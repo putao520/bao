@@ -137,7 +137,10 @@ mod tests {
 
     #[test]
     fn cdp_event_new_basic() {
-        let e = CdpEvent::new("Page.frameNavigated", serde_json::json!({"url": "about:blank"}));
+        let e = CdpEvent::new(
+            "Page.frameNavigated",
+            serde_json::json!({"url": "about:blank"}),
+        );
         assert_eq!(e.method, "Page.frameNavigated");
         assert_eq!(e.params["url"], "about:blank");
         assert!(e.session_id.is_none());

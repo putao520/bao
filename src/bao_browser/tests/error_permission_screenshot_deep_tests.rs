@@ -4,8 +4,8 @@
 // ScreenshotFormat encode, PermissionGuard edge cases, Permission struct
 // default and custom.
 
-use bao_browser::{BrowserError, Permission, PermissionDenied, PermissionGuard, ScreenshotFormat};
 use bao_browser::encode_image;
+use bao_browser::{BrowserError, Permission, PermissionDenied, PermissionGuard, ScreenshotFormat};
 use image::RgbaImage;
 
 // ---- BrowserError ----

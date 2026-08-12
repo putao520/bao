@@ -4,7 +4,9 @@
 // T8: DomainDispatch enum dispatch
 // BaoEvent parsing and broadcast
 
-use cdp_server::{EmptyHandler, BaoEvent, ConsoleMessage, DomainHandler, DomainRegistry, EventSender, CdpError};
+use cdp_server::{
+    BaoEvent, CdpError, ConsoleMessage, DomainHandler, DomainRegistry, EmptyHandler, EventSender,
+};
 use serde_json::{json, Value};
 
 struct NoopSender;
@@ -64,9 +66,7 @@ fn bao_event_parse_runtime_exception() {
 
 #[test]
 fn bao_event_parse_page_load() {
-    let evt = parse_event(
-        "__BAO_EVT__Page.loadEventFired\n{\"timestamp\":2000}"
-    );
+    let evt = parse_event("__BAO_EVT__Page.loadEventFired\n{\"timestamp\":2000}");
     evt.broadcast(&NoopSender);
 }
 
@@ -83,7 +83,10 @@ fn bao_event_reject_no_prefix() {
 #[test]
 fn bao_event_malformed_json_uses_defaults() {
     let result = BaoEvent::from_console_text("__BAO_EVT__Debugger.paused\nnot-json");
-    assert!(result.is_some(), "malformed JSON should still parse with defaults");
+    assert!(
+        result.is_some(),
+        "malformed JSON should still parse with defaults"
+    );
 }
 
 #[test]
@@ -95,9 +98,8 @@ fn bao_event_reject_empty_after_prefix() {
 
 #[test]
 fn console_message_event_variant() {
-    let msg = BaoEvent::from_console_text(
-        "__BAO_EVT__Page.loadEventFired\n{\"timestamp\":0}"
-    ).unwrap();
+    let msg =
+        BaoEvent::from_console_text("__BAO_EVT__Page.loadEventFired\n{\"timestamp\":0}").unwrap();
     match &msg {
         ConsoleMessage::Event(_) => {}
         ConsoleMessage::Log { .. } => panic!("expected Event variant"),
@@ -121,9 +123,13 @@ fn console_message_log_variant() {
 
 // ─── DomainRegistry with concrete handler type ───────────────────────────
 
-struct MockH { name: &'static str }
+struct MockH {
+    name: &'static str,
+}
 impl DomainHandler for MockH {
-    fn domain_name(&self) -> &'static str { self.name }
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
     fn handle_command(&self, cmd: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
         Ok(json!({"domain": self.name, "cmd": cmd}))
     }
@@ -138,22 +144,33 @@ fn registry_concrete_handler_works() {
 
 // ─── DomainRegistry with enum dispatch ───────────────────────────────────
 
-enum TestDispatch { Alpha(MockH), Beta(MockH) }
+enum TestDispatch {
+    Alpha(MockH),
+    Beta(MockH),
+}
 
 impl DomainHandler for TestDispatch {
     fn domain_name(&self) -> &'static str {
-        match self { Self::Alpha(h) => h.domain_name(), Self::Beta(h) => h.domain_name() }
+        match self {
+            Self::Alpha(h) => h.domain_name(),
+            Self::Beta(h) => h.domain_name(),
+        }
     }
     fn handle_command(&self, cmd: &str, p: Value, s: &dyn EventSender) -> Result<Value, CdpError> {
-        match self { Self::Alpha(h) => h.handle_command(cmd, p, s), Self::Beta(h) => h.handle_command(cmd, p, s) }
+        match self {
+            Self::Alpha(h) => h.handle_command(cmd, p, s),
+            Self::Beta(h) => h.handle_command(cmd, p, s),
+        }
     }
 }
 
 #[test]
 fn registry_enum_dispatch_works() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Alpha(MockH { name: "Alpha" })).unwrap();
-    reg.register(TestDispatch::Beta(MockH { name: "Beta" })).unwrap();
+    reg.register(TestDispatch::Alpha(MockH { name: "Alpha" }))
+        .unwrap();
+    reg.register(TestDispatch::Beta(MockH { name: "Beta" }))
+        .unwrap();
     assert!(reg.has_domain("Alpha"));
     assert!(reg.has_domain("Beta"));
 
@@ -167,7 +184,10 @@ fn registry_enum_dispatch_works() {
 #[test]
 fn registry_enum_dispatch_duplicate_rejected() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Alpha(MockH { name: "X" })).unwrap();
-    let err = reg.register(TestDispatch::Alpha(MockH { name: "X" })).unwrap_err();
+    reg.register(TestDispatch::Alpha(MockH { name: "X" }))
+        .unwrap();
+    let err = reg
+        .register(TestDispatch::Alpha(MockH { name: "X" }))
+        .unwrap_err();
     assert!(err.contains("already registered"));
 }

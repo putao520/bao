@@ -11,7 +11,9 @@ pub struct JsCell<T> {
 
 impl<T> JsCell<T> {
     pub fn new(value: T) -> Self {
-        Self { inner: UnsafeCell::new(value) }
+        Self {
+            inner: UnsafeCell::new(value),
+        }
     }
 
     pub fn get(&self) -> &T {

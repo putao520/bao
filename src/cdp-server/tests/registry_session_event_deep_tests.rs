@@ -5,10 +5,9 @@
 use std::sync::{Arc, Mutex};
 
 use cdp_server::{
-    DomainHandler, DomainRegistry, EventSender, CdpError,
-    CdpResponse, CdpEvent, SessionState,
+    CdpError, CdpEvent, CdpResponse, DomainHandler, DomainRegistry, EventSender, SessionState,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 // ---- Test helpers: mock DomainHandler with interior mutability ----
 
@@ -55,7 +54,9 @@ impl MockHandler {
 }
 
 impl DomainHandler for MockHandler {
-    fn domain_name(&self) -> &'static str { self.domain }
+    fn domain_name(&self) -> &'static str {
+        self.domain
+    }
 
     fn handle_command(
         &self,
@@ -90,7 +91,9 @@ impl ObservedHandler {
 }
 
 impl DomainHandler for ObservedHandler {
-    fn domain_name(&self) -> &'static str { self.inner.domain_name() }
+    fn domain_name(&self) -> &'static str {
+        self.inner.domain_name()
+    }
 
     fn handle_command(
         &self,
@@ -116,10 +119,11 @@ impl EventSender for NoopEventSender {
 }
 
 static SENDER: NoopEventSender = NoopEventSender;
-fn noop_sender() -> &'static dyn EventSender { &SENDER }
+fn noop_sender() -> &'static dyn EventSender {
+    &SENDER
+}
 
 // ---- DomainRegistry::new / default ----
-
 
 // TestDispatch — enum dispatch for multi-handler tests
 enum TestDispatch {
@@ -129,16 +133,33 @@ enum TestDispatch {
 
 impl DomainHandler for TestDispatch {
     fn domain_name(&self) -> &'static str {
-        match self { Self::Mock(h) => h.domain_name(), Self::Observed(h) => h.domain_name() }
+        match self {
+            Self::Mock(h) => h.domain_name(),
+            Self::Observed(h) => h.domain_name(),
+        }
     }
-    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
-        match self { Self::Mock(h) => h.handle_command(cmd, params, sender), Self::Observed(h) => h.handle_command(cmd, params, sender) }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: serde_json::Value,
+        sender: &dyn EventSender,
+    ) -> Result<serde_json::Value, CdpError> {
+        match self {
+            Self::Mock(h) => h.handle_command(cmd, params, sender),
+            Self::Observed(h) => h.handle_command(cmd, params, sender),
+        }
     }
     fn on_session_created(&self, session_id: &str) {
-        match self { Self::Mock(h) => h.on_session_created(session_id), Self::Observed(h) => h.on_session_created(session_id) }
+        match self {
+            Self::Mock(h) => h.on_session_created(session_id),
+            Self::Observed(h) => h.on_session_created(session_id),
+        }
     }
     fn on_session_destroyed(&self, session_id: &str) {
-        match self { Self::Mock(h) => h.on_session_destroyed(session_id), Self::Observed(h) => h.on_session_destroyed(session_id) }
+        match self {
+            Self::Mock(h) => h.on_session_destroyed(session_id),
+            Self::Observed(h) => h.on_session_destroyed(session_id),
+        }
     }
 }
 
@@ -187,7 +208,9 @@ fn test_register_duplicate_fails() {
 #[test]
 fn test_register_duplicate_preserves_original() {
     let reg = DomainRegistry::<MockHandler>::new();
-    assert!(reg.register(MockHandler::with_response("Page", Ok(json!({"v": 1})))).is_ok());
+    assert!(reg
+        .register(MockHandler::with_response("Page", Ok(json!({"v": 1}))))
+        .is_ok());
     let _ = reg.register(MockHandler::new("Page"));
     let result = reg.dispatch_command("Page.navigate", json!({}), noop_sender());
     assert!(result.is_some());
@@ -199,8 +222,19 @@ fn test_register_duplicate_preserves_original() {
 #[test]
 fn test_register_many_domains() {
     let reg = DomainRegistry::<MockHandler>::new();
-    let domains = ["Page", "Runtime", "DOM", "Network", "CSS", "Emulation",
-                   "Input", "Overlay", "Debugger", "Log", "Fetch"];
+    let domains = [
+        "Page",
+        "Runtime",
+        "DOM",
+        "Network",
+        "CSS",
+        "Emulation",
+        "Input",
+        "Overlay",
+        "Debugger",
+        "Log",
+        "Fetch",
+    ];
     for d in &domains {
         assert!(reg.register(MockHandler::new(d)).is_ok());
     }
@@ -215,7 +249,11 @@ fn test_register_many_domains() {
 fn test_dispatch_known_domain() {
     let reg = DomainRegistry::<MockHandler>::new();
     assert!(reg.register(MockHandler::new("Page")).is_ok());
-    let result = reg.dispatch_command("Page.navigate", json!({"url": "http://test"}), noop_sender());
+    let result = reg.dispatch_command(
+        "Page.navigate",
+        json!({"url": "http://test"}),
+        noop_sender(),
+    );
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
 }
@@ -231,19 +269,28 @@ fn test_dispatch_unknown_domain() {
 fn test_dispatch_extracts_domain_correctly() {
     let mock = Arc::new(MockHandler::new("Runtime"));
     let reg = DomainRegistry::<ObservedHandler>::new();
-    assert!(reg.register(ObservedHandler::new(Arc::clone(&mock))).is_ok());
+    assert!(reg
+        .register(ObservedHandler::new(Arc::clone(&mock)))
+        .is_ok());
 
-    let _ = reg.dispatch_command("Runtime.evaluate", json!({"expression": "1+1"}), noop_sender());
+    let _ = reg.dispatch_command(
+        "Runtime.evaluate",
+        json!({"expression": "1+1"}),
+        noop_sender(),
+    );
     assert_eq!(mock.last_command(), "Runtime.evaluate");
 }
 
 #[test]
 fn test_dispatch_handler_error() {
     let reg = DomainRegistry::<MockHandler>::new();
-    let handler = MockHandler::with_response("Debugger", Err(CdpError {
-        code: -32601,
-        message: "not found".into(),
-    }));
+    let handler = MockHandler::with_response(
+        "Debugger",
+        Err(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
+    );
     assert!(reg.register(handler).is_ok());
     let result = reg.dispatch_command("Debugger.invalidMethod", json!({}), noop_sender());
     assert!(result.is_some());
@@ -310,7 +357,9 @@ fn test_has_domain_case_sensitive() {
 fn test_notify_session_created_calls_handler() {
     let mock = Arc::new(MockHandler::new("Page"));
     let reg = DomainRegistry::<ObservedHandler>::new();
-    assert!(reg.register(ObservedHandler::new(Arc::clone(&mock))).is_ok());
+    assert!(reg
+        .register(ObservedHandler::new(Arc::clone(&mock)))
+        .is_ok());
 
     reg.notify_session_created("Page", "sess-1");
     assert_eq!(mock.created_count(), 1);
@@ -327,7 +376,9 @@ fn test_notify_session_created_unknown_domain() {
 fn test_notify_session_created_multiple() {
     let mock = Arc::new(MockHandler::new("Runtime"));
     let reg = DomainRegistry::<ObservedHandler>::new();
-    assert!(reg.register(ObservedHandler::new(Arc::clone(&mock))).is_ok());
+    assert!(reg
+        .register(ObservedHandler::new(Arc::clone(&mock)))
+        .is_ok());
 
     reg.notify_session_created("Runtime", "s1");
     reg.notify_session_created("Runtime", "s2");
@@ -340,8 +391,12 @@ fn test_notify_session_created_only_matching_domain() {
     let m_page = Arc::new(MockHandler::new("Page"));
     let m_runtime = Arc::new(MockHandler::new("Runtime"));
     let reg = DomainRegistry::<ObservedHandler>::new();
-    assert!(reg.register(ObservedHandler::new(Arc::clone(&m_page))).is_ok());
-    assert!(reg.register(ObservedHandler::new(Arc::clone(&m_runtime))).is_ok());
+    assert!(reg
+        .register(ObservedHandler::new(Arc::clone(&m_page)))
+        .is_ok());
+    assert!(reg
+        .register(ObservedHandler::new(Arc::clone(&m_runtime)))
+        .is_ok());
 
     reg.notify_session_created("Page", "s1");
     assert_eq!(m_page.created_count(), 1);
@@ -355,8 +410,12 @@ fn test_notify_session_destroyed_calls_matching() {
     let m_page = Arc::new(MockHandler::new("Page"));
     let m_runtime = Arc::new(MockHandler::new("Runtime"));
     let reg = DomainRegistry::<ObservedHandler>::new();
-    assert!(reg.register(ObservedHandler::new(Arc::clone(&m_page))).is_ok());
-    assert!(reg.register(ObservedHandler::new(Arc::clone(&m_runtime))).is_ok());
+    assert!(reg
+        .register(ObservedHandler::new(Arc::clone(&m_page)))
+        .is_ok());
+    assert!(reg
+        .register(ObservedHandler::new(Arc::clone(&m_runtime)))
+        .is_ok());
 
     reg.notify_session_destroyed(&["Page".to_string()], "s1");
     assert_eq!(m_page.destroyed_count(), 1);
@@ -408,11 +467,17 @@ fn test_notify_session_destroyed_repeated() {
 
 #[test]
 fn test_session_state_variants_differ() {
-    let states = [SessionState::Created, SessionState::Active,
-                  SessionState::Closing, SessionState::Closed];
+    let states = [
+        SessionState::Created,
+        SessionState::Active,
+        SessionState::Closing,
+        SessionState::Closed,
+    ];
     for i in 0..states.len() {
         for j in 0..states.len() {
-            if i != j { assert_ne!(states[i], states[j]); }
+            if i != j {
+                assert_ne!(states[i], states[j]);
+            }
         }
     }
 }
@@ -487,14 +552,20 @@ fn test_shared_registry_thread_safety() {
 
 #[test]
 fn test_cdp_error_fields() {
-    let err = CdpError { code: -32601, message: "test error".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "test error".into(),
+    };
     assert_eq!(err.code, -32601);
     assert_eq!(err.message, "test error");
 }
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32600, message: "invalid".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "invalid".into(),
+    };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32600"));
     assert!(debug.contains("invalid"));
@@ -502,7 +573,10 @@ fn test_cdp_error_debug() {
 
 #[test]
 fn test_cdp_error_serialize() {
-    let err = CdpError { code: -32601, message: "not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "not found".into(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     assert!(json_str.contains("-32601"));
     assert!(json_str.contains("not found"));
@@ -527,7 +601,10 @@ fn test_cdp_response_error_fields() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "err".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "err".into(),
+        }),
     };
     assert!(resp.result.is_none());
     assert!(resp.error.is_some());
@@ -651,7 +728,10 @@ fn test_server_config_default_max_sessions() {
 
 #[test]
 fn test_server_config_default_browser_name() {
-    assert_eq!(cdp_server::ServerConfig::default().browser_name, "Bao/0.1.0");
+    assert_eq!(
+        cdp_server::ServerConfig::default().browser_name,
+        "Bao/0.1.0"
+    );
 }
 
 #[test]
@@ -691,9 +771,7 @@ fn test_server_config_builder_full() {
 
 #[test]
 fn test_server_config_builder_partial() {
-    let cfg = cdp_server::ServerConfig::builder()
-        .port(9999)
-        .build();
+    let cfg = cdp_server::ServerConfig::builder().port(9999).build();
     assert_eq!(cfg.port, 9999);
     assert_eq!(cfg.host, "127.0.0.1"); // default
 }

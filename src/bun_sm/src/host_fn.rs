@@ -1,6 +1,6 @@
 // @trace REQ-ENG-003
 use ::std::ptr::NonNull;
-use log::{info, debug, trace, error, warn};
+use log::{debug, error, info, trace, warn};
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::glue::JS_GetReservedSlot;
@@ -71,14 +71,7 @@ pub unsafe fn new_runtime_function(
     flags: u32,
 ) -> *mut JSObject {
     let c_name = ::std::ffi::CString::new(name).unwrap_or_default();
-    let func = w2::JS_DefineFunction(
-        cx,
-        parent,
-        c_name.as_ptr(),
-        Some(host_fn),
-        nargs,
-        flags,
-    );
+    let func = w2::JS_DefineFunction(cx, parent, c_name.as_ptr(), Some(host_fn), nargs, flags);
     JS_GetFunctionObject(func)
 }
 // ---------------------------------------------------------------------------
@@ -113,22 +106,126 @@ pub fn install_console(
     }
 
     unsafe {
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"log".as_ptr(), Some(console_log), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"error".as_ptr(), Some(console_error), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"warn".as_ptr(), Some(console_warn), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"info".as_ptr(), Some(console_info), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"debug".as_ptr(), Some(console_debug), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"dir".as_ptr(), Some(console_dir), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"time".as_ptr(), Some(console_time), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"timeEnd".as_ptr(), Some(console_time_end), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"trace".as_ptr(), Some(console_trace), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"assert".as_ptr(), Some(console_assert), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"clear".as_ptr(), Some(console_clear), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"count".as_ptr(), Some(console_count), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"countReset".as_ptr(), Some(console_count_reset), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"table".as_ptr(), Some(console_table), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"log".as_ptr(),
+            Some(console_log),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"error".as_ptr(),
+            Some(console_error),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"warn".as_ptr(),
+            Some(console_warn),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"info".as_ptr(),
+            Some(console_info),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"debug".as_ptr(),
+            Some(console_debug),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"dir".as_ptr(),
+            Some(console_dir),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"time".as_ptr(),
+            Some(console_time),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"timeEnd".as_ptr(),
+            Some(console_time_end),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"trace".as_ptr(),
+            Some(console_trace),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"assert".as_ptr(),
+            Some(console_assert),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"clear".as_ptr(),
+            Some(console_clear),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"count".as_ptr(),
+            Some(console_count),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"countReset".as_ptr(),
+            Some(console_count_reset),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"table".as_ptr(),
+            Some(console_table),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
 
-        w2::JS_DefineProperty3(cx, global, c"console".as_ptr(), console_obj.handle(), JSPROP_ENUMERATE as u32);
+        w2::JS_DefineProperty3(
+            cx,
+            global,
+            c"console".as_ptr(),
+            console_obj.handle(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 }
 
@@ -251,10 +348,15 @@ pub unsafe fn call_method(
     let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(cx_ref) let obj_root = obj);
     let mut func_val = UndefinedValue();
-    JS_GetProperty(cx, obj_root.handle().into(), c_name.as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut func_val,
-    });
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c_name.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut func_val,
+        },
+    );
 
     call_function(cx, func_val, obj, args)
 }
@@ -280,10 +382,13 @@ pub unsafe fn take_exception(cx: *mut JSContext) -> JsError {
     }
 
     let mut exc = UndefinedValue();
-    JS_GetPendingException(cx, MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut exc,
-    });
+    JS_GetPendingException(
+        cx,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut exc,
+        },
+    );
     JS_ClearPendingException(cx);
 
     if !exc.is_object() {
@@ -308,7 +413,13 @@ pub unsafe fn take_exception(cx: *mut JSContext) -> JsError {
     let column = get_int_property(cx, obj_h, "columnNumber").unwrap_or(0);
     let stack = get_string_property(cx, obj_h, "stack");
 
-    JsError { message, filename, line, column, stack }
+    JsError {
+        message,
+        filename,
+        line,
+        column,
+        stack,
+    }
 }
 
 /// Check if there is a pending exception and return it as `Err(JsError)`.
@@ -355,10 +466,15 @@ pub unsafe fn get_string_property(
 ) -> ::std::option::Option<String> {
     let c_name = ::std::ffi::CString::new(name).unwrap_or_default();
     let mut val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c_name.as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut val,
-    });
+    JS_GetProperty(
+        cx,
+        obj_h,
+        c_name.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        },
+    );
     if val.is_string() {
         let s = val.to_string();
         if !s.is_null() {
@@ -383,10 +499,15 @@ pub unsafe fn get_int_property(
 ) -> ::std::option::Option<u32> {
     let c_name = ::std::ffi::CString::new(name).unwrap_or_default();
     let mut val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c_name.as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut val,
-    });
+    JS_GetProperty(
+        cx,
+        obj_h,
+        c_name.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        },
+    );
     if val.is_int32() {
         Some(val.to_int32() as u32)
     } else if val.is_double() {
@@ -408,7 +529,9 @@ impl JsError {
     pub unsafe fn throw_on(&self, cx: *mut JSContext) {
         let msg = ::std::ffi::CString::new(self.message.as_str())
             .unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
-        unsafe { JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr()); }
+        unsafe {
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        }
     }
 }
 
@@ -441,7 +564,9 @@ unsafe extern "C" fn console_log(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, argc);
     let args_slice = ::std::slice::from_raw_parts(args.argv_, argc as usize);
     for (i, val) in args_slice.iter().enumerate() {
-        if i > 0 { print!(" "); }
+        if i > 0 {
+            print!(" ");
+        }
         print_value(cx, *val);
     }
     // Node.js / Bun: console.log terminates the line with a newline. Use
@@ -490,7 +615,9 @@ unsafe extern "C" fn console_error(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let args = CallArgs::from_vp(vp, argc);
     let args_slice = ::std::slice::from_raw_parts(args.argv_, argc as usize);
     for (i, val) in args_slice.iter().enumerate() {
-        if i > 0 { print!(" "); }
+        if i > 0 {
+            print!(" ");
+        }
         print_value(cx, *val);
     }
     error!("console.error");
@@ -503,7 +630,9 @@ unsafe extern "C" fn console_warn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     let args = CallArgs::from_vp(vp, argc);
     let args_slice = ::std::slice::from_raw_parts(args.argv_, argc as usize);
     for (i, val) in args_slice.iter().enumerate() {
-        if i > 0 { print!(" "); }
+        if i > 0 {
+            print!(" ");
+        }
         print_value(cx, *val);
     }
     warn!("console.warn");
@@ -543,7 +672,8 @@ unsafe extern "C" fn console_time(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 unsafe extern "C" fn console_time_end(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let label = extract_label(cx, argc, &args);
-    let elapsed = CONSOLE_TIMERS.with(|t| t.borrow_mut().remove(&label))
+    let elapsed = CONSOLE_TIMERS
+        .with(|t| t.borrow_mut().remove(&label))
         .map(|start| start.elapsed());
     if let Some(d) = elapsed {
         debug!("{}: {:.3}ms", label, d.as_secs_f64() * 1000.0);
@@ -559,7 +689,9 @@ unsafe extern "C" fn console_trace(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let args = CallArgs::from_vp(vp, argc);
     let args_slice = ::std::slice::from_raw_parts(args.argv_, argc as usize);
     for (i, val) in args_slice.iter().enumerate() {
-        if i > 0 { print!(" "); }
+        if i > 0 {
+            print!(" ");
+        }
         print_value(cx, *val);
     }
     trace!("\n    at <anonymous>");
@@ -575,7 +707,9 @@ unsafe extern "C" fn console_assert(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         if !cond.is_boolean() || !cond.to_boolean() {
             let args_slice = ::std::slice::from_raw_parts(args.argv_, argc as usize);
             for (i, val) in args_slice.iter().enumerate().skip(1) {
-                if i > 1 { print!(" "); }
+                if i > 1 {
+                    print!(" ");
+                }
                 print_value(cx, *val);
             }
             debug!("\nAssertion failed");
@@ -704,8 +838,13 @@ impl<'a> ArgReader<'a> {
     ///
     /// # Safety
     /// Must be called within a valid JSContext scope.
-    pub unsafe fn get_optional_string(&self, index: u32) -> ::std::option::Option<::std::string::String> {
-        if !self.has(index) { return None; }
+    pub unsafe fn get_optional_string(
+        &self,
+        index: u32,
+    ) -> ::std::option::Option<::std::string::String> {
+        if !self.has(index) {
+            return None;
+        }
         let s = unsafe { self.get_string(index) };
         if s.is_empty() { None } else { Some(s) }
     }
@@ -843,8 +982,11 @@ impl<'a> ArgReader<'a> {
     /// # Safety
     /// Must be called within a valid JSContext scope.
     pub unsafe fn throw(&self, msg: &str) -> bool {
-        let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
-        unsafe { JS_ReportErrorUTF8(self.cx, c"%s".as_ptr(), c_msg.as_ptr()); }
+        let c_msg = ::std::ffi::CString::new(msg)
+            .unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
+        unsafe {
+            JS_ReportErrorUTF8(self.cx, c"%s".as_ptr(), c_msg.as_ptr());
+        }
         false
     }
 }
@@ -871,18 +1013,35 @@ impl<'a> ArgReader<'a> {
 macro_rules! define_host_fn {
     ($cx:expr, $obj:expr, $name:expr, $nargs:expr, $handler:expr) => {
         unsafe {
-            static mut __HANDLER: ::std::option::Option<for<'a> fn(*mut mozjs::jsapi::JSContext, &'a $crate::host_fn::ArgReader<'a>) -> bool> = None;
+            static mut __HANDLER: ::std::option::Option<
+                for<'a> fn(
+                    *mut mozjs::jsapi::JSContext,
+                    &'a $crate::host_fn::ArgReader<'a>,
+                ) -> bool,
+            > = None;
             ::std::ptr::write_volatile(&mut __HANDLER, Some($handler));
-            unsafe extern "C" fn __trampoline(cx: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut mozjs::jsval::JSVal) -> bool {
+            unsafe extern "C" fn __trampoline(
+                cx: *mut mozjs::jsapi::JSContext,
+                argc: u32,
+                vp: *mut mozjs::jsval::JSVal,
+            ) -> bool {
                 let args = mozjs::jsapi::CallArgs::from_vp(vp, argc);
                 let reader = $crate::host_fn::ArgReader::new(cx, &args);
                 match ::std::ptr::read_volatile(&__HANDLER) {
                     Some(h) => h(cx, &reader),
-                    None => { args.rval().set(mozjs::jsval::UndefinedValue()); true }
+                    None => {
+                        args.rval().set(mozjs::jsval::UndefinedValue());
+                        true
+                    }
                 }
             }
             mozjs::rust::wrappers2::JS_DefineFunction(
-                $cx, $obj, $name.as_ptr(), Some(__trampoline), $nargs, mozjs::jsapi::JSPROP_ENUMERATE as u32,
+                $cx,
+                $obj,
+                $name.as_ptr(),
+                Some(__trampoline),
+                $nargs,
+                mozjs::jsapi::JSPROP_ENUMERATE as u32,
             );
         }
     };

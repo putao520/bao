@@ -18,7 +18,9 @@ pub struct Debugger {
 
 impl Debugger {
     pub fn new() -> Self {
-        Debugger { breakpoints: HashMap::new() }
+        Debugger {
+            breakpoints: HashMap::new(),
+        }
     }
 
     pub fn enable(&mut self) -> Result<(), DebuggerError> {
@@ -43,7 +45,15 @@ impl Debugger {
 
     pub fn set_breakpoint(&mut self, url: String, line: u32, column: u32) -> u64 {
         let id = BREAKPOINT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        self.breakpoints.insert(id, Breakpoint { id, url, line, column });
+        self.breakpoints.insert(
+            id,
+            Breakpoint {
+                id,
+                url,
+                line,
+                column,
+            },
+        );
         id
     }
 
@@ -56,7 +66,10 @@ impl Debugger {
     }
 
     pub fn get_breakpoints_for_url(&self, url: &str) -> Vec<&Breakpoint> {
-        self.breakpoints.values().filter(|bp| bp.url == url).collect()
+        self.breakpoints
+            .values()
+            .filter(|bp| bp.url == url)
+            .collect()
     }
 
     pub fn all_breakpoints(&self) -> Vec<&Breakpoint> {

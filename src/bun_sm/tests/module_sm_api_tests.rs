@@ -150,7 +150,11 @@ fn test_finish_dynamic_module_import_file_module() {
     // (the spec-mandated FinishDynamicModuleImport drives the SM state
     // machine and resolves the user-facing promise with the namespace).
     let dir = TempDir::new().unwrap();
-    let entry_path = write_module(&dir, "dyn_dep.mjs", "export const V = 7;\nexport default 7;");
+    let entry_path = write_module(
+        &dir,
+        "dyn_dep.mjs",
+        "export const V = 7;\nexport default 7;",
+    );
 
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
@@ -198,7 +202,11 @@ fn test_require_of_esm_module() {
         esm_path.to_string_lossy().replace('\\', "\\\\")
     );
     let result = eval_string(&mut ctx, &src, &entry_path.to_string_lossy());
-    assert!(result.starts_with("PASS"), "require(esm) should expose named export: {}", result);
+    assert!(
+        result.starts_with("PASS"),
+        "require(esm) should expose named export: {}",
+        result
+    );
 }
 
 // ===========================================================================
@@ -280,7 +288,11 @@ fn test_node_modules_resolution() {
     // Create node_modules/mylib/index.js
     let nm_pkg = dir.path().join("node_modules").join("mylib");
     fs::create_dir_all(&nm_pkg).unwrap();
-    fs::write(nm_pkg.join("index.js"), "module.exports = { from: 'node_modules' };").unwrap();
+    fs::write(
+        nm_pkg.join("index.js"),
+        "module.exports = { from: 'node_modules' };",
+    )
+    .unwrap();
     fs::write(
         nm_pkg.join("package.json"),
         r#"{"name": "mylib", "main": "index.js", "version": "1.0.0"}"#,
@@ -296,7 +308,11 @@ fn test_node_modules_resolution() {
         "const m = require('mylib'); m.from === 'node_modules' ? 'PASS' : 'FAIL:' + m.from",
         "<test>",
     );
-    assert!(result.starts_with("PASS"), "node_modules resolution: {}", result);
+    assert!(
+        result.starts_with("PASS"),
+        "node_modules resolution: {}",
+        result
+    );
 }
 
 #[test]
@@ -317,7 +333,11 @@ fn test_node_modules_resolution_traverses_up() {
         "const m = require('upper_lib'); m === 42 ? 'PASS' : 'FAIL:' + m",
         "<test>",
     );
-    assert!(result.starts_with("PASS"), "node_modules upward traversal: {}", result);
+    assert!(
+        result.starts_with("PASS"),
+        "node_modules upward traversal: {}",
+        result
+    );
 }
 
 // ===========================================================================
@@ -333,11 +353,7 @@ fn test_require_resolve_returns_path() {
     ctx.set_global_setup(bun_runtime::globals::install_all);
     bun_runtime::require::set_require_dir(dir.path().to_path_buf());
 
-    let result = eval_string(
-        &mut ctx,
-        "require.resolve('./target')",
-        "<test>",
-    );
+    let result = eval_string(&mut ctx, "require.resolve('./target')", "<test>");
     assert!(
         result.contains("target.js"),
         "require.resolve should return absolute path: {}",
@@ -382,8 +398,7 @@ fn test_cjs_detection_by_extension() {
         let has_cjs_marker = content.contains("module.exports")
             || content.contains("exports.")
             || content.contains("exports[");
-        let has_esm_marker = content.contains("import ")
-            || content.contains("export ");
+        let has_esm_marker = content.contains("import ") || content.contains("export ");
         if has_esm_marker && !has_cjs_marker {
             return false;
         }
@@ -407,8 +422,7 @@ fn test_percent_encode_decode_round_trip() {
     fn encode(path: &str) -> String {
         let mut out = String::with_capacity(path.len());
         for b in path.bytes() {
-            let safe = b.is_ascii_alphanumeric()
-                || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/');
+            let safe = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/');
             if safe {
                 out.push(b as char);
             } else {

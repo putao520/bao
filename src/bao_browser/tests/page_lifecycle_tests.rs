@@ -11,10 +11,21 @@ use bao_browser::{BrowserError, PageState, Permission, PermissionGuard};
 fn test_page_state_variants_distinct() {
     // SM PageLifecycle (SPEC 03-PROCESS): Closing is a distinct intermediate state.
     // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state distinct
-    let states = [PageState::Created, PageState::Navigating, PageState::Interactive, PageState::Idle, PageState::Closing, PageState::Closed];
+    let states = [
+        PageState::Created,
+        PageState::Navigating,
+        PageState::Interactive,
+        PageState::Idle,
+        PageState::Closing,
+        PageState::Closed,
+    ];
     for i in 0..states.len() {
-        for j in (i+1)..states.len() {
-            assert_ne!(states[i], states[j], "{:?} should differ from {:?}", states[i], states[j]);
+        for j in (i + 1)..states.len() {
+            assert_ne!(
+                states[i], states[j],
+                "{:?} should differ from {:?}",
+                states[i], states[j]
+            );
         }
     }
 }
@@ -210,7 +221,7 @@ fn test_permission_guard_read_only() {
         write: Some(vec![]),
         env: Some(false),
         run: Some(false),
-    ..Default::default()
+        ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -230,7 +241,7 @@ fn test_permission_guard_net_whitelist() {
         write: None,
         env: None,
         run: None,
-    ..Default::default()
+        ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -250,7 +261,7 @@ fn test_permission_guard_empty_net_blocks_all() {
         write: None,
         env: None,
         run: None,
-    ..Default::default()
+        ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -265,13 +276,19 @@ fn test_permission_guard_clone() {
         write: Some(vec![]),
         env: Some(true),
         run: Some(false),
-    ..Default::default()
+        ..Default::default()
     };
     let g1 = PermissionGuard::new(perm);
     let g2 = g1.clone();
     assert_eq!(g1.is_restricted(), g2.is_restricted());
-    assert_eq!(g1.check_net("safe.com").is_ok(), g2.check_net("safe.com").is_ok());
-    assert_eq!(g1.check_net("evil.com").is_err(), g2.check_net("evil.com").is_err());
+    assert_eq!(
+        g1.check_net("safe.com").is_ok(),
+        g2.check_net("safe.com").is_ok()
+    );
+    assert_eq!(
+        g1.check_net("evil.com").is_err(),
+        g2.check_net("evil.com").is_err()
+    );
 }
 
 // ---- BaoConfig default tests ----
@@ -309,7 +326,7 @@ fn test_bao_config_custom() {
 
 #[test]
 fn test_browser_config_into_bao_config() {
-    use bao_browser::{BrowserConfig, BaoConfig};
+    use bao_browser::{BaoConfig, BrowserConfig};
     use bao_stealth::StealthProfile;
 
     let mut bc = BrowserConfig::default();

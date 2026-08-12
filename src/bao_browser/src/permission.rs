@@ -215,7 +215,11 @@ pub struct PermissionDenied {
 
 impl std::fmt::Display for PermissionDenied {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Permission denied: {} on {}", self.category, self.resource)
+        write!(
+            f,
+            "Permission denied: {} on {}",
+            self.category, self.resource
+        )
     }
 }
 
@@ -575,10 +579,7 @@ mod tests {
             net: Some(vec!["safe.com".into()]),
             ..Default::default()
         };
-        assert!(
-            perm.is_net_allowed("SAFE.com"),
-            "uppercase host must match"
-        );
+        assert!(perm.is_net_allowed("SAFE.com"), "uppercase host must match");
         assert!(
             perm.is_net_allowed("sub.SAFE.com"),
             "uppercase subdomain must match"

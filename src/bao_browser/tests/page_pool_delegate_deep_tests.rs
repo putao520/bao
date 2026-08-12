@@ -24,7 +24,11 @@ fn test_config(max_pages: usize) -> BaoConfig {
 }
 
 fn make_pool(servo: &Rc<Servo>, delegate: &Rc<BaoServoDelegate>, max_pages: usize) -> PagePool {
-    PagePool::new(Rc::clone(servo), Rc::clone(delegate), &test_config(max_pages))
+    PagePool::new(
+        Rc::clone(servo),
+        Rc::clone(delegate),
+        &test_config(max_pages),
+    )
 }
 
 fn make_pool_with_config(
@@ -165,7 +169,9 @@ fn page_pool_comprehensive() {
             ..BaoConfig::default()
         };
         let pool = make_pool_with_config(&servo, &delegate, &config);
-        let page = pool.create_page(&PageConfig::default()).expect("D.2 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.2 create");
         assert!(page.is_alive(), "D.2 alive");
         pool.close_all();
     }
@@ -173,7 +179,9 @@ fn page_pool_comprehensive() {
     // ---- D.3 create_page increments stats ----
     {
         let pool = make_pool(&servo, &delegate, 10);
-        let page = pool.create_page(&PageConfig::default()).expect("D.3 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.3 create");
         let stats = pool.stats();
         assert_eq!(stats.active, 1, "D.3 active");
         assert_eq!(stats.idle, 0, "D.3 idle");
@@ -200,7 +208,9 @@ fn page_pool_comprehensive() {
     // ---- D.5 close active page ----
     {
         let pool = make_pool(&servo, &delegate, 10);
-        let page = pool.create_page(&PageConfig::default()).expect("D.5 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.5 create");
         let id = page.id();
         pool.close_page(id).expect("D.5 close");
         let stats = pool.stats();
@@ -213,7 +223,9 @@ fn page_pool_comprehensive() {
     // ---- D.6 close idle page ----
     {
         let pool = make_pool(&servo, &delegate, 10);
-        let page = pool.create_page(&PageConfig::default()).expect("D.6 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.6 create");
         let id = page.id();
         pool.release_page(id);
         assert_eq!(pool.stats().idle, 1, "D.6 idle before close");
@@ -239,7 +251,9 @@ fn page_pool_comprehensive() {
     // ---- D.8 release moves active to idle ----
     {
         let pool = make_pool(&servo, &delegate, 10);
-        let page = pool.create_page(&PageConfig::default()).expect("D.8 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.8 create");
         let id = page.id();
         pool.release_page(id);
         let stats = pool.stats();
@@ -253,7 +267,9 @@ fn page_pool_comprehensive() {
     // ---- D.9 get_page for active page ----
     {
         let pool = make_pool(&servo, &delegate, 10);
-        let page = pool.create_page(&PageConfig::default()).expect("D.9 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.9 create");
         let id = page.id();
         let retrieved = pool.get_page(id).expect("D.9 get active");
         assert_eq!(retrieved.id(), id, "D.9 id match");
@@ -265,7 +281,9 @@ fn page_pool_comprehensive() {
     // ---- D.10 get_page promotes idle to active ----
     {
         let pool = make_pool(&servo, &delegate, 10);
-        let page = pool.create_page(&PageConfig::default()).expect("D.10 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.10 create");
         let id = page.id();
         pool.release_page(id);
         assert_eq!(pool.stats().idle, 1, "D.10 idle before get");
@@ -323,9 +341,14 @@ fn page_pool_comprehensive() {
     {
         let pool = make_pool(&servo, &delegate, 1);
         let page = pool.create_page(&PageConfig::default()).expect("D.15 p1");
-        assert!(pool.create_page(&PageConfig::default()).is_err(), "D.15 full");
+        assert!(
+            pool.create_page(&PageConfig::default()).is_err(),
+            "D.15 full"
+        );
         pool.close_page(page.id()).expect("D.15 close");
-        let _new = pool.create_page(&PageConfig::default()).expect("D.15 after close");
+        let _new = pool
+            .create_page(&PageConfig::default())
+            .expect("D.15 after close");
         pool.close_all();
     }
 
@@ -382,7 +405,9 @@ fn page_pool_comprehensive() {
     // ---- D.20 check_idle_pages with no expired ----
     {
         let pool = make_pool(&servo, &delegate, 10);
-        let page = pool.create_page(&PageConfig::default()).expect("D.20 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.20 create");
         pool.release_page(page.id());
         let reclaimed = pool.check_idle_pages();
         assert_eq!(reclaimed, 0, "D.20 no expired");
@@ -409,7 +434,9 @@ fn page_pool_comprehensive() {
     // ---- D.22 double release same page ----
     {
         let pool = make_pool(&servo, &delegate, 10);
-        let page = pool.create_page(&PageConfig::default()).expect("D.22 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.22 create");
         let id = page.id();
         pool.release_page(id);
         pool.release_page(id);
@@ -422,7 +449,9 @@ fn page_pool_comprehensive() {
     // ---- D.23 get_page twice from idle ----
     {
         let pool = make_pool(&servo, &delegate, 10);
-        let page = pool.create_page(&PageConfig::default()).expect("D.23 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.23 create");
         let id = page.id();
         pool.release_page(id);
         let first = pool.get_page(id).expect("D.23 first get");
@@ -437,7 +466,9 @@ fn page_pool_comprehensive() {
     // ---- D.24 close already-closed page returns error ----
     {
         let pool = make_pool(&servo, &delegate, 10);
-        let page = pool.create_page(&PageConfig::default()).expect("D.24 create");
+        let page = pool
+            .create_page(&PageConfig::default())
+            .expect("D.24 create");
         let id = page.id();
         pool.close_page(id).expect("D.24 first close");
         assert!(

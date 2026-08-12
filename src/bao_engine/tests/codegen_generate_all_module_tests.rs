@@ -3,15 +3,18 @@
 // PropertyKind variants, ClassDef edge cases, multi-class scenarios.
 
 use bao_engine::codegen::{
-    ClassDef, PropertyDef, PropertyKind, GeneratedBindings,
-    parse_classes, generate_bindings, generate_all, generate_module,
+    ClassDef, GeneratedBindings, PropertyDef, PropertyKind, generate_all, generate_bindings,
+    generate_module, parse_classes,
 };
 
 // ---- PropertyKind variants ----
 
 #[test]
 fn test_property_kind_getter() {
-    let pk = PropertyKind::Getter { fn_name: "get_foo".into(), cache: false };
+    let pk = PropertyKind::Getter {
+        fn_name: "get_foo".into(),
+        cache: false,
+    };
     if let PropertyKind::Getter { fn_name, cache } = pk {
         assert_eq!(fn_name, "get_foo");
         assert!(!cache);
@@ -22,7 +25,9 @@ fn test_property_kind_getter() {
 
 #[test]
 fn test_property_kind_setter() {
-    let pk = PropertyKind::Setter { fn_name: "set_bar".into() };
+    let pk = PropertyKind::Setter {
+        fn_name: "set_bar".into(),
+    };
     if let PropertyKind::Setter { fn_name } = pk {
         assert_eq!(fn_name, "set_bar");
     } else {
@@ -37,7 +42,12 @@ fn test_property_kind_accessor() {
         setter: "set_x".into(),
         cache: true,
     };
-    if let PropertyKind::Accessor { getter, setter, cache } = pk {
+    if let PropertyKind::Accessor {
+        getter,
+        setter,
+        cache,
+    } = pk
+    {
         assert_eq!(getter, "get_x");
         assert_eq!(setter, "set_x");
         assert!(cache);
@@ -48,7 +58,10 @@ fn test_property_kind_accessor() {
 
 #[test]
 fn test_property_kind_method() {
-    let pk = PropertyKind::Method { fn_name: "do_it".into(), length: 2 };
+    let pk = PropertyKind::Method {
+        fn_name: "do_it".into(),
+        length: 2,
+    };
     if let PropertyKind::Method { fn_name, length } = pk {
         assert_eq!(fn_name, "do_it");
         assert_eq!(length, 2);
@@ -69,14 +82,20 @@ fn test_property_kind_value() {
 
 #[test]
 fn test_property_kind_debug() {
-    let pk = PropertyKind::Method { fn_name: "test".into(), length: 0 };
+    let pk = PropertyKind::Method {
+        fn_name: "test".into(),
+        length: 0,
+    };
     let debug = format!("{:?}", pk);
     assert!(debug.contains("Method"));
 }
 
 #[test]
 fn test_property_kind_clone() {
-    let pk = PropertyKind::Getter { fn_name: "g".into(), cache: true };
+    let pk = PropertyKind::Getter {
+        fn_name: "g".into(),
+        cache: true,
+    };
     let cloned = pk.clone();
     if let PropertyKind::Getter { fn_name, cache } = cloned {
         assert_eq!(fn_name, "g");
@@ -92,7 +111,10 @@ fn test_property_kind_clone() {
 fn test_property_def_fields() {
     let pd = PropertyDef {
         name: "url".into(),
-        kind: PropertyKind::Getter { fn_name: "get_url".into(), cache: false },
+        kind: PropertyKind::Getter {
+            fn_name: "get_url".into(),
+            cache: false,
+        },
     };
     assert_eq!(pd.name, "url");
 }
@@ -111,7 +133,10 @@ fn test_property_def_debug() {
 fn test_property_def_clone() {
     let pd = PropertyDef {
         name: "x".into(),
-        kind: PropertyKind::Method { fn_name: "get_x".into(), length: 1 },
+        kind: PropertyKind::Method {
+            fn_name: "get_x".into(),
+            length: 1,
+        },
     };
     let cloned = pd.clone();
     assert_eq!(cloned.name, "x");
@@ -150,11 +175,17 @@ fn test_class_def_with_proto() {
         proto: vec![
             PropertyDef {
                 name: "url".into(),
-                kind: PropertyKind::Getter { fn_name: "get_url".into(), cache: false },
+                kind: PropertyKind::Getter {
+                    fn_name: "get_url".into(),
+                    cache: false,
+                },
             },
             PropertyDef {
                 name: "read".into(),
-                kind: PropertyKind::Method { fn_name: "read".into(), length: 0 },
+                kind: PropertyKind::Method {
+                    fn_name: "read".into(),
+                    length: 0,
+                },
             },
         ],
         static_props: vec![],
@@ -303,11 +334,17 @@ fn test_generate_bindings_with_methods() {
         proto: vec![
             PropertyDef {
                 name: "fetch".into(),
-                kind: PropertyKind::Method { fn_name: "api_fetch".into(), length: 1 },
+                kind: PropertyKind::Method {
+                    fn_name: "api_fetch".into(),
+                    length: 1,
+                },
             },
             PropertyDef {
                 name: "close".into(),
-                kind: PropertyKind::Method { fn_name: "api_close".into(), length: 0 },
+                kind: PropertyKind::Method {
+                    fn_name: "api_close".into(),
+                    length: 0,
+                },
             },
         ],
         static_props: vec![],
@@ -327,12 +364,13 @@ fn test_generate_bindings_with_getters() {
         finalize: false,
         configurable: false,
         has_pending_activity: false,
-        proto: vec![
-            PropertyDef {
-                name: "width".into(),
-                kind: PropertyKind::Getter { fn_name: "get_width".into(), cache: true },
+        proto: vec![PropertyDef {
+            name: "width".into(),
+            kind: PropertyKind::Getter {
+                fn_name: "get_width".into(),
+                cache: true,
             },
-        ],
+        }],
         static_props: vec![],
     };
     let bindings = generate_bindings(&cd);
@@ -350,12 +388,12 @@ fn test_generate_bindings_with_setters() {
         finalize: false,
         configurable: false,
         has_pending_activity: false,
-        proto: vec![
-            PropertyDef {
-                name: "value".into(),
-                kind: PropertyKind::Setter { fn_name: "set_value".into() },
+        proto: vec![PropertyDef {
+            name: "value".into(),
+            kind: PropertyKind::Setter {
+                fn_name: "set_value".into(),
             },
-        ],
+        }],
         static_props: vec![],
     };
     let bindings = generate_bindings(&cd);
@@ -372,16 +410,14 @@ fn test_generate_bindings_with_accessors() {
         finalize: false,
         configurable: false,
         has_pending_activity: false,
-        proto: vec![
-            PropertyDef {
-                name: "data".into(),
-                kind: PropertyKind::Accessor {
-                    getter: "get_data".into(),
-                    setter: "set_data".into(),
-                    cache: false,
-                },
+        proto: vec![PropertyDef {
+            name: "data".into(),
+            kind: PropertyKind::Accessor {
+                getter: "get_data".into(),
+                setter: "set_data".into(),
+                cache: false,
             },
-        ],
+        }],
         static_props: vec![],
     };
     let bindings = generate_bindings(&cd);
@@ -400,12 +436,13 @@ fn test_generate_bindings_static_props() {
         configurable: false,
         has_pending_activity: false,
         proto: vec![],
-        static_props: vec![
-            PropertyDef {
-                name: "version".into(),
-                kind: PropertyKind::Method { fn_name: "get_version".into(), length: 0 },
+        static_props: vec![PropertyDef {
+            name: "version".into(),
+            kind: PropertyKind::Method {
+                fn_name: "get_version".into(),
+                length: 0,
             },
-        ],
+        }],
     };
     let bindings = generate_bindings(&cd);
     assert!(bindings.function_specs.is_empty());
@@ -424,24 +461,32 @@ fn test_generate_bindings_value_kind_emits_string_value_spec() {
         finalize: false,
         configurable: false,
         has_pending_activity: false,
-        proto: vec![
-            PropertyDef {
-                name: "constant".into(),
-                kind: PropertyKind::Value { value: "42".into() },
-            },
-        ],
+        proto: vec![PropertyDef {
+            name: "constant".into(),
+            kind: PropertyKind::Value { value: "42".into() },
+        }],
         static_props: vec![],
     };
     let bindings = generate_bindings(&cd);
     assert!(bindings.function_specs.is_empty());
-    assert_eq!(bindings.property_specs.len(), 1, "Value kind must emit one property spec");
+    assert_eq!(
+        bindings.property_specs.len(),
+        1,
+        "Value kind must emit one property spec"
+    );
     let spec = &bindings.property_specs[0];
-    assert!(spec.contains("c\"constant\""), "spec must reference the member name");
+    assert!(
+        spec.contains("c\"constant\""),
+        "spec must reference the member name"
+    );
     assert!(
         spec.contains("JSPropertySpec_ValueWrapper::StringValue"),
         "spec must use the SM string-value wrapper"
     );
-    assert!(spec.contains("c\"42\""), "spec must carry the constant value");
+    assert!(
+        spec.contains("c\"42\""),
+        "spec must carry the constant value"
+    );
 }
 
 // ---- generate_all ----
@@ -566,7 +611,10 @@ fn test_generate_module_multi_class() {
             has_pending_activity: false,
             proto: vec![PropertyDef {
                 name: "read".into(),
-                kind: PropertyKind::Method { fn_name: "reader_read".into(), length: 1 },
+                kind: PropertyKind::Method {
+                    fn_name: "reader_read".into(),
+                    length: 1,
+                },
             }],
             static_props: vec![],
         },
@@ -579,7 +627,10 @@ fn test_generate_module_multi_class() {
             has_pending_activity: false,
             proto: vec![PropertyDef {
                 name: "write".into(),
-                kind: PropertyKind::Method { fn_name: "writer_write".into(), length: 2 },
+                kind: PropertyKind::Method {
+                    fn_name: "writer_write".into(),
+                    length: 2,
+                },
             }],
             static_props: vec![],
         },
@@ -607,12 +658,13 @@ fn test_generate_module_with_static_specs() {
         configurable: false,
         has_pending_activity: false,
         proto: vec![],
-        static_props: vec![
-            PropertyDef {
-                name: "create".into(),
-                kind: PropertyKind::Method { fn_name: "factory_create".into(), length: 1 },
+        static_props: vec![PropertyDef {
+            name: "create".into(),
+            kind: PropertyKind::Method {
+                fn_name: "factory_create".into(),
+                length: 1,
             },
-        ],
+        }],
     };
     let bindings = generate_bindings(&cd);
     let output = generate_module(&[bindings], "factory_mod");

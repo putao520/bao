@@ -21,11 +21,7 @@ impl StringJsc for &str {
         let c_str = CString::new(*self).ok()?;
         unsafe {
             let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
-            if js_str.is_null() {
-                None
-            } else {
-                Some(js_str)
-            }
+            if js_str.is_null() { None } else { Some(js_str) }
         }
     }
 }

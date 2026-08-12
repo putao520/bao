@@ -35,8 +35,13 @@ fn page_navigate_result_schema_conformance() {
     let b = backend();
 
     // Act
-    let result =
-        dispatch_command(&*b, "Page.navigate", json!({"url":"https://example.com"}), "1").unwrap();
+    let result = dispatch_command(
+        &*b,
+        "Page.navigate",
+        json!({"url":"https://example.com"}),
+        "1",
+    )
+    .unwrap();
 
     // Assert — 对照 CDP 官方 schema
     // CDP spec: frameId is FrameId (string)
@@ -123,8 +128,7 @@ fn page_capture_screenshot_result_schema_conformance() {
     let b = backend();
 
     // Act
-    let result =
-        dispatch_command(&*b, "Page.captureScreenshot", json!({}), "1").unwrap();
+    let result = dispatch_command(&*b, "Page.captureScreenshot", json!({}), "1").unwrap();
 
     // Assert — CDP spec: data is base64-encoded image data
     assert!(
@@ -152,13 +156,8 @@ fn page_capture_screenshot_format_png_accepted() {
     let b = backend();
 
     // Act
-    let result = dispatch_command(
-        &*b,
-        "Page.captureScreenshot",
-        json!({"format":"png"}),
-        "1",
-    )
-    .unwrap();
+    let result =
+        dispatch_command(&*b, "Page.captureScreenshot", json!({"format":"png"}), "1").unwrap();
 
     // Assert
     assert!(result["data"].is_string());
@@ -182,13 +181,8 @@ fn page_capture_screenshot_format_jpeg_accepted() {
 fn page_capture_screenshot_format_webp_accepted() {
     // @trace REQ-CDP-001 [domain:Page] [level:integration]
     let b = backend();
-    let result = dispatch_command(
-        &*b,
-        "Page.captureScreenshot",
-        json!({"format":"webp"}),
-        "1",
-    )
-    .unwrap();
+    let result =
+        dispatch_command(&*b, "Page.captureScreenshot", json!({"format":"webp"}), "1").unwrap();
     assert!(result["data"].is_string());
 }
 
@@ -255,13 +249,8 @@ fn page_set_content_requires_html_param() {
 fn page_set_content_with_html_returns_empty() {
     // @trace REQ-CDP-001 [domain:Page] [level:integration]
     let b = backend();
-    let result = dispatch_command(
-        &*b,
-        "Page.setContent",
-        json!({"html":"<h1>hi</h1>"}),
-        "1",
-    )
-    .unwrap();
+    let result =
+        dispatch_command(&*b, "Page.setContent", json!({"html":"<h1>hi</h1>"}), "1").unwrap();
     assert!(result.as_object().map(|o| o.is_empty()).unwrap_or(false));
 }
 
@@ -318,7 +307,10 @@ fn page_get_navigation_history_schema_conformance() {
         "CDP spec: entries must be array"
     );
     for entry in result["entries"].as_array().unwrap() {
-        assert!(entry["id"].is_i64() || entry["id"].is_u64(), "entry.id must be int");
+        assert!(
+            entry["id"].is_i64() || entry["id"].is_u64(),
+            "entry.id must be int"
+        );
         assert!(entry["url"].is_string(), "entry.url must be string");
         assert!(entry["title"].is_string(), "entry.title must be string");
     }
@@ -348,7 +340,10 @@ fn page_get_frame_tree_schema_conformance() {
     );
     let frame = &tree["frame"];
     assert!(frame["id"].is_string(), "CDP spec: frame.id must be string");
-    assert!(frame["url"].is_string(), "CDP spec: frame.url must be string");
+    assert!(
+        frame["url"].is_string(),
+        "CDP spec: frame.url must be string"
+    );
     assert!(
         frame["mimeType"].is_string(),
         "CDP spec: frame.mimeType must be string"
@@ -392,7 +387,10 @@ fn page_get_layout_metrics_deprecated_schema_conformance() {
     assert!(lv["pageX"].is_i64() || lv["pageX"].is_u64());
     assert!(lv["pageY"].is_i64() || lv["pageY"].is_u64());
     assert!(lv["clientWidth"].is_number(), "clientWidth must be number");
-    assert!(lv["clientHeight"].is_number(), "clientHeight must be number");
+    assert!(
+        lv["clientHeight"].is_number(),
+        "clientHeight must be number"
+    );
 
     let vv = &result["visualViewport"];
     assert!(vv.is_object());
@@ -434,7 +432,10 @@ fn page_get_layout_metrics_css_fields_schema_conformance() {
 
     // Assert — cssVisualViewport: 与 visualViewport 同结构
     let cvv = &result["cssVisualViewport"];
-    assert!(cvv.is_object(), "CDP spec: cssVisualViewport must be object");
+    assert!(
+        cvv.is_object(),
+        "CDP spec: cssVisualViewport must be object"
+    );
     assert!(cvv["offsetX"].is_number());
     assert!(cvv["offsetY"].is_number());
     assert!(cvv["pageX"].is_number());
@@ -490,7 +491,10 @@ fn page_title_b_class_returns_evaluate_shape() {
     let result = dispatch_command(&*b, "Page.title", json!({}), "1").unwrap();
 
     // Assert — B 类返回的是 Runtime.evaluate 的 JSON 结构
-    assert!(result["result"].is_object(), "B-class returns evaluate.result");
+    assert!(
+        result["result"].is_object(),
+        "B-class returns evaluate.result"
+    );
     assert!(
         result["result"]["type"].is_string(),
         "CDP spec: RemoteObject.type must be string"
@@ -535,7 +539,10 @@ fn page_viewport_b_class_returns_local_state_shape() {
 
     // Assert
     assert!(result["width"].is_number(), "viewport.width must be number");
-    assert!(result["height"].is_number(), "viewport.height must be number");
+    assert!(
+        result["height"].is_number(),
+        "viewport.height must be number"
+    );
     assert!(
         result["deviceScaleFactor"].is_number(),
         "viewport.deviceScaleFactor must be number"

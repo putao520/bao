@@ -19,7 +19,9 @@ fn test_string_decoder_module_deep() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         function check(label, fn) {
             try { var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }
@@ -202,7 +204,8 @@ fn test_string_decoder_module_deep() {
         });
 
         results.join("|");
-    "#);
+    "#,
+    );
 
     let mut pass = 0;
     let mut fail = 0;
@@ -214,7 +217,11 @@ fn test_string_decoder_module_deep() {
             eprintln!("FAILED: {}", item);
         }
     }
-    assert_eq!(fail, 0, "string_decoder + module deep tests had {} failures", fail);
+    assert_eq!(
+        fail, 0,
+        "string_decoder + module deep tests had {} failures",
+        fail
+    );
     assert!(pass >= 30, "Expected at least 30 passes, got {}", pass);
     bun_runtime::shutdown_thread_sm();
 }

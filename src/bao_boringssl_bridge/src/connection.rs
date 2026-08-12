@@ -37,8 +37,12 @@ pub enum TlsConnection {
 impl core::fmt::Debug for TlsConnection {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Client(_) => f.debug_struct("TlsConnection::Client").finish_non_exhaustive(),
-            Self::Server(_) => f.debug_struct("TlsConnection::Server").finish_non_exhaustive(),
+            Self::Client(_) => f
+                .debug_struct("TlsConnection::Client")
+                .finish_non_exhaustive(),
+            Self::Server(_) => f
+                .debug_struct("TlsConnection::Server")
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -202,9 +206,7 @@ impl TlsConnection {
         let mut outgoing = Vec::new();
         let mut buf = [0u8; TLS_RECORD_MAX];
         loop {
-            let n = unsafe {
-                BIO_read(bio, buf.as_mut_ptr() as *mut c_void, buf.len() as c_int)
-            };
+            let n = unsafe { BIO_read(bio, buf.as_mut_ptr() as *mut c_void, buf.len() as c_int) };
             if n > 0 {
                 outgoing.extend_from_slice(&buf[..n as usize]);
             } else {
@@ -313,7 +315,11 @@ impl ClientConn {
             let mut buf = vec![0u8; TLS_RECORD_MAX];
             loop {
                 let n = unsafe {
-                    SSL_read(self.ssl, buf.as_mut_ptr() as *mut c_void, buf.len() as c_int)
+                    SSL_read(
+                        self.ssl,
+                        buf.as_mut_ptr() as *mut c_void,
+                        buf.len() as c_int,
+                    )
                 };
                 if n > 0 {
                     plaintext.push(buf[..n as usize].to_vec());
@@ -349,7 +355,11 @@ impl ClientConn {
             return Err(TlsError::NotReady);
         }
         let n = unsafe {
-            SSL_write(self.ssl, plaintext.as_ptr() as *const c_void, plaintext.len() as c_int)
+            SSL_write(
+                self.ssl,
+                plaintext.as_ptr() as *const c_void,
+                plaintext.len() as c_int,
+            )
         };
         if n > 0 {
             Ok(n as usize)
@@ -366,7 +376,13 @@ impl ClientConn {
         if !self.handshake_done {
             return Err(TlsError::NotReady);
         }
-        let n = unsafe { SSL_read(self.ssl, buf.as_mut_ptr() as *mut c_void, buf.len() as c_int) };
+        let n = unsafe {
+            SSL_read(
+                self.ssl,
+                buf.as_mut_ptr() as *mut c_void,
+                buf.len() as c_int,
+            )
+        };
         if n > 0 {
             Ok(n as usize)
         } else {
@@ -417,7 +433,11 @@ impl ServerConn {
             let mut buf = vec![0u8; TLS_RECORD_MAX];
             loop {
                 let n = unsafe {
-                    SSL_read(self.ssl, buf.as_mut_ptr() as *mut c_void, buf.len() as c_int)
+                    SSL_read(
+                        self.ssl,
+                        buf.as_mut_ptr() as *mut c_void,
+                        buf.len() as c_int,
+                    )
                 };
                 if n > 0 {
                     plaintext.push(buf[..n as usize].to_vec());
@@ -453,7 +473,11 @@ impl ServerConn {
             return Err(TlsError::NotReady);
         }
         let n = unsafe {
-            SSL_write(self.ssl, plaintext.as_ptr() as *const c_void, plaintext.len() as c_int)
+            SSL_write(
+                self.ssl,
+                plaintext.as_ptr() as *const c_void,
+                plaintext.len() as c_int,
+            )
         };
         if n > 0 {
             Ok(n as usize)
@@ -470,7 +494,13 @@ impl ServerConn {
         if !self.handshake_done {
             return Err(TlsError::NotReady);
         }
-        let n = unsafe { SSL_read(self.ssl, buf.as_mut_ptr() as *mut c_void, buf.len() as c_int) };
+        let n = unsafe {
+            SSL_read(
+                self.ssl,
+                buf.as_mut_ptr() as *mut c_void,
+                buf.len() as c_int,
+            )
+        };
         if n > 0 {
             Ok(n as usize)
         } else {

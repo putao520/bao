@@ -266,19 +266,13 @@ pub enum ServoEvent {
     /// → `Page.frameStartedLoading`
     ///
     /// @trace REQ-BAO-API-003 [event:FrameInfo]
-    FrameStartedLoading {
-        target_id: String,
-        frame_id: String,
-    },
+    FrameStartedLoading { target_id: String, frame_id: String },
     /// frame 停止加载。
     ///
     /// → `Page.frameStoppedLoading`
     ///
     /// @trace REQ-BAO-API-003 [event:FrameInfo]
-    FrameStoppedLoading {
-        target_id: String,
-        frame_id: String,
-    },
+    FrameStoppedLoading { target_id: String, frame_id: String },
 
     // ── TimelineMarker 类(REQ-BAO-API-003.7)
     /// servo 性能 timeline 标记。
@@ -1278,15 +1272,9 @@ mod tests {
         // console.log → info
         assert_eq!(ConsoleLevel::from_servo_str("log"), ConsoleLevel::Info);
         // console.warn → warning
-        assert_eq!(
-            ConsoleLevel::from_servo_str("warn"),
-            ConsoleLevel::Warning
-        );
+        assert_eq!(ConsoleLevel::from_servo_str("warn"), ConsoleLevel::Warning);
         // console.trace → verbose
-        assert_eq!(
-            ConsoleLevel::from_servo_str("trace"),
-            ConsoleLevel::Verbose
-        );
+        assert_eq!(ConsoleLevel::from_servo_str("trace"), ConsoleLevel::Verbose);
     }
 
     #[test]
@@ -1375,7 +1363,10 @@ mod tests {
         assert_eq!(details["lineNumber"], 10);
         assert_eq!(details["columnNumber"], 5);
         assert_eq!(details["exception"]["type"], "string");
-        assert_eq!(details["exception"]["value"], "TypeError: x is not a function");
+        assert_eq!(
+            details["exception"]["value"],
+            "TypeError: x is not a function"
+        );
         // stack trace
         let st = &details["stackTrace"];
         assert!(st.is_array());
@@ -1588,10 +1579,7 @@ mod tests {
         assert_eq!(e.params["startColumn"], 0);
         assert_eq!(e.params["endLine"], 100);
         assert_eq!(e.params["endColumn"], 50);
-        assert_eq!(
-            e.params["sourceMapURL"],
-            "http://example.com/x.js.map"
-        );
+        assert_eq!(e.params["sourceMapURL"], "http://example.com/x.js.map");
         // 必备字段
         assert!(e.params["executionContextId"].is_number());
     }
@@ -1752,8 +1740,12 @@ mod tests {
         let (sub, rx) = EventSubscriber::new();
         sub.on_console_message("T1", ConsoleLevel::Info, "hello", None, None, None);
         sub.on_page_error("T2", "boom", None, None, None, None);
-        let ev1 = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
-        let ev2 = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
+        let ev1 = rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
+        let ev2 = rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
         assert!(matches!(ev1, ServoEvent::Console { .. }));
         assert!(matches!(ev2, ServoEvent::PageError { .. }));
     }
@@ -1847,7 +1839,13 @@ mod tests {
         });
         let ev = from_console_message(msg, "T").expect("should map");
         match ev {
-            ServoEvent::PageError { text, url, line, column, .. } => {
+            ServoEvent::PageError {
+                text,
+                url,
+                line,
+                column,
+                ..
+            } => {
                 assert_eq!(text, "boom");
                 assert_eq!(url.as_deref(), Some("x.js"));
                 assert_eq!(line, Some(5));
@@ -1864,7 +1862,10 @@ mod tests {
         });
         let ev = from_console_message(msg, "T").expect("should map");
         match ev {
-            ServoEvent::FrameStoppedLoading { target_id, frame_id } => {
+            ServoEvent::FrameStoppedLoading {
+                target_id,
+                frame_id,
+            } => {
                 assert_eq!(target_id, "T");
                 assert_eq!(frame_id, "0");
             }
@@ -1881,7 +1882,12 @@ mod tests {
         });
         let ev = from_console_message(msg, "T").expect("should map");
         match ev {
-            ServoEvent::FrameNavigated { target_id, frame_id, url, name } => {
+            ServoEvent::FrameNavigated {
+                target_id,
+                frame_id,
+                url,
+                name,
+            } => {
                 assert_eq!(target_id, "T");
                 assert_eq!(frame_id, "FRAME1");
                 assert_eq!(url, "https://example.com");
@@ -1931,7 +1937,10 @@ mod tests {
 
     #[test]
     fn origin_from_url_extracts_correctly() {
-        assert_eq!(origin_from_url("https://example.com/path"), "https://example.com");
+        assert_eq!(
+            origin_from_url("https://example.com/path"),
+            "https://example.com"
+        );
         assert_eq!(
             origin_from_url("http://localhost:8080/x/y"),
             "http://localhost:8080"

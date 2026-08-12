@@ -13,10 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use cdp_server::{
-    error_response, ok_empty, ok_response, parse_message, serialize_response,
-    CdpError, CdpEvent, CdpMessage, CdpResponse, DomainHandler, DomainRegistry,
+    error_response, ok_empty, ok_response, parse_message, serialize_response, CdpError, CdpEvent,
+    CdpMessage, CdpResponse, DomainHandler, DomainRegistry, EventSender, RegistryDispatch,
     ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND,
-    EventSender, RegistryDispatch,
 };
 use serde_json::{json, Value};
 
@@ -185,14 +184,20 @@ fn test_c7_invalid_request_error_response_chain() {
     let resp = error_response(None, ERR_INVALID_REQUEST, "Invalid Request");
     assert_eq!(resp.id, None);
     assert!(resp.result.is_none());
-    let err = resp.error.as_ref().expect("error_response must populate error");
+    let err = resp
+        .error
+        .as_ref()
+        .expect("error_response must populate error");
     assert_eq!(err.code, -32600);
     assert!(err.message.contains("Invalid Request"));
 
     let wire = serialize_response(&resp);
     let v: Value = serde_json::from_str(&wire).unwrap();
     assert_eq!(v["error"]["code"].as_i64(), Some(-32600));
-    assert!(v["error"]["message"].as_str().unwrap().contains("Invalid Request"));
+    assert!(v["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Invalid Request"));
 }
 
 #[test]
@@ -200,9 +205,9 @@ fn test_c7_various_malformed_json_yields_none() {
     // Every input here must be rejected by parse_message — these are the
     // predicates that trigger the -32600 path in the server.
     let cases = [
-        r#"{"id":1,"# ,          // truncated
-        r#"{"id":1}"#,           // missing method (valid JSON, invalid request)
-        r#"{"#,                  // bare brace
+        r#"{"id":1,"#, // truncated
+        r#"{"id":1}"#, // missing method (valid JSON, invalid request)
+        r#"{"#,        // bare brace
         "{",
         "}",
         "null",
@@ -211,8 +216,8 @@ fn test_c7_various_malformed_json_yields_none() {
         "\"string\"",
         "",
         "   ",
-        r#"{"id":1.5}"#,         // float id
-        r#"{"id":1e308}"#,       // overflow numeric
+        r#"{"id":1.5}"#,   // float id
+        r#"{"id":1e308}"#, // overflow numeric
     ];
     for (i, raw) in cases.iter().enumerate() {
         assert!(
@@ -263,8 +268,16 @@ fn test_c8_method_not_found_error_response_chain() {
     let wire = serialize_response(&resp);
     let v: Value = serde_json::from_str(&wire).unwrap();
     assert_eq!(v["error"]["code"].as_i64(), Some(-32601));
-    assert!(v["error"]["message"].as_str().unwrap().contains("Method not found")
-        || v["error"]["message"].as_str().unwrap().contains("wasn't found"));
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Method not found")
+            || v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("wasn't found")
+    );
 }
 
 /// Simulate the full session.route_command decision tree at the unit level:
@@ -281,7 +294,11 @@ fn test_c8_dispatch_none_maps_to_method_not_found_response() {
 
     let resp: CdpResponse = match dispatched {
         Some(Ok(r)) => ok_response(id, r),
-        Some(Err(e)) => CdpResponse { id, result: None, error: Some(e) },
+        Some(Err(e)) => CdpResponse {
+            id,
+            result: None,
+            error: Some(e),
+        },
         None => error_response(id, ERR_METHOD_NOT_FOUND, format!("'{method}' wasn't found")),
     };
 
@@ -334,10 +351,16 @@ fn test_c5_target_handler_registered_serves_builtin_commands() {
     // the built-in Target.* command set. cdp-server routes to it transparently.
     let recorder = TargetRecorder::new();
     let reg = DomainRegistry::<TargetObserved>::new();
-    reg.register(TargetObserved { inner: Arc::clone(&recorder) }).unwrap();
+    reg.register(TargetObserved {
+        inner: Arc::clone(&recorder),
+    })
+    .unwrap();
 
     let r = reg.dispatch_command("Target.getTargets", json!({}), noop());
-    assert!(r.is_some(), "Target.* must reach the registered Target handler");
+    assert!(
+        r.is_some(),
+        "Target.* must reach the registered Target handler"
+    );
     assert!(r.unwrap().is_ok());
     assert!(recorder.was_entered(), "Target handler must be invoked");
 }
@@ -363,16 +386,16 @@ fn test_c6_session_id_roundtrip_preserved() {
 #[test]
 fn test_c6_session_id_extremes_roundtrip() {
     let cases = [
-        "",                                  // empty
-        "a",                                 // single char
-        &"x".repeat(1024),                   // very long
+        "",                // empty
+        "a",               // single char
+        &"x".repeat(1024), // very long
         "session/with/slashes",
         "session:with:colons",
         "session-with-dashes",
         "SESSION_UPPER",
         "session.with.dots",
         "session@special#chars$%",
-        "日本語セッション",                    // unicode
+        "日本語セッション", // unicode
     ];
     for sid in cases {
         let raw = json!({"id":1, "method":"Runtime.evaluate", "session_id": sid}).to_string();
@@ -427,7 +450,10 @@ fn test_c3_notify_session_created_unknown_domain_no_callback_no_panic() {
     reg.register(Observed::new(Arc::clone(&spy))).unwrap();
 
     reg.notify_session_created("UnknownDomain", "sess-x");
-    assert!(spy.created_ids().is_empty(), "unknown domain must not fire callback");
+    assert!(
+        spy.created_ids().is_empty(),
+        "unknown domain must not fire callback"
+    );
 }
 
 #[test]
@@ -440,7 +466,10 @@ fn test_c3_notify_session_created_only_matching_domain_fires() {
 
     reg.notify_session_created("Page", "s1");
     assert_eq!(page.created_ids(), vec!["s1".to_string()]);
-    assert!(runtime.created_ids().is_empty(), "Runtime must not fire for Page enable");
+    assert!(
+        runtime.created_ids().is_empty(),
+        "Runtime must not fire for Page enable"
+    );
 }
 
 // ===========================================================================
@@ -653,8 +682,7 @@ fn test_cdp_message_parse_params_as_bool_accepted() {
 
 #[test]
 fn test_cdp_message_parse_unicode_method() {
-    let msg: CdpMessage =
-        serde_json::from_str(r#"{"id":1,"method":"Page.日本語テスト"}"#).unwrap();
+    let msg: CdpMessage = serde_json::from_str(r#"{"id":1,"method":"Page.日本語テスト"}"#).unwrap();
     assert_eq!(msg.method, "Page.日本語テスト");
 }
 
@@ -677,7 +705,10 @@ fn test_cdp_response_error_serialization() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains("\"error\""));
@@ -718,7 +749,12 @@ impl DomainHandler for EchoHandler {
     fn domain_name(&self) -> &'static str {
         self.name
     }
-    fn handle_command(&self, cmd: &str, params: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: Value,
+        _: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         Ok(json!({"command": cmd, "params": params}))
     }
 }
@@ -734,7 +770,10 @@ fn test_dispatch_no_dot_in_method() {
 fn test_dispatch_multiple_dots_in_method() {
     let reg = DomainRegistry::<EchoHandler>::new();
     reg.register(EchoHandler { name: "Page" }).unwrap();
-    let r = reg.dispatch_command("Page.navigate.to.url", json!({}), noop()).unwrap().unwrap();
+    let r = reg
+        .dispatch_command("Page.navigate.to.url", json!({}), noop())
+        .unwrap()
+        .unwrap();
     assert_eq!(r["command"], "Page.navigate.to.url");
 }
 
@@ -749,14 +788,18 @@ fn test_dispatch_empty_method() {
 fn test_dispatch_unregistered_domain() {
     let reg = DomainRegistry::<EchoHandler>::new();
     reg.register(EchoHandler { name: "Page" }).unwrap();
-    assert!(reg.dispatch_command("Network.enable", json!({}), noop()).is_none());
+    assert!(reg
+        .dispatch_command("Network.enable", json!({}), noop())
+        .is_none());
 }
 
 #[test]
 fn test_dispatch_case_sensitive_domain() {
     let reg = DomainRegistry::<EchoHandler>::new();
     reg.register(EchoHandler { name: "Page" }).unwrap();
-    assert!(reg.dispatch_command("page.navigate", json!({}), noop()).is_none());
+    assert!(reg
+        .dispatch_command("page.navigate", json!({}), noop())
+        .is_none());
 }
 
 #[test]
@@ -772,10 +815,18 @@ fn test_registry_multiple_handlers_independent() {
     reg.register(EchoHandler { name: "Runtime" }).unwrap();
     reg.register(EchoHandler { name: "DOM" }).unwrap();
 
-    assert!(reg.dispatch_command("Page.enable", json!({}), noop()).is_some());
-    assert!(reg.dispatch_command("Runtime.evaluate", json!({"expr": "1"}), noop()).is_some());
-    assert!(reg.dispatch_command("DOM.getDocument", json!({}), noop()).is_some());
-    assert!(reg.dispatch_command("Network.enable", json!({}), noop()).is_none());
+    assert!(reg
+        .dispatch_command("Page.enable", json!({}), noop())
+        .is_some());
+    assert!(reg
+        .dispatch_command("Runtime.evaluate", json!({"expr": "1"}), noop())
+        .is_some());
+    assert!(reg
+        .dispatch_command("DOM.getDocument", json!({}), noop())
+        .is_some());
+    assert!(reg
+        .dispatch_command("Network.enable", json!({}), noop())
+        .is_none());
 }
 
 #[test]
@@ -787,7 +838,10 @@ fn test_registry_duplicate_rejected_preserves_original() {
     assert!(dup.unwrap_err().contains("already registered"));
 
     // Original handler must remain intact after a failed re-register.
-    let r = reg.dispatch_command("Page.enable", json!({}), noop()).unwrap().unwrap();
+    let r = reg
+        .dispatch_command("Page.enable", json!({}), noop())
+        .unwrap()
+        .unwrap();
     assert_eq!(r["command"], "Page.enable");
 }
 
@@ -802,16 +856,23 @@ fn test_registry_dispatch_recovers_after_handler_error() {
     let reg = DomainRegistry::<ErrorAlways>::new();
     reg.register(ErrorAlways).unwrap();
 
-    let r1 = reg.dispatch_command("ErrDomain.failing", json!({}), noop()).unwrap();
+    let r1 = reg
+        .dispatch_command("ErrDomain.failing", json!({}), noop())
+        .unwrap();
     assert!(r1.is_err());
     assert_eq!(r1.unwrap_err().code, -32000);
 
     // Dispatch again — registry state must be intact.
-    let r2 = reg.dispatch_command("ErrDomain.again", json!({}), noop()).unwrap();
+    let r2 = reg
+        .dispatch_command("ErrDomain.again", json!({}), noop())
+        .unwrap();
     assert!(r2.is_err());
 
     let r3 = reg.dispatch_command("Unknown.method", json!({}), noop());
-    assert!(r3.is_none(), "unknown domain still returns None after errors");
+    assert!(
+        r3.is_none(),
+        "unknown domain still returns None after errors"
+    );
 }
 
 #[test]
@@ -853,7 +914,8 @@ fn test_concurrent_dispatch_thread_safe() {
         }));
     }
     for h in handles {
-        h.join().expect("no thread should panic under concurrent dispatch");
+        h.join()
+            .expect("no thread should panic under concurrent dispatch");
     }
     assert_eq!(spy.commands().len(), 8 * 100);
 }
@@ -952,7 +1014,10 @@ fn test_c8_config_all_optional_fields() {
 
 #[test]
 fn test_cdp_error_clone() {
-    let e1 = CdpError { code: -32601, message: "test".into() };
+    let e1 = CdpError {
+        code: -32601,
+        message: "test".into(),
+    };
     let e2 = e1.clone();
     assert_eq!(e1.code, e2.code);
     assert_eq!(e1.message, e2.message);
@@ -960,7 +1025,10 @@ fn test_cdp_error_clone() {
 
 #[test]
 fn test_cdp_error_debug() {
-    let e = CdpError { code: -32601, message: "not found".into() };
+    let e = CdpError {
+        code: -32601,
+        message: "not found".into(),
+    };
     let d = format!("{:?}", e);
     assert!(d.contains("-32601"));
     assert!(d.contains("not found"));

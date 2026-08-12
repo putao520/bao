@@ -5,10 +5,10 @@
 // tracingChannel(), Channel class, and ActiveChannel prototype swap.
 // Mirrors Bun's diagnostics_channel.ts API surface.
 
+use ::std::ptr::NonNull;
 use mozjs::jsapi::*;
 use mozjs::jsval::{ObjectValue, UndefinedValue};
 use mozjs::rooted;
-use ::std::ptr::NonNull;
 
 use crate::require::cache_builtin;
 
@@ -218,21 +218,22 @@ return {
 })()"#;
 
     unsafe {
-    let raw_cx = cx.raw_cx();
-    let mut source_text = mozjs::rust::transform_str_to_source_text(source);
-    let mut rval = UndefinedValue();
-    let rval_handle = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut rval,
-    };
-    let opts = mozjs::glue::NewCompileOptions(raw_cx, c"<node:diagnostics_channel>".as_ptr(), 1);
-    if !opts.is_null() {
-        let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
-        libc::free(opts as *mut _);
-        if ok && rval.is_object() {
-            let obj = rval.to_object();
-            cache_builtin(cx, "diagnostics_channel", obj);
+        let raw_cx = cx.raw_cx();
+        let mut source_text = mozjs::rust::transform_str_to_source_text(source);
+        let mut rval = UndefinedValue();
+        let rval_handle = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        let opts =
+            mozjs::glue::NewCompileOptions(raw_cx, c"<node:diagnostics_channel>".as_ptr(), 1);
+        if !opts.is_null() {
+            let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
+            libc::free(opts as *mut _);
+            if ok && rval.is_object() {
+                let obj = rval.to_object();
+                cache_builtin(cx, "diagnostics_channel", obj);
+            }
         }
-    }
     }
 }

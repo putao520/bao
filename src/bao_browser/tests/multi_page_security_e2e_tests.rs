@@ -111,14 +111,18 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
         w = profile.screen.width,
         h = profile.screen.height
     );
-    page.evaluate_js_web(&js).map(|_| ()).map_err(|e| format!("inject: {}", e))
+    page.evaluate_js_web(&js)
+        .map(|_| ())
+        .map_err(|e| format!("inject: {}", e))
 }
 
 #[test]
 fn multi_page_security_e2e() {
     // Guard 1: opt-in for real servo runtime
     if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_REAL_SERVO != 1 — multi-page security E2E requires real servo runtime");
+        eprintln!(
+            "[skip] BAO_TEST_REAL_SERVO != 1 — multi-page security E2E requires real servo runtime"
+        );
         return;
     }
     // Guard 2: servo requires a display server
@@ -131,7 +135,10 @@ fn multi_page_security_e2e() {
     let runtime = match BaoRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] BaoRuntime::new failed (likely missing servo runtime): {}", e);
+            eprintln!(
+                "[skip] BaoRuntime::new failed (likely missing servo runtime): {}",
+                e
+            );
             return;
         }
     };
@@ -146,7 +153,11 @@ fn multi_page_security_e2e() {
     pool.close_all();
     report.finish();
 
-    assert_eq!(report.failed, 0, "{} sub-assertions failed — see stderr above", report.failed);
+    assert_eq!(
+        report.failed, 0,
+        "{} sub-assertions failed — see stderr above",
+        report.failed
+    );
 }
 
 /// Verify that global variables set on one page do not leak to other pages.
@@ -222,9 +233,15 @@ fn scenario_global_isolation(pool: &PagePool, report: &mut Report) {
     }
 
     // Verify each page's __id is its own (not leaked from another page)
-    let a_id = page_a.evaluate_js_web("window.__id || 'undefined'").unwrap_or_default();
-    let b_id = page_b.evaluate_js_web("window.__id || 'undefined'").unwrap_or_default();
-    let c_id = page_c.evaluate_js_web("window.__id || 'undefined'").unwrap_or_default();
+    let a_id = page_a
+        .evaluate_js_web("window.__id || 'undefined'")
+        .unwrap_or_default();
+    let b_id = page_b
+        .evaluate_js_web("window.__id || 'undefined'")
+        .unwrap_or_default();
+    let c_id = page_c
+        .evaluate_js_web("window.__id || 'undefined'")
+        .unwrap_or_default();
 
     report.assert_actual(
         a_id == "A",
@@ -244,7 +261,9 @@ fn scenario_global_isolation(pool: &PagePool, report: &mut Report) {
 
     // Verify cross-page isolation: modifying pageA's __id does NOT affect pageB
     let _ = page_a.evaluate_js_web("window.__id = 'A_MODIFIED'");
-    let b_id_after = page_b.evaluate_js_web("window.__id || 'undefined'").unwrap_or_default();
+    let b_id_after = page_b
+        .evaluate_js_web("window.__id || 'undefined'")
+        .unwrap_or_default();
     report.assert_actual(
         b_id_after == "B",
         &format!("{}::pageB_unchanged_after_A_modify", name),
@@ -252,8 +271,12 @@ fn scenario_global_isolation(pool: &PagePool, report: &mut Report) {
     );
 
     // Realm isolation: each page's body.id is its own
-    let a_body = page_a.evaluate_js_web("document.body.id").unwrap_or_default();
-    let b_body = page_b.evaluate_js_web("document.body.id").unwrap_or_default();
+    let a_body = page_a
+        .evaluate_js_web("document.body.id")
+        .unwrap_or_default();
+    let b_body = page_b
+        .evaluate_js_web("document.body.id")
+        .unwrap_or_default();
     report.assert_actual(
         a_body == "pageA" && b_body == "pageB",
         &format!("{}::body_id_isolated", name),
@@ -332,14 +355,20 @@ fn scenario_user_agent_isolation(pool: &PagePool, report: &mut Report) {
     report.assert_actual(
         chrome_ua.contains("Chrome"),
         &format!("{}::chrome_page_ua", name),
-        &format!("{}::chrome_page_ua (got '{}', missing 'Chrome')", name, chrome_ua),
+        &format!(
+            "{}::chrome_page_ua (got '{}', missing 'Chrome')",
+            name, chrome_ua
+        ),
     );
 
     // Firefox page UA contains "Firefox"
     report.assert_actual(
         firefox_ua.contains("Firefox"),
         &format!("{}::firefox_page_ua", name),
-        &format!("{}::firefox_page_ua (got '{}', missing 'Firefox')", name, firefox_ua),
+        &format!(
+            "{}::firefox_page_ua (got '{}', missing 'Firefox')",
+            name, firefox_ua
+        ),
     );
 
     // Chrome and Firefox UAs differ
@@ -423,7 +452,10 @@ fn scenario_stealth_realm_isolation(pool: &PagePool, report: &mut Report) {
     report.assert_actual(
         a_vendor == "Google Inc." && b_vendor.is_empty(),
         &format!("{}::vendor_isolated", name),
-        &format!("{}::vendor_isolated (A='{}', B='{}')", name, a_vendor, b_vendor),
+        &format!(
+            "{}::vendor_isolated (A='{}', B='{}')",
+            name, a_vendor, b_vendor
+        ),
     );
 
     // hardwareConcurrency differs if profiles differ (chrome=8, firefox=4 by default)
@@ -453,7 +485,10 @@ fn scenario_stealth_realm_isolation(pool: &PagePool, report: &mut Report) {
     report.assert_actual(
         a_wd == "false" && b_wd == "false",
         &format!("{}::webdriver_hidden_both", name),
-        &format!("{}::webdriver_hidden_both (A='{}', B='{}')", name, a_wd, b_wd),
+        &format!(
+            "{}::webdriver_hidden_both (A='{}', B='{}')",
+            name, a_wd, b_wd
+        ),
     );
 
     let _ = page_a.close();
@@ -467,7 +502,10 @@ fn scenario_pool_stats_tracking(pool: &PagePool, report: &mut Report) {
     let initial = pool.stats();
     report.assert_actual(
         true,
-        &format!("{}::initial_state(total_created={})", name, initial.total_created),
+        &format!(
+            "{}::initial_state(total_created={})",
+            name, initial.total_created
+        ),
         &format!("{}::initial_state", name),
     );
 
@@ -496,7 +534,10 @@ fn scenario_pool_stats_tracking(pool: &PagePool, report: &mut Report) {
         &format!("{}::total_created_+", name),
         &format!(
             "{}::total_created (initial={}, after={}, want +{})",
-            name, initial.total_created, after_create.total_created, pages.len()
+            name,
+            initial.total_created,
+            after_create.total_created,
+            pages.len()
         ),
     );
     report.assert_actual(
@@ -504,7 +545,9 @@ fn scenario_pool_stats_tracking(pool: &PagePool, report: &mut Report) {
         &format!("{}::active_count", name),
         &format!(
             "{}::active_count (got {}, want >= {})",
-            name, after_create.active, pages.len()
+            name,
+            after_create.active,
+            pages.len()
         ),
     );
 

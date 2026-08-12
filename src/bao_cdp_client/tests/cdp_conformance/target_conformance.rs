@@ -68,7 +68,13 @@ fn target_create_target_result_schema_conformance() {
     let b = backend();
 
     // Act
-    let result = dispatch_command(&*b, "Target.createTarget", json!({"url":"about:blank"}), "1").unwrap();
+    let result = dispatch_command(
+        &*b,
+        "Target.createTarget",
+        json!({"url":"about:blank"}),
+        "1",
+    )
+    .unwrap();
 
     // Assert
     assert!(
@@ -115,8 +121,13 @@ fn target_close_target_returns_success_or_empty() {
     let b = backend();
 
     // 先创建一个 target,然后关闭它
-    let create_result =
-        dispatch_command(&*b, "Target.createTarget", json!({"url":"about:blank"}), "1").unwrap();
+    let create_result = dispatch_command(
+        &*b,
+        "Target.createTarget",
+        json!({"url":"about:blank"}),
+        "1",
+    )
+    .unwrap();
     let new_target_id = create_result["targetId"].as_str().unwrap().to_string();
 
     // Act
@@ -159,7 +170,8 @@ fn target_attach_to_target_result_schema_conformance() {
     let b = backend();
 
     // Act
-    let result = dispatch_command(&*b, "Target.attachToTarget", json!({"targetId":"1"}), "1").unwrap();
+    let result =
+        dispatch_command(&*b, "Target.attachToTarget", json!({"targetId":"1"}), "1").unwrap();
 
     // Assert
     assert!(
@@ -220,13 +232,8 @@ fn target_detach_from_target_with_target_id_returns_empty() {
     // Arrange — CDP 规范: sessionId 或 targetId 二选一
     // @trace REQ-CDP-001 [domain:Target] [level:integration]
     let b = backend();
-    let result = dispatch_command(
-        &*b,
-        "Target.detachFromTarget",
-        json!({"targetId":"1"}),
-        "1",
-    )
-    .unwrap();
+    let result =
+        dispatch_command(&*b, "Target.detachFromTarget", json!({"targetId":"1"}), "1").unwrap();
     assert!(result.as_object().map(|o| o.is_empty()).unwrap_or(false));
 }
 

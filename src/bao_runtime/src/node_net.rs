@@ -7,20 +7,20 @@
 
 use ::std::cell::{Cell, RefCell};
 use ::std::collections::HashMap;
-use bun_core::ZBox;
 use ::std::ptr::{self, NonNull};
+use bun_core::ZBox;
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue, UndefinedValue};
+use mozjs::jsval::{
+    BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue,
+    UndefinedValue,
+};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
-use bun_uws_sys::{
-    ListenSocket, Loop, SocketGroup, SocketKind,
-    us_socket_t, CloseCode,
-};
 use bun_uws_sys::socket_group::VTable;
+use bun_uws_sys::{CloseCode, ListenSocket, Loop, SocketGroup, SocketKind, us_socket_t};
 
 use crate::require::cache_builtin;
 
@@ -82,7 +82,9 @@ impl NetPendingWrite {
 
     fn clear(&mut self) {
         if self.cap > 0 && !self.ptr.is_null() {
-            unsafe { drop(Vec::from_raw_parts(self.ptr, 0, self.cap)); }
+            unsafe {
+                drop(Vec::from_raw_parts(self.ptr, 0, self.cap));
+            }
         }
         self.ptr = ptr::null_mut();
         self.len = 0;
@@ -518,7 +520,11 @@ fn ensure_server_group(loop_: *mut Loop) -> *mut SocketGroup {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let port = if argc > 0 { (*args.get(0).ptr).to_int32() } else { 0 };
+    let port = if argc > 0 {
+        (*args.get(0).ptr).to_int32()
+    } else {
+        0
+    };
     let addr = if argc > 1 && (*args.get(1).ptr).is_string() {
         jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
     } else {
@@ -549,14 +555,19 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 
     if listen_socket.is_null() || err != 0 {
         // Listen failed — destroy the group.
-        unsafe { SocketGroup::destroy(group_ptr); }
+        unsafe {
+            SocketGroup::destroy(group_ptr);
+        }
         args.rval().set(Int32Value(0));
         return true;
     }
 
     // Store the group and listen socket.
     let listen_key = listen_socket as usize;
-    NET_SERVER_GROUPS.with(|g| g.borrow_mut().insert(listen_key, unsafe { Box::from_raw(group_ptr) }));
+    NET_SERVER_GROUPS.with(|g| {
+        g.borrow_mut()
+            .insert(listen_key, unsafe { Box::from_raw(group_ptr) })
+    });
     NET_LISTEN_SOCKETS.with(|l| l.borrow_mut().push(listen_key));
 
     // Store the requested port so address() can return it if getsockname fails.
@@ -572,7 +583,11 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let port = if argc > 0 { (*args.get(0).ptr).to_int32() } else { 0 };
+    let port = if argc > 0 {
+        (*args.get(0).ptr).to_int32()
+    } else {
+        0
+    };
     let addr = if argc > 1 && (*args.get(1).ptr).is_string() {
         jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
     } else {
@@ -611,14 +626,20 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             let key = socket as usize;
             NET_SOCKETS.with(|m| m.borrow_mut().insert(key, true));
             // Store the group so it lives as long as the socket.
-            NET_SERVER_GROUPS.with(|g| g.borrow_mut().insert(key, unsafe { Box::from_raw(group_ptr) }));
+            NET_SERVER_GROUPS.with(|g| {
+                g.borrow_mut()
+                    .insert(key, unsafe { Box::from_raw(group_ptr) })
+            });
             args.rval().set(ptr_to_jsval(key));
         }
         bun_uws_sys::ConnectResult::Connecting(_connecting) => {
             // Async connect — tick the loop until on_open or on_connect_error fires.
             // Store the group so it stays alive during the connect.
             let group_key = group_ptr as usize;
-            NET_SERVER_GROUPS.with(|g| g.borrow_mut().insert(group_key, unsafe { Box::from_raw(group_ptr) }));
+            NET_SERVER_GROUPS.with(|g| {
+                g.borrow_mut()
+                    .insert(group_key, unsafe { Box::from_raw(group_ptr) })
+            });
 
             let max_ticks: u32 = 5000;
             for _ in 0..max_ticks {
@@ -645,7 +666,9 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
         bun_uws_sys::ConnectResult::Failed => {
             // Connect failed immediately.
-            unsafe { SocketGroup::destroy(group_ptr); }
+            unsafe {
+                SocketGroup::destroy(group_ptr);
+            }
             args.rval().set(Int32Value(0));
         }
     }
@@ -683,7 +706,11 @@ unsafe extern "C" fn net_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let ptr_val = if argc > 0 { jsval_to_ptr(&(*args.get(0).ptr)) } else { 0 };
+    let ptr_val = if argc > 0 {
+        jsval_to_ptr(&(*args.get(0).ptr))
+    } else {
+        0
+    };
 
     if ptr_val == 0 {
         args.rval().set(UndefinedValue());
@@ -694,7 +721,9 @@ unsafe extern "C" fn net_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let was_socket = NET_SOCKETS.with(|m| m.borrow_mut().remove(&ptr_val).is_some());
     if was_socket {
         let socket_ptr = ptr_val as *mut us_socket_t;
-        unsafe { (*socket_ptr).close(CloseCode::normal); }
+        unsafe {
+            (*socket_ptr).close(CloseCode::normal);
+        }
     }
 
     // Try to close as a listen socket.
@@ -703,7 +732,9 @@ unsafe extern "C" fn net_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         if let Some(pos) = list.iter().position(|&k| k == ptr_val) {
             list.swap_remove(pos);
             let listen_ptr = ptr_val as *mut ListenSocket;
-            unsafe { (*listen_ptr).close(); }
+            unsafe {
+                (*listen_ptr).close();
+            }
         }
     });
 
@@ -719,7 +750,11 @@ unsafe extern "C" fn net_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let ptr_val = if argc > 0 { jsval_to_ptr(&(*args.get(0).ptr)) } else { 0 };
+    let ptr_val = if argc > 0 {
+        jsval_to_ptr(&(*args.get(0).ptr))
+    } else {
+        0
+    };
 
     if ptr_val == 0 {
         args.rval().set(ObjectValue(::std::ptr::null_mut()));
@@ -732,10 +767,18 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     // Get local address via libc::getsockname as fallback
     let mut addr: libc::sockaddr_storage = unsafe { ::std::mem::zeroed() };
-    let mut addr_len: libc::socklen_t = ::std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    let mut addr_len: libc::socklen_t =
+        ::std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
     let fd = unsafe { (*listen_ptr).fd() };
 
-    let (address_str, family_str, resolved_port) = if unsafe { libc::getsockname(fd.native(), &mut addr as *mut _ as *mut libc::sockaddr, &mut addr_len) } == 0 {
+    let (address_str, family_str, resolved_port) = if unsafe {
+        libc::getsockname(
+            fd.native(),
+            &mut addr as *mut _ as *mut libc::sockaddr,
+            &mut addr_len,
+        )
+    } == 0
+    {
         let actual_port = if addr.ss_family as i32 == libc::AF_INET6 {
             let addr_in6 = &addr as *const _ as *const libc::sockaddr_in6;
             unsafe { u16::from_be((*addr_in6).sin6_port) as i32 }
@@ -758,7 +801,9 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             let addr_str = if ok.is_null() {
                 "::".to_string()
             } else {
-                unsafe { ::std::ffi::CStr::from_ptr(ok) }.to_string_lossy().into_owned()
+                unsafe { ::std::ffi::CStr::from_ptr(ok) }
+                    .to_string_lossy()
+                    .into_owned()
             };
             (addr_str, "IPv6", actual_port)
         } else {
@@ -776,13 +821,19 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             let addr_str = if ok.is_null() {
                 "0.0.0.0".to_string()
             } else {
-                unsafe { ::std::ffi::CStr::from_ptr(ok) }.to_string_lossy().into_owned()
+                unsafe { ::std::ffi::CStr::from_ptr(ok) }
+                    .to_string_lossy()
+                    .into_owned()
             };
             (addr_str, "IPv4", actual_port)
         }
     } else {
         // getsockname failed — use port from get_local_port() or stored port
-        let fallback_port = if port > 0 { port } else { NET_LISTEN_PORTS.with(|p| p.borrow().get(&ptr_val).copied().unwrap_or(0) as i32) };
+        let fallback_port = if port > 0 {
+            port
+        } else {
+            NET_LISTEN_PORTS.with(|p| p.borrow().get(&ptr_val).copied().unwrap_or(0) as i32)
+        };
         ("0.0.0.0".to_string(), "IPv4", fallback_port)
     };
 
@@ -799,14 +850,26 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     // port
     rooted!(&in(cx_ref) let pv = Int32Value(resolved_port));
-    JS_DefineProperty(cx, result_h, c"port".as_ptr(), pv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        result_h,
+        c"port".as_ptr(),
+        pv.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // family
     let c_family = ZBox::from_bytes(family_str.as_bytes());
     let family_js = JS_NewStringCopyZ(cx, c_family.as_ptr());
     if !family_js.is_null() {
         rooted!(&in(cx_ref) let fv = StringValue(&*family_js));
-        JS_DefineProperty(cx, result_h, c"family".as_ptr(), fv.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            result_h,
+            c"family".as_ptr(),
+            fv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     // address
@@ -814,7 +877,13 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let addr_js = JS_NewStringCopyZ(cx, c_addr.as_ptr());
     if !addr_js.is_null() {
         rooted!(&in(cx_ref) let av = StringValue(&*addr_js));
-        JS_DefineProperty(cx, result_h, c"address".as_ptr(), av.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            result_h,
+            c"address".as_ptr(),
+            av.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     args.rval().set(ObjectValue(result_obj.get()));
@@ -827,7 +896,11 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let ptr_val = if argc > 0 { jsval_to_ptr(&(*args.get(0).ptr)) } else { 0 };
+    let ptr_val = if argc > 0 {
+        jsval_to_ptr(&(*args.get(0).ptr))
+    } else {
+        0
+    };
 
     if ptr_val == 0 {
         args.rval().set(NullValue());
@@ -853,21 +926,31 @@ unsafe extern "C" fn net_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     let len = data.len();
     let buf_ptr = data.as_ptr();
     // We need to copy data into a new allocation because Vec will be freed
-    let alloc = ::std::alloc::alloc(::std::alloc::Layout::from_size_align(len, 1).unwrap_or_else(|_| ::std::alloc::Layout::from_size_align(1, 1).unwrap()));
+    let alloc = ::std::alloc::alloc(
+        ::std::alloc::Layout::from_size_align(len, 1)
+            .unwrap_or_else(|_| ::std::alloc::Layout::from_size_align(1, 1).unwrap()),
+    );
     if alloc.is_null() {
         args.rval().set(NullValue());
         return true;
     }
-    unsafe { ::std::ptr::copy_nonoverlapping(buf_ptr, alloc, len); }
+    unsafe {
+        ::std::ptr::copy_nonoverlapping(buf_ptr, alloc, len);
+    }
     // Vec is freed here (data goes out of scope), alloc is our copy
 
     let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
     let cx_ref = &mut wrapped_cx;
 
-    let array_buffer = w2::NewArrayBufferWithContents(cx_ref, len, alloc as *mut ::std::os::raw::c_void);
+    let array_buffer =
+        w2::NewArrayBufferWithContents(cx_ref, len, alloc as *mut ::std::os::raw::c_void);
     if array_buffer.is_null() {
         // NewArrayBufferWithContents failed — free our allocation
-        ::std::alloc::dealloc(alloc, ::std::alloc::Layout::from_size_align(len, 1).unwrap_or_else(|_| ::std::alloc::Layout::from_size_align(1, 1).unwrap()));
+        ::std::alloc::dealloc(
+            alloc,
+            ::std::alloc::Layout::from_size_align(len, 1)
+                .unwrap_or_else(|_| ::std::alloc::Layout::from_size_align(1, 1).unwrap()),
+        );
         args.rval().set(NullValue());
         return true;
     }
@@ -904,13 +987,62 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let cx_raw = cx.raw_cx();
 
         // Register native helper functions on module object for JS code to call
-        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_listen".as_ptr(), Some(net_listen), 2, 0);
-        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_connect".as_ptr(), Some(net_connect), 2, 0);
-        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_write".as_ptr(), Some(net_write), 2, 0);
-        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_close".as_ptr(), Some(net_close), 1, 0);
-        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_address".as_ptr(), Some(net_address), 1, 0);
-        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_read".as_ptr(), Some(net_read), 1, 0);
-        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_isIPv6".as_ptr(), Some(net_is_ipv6), 1, 0);
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_listen".as_ptr(),
+            Some(net_listen),
+            2,
+            0,
+        );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_connect".as_ptr(),
+            Some(net_connect),
+            2,
+            0,
+        );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_write".as_ptr(),
+            Some(net_write),
+            2,
+            0,
+        );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_close".as_ptr(),
+            Some(net_close),
+            1,
+            0,
+        );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_address".as_ptr(),
+            Some(net_address),
+            1,
+            0,
+        );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_read".as_ptr(),
+            Some(net_read),
+            1,
+            0,
+        );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_isIPv6".as_ptr(),
+            Some(net_is_ipv6),
+            1,
+            0,
+        );
 
         // Store the JSContext for use in C callbacks.
         NET_CX.with(|c| c.set(Some(cx_raw)));
@@ -937,16 +1069,36 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let exports_obj = rval.to_object();
         rooted!(&in(cx) let exports_rooted = exports_obj);
 
-        for name in &["Socket", "Server", "createServer", "connect", "createConnection", "isIP", "isIPv4", "isIPv6"] {
+        for name in &[
+            "Socket",
+            "Server",
+            "createServer",
+            "connect",
+            "createConnection",
+            "isIP",
+            "isIPv4",
+            "isIPv6",
+        ] {
             let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
-            JS_GetProperty(cx_raw, exports_rooted.handle().into(), cname.as_ptr(), MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut val,
-            });
+            JS_GetProperty(
+                cx_raw,
+                exports_rooted.handle().into(),
+                cname.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut val,
+                },
+            );
             if !val.is_undefined() {
                 rooted!(&in(cx) let val_root = val);
-                JS_DefineProperty(cx_raw, mod_obj.handle().into(), cname.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    cx_raw,
+                    mod_obj.handle().into(),
+                    cname.as_ptr(),
+                    val_root.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 
@@ -970,9 +1122,18 @@ mod tests {
         assert!(NET_VTABLE.on_writable.is_some(), "on_writable must be set");
         assert!(NET_VTABLE.on_end.is_some(), "on_end must be set");
         assert!(NET_VTABLE.on_timeout.is_some(), "on_timeout must be set");
-        assert!(NET_VTABLE.on_connect_error.is_some(), "on_connect_error must be set");
-        assert!(NET_VTABLE.on_connecting_error.is_some(), "on_connecting_error must be set");
-        assert!(NET_VTABLE.on_handshake.is_some(), "on_handshake must be set");
+        assert!(
+            NET_VTABLE.on_connect_error.is_some(),
+            "on_connect_error must be set"
+        );
+        assert!(
+            NET_VTABLE.on_connecting_error.is_some(),
+            "on_connecting_error must be set"
+        );
+        assert!(
+            NET_VTABLE.on_handshake.is_some(),
+            "on_handshake must be set"
+        );
     }
 
     // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
@@ -980,7 +1141,10 @@ mod tests {
     fn test_get_loop_returns_non_null() {
         bao_uloop::force_link();
         let loop_ = get_loop();
-        assert!(!loop_.is_null(), "get_loop must return non-null after force_link");
+        assert!(
+            !loop_.is_null(),
+            "get_loop must return non-null after force_link"
+        );
     }
 
     // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
@@ -1047,14 +1211,26 @@ mod tests {
     #[test]
     fn test_js_source_contains_ptr_not_fd() {
         // Verify JS source uses _ptr instead of _fd.
-        assert!(NET_JS.contains("_ptr"), "JS must use _ptr for socket reference");
+        assert!(
+            NET_JS.contains("_ptr"),
+            "JS must use _ptr for socket reference"
+        );
         assert!(!NET_JS.contains("_fd"), "JS must not use _fd");
     }
 
     // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_js_source_contains_all_exports() {
-        for name in &["Socket", "Server", "createServer", "connect", "createConnection", "isIP", "isIPv4", "isIPv6"] {
+        for name in &[
+            "Socket",
+            "Server",
+            "createServer",
+            "connect",
+            "createConnection",
+            "isIP",
+            "isIPv4",
+            "isIPv6",
+        ] {
             assert!(NET_JS.contains(name), "JS must export {}", name);
         }
     }
@@ -1076,7 +1252,9 @@ mod tests {
         let group_ptr = ensure_server_group(loop_);
         assert!(!group_ptr.is_null());
         // Clean up — destroy the group.
-        unsafe { SocketGroup::destroy(group_ptr); }
+        unsafe {
+            SocketGroup::destroy(group_ptr);
+        }
     }
 
     // ──── extended unit tests ────

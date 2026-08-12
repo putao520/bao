@@ -54,9 +54,7 @@ pub fn parse_message(raw: &str) -> Option<CdpMessage> {
 /// defense-in-depth).
 pub fn serialize_response(resp: &CdpResponse) -> String {
     serde_json::to_string(resp).unwrap_or_else(|_| {
-        format!(
-            r#"{{"id":null,"error":{{"code":{ERR_PARSE_ERROR},"message":"serialize error"}}}}"#
-        )
+        format!(r#"{{"id":null,"error":{{"code":{ERR_PARSE_ERROR},"message":"serialize error"}}}}"#)
     })
 }
 
@@ -142,7 +140,8 @@ pub fn handle_command(
 type HandlerResult = Result<Value, CdpError>;
 
 fn params_str(params: &Option<Value>, key: &str) -> String {
-    params.as_ref()
+    params
+        .as_ref()
         .and_then(|p| p.get(key))
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -153,9 +152,15 @@ fn bridge_send(bridge: Option<&BridgeSender>, cmd: BridgeCommand) -> HandlerResu
     match bridge {
         Some(b) => {
             let resp = b.send(cmd);
-            resp.result.map_err(|e| CdpError { code: -32603, message: e })
+            resp.result.map_err(|e| CdpError {
+                code: -32603,
+                message: e,
+            })
         }
-        None => Err(CdpError { code: -32603, message: "no servo bridge connected".into() }),
+        None => Err(CdpError {
+            code: -32603,
+            message: "no servo bridge connected".into(),
+        }),
     }
 }
 
@@ -164,10 +169,24 @@ fn ok_empty() -> HandlerResult {
 }
 
 fn live_target_info(target_id: &str, bridge: Option<&BridgeSender>) -> Value {
-    let title = bridge.and_then(|b| b.send(BridgeCommand::GetTitle { target_id: target_id.to_string() }).result.ok())
+    let title = bridge
+        .and_then(|b| {
+            b.send(BridgeCommand::GetTitle {
+                target_id: target_id.to_string(),
+            })
+            .result
+            .ok()
+        })
         .and_then(|v| v.as_str().map(|s| s.to_string()))
         .unwrap_or_else(|| "Bao".into());
-    let url = bridge.and_then(|b| b.send(BridgeCommand::GetUrl { target_id: target_id.to_string() }).result.ok())
+    let url = bridge
+        .and_then(|b| {
+            b.send(BridgeCommand::GetUrl {
+                target_id: target_id.to_string(),
+            })
+            .result
+            .ok()
+        })
         .and_then(|v| v.as_str().map(|s| s.to_string()))
         .unwrap_or_else(|| "about:blank".into());
     serde_json::json!({
@@ -187,10 +206,15 @@ fn handle_target(command: &str, target_id: &str, bridge: Option<&BridgeSender>) 
             let mut target_infos = vec![live_target_info(target_id, bridge)];
             // Append Worker sub-targets if bridge is available
             if let Some(b) = bridge {
-                if let Ok(worker_resp) = b.send(BridgeCommand::ListWorkerTargets {
-                    target_id: target_id.to_string(),
-                }).result {
-                    if let Some(workers) = worker_resp.get("workerTargets").and_then(|v| v.as_array()) {
+                if let Ok(worker_resp) = b
+                    .send(BridgeCommand::ListWorkerTargets {
+                        target_id: target_id.to_string(),
+                    })
+                    .result
+                {
+                    if let Some(workers) =
+                        worker_resp.get("workerTargets").and_then(|v| v.as_array())
+                    {
                         for w in workers {
                             target_infos.push(w.clone());
                         }
@@ -201,7 +225,11 @@ fn handle_target(command: &str, target_id: &str, bridge: Option<&BridgeSender>) 
         }
         "createTarget" => Ok(serde_json::json!({ "targetId": target_id })),
         "closeTarget" => {
-            if let Some(b) = bridge { b.send_fire_and_forget(BridgeCommand::ClosePage { target_id: target_id.to_string() }); }
+            if let Some(b) = bridge {
+                b.send_fire_and_forget(BridgeCommand::ClosePage {
+                    target_id: target_id.to_string(),
+                });
+            }
             Ok(serde_json::json!({ "success": true }))
         }
         "setAutoAttach" | "setDiscoverTargets" => ok_empty(),
@@ -212,11 +240,19 @@ fn handle_target(command: &str, target_id: &str, bridge: Option<&BridgeSender>) 
             "sessionId": format!("{:016x}", target_id.chars().map(|c| c as u64).sum::<u64>())
         })),
         "detachFromTarget" | "sendMessageToTarget" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'Target.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Target.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_page(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_page(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
@@ -225,13 +261,20 @@ fn handle_page(command: &str, target_id: &str, params: &Option<Value>, bridge: O
             // (CDP/Chrome semantics: empty url = "not provided"). `Option::as_str()`
             // returns Some("") for empty strings, bypassing `unwrap_or`, so we add
             // `.filter(|s| !s.is_empty())` to treat "" as "not provided".
-            let url = params.as_ref()
+            let url = params
+                .as_ref()
                 .and_then(|v| v.get("url"))
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or("about:blank");
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::Navigate { target_id: tid.clone(), url: url.to_string() })?;
+                bridge_send(
+                    bridge,
+                    BridgeCommand::Navigate {
+                        target_id: tid.clone(),
+                        url: url.to_string(),
+                    },
+                )?;
             }
             let loader_id = format!("{:016x}", url.len() as u64);
             let resp = cdp_protocol::page::NavigateReturnObjectBuilder::default()
@@ -242,17 +285,31 @@ fn handle_page(command: &str, target_id: &str, params: &Option<Value>, bridge: O
             Ok(serde_json::to_value(resp).unwrap_or_default())
         }
         "reload" => {
-            let ignore_cache = params.as_ref()
+            let ignore_cache = params
+                .as_ref()
                 .and_then(|p| p.get("ignoreCache"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::Reload { target_id: tid.clone(), ignore_cache })?;
+                bridge_send(
+                    bridge,
+                    BridgeCommand::Reload {
+                        target_id: tid.clone(),
+                        ignore_cache,
+                    },
+                )?;
             }
             Ok(serde_json::json!({ "frameId": "0", "loaderId": "0" }))
         }
         "getFrameTree" => {
-            let url = bridge.and_then(|b| b.send(BridgeCommand::GetUrl { target_id: tid.clone() }).result.ok())
+            let url = bridge
+                .and_then(|b| {
+                    b.send(BridgeCommand::GetUrl {
+                        target_id: tid.clone(),
+                    })
+                    .result
+                    .ok()
+                })
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "about:blank".into());
             Ok(serde_json::json!({
@@ -262,7 +319,14 @@ fn handle_page(command: &str, target_id: &str, params: &Option<Value>, bridge: O
             }))
         }
         "getNavigationHistory" => {
-            let url = bridge.and_then(|b| b.send(BridgeCommand::GetUrl { target_id: tid.clone() }).result.ok())
+            let url = bridge
+                .and_then(|b| {
+                    b.send(BridgeCommand::GetUrl {
+                        target_id: tid.clone(),
+                    })
+                    .result
+                    .ok()
+                })
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "about:blank".into());
             Ok(serde_json::json!({
@@ -271,15 +335,26 @@ fn handle_page(command: &str, target_id: &str, params: &Option<Value>, bridge: O
             }))
         }
         "captureScreenshot" => {
-            let format = params.as_ref()
+            let format = params
+                .as_ref()
                 .and_then(|p| p.get("format"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("png").to_string();
-            let quality = params.as_ref()
+                .unwrap_or("png")
+                .to_string();
+            let quality = params
+                .as_ref()
                 .and_then(|p| p.get("quality"))
-                .and_then(|v| v.as_u64()).map(|q| q as u8);
+                .and_then(|v| v.as_u64())
+                .map(|q| q as u8);
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::TakeScreenshot { target_id: tid.clone(), format, quality })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::TakeScreenshot {
+                        target_id: tid.clone(),
+                        format,
+                        quality,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "data": "" }))
             }
@@ -292,91 +367,145 @@ fn handle_page(command: &str, target_id: &str, params: &Option<Value>, bridge: O
         "addScriptToEvaluateOnNewDocument" => {
             let source = params_str(params, "source");
             if bridge.is_some() && !source.is_empty() {
-                bridge_send(bridge, BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id: tid.clone(), source })?;
+                bridge_send(
+                    bridge,
+                    BridgeCommand::AddScriptToEvaluateOnNewDocument {
+                        target_id: tid.clone(),
+                        source,
+                    },
+                )?;
             }
             Ok(serde_json::json!({ "identifier": "1" }))
         }
         "removeScriptToEvaluateOnNewDocument" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'Page.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Page.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_runtime(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_runtime(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "enable" => Ok(serde_json::json!({ "executionContextId": 1 })),
         "disable" => ok_empty(),
         "evaluate" => {
-            let expression = params.as_ref()
+            let expression = params
+                .as_ref()
                 .and_then(|p| p.get("expression"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("").to_string();
-            let return_by_value = params.as_ref()
+                .unwrap_or("")
+                .to_string();
+            let return_by_value = params
+                .as_ref()
                 .and_then(|p| p.get("returnByValue"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
             if bridge.is_some() && !expression.is_empty() {
-                bridge_send(bridge, BridgeCommand::EvaluateJs { target_id: tid, expression, return_by_value })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::EvaluateJs {
+                        target_id: tid,
+                        expression,
+                        return_by_value,
+                    },
+                )
             } else {
-                Ok(serde_json::json!({ "result": { "type": "undefined" }, "exceptionDetails": null }))
+                Ok(
+                    serde_json::json!({ "result": { "type": "undefined" }, "exceptionDetails": null }),
+                )
             }
         }
         "callFunctionOn" => {
-            let object_id = params.as_ref()
+            let object_id = params
+                .as_ref()
                 .and_then(|p| p.get("objectId"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let function_declaration = params.as_ref()
+            let function_declaration = params
+                .as_ref()
                 .and_then(|p| p.get("functionDeclaration"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("function(){}")
                 .to_string();
-            let arguments = params.as_ref()
-                .and_then(|p| p.get("arguments"))
-                .cloned();
-            let return_by_value = params.as_ref()
+            let arguments = params.as_ref().and_then(|p| p.get("arguments")).cloned();
+            let return_by_value = params
+                .as_ref()
                 .and_then(|p| p.get("returnByValue"))
                 .and_then(|v| v.as_bool());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::RuntimeCallFunctionOn {
-                    target_id: tid,
-                    object_id,
-                    function_declaration,
-                    arguments,
-                    return_by_value,
-                })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::RuntimeCallFunctionOn {
+                        target_id: tid,
+                        object_id,
+                        function_declaration,
+                        arguments,
+                        return_by_value,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "result": { "type": "undefined" } }))
             }
         }
         "getProperties" => {
-            let object_id = params.as_ref()
+            let object_id = params
+                .as_ref()
                 .and_then(|p| p.get("objectId"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let own_properties = params.as_ref()
+            let own_properties = params
+                .as_ref()
                 .and_then(|p| p.get("ownProperties"))
                 .and_then(|v| v.as_bool());
             if bridge.is_some() && !object_id.is_empty() {
-                bridge_send(bridge, BridgeCommand::RuntimeGetProperties { target_id: tid, object_id, own_properties })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::RuntimeGetProperties {
+                        target_id: tid,
+                        object_id,
+                        own_properties,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "result": [] }))
             }
         }
-        "evaluateAsync" | "runScript" => Ok(serde_json::json!({ "result": { "type": "undefined" } })),
+        "evaluateAsync" | "runScript" => {
+            Ok(serde_json::json!({ "result": { "type": "undefined" } }))
+        }
         "releaseObject" | "releaseObjectGroup" | "compileScript" | "callArgument" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'Runtime.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Runtime.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_dom(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_dom(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
         "getDocument" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::GetDocument { target_id: tid.clone() })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::GetDocument {
+                        target_id: tid.clone(),
+                    },
+                )
             } else {
                 Ok(serde_json::json!({
                     "root": {
@@ -392,11 +521,19 @@ fn handle_dom(command: &str, target_id: &str, params: &Option<Value>, bridge: Op
                 }))
             }
         }
-        "describeNode" => Ok(serde_json::json!({ "node": { "nodeId": 1, "nodeType": 1, "nodeName": "HTML" } })),
+        "describeNode" => {
+            Ok(serde_json::json!({ "node": { "nodeId": 1, "nodeType": 1, "nodeName": "HTML" } }))
+        }
         "querySelector" => {
             let selector = params_str(params, "selector");
             if bridge.is_some() && !selector.is_empty() {
-                bridge_send(bridge, BridgeCommand::QuerySelector { target_id: tid.clone(), selector })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::QuerySelector {
+                        target_id: tid.clone(),
+                        selector,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "nodeId": 0 }))
             }
@@ -404,7 +541,13 @@ fn handle_dom(command: &str, target_id: &str, params: &Option<Value>, bridge: Op
         "querySelectorAll" => {
             let selector = params_str(params, "selector");
             if bridge.is_some() && !selector.is_empty() {
-                bridge_send(bridge, BridgeCommand::QuerySelectorAll { target_id: tid.clone(), selector })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::QuerySelectorAll {
+                        target_id: tid.clone(),
+                        selector,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "nodeIds": [] }))
             }
@@ -413,31 +556,60 @@ fn handle_dom(command: &str, target_id: &str, params: &Option<Value>, bridge: Op
             "model": { "width": 1920, "height": 1080, "content": [0, 0, 1920, 0, 1920, 1080, 0, 1080] }
         })),
         "setAttributeValue" => {
-            let node_id = params.as_ref().and_then(|p| p.get("nodeId")).and_then(|v| v.as_i64()).unwrap_or(0);
+            let node_id = params
+                .as_ref()
+                .and_then(|p| p.get("nodeId"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             let name = params_str(params, "name");
             let value = params_str(params, "value");
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::SetAttributeValue { target_id: tid.clone(), node_id, name, value })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::SetAttributeValue {
+                        target_id: tid.clone(),
+                        node_id,
+                        name,
+                        value,
+                    },
+                )
             } else {
                 ok_empty()
             }
         }
         "removeAttribute" | "setOuterHTML" | "insertBefore" | "removeNode" => ok_empty(),
         "getOuterHTML" => {
-            let node_id = params.as_ref().and_then(|p| p.get("nodeId")).and_then(|v| v.as_i64());
+            let node_id = params
+                .as_ref()
+                .and_then(|p| p.get("nodeId"))
+                .and_then(|v| v.as_i64());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::GetOuterHtml { target_id: tid.clone(), node_id })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::GetOuterHtml {
+                        target_id: tid.clone(),
+                        node_id,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "outerHTML": "<html><body></body></html>" }))
             }
         }
         "resolveNode" => Ok(serde_json::json!({ "object": { "type": "node" } })),
         "pushNodesByBackendIdsToFrontend" => Ok(serde_json::json!({ "nodeIds": [] })),
-        _ => Err(CdpError { code: -32601, message: format!("'DOM.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'DOM.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_network(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_network(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "enable" => {
@@ -453,13 +625,24 @@ fn handle_network(command: &str, target_id: &str, params: &Option<Value>, bridge
             ok_empty()
         }
         "getCookies" => {
-            let urls: Vec<String> = params.as_ref()
+            let urls: Vec<String> = params
+                .as_ref()
                 .and_then(|p| p.get("urls"))
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::GetCookies { target_id: tid, urls })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::GetCookies {
+                        target_id: tid,
+                        urls,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "cookies": [] }))
             }
@@ -474,19 +657,47 @@ fn handle_network(command: &str, target_id: &str, params: &Option<Value>, bridge
         "setCookie" => {
             let name = params_str(params, "name");
             let value = params_str(params, "value");
-            let url = params.as_ref().and_then(|p| p.get("url")).and_then(|v| v.as_str()).map(|s| s.to_string());
-            let domain = params.as_ref().and_then(|p| p.get("domain")).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let url = params
+                .as_ref()
+                .and_then(|p| p.get("url"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let domain = params
+                .as_ref()
+                .and_then(|p| p.get("domain"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::SetCookie { target_id: tid, name, value, url, domain })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::SetCookie {
+                        target_id: tid,
+                        name,
+                        value,
+                        url,
+                        domain,
+                    },
+                )
             } else {
                 ok_empty()
             }
         }
         "deleteCookies" => {
             let name = params_str(params, "name");
-            let url = params.as_ref().and_then(|p| p.get("url")).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let url = params
+                .as_ref()
+                .and_then(|p| p.get("url"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DeleteCookie { target_id: tid, name, url })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DeleteCookie {
+                        target_id: tid,
+                        name,
+                        url,
+                    },
+                )
             } else {
                 ok_empty()
             }
@@ -494,113 +705,211 @@ fn handle_network(command: &str, target_id: &str, params: &Option<Value>, bridge
         "getResponseBody" => {
             let request_id = params_str(params, "requestId");
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::GetResponseBody { target_id: tid, request_id })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::GetResponseBody {
+                        target_id: tid,
+                        request_id,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "body": "", "base64Encoded": false }))
             }
         }
         "setCacheDisabled" => {
-            let cache_disabled = params.as_ref()
+            let cache_disabled = params
+                .as_ref()
                 .and_then(|p| p.get("cacheDisabled"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::NetworkSetCacheDisabled { target_id: tid, cache_disabled })?;
+                bridge_send(
+                    bridge,
+                    BridgeCommand::NetworkSetCacheDisabled {
+                        target_id: tid,
+                        cache_disabled,
+                    },
+                )?;
             }
             ok_empty()
         }
         "setExtraHTTPHeaders" => {
-            let headers = params.as_ref()
+            let headers = params
+                .as_ref()
                 .and_then(|p| p.get("headers"))
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::NetworkSetExtraHTTPHeaders { target_id: tid, headers })?;
+                bridge_send(
+                    bridge,
+                    BridgeCommand::NetworkSetExtraHTTPHeaders {
+                        target_id: tid,
+                        headers,
+                    },
+                )?;
             }
             ok_empty()
         }
         "clearBrowserCache" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::NetworkClearBrowserCache { target_id: tid })?;
+                bridge_send(
+                    bridge,
+                    BridgeCommand::NetworkClearBrowserCache { target_id: tid },
+                )?;
             }
             ok_empty()
         }
         "clearBrowserCookies" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::NetworkClearBrowserCookies { target_id: tid })?;
+                bridge_send(
+                    bridge,
+                    BridgeCommand::NetworkClearBrowserCookies { target_id: tid },
+                )?;
             }
             ok_empty()
         }
-        "emulateNetworkConditions" | "setRequestInterception" | "continueInterceptedRequest" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'Network.{}' wasn't found", command) }),
+        "emulateNetworkConditions" | "setRequestInterception" | "continueInterceptedRequest" => {
+            ok_empty()
+        }
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Network.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_storage(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_storage(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "getStorageItemsForOrigin" => {
             let origin = params_str(params, "origin");
             let storage_type = params_str(params, "storageType");
-            bridge_send(bridge, BridgeCommand::StorageGetStorageItemsForOrigin { target_id: tid, origin, storage_type })
+            bridge_send(
+                bridge,
+                BridgeCommand::StorageGetStorageItemsForOrigin {
+                    target_id: tid,
+                    origin,
+                    storage_type,
+                },
+            )
         }
         "clearDataForOrigin" => {
             let origin = params_str(params, "origin");
             let storage_type = params_str(params, "storageType");
-            bridge_send(bridge, BridgeCommand::StorageClearDataForOrigin { target_id: tid, origin, storage_type })
+            bridge_send(
+                bridge,
+                BridgeCommand::StorageClearDataForOrigin {
+                    target_id: tid,
+                    origin,
+                    storage_type,
+                },
+            )
         }
         "getCookies" => {
             // Storage.getCookies is an alias for Network.getCookies
-            let urls: Vec<String> = params.as_ref()
+            let urls: Vec<String> = params
+                .as_ref()
                 .and_then(|p| p.get("urls"))
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
-            bridge_send(bridge, BridgeCommand::GetCookies { target_id: tid, urls })
+            bridge_send(
+                bridge,
+                BridgeCommand::GetCookies {
+                    target_id: tid,
+                    urls,
+                },
+            )
         }
-        _ => Err(CdpError { code: -32601, message: format!("'Storage.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Storage.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_security(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_security(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "enable" => bridge_send(bridge, BridgeCommand::SecurityEnable { target_id: tid }),
         "disable" => bridge_send(bridge, BridgeCommand::SecurityDisable { target_id: tid }),
         "setOverrideCertificateErrors" => {
-            let override_errors = params.as_ref()
+            let override_errors = params
+                .as_ref()
                 .and_then(|p| p.get("override"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            bridge_send(bridge, BridgeCommand::SecuritySetOverrideCertificateErrors { target_id: tid, override_errors })
+            bridge_send(
+                bridge,
+                BridgeCommand::SecuritySetOverrideCertificateErrors {
+                    target_id: tid,
+                    override_errors,
+                },
+            )
         }
         "handleCertificateError" | "certificateError" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'Security.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Security.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_css(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_css(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
         "getComputedStyleForNode" => {
-            let node_id = params.as_ref()
+            let node_id = params
+                .as_ref()
                 .and_then(|p| p.get("nodeId"))
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::CssGetComputedStyleForNode { target_id: tid, node_id })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::CssGetComputedStyleForNode {
+                        target_id: tid,
+                        node_id,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "computedStyle": [] }))
             }
         }
         "getMatchedStylesForNode" => {
-            let node_id = params.as_ref()
+            let node_id = params
+                .as_ref()
                 .and_then(|p| p.get("nodeId"))
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::CssGetMatchedStylesForNode { target_id: tid, node_id })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::CssGetMatchedStylesForNode {
+                        target_id: tid,
+                        node_id,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({
                     "matchedCSSRules": [], "inlineStyle": null, "attributesStyle": null
@@ -608,33 +917,64 @@ fn handle_css(command: &str, target_id: &str, params: &Option<Value>, bridge: Op
             }
         }
         "getInlineStylesForNode" => {
-            let node_id = params.as_ref()
+            let node_id = params
+                .as_ref()
                 .and_then(|p| p.get("nodeId"))
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::CssGetInlineStylesForNode { target_id: tid, node_id })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::CssGetInlineStylesForNode {
+                        target_id: tid,
+                        node_id,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "inlineStyle": null }))
             }
         }
         "setStyleTexts" => Ok(serde_json::json!({ "styles": [] })),
-        _ => Err(CdpError { code: -32601, message: format!("'CSS.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'CSS.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_emulation(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_emulation(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "setDeviceMetricsOverride" => {
-            let width = params.as_ref()
-                .and_then(|p| p.get("width")).and_then(|v| v.as_u64()).unwrap_or(1920) as u32;
-            let height = params.as_ref()
-                .and_then(|p| p.get("height")).and_then(|v| v.as_u64()).unwrap_or(1080) as u32;
-            let dsf = params.as_ref()
-                .and_then(|p| p.get("deviceScaleFactor")).and_then(|v| v.as_f64());
+            let width = params
+                .as_ref()
+                .and_then(|p| p.get("width"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1920) as u32;
+            let height = params
+                .as_ref()
+                .and_then(|p| p.get("height"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1080) as u32;
+            let dsf = params
+                .as_ref()
+                .and_then(|p| p.get("deviceScaleFactor"))
+                .and_then(|v| v.as_f64());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::SetViewport { target_id: tid, width, height, device_scale_factor: dsf })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::SetViewport {
+                        target_id: tid,
+                        width,
+                        height,
+                        device_scale_factor: dsf,
+                    },
+                )
             } else {
                 ok_empty()
             }
@@ -643,7 +983,13 @@ fn handle_emulation(command: &str, target_id: &str, params: &Option<Value>, brid
         "setUserAgentOverride" => {
             let ua = params_str(params, "userAgent");
             if bridge.is_some() && !ua.is_empty() {
-                bridge_send(bridge, BridgeCommand::SetUserAgent { target_id: tid, user_agent: ua })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::SetUserAgent {
+                        target_id: tid,
+                        user_agent: ua,
+                    },
+                )
             } else {
                 ok_empty()
             }
@@ -651,21 +997,53 @@ fn handle_emulation(command: &str, target_id: &str, params: &Option<Value>, brid
         "setTouchEmulationEnabled" | "setScriptExecutionDisabled" => ok_empty(),
         "setFocusEmulationEnabled" | "setCPUThrottlingRate" => ok_empty(),
         "setDefaultBackgroundColorOverride" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'Emulation.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Emulation.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_input(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_input(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "dispatchMouseEvent" => {
             let event_type = params_str(params, "type");
-            let x = params.as_ref().and_then(|p| p.get("x")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let y = params.as_ref().and_then(|p| p.get("y")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let button = params.as_ref().and_then(|p| p.get("button")).and_then(|v| v.as_i64());
-            let click_count = params.as_ref().and_then(|p| p.get("clickCount")).and_then(|v| v.as_i64());
+            let x = params
+                .as_ref()
+                .and_then(|p| p.get("x"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let y = params
+                .as_ref()
+                .and_then(|p| p.get("y"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let button = params
+                .as_ref()
+                .and_then(|p| p.get("button"))
+                .and_then(|v| v.as_i64());
+            let click_count = params
+                .as_ref()
+                .and_then(|p| p.get("clickCount"))
+                .and_then(|v| v.as_i64());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DispatchMouseEvent { target_id: tid.clone(), event_type, x, y, button, click_count })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DispatchMouseEvent {
+                        target_id: tid.clone(),
+                        event_type,
+                        x,
+                        y,
+                        button,
+                        click_count,
+                    },
+                )
             } else {
                 ok_empty()
             }
@@ -674,9 +1052,22 @@ fn handle_input(command: &str, target_id: &str, params: &Option<Value>, bridge: 
             let event_type = params_str(params, "type");
             let key = params_str(params, "key");
             let code = params_str(params, "code");
-            let text = params.as_ref().and_then(|p| p.get("text")).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let text = params
+                .as_ref()
+                .and_then(|p| p.get("text"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DispatchKeyEvent { target_id: tid.clone(), event_type, key, code, text })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DispatchKeyEvent {
+                        target_id: tid.clone(),
+                        event_type,
+                        key,
+                        code,
+                        text,
+                    },
+                )
             } else {
                 ok_empty()
             }
@@ -685,13 +1076,22 @@ fn handle_input(command: &str, target_id: &str, params: &Option<Value>, bridge: 
         "insertText" => {
             let text = params_str(params, "text");
             if bridge.is_some() && !text.is_empty() {
-                bridge_send(bridge, BridgeCommand::InsertText { target_id: tid, text })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::InsertText {
+                        target_id: tid,
+                        text,
+                    },
+                )
             } else {
                 ok_empty()
             }
         }
         "setIgnoreInputEvents" | "setInterceptDrags" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'Input.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Input.{}' wasn't found", command),
+        }),
     }
 }
 
@@ -700,11 +1100,19 @@ fn handle_overlay(command: &str) -> HandlerResult {
         "enable" | "disable" => ok_empty(),
         "highlightNode" | "hideHighlight" | "setInspectMode" => ok_empty(),
         "setPausedInDebuggerMessage" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'Overlay.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Overlay.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_debugger(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_debugger(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "enable" => {
@@ -722,47 +1130,58 @@ fn handle_debugger(command: &str, target_id: &str, params: &Option<Value>, bridg
             }
         }
         "setBreakpointByUrl" => {
-            let url = params.as_ref()
+            let url = params
+                .as_ref()
                 .and_then(|p| p.get("url"))
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
-            let url_regex = params.as_ref()
+            let url_regex = params
+                .as_ref()
                 .and_then(|p| p.get("urlRegex"))
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
-            let line = params.as_ref()
+            let line = params
+                .as_ref()
                 .and_then(|p| p.get("lineNumber"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
-            let column = params.as_ref()
+            let column = params
+                .as_ref()
                 .and_then(|p| p.get("columnNumber"))
                 .and_then(|v| v.as_u64())
                 .map(|c| c as u32);
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DebuggerSetBreakpoint {
-                    target_id: tid,
-                    url,
-                    url_regex,
-                    line,
-                    column,
-                })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DebuggerSetBreakpoint {
+                        target_id: tid,
+                        url,
+                        url_regex,
+                        line,
+                        column,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "breakpointId": "1", "locations": [] }))
             }
         }
         "removeBreakpoint" => {
-            let breakpoint_id = params.as_ref()
+            let breakpoint_id = params
+                .as_ref()
                 .and_then(|p| p.get("breakpointId"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DebuggerRemoveBreakpoint {
-                    target_id: tid,
-                    breakpoint_id,
-                })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DebuggerRemoveBreakpoint {
+                        target_id: tid,
+                        breakpoint_id,
+                    },
+                )
             } else {
                 ok_empty()
             }
@@ -776,75 +1195,126 @@ fn handle_debugger(command: &str, target_id: &str, params: &Option<Value>, bridg
         }
         "resume" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DebuggerResume { target_id: tid, step_type: None })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DebuggerResume {
+                        target_id: tid,
+                        step_type: None,
+                    },
+                )
             } else {
                 ok_empty()
             }
         }
         "stepOver" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DebuggerResume { target_id: tid, step_type: Some("next".into()) })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DebuggerResume {
+                        target_id: tid,
+                        step_type: Some("next".into()),
+                    },
+                )
             } else {
                 ok_empty()
             }
         }
         "stepInto" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DebuggerResume { target_id: tid, step_type: Some("step".into()) })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DebuggerResume {
+                        target_id: tid,
+                        step_type: Some("step".into()),
+                    },
+                )
             } else {
                 ok_empty()
             }
         }
         "stepOut" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DebuggerResume { target_id: tid, step_type: Some("finish".into()) })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DebuggerResume {
+                        target_id: tid,
+                        step_type: Some("finish".into()),
+                    },
+                )
             } else {
                 ok_empty()
             }
         }
         "setSkipAllPauses" | "setBreakpointsActive" => ok_empty(),
         "evaluateOnCallFrame" => {
-            let expression = params.as_ref()
+            let expression = params
+                .as_ref()
                 .and_then(|p| p.get("expression"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("").to_string();
-            let frame_actor_id = params.as_ref()
+                .unwrap_or("")
+                .to_string();
+            let frame_actor_id = params
+                .as_ref()
                 .and_then(|p| p.get("callFrameId"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             if bridge.is_some() && !expression.is_empty() {
-                bridge_send(bridge, BridgeCommand::DebuggerEval { target_id: tid, expression, frame_actor_id })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DebuggerEval {
+                        target_id: tid,
+                        expression,
+                        frame_actor_id,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "result": { "type": "undefined" } }))
             }
         }
         "getPossibleBreakpoints" => {
-            let start_script_id = params.as_ref()
+            let start_script_id = params
+                .as_ref()
                 .and_then(|p| p.get("start"))
                 .and_then(|v| v.get("scriptId"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: tid, start_script_id })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DebuggerGetPossibleBreakpoints {
+                        target_id: tid,
+                        start_script_id,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "locations": [] }))
             }
         }
         "getScriptSource" => {
-            let script_id = params.as_ref()
+            let script_id = params
+                .as_ref()
                 .and_then(|p| p.get("scriptId"))
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0);
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DebuggerGetScriptSource { target_id: tid, script_id })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::DebuggerGetScriptSource {
+                        target_id: tid,
+                        script_id,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "scriptSource": "" }))
             }
         }
         "setPauseOnExceptions" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'Debugger.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Debugger.{}' wasn't found", command),
+        }),
     }
 }
 
@@ -852,14 +1322,18 @@ fn handle_log(command: &str) -> HandlerResult {
     match command {
         "enable" | "disable" | "clear" => ok_empty(),
         "startViolationsReport" | "stopViolationsReport" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'Log.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Log.{}' wasn't found", command),
+        }),
     }
 }
 
 fn handle_fetch(command: &str, params: &Option<Value>) -> HandlerResult {
     match command {
         "enable" => {
-            let pattern_count = params.as_ref()
+            let pattern_count = params
+                .as_ref()
                 .and_then(|p| p.get("patterns"))
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
@@ -878,10 +1352,15 @@ fn handle_fetch(command: &str, params: &Option<Value>) -> HandlerResult {
         }
         "fulfillRequest" => {
             let request_id = params_str(params, "requestId");
-            let status_code = params.as_ref()
-                .and_then(|p| p.get("responseCode")).and_then(|v| v.as_u64()).unwrap_or(200);
+            let status_code = params
+                .as_ref()
+                .and_then(|p| p.get("responseCode"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200);
             let body = params_str(params, "body");
-            Ok(serde_json::json!({ "requestId": request_id, "fulfilled": true, "responseCode": status_code, "bodyLength": body.len() }))
+            Ok(
+                serde_json::json!({ "requestId": request_id, "fulfilled": true, "responseCode": status_code, "bodyLength": body.len() }),
+            )
         }
         "getRequestPostData" => {
             let request_id = params_str(params, "requestId");
@@ -895,11 +1374,19 @@ fn handle_fetch(command: &str, params: &Option<Value>) -> HandlerResult {
             let request_id = params_str(params, "requestId");
             Ok(serde_json::json!({ "stream": format!("stream-{}", request_id) }))
         }
-        _ => Err(CdpError { code: -32601, message: format!("'Fetch.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Fetch.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_profiler(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_profiler(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
@@ -919,27 +1406,44 @@ fn handle_profiler(command: &str, target_id: &str, params: &Option<Value>, bridg
             }
         }
         "setSamplingInterval" => {
-            let interval = params.as_ref()
+            let interval = params
+                .as_ref()
                 .and_then(|p| p.get("interval"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(1000) as u32;
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::ProfilerSetSamplingInterval { target_id: tid, interval })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::ProfilerSetSamplingInterval {
+                        target_id: tid,
+                        interval,
+                    },
+                )
             } else {
                 ok_empty()
             }
         }
-        _ => Err(CdpError { code: -32601, message: format!("'Profiler.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Profiler.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_heap_profiler(command: &str, target_id: &str, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_heap_profiler(
+    command: &str,
+    target_id: &str,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
         "takeHeapSnapshot" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::HeapProfilerTakeSnapshot { target_id: tid })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::HeapProfilerTakeSnapshot { target_id: tid },
+                )
             } else {
                 // Stub: return empty snapshot when no bridge
                 Ok(serde_json::json!({}))
@@ -947,26 +1451,38 @@ fn handle_heap_profiler(command: &str, target_id: &str, bridge: Option<&BridgeSe
         }
         "startTrackingHeapObjects" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::HeapProfilerStartTracking { target_id: tid })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::HeapProfilerStartTracking { target_id: tid },
+                )
             } else {
                 ok_empty()
             }
         }
         "stopTrackingHeapObjects" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::HeapProfilerStopTracking { target_id: tid })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::HeapProfilerStopTracking { target_id: tid },
+                )
             } else {
                 ok_empty()
             }
         }
         "collectGarbage" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::HeapProfilerCollectGarbage { target_id: tid })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::HeapProfilerCollectGarbage { target_id: tid },
+                )
             } else {
                 ok_empty()
             }
         }
-        _ => Err(CdpError { code: -32601, message: format!("'HeapProfiler.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'HeapProfiler.{}' wasn't found", command),
+        }),
     }
 }
 
@@ -975,7 +1491,10 @@ fn handle_memory(command: &str, target_id: &str, bridge: Option<&BridgeSender>) 
     match command {
         "getDOMCounters" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::MemoryGetDOMCounters { target_id: tid })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::MemoryGetDOMCounters { target_id: tid },
+                )
             } else {
                 // Default zero values when no bridge
                 Ok(serde_json::json!({
@@ -993,23 +1512,36 @@ fn handle_memory(command: &str, target_id: &str, bridge: Option<&BridgeSender>) 
                 ok_empty()
             }
         }
-        _ => Err(CdpError { code: -32601, message: format!("'Memory.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Memory.{}' wasn't found", command),
+        }),
     }
 }
 
-fn handle_performance(command: &str, target_id: &str, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_performance(
+    command: &str,
+    target_id: &str,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
         "getMetrics" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::PerformanceGetMetrics { target_id: tid })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::PerformanceGetMetrics { target_id: tid },
+                )
             } else {
                 // Return empty metrics list when no bridge
                 Ok(serde_json::json!({ "metrics": [] }))
             }
         }
-        _ => Err(CdpError { code: -32601, message: format!("'Performance.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Performance.{}' wasn't found", command),
+        }),
     }
 }
 
@@ -1048,7 +1580,10 @@ fn handle_system_info(command: &str) -> HandlerResult {
                 }]
             }))
         }
-        _ => Err(CdpError { code: -32601, message: format!("'SystemInfo.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'SystemInfo.{}' wasn't found", command),
+        }),
     }
 }
 
@@ -1099,7 +1634,10 @@ fn handle_service_worker(
         // ServiceWorkerRegistrationTracking entries per-delegate.
         "getAllRegistrations" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::ListServiceWorkerRegistrations { target_id: tid })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::ListServiceWorkerRegistrations { target_id: tid },
+                )
             } else {
                 Ok(serde_json::json!({ "registrations": [] }))
             }
@@ -1108,10 +1646,13 @@ fn handle_service_worker(
         "getRegistration" => {
             let registration_id = params_str(params, "registrationId");
             if bridge.is_some() && !registration_id.is_empty() {
-                bridge_send(bridge, BridgeCommand::GetServiceWorkerRegistrationInfo {
-                    target_id: tid,
-                    registration_id,
-                })
+                bridge_send(
+                    bridge,
+                    BridgeCommand::GetServiceWorkerRegistrationInfo {
+                        target_id: tid,
+                        registration_id,
+                    },
+                )
             } else {
                 Ok(serde_json::json!({ "registration": null }))
             }
@@ -1121,25 +1662,34 @@ fn handle_service_worker(
         "stopWorker" => {
             let registration_id = params_str(params, "registrationId");
             if bridge.is_some() && !registration_id.is_empty() {
-                bridge_send(bridge, BridgeCommand::StopServiceWorker {
-                    target_id: tid,
-                    registration_id,
-                })?;
+                bridge_send(
+                    bridge,
+                    BridgeCommand::StopServiceWorker {
+                        target_id: tid,
+                        registration_id,
+                    },
+                )?;
             }
             ok_empty()
         }
         "unregister" => {
             let registration_id = params_str(params, "registrationId");
             if bridge.is_some() && !registration_id.is_empty() {
-                bridge_send(bridge, BridgeCommand::TerminateServiceWorker {
-                    target_id: tid,
-                    registration_id,
-                })?;
+                bridge_send(
+                    bridge,
+                    BridgeCommand::TerminateServiceWorker {
+                        target_id: tid,
+                        registration_id,
+                    },
+                )?;
             }
             ok_empty()
         }
         "updateRegistration" => ok_empty(),
-        _ => Err(CdpError { code: -32601, message: format!("'ServiceWorker.{}' wasn't found", command) }),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'ServiceWorker.{}' wasn't found", command),
+        }),
     }
 }
 
@@ -1152,7 +1702,8 @@ mod tests {
     // 1. parse_message valid JSON → Some(CdpMessage) with correct id/method/params
     #[test]
     fn parse_message_valid_json() {
-        let msg = parse_message(r#"{"id":1,"method":"Page.enable","params":{"url":"http://x"}}"#).unwrap();
+        let msg = parse_message(r#"{"id":1,"method":"Page.enable","params":{"url":"http://x"}}"#)
+            .unwrap();
         assert_eq!(msg.id, Some(1));
         assert_eq!(msg.method, "Page.enable");
         assert_eq!(msg.params, Some(json!({"url": "http://x"})));
@@ -1210,7 +1761,10 @@ mod tests {
         let resp = CdpResponse {
             id: Some(2),
             result: None,
-            error: Some(CdpError { code: -32601, message: "not found".into() }),
+            error: Some(CdpError {
+                code: -32601,
+                message: "not found".into(),
+            }),
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -1223,7 +1777,12 @@ mod tests {
     // 8. handle_command with unknown domain → error code -32601
     #[test]
     fn handle_command_unknown_domain() {
-        let msg = CdpMessage { id: Some(1), method: "Foo.bar".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(1),
+            method: "Foo.bar".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1234,7 +1793,12 @@ mod tests {
     // 9. handle_command Target.getTargets (no bridge) → ok with targetInfos
     #[test]
     fn handle_command_target_get_targets() {
-        let msg = CdpMessage { id: Some(2), method: "Target.getTargets".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(2),
+            method: "Target.getTargets".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1246,7 +1810,12 @@ mod tests {
     // 10. handle_command Target.createTarget (no bridge) → ok with targetId
     #[test]
     fn handle_command_target_create_target() {
-        let msg = CdpMessage { id: Some(3), method: "Target.createTarget".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(3),
+            method: "Target.createTarget".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1257,7 +1826,12 @@ mod tests {
     // 11. handle_command Target.closeTarget (no bridge) → ok with success:true
     #[test]
     fn handle_command_target_close_target() {
-        let msg = CdpMessage { id: Some(4), method: "Target.closeTarget".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(4),
+            method: "Target.closeTarget".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1268,7 +1842,12 @@ mod tests {
     // 12. handle_command Target.setAutoAttach → ok empty
     #[test]
     fn handle_command_target_set_auto_attach() {
-        let msg = CdpMessage { id: Some(5), method: "Target.setAutoAttach".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(5),
+            method: "Target.setAutoAttach".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1278,7 +1857,12 @@ mod tests {
     // 13. handle_command Page.enable → ok empty
     #[test]
     fn handle_command_page_enable() {
-        let msg = CdpMessage { id: Some(6), method: "Page.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(6),
+            method: "Page.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1288,7 +1872,12 @@ mod tests {
     // 14. handle_command Page.getLayoutMetrics → ok with contentSize
     #[test]
     fn handle_command_page_get_layout_metrics() {
-        let msg = CdpMessage { id: Some(7), method: "Page.getLayoutMetrics".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(7),
+            method: "Page.getLayoutMetrics".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1301,7 +1890,12 @@ mod tests {
     // 15. handle_command Runtime.enable → ok with executionContextId
     #[test]
     fn handle_command_runtime_enable() {
-        let msg = CdpMessage { id: Some(8), method: "Runtime.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(8),
+            method: "Runtime.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1328,7 +1922,12 @@ mod tests {
     // 17. handle_command DOM.getDocument (no bridge) → ok with root node
     #[test]
     fn handle_command_dom_get_document() {
-        let msg = CdpMessage { id: Some(10), method: "DOM.getDocument".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(10),
+            method: "DOM.getDocument".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1358,7 +1957,12 @@ mod tests {
     // 19. handle_command Network.enable → ok empty
     #[test]
     fn handle_command_network_enable() {
-        let msg = CdpMessage { id: Some(12), method: "Network.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(12),
+            method: "Network.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1368,7 +1972,12 @@ mod tests {
     // 20. handle_command Network.getCookies → ok with empty cookies
     #[test]
     fn handle_command_network_get_cookies() {
-        let msg = CdpMessage { id: Some(13), method: "Network.getCookies".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(13),
+            method: "Network.getCookies".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1379,7 +1988,12 @@ mod tests {
     // 21. handle_command CSS.enable → ok empty
     #[test]
     fn handle_command_css_enable() {
-        let msg = CdpMessage { id: Some(14), method: "CSS.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(14),
+            method: "CSS.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1389,7 +2003,12 @@ mod tests {
     // 22. handle_command CSS.getComputedStyleForNode → ok empty computedStyle
     #[test]
     fn handle_command_css_get_computed_style() {
-        let msg = CdpMessage { id: Some(15), method: "CSS.getComputedStyleForNode".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(15),
+            method: "CSS.getComputedStyleForNode".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1418,7 +2037,9 @@ mod tests {
         let msg = CdpMessage {
             id: Some(17),
             method: "Input.dispatchMouseEvent".into(),
-            params: Some(json!({"type": "mousePressed", "x": 100, "y": 200, "button": 0, "clickCount": 1})),
+            params: Some(
+                json!({"type": "mousePressed", "x": 100, "y": 200, "button": 0, "clickCount": 1}),
+            ),
             session_id: None,
         };
         let params = msg.params.clone();
@@ -1430,7 +2051,12 @@ mod tests {
     // 25. handle_command Overlay.enable → ok empty
     #[test]
     fn handle_command_overlay_enable() {
-        let msg = CdpMessage { id: Some(18), method: "Overlay.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(18),
+            method: "Overlay.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1440,7 +2066,12 @@ mod tests {
     // 26. handle_command Debugger.enable → ok empty
     #[test]
     fn handle_command_debugger_enable() {
-        let msg = CdpMessage { id: Some(19), method: "Debugger.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(19),
+            method: "Debugger.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1450,7 +2081,12 @@ mod tests {
     // 27. handle_command Debugger.setBreakpointByUrl → ok with breakpointId
     #[test]
     fn handle_command_debugger_set_breakpoint_by_url() {
-        let msg = CdpMessage { id: Some(20), method: "Debugger.setBreakpointByUrl".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(20),
+            method: "Debugger.setBreakpointByUrl".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1461,7 +2097,12 @@ mod tests {
     // 28. handle_command Log.enable → ok empty
     #[test]
     fn handle_command_log_enable() {
-        let msg = CdpMessage { id: Some(21), method: "Log.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(21),
+            method: "Log.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1503,7 +2144,10 @@ mod tests {
     // 31. CdpError clone + debug format
     #[test]
     fn cdp_error_clone_and_debug() {
-        let err = CdpError { code: -32601, message: "not found".into() };
+        let err = CdpError {
+            code: -32601,
+            message: "not found".into(),
+        };
         let cloned = err.clone();
         assert_eq!(cloned.code, err.code);
         assert_eq!(cloned.message, err.message);
@@ -1613,7 +2257,9 @@ mod tests {
     // 44. CdpMessage params as object
     #[test]
     fn parse_message_params_object() {
-        let msg = parse_message(r#"{"id":1,"method":"Page.navigate","params":{"url":"http://x.com"}}"#).unwrap();
+        let msg =
+            parse_message(r#"{"id":1,"method":"Page.navigate","params":{"url":"http://x.com"}}"#)
+                .unwrap();
         assert!(msg.params.is_some());
         assert_eq!(msg.params.unwrap()["url"], "http://x.com");
     }
@@ -1654,7 +2300,10 @@ mod tests {
     #[test]
     fn parse_message_long_session_id() {
         let long_session = "A".repeat(10000);
-        let raw = format!(r#"{{"id":1,"method":"Page.enable","session_id":"{}"}}"#, long_session);
+        let raw = format!(
+            r#"{{"id":1,"method":"Page.enable","session_id":"{}"}}"#,
+            long_session
+        );
         let msg = parse_message(&raw).unwrap();
         assert_eq!(msg.session_id.unwrap().len(), 10000);
     }
@@ -1784,7 +2433,10 @@ mod tests {
         let resp = CdpResponse {
             id: Some(1),
             result: None,
-            error: Some(CdpError { code: -32700, message: "Parse error".into() }),
+            error: Some(CdpError {
+                code: -32700,
+                message: "Parse error".into(),
+            }),
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -1795,7 +2447,10 @@ mod tests {
     // 60. CdpError code -32600 (Invalid Request)
     #[test]
     fn cdp_error_code_invalid_request() {
-        let err = CdpError { code: -32600, message: "Invalid Request".into() };
+        let err = CdpError {
+            code: -32600,
+            message: "Invalid Request".into(),
+        };
         assert_eq!(err.code, -32600);
         let s = serde_json::to_string(&err).unwrap();
         assert!(s.contains("-32600"));
@@ -1804,28 +2459,40 @@ mod tests {
     // 61. CdpError code -32601 (Method not found)
     #[test]
     fn cdp_error_code_method_not_found() {
-        let err = CdpError { code: -32601, message: "Method not found".into() };
+        let err = CdpError {
+            code: -32601,
+            message: "Method not found".into(),
+        };
         assert_eq!(err.code, -32601);
     }
 
     // 62. CdpError code -32602 (Invalid params)
     #[test]
     fn cdp_error_code_invalid_params() {
-        let err = CdpError { code: -32602, message: "Invalid params".into() };
+        let err = CdpError {
+            code: -32602,
+            message: "Invalid params".into(),
+        };
         assert_eq!(err.code, -32602);
     }
 
     // 63. CdpError code -32603 (Internal error)
     #[test]
     fn cdp_error_code_internal_error() {
-        let err = CdpError { code: -32603, message: "Internal error".into() };
+        let err = CdpError {
+            code: -32603,
+            message: "Internal error".into(),
+        };
         assert_eq!(err.code, -32603);
     }
 
     // 64. CdpError with custom error code
     #[test]
     fn cdp_error_custom_code() {
-        let err = CdpError { code: -32000, message: "Server error".into() };
+        let err = CdpError {
+            code: -32000,
+            message: "Server error".into(),
+        };
         let s = serde_json::to_string(&err).unwrap();
         assert!(s.contains("-32000"));
         assert!(s.contains("Server error"));
@@ -1834,7 +2501,10 @@ mod tests {
     // 65. CdpError with empty message
     #[test]
     fn cdp_error_empty_message() {
-        let err = CdpError { code: -32601, message: String::new() };
+        let err = CdpError {
+            code: -32601,
+            message: String::new(),
+        };
         let s = serde_json::to_string(&err).unwrap();
         assert!(s.contains("-32601"));
     }
@@ -1842,7 +2512,10 @@ mod tests {
     // 66. CdpError with unicode message
     #[test]
     fn cdp_error_unicode_message() {
-        let err = CdpError { code: -32601, message: "方法未找到".into() };
+        let err = CdpError {
+            code: -32601,
+            message: "方法未找到".into(),
+        };
         let s = serde_json::to_string(&err).unwrap();
         assert!(s.contains("方法未找到"));
     }
@@ -1860,7 +2533,10 @@ mod tests {
         let s = serialize_event(&ev);
         let parsed: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(parsed["method"], "Page.domContentEventFired");
-        assert!(parsed.get("params").is_none(), "params should be skipped when None");
+        assert!(
+            parsed.get("params").is_none(),
+            "params should be skipped when None"
+        );
     }
 
     // 68. CdpEvent with large data
@@ -1869,7 +2545,9 @@ mod tests {
         let large_string = "X".repeat(100_000);
         let ev = CdpEvent {
             method: "Network.dataReceived".into(),
-            params: Some(json!({ "dataLength": large_string.len(), "encodedDataLength": large_string.len() })),
+            params: Some(
+                json!({ "dataLength": large_string.len(), "encodedDataLength": large_string.len() }),
+            ),
         };
         let s = serialize_event(&ev);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -1927,7 +2605,12 @@ mod tests {
     // 72. handle_command with method containing no dot → empty domain
     #[test]
     fn handle_command_no_dot_method() {
-        let msg = CdpMessage { id: Some(1), method: "NoDomain".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(1),
+            method: "NoDomain".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1939,7 +2622,12 @@ mod tests {
     // 73. handle_command with empty method → empty domain, error
     #[test]
     fn handle_command_empty_method() {
-        let msg = CdpMessage { id: Some(2), method: String::new(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(2),
+            method: String::new(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1950,7 +2638,12 @@ mod tests {
     // 74. handle_command with known domain but unknown command
     #[test]
     fn handle_command_known_domain_unknown_command() {
-        let msg = CdpMessage { id: Some(3), method: "Page.nonExistentCommand".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(3),
+            method: "Page.nonExistentCommand".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1962,7 +2655,12 @@ mod tests {
     // 75. handle_command Target.getTargetInfo (no bridge) → ok with targetInfo
     #[test]
     fn handle_command_target_get_target_info() {
-        let msg = CdpMessage { id: Some(4), method: "Target.getTargetInfo".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(4),
+            method: "Target.getTargetInfo".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1976,7 +2674,12 @@ mod tests {
     // 76. handle_command Target.attachToTarget → ok with sessionId
     #[test]
     fn handle_command_target_attach_to_target() {
-        let msg = CdpMessage { id: Some(5), method: "Target.attachToTarget".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(5),
+            method: "Target.attachToTarget".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1988,7 +2691,12 @@ mod tests {
     // 77. handle_command Target.detachFromTarget → ok empty
     #[test]
     fn handle_command_target_detach_from_target() {
-        let msg = CdpMessage { id: Some(6), method: "Target.detachFromTarget".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(6),
+            method: "Target.detachFromTarget".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1998,7 +2706,12 @@ mod tests {
     // 78. handle_command Target.setDiscoverTargets → ok empty
     #[test]
     fn handle_command_target_set_discover_targets() {
-        let msg = CdpMessage { id: Some(7), method: "Target.setDiscoverTargets".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(7),
+            method: "Target.setDiscoverTargets".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2008,7 +2721,12 @@ mod tests {
     // 79. handle_command Target.getTargetTargets → ok (alias for getTargets)
     #[test]
     fn handle_command_target_get_target_targets() {
-        let msg = CdpMessage { id: Some(8), method: "Target.getTargetTargets".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(8),
+            method: "Target.getTargetTargets".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2019,7 +2737,12 @@ mod tests {
     // 80. handle_command Page.navigate (no bridge) → ok with default url
     #[test]
     fn handle_command_page_navigate_no_bridge_default_url() {
-        let msg = CdpMessage { id: Some(9), method: "Page.navigate".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(9),
+            method: "Page.navigate".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2046,7 +2769,12 @@ mod tests {
     // 82. handle_command Page.reload (no bridge) → ok
     #[test]
     fn handle_command_page_reload_no_bridge() {
-        let msg = CdpMessage { id: Some(11), method: "Page.reload".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(11),
+            method: "Page.reload".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2058,7 +2786,12 @@ mod tests {
     // 83. handle_command Page.getFrameTree (no bridge) → ok
     #[test]
     fn handle_command_page_get_frame_tree() {
-        let msg = CdpMessage { id: Some(12), method: "Page.getFrameTree".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(12),
+            method: "Page.getFrameTree".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2072,7 +2805,12 @@ mod tests {
     // 84. handle_command Page.getNavigationHistory (no bridge) → ok
     #[test]
     fn handle_command_page_get_navigation_history() {
-        let msg = CdpMessage { id: Some(13), method: "Page.getNavigationHistory".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(13),
+            method: "Page.getNavigationHistory".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2084,7 +2822,12 @@ mod tests {
     // 85. handle_command Page.captureScreenshot (no bridge) → ok with empty data
     #[test]
     fn handle_command_page_capture_screenshot_no_bridge() {
-        let msg = CdpMessage { id: Some(14), method: "Page.captureScreenshot".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(14),
+            method: "Page.captureScreenshot".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2095,7 +2838,12 @@ mod tests {
     // 86. handle_command Page.addScriptToEvaluateOnNewDocument (no bridge, empty source)
     #[test]
     fn handle_command_page_add_script_empty_source() {
-        let msg = CdpMessage { id: Some(15), method: "Page.addScriptToEvaluateOnNewDocument".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(15),
+            method: "Page.addScriptToEvaluateOnNewDocument".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2106,7 +2854,12 @@ mod tests {
     // 87. handle_command Page.removeScriptToEvaluateOnNewDocument → ok empty
     #[test]
     fn handle_command_page_remove_script() {
-        let msg = CdpMessage { id: Some(16), method: "Page.removeScriptToEvaluateOnNewDocument".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(16),
+            method: "Page.removeScriptToEvaluateOnNewDocument".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2116,7 +2869,12 @@ mod tests {
     // 88. handle_command Page.setContent → ok empty
     #[test]
     fn handle_command_page_set_content() {
-        let msg = CdpMessage { id: Some(17), method: "Page.setContent".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(17),
+            method: "Page.setContent".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2126,7 +2884,12 @@ mod tests {
     // 89. handle_command Page.close → ok empty
     #[test]
     fn handle_command_page_close() {
-        let msg = CdpMessage { id: Some(18), method: "Page.close".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(18),
+            method: "Page.close".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2136,7 +2899,12 @@ mod tests {
     // 90. handle_command Page.bringToFront → ok empty
     #[test]
     fn handle_command_page_bring_to_front() {
-        let msg = CdpMessage { id: Some(19), method: "Page.bringToFront".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(19),
+            method: "Page.bringToFront".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2145,7 +2913,12 @@ mod tests {
     // 91. handle_command Page.disable → ok empty
     #[test]
     fn handle_command_page_disable() {
-        let msg = CdpMessage { id: Some(20), method: "Page.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(20),
+            method: "Page.disable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2154,7 +2927,12 @@ mod tests {
     // 92. handle_command Runtime.disable → ok empty
     #[test]
     fn handle_command_runtime_disable() {
-        let msg = CdpMessage { id: Some(21), method: "Runtime.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(21),
+            method: "Runtime.disable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2163,7 +2941,12 @@ mod tests {
     // 93. handle_command Runtime.callFunctionOn → ok
     #[test]
     fn handle_command_runtime_call_function_on() {
-        let msg = CdpMessage { id: Some(22), method: "Runtime.callFunctionOn".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(22),
+            method: "Runtime.callFunctionOn".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2174,7 +2957,12 @@ mod tests {
     // 94. handle_command Runtime.getProperties → ok with empty array
     #[test]
     fn handle_command_runtime_get_properties() {
-        let msg = CdpMessage { id: Some(23), method: "Runtime.getProperties".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(23),
+            method: "Runtime.getProperties".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2185,7 +2973,12 @@ mod tests {
     // 95. handle_command Runtime.evaluateAsync → ok
     #[test]
     fn handle_command_runtime_evaluate_async() {
-        let msg = CdpMessage { id: Some(24), method: "Runtime.evaluateAsync".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(24),
+            method: "Runtime.evaluateAsync".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2194,7 +2987,12 @@ mod tests {
     // 96. handle_command Runtime.runScript → ok
     #[test]
     fn handle_command_runtime_run_script() {
-        let msg = CdpMessage { id: Some(25), method: "Runtime.runScript".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(25),
+            method: "Runtime.runScript".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2203,7 +3001,12 @@ mod tests {
     // 97. handle_command Runtime.releaseObject → ok empty
     #[test]
     fn handle_command_runtime_release_object() {
-        let msg = CdpMessage { id: Some(26), method: "Runtime.releaseObject".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(26),
+            method: "Runtime.releaseObject".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2212,7 +3015,12 @@ mod tests {
     // 98. handle_command Runtime.releaseObjectGroup → ok empty
     #[test]
     fn handle_command_runtime_release_object_group() {
-        let msg = CdpMessage { id: Some(27), method: "Runtime.releaseObjectGroup".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(27),
+            method: "Runtime.releaseObjectGroup".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2221,7 +3029,12 @@ mod tests {
     // 99. handle_command Runtime.compileScript → ok empty
     #[test]
     fn handle_command_runtime_compile_script() {
-        let msg = CdpMessage { id: Some(28), method: "Runtime.compileScript".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(28),
+            method: "Runtime.compileScript".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2230,7 +3043,12 @@ mod tests {
     // 100. handle_command Runtime.unknown → error -32601
     #[test]
     fn handle_command_runtime_unknown_command() {
-        let msg = CdpMessage { id: Some(29), method: "Runtime.unknownMethod".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(29),
+            method: "Runtime.unknownMethod".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2242,7 +3060,12 @@ mod tests {
     // 101. handle_command DOM.enable → ok empty
     #[test]
     fn handle_command_dom_enable() {
-        let msg = CdpMessage { id: Some(30), method: "DOM.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(30),
+            method: "DOM.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2251,7 +3074,12 @@ mod tests {
     // 102. handle_command DOM.disable → ok empty
     #[test]
     fn handle_command_dom_disable() {
-        let msg = CdpMessage { id: Some(31), method: "DOM.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(31),
+            method: "DOM.disable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2260,7 +3088,12 @@ mod tests {
     // 103. handle_command DOM.describeNode → ok
     #[test]
     fn handle_command_dom_describe_node() {
-        let msg = CdpMessage { id: Some(32), method: "DOM.describeNode".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(32),
+            method: "DOM.describeNode".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2271,7 +3104,12 @@ mod tests {
     // 104. handle_command DOM.getBoxModel → ok with model
     #[test]
     fn handle_command_dom_get_box_model() {
-        let msg = CdpMessage { id: Some(33), method: "DOM.getBoxModel".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(33),
+            method: "DOM.getBoxModel".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2298,7 +3136,12 @@ mod tests {
     // 106. handle_command DOM.removeAttribute → ok empty
     #[test]
     fn handle_command_dom_remove_attribute() {
-        let msg = CdpMessage { id: Some(35), method: "DOM.removeAttribute".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(35),
+            method: "DOM.removeAttribute".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2307,7 +3150,12 @@ mod tests {
     // 107. handle_command DOM.setOuterHTML → ok empty
     #[test]
     fn handle_command_dom_set_outer_html() {
-        let msg = CdpMessage { id: Some(36), method: "DOM.setOuterHTML".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(36),
+            method: "DOM.setOuterHTML".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2316,7 +3164,12 @@ mod tests {
     // 108. handle_command DOM.insertBefore → ok empty
     #[test]
     fn handle_command_dom_insert_before() {
-        let msg = CdpMessage { id: Some(37), method: "DOM.insertBefore".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(37),
+            method: "DOM.insertBefore".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2325,7 +3178,12 @@ mod tests {
     // 109. handle_command DOM.removeNode → ok empty
     #[test]
     fn handle_command_dom_remove_node() {
-        let msg = CdpMessage { id: Some(38), method: "DOM.removeNode".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(38),
+            method: "DOM.removeNode".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2334,7 +3192,12 @@ mod tests {
     // 110. handle_command DOM.getOuterHTML (no bridge) → ok with default html
     #[test]
     fn handle_command_dom_get_outer_html_no_bridge() {
-        let msg = CdpMessage { id: Some(39), method: "DOM.getOuterHTML".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(39),
+            method: "DOM.getOuterHTML".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2345,7 +3208,12 @@ mod tests {
     // 111. handle_command DOM.resolveNode → ok
     #[test]
     fn handle_command_dom_resolve_node() {
-        let msg = CdpMessage { id: Some(40), method: "DOM.resolveNode".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(40),
+            method: "DOM.resolveNode".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2356,7 +3224,12 @@ mod tests {
     // 112. handle_command DOM.pushNodesByBackendIdsToFrontend → ok
     #[test]
     fn handle_command_dom_push_nodes_by_backend_ids() {
-        let msg = CdpMessage { id: Some(41), method: "DOM.pushNodesByBackendIdsToFrontend".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(41),
+            method: "DOM.pushNodesByBackendIdsToFrontend".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2367,7 +3240,12 @@ mod tests {
     // 113. handle_command DOM.unknown → error -32601
     #[test]
     fn handle_command_dom_unknown_command() {
-        let msg = CdpMessage { id: Some(42), method: "DOM.nonExistent".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(42),
+            method: "DOM.nonExistent".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2377,7 +3255,12 @@ mod tests {
     // 114. handle_command Network.disable → ok empty
     #[test]
     fn handle_command_network_disable() {
-        let msg = CdpMessage { id: Some(43), method: "Network.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(43),
+            method: "Network.disable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2386,7 +3269,12 @@ mod tests {
     // 115. handle_command Network.getResponseBody → ok
     #[test]
     fn handle_command_network_get_response_body() {
-        let msg = CdpMessage { id: Some(44), method: "Network.getResponseBody".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(44),
+            method: "Network.getResponseBody".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2398,7 +3286,12 @@ mod tests {
     // 116. handle_command Network.setCacheDisabled → ok empty
     #[test]
     fn handle_command_network_set_cache_disabled() {
-        let msg = CdpMessage { id: Some(45), method: "Network.setCacheDisabled".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(45),
+            method: "Network.setCacheDisabled".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2407,7 +3300,12 @@ mod tests {
     // 117. handle_command Network.setExtraHTTPHeaders → ok empty
     #[test]
     fn handle_command_network_set_extra_http_headers() {
-        let msg = CdpMessage { id: Some(46), method: "Network.setExtraHTTPHeaders".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(46),
+            method: "Network.setExtraHTTPHeaders".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2416,7 +3314,12 @@ mod tests {
     // 118. handle_command Network.emulateNetworkConditions → ok empty
     #[test]
     fn handle_command_network_emulate_conditions() {
-        let msg = CdpMessage { id: Some(47), method: "Network.emulateNetworkConditions".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(47),
+            method: "Network.emulateNetworkConditions".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2425,7 +3328,12 @@ mod tests {
     // 119. handle_command Network.getAllCookies → ok with empty cookies
     #[test]
     fn handle_command_network_get_all_cookies() {
-        let msg = CdpMessage { id: Some(48), method: "Network.getAllCookies".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(48),
+            method: "Network.getAllCookies".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2436,7 +3344,12 @@ mod tests {
     // 120. handle_command Network.deleteCookies → ok empty
     #[test]
     fn handle_command_network_delete_cookies() {
-        let msg = CdpMessage { id: Some(49), method: "Network.deleteCookies".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(49),
+            method: "Network.deleteCookies".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2445,7 +3358,12 @@ mod tests {
     // 121. handle_command Network.setCookie → ok empty
     #[test]
     fn handle_command_network_set_cookie() {
-        let msg = CdpMessage { id: Some(50), method: "Network.setCookie".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(50),
+            method: "Network.setCookie".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2454,7 +3372,12 @@ mod tests {
     // 122. handle_command Network.setRequestInterception → ok empty
     #[test]
     fn handle_command_network_set_request_interception() {
-        let msg = CdpMessage { id: Some(51), method: "Network.setRequestInterception".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(51),
+            method: "Network.setRequestInterception".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2463,7 +3386,12 @@ mod tests {
     // 123. handle_command Network.continueInterceptedRequest → ok empty
     #[test]
     fn handle_command_network_continue_intercepted_request() {
-        let msg = CdpMessage { id: Some(52), method: "Network.continueInterceptedRequest".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(52),
+            method: "Network.continueInterceptedRequest".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2472,7 +3400,12 @@ mod tests {
     // 124. handle_command Network.unknown → error -32601
     #[test]
     fn handle_command_network_unknown() {
-        let msg = CdpMessage { id: Some(53), method: "Network.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(53),
+            method: "Network.bogus".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2482,7 +3415,12 @@ mod tests {
     // 125. handle_command CSS.disable → ok empty
     #[test]
     fn handle_command_css_disable() {
-        let msg = CdpMessage { id: Some(54), method: "CSS.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(54),
+            method: "CSS.disable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2491,7 +3429,12 @@ mod tests {
     // 126. handle_command CSS.getMatchedStylesForNode → ok
     #[test]
     fn handle_command_css_get_matched_styles() {
-        let msg = CdpMessage { id: Some(55), method: "CSS.getMatchedStylesForNode".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(55),
+            method: "CSS.getMatchedStylesForNode".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2503,7 +3446,12 @@ mod tests {
     // 127. handle_command CSS.getInlineStylesForNode → ok
     #[test]
     fn handle_command_css_get_inline_styles() {
-        let msg = CdpMessage { id: Some(56), method: "CSS.getInlineStylesForNode".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(56),
+            method: "CSS.getInlineStylesForNode".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2514,7 +3462,12 @@ mod tests {
     // 128. handle_command CSS.setStyleTexts → ok
     #[test]
     fn handle_command_css_set_style_texts() {
-        let msg = CdpMessage { id: Some(57), method: "CSS.setStyleTexts".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(57),
+            method: "CSS.setStyleTexts".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2525,7 +3478,12 @@ mod tests {
     // 129. handle_command CSS.unknown → error -32601
     #[test]
     fn handle_command_css_unknown() {
-        let msg = CdpMessage { id: Some(58), method: "CSS.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(58),
+            method: "CSS.bogus".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2535,7 +3493,12 @@ mod tests {
     // 130. handle_command Emulation.clearDeviceMetricsOverride → ok empty
     #[test]
     fn handle_command_emulation_clear_device_metrics() {
-        let msg = CdpMessage { id: Some(59), method: "Emulation.clearDeviceMetricsOverride".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(59),
+            method: "Emulation.clearDeviceMetricsOverride".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2544,7 +3507,12 @@ mod tests {
     // 131. handle_command Emulation.setUserAgentOverride (no bridge, empty ua) → ok empty
     #[test]
     fn handle_command_emulation_set_user_agent_no_bridge() {
-        let msg = CdpMessage { id: Some(60), method: "Emulation.setUserAgentOverride".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(60),
+            method: "Emulation.setUserAgentOverride".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2553,7 +3521,12 @@ mod tests {
     // 132. handle_command Emulation.setTouchEmulationEnabled → ok empty
     #[test]
     fn handle_command_emulation_set_touch_emulation() {
-        let msg = CdpMessage { id: Some(61), method: "Emulation.setTouchEmulationEnabled".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(61),
+            method: "Emulation.setTouchEmulationEnabled".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2562,7 +3535,12 @@ mod tests {
     // 133. handle_command Emulation.setScriptExecutionDisabled → ok empty
     #[test]
     fn handle_command_emulation_set_script_execution_disabled() {
-        let msg = CdpMessage { id: Some(62), method: "Emulation.setScriptExecutionDisabled".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(62),
+            method: "Emulation.setScriptExecutionDisabled".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2571,7 +3549,12 @@ mod tests {
     // 134. handle_command Emulation.setFocusEmulationEnabled → ok empty
     #[test]
     fn handle_command_emulation_set_focus_emulation() {
-        let msg = CdpMessage { id: Some(63), method: "Emulation.setFocusEmulationEnabled".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(63),
+            method: "Emulation.setFocusEmulationEnabled".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2580,7 +3563,12 @@ mod tests {
     // 135. handle_command Emulation.setCPUThrottlingRate → ok empty
     #[test]
     fn handle_command_emulation_set_cpu_throttling() {
-        let msg = CdpMessage { id: Some(64), method: "Emulation.setCPUThrottlingRate".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(64),
+            method: "Emulation.setCPUThrottlingRate".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2589,7 +3577,12 @@ mod tests {
     // 136. handle_command Emulation.setDefaultBackgroundColorOverride → ok empty
     #[test]
     fn handle_command_emulation_set_default_bg_color() {
-        let msg = CdpMessage { id: Some(65), method: "Emulation.setDefaultBackgroundColorOverride".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(65),
+            method: "Emulation.setDefaultBackgroundColorOverride".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2598,7 +3591,12 @@ mod tests {
     // 137. handle_command Emulation.unknown → error -32601
     #[test]
     fn handle_command_emulation_unknown() {
-        let msg = CdpMessage { id: Some(66), method: "Emulation.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(66),
+            method: "Emulation.bogus".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2608,7 +3606,12 @@ mod tests {
     // 138. handle_command Input.dispatchKeyEvent (no bridge) → ok empty
     #[test]
     fn handle_command_input_dispatch_key_no_bridge() {
-        let msg = CdpMessage { id: Some(67), method: "Input.dispatchKeyEvent".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(67),
+            method: "Input.dispatchKeyEvent".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2617,7 +3620,12 @@ mod tests {
     // 139. handle_command Input.dispatchTouchEvent → ok empty
     #[test]
     fn handle_command_input_dispatch_touch() {
-        let msg = CdpMessage { id: Some(68), method: "Input.dispatchTouchEvent".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(68),
+            method: "Input.dispatchTouchEvent".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2626,7 +3634,12 @@ mod tests {
     // 140. handle_command Input.insertText (no bridge, empty text) → ok empty
     #[test]
     fn handle_command_input_insert_text_no_bridge() {
-        let msg = CdpMessage { id: Some(69), method: "Input.insertText".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(69),
+            method: "Input.insertText".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2635,7 +3648,12 @@ mod tests {
     // 141. handle_command Input.setIgnoreInputEvents → ok empty
     #[test]
     fn handle_command_input_set_ignore_input_events() {
-        let msg = CdpMessage { id: Some(70), method: "Input.setIgnoreInputEvents".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(70),
+            method: "Input.setIgnoreInputEvents".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2644,7 +3662,12 @@ mod tests {
     // 142. handle_command Input.setInterceptDrags → ok empty
     #[test]
     fn handle_command_input_set_intercept_drags() {
-        let msg = CdpMessage { id: Some(71), method: "Input.setInterceptDrags".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(71),
+            method: "Input.setInterceptDrags".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2653,7 +3676,12 @@ mod tests {
     // 143. handle_command Input.unknown → error -32601
     #[test]
     fn handle_command_input_unknown() {
-        let msg = CdpMessage { id: Some(72), method: "Input.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(72),
+            method: "Input.bogus".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2663,7 +3691,12 @@ mod tests {
     // 144. handle_command Overlay.highlightNode → ok empty
     #[test]
     fn handle_command_overlay_highlight_node() {
-        let msg = CdpMessage { id: Some(73), method: "Overlay.highlightNode".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(73),
+            method: "Overlay.highlightNode".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2672,7 +3705,12 @@ mod tests {
     // 145. handle_command Overlay.hideHighlight → ok empty
     #[test]
     fn handle_command_overlay_hide_highlight() {
-        let msg = CdpMessage { id: Some(74), method: "Overlay.hideHighlight".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(74),
+            method: "Overlay.hideHighlight".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2681,7 +3719,12 @@ mod tests {
     // 146. handle_command Overlay.setInspectMode → ok empty
     #[test]
     fn handle_command_overlay_set_inspect_mode() {
-        let msg = CdpMessage { id: Some(75), method: "Overlay.setInspectMode".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(75),
+            method: "Overlay.setInspectMode".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2690,7 +3733,12 @@ mod tests {
     // 147. handle_command Overlay.setPausedInDebuggerMessage → ok empty
     #[test]
     fn handle_command_overlay_set_paused_in_debugger() {
-        let msg = CdpMessage { id: Some(76), method: "Overlay.setPausedInDebuggerMessage".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(76),
+            method: "Overlay.setPausedInDebuggerMessage".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2699,7 +3747,12 @@ mod tests {
     // 148. handle_command Overlay.unknown → error -32601
     #[test]
     fn handle_command_overlay_unknown() {
-        let msg = CdpMessage { id: Some(77), method: "Overlay.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(77),
+            method: "Overlay.bogus".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2709,7 +3762,12 @@ mod tests {
     // 149. handle_command Debugger.disable → ok empty
     #[test]
     fn handle_command_debugger_disable() {
-        let msg = CdpMessage { id: Some(78), method: "Debugger.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(78),
+            method: "Debugger.disable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2718,7 +3776,12 @@ mod tests {
     // 150. handle_command Debugger.removeBreakpoint → ok empty
     #[test]
     fn handle_command_debugger_remove_breakpoint() {
-        let msg = CdpMessage { id: Some(79), method: "Debugger.removeBreakpoint".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(79),
+            method: "Debugger.removeBreakpoint".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2727,7 +3790,12 @@ mod tests {
     // 151. handle_command Debugger.pause → ok empty
     #[test]
     fn handle_command_debugger_pause() {
-        let msg = CdpMessage { id: Some(80), method: "Debugger.pause".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(80),
+            method: "Debugger.pause".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2736,7 +3804,12 @@ mod tests {
     // 152. handle_command Debugger.resume → ok empty
     #[test]
     fn handle_command_debugger_resume() {
-        let msg = CdpMessage { id: Some(81), method: "Debugger.resume".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(81),
+            method: "Debugger.resume".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2745,7 +3818,12 @@ mod tests {
     // 153. handle_command Debugger.stepOver → ok empty
     #[test]
     fn handle_command_debugger_step_over() {
-        let msg = CdpMessage { id: Some(82), method: "Debugger.stepOver".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(82),
+            method: "Debugger.stepOver".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2754,7 +3832,12 @@ mod tests {
     // 154. handle_command Debugger.stepInto → ok empty
     #[test]
     fn handle_command_debugger_step_into() {
-        let msg = CdpMessage { id: Some(83), method: "Debugger.stepInto".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(83),
+            method: "Debugger.stepInto".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2763,7 +3846,12 @@ mod tests {
     // 155. handle_command Debugger.stepOut → ok empty
     #[test]
     fn handle_command_debugger_step_out() {
-        let msg = CdpMessage { id: Some(84), method: "Debugger.stepOut".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(84),
+            method: "Debugger.stepOut".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2772,7 +3860,12 @@ mod tests {
     // 156. handle_command Debugger.setSkipAllPauses → ok empty
     #[test]
     fn handle_command_debugger_set_skip_all_pauses() {
-        let msg = CdpMessage { id: Some(85), method: "Debugger.setSkipAllPauses".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(85),
+            method: "Debugger.setSkipAllPauses".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2781,7 +3874,12 @@ mod tests {
     // 157. handle_command Debugger.setBreakpointsActive → ok empty
     #[test]
     fn handle_command_debugger_set_breakpoints_active() {
-        let msg = CdpMessage { id: Some(86), method: "Debugger.setBreakpointsActive".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(86),
+            method: "Debugger.setBreakpointsActive".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2790,7 +3888,12 @@ mod tests {
     // 158. handle_command Debugger.evaluateOnCallFrame → ok
     #[test]
     fn handle_command_debugger_evaluate_on_call_frame() {
-        let msg = CdpMessage { id: Some(87), method: "Debugger.evaluateOnCallFrame".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(87),
+            method: "Debugger.evaluateOnCallFrame".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2801,7 +3904,12 @@ mod tests {
     // 159. handle_command Debugger.getPossibleBreakpoints → ok
     #[test]
     fn handle_command_debugger_get_possible_breakpoints() {
-        let msg = CdpMessage { id: Some(88), method: "Debugger.getPossibleBreakpoints".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(88),
+            method: "Debugger.getPossibleBreakpoints".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2812,7 +3920,12 @@ mod tests {
     // 160. handle_command Debugger.getScriptSource → ok
     #[test]
     fn handle_command_debugger_get_script_source() {
-        let msg = CdpMessage { id: Some(89), method: "Debugger.getScriptSource".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(89),
+            method: "Debugger.getScriptSource".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2823,7 +3936,12 @@ mod tests {
     // 161. handle_command Debugger.setPauseOnExceptions → ok empty
     #[test]
     fn handle_command_debugger_set_pause_on_exceptions() {
-        let msg = CdpMessage { id: Some(90), method: "Debugger.setPauseOnExceptions".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(90),
+            method: "Debugger.setPauseOnExceptions".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2832,7 +3950,12 @@ mod tests {
     // 162. handle_command Debugger.unknown → error -32601
     #[test]
     fn handle_command_debugger_unknown() {
-        let msg = CdpMessage { id: Some(91), method: "Debugger.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(91),
+            method: "Debugger.bogus".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2842,7 +3965,12 @@ mod tests {
     // 163. handle_command Log.disable → ok empty
     #[test]
     fn handle_command_log_disable() {
-        let msg = CdpMessage { id: Some(92), method: "Log.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(92),
+            method: "Log.disable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2851,7 +3979,12 @@ mod tests {
     // 164. handle_command Log.clear → ok empty
     #[test]
     fn handle_command_log_clear() {
-        let msg = CdpMessage { id: Some(93), method: "Log.clear".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(93),
+            method: "Log.clear".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2860,7 +3993,12 @@ mod tests {
     // 165. handle_command Log.startViolationsReport → ok empty
     #[test]
     fn handle_command_log_start_violations_report() {
-        let msg = CdpMessage { id: Some(94), method: "Log.startViolationsReport".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(94),
+            method: "Log.startViolationsReport".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2869,7 +4007,12 @@ mod tests {
     // 166. handle_command Log.stopViolationsReport → ok empty
     #[test]
     fn handle_command_log_stop_violations_report() {
-        let msg = CdpMessage { id: Some(95), method: "Log.stopViolationsReport".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(95),
+            method: "Log.stopViolationsReport".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2878,7 +4021,12 @@ mod tests {
     // 167. handle_command Log.unknown → error -32601
     #[test]
     fn handle_command_log_unknown() {
-        let msg = CdpMessage { id: Some(96), method: "Log.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(96),
+            method: "Log.bogus".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2888,7 +4036,12 @@ mod tests {
     // 168. handle_command Fetch.disable → ok empty
     #[test]
     fn handle_command_fetch_disable() {
-        let msg = CdpMessage { id: Some(97), method: "Fetch.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(97),
+            method: "Fetch.disable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2999,7 +4152,12 @@ mod tests {
     // 175. handle_command Fetch.enable without patterns → patternCount 0
     #[test]
     fn handle_command_fetch_enable_without_patterns() {
-        let msg = CdpMessage { id: Some(104), method: "Fetch.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(104),
+            method: "Fetch.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -3027,7 +4185,12 @@ mod tests {
     // 177. handle_command Fetch.unknown → error -32601
     #[test]
     fn handle_command_fetch_unknown() {
-        let msg = CdpMessage { id: Some(106), method: "Fetch.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(106),
+            method: "Fetch.bogus".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -3104,7 +4267,12 @@ mod tests {
         // The key scenario is when bridge_send is called with None
         // This is tested indirectly through the domain handlers
         // Direct test: bridge_send(None, ...) → Err(-32603)
-        let result = bridge_send(None, BridgeCommand::GetTitle { target_id: "test-target".into() });
+        let result = bridge_send(
+            None,
+            BridgeCommand::GetTitle {
+                target_id: "test-target".into(),
+            },
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, -32603);
@@ -3117,7 +4285,12 @@ mod tests {
     // 186. CdpMessage debug format
     #[test]
     fn cdp_message_debug_format() {
-        let msg = CdpMessage { id: Some(1), method: "Page.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(1),
+            method: "Page.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let debug = format!("{:?}", msg);
         assert!(debug.contains("CdpMessage"));
         assert!(debug.contains("Page.enable"));
@@ -3126,7 +4299,12 @@ mod tests {
     // 187. CdpMessage clone
     #[test]
     fn cdp_message_clone() {
-        let msg = CdpMessage { id: Some(1), method: "Page.enable".into(), params: Some(json!({"k": "v"})), session_id: Some("s1".into()) };
+        let msg = CdpMessage {
+            id: Some(1),
+            method: "Page.enable".into(),
+            params: Some(json!({"k": "v"})),
+            session_id: Some("s1".into()),
+        };
         let cloned = msg.clone();
         assert_eq!(cloned.id, msg.id);
         assert_eq!(cloned.method, msg.method);
@@ -3140,7 +4318,12 @@ mod tests {
     // 188. ServiceWorker.enable → ok empty
     #[test]
     fn service_worker_enable() {
-        let msg = CdpMessage { id: Some(1), method: "ServiceWorker.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(1),
+            method: "ServiceWorker.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -3150,7 +4333,12 @@ mod tests {
     // 189. ServiceWorker.disable → ok empty
     #[test]
     fn service_worker_disable() {
-        let msg = CdpMessage { id: Some(2), method: "ServiceWorker.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(2),
+            method: "ServiceWorker.disable".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -3160,7 +4348,12 @@ mod tests {
     // 190. ServiceWorker.getAllRegistrations (no bridge) → empty registrations
     #[test]
     fn service_worker_get_all_registrations_no_bridge() {
-        let msg = CdpMessage { id: Some(3), method: "ServiceWorker.getAllRegistrations".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(3),
+            method: "ServiceWorker.getAllRegistrations".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -3262,7 +4455,12 @@ mod tests {
     // 197. Target.getTargets (no bridge) still returns page target (Worker sub-targets are empty)
     #[test]
     fn target_get_targets_no_bridge_includes_page() {
-        let msg = CdpMessage { id: Some(10), method: "Target.getTargets".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(10),
+            method: "Target.getTargets".into(),
+            params: None,
+            session_id: None,
+        };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());

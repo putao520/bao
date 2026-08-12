@@ -54,10 +54,26 @@ impl Http2Fingerprint {
             // root), non-exclusive. Wire weights 40/109/138/255 → effective 41/110/139/256.
             // Matches observed Firefox connection-setup traffic.
             priority_frames: vec![
-                PriorityFrame { stream_dependency: 0, exclusive: false, weight: 40 },
-                PriorityFrame { stream_dependency: 0, exclusive: false, weight: 109 },
-                PriorityFrame { stream_dependency: 0, exclusive: false, weight: 138 },
-                PriorityFrame { stream_dependency: 0, exclusive: false, weight: 255 },
+                PriorityFrame {
+                    stream_dependency: 0,
+                    exclusive: false,
+                    weight: 40,
+                },
+                PriorityFrame {
+                    stream_dependency: 0,
+                    exclusive: false,
+                    weight: 109,
+                },
+                PriorityFrame {
+                    stream_dependency: 0,
+                    exclusive: false,
+                    weight: 138,
+                },
+                PriorityFrame {
+                    stream_dependency: 0,
+                    exclusive: false,
+                    weight: 255,
+                },
             ],
         }
     }
@@ -168,13 +184,19 @@ mod tests {
     #[test]
     fn firefox_pseudo_header_order() {
         let fp = Http2Fingerprint::firefox();
-        assert_eq!(fp.pseudo_header_order, vec![":method", ":path", ":authority", ":scheme"]);
+        assert_eq!(
+            fp.pseudo_header_order,
+            vec![":method", ":path", ":authority", ":scheme"]
+        );
     }
 
     #[test]
     fn chrome_pseudo_header_order() {
         let fp = Http2Fingerprint::chrome();
-        assert_eq!(fp.pseudo_header_order, vec![":method", ":authority", ":scheme", ":path"]);
+        assert_eq!(
+            fp.pseudo_header_order,
+            vec![":method", ":authority", ":scheme", ":path"]
+        );
     }
 
     #[test]

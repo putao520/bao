@@ -69,7 +69,11 @@ fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
     // returns. This transmute extends the lifetime bound to 'static, matching
     // the actual underlying static Mutex. No reference to the guard escapes
     // beyond the test function that called this.
-    unsafe { std::mem::transmute::<std::sync::MutexGuard<'_, ()>, std::sync::MutexGuard<'static, ()>>(guard) }
+    unsafe {
+        std::mem::transmute::<std::sync::MutexGuard<'_, ()>, std::sync::MutexGuard<'static, ()>>(
+            guard,
+        )
+    }
 }
 
 /// Page-side harness: install a global `__onerrorResult` JSON dump that the
@@ -145,9 +149,7 @@ fn wait_for_onerror_result(page: &bao_browser::PageHandle, timeout: Duration) ->
             let trimmed = s.trim();
             // evaluate_js_web wraps strings in quotes when returning a JS string;
             // `null` comes back as the literal token `null` (possibly quoted).
-            let is_set = !trimmed.is_empty()
-                && trimmed != "null"
-                && trimmed != "\"null\"";
+            let is_set = !trimmed.is_empty() && trimmed != "null" && trimmed != "\"null\"";
             if is_set {
                 // Strip the outer quote layer added by JSON serialization + the
                 // JS-to-string bridge so callers see raw JSON.
@@ -173,7 +175,9 @@ fn unquote_bridge(mut s: String) -> String {
 }
 
 /// Parse a captured `__onerrorResult` JSON blob into its four ErrorEvent fields.
-fn parse_onerror_result(json: &str) -> Option<(Option<String>, Option<String>, Option<i64>, Option<i64>)> {
+fn parse_onerror_result(
+    json: &str,
+) -> Option<(Option<String>, Option<String>, Option<i64>, Option<i64>)> {
     // Lightweight field extraction (no serde dep) — the producer above is fixed.
     let extract_str = |field: &str| -> Option<String> {
         let key = format!("\"{}\":", field);
@@ -504,7 +508,10 @@ fn encode_worker_body_preserves_alnum_and_percent_encodes_special() {
 
     // Apostrophes and parens must be percent-encoded.
     assert!(enc.contains("%27"), "apostrophe should be %27");
-    assert!(enc.contains("%28") || enc.contains("%29"), "parens should be encoded");
+    assert!(
+        enc.contains("%28") || enc.contains("%29"),
+        "parens should be encoded"
+    );
 }
 
 /// @trace NFR-TEST-REPRODUCIBER [criterion:harness] JSON field parser

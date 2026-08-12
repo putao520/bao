@@ -198,13 +198,20 @@ impl EventEmitterInner {
         let to_call: Vec<(HandlerId, EventHandler, bool)> = {
             let map = self.handlers.borrow();
             match map.get(event) {
-                Some(list) => list.iter().map(|e| (e.id, e.handler.clone(), e.once)).collect(),
+                Some(list) => list
+                    .iter()
+                    .map(|e| (e.id, e.handler.clone(), e.once))
+                    .collect(),
                 None => return,
             }
         };
 
         // 2. 收集需要移除的 once handler ID。
-        let once_ids: Vec<HandlerId> = to_call.iter().filter(|(_, _, o)| *o).map(|(id, _, _)| *id).collect();
+        let once_ids: Vec<HandlerId> = to_call
+            .iter()
+            .filter(|(_, _, o)| *o)
+            .map(|(id, _, _)| *id)
+            .collect();
 
         // 3. 调用所有 handler(此时未持有任何 borrow)。
         for (_, handler, _) in &to_call {
@@ -238,13 +245,25 @@ impl Default for EventEmitterInner {
 #[macro_export]
 macro_rules! delegate_event_emitter {
     ($self:ident, $field:ident) => {
-        fn on(&self, event: &str, handler: $crate::api::event_emitter::EventHandler) -> $crate::api::event_emitter::HandlerId {
+        fn on(
+            &self,
+            event: &str,
+            handler: $crate::api::event_emitter::EventHandler,
+        ) -> $crate::api::event_emitter::HandlerId {
             self.$field.on(event, handler)
         }
-        fn once(&self, event: &str, handler: $crate::api::event_emitter::EventHandler) -> $crate::api::event_emitter::HandlerId {
+        fn once(
+            &self,
+            event: &str,
+            handler: $crate::api::event_emitter::EventHandler,
+        ) -> $crate::api::event_emitter::HandlerId {
             self.$field.once(event, handler)
         }
-        fn off(&self, event: &str, handler_id: $crate::api::event_emitter::HandlerId) -> $crate::api::event_emitter::SubscriptionResult {
+        fn off(
+            &self,
+            event: &str,
+            handler_id: $crate::api::event_emitter::HandlerId,
+        ) -> $crate::api::event_emitter::SubscriptionResult {
             self.$field.off(event, handler_id)
         }
         fn remove_all_listeners(&self, event: Option<&str>) {

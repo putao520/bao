@@ -40,7 +40,10 @@ fn test_target_info_json_fields() {
     assert_eq!(json_val["type"], "page");
     assert_eq!(json_val["title"], "Title");
     assert_eq!(json_val["url"], "https://test.com");
-    assert_eq!(json_val["web_socket_debugger_url"], "ws://localhost:9222/devtools/page/abc");
+    assert_eq!(
+        json_val["web_socket_debugger_url"],
+        "ws://localhost:9222/devtools/page/abc"
+    );
 }
 
 #[test]
@@ -135,9 +138,7 @@ fn test_server_config_builder_full() {
 
 #[test]
 fn test_server_config_builder_partial() {
-    let config = ServerConfig::builder()
-        .port(8888)
-        .build();
+    let config = ServerConfig::builder().port(8888).build();
     assert_eq!(config.port, 8888);
     assert_eq!(config.host, "127.0.0.1"); // default preserved
 }
@@ -198,8 +199,15 @@ struct EchoHandler {
 }
 
 impl DomainHandler for EchoHandler {
-    fn domain_name(&self) -> &'static str { self.name }
-    fn handle_command(&self, cmd: &str, params: serde_json::Value, _: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: serde_json::Value,
+        _: &dyn EventSender,
+    ) -> Result<serde_json::Value, CdpError> {
         Ok(json!({"echo": cmd, "params": params}))
     }
     fn on_session_created(&self, _session_id: &str) {}
@@ -211,7 +219,10 @@ fn test_registry_register_and_dispatch() {
     let reg = DomainRegistry::<EchoHandler>::new();
     reg.register(EchoHandler { name: "Test" }).unwrap();
     assert!(reg.has_domain("Test"));
-    let result = reg.dispatch_command("Test.run", json!({"x": 1}), &NopSender).unwrap().unwrap();
+    let result = reg
+        .dispatch_command("Test.run", json!({"x": 1}), &NopSender)
+        .unwrap()
+        .unwrap();
     assert_eq!(result["echo"], "Test.run");
     assert_eq!(result["params"]["x"], 1);
 }
@@ -219,13 +230,17 @@ fn test_registry_register_and_dispatch() {
 #[test]
 fn test_registry_unknown_domain_returns_none() {
     let reg = DomainRegistry::<EchoHandler>::new();
-    assert!(reg.dispatch_command("Unknown.method", json!({}), &NopSender).is_none());
+    assert!(reg
+        .dispatch_command("Unknown.method", json!({}), &NopSender)
+        .is_none());
 }
 
 #[test]
 fn test_registry_no_dot_returns_none() {
     let reg = DomainRegistry::<EchoHandler>::new();
-    assert!(reg.dispatch_command("NoDotMethod", json!({}), &NopSender).is_none());
+    assert!(reg
+        .dispatch_command("NoDotMethod", json!({}), &NopSender)
+        .is_none());
 }
 
 #[test]
@@ -238,7 +253,10 @@ fn test_registry_empty_method_returns_none() {
 fn test_registry_dispatch_with_empty_params() {
     let reg = DomainRegistry::<EchoHandler>::new();
     reg.register(EchoHandler { name: "Page" }).unwrap();
-    let result = reg.dispatch_command("Page.enable", json!({}), &NopSender).unwrap().unwrap();
+    let result = reg
+        .dispatch_command("Page.enable", json!({}), &NopSender)
+        .unwrap()
+        .unwrap();
     assert_eq!(result["echo"], "Page.enable");
 }
 
@@ -303,14 +321,20 @@ fn test_session_state_equality() {
 
 #[test]
 fn test_cdp_error_fields() {
-    let err = CdpError { code: -32600, message: "invalid".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "invalid".into(),
+    };
     assert_eq!(err.code, -32600);
     assert_eq!(err.message, "invalid");
 }
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32700, message: "parse".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "parse".into(),
+    };
     assert!(format!("{:?}", err).contains("-32700"));
 }
 
@@ -334,7 +358,10 @@ fn test_cdp_response_error_serializes() {
     let resp = CdpResponse {
         id: Some(42),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();

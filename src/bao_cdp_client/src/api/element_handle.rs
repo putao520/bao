@@ -316,7 +316,12 @@ mod tests {
     fn bounding_box_cache() {
         let (h, _p) = make_handle();
         assert!(h.bounding_box().is_none());
-        h.set_bounding_box(BoundingBox { x: 10.0, y: 20.0, width: 100.0, height: 50.0 });
+        h.set_bounding_box(BoundingBox {
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 50.0,
+        });
         let b = h.bounding_box().unwrap();
         assert_eq!(b.x, 10.0);
         assert_eq!(b.width, 100.0);
@@ -326,7 +331,11 @@ mod tests {
     fn content_frame_cache() {
         let (h, p) = make_handle();
         assert!(h.content_frame().is_none());
-        let sub_frame = Rc::new(crate::api::frame::Frame::new("SUB", false, Rc::downgrade(&p)));
+        let sub_frame = Rc::new(crate::api::frame::Frame::new(
+            "SUB",
+            false,
+            Rc::downgrade(&p),
+        ));
         h.set_content_frame(sub_frame.clone());
         assert_eq!(h.content_frame().unwrap().id(), "SUB");
     }
@@ -344,7 +353,12 @@ mod tests {
         let (h, _p) = make_handle();
         h.set_visible(true);
         h.set_enabled(true);
-        h.set_bounding_box(BoundingBox { x: 0.0, y: 0.0, width: 1.0, height: 1.0 });
+        h.set_bounding_box(BoundingBox {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        });
         h.dispose();
         assert!(h.is_disposed());
         assert!(h.is_visible().is_none());

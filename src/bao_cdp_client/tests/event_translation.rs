@@ -35,11 +35,7 @@ use serde_json::Value;
 // ────────────────────────────────────────────────────────────────────────────
 
 /// 断言 CdpEvent 的 method + session_id,返回 params 供进一步检查。
-fn assert_event<'a>(
-    ev: &'a CdpEvent,
-    expected_method: &str,
-    expected_session: &str,
-) -> &'a Value {
+fn assert_event<'a>(ev: &'a CdpEvent, expected_method: &str, expected_session: &str) -> &'a Value {
     assert_eq!(ev.method, expected_method, "method mismatch");
     assert_eq!(
         ev.session_id.as_deref(),
@@ -337,14 +333,7 @@ fn e2e_full_chain_console_event_through_transport() {
     transport.attach_servo_event_receiver(rx);
 
     // 模拟 servo 端 push 一个 console 事件
-    subscriber.on_console_message(
-        "TARGET-X",
-        ConsoleLevel::Info,
-        "hello",
-        None,
-        None,
-        None,
-    );
+    subscriber.on_console_message("TARGET-X", ConsoleLevel::Info, "hello", None, None, None);
 
     // CDP client 端 recv — 应该是 Log.entryAdded
     let ev = transport
@@ -432,12 +421,8 @@ fn e2e_seven_classes_each_route_to_correct_method() {
     // 7 类事件全部 push
     subscriber.on_console_message("T", ConsoleLevel::Debug, "c", None, None, None);
     subscriber.on_page_error("T", "p", None, None, None, None);
-    subscriber.on_network_request(
-        "T", "N1", "u", "GET", HashMap::new(), None, "Other", "F",
-    );
-    subscriber.on_network_response(
-        "T", "N2", "u", 200, "OK", HashMap::new(), "text/html", None,
-    );
+    subscriber.on_network_request("T", "N1", "u", "GET", HashMap::new(), None, "Other", "F");
+    subscriber.on_network_response("T", "N2", "u", 200, "OK", HashMap::new(), "text/html", None);
     subscriber.on_network_loading_finish("T", "N3", 10);
     subscriber.on_network_loading_fail("T", "N4", "err", false);
     subscriber.on_dom_attribute_modified("T", 1, "n", "v");
@@ -472,7 +457,12 @@ fn e2e_seven_classes_each_route_to_correct_method() {
         "Performance.metrics",
     ];
     // Assert
-    assert_eq!(methods.len(), expected.len(), "expected {} events", expected.len());
+    assert_eq!(
+        methods.len(),
+        expected.len(),
+        "expected {} events",
+        expected.len()
+    );
     for (i, exp) in expected.iter().enumerate() {
         assert_eq!(&methods[i].as_str(), exp, "event {} method mismatch", i);
     }
@@ -591,13 +581,19 @@ fn all_seven_classes_zero_omission() {
 
     // 7 类的 13 个目标 CDP method 全部覆盖
     let expected: &[&str] = &[
-        "Log.entryAdded", // Console
+        "Log.entryAdded",          // Console
         "Runtime.exceptionThrown", // PageError
-        "Network.requestWillBeSent", "Network.responseReceived", "Network.loadingFinished", "Network.loadingFailed", // NetworkEvent
-        "DOM.attributeModified", "DOM.characterDataModified", // DomMutation
-        "Debugger.scriptParsed", // SourceInfo
-        "Page.frameNavigated", "Page.frameStartedLoading", "Page.frameStoppedLoading", // FrameInfo
-        "Performance.metrics", // TimelineMarker
+        "Network.requestWillBeSent",
+        "Network.responseReceived",
+        "Network.loadingFinished",
+        "Network.loadingFailed", // NetworkEvent
+        "DOM.attributeModified",
+        "DOM.characterDataModified", // DomMutation
+        "Debugger.scriptParsed",     // SourceInfo
+        "Page.frameNavigated",
+        "Page.frameStartedLoading",
+        "Page.frameStoppedLoading", // FrameInfo
+        "Performance.metrics",      // TimelineMarker
     ];
     for m in expected {
         // Assert

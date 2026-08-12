@@ -58,7 +58,10 @@ fn get_str(params: &Value, key: &str) -> Result<String, BridgeError> {
 }
 
 fn get_opt_str(params: &Value, key: &str) -> Option<String> {
-    params.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    params
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn get_opt_i64(params: &Value, key: &str, default: i64) -> i64 {
@@ -119,7 +122,11 @@ fn eval_iife(
 /// Page.title — `return document.title;`
 ///
 /// @trace REQ-BAO-API-005 [method:Page.title]
-pub fn page_title(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
+pub fn page_title(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
     let expr = build_iife("return document.title;");
     eval_iife(backend, target_id, expr)
 }
@@ -127,7 +134,11 @@ pub fn page_title(backend: &dyn ServoBackend, target_id: &str, _params: &Value) 
 /// Page.url — `return location.href;`
 ///
 /// @trace REQ-BAO-API-005 [method:Page.url]
-pub fn page_url(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
+pub fn page_url(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
     let expr = build_iife("return location.href;");
     eval_iife(backend, target_id, expr)
 }
@@ -135,7 +146,11 @@ pub fn page_url(backend: &dyn ServoBackend, target_id: &str, _params: &Value) ->
 /// Page.content — `return document.documentElement.outerHTML;`
 ///
 /// @trace REQ-BAO-API-005 [method:Page.content]
-pub fn page_content(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
+pub fn page_content(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
     let expr = build_iife("return document.documentElement.outerHTML;");
     eval_iife(backend, target_id, expr)
 }
@@ -143,7 +158,11 @@ pub fn page_content(backend: &dyn ServoBackend, target_id: &str, _params: &Value
 /// Page.viewport — 本地状态(TASK-5 D 类)。当前从 `Page.getLayoutMetrics` 合成基础值。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.viewport]
-pub fn page_viewport(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
+pub fn page_viewport(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
     let m = backend.page_layout_metrics(target_id)?;
     Ok(json!({
         "width": m.layout_width,
@@ -166,7 +185,11 @@ pub fn page_set_viewport(
     let height = get_i64(params, "height")?;
     let device_scale_factor = {
         let v = get_opt_i64(params, "deviceScaleFactor", 1);
-        if v < 0 { 1.0 } else { v as f64 }
+        if v < 0 {
+            1.0
+        } else {
+            v as f64
+        }
     };
     let mobile = get_opt_bool(params, "isMobile", false);
     let metrics = super::servo_backend::DeviceMetrics {
@@ -245,7 +268,11 @@ pub fn page_wait_for_event(
 /// Page.goBack — `history.back()` + 等待导航。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.goBack]
-pub fn page_go_back(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
+pub fn page_go_back(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
     let expr = build_iife("history.back(); return true;");
     eval_iife(backend, target_id, expr)
 }
@@ -253,7 +280,11 @@ pub fn page_go_back(backend: &dyn ServoBackend, target_id: &str, _params: &Value
 /// Page.goForward — `history.forward()` + 等待导航。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.goForward]
-pub fn page_go_forward(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
+pub fn page_go_forward(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
     let expr = build_iife("history.forward(); return true;");
     eval_iife(backend, target_id, expr)
 }
@@ -278,7 +309,11 @@ pub fn page_emulate_media(
     // body 引用 __args[0] = media
     let _ = backend; // emulate via JS only; backend unused for now
     let _ = target_id;
-    eval_iife(backend, target_id, build_iife_with_args(&body, &[json!(media)])?)
+    eval_iife(
+        backend,
+        target_id,
+        build_iife_with_args(&body, &[json!(media)])?,
+    )
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -378,7 +413,11 @@ pub fn page_screenshot(
 /// Page.pdf — 转发到 `Page.printToPDF`(A 类)。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.pdf]
-pub fn page_pdf(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
+pub fn page_pdf(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
     let bytes = backend.page_print_to_pdf(target_id)?;
     let b64 = super::a_class_handlers::base64_encode(&bytes);
     Ok(json!({ "data": b64 }))
@@ -392,7 +431,11 @@ pub fn page_pdf(backend: &dyn ServoBackend, target_id: &str, _params: &Value) ->
 /// Page.tap(selector) — querySelector + 模拟点击。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.tap]
-pub fn page_tap(backend: &dyn ServoBackend, target_id: &str, params: &Value) -> Result<Value, BridgeError> {
+pub fn page_tap(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
+) -> Result<Value, BridgeError> {
     let selector = get_str(params, "selector")?;
     let body = "var s=__args[0]; var el=document.querySelector(s); if(!el){throw new Error('not found');} el.scrollIntoViewIfNeeded(); var r=el.getBoundingClientRect(); return [r.x+r.width/2, r.y+r.height/2];";
     let expr = build_iife_with_args(body, &[json!(selector)])?;
@@ -406,7 +449,11 @@ pub fn page_tap(backend: &dyn ServoBackend, target_id: &str, params: &Value) -> 
 /// Page.hover(selector) — querySelector + dispatchEvent('mousemove')。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.hover]
-pub fn page_hover(backend: &dyn ServoBackend, target_id: &str, params: &Value) -> Result<Value, BridgeError> {
+pub fn page_hover(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
+) -> Result<Value, BridgeError> {
     let selector = get_str(params, "selector")?;
     let body = "var s=__args[0]; var el=document.querySelector(s); if(!el){throw new Error('not found');} el.dispatchEvent(new MouseEvent('mouseenter',{bubbles:true})); el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true})); return true;";
     let expr = build_iife_with_args(body, &[json!(selector)])?;
@@ -416,7 +463,11 @@ pub fn page_hover(backend: &dyn ServoBackend, target_id: &str, params: &Value) -
 /// Page.focus(selector) — querySelector + focus()。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.focus]
-pub fn page_focus(backend: &dyn ServoBackend, target_id: &str, params: &Value) -> Result<Value, BridgeError> {
+pub fn page_focus(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
+) -> Result<Value, BridgeError> {
     let selector = get_str(params, "selector")?;
     let body = "var s=__args[0]; var el=document.querySelector(s); if(!el){throw new Error('not found');} el.focus(); return true;";
     let expr = build_iife_with_args(body, &[json!(selector)])?;
@@ -428,7 +479,11 @@ pub fn page_focus(backend: &dyn ServoBackend, target_id: &str, params: &Value) -
 /// 当前简化为合成 `input.value += text` + dispatch input event。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.type]
-pub fn page_type(backend: &dyn ServoBackend, target_id: &str, params: &Value) -> Result<Value, BridgeError> {
+pub fn page_type(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
+) -> Result<Value, BridgeError> {
     let selector = get_str(params, "selector")?;
     let text = get_str(params, "text")?;
     let body = "var s=__args[0], t=__args[1]; var el=document.querySelector(s); if(!el){throw new Error('not found');} el.focus(); var ev=new InputEvent('input',{bubbles:true,data:t}); if(el.value!==undefined){el.value=el.value+t;} else {el.textContent=(el.textContent||'')+t;} el.dispatchEvent(ev); return true;";
@@ -439,7 +494,11 @@ pub fn page_type(backend: &dyn ServoBackend, target_id: &str, params: &Value) ->
 /// Page.fill(selector, value) — querySelector + 整体替换 value。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.fill]
-pub fn page_fill(backend: &dyn ServoBackend, target_id: &str, params: &Value) -> Result<Value, BridgeError> {
+pub fn page_fill(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
+) -> Result<Value, BridgeError> {
     let selector = get_str(params, "selector")?;
     let value = get_str(params, "value")?;
     let body = "var s=__args[0], v=__args[1]; var el=document.querySelector(s); if(!el){throw new Error('not found');} el.focus(); if(el.value!==undefined){el.value=v;} else {el.textContent=v;} el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true;";
@@ -450,7 +509,11 @@ pub fn page_fill(backend: &dyn ServoBackend, target_id: &str, params: &Value) ->
 /// Page.press(selector, key) — querySelector + dispatch keydown/keyup。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.press]
-pub fn page_press(backend: &dyn ServoBackend, target_id: &str, params: &Value) -> Result<Value, BridgeError> {
+pub fn page_press(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
+) -> Result<Value, BridgeError> {
     let selector = get_str(params, "selector")?;
     let key = get_str(params, "key")?;
     let body = "var s=__args[0], k=__args[1]; var el=document.querySelector(s); if(!el){throw new Error('not found');} el.focus(); el.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:k})); el.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:k})); return true;";
@@ -461,7 +524,11 @@ pub fn page_press(backend: &dyn ServoBackend, target_id: &str, params: &Value) -
 /// Page.check(selector) — querySelector checkbox → checked=true + dispatch change。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.check]
-pub fn page_check(backend: &dyn ServoBackend, target_id: &str, params: &Value) -> Result<Value, BridgeError> {
+pub fn page_check(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
+) -> Result<Value, BridgeError> {
     let selector = get_str(params, "selector")?;
     let body = "var s=__args[0]; var el=document.querySelector(s); if(!el){throw new Error('not found');} el.checked=true; el.dispatchEvent(new Event('change',{bubbles:true})); return true;";
     let expr = build_iife_with_args(body, &[json!(selector)])?;
@@ -471,7 +538,11 @@ pub fn page_check(backend: &dyn ServoBackend, target_id: &str, params: &Value) -
 /// Page.uncheck(selector) — querySelector checkbox → checked=false。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.uncheck]
-pub fn page_uncheck(backend: &dyn ServoBackend, target_id: &str, params: &Value) -> Result<Value, BridgeError> {
+pub fn page_uncheck(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
+) -> Result<Value, BridgeError> {
     let selector = get_str(params, "selector")?;
     let body = "var s=__args[0]; var el=document.querySelector(s); if(!el){throw new Error('not found');} el.checked=false; el.dispatchEvent(new Event('change',{bubbles:true})); return true;";
     let expr = build_iife_with_args(body, &[json!(selector)])?;
@@ -550,7 +621,11 @@ pub fn page_set_default_timeout(
 /// Page.opener — 通过 `window.opener` 检测。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.opener]
-pub fn page_opener(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
+pub fn page_opener(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
     let expr = build_iife("return (window.opener ? true : false);");
     eval_iife(backend, target_id, expr)
 }
@@ -558,7 +633,11 @@ pub fn page_opener(backend: &dyn ServoBackend, target_id: &str, _params: &Value)
 /// Page.frames — 从 Page.getFrameTree 解析。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.frames]
-pub fn page_frames(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
+pub fn page_frames(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
     let tree = backend.page_frame_tree(target_id)?;
     let mut frames = vec![frame_to_json(&tree.frame)];
     collect_child_frames(&tree, &mut frames);
@@ -584,7 +663,11 @@ fn collect_child_frames(tree: &super::servo_backend::FrameTree, out: &mut Vec<Va
 /// Page.mainFrame — frame tree 的根 frame。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.mainFrame]
-pub fn page_main_frame(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
+pub fn page_main_frame(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
     let tree = backend.page_frame_tree(target_id)?;
     Ok(frame_to_json(&tree.frame))
 }
@@ -596,8 +679,14 @@ pub fn page_main_frame(backend: &dyn ServoBackend, target_id: &str, _params: &Va
 /// Page.requestGC — `window.gc()` 触发(若可用)。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.requestGC]
-pub fn page_request_gc(backend: &dyn ServoBackend, target_id: &str, _params: &Value) -> Result<Value, BridgeError> {
-    let expr = build_iife("if (typeof window.gc==='function') { window.gc(); return true; } return false;");
+pub fn page_request_gc(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    _params: &Value,
+) -> Result<Value, BridgeError> {
+    let expr = build_iife(
+        "if (typeof window.gc==='function') { window.gc(); return true; } return false;",
+    );
     eval_iife(backend, target_id, expr)
 }
 
@@ -660,7 +749,8 @@ pub fn element_scroll_into_view(
     params: &Value,
 ) -> Result<Value, BridgeError> {
     let object_id = get_str(params, "objectId")?;
-    let body = "if (this && this.scrollIntoViewIfNeeded) { this.scrollIntoViewIfNeeded(); } return true;";
+    let body =
+        "if (this && this.scrollIntoViewIfNeeded) { this.scrollIntoViewIfNeeded(); } return true;";
     let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
     Ok(evaluate_to_cdp_json(&r))
 }
@@ -934,8 +1024,8 @@ pub fn js_handle_json_value(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::servo_backend::MockServoBackend;
+    use super::*;
     use serde_json::json;
 
     fn backend() -> MockServoBackend {
@@ -1111,7 +1201,8 @@ mod tests {
     fn page_select_option_values_injection_attempt() {
         let b = backend();
         let payloads = vec![json!("';alert(1);//"), json!("</option>")];
-        let r = page_select_option(&b, "1", &json!({"selector":"select","values":payloads})).unwrap();
+        let r =
+            page_select_option(&b, "1", &json!({"selector":"select","values":payloads})).unwrap();
         let v = r["result"]["value"].as_str().unwrap();
         assert!(v.contains("\"';alert(1);//\""));
         assert!(v.contains("\"</option>\""));
@@ -1121,7 +1212,12 @@ mod tests {
     fn page_set_input_files_paths_injection_attempt() {
         let b = backend();
         let payloads = vec![json!("/etc/passwd'),alert(1),String('/")];
-        let r = page_set_input_files(&b, "1", &json!({"selector":"input[type=file]","paths":payloads})).unwrap();
+        let r = page_set_input_files(
+            &b,
+            "1",
+            &json!({"selector":"input[type=file]","paths":payloads}),
+        )
+        .unwrap();
         let v = r["result"]["value"].as_str().unwrap();
         assert!(v.contains("var s=__args[0], ps=__args[1]"));
     }
@@ -1272,14 +1368,17 @@ mod tests {
     #[test]
     fn js_handle_evaluate_calls_call_function_on() {
         let b = backend();
-        let r = js_handle_evaluate(&b, "1", &json!({"objectId":"obj1","func":"return 1+1;"})).unwrap();
+        let r =
+            js_handle_evaluate(&b, "1", &json!({"objectId":"obj1","func":"return 1+1;"})).unwrap();
         assert!(r["result"].is_object());
     }
 
     #[test]
     fn js_handle_evaluate_handle_calls_call_function_on() {
         let b = backend();
-        let r = js_handle_evaluate_handle(&b, "1", &json!({"objectId":"obj1","func":"return this;"})).unwrap();
+        let r =
+            js_handle_evaluate_handle(&b, "1", &json!({"objectId":"obj1","func":"return this;"}))
+                .unwrap();
         assert!(r["result"].is_object());
     }
 
@@ -1294,7 +1393,8 @@ mod tests {
     fn js_handle_get_property_injection_attempt() {
         let b = backend();
         let payload = "constructor';alert(1);//";
-        let r = js_handle_get_property(&b, "1", &json!({"objectId":"obj1","name":payload})).unwrap();
+        let r =
+            js_handle_get_property(&b, "1", &json!({"objectId":"obj1","name":payload})).unwrap();
         // callFunctionOn 路径下,backend 仅记录函数声明长度,不影响安全
         assert!(r["result"].is_object());
     }

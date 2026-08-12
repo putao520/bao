@@ -308,7 +308,14 @@ fn backend_close(st: &mut TraceState) {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn write_jsonl_line(file: &mut std::fs::File, name: &str, duration_ns: i64, ts_ns: u64, pid: u32, tid: u64) -> bool {
+fn write_jsonl_line(
+    file: &mut std::fs::File,
+    name: &str,
+    duration_ns: i64,
+    ts_ns: u64,
+    pid: u32,
+    tid: u64,
+) -> bool {
     // Minimal JSON object per line (no serde dep required).
     let line = format!(
         "{{\"name\":{},\"duration_ns\":{},\"ts_ns\":{},\"pid\":{},\"tid\":{}}}\n",
@@ -359,10 +366,7 @@ fn output_debug_string(name: &str, duration_ns: i64, pid: u32, tid: u64) {
     unsafe extern "system" {
         fn OutputDebugStringW(lp_output_string: *const u16);
     }
-    let msg = format!(
-        "bao-perf: C|{}|{}|{} tid={}\0",
-        pid, name, duration_ns, tid
-    );
+    let msg = format!("bao-perf: C|{}|{}|{} tid={}\0", pid, name, duration_ns, tid);
     let wide: Vec<u16> = msg.encode_utf16().collect();
     unsafe { OutputDebugStringW(wide.as_ptr()) };
 }
@@ -414,11 +418,7 @@ pub extern "C" fn Bun__linux_trace_init() -> c_int {
     if guard.backend.is_some() {
         return 1;
     }
-    if backend_open(&mut guard) {
-        1
-    } else {
-        0
-    }
+    if backend_open(&mut guard) { 1 } else { 0 }
 }
 
 /// Close the backend and release OS resources. Idempotent / re-entrant safe.
@@ -565,10 +565,7 @@ mod tests {
                 linux_trace_ring_len() >= 1,
                 "ring must be non-empty after successful emit"
             );
-            assert!(
-                linux_trace_emit_ok() >= 1,
-                "emit_ok counter must advance"
-            );
+            assert!(linux_trace_emit_ok() >= 1, "emit_ok counter must advance");
             let snap = linux_trace_ring_snapshot();
             let last = snap.last().expect("ring snapshot");
             assert_eq!(last.name, "bao_test_event");

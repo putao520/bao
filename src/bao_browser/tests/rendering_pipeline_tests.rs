@@ -11,7 +11,10 @@ fn test_png_magic_bytes() {
     use image::RgbaImage;
     let img = RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]));
     let bytes = bao_browser::encode_image(&img, ScreenshotFormat::Png).unwrap();
-    assert!(bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]), "PNG magic bytes");
+    assert!(
+        bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]),
+        "PNG magic bytes"
+    );
 }
 
 #[test]
@@ -200,7 +203,7 @@ fn test_page_state_lifecycle() {
     ];
     // All 5 states are distinct
     for i in 0..states.len() {
-        for j in (i+1)..states.len() {
+        for j in (i + 1)..states.len() {
             assert_ne!(states[i], states[j]);
         }
     }

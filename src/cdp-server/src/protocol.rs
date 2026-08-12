@@ -65,8 +65,9 @@ pub fn parse_message(raw: &str) -> Option<CdpMessage> {
 }
 
 pub fn serialize_response(resp: &CdpResponse) -> String {
-    serde_json::to_string(resp)
-        .unwrap_or_else(|_| r#"{"id":null,"error":{"code":-32700,"message":"serialize error"}}"#.into())
+    serde_json::to_string(resp).unwrap_or_else(|_| {
+        r#"{"id":null,"error":{"code":-32700,"message":"serialize error"}}"#.into()
+    })
 }
 
 pub fn serialize_event(ev: &CdpEvent) -> String {
@@ -135,10 +136,8 @@ mod tests {
     // 5. parse_message with session_id
     #[test]
     fn parse_session_id() {
-        let msg = parse_message(
-            r#"{"id":5,"method":"Runtime.evaluate","session_id":"sess-abc"}"#,
-        )
-        .unwrap();
+        let msg = parse_message(r#"{"id":5,"method":"Runtime.evaluate","session_id":"sess-abc"}"#)
+            .unwrap();
         assert_eq!(msg.session_id, Some("sess-abc".into()));
     }
 
@@ -157,10 +156,9 @@ mod tests {
     // 7. parse_message with array params
     #[test]
     fn parse_array_params() {
-        let msg = parse_message(
-            r#"{"id":3,"method":"DOM.querySelectorAll","params":["div","span"]}"#,
-        )
-        .unwrap();
+        let msg =
+            parse_message(r#"{"id":3,"method":"DOM.querySelectorAll","params":["div","span"]}"#)
+                .unwrap();
         let params = msg.params.unwrap();
         assert!(params.is_array());
         assert_eq!(params.as_array().unwrap().len(), 2);
@@ -285,10 +283,9 @@ mod tests {
     // 20. parse_message extra fields ignored
     #[test]
     fn parse_extra_fields_ignored() {
-        let msg = parse_message(
-            r#"{"id":1,"method":"Page.reload","extra":"ignored","another":123}"#,
-        )
-        .unwrap();
+        let msg =
+            parse_message(r#"{"id":1,"method":"Page.reload","extra":"ignored","another":123}"#)
+                .unwrap();
         assert_eq!(msg.id, Some(1));
         assert_eq!(msg.method, "Page.reload");
     }

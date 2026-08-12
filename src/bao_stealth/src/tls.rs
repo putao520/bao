@@ -98,8 +98,16 @@ impl TlsFingerprint {
     pub fn compute_ja3(&self) -> String {
         let ciphers: Vec<String> = self.cipher_suites.iter().map(|c| format!("{c}")).collect();
         let exts: Vec<String> = self.extensions.iter().map(|e| format!("{e}")).collect();
-        let curves: Vec<String> = self.supported_groups.iter().map(|g| format!("{g}")).collect();
-        let sigs: Vec<String> = self.signature_algorithms.iter().map(|s| format!("{s}")).collect();
+        let curves: Vec<String> = self
+            .supported_groups
+            .iter()
+            .map(|g| format!("{g}"))
+            .collect();
+        let sigs: Vec<String> = self
+            .signature_algorithms
+            .iter()
+            .map(|s| format!("{s}"))
+            .collect();
         format!(
             "771,{},{},{},{}",
             ciphers.join("-"),
@@ -118,11 +126,16 @@ impl TlsFingerprint {
         let num_exts = self.extensions.len();
 
         // Count TLS 1.3 vs TLS 1.2 cipher suites
-        let tls13_count = self.cipher_suites.iter().filter(|&&c| (0x1301..=0x1303).contains(&c)).count();
+        let tls13_count = self
+            .cipher_suites
+            .iter()
+            .filter(|&&c| (0x1301..=0x1303).contains(&c))
+            .count();
         let tls12_count = num_suites - tls13_count;
 
         // ALPN hash: sort ALPN strings, join, SHA256, first 12 hex chars
-        let mut alpn_sorted: Vec<String> = self.alpn_protocols
+        let mut alpn_sorted: Vec<String> = self
+            .alpn_protocols
             .iter()
             .filter_map(|p| std::str::from_utf8(p).ok().map(|s| s.to_string()))
             .collect();
@@ -157,11 +170,19 @@ impl TlsFingerprint {
     }
 
     pub fn tls13_suites(&self) -> Vec<u16> {
-        self.cipher_suites.iter().copied().filter(|s| self.is_tls13_suite(*s)).collect()
+        self.cipher_suites
+            .iter()
+            .copied()
+            .filter(|s| self.is_tls13_suite(*s))
+            .collect()
     }
 
     pub fn tls12_suites(&self) -> Vec<u16> {
-        self.cipher_suites.iter().copied().filter(|s| !self.is_tls13_suite(*s)).collect()
+        self.cipher_suites
+            .iter()
+            .copied()
+            .filter(|s| !self.is_tls13_suite(*s))
+            .collect()
     }
 
     /// Convert TLS 1.2 cipher suite IDs to BoringSSL OpenSSL name string
@@ -407,8 +428,11 @@ mod tests {
     fn test_compute_ja3_matches_stored_hash_firefox() {
         let fp = TlsFingerprint::firefox();
         let computed = fp.compute_ja3();
-        assert_eq!(computed, fp.ja3_hash,
-            "compute_ja3() must equal stored ja3_hash for Firefox — computed: {}", computed);
+        assert_eq!(
+            computed, fp.ja3_hash,
+            "compute_ja3() must equal stored ja3_hash for Firefox — computed: {}",
+            computed
+        );
     }
 
     // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
@@ -416,8 +440,11 @@ mod tests {
     fn test_compute_ja3_matches_stored_hash_chrome() {
         let fp = TlsFingerprint::chrome();
         let computed = fp.compute_ja3();
-        assert_eq!(computed, fp.ja3_hash,
-            "compute_ja3() must equal stored ja3_hash for Chrome — computed: {}", computed);
+        assert_eq!(
+            computed, fp.ja3_hash,
+            "compute_ja3() must equal stored ja3_hash for Chrome — computed: {}",
+            computed
+        );
     }
 
     // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
@@ -425,8 +452,11 @@ mod tests {
     fn test_compute_ja3_matches_stored_hash_chrome_latest() {
         let fp = TlsFingerprint::chrome_latest();
         let computed = fp.compute_ja3();
-        assert_eq!(computed, fp.ja3_hash,
-            "compute_ja3() must equal stored ja3_hash for Chrome latest — computed: {}", computed);
+        assert_eq!(
+            computed, fp.ja3_hash,
+            "compute_ja3() must equal stored ja3_hash for Chrome latest — computed: {}",
+            computed
+        );
     }
 
     #[test]
@@ -496,11 +526,22 @@ mod tests {
         let fp = TlsFingerprint::firefox();
         let ja4 = fp.compute_ja4();
         let parts: Vec<&str> = ja4.split('_').collect();
-        assert!(parts.len() >= 2, "JA4 should have underscore separator: {}", ja4);
+        assert!(
+            parts.len() >= 2,
+            "JA4 should have underscore separator: {}",
+            ja4
+        );
         let hash_part = parts.last().unwrap();
-        assert!(hash_part.len() >= 12, "ALPN hash part should be at least 12 chars: {}", hash_part);
-        assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()),
-            "ALPN hash must be valid hex: {}", hash_part);
+        assert!(
+            hash_part.len() >= 12,
+            "ALPN hash part should be at least 12 chars: {}",
+            hash_part
+        );
+        assert!(
+            hash_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "ALPN hash must be valid hex: {}",
+            hash_part
+        );
     }
 
     // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
@@ -509,8 +550,11 @@ mod tests {
     fn test_compute_ja4_differs_between_profiles() {
         let ff = TlsFingerprint::firefox();
         let ch = TlsFingerprint::chrome();
-        assert_ne!(ff.compute_ja4(), ch.compute_ja4(),
-            "Firefox and Chrome must produce different JA4 fingerprints");
+        assert_ne!(
+            ff.compute_ja4(),
+            ch.compute_ja4(),
+            "Firefox and Chrome must produce different JA4 fingerprints"
+        );
     }
 
     #[test]
@@ -565,7 +609,10 @@ mod tests {
     fn test_tls12_suites_count() {
         let fp = TlsFingerprint::firefox();
         let tls12 = fp.tls12_suites();
-        assert_eq!(tls12.len(), fp.cipher_suites.len() - fp.tls13_suites().len());
+        assert_eq!(
+            tls12.len(),
+            fp.cipher_suites.len() - fp.tls13_suites().len()
+        );
     }
 
     #[test]
@@ -661,9 +708,18 @@ mod tests {
     fn test_tls13_cipher_suites_firefox() {
         let fp = TlsFingerprint::firefox();
         let list = fp.tls13_cipher_suites_string();
-        assert!(list.contains("TLS_AES_128_GCM_SHA256"), "Should contain TLS 1.3 AES-128");
-        assert!(list.contains("TLS_AES_256_GCM_SHA384"), "Should contain TLS 1.3 AES-256");
-        assert!(list.contains("TLS_CHACHA20_POLY1305_SHA256"), "Should contain TLS 1.3 ChaCha20");
+        assert!(
+            list.contains("TLS_AES_128_GCM_SHA256"),
+            "Should contain TLS 1.3 AES-128"
+        );
+        assert!(
+            list.contains("TLS_AES_256_GCM_SHA384"),
+            "Should contain TLS 1.3 AES-256"
+        );
+        assert!(
+            list.contains("TLS_CHACHA20_POLY1305_SHA256"),
+            "Should contain TLS 1.3 ChaCha20"
+        );
     }
 
     #[test]
@@ -693,8 +749,14 @@ mod tests {
     fn test_sigalgs_list_firefox() {
         let fp = TlsFingerprint::firefox();
         let list = fp.sigalgs_list_string();
-        assert!(list.contains("ecdsa_secp256r1_sha256"), "Should contain ECDSA P-256");
-        assert!(list.contains("rsa_pss_rsae_sha256"), "Should contain RSA-PSS");
+        assert!(
+            list.contains("ecdsa_secp256r1_sha256"),
+            "Should contain ECDSA P-256"
+        );
+        assert!(
+            list.contains("rsa_pss_rsae_sha256"),
+            "Should contain RSA-PSS"
+        );
     }
 
     #[test]
@@ -740,8 +802,14 @@ mod tests {
 
     #[test]
     fn test_cipher_suite_openssl_name_known_ids() {
-        assert_eq!(cipher_suite_openssl_name(0x1301), Some("TLS_AES_128_GCM_SHA256"));
-        assert_eq!(cipher_suite_openssl_name(0xC02B), Some("ECDHE-ECDSA-AES128-GCM-SHA256"));
+        assert_eq!(
+            cipher_suite_openssl_name(0x1301),
+            Some("TLS_AES_128_GCM_SHA256")
+        );
+        assert_eq!(
+            cipher_suite_openssl_name(0xC02B),
+            Some("ECDHE-ECDSA-AES128-GCM-SHA256")
+        );
         assert_eq!(cipher_suite_openssl_name(0xFFFF), None);
     }
 

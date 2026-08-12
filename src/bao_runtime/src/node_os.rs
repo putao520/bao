@@ -1,9 +1,9 @@
 // @trace REQ-ENG-007
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, ObjectValue, StringValue};
+use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -16,46 +16,179 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"hostname".as_ptr(), Some(os_hostname), 0, 0);
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"hostname".as_ptr(),
+            Some(os_hostname),
+            0,
+            0,
+        );
         w2::JS_DefineFunction(cx, os_obj.handle(), c"type".as_ptr(), Some(os_type), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"platform".as_ptr(), Some(os_platform), 0, 0);
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"platform".as_ptr(),
+            Some(os_platform),
+            0,
+            0,
+        );
         w2::JS_DefineFunction(cx, os_obj.handle(), c"arch".as_ptr(), Some(os_arch), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"release".as_ptr(), Some(os_release), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"uptime".as_ptr(), Some(os_uptime), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"totalmem".as_ptr(), Some(os_totalmem), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"freemem".as_ptr(), Some(os_freemem), 0, 0);
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"release".as_ptr(),
+            Some(os_release),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"uptime".as_ptr(),
+            Some(os_uptime),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"totalmem".as_ptr(),
+            Some(os_totalmem),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"freemem".as_ptr(),
+            Some(os_freemem),
+            0,
+            0,
+        );
         w2::JS_DefineFunction(cx, os_obj.handle(), c"cpus".as_ptr(), Some(os_cpus), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"networkInterfaces".as_ptr(), Some(os_network_interfaces), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"homedir".as_ptr(), Some(os_homedir), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"tmpdir".as_ptr(), Some(os_tmpdir), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"userInfo".as_ptr(), Some(os_user_info), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"loadavg".as_ptr(), Some(os_loadavg), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"endianness".as_ptr(), Some(os_endianness), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"devNull".as_ptr(), Some(os_dev_null), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"getPriority".as_ptr(), Some(os_get_priority), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"availableParallelism".as_ptr(), Some(os_available_parallelism), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"machine".as_ptr(), Some(os_machine), 0, 0);
-        w2::JS_DefineFunction(cx, os_obj.handle(), c"version".as_ptr(), Some(os_version), 0, 0);
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"networkInterfaces".as_ptr(),
+            Some(os_network_interfaces),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"homedir".as_ptr(),
+            Some(os_homedir),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"tmpdir".as_ptr(),
+            Some(os_tmpdir),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"userInfo".as_ptr(),
+            Some(os_user_info),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"loadavg".as_ptr(),
+            Some(os_loadavg),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"endianness".as_ptr(),
+            Some(os_endianness),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"devNull".as_ptr(),
+            Some(os_dev_null),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"getPriority".as_ptr(),
+            Some(os_get_priority),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"availableParallelism".as_ptr(),
+            Some(os_available_parallelism),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"machine".as_ptr(),
+            Some(os_machine),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            os_obj.handle(),
+            c"version".as_ptr(),
+            Some(os_version),
+            0,
+            0,
+        );
 
         let eol = if cfg!(windows) { "\r\n" } else { "\n" };
-        let eol_str = JS_NewStringCopyN(cx.raw_cx(), eol.as_ptr() as *const ::std::os::raw::c_char, eol.len());
+        let eol_str = JS_NewStringCopyN(
+            cx.raw_cx(),
+            eol.as_ptr() as *const ::std::os::raw::c_char,
+            eol.len(),
+        );
         if !eol_str.is_null() {
             let val = StringValue(&*eol_str);
             rooted!(&in(cx) let v = val);
             JS_DefineProperty(
-                cx.raw_cx(), os_obj.handle().into(), c"EOL".as_ptr(),
-                v.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
+                cx.raw_cx(),
+                os_obj.handle().into(),
+                c"EOL".as_ptr(),
+                v.handle().into(),
+                (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
             );
         }
 
         let dev_null = if cfg!(windows) { "NUL" } else { "/dev/null" };
-        let dn_str = JS_NewStringCopyN(cx.raw_cx(), dev_null.as_ptr() as *const ::std::os::raw::c_char, dev_null.len());
+        let dn_str = JS_NewStringCopyN(
+            cx.raw_cx(),
+            dev_null.as_ptr() as *const ::std::os::raw::c_char,
+            dev_null.len(),
+        );
         if !dn_str.is_null() {
             let val = StringValue(&*dn_str);
             rooted!(&in(cx) let v = val);
             JS_DefineProperty(
-                cx.raw_cx(), os_obj.handle().into(), c"devNull".as_ptr(),
-                v.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
+                cx.raw_cx(),
+                os_obj.handle().into(),
+                c"devNull".as_ptr(),
+                v.handle().into(),
+                (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
             );
         }
     }
@@ -67,26 +200,66 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             rooted!(&in(cx) let sig_obj = w2::JS_NewPlainObject(cx));
             if !sig_obj.get().is_null() {
                 let raw = cx.raw_cx();
-                let signals = [("SIGHUP", 1), ("SIGINT", 2), ("SIGQUIT", 3), ("SIGILL", 4), ("SIGTRAP", 5), ("SIGABRT", 6), ("SIGBUS", 7), ("SIGFPE", 8), ("SIGKILL", 9), ("SIGUSR1", 10), ("SIGSEGV", 11), ("SIGUSR2", 12), ("SIGPIPE", 13), ("SIGALRM", 14), ("SIGTERM", 15)];
+                let signals = [
+                    ("SIGHUP", 1),
+                    ("SIGINT", 2),
+                    ("SIGQUIT", 3),
+                    ("SIGILL", 4),
+                    ("SIGTRAP", 5),
+                    ("SIGABRT", 6),
+                    ("SIGBUS", 7),
+                    ("SIGFPE", 8),
+                    ("SIGKILL", 9),
+                    ("SIGUSR1", 10),
+                    ("SIGSEGV", 11),
+                    ("SIGUSR2", 12),
+                    ("SIGPIPE", 13),
+                    ("SIGALRM", 14),
+                    ("SIGTERM", 15),
+                ];
                 for (name, val) in &signals {
                     let v = Int32Value(*val);
                     rooted!(&in(cx) let rv = v);
-                    JS_DefineProperty(raw, sig_obj.handle().into(), ZBox::from_bytes(name.as_bytes()).as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(
+                        raw,
+                        sig_obj.handle().into(),
+                        ZBox::from_bytes(name.as_bytes()).as_ptr(),
+                        rv.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
                 }
-                w2::JS_DefineProperty3(cx, constants_obj.handle(), c"signals".as_ptr(), sig_obj.handle(), JSPROP_ENUMERATE as u32);
+                w2::JS_DefineProperty3(
+                    cx,
+                    constants_obj.handle(),
+                    c"signals".as_ptr(),
+                    sig_obj.handle(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
-            w2::JS_DefineProperty3(cx, os_obj.handle(), c"constants".as_ptr(), constants_obj.handle(), JSPROP_ENUMERATE as u32);
+            w2::JS_DefineProperty3(
+                cx,
+                os_obj.handle(),
+                c"constants".as_ptr(),
+                constants_obj.handle(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 
     cache_builtin(cx, "os", os_obj.get());
 }
 
-unsafe fn return_string(cx: *mut JSContext, s: &str, args: &CallArgs) { unsafe {
-    let utf16: Vec<u16> = s.encode_utf16().collect();
-    let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
-    args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
-}}
+unsafe fn return_string(cx: *mut JSContext, s: &str, args: &CallArgs) {
+    unsafe {
+        let utf16: Vec<u16> = s.encode_utf16().collect();
+        let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
+        args.rval().set(if js_str.is_null() {
+            UndefinedValue()
+        } else {
+            StringValue(&*js_str)
+        });
+    }
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn os_hostname(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
@@ -99,10 +272,15 @@ unsafe extern "C" fn os_hostname(cx: *mut JSContext, _argc: u32, vp: *mut JSVal)
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn os_type(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let os_type = if cfg!(target_os = "linux") { "Linux" }
-        else if cfg!(target_os = "macos") { "Darwin" }
-        else if cfg!(target_os = "windows") { "Windows_NT" }
-        else { "Unknown" };
+    let os_type = if cfg!(target_os = "linux") {
+        "Linux"
+    } else if cfg!(target_os = "macos") {
+        "Darwin"
+    } else if cfg!(target_os = "windows") {
+        "Windows_NT"
+    } else {
+        "Unknown"
+    };
     return_string(cx, os_type, &args);
     true
 }
@@ -110,10 +288,15 @@ unsafe extern "C" fn os_type(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn os_platform(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let platform = if cfg!(target_os = "linux") { "linux" }
-        else if cfg!(target_os = "macos") { "darwin" }
-        else if cfg!(target_os = "windows") { "win32" }
-        else { "unknown" };
+    let platform = if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        "win32"
+    } else {
+        "unknown"
+    };
     return_string(cx, platform, &args);
     true
 }
@@ -121,11 +304,17 @@ unsafe extern "C" fn os_platform(cx: *mut JSContext, _argc: u32, vp: *mut JSVal)
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn os_arch(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let arch = if cfg!(target_arch = "x86_64") { "x64" }
-        else if cfg!(target_arch = "aarch64") { "arm64" }
-        else if cfg!(target_arch = "x86") { "ia32" }
-        else if cfg!(target_arch = "arm") { "arm" }
-        else { "unknown" };
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else if cfg!(target_arch = "x86") {
+        "ia32"
+    } else if cfg!(target_arch = "arm") {
+        "arm"
+    } else {
+        "unknown"
+    };
     return_string(cx, arch, &args);
     true
 }
@@ -182,30 +371,70 @@ unsafe extern "C" fn os_cpus(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> 
     for i in 0..nproc {
         rooted!(&in(cx_ref) let cpu = mozjs_sys::jsapi::JS_NewPlainObject(cx));
         if !cpu.get().is_null() {
-            let model_str = JS_NewStringCopyN(cx, model.as_ptr() as *const ::std::os::raw::c_char, model.len());
+            let model_str = JS_NewStringCopyN(
+                cx,
+                model.as_ptr() as *const ::std::os::raw::c_char,
+                model.len(),
+            );
             if !model_str.is_null() {
                 let val = StringValue(&*model_str);
                 rooted!(&in(cx_ref) let mv = val);
-                JS_DefineProperty(cx, cpu.handle().into(), c"model".as_ptr(), mv.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    cx,
+                    cpu.handle().into(),
+                    c"model".as_ptr(),
+                    mv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
             rooted!(&in(cx_ref) let sv = Int32Value(i as i32));
-            JS_DefineProperty(cx, cpu.handle().into(), c"speed".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx,
+                cpu.handle().into(),
+                c"speed".as_ptr(),
+                sv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
 
             rooted!(&in(cx_ref) let times = mozjs_sys::jsapi::JS_NewPlainObject(cx));
             if !times.get().is_null() {
-                for &(name, val) in &[("user", 0i32), ("nice", 0), ("sys", 0), ("idle", 0), ("irq", 0)] {
+                for &(name, val) in &[
+                    ("user", 0i32),
+                    ("nice", 0),
+                    ("sys", 0),
+                    ("idle", 0),
+                    ("irq", 0),
+                ] {
                     let c_name = ZBox::from_bytes(name.as_bytes());
                     rooted!(&in(cx_ref) let tv = Int32Value(val));
-                    JS_DefineProperty(cx, times.handle().into(), c_name.as_ptr(), tv.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(
+                        cx,
+                        times.handle().into(),
+                        c_name.as_ptr(),
+                        tv.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
                 }
             }
             let times_val = ObjectValue(times.get());
             rooted!(&in(cx_ref) let tv = times_val);
-            JS_DefineProperty(cx, cpu.handle().into(), c"times".as_ptr(), tv.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx,
+                cpu.handle().into(),
+                c"times".as_ptr(),
+                tv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
         let cpu_val = ObjectValue(cpu.get());
         rooted!(&in(cx_ref) let cv = cpu_val);
-        JS_DefineElement(cx, arr.handle().into(), i as u32, cv.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineElement(
+            cx,
+            arr.handle().into(),
+            i as u32,
+            cv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
     args.rval().set(ObjectValue(arr.get()));
     true
@@ -225,8 +454,10 @@ unsafe extern "C" fn os_homedir(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, _argc);
     let home = bun_core::getenv_z(bun_core::zstr!("HOME"))
         .map(|s| String::from_utf8_lossy(s).into_owned())
-        .or_else(|| bun_core::getenv_z(bun_core::zstr!("USERPROFILE"))
-            .map(|s| String::from_utf8_lossy(s).into_owned()))
+        .or_else(|| {
+            bun_core::getenv_z(bun_core::zstr!("USERPROFILE"))
+                .map(|s| String::from_utf8_lossy(s).into_owned())
+        })
         .unwrap_or_else(|| "/root".to_string());
     return_string(cx, &home, &args);
     true
@@ -237,8 +468,10 @@ unsafe extern "C" fn os_tmpdir(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -
     let args = CallArgs::from_vp(vp, _argc);
     let tmp = bun_core::getenv_z(bun_core::zstr!("TMPDIR"))
         .map(|s| String::from_utf8_lossy(s).into_owned())
-        .or_else(|| bun_core::getenv_z(bun_core::zstr!("TEMP"))
-            .map(|s| String::from_utf8_lossy(s).into_owned()))
+        .or_else(|| {
+            bun_core::getenv_z(bun_core::zstr!("TEMP"))
+                .map(|s| String::from_utf8_lossy(s).into_owned())
+        })
         .unwrap_or_else(|| "/tmp".to_string());
     return_string(cx, &tmp, &args);
     true
@@ -260,20 +493,36 @@ unsafe extern "C" fn os_user_info(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
             .map(|s| String::from_utf8_lossy(s).into_owned())
             .unwrap_or_else(|| "/bin/sh".to_string());
 
-        for (name, val_str) in &[("username", &username), ("homedir", &home), ("shell", &shell)] {
+        for (name, val_str) in &[
+            ("username", &username),
+            ("homedir", &home),
+            ("shell", &shell),
+        ] {
             let c_name = ZBox::from_bytes(name.as_bytes());
             let utf16: Vec<u16> = val_str.encode_utf16().collect();
             let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
             if !js_str.is_null() {
                 let val = StringValue(&*js_str);
                 rooted!(&in(wrapped_cx) let v = val);
-                JS_DefineProperty(cx, obj.handle().into(), c_name.as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    cx,
+                    obj.handle().into(),
+                    c_name.as_ptr(),
+                    v.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
         for (name, val) in &[("uid", uid as i32), ("gid", gid as i32)] {
             let c_name = ZBox::from_bytes(name.as_bytes());
             rooted!(&in(wrapped_cx) let v = Int32Value(*val));
-            JS_DefineProperty(cx, obj.handle().into(), c_name.as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx,
+                obj.handle().into(),
+                c_name.as_ptr(),
+                v.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
     args.rval().set(ObjectValue(obj.get()));
@@ -289,7 +538,13 @@ unsafe extern "C" fn os_loadavg(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
     for (i, &val) in loadavg.iter().enumerate() {
         let dval = mozjs::jsval::DoubleValue(val);
         rooted!(&in(wrapped_cx) let v = dval);
-        JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineElement(
+            cx,
+            arr.handle().into(),
+            i as u32,
+            v.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
     args.rval().set(ObjectValue(arr.get()));
     true
@@ -298,7 +553,11 @@ unsafe extern "C" fn os_loadavg(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn os_endianness(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let endian = if cfg!(target_endian = "little") { "LE" } else { "BE" };
+    let endian = if cfg!(target_endian = "little") {
+        "LE"
+    } else {
+        "BE"
+    };
     return_string(cx, endian, &args);
     true
 }
@@ -320,7 +579,11 @@ unsafe extern "C" fn os_get_priority(_cx: *mut JSContext, _argc: u32, vp: *mut J
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn os_available_parallelism(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn os_available_parallelism(
+    _cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let n = match ::std::thread::available_parallelism() {
         Ok(n) => n.get() as i32,
@@ -333,11 +596,17 @@ unsafe extern "C" fn os_available_parallelism(_cx: *mut JSContext, _argc: u32, v
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn os_machine(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let machine = if cfg!(target_arch = "x86_64") { "x86_64" }
-        else if cfg!(target_arch = "aarch64") { "aarch64" }
-        else if cfg!(target_arch = "x86") { "i686" }
-        else if cfg!(target_arch = "arm") { "arm" }
-        else { "unknown" };
+    let machine = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else if cfg!(target_arch = "x86") {
+        "i686"
+    } else if cfg!(target_arch = "arm") {
+        "arm"
+    } else {
+        "unknown"
+    };
     return_string(cx, machine, &args);
     true
 }
@@ -351,7 +620,6 @@ unsafe extern "C" fn os_version(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
 }
 
 pub(crate) mod libc_binding {
-    
 
     pub fn get_username() -> String {
         unsafe {
@@ -363,8 +631,10 @@ pub(crate) mod libc_binding {
             } else {
                 bun_core::getenv_z(bun_core::zstr!("USER"))
                     .map(|s| String::from_utf8_lossy(s).into_owned())
-                    .or_else(|| bun_core::getenv_z(bun_core::zstr!("LOGNAME"))
-                        .map(|s| String::from_utf8_lossy(s).into_owned()))
+                    .or_else(|| {
+                        bun_core::getenv_z(bun_core::zstr!("LOGNAME"))
+                            .map(|s| String::from_utf8_lossy(s).into_owned())
+                    })
                     .unwrap_or_else(|| "unknown".to_string())
             }
         }
@@ -385,7 +655,11 @@ pub(crate) mod libc_binding {
     pub fn get_os_release() -> String {
         let mut buf = [0u8; 256];
         unsafe {
-            if libc::syscall(libc::SYS_uname, buf.as_mut_ptr() as *mut ::std::os::raw::c_void) == 0 {
+            if libc::syscall(
+                libc::SYS_uname,
+                buf.as_mut_ptr() as *mut ::std::os::raw::c_void,
+            ) == 0
+            {
                 let utsname = buf.as_ptr() as *const libc::utsname;
                 let release = ::std::ffi::CStr::from_ptr((*utsname).release.as_ptr());
                 release.to_string_lossy().into_owned()
@@ -413,14 +687,22 @@ pub(crate) mod libc_binding {
         unsafe {
             if libc::sysinfo(info.as_mut_ptr()) == 0 {
                 let info = info.assume_init();
-                let mem_unit = if info.mem_unit == 0 { 1 } else { info.mem_unit as u64 };
+                let mem_unit = if info.mem_unit == 0 {
+                    1
+                } else {
+                    info.mem_unit as u64
+                };
                 SysInfo {
                     totalram: info.totalram * mem_unit,
                     freeram: info.freeram * mem_unit,
                     uptime: info.uptime as u64,
                 }
             } else {
-                SysInfo { totalram: 0, freeram: 0, uptime: 0 }
+                SysInfo {
+                    totalram: 0,
+                    freeram: 0,
+                    uptime: 0,
+                }
             }
         }
     }
@@ -437,9 +719,10 @@ pub(crate) mod libc_binding {
         if let Ok(content) = bun_sys::fs::read_to_string("/proc/cpuinfo") {
             for line in content.lines() {
                 if line.starts_with("model name")
-                    && let Some((_, val)) = line.split_once(':') {
-                        return val.trim().to_string();
-                    }
+                    && let Some((_, val)) = line.split_once(':')
+                {
+                    return val.trim().to_string();
+                }
             }
         }
         "unknown".to_string()
@@ -522,14 +805,20 @@ mod tests {
     #[test]
     fn test_get_hostname_no_null_bytes() {
         let host = get_hostname();
-        assert!(!host.contains('\0'), "hostname should not contain null bytes");
+        assert!(
+            !host.contains('\0'),
+            "hostname should not contain null bytes"
+        );
     }
 
     #[test]
     fn test_get_os_release_format() {
         let rel = get_os_release();
         // Linux kernel version format: X.Y.Z...
-        assert!(rel.contains('.') || rel == "unknown", "release should contain dots or be unknown");
+        assert!(
+            rel.contains('.') || rel == "unknown",
+            "release should contain dots or be unknown"
+        );
     }
 
     #[test]

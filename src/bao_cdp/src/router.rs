@@ -26,7 +26,9 @@ use crate::protocol::CdpError;
 /// for the internal/external routing layer.
 fn rand_id() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     d.as_nanos() as u64 ^ (d.as_nanos() as u64).wrapping_shr(17)
 }
 
@@ -77,10 +79,7 @@ impl CdpRouter {
         self.sessions
             .borrow_mut()
             .insert(session_id.clone(), Rc::clone(&inner));
-        CdpSession {
-            session_id,
-            inner,
-        }
+        CdpSession { session_id, inner }
     }
 
     pub fn connect_external(&self, endpoint: &str) -> Result<ExternalBrowser, CdpError> {
@@ -375,7 +374,10 @@ mod tests {
         });
         let sessions = router.sessions.borrow();
         let inner = sessions.get(session.session_id()).unwrap();
-        assert!(inner.event_handlers.borrow().contains_key("Page.loadEventFired"));
+        assert!(inner
+            .event_handlers
+            .borrow()
+            .contains_key("Page.loadEventFired"));
         let binding = inner.event_handlers.borrow();
         let handler = binding.get("Page.loadEventFired").unwrap();
         handler(serde_json::json!({}));
@@ -428,7 +430,10 @@ mod tests {
         let mut ids = std::collections::HashSet::new();
         for i in 0..10 {
             let session = router.create_internal_session(&format!("target-{i}"));
-            assert!(ids.insert(session.session_id().to_string()), "session ids must be unique");
+            assert!(
+                ids.insert(session.session_id().to_string()),
+                "session ids must be unique"
+            );
         }
         assert_eq!(router.sessions.borrow().len(), 10);
     }
@@ -465,7 +470,10 @@ mod tests {
         let router = CdpRouter::new();
         let session = router.create_internal_session("target-1");
         let id = session.session_id();
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "session id must be hex");
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit()),
+            "session id must be hex"
+        );
     }
 
     #[test]

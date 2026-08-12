@@ -28,7 +28,10 @@ impl HotReloader {
         let p = PathBuf::from(path);
         if let Ok(metadata) = ::std::fs::metadata(&p) {
             if let Ok(modified) = metadata.modified() {
-                self.watched.lock().unwrap_or_else(|e| e.into_inner()).insert(p, modified);
+                self.watched
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(p, modified);
             }
         }
         Ok(())
@@ -36,7 +39,10 @@ impl HotReloader {
 
     pub fn unwatch(&self, path: &str) {
         let p = PathBuf::from(path);
-        self.watched.lock().unwrap_or_else(|e| e.into_inner()).remove(&p);
+        self.watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&p);
     }
 
     pub fn has_changes(&self) -> bool {
@@ -71,7 +77,9 @@ impl HotReloader {
 }
 
 impl Default for HotReloader {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct ImportWatcher {
@@ -80,11 +88,15 @@ pub struct ImportWatcher {
 
 impl ImportWatcher {
     pub fn new() -> Self {
-        ImportWatcher { imports: Mutex::new(HashMap::new()) }
+        ImportWatcher {
+            imports: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn register_import(&self, from: &str, to: &str) {
-        self.imports.lock().unwrap_or_else(|e| e.into_inner())
+        self.imports
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(from.to_string())
             .or_default()
             .push(to.to_string());
@@ -103,7 +115,9 @@ impl ImportWatcher {
 }
 
 impl Default for ImportWatcher {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

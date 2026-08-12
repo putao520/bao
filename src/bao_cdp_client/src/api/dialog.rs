@@ -73,7 +73,11 @@ impl Dialog {
     /// 构造 Dialog。
     ///
     /// @trace REQ-BAO-API-006 [class:Dialog]
-    pub fn new(dialog_type: DialogType, message: impl Into<String>, default_value: Option<String>) -> Self {
+    pub fn new(
+        dialog_type: DialogType,
+        message: impl Into<String>,
+        default_value: Option<String>,
+    ) -> Self {
         Self {
             dialog_type,
             message: RefCell::new(message.into()),
@@ -192,7 +196,10 @@ mod tests {
         assert_eq!(DialogType::from_str("alert"), DialogType::Alert);
         assert_eq!(DialogType::from_str("confirm"), DialogType::Confirm);
         assert_eq!(DialogType::from_str("prompt"), DialogType::Prompt);
-        assert_eq!(DialogType::from_str("beforeunload"), DialogType::BeforeUnload);
+        assert_eq!(
+            DialogType::from_str("beforeunload"),
+            DialogType::BeforeUnload
+        );
         // unknown defaults to alert
         assert_eq!(DialogType::from_str("garbage"), DialogType::Alert);
     }

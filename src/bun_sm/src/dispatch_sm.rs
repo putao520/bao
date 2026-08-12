@@ -88,16 +88,12 @@ impl BaoEventLoop {
 
     /// Materialize the inner `MiniEventLoop` if it doesn't yet exist.
     /// Returns a `RefMut` guard; callers dispatch through it.
-    fn ensure_inner(
-        &self,
-    ) -> core::cell::RefMut<'_, MiniEventLoop<'static>> {
+    fn ensure_inner(&self) -> core::cell::RefMut<'_, MiniEventLoop<'static>> {
         let mut guard = self.inner.borrow_mut();
         if guard.is_none() {
             *guard = Some(MiniEventLoop::init());
         }
-        core::cell::RefMut::map(guard, |opt| {
-            opt.as_mut().expect("just initialized")
-        })
+        core::cell::RefMut::map(guard, |opt| opt.as_mut().expect("just initialized"))
     }
 
     /// Register a SpiderMonkey `JSContext*` on this thread's event loop.

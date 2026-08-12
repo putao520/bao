@@ -2,7 +2,7 @@
 // CanvasNoise pixel boundary tests, WebGLProfile field completeness,
 // AudioProfile noise properties, cross-profile isolation.
 
-use bao_stealth::{CanvasNoise, WebGLProfile, AudioProfile};
+use bao_stealth::{AudioProfile, CanvasNoise, WebGLProfile};
 
 // ---- CanvasNoise construction ----
 
@@ -157,8 +157,14 @@ fn test_webgl_firefox_extensions_nonempty() {
 #[test]
 fn test_webgl_firefox_extensions_common_ones() {
     let w = WebGLProfile::firefox();
-    assert!(w.extensions.iter().any(|e| e.contains("ANGLE_instanced_arrays")));
-    assert!(w.extensions.iter().any(|e| e.contains("WEBGL_lose_context")));
+    assert!(w
+        .extensions
+        .iter()
+        .any(|e| e.contains("ANGLE_instanced_arrays")));
+    assert!(w
+        .extensions
+        .iter()
+        .any(|e| e.contains("WEBGL_lose_context")));
     assert!(w.extensions.iter().any(|e| e.contains("OES_texture_float")));
 }
 
@@ -212,12 +218,18 @@ fn test_webgl_chrome_max_viewport_dims() {
 
 #[test]
 fn test_webgl_firefox_chrome_vendor_differ() {
-    assert_ne!(WebGLProfile::firefox().vendor, WebGLProfile::chrome().vendor);
+    assert_ne!(
+        WebGLProfile::firefox().vendor,
+        WebGLProfile::chrome().vendor
+    );
 }
 
 #[test]
 fn test_webgl_firefox_chrome_renderer_differ() {
-    assert_ne!(WebGLProfile::firefox().renderer, WebGLProfile::chrome().renderer);
+    assert_ne!(
+        WebGLProfile::firefox().renderer,
+        WebGLProfile::chrome().renderer
+    );
 }
 
 #[test]

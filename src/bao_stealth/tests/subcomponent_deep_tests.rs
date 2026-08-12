@@ -4,8 +4,8 @@
 // Per-preset field validation, cross-preset differences, boundary/edge cases.
 
 use bao_stealth::{
-    NavigatorProfile, ScreenProfile, CanvasNoise, WebGLProfile, AudioProfile,
-    BehaviorSimulator, Http2Fingerprint,
+    AudioProfile, BehaviorSimulator, CanvasNoise, Http2Fingerprint, NavigatorProfile,
+    ScreenProfile, WebGLProfile,
 };
 
 // ---- NavigatorProfile ----
@@ -471,7 +471,11 @@ fn test_behavior_typing_delays_count() {
     let b = BehaviorSimulator::new(42);
     let delays = b.generate_typing_delays(10);
     // May have extra backspace events from typo correction
-    assert!(delays.len() >= 10, "Expected >= 10 delays, got {}", delays.len());
+    assert!(
+        delays.len() >= 10,
+        "Expected >= 10 delays, got {}",
+        delays.len()
+    );
 }
 
 #[test]
@@ -558,13 +562,19 @@ fn test_http2_chrome_initial_window_size() {
 #[test]
 fn test_http2_firefox_pseudo_header_order() {
     let h2 = Http2Fingerprint::firefox();
-    assert_eq!(h2.pseudo_header_order, vec![":method", ":path", ":authority", ":scheme"]);
+    assert_eq!(
+        h2.pseudo_header_order,
+        vec![":method", ":path", ":authority", ":scheme"]
+    );
 }
 
 #[test]
 fn test_http2_chrome_pseudo_header_order() {
     let h2 = Http2Fingerprint::chrome();
-    assert_eq!(h2.pseudo_header_order, vec![":method", ":authority", ":scheme", ":path"]);
+    assert_eq!(
+        h2.pseudo_header_order,
+        vec![":method", ":authority", ":scheme", ":path"]
+    );
 }
 
 #[test]
@@ -585,7 +595,13 @@ fn test_http2_settings_frame_payload_ids() {
 #[test]
 fn test_http2_ordered_headers() {
     let h2 = Http2Fingerprint::firefox();
-    let headers = vec![(":scheme", "https"), (":method", "GET"), (":path", "/"), (":authority", "example.com"), ("content-length", "0")];
+    let headers = vec![
+        (":scheme", "https"),
+        (":method", "GET"),
+        (":path", "/"),
+        (":authority", "example.com"),
+        ("content-length", "0"),
+    ];
     let ordered = h2.ordered_headers(&headers);
     assert_eq!(ordered[0].0, ":method");
     assert_eq!(ordered[1].0, ":path");
@@ -598,7 +614,13 @@ fn test_http2_ordered_headers() {
 #[test]
 fn test_http2_ordered_headers_chrome() {
     let h2 = Http2Fingerprint::chrome();
-    let headers = vec![(":path", "/"), (":method", "GET"), ("accept", "*/*"), (":authority", "x.com"), (":scheme", "https")];
+    let headers = vec![
+        (":path", "/"),
+        (":method", "GET"),
+        ("accept", "*/*"),
+        (":authority", "x.com"),
+        (":scheme", "https"),
+    ];
     let ordered = h2.ordered_headers(&headers);
     assert_eq!(ordered[0].0, ":method");
     assert_eq!(ordered[1].0, ":authority");
@@ -638,7 +660,10 @@ fn test_http2_clone() {
     let h2 = Http2Fingerprint::firefox();
     let cloned = h2.clone();
     assert_eq!(h2.initial_window_size, cloned.initial_window_size);
-    assert_eq!(h2.pseudo_header_order.len(), cloned.pseudo_header_order.len());
+    assert_eq!(
+        h2.pseudo_header_order.len(),
+        cloned.pseudo_header_order.len()
+    );
 }
 
 #[test]

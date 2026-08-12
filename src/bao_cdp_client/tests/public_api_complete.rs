@@ -25,11 +25,11 @@
 use bao_cdp_client::{
     bridge::ConsoleLevel, bridge::ServoEvent, AXNode, Accessibility, BoundingBox, BridgeError,
     BridgeScreenshotFormat, Browser, BrowserContext, BrowserOptions, CDPRdpBridge, CdpError,
-    CdpEvent, Connection, ConnectionConfig, ConnectError, ConsoleMessage, ContextOptions, Cookie,
-    Coverage, DeviceDescriptor, Dialog, DialogType, ElementHandle, EventHandler, EventEmitter,
-    EventEmitterInner, EventSubscriber, ExecutionContext, Frame, HandlerId, HighLevelBrowser,
-    InMemoryBridge, InMemoryBridgeResponse, InMemoryTransport, JSHandle, Keyboard, MouseButton,
-    Mouse, NavigationEntry, NavigationHistory, Page, PageTargetInfo, PageViewport,
+    CdpEvent, ConnectError, Connection, ConnectionConfig, ConsoleMessage, ContextOptions, Cookie,
+    Coverage, DeviceDescriptor, Dialog, DialogType, ElementHandle, EventEmitter, EventEmitterInner,
+    EventHandler, EventSubscriber, ExecutionContext, Frame, HandlerId, HighLevelBrowser,
+    InMemoryBridge, InMemoryBridgeResponse, InMemoryTransport, JSHandle, Keyboard, Mouse,
+    MouseButton, NavigationEntry, NavigationHistory, Page, PageTargetInfo, PageViewport,
     ParsedConnectUrl, PermissionOverride, Pid, RemoteObject, Request, Response, ScreenshotFormat,
     ServoBackend, SubscriptionResult, TargetInfo, Touchscreen, Tracing, Transport, TransportKind,
     Viewport, WaitUntilState, WebSocketTransport, Worker, VERSION,
@@ -87,7 +87,10 @@ fn top_level_errors() {
 fn top_level_transport() {
     // Arrange
     // CdpEvent 构造
-    let evt = CdpEvent::new("Page.frameNavigated", serde_json::json!({"url": "about:blank"}));
+    let evt = CdpEvent::new(
+        "Page.frameNavigated",
+        serde_json::json!({"url": "about:blank"}),
+    );
     // Act
     // Assert
     assert_eq!(evt.method, "Page.frameNavigated");
@@ -206,12 +209,18 @@ fn public_types_full_coverage() {
     assert_eq!(ScreenshotFormat::Png.as_cdp_str(), "png");
     assert_eq!(ScreenshotFormat::Jpeg.as_cdp_str(), "jpeg");
     assert_eq!(ScreenshotFormat::Webp.as_cdp_str(), "webp");
-    assert_eq!(ScreenshotFormat::from_cdp(Some("png")), ScreenshotFormat::Png);
+    assert_eq!(
+        ScreenshotFormat::from_cdp(Some("png")),
+        ScreenshotFormat::Png
+    );
     assert_eq!(ScreenshotFormat::default(), ScreenshotFormat::Png);
 
     // WaitUntilState 变体 + 转换
     assert_eq!(WaitUntilState::Load.as_str(), "load");
-    assert_eq!(WaitUntilState::DomContentLoaded.as_str(), "domcontentloaded");
+    assert_eq!(
+        WaitUntilState::DomContentLoaded.as_str(),
+        "domcontentloaded"
+    );
     assert_eq!(WaitUntilState::NetworkIdle0.as_str(), "networkidle0");
     assert_eq!(WaitUntilState::NetworkIdle2.as_str(), "networkidle2");
     assert_eq!(WaitUntilState::default(), WaitUntilState::Load);

@@ -3,8 +3,8 @@
 // Provides a lazily-initialized set of frequently used JS property names
 // to avoid repeated string allocation when accessing JS object properties.
 
-use std::ptr::NonNull;
 use mozjs::jsapi::{JSContext, JSString};
+use std::ptr::NonNull;
 
 /// Lazily-interned JS atom strings. Initialized once per JSContext lifetime.
 pub struct CommonStrings {
@@ -67,8 +67,8 @@ impl CommonStrings {
     /// Intern all common strings for the given JSContext.
     /// Must be called once after the JSContext is created.
     pub unsafe fn init(&mut self, cx: *mut JSContext) {
-        use std::ffi::CString;
         use mozjs::jsapi::JS_NewStringCopyZ;
+        use std::ffi::CString;
 
         for (i, &name) in ATOM_NAMES.iter().enumerate() {
             let c_str = CString::new(name).unwrap_or_default();

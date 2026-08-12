@@ -138,7 +138,9 @@ fn ws_transport_connect_handshake_succeeds() {
     let server = MiniCdpServer::new(echo_handler);
     // Act
     let mut t = WebSocketTransport::connect(&server.url()).expect("handshake");
-    let result = t.send_command("Page.navigate", json!({}), None).expect("send");
+    let result = t
+        .send_command("Page.navigate", json!({}), None)
+        .expect("send");
     // Assert
     assert_eq!(result["echoedMethod"], "Page.navigate");
 }

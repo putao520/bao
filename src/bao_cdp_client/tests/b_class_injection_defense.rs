@@ -46,7 +46,9 @@ fn extract_expr(r: &Value) -> String {
 
 /// 截取 IIFE expression 的 `var __args=[...]` 字面量段。
 fn args_literal(expr: &str) -> String {
-    let start = expr.find("var __args=").expect("missing __args declaration");
+    let start = expr
+        .find("var __args=")
+        .expect("missing __args declaration");
     let rel = expr[start..].find("];").expect("missing __args terminator");
     expr[start..start + rel + 1].to_string()
 }
@@ -208,7 +210,11 @@ fn inj_add_script_tag_content_script_close() {
 fn inj_add_script_tag_content_template_literal() {
     // Arrange
     // Act
-    let r = run("Page.addScriptTag", json!({"content": VEC_TEMPLATE_LITERAL})).unwrap();
+    let r = run(
+        "Page.addScriptTag",
+        json!({"content": VEC_TEMPLATE_LITERAL}),
+    )
+    .unwrap();
     // Assert
     assert_payload_safe(&extract_expr(&r), VEC_TEMPLATE_LITERAL);
 }
@@ -254,7 +260,11 @@ fn inj_expose_function_name_single_quote_alert() {
     // Arrange
     // @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
     // Act
-    let r = run("Page.exposeFunction", json!({"name": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    let r = run(
+        "Page.exposeFunction",
+        json!({"name": VEC_SINGLE_QUOTE_ALERT}),
+    )
+    .unwrap();
     // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -286,7 +296,11 @@ fn inj_emulate_media_single_quote_alert() {
     // Arrange
     // @trace REQ-BAO-API-005 [method:Page.emulateMedia] [level:integration]
     // Act
-    let r = run("Page.emulateMedia", json!({"media": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    let r = run(
+        "Page.emulateMedia",
+        json!({"media": VEC_SINGLE_QUOTE_ALERT}),
+    )
+    .unwrap();
     // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -369,7 +383,11 @@ fn inj_type_text_single_quote_alert() {
     // Arrange
     // @trace REQ-BAO-API-005 [method:Page.type] [level:integration]
     // Act
-    let r = run("Page.type", json!({"selector":"input","text": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    let r = run(
+        "Page.type",
+        json!({"selector":"input","text": VEC_SINGLE_QUOTE_ALERT}),
+    )
+    .unwrap();
     // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -378,7 +396,11 @@ fn inj_type_text_single_quote_alert() {
 fn inj_type_text_template_literal() {
     // Arrange
     // Act
-    let r = run("Page.type", json!({"selector":"input","text": VEC_TEMPLATE_LITERAL})).unwrap();
+    let r = run(
+        "Page.type",
+        json!({"selector":"input","text": VEC_TEMPLATE_LITERAL}),
+    )
+    .unwrap();
     // Assert
     assert_payload_safe(&extract_expr(&r), VEC_TEMPLATE_LITERAL);
 }
@@ -401,7 +423,11 @@ fn inj_fill_value_single_quote_alert() {
     // Arrange
     // @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
     // Act
-    let r = run("Page.fill", json!({"selector":"input","value": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    let r = run(
+        "Page.fill",
+        json!({"selector":"input","value": VEC_SINGLE_QUOTE_ALERT}),
+    )
+    .unwrap();
     // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -410,7 +436,11 @@ fn inj_fill_value_single_quote_alert() {
 fn inj_fill_value_backslash() {
     // Arrange
     // Act
-    let r = run("Page.fill", json!({"selector":"input","value": VEC_BACKSLASH})).unwrap();
+    let r = run(
+        "Page.fill",
+        json!({"selector":"input","value": VEC_BACKSLASH}),
+    )
+    .unwrap();
     // Assert
     assert_payload_safe(&extract_expr(&r), VEC_BACKSLASH);
 }
@@ -419,7 +449,11 @@ fn inj_fill_value_backslash() {
 fn inj_fill_value_script_close() {
     // Arrange
     // Act
-    let r = run("Page.fill", json!({"selector":"input","value": VEC_SCRIPT_CLOSE})).unwrap();
+    let r = run(
+        "Page.fill",
+        json!({"selector":"input","value": VEC_SCRIPT_CLOSE}),
+    )
+    .unwrap();
     // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SCRIPT_CLOSE);
 }
@@ -433,7 +467,11 @@ fn inj_press_key_single_quote_alert() {
     // Arrange
     // @trace REQ-BAO-API-005 [method:Page.press] [level:integration]
     // Act
-    let r = run("Page.press", json!({"selector":"input","key": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    let r = run(
+        "Page.press",
+        json!({"selector":"input","key": VEC_SINGLE_QUOTE_ALERT}),
+    )
+    .unwrap();
     // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -442,7 +480,11 @@ fn inj_press_key_single_quote_alert() {
 fn inj_press_key_template_literal() {
     // Arrange
     // Act
-    let r = run("Page.press", json!({"selector":"input","key": VEC_TEMPLATE_LITERAL})).unwrap();
+    let r = run(
+        "Page.press",
+        json!({"selector":"input","key": VEC_TEMPLATE_LITERAL}),
+    )
+    .unwrap();
     // Assert
     assert_payload_safe(&extract_expr(&r), VEC_TEMPLATE_LITERAL);
 }
@@ -524,7 +566,10 @@ fn inj_select_option_values_with_injection_payloads() {
     ] {
         let json_p = serde_json::to_string(p).unwrap();
         // Assert
-        assert!(args_literal(&e).contains(&json_p), "missing payload {p} in args");
+        assert!(
+            args_literal(&e).contains(&json_p),
+            "missing payload {p} in args"
+        );
     }
 }
 
@@ -549,7 +594,10 @@ fn inj_set_input_files_paths_with_injection_payloads() {
     for p in &[VEC_SINGLE_QUOTE_ALERT, VEC_SCRIPT_CLOSE] {
         let json_p = serde_json::to_string(p).unwrap();
         // Assert
-        assert!(args_literal(&e).contains(&json_p), "missing payload {p} in args");
+        assert!(
+            args_literal(&e).contains(&json_p),
+            "missing payload {p} in args"
+        );
     }
 }
 
@@ -690,7 +738,11 @@ fn inj_element_owner_frame_returns_object() {
 fn inj_element_scroll_into_view_returns_object() {
     // Arrange
     // Act
-    let r = run("ElementHandle.scrollIntoViewIfNeeded", json!({"objectId":"obj1"})).unwrap();
+    let r = run(
+        "ElementHandle.scrollIntoViewIfNeeded",
+        json!({"objectId":"obj1"}),
+    )
+    .unwrap();
     // Assert
     assert!(r["result"].is_object());
 }
@@ -1076,10 +1128,7 @@ fn inj_all_b_class_evals_start_with_iife_open() {
             e.starts_with("(function(){"),
             "{m} must wrap in IIFE; got: {e}"
         );
-        assert!(
-            e.ends_with("})()"),
-            "{m} must end with }})(); got: {e}"
-        );
+        assert!(e.ends_with("})()"), "{m} must end with }})(); got: {e}");
     }
 }
 

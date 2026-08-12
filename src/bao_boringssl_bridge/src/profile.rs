@@ -29,9 +29,15 @@ impl TlsProfile {
     pub fn build_client(&self) -> Result<TlsClient, TlsError> {
         match self {
             TlsProfile::Default => TlsClient::new(),
-            TlsProfile::Chrome => Self::build_with_profile(Self::chrome_ciphers(), Self::chrome_curves()),
-            TlsProfile::Firefox => Self::build_with_profile(Self::firefox_ciphers(), Self::firefox_curves()),
-            TlsProfile::Safari => Self::build_with_profile(Self::safari_ciphers(), Self::safari_curves()),
+            TlsProfile::Chrome => {
+                Self::build_with_profile(Self::chrome_ciphers(), Self::chrome_curves())
+            }
+            TlsProfile::Firefox => {
+                Self::build_with_profile(Self::firefox_ciphers(), Self::firefox_curves())
+            }
+            TlsProfile::Safari => {
+                Self::build_with_profile(Self::safari_ciphers(), Self::safari_curves())
+            }
         }
     }
 
@@ -86,7 +92,10 @@ impl TlsProfile {
 
     // ─── Common builder ─────────────────────────────────────────────
 
-    fn build_with_profile(ciphers: &'static str, curves: &'static str) -> Result<TlsClient, TlsError> {
+    fn build_with_profile(
+        ciphers: &'static str,
+        curves: &'static str,
+    ) -> Result<TlsClient, TlsError> {
         let client = TlsClient::new()?;
         let ctx = client.ctx();
 
@@ -95,7 +104,9 @@ impl TlsProfile {
             .map_err(|_| TlsError::BoringSSL("invalid cipher string"))?;
         let ok = unsafe { SSL_CTX_set_cipher_list(ctx, ciphers_c.as_ptr()) };
         if ok == 0 {
-            return Err(TlsError::BoringSSL("SSL_CTX_set_cipher_list failed for profile"));
+            return Err(TlsError::BoringSSL(
+                "SSL_CTX_set_cipher_list failed for profile",
+            ));
         }
 
         // Set curves on the SSL_CTX via an intermediate SSL object.

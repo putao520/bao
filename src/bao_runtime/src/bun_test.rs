@@ -1,10 +1,10 @@
 // @trace REQ-IMPL-01
 // bun:test + harness compatibility shims for Bun upstream test compat
-use bun_core::ZBox;
 use ::std::ptr;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{UndefinedValue, Int32Value, BooleanValue};
+use mozjs::jsval::{BooleanValue, Int32Value, UndefinedValue};
 use mozjs::rooted;
 
 use crate::gc_store;
@@ -1483,10 +1483,19 @@ unsafe fn read_report_from_obj(raw: *mut JSContext, report_obj: *mut JSObject) -
     let passes = read_string_array(raw, obj_h, c"passes".as_ptr());
     let failures = read_failure_array(raw, obj_h, c"failures".as_ptr());
 
-    TestReport { passed, failed, passes, failures }
+    TestReport {
+        passed,
+        failed,
+        passes,
+        failures,
+    }
 }
 
-unsafe fn read_string_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, key: *const i8) -> Vec<String> {
+unsafe fn read_string_array(
+    raw: *mut JSContext,
+    obj_h: Handle<*mut JSObject>,
+    key: *const i8,
+) -> Vec<String> {
     let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw));
     let mut arr_val = UndefinedValue();
     JS_GetProperty(
@@ -1514,7 +1523,11 @@ unsafe fn read_string_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, k
             ptr: &mut len_val,
         },
     );
-    let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+    let len = if len_val.is_int32() {
+        len_val.to_int32() as usize
+    } else {
+        0
+    };
 
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
@@ -1533,7 +1546,11 @@ unsafe fn read_string_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, k
     out
 }
 
-unsafe fn read_failure_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, key: *const i8) -> Vec<TestFailure> {
+unsafe fn read_failure_array(
+    raw: *mut JSContext,
+    obj_h: Handle<*mut JSObject>,
+    key: *const i8,
+) -> Vec<TestFailure> {
     let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw));
     let mut arr_val = UndefinedValue();
     JS_GetProperty(
@@ -1561,7 +1578,11 @@ unsafe fn read_failure_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, 
             ptr: &mut len_val,
         },
     );
-    let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+    let len = if len_val.is_int32() {
+        len_val.to_int32() as usize
+    } else {
+        0
+    };
 
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
@@ -1589,7 +1610,11 @@ unsafe fn read_failure_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, 
     out
 }
 
-unsafe fn read_obj_string(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, key: *const i8) -> String {
+unsafe fn read_obj_string(
+    raw: *mut JSContext,
+    obj_h: Handle<*mut JSObject>,
+    key: *const i8,
+) -> String {
     let mut v = UndefinedValue();
     JS_GetProperty(
         raw,

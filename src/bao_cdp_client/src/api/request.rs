@@ -203,7 +203,10 @@ impl Request {
     ///
     /// @trace REQ-BAO-API-006 [class:Request]
     pub fn redirected_from(&self) -> Option<Rc<Request>> {
-        self.redirected_from.borrow().as_ref().and_then(|w| w.upgrade())
+        self.redirected_from
+            .borrow()
+            .as_ref()
+            .and_then(|w| w.upgrade())
     }
 
     /// 设置 redirected_from。
@@ -303,7 +306,10 @@ mod tests {
         r.add_header("content-type", "application/json");
         r.add_header("x-foo", "bar");
         assert_eq!(r.headers().len(), 2);
-        assert_eq!(r.headers().get("content-type"), Some(&"application/json".to_string()));
+        assert_eq!(
+            r.headers().get("content-type"),
+            Some(&"application/json".to_string())
+        );
     }
 
     #[test]

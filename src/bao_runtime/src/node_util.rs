@@ -1,10 +1,10 @@
 // @trace REQ-ENG-007
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, BooleanValue, ObjectValue, StringValue};
+use mozjs::jsval::{BooleanValue, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -17,45 +17,276 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"inspect".as_ptr(), Some(util_inspect), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isBoolean".as_ptr(), Some(util_is_boolean), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isNumber".as_ptr(), Some(util_is_number), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isString".as_ptr(), Some(util_is_string), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isSymbol".as_ptr(), Some(util_is_symbol), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isUndefined".as_ptr(), Some(util_is_undefined), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isNull".as_ptr(), Some(util_is_null), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isObject".as_ptr(), Some(util_is_object), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isFunction".as_ptr(), Some(util_is_function), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isArray".as_ptr(), Some(util_is_array), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isDate".as_ptr(), Some(util_is_date), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isRegExp".as_ptr(), Some(util_is_regexp), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isError".as_ptr(), Some(util_is_error), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"format".as_ptr(), Some(util_format), 0, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"promisify".as_ptr(), Some(util_promisify), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"callbackify".as_ptr(), Some(util_callbackify), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"deprecate".as_ptr(), Some(util_deprecate), 2, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"getSystemErrorName".as_ptr(), Some(util_get_system_error_name), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"parseArgs".as_ptr(), Some(util_parse_args), 1, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"inherits".as_ptr(), Some(util_inherits), 2, 0);
-        w2::JS_DefineFunction(cx, util_obj.handle(), c"isDeepStrictEqual".as_ptr(), Some(util_is_deep_strict_equal), 2, 0);
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"inspect".as_ptr(),
+            Some(util_inspect),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isBoolean".as_ptr(),
+            Some(util_is_boolean),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isNumber".as_ptr(),
+            Some(util_is_number),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isString".as_ptr(),
+            Some(util_is_string),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isSymbol".as_ptr(),
+            Some(util_is_symbol),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isUndefined".as_ptr(),
+            Some(util_is_undefined),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isNull".as_ptr(),
+            Some(util_is_null),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isObject".as_ptr(),
+            Some(util_is_object),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isFunction".as_ptr(),
+            Some(util_is_function),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isArray".as_ptr(),
+            Some(util_is_array),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isDate".as_ptr(),
+            Some(util_is_date),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isRegExp".as_ptr(),
+            Some(util_is_regexp),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isError".as_ptr(),
+            Some(util_is_error),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"format".as_ptr(),
+            Some(util_format),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"promisify".as_ptr(),
+            Some(util_promisify),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"callbackify".as_ptr(),
+            Some(util_callbackify),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"deprecate".as_ptr(),
+            Some(util_deprecate),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"getSystemErrorName".as_ptr(),
+            Some(util_get_system_error_name),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"parseArgs".as_ptr(),
+            Some(util_parse_args),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"inherits".as_ptr(),
+            Some(util_inherits),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            util_obj.handle(),
+            c"isDeepStrictEqual".as_ptr(),
+            Some(util_is_deep_strict_equal),
+            2,
+            0,
+        );
 
         // util.types — native type checkers (12 Rust-backed)
         {
             rooted!(&in(cx) let types_obj = w2::JS_NewPlainObject(cx));
             if !types_obj.get().is_null() {
                 let enumerate = JSPROP_ENUMERATE as u32;
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isBoolean".as_ptr(), Some(util_is_boolean), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isNumber".as_ptr(), Some(util_is_number), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isString".as_ptr(), Some(util_is_string), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isSymbol".as_ptr(), Some(util_is_symbol), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isUndefined".as_ptr(), Some(util_is_undefined), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isNull".as_ptr(), Some(util_is_null), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isObject".as_ptr(), Some(util_is_object), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isFunction".as_ptr(), Some(util_is_function), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isArray".as_ptr(), Some(util_is_array), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isDate".as_ptr(), Some(util_is_date), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isRegExp".as_ptr(), Some(util_is_regexp), 1, enumerate);
-                w2::JS_DefineFunction(cx, types_obj.handle(), c"isError".as_ptr(), Some(util_is_error), 1, enumerate);
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isBoolean".as_ptr(),
+                    Some(util_is_boolean),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isNumber".as_ptr(),
+                    Some(util_is_number),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isString".as_ptr(),
+                    Some(util_is_string),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isSymbol".as_ptr(),
+                    Some(util_is_symbol),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isUndefined".as_ptr(),
+                    Some(util_is_undefined),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isNull".as_ptr(),
+                    Some(util_is_null),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isObject".as_ptr(),
+                    Some(util_is_object),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isFunction".as_ptr(),
+                    Some(util_is_function),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isArray".as_ptr(),
+                    Some(util_is_array),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isDate".as_ptr(),
+                    Some(util_is_date),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isRegExp".as_ptr(),
+                    Some(util_is_regexp),
+                    1,
+                    enumerate,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    types_obj.handle(),
+                    c"isError".as_ptr(),
+                    Some(util_is_error),
+                    1,
+                    enumerate,
+                );
 
                 // Extended types via JS eval — factory function pattern
                 let types_src = r#"(function(t){
@@ -101,25 +332,51 @@ t.isCryptoKey=function(){return false};
 })"#;
                 let mut src = mozjs::rust::transform_str_to_source_text(types_src);
                 let mut factory_val = UndefinedValue();
-                let factory_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut factory_val };
+                let factory_h = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut factory_val,
+                };
                 let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<types>".as_ptr(), 1);
                 if !opts.is_null() {
                     let global = CurrentGlobalOrNull(cx.raw_cx());
-                    if !global.is_null() && JS::Evaluate2(cx.raw_cx(), opts, &mut src, factory_h) && factory_val.is_object() {
-                        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                    if !global.is_null()
+                        && JS::Evaluate2(cx.raw_cx(), opts, &mut src, factory_h)
+                        && factory_val.is_object()
+                    {
+                        let wrapped_cx = mozjs::context::JSContext::from_ptr(
+                            NonNull::new_unchecked(cx.raw_cx()),
+                        );
                         rooted!(&in(wrapped_cx) let global_root = global);
                         rooted!(&in(wrapped_cx) let types_val_root = ObjectValue(types_obj.get()));
-                        let args_arr = HandleValueArray { length_: 1, elements_: &types_val_root.get() as *const Value };
+                        let args_arr = HandleValueArray {
+                            length_: 1,
+                            elements_: &types_val_root.get() as *const Value,
+                        };
                         let mut call_rval = UndefinedValue();
-                        let call_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval };
+                        let call_rval_h = MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut call_rval,
+                        };
                         rooted!(&in(wrapped_cx) let factory_obj = factory_val.to_object());
                         rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
-                        JS_CallFunctionValue(cx.raw_cx(), global_root.handle().into(), factory_obj_h.handle().into(), &args_arr, call_rval_h);
+                        JS_CallFunctionValue(
+                            cx.raw_cx(),
+                            global_root.handle().into(),
+                            factory_obj_h.handle().into(),
+                            &args_arr,
+                            call_rval_h,
+                        );
                     }
                     libc::free(opts as *mut _);
                 }
 
-                w2::JS_DefineProperty3(cx, util_obj.handle(), c"types".as_ptr(), types_obj.handle(), JSPROP_ENUMERATE as u32);
+                w2::JS_DefineProperty3(
+                    cx,
+                    util_obj.handle(),
+                    c"types".as_ptr(),
+                    types_obj.handle(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 
@@ -203,8 +460,10 @@ t.isCryptoKey=function(){return false};
             let global = CurrentGlobalOrNull(cx.raw_cx());
             if !global.is_null()
                 && JS::Evaluate2(cx.raw_cx(), eopts, &mut esrc, eval_h)
-                && eval_rval.is_object() {
-                let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                && eval_rval.is_object()
+            {
+                let wrapped_cx =
+                    mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                 rooted!(&in(wrapped_cx) let global_root = global);
                 rooted!(&in(wrapped_cx) let util_val_root = ObjectValue(util_obj.get()));
                 let args_arr = HandleValueArray {
@@ -661,22 +920,119 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     // the JS-based assert above supersedes them in practice (cached as the
     // primary `assert` builtin).
     unsafe {
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"ok".as_ptr(), Some(assert_ok), 1, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"equal".as_ptr(), Some(assert_equal), 2, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"notEqual".as_ptr(), Some(assert_not_equal), 2, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"deepEqual".as_ptr(), Some(assert_deep_equal), 2, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"notDeepEqual".as_ptr(), Some(assert_not_deep_equal), 2, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"strictEqual".as_ptr(), Some(assert_strict_equal), 2, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"notStrictEqual".as_ptr(), Some(assert_not_strict_equal), 2, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"throws".as_ptr(), Some(assert_throws), 1, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"rejects".as_ptr(), Some(assert_rejects), 1, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"doesNotThrow".as_ptr(), Some(assert_does_not_throw), 1, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"fail".as_ptr(), Some(assert_fail), 0, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"ifError".as_ptr(), Some(assert_if_error), 1, 0);
-        w2::JS_DefineFunction(cx, assert_obj.handle(), c"deepStrictEqual".as_ptr(), Some(assert_deep_equal), 2, 0);
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"ok".as_ptr(),
+            Some(assert_ok),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"equal".as_ptr(),
+            Some(assert_equal),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"notEqual".as_ptr(),
+            Some(assert_not_equal),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"deepEqual".as_ptr(),
+            Some(assert_deep_equal),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"notDeepEqual".as_ptr(),
+            Some(assert_not_deep_equal),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"strictEqual".as_ptr(),
+            Some(assert_strict_equal),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"notStrictEqual".as_ptr(),
+            Some(assert_not_strict_equal),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"throws".as_ptr(),
+            Some(assert_throws),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"rejects".as_ptr(),
+            Some(assert_rejects),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"doesNotThrow".as_ptr(),
+            Some(assert_does_not_throw),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"fail".as_ptr(),
+            Some(assert_fail),
+            0,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"ifError".as_ptr(),
+            Some(assert_if_error),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            assert_obj.handle(),
+            c"deepStrictEqual".as_ptr(),
+            Some(assert_deep_equal),
+            2,
+            0,
+        );
 
         rooted!(&in(cx) let strict_val = ObjectValue(assert_obj.get()));
-        JS_DefineProperty(cx.raw_cx(), assert_obj.handle().into(), c"strict".as_ptr(), strict_val.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx.raw_cx(),
+            assert_obj.handle().into(),
+            c"strict".as_ptr(),
+            strict_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 }
 
@@ -684,102 +1040,182 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
 /// depth cap to avoid infinite recursion on cyclic structures.
 ///
 /// @trace REQ-ENG-004 [algorithm:util_inspect]
-unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String { unsafe {
-    if val.is_undefined() { return "undefined".to_string(); }
-    if val.is_null() { return "null".to_string(); }
-    if val.is_boolean() { return val.to_boolean().to_string(); }
-    if val.is_int32() { return val.to_int32().to_string(); }
-    if val.is_double() { return val.to_double().to_string(); }
-    if val.is_string() {
-        return format!("'{}'", crate::js_to_rust_string(cx, val));
-    }
-    if val.is_object() {
-        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        rooted!(&in(wrapped_cx) let obj = val.to_object());
+unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
+    unsafe {
+        if val.is_undefined() {
+            return "undefined".to_string();
+        }
+        if val.is_null() {
+            return "null".to_string();
+        }
+        if val.is_boolean() {
+            return val.to_boolean().to_string();
+        }
+        if val.is_int32() {
+            return val.to_int32().to_string();
+        }
+        if val.is_double() {
+            return val.to_double().to_string();
+        }
+        if val.is_string() {
+            return format!("'{}'", crate::js_to_rust_string(cx, val));
+        }
+        if val.is_object() {
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let obj = val.to_object());
 
-        // Arrays → [ a, b, c ]
-        let mut is_arr = false;
-        rooted!(&in(wrapped_cx) let v_root = val);
-        IsArrayObject(cx, v_root.handle().into(), &mut is_arr);
-        if is_arr {
-            if depth == 0 { return "[Array]".to_string(); }
-            let mut len_val = UndefinedValue();
-            JS_GetProperty(cx, obj.handle().into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
-            let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
-            let mut parts: Vec<String> = Vec::with_capacity(len);
-            for i in 0..len {
-                let mut elem = UndefinedValue();
-                JS_GetElement(cx, obj.handle().into(), i as u32, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
-                parts.push(jsval_inspect(cx, elem, depth - 1));
+            // Arrays → [ a, b, c ]
+            let mut is_arr = false;
+            rooted!(&in(wrapped_cx) let v_root = val);
+            IsArrayObject(cx, v_root.handle().into(), &mut is_arr);
+            if is_arr {
+                if depth == 0 {
+                    return "[Array]".to_string();
+                }
+                let mut len_val = UndefinedValue();
+                JS_GetProperty(
+                    cx,
+                    obj.handle().into(),
+                    c"length".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut len_val,
+                    },
+                );
+                let len = if len_val.is_int32() {
+                    len_val.to_int32() as usize
+                } else {
+                    0
+                };
+                let mut parts: Vec<String> = Vec::with_capacity(len);
+                for i in 0..len {
+                    let mut elem = UndefinedValue();
+                    JS_GetElement(
+                        cx,
+                        obj.handle().into(),
+                        i as u32,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut elem,
+                        },
+                    );
+                    parts.push(jsval_inspect(cx, elem, depth - 1));
+                }
+                return format!("[ {} ]", parts.join(", "));
             }
-            return format!("[ {} ]", parts.join(", "));
-        }
 
-        // Functions → [Function: name] or [Function (anonymous)]
-        if JS_ObjectIsFunction(obj.get()) {
-            let mut name_val = UndefinedValue();
-            JS_GetProperty(cx, obj.handle().into(), c"name".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut name_val });
-            let name = if name_val.is_string() { crate::js_to_rust_string(cx, name_val) } else { String::new() };
-            if name.is_empty() { return "[Function (anonymous)]".to_string(); }
-            return format!("[Function: {}]", name);
-        }
-
-        // Plain objects → { key: value, ... }
-        if depth == 0 { return "[Object]".to_string(); }
-
-        // Enumerate own enumerable string keys via the established IdVector +
-        // GetPropertyKeys pattern used elsewhere in bao_runtime. Note: IdVector
-        // takes the raw *mut JSContext, and we fetch each value via JS_GetProperty
-        // with the C-string key (the same approach node_url.rs uses) to avoid the
-        // Handle<PropertyKey> wrapping that JS_GetPropertyById would require.
-        let mut ids = mozjs::rust::IdVector::new(cx);
-        let ok = GetPropertyKeys(cx, obj.handle().into(), JSITER_OWNONLY, ids.handle_mut());
-        let mut parts: Vec<String> = Vec::new();
-        if ok {
-            for jsid in &*ids {
-                if !jsid.is_string() { continue; }
-                let key_str_ptr = jsid.to_string();
-                if key_str_ptr.is_null() { continue; }
-                let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str_ptr));
-                let c_key = ZBox::from_bytes(key.as_bytes());
-                let mut v = UndefinedValue();
-                JS_GetProperty(cx, obj.handle().into(), c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut v });
-                parts.push(format!("{}: {}", key, jsval_inspect(cx, v, depth - 1)));
+            // Functions → [Function: name] or [Function (anonymous)]
+            if JS_ObjectIsFunction(obj.get()) {
+                let mut name_val = UndefinedValue();
+                JS_GetProperty(
+                    cx,
+                    obj.handle().into(),
+                    c"name".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut name_val,
+                    },
+                );
+                let name = if name_val.is_string() {
+                    crate::js_to_rust_string(cx, name_val)
+                } else {
+                    String::new()
+                };
+                if name.is_empty() {
+                    return "[Function (anonymous)]".to_string();
+                }
+                return format!("[Function: {}]", name);
             }
+
+            // Plain objects → { key: value, ... }
+            if depth == 0 {
+                return "[Object]".to_string();
+            }
+
+            // Enumerate own enumerable string keys via the established IdVector +
+            // GetPropertyKeys pattern used elsewhere in bao_runtime. Note: IdVector
+            // takes the raw *mut JSContext, and we fetch each value via JS_GetProperty
+            // with the C-string key (the same approach node_url.rs uses) to avoid the
+            // Handle<PropertyKey> wrapping that JS_GetPropertyById would require.
+            let mut ids = mozjs::rust::IdVector::new(cx);
+            let ok = GetPropertyKeys(cx, obj.handle().into(), JSITER_OWNONLY, ids.handle_mut());
+            let mut parts: Vec<String> = Vec::new();
+            if ok {
+                for jsid in &*ids {
+                    if !jsid.is_string() {
+                        continue;
+                    }
+                    let key_str_ptr = jsid.to_string();
+                    if key_str_ptr.is_null() {
+                        continue;
+                    }
+                    let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str_ptr));
+                    let c_key = ZBox::from_bytes(key.as_bytes());
+                    let mut v = UndefinedValue();
+                    JS_GetProperty(
+                        cx,
+                        obj.handle().into(),
+                        c_key.as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut v,
+                        },
+                    );
+                    parts.push(format!("{}: {}", key, jsval_inspect(cx, v, depth - 1)));
+                }
+            }
+            if parts.is_empty() {
+                return "{}".to_string();
+            }
+            return format!("{{ {} }}", parts.join(", "));
         }
-        if parts.is_empty() { return "{}".to_string(); }
-        return format!("{{ {} }}", parts.join(", "));
+        String::new()
     }
-    String::new()
-}}
+}
 
 /// Format a JSVal for `util.format` / console output. Strings are emitted
 /// bare (no quotes), objects fall back to their constructor-tag. This is the
 /// `util.format("%s", val)` / `console.log` display semantics — distinct from
 /// `util.inspect`, which quotes strings and recurses into objects.
-unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String { unsafe {
-    if val.is_undefined() { return "undefined".to_string(); }
-    if val.is_null() { return "null".to_string(); }
-    if val.is_boolean() { return val.to_boolean().to_string(); }
-    if val.is_int32() { return val.to_int32().to_string(); }
-    if val.is_double() { return val.to_double().to_string(); }
-    if val.is_string() {
-        return crate::js_to_rust_string(cx, val);
+unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String {
+    unsafe {
+        if val.is_undefined() {
+            return "undefined".to_string();
+        }
+        if val.is_null() {
+            return "null".to_string();
+        }
+        if val.is_boolean() {
+            return val.to_boolean().to_string();
+        }
+        if val.is_int32() {
+            return val.to_int32().to_string();
+        }
+        if val.is_double() {
+            return val.to_double().to_string();
+        }
+        if val.is_string() {
+            return crate::js_to_rust_string(cx, val);
+        }
+        if val.is_object() {
+            // For format display, delegate to inspect so arrays/objects render
+            // with their contents rather than the bare "[Object]" tag.
+            return jsval_inspect(cx, val, 2);
+        }
+        String::new()
     }
-    if val.is_object() {
-        // For format display, delegate to inspect so arrays/objects render
-        // with their contents rather than the bare "[Object]" tag.
-        return jsval_inspect(cx, val, 2);
-    }
-    String::new()
-}}
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         let s = JS_NewStringCopyZ(cx, c"undefined".as_ptr());
-        args.rval().set(if s.is_null() { UndefinedValue() } else { StringValue(&*s) });
+        args.rval().set(if s.is_null() {
+            UndefinedValue()
+        } else {
+            StringValue(&*s)
+        });
         return true;
     }
     let val = *args.get(0).ptr;
@@ -789,7 +1225,11 @@ unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     let result = jsval_inspect(cx, val, 2);
     let utf16: Vec<u16> = result.encode_utf16().collect();
     let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
-    args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
+    args.rval().set(if js_str.is_null() {
+        UndefinedValue()
+    } else {
+        StringValue(&*js_str)
+    });
     true
 }
 
@@ -798,7 +1238,10 @@ macro_rules! type_check_fn {
         #[allow(unsafe_op_in_unsafe_fn)]
         unsafe extern "C" fn $name(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
             let args = CallArgs::from_vp(vp, argc);
-            if argc == 0 { args.rval().set(BooleanValue(false)); return true; }
+            if argc == 0 {
+                args.rval().set(BooleanValue(false));
+                return true;
+            }
             let val = *args.get(0).ptr;
             args.rval().set(BooleanValue($check(&val)));
             true
@@ -814,82 +1257,128 @@ type_check_fn!(util_is_undefined, |v: &JSVal| v.is_undefined());
 type_check_fn!(util_is_null, |v: &JSVal| v.is_null());
 type_check_fn!(util_is_object, |v: &JSVal| v.is_object());
 
-unsafe fn is_function(cx: *mut JSContext, val: &JSVal) -> bool { unsafe {
-    if !val.is_object() { return false; }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let obj = val.to_object());
-    JS_ObjectIsFunction(obj.get())
-}}
+unsafe fn is_function(cx: *mut JSContext, val: &JSVal) -> bool {
+    unsafe {
+        if !val.is_object() {
+            return false;
+        }
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let obj = val.to_object());
+        JS_ObjectIsFunction(obj.get())
+    }
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_is_function(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 { args.rval().set(BooleanValue(false)); return true; }
+    if argc == 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
     let val = *args.get(0).ptr;
     args.rval().set(BooleanValue(is_function(cx, &val)));
     true
 }
 
-unsafe fn is_array(cx: *mut JSContext, val: &JSVal) -> bool { unsafe {
-    if !val.is_object() { return false; }
-    let mut result = false;
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let v_root = *val);
-    IsArrayObject(cx, v_root.handle().into(), &mut result);
-    result
-}}
+unsafe fn is_array(cx: *mut JSContext, val: &JSVal) -> bool {
+    unsafe {
+        if !val.is_object() {
+            return false;
+        }
+        let mut result = false;
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let v_root = *val);
+        IsArrayObject(cx, v_root.handle().into(), &mut result);
+        result
+    }
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_is_array(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 { args.rval().set(BooleanValue(false)); return true; }
+    if argc == 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
     let val = *args.get(0).ptr;
     args.rval().set(BooleanValue(is_array(cx, &val)));
     true
 }
 
-unsafe fn has_class_name(cx: *mut JSContext, val: &JSVal, name: &str) -> bool { unsafe {
-    if !val.is_object() { return false; }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let obj = val.to_object());
-    let mut ctor = UndefinedValue();
-    JS_GetProperty(cx, obj.handle().into(), c"constructor".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ctor });
-    if ctor.is_object() {
-        rooted!(&in(wrapped_cx) let ctor_obj = ctor.to_object());
-        let mut name_val = UndefinedValue();
-        JS_GetProperty(cx, ctor_obj.handle().into(), c"name".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut name_val });
-        if name_val.is_string() {
-            let n = crate::js_to_rust_string(cx, name_val);
-            return n == name;
+unsafe fn has_class_name(cx: *mut JSContext, val: &JSVal, name: &str) -> bool {
+    unsafe {
+        if !val.is_object() {
+            return false;
         }
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let obj = val.to_object());
+        let mut ctor = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"constructor".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ctor,
+            },
+        );
+        if ctor.is_object() {
+            rooted!(&in(wrapped_cx) let ctor_obj = ctor.to_object());
+            let mut name_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                ctor_obj.handle().into(),
+                c"name".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut name_val,
+                },
+            );
+            if name_val.is_string() {
+                let n = crate::js_to_rust_string(cx, name_val);
+                return n == name;
+            }
+        }
+        false
     }
-    false
-}}
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_is_date(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 { args.rval().set(BooleanValue(false)); return true; }
+    if argc == 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
     let val = *args.get(0).ptr;
-    args.rval().set(BooleanValue(has_class_name(cx, &val, "Date")));
+    args.rval()
+        .set(BooleanValue(has_class_name(cx, &val, "Date")));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_is_regexp(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 { args.rval().set(BooleanValue(false)); return true; }
+    if argc == 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
     let val = *args.get(0).ptr;
-    args.rval().set(BooleanValue(has_class_name(cx, &val, "RegExp")));
+    args.rval()
+        .set(BooleanValue(has_class_name(cx, &val, "RegExp")));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_is_error(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 { args.rval().set(BooleanValue(false)); return true; }
+    if argc == 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
     let val = *args.get(0).ptr;
-    args.rval().set(BooleanValue(has_class_name(cx, &val, "Error")));
+    args.rval()
+        .set(BooleanValue(has_class_name(cx, &val, "Error")));
     true
 }
 
@@ -898,7 +1387,11 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         let s = JS_NewStringCopyZ(cx, c"".as_ptr());
-        args.rval().set(if s.is_null() { UndefinedValue() } else { StringValue(&*s) });
+        args.rval().set(if s.is_null() {
+            UndefinedValue()
+        } else {
+            StringValue(&*s)
+        });
         return true;
     }
 
@@ -912,14 +1405,18 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             while let Some(c) = chars.next() {
                 if c == '%' {
                     match chars.peek() {
-                        Some(&'s') | Some(&'d') | Some(&'i') | Some(&'f') | Some(&'j') | Some(&'o') | Some(&'O') => {
+                        Some(&'s') | Some(&'d') | Some(&'i') | Some(&'f') | Some(&'j')
+                        | Some(&'o') | Some(&'O') => {
                             chars.next();
                             if arg_idx < argc {
                                 result.push_str(&jsval_to_display(cx, *args.get(arg_idx).ptr));
                                 arg_idx += 1;
                             }
                         }
-                        Some(&'%') => { chars.next(); result.push('%'); }
+                        Some(&'%') => {
+                            chars.next();
+                            result.push('%');
+                        }
                         _ => result.push(c),
                     }
                 } else {
@@ -928,7 +1425,11 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             }
             let utf16: Vec<u16> = result.encode_utf16().collect();
             let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
-            args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
+            args.rval().set(if js_str.is_null() {
+                UndefinedValue()
+            } else {
+                StringValue(&*js_str)
+            });
             return true;
         }
     }
@@ -940,7 +1441,11 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let result = parts.join(" ");
     let utf16: Vec<u16> = result.encode_utf16().collect();
     let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
-    args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
+    args.rval().set(if js_str.is_null() {
+        UndefinedValue()
+    } else {
+        StringValue(&*js_str)
+    });
     true
 }
 
@@ -978,7 +1483,10 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
 })"#;
     let mut src = mozjs::rust::transform_str_to_source_text(promisify_src);
     let mut factory_val = UndefinedValue();
-    let factory_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut factory_val };
+    let factory_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut factory_val,
+    };
     let opts = mozjs::glue::NewCompileOptions(cx, c"<promisify>".as_ptr(), 1);
     if opts.is_null() {
         args.rval().set(*args.get(0).ptr);
@@ -999,12 +1507,24 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     rooted!(&in(wrapped_cx) let global_root = global);
     rooted!(&in(wrapped_cx) let fn_obj = fn_val.get().to_object());
     rooted!(&in(wrapped_cx) let fn_obj_val = ObjectValue(fn_obj.get()));
-    let args_arr = HandleValueArray { length_: 1, elements_: &fn_obj_val.get() as *const Value };
+    let args_arr = HandleValueArray {
+        length_: 1,
+        elements_: &fn_obj_val.get() as *const Value,
+    };
     let mut call_rval = UndefinedValue();
-    let call_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval };
+    let call_rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut call_rval,
+    };
     rooted!(&in(wrapped_cx) let factory_obj = factory_val.to_object());
     rooted!(&in(wrapped_cx) let factory_val_h = ObjectValue(factory_obj.get()));
-    JS_CallFunctionValue(cx, global_root.handle().into(), factory_val_h.handle().into(), &args_arr, call_rval_h);
+    JS_CallFunctionValue(
+        cx,
+        global_root.handle().into(),
+        factory_val_h.handle().into(),
+        &args_arr,
+        call_rval_h,
+    );
     args.rval().set(call_rval);
     true
 }
@@ -1019,12 +1539,20 @@ unsafe extern "C" fn util_callbackify(_cx: *mut JSContext, _argc: u32, vp: *mut 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_deprecate(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    if _argc > 0 { args.rval().set(*args.get(0).ptr); } else { args.rval().set(UndefinedValue()); }
+    if _argc > 0 {
+        args.rval().set(*args.get(0).ptr);
+    } else {
+        args.rval().set(UndefinedValue());
+    }
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn util_get_system_error_name(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn util_get_system_error_name(
+    _cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     args.rval().set(UndefinedValue());
     true
@@ -1056,9 +1584,15 @@ unsafe extern "C" fn assert_ok(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         val.to_double() != 0.0
     } else if val.is_string() {
         true
-    } else { !(val.is_null() || val.is_undefined()) };
+    } else {
+        !(val.is_null() || val.is_undefined())
+    };
     if !is_truthy {
-        let msg = if argc > 1 { jsval_to_display(cx, *args.get(1).ptr) } else { "The expression evaluated to a falsy value".to_string() };
+        let msg = if argc > 1 {
+            jsval_to_display(cx, *args.get(1).ptr)
+        } else {
+            "The expression evaluated to a falsy value".to_string()
+        };
         let c_msg = ZBox::from_bytes(msg.as_bytes());
         JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
         return false;
@@ -1108,7 +1642,11 @@ unsafe extern "C" fn assert_deep_equal(cx: *mut JSContext, argc: u32, vp: *mut J
         let a = jsval_to_display(cx, *args.get(0).ptr);
         let b = jsval_to_display(cx, *args.get(1).ptr);
         if a != b {
-            let c_msg = ZBox::from_vec("Expected values to be deeply equal".to_string().into_bytes());
+            let c_msg = ZBox::from_vec(
+                "Expected values to be deeply equal"
+                    .to_string()
+                    .into_bytes(),
+            );
             JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -1118,52 +1656,84 @@ unsafe extern "C" fn assert_deep_equal(cx: *mut JSContext, argc: u32, vp: *mut J
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn assert_not_deep_equal(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn assert_not_deep_equal(
+    _cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     args.rval().set(UndefinedValue());
     true
 }
 
-unsafe fn values_equal_strict(cx: *mut JSContext, a: JSVal, b: JSVal) -> bool { unsafe {
-    if a.is_undefined() && b.is_undefined() { return true; }
-    if a.is_null() && b.is_null() { return true; }
-    if a.is_boolean() && b.is_boolean() { return a.to_boolean() == b.to_boolean(); }
-    if a.is_int32() && b.is_int32() { return a.to_int32() == b.to_int32(); }
-    if a.is_string() && b.is_string() {
-        return jsval_to_display(cx, a) == jsval_to_display(cx, b);
+unsafe fn values_equal_strict(cx: *mut JSContext, a: JSVal, b: JSVal) -> bool {
+    unsafe {
+        if a.is_undefined() && b.is_undefined() {
+            return true;
+        }
+        if a.is_null() && b.is_null() {
+            return true;
+        }
+        if a.is_boolean() && b.is_boolean() {
+            return a.to_boolean() == b.to_boolean();
+        }
+        if a.is_int32() && b.is_int32() {
+            return a.to_int32() == b.to_int32();
+        }
+        if a.is_string() && b.is_string() {
+            return jsval_to_display(cx, a) == jsval_to_display(cx, b);
+        }
+        if a.is_double() || b.is_double() {
+            let da = if a.is_double() {
+                a.to_double()
+            } else if a.is_int32() {
+                a.to_int32() as f64
+            } else {
+                return false;
+            };
+            let db = if b.is_double() {
+                b.to_double()
+            } else if b.is_int32() {
+                b.to_int32() as f64
+            } else {
+                return false;
+            };
+            return da == db;
+        }
+        false
     }
-    if a.is_double() || b.is_double() {
-        let da = if a.is_double() { a.to_double() } else if a.is_int32() { a.to_int32() as f64 } else { return false };
-        let db = if b.is_double() { b.to_double() } else if b.is_int32() { b.to_int32() as f64 } else { return false };
-        return da == db;
-    }
-    false
-}}
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn assert_strict_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc >= 2
-        && !values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
-            let a = jsval_to_display(cx, *args.get(0).ptr);
-            let b = jsval_to_display(cx, *args.get(1).ptr);
-            let c_msg = ZBox::from_vec(format!("Expected {} to strictly equal {}", a, b).into_bytes());
-            JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
-            return false;
-        }
+    if argc >= 2 && !values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
+        let a = jsval_to_display(cx, *args.get(0).ptr);
+        let b = jsval_to_display(cx, *args.get(1).ptr);
+        let c_msg = ZBox::from_vec(format!("Expected {} to strictly equal {}", a, b).into_bytes());
+        JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
+        return false;
+    }
     args.rval().set(UndefinedValue());
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn assert_not_strict_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn assert_not_strict_equal(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc >= 2
-        && values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
-            let c_msg = ZBox::from_vec("Expected values to be strictly unequal".to_string().into_bytes());
-            JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
-            return false;
-        }
+    if argc >= 2 && values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
+        let c_msg = ZBox::from_vec(
+            "Expected values to be strictly unequal"
+                .to_string()
+                .into_bytes(),
+        );
+        JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
+        return false;
+    }
     args.rval().set(UndefinedValue());
     true
 }
@@ -1191,7 +1761,10 @@ unsafe extern "C" fn assert_rejects(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     //   - assert.rejects(fn, "string")                → reject.message includes
     let args = CallArgs::from_vp(vp, _argc);
     if _argc == 0 {
-        JS_ReportErrorUTF8(cx, c"assert.rejects() requires an async function or Promise".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"assert.rejects() requires an async function or Promise".as_ptr(),
+        );
         return false;
     }
 
@@ -1287,7 +1860,11 @@ unsafe extern "C" fn assert_rejects(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let global_root = global);
     rooted!(&in(wrapped_cx) let fn_root = *args.get(0).ptr);
-    let spec_val = if _argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let spec_val = if _argc > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
     rooted!(&in(wrapped_cx) let spec_root = spec_val);
     unsafe {
         let _ = mozjs_sys::jsapi::JS_DefineProperty(
@@ -1324,7 +1901,11 @@ unsafe extern "C" fn assert_rejects(cx: *mut JSContext, _argc: u32, vp: *mut JSV
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn assert_does_not_throw(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn assert_does_not_throw(
+    _cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     args.rval().set(UndefinedValue());
     true
@@ -1389,7 +1970,11 @@ unsafe extern "C" fn util_inherits(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn util_is_deep_strict_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn util_is_deep_strict_equal(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 {
         args.rval().set(BooleanValue(false));

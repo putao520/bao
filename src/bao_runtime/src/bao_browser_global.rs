@@ -48,7 +48,7 @@ use ::std::ptr::NonNull;
 use ::std::sync::Arc;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue, BooleanValue};
+use mozjs::jsval::{BooleanValue, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject};
 
@@ -187,11 +187,7 @@ unsafe fn install_transport_kinds_array(
 ///
 /// 失败抛出 JS Error(对应 ConnectError 变体)。
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn browser_connect_fn(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn browser_connect_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         JS_ReportErrorUTF8(cx, c"Bao.browser.connect requires a URL argument".as_ptr());
@@ -223,11 +219,7 @@ unsafe extern "C" fn browser_connect_fn(
 
 /// `Bao.browser.version()` JS callback — 返回 bao_cdp_client 版本字符串。
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn browser_version_fn(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn browser_version_fn(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let ver = bao_cdp_client::version();
     let c_ver = ZBox::from_bytes(ver.as_bytes());
@@ -357,11 +349,7 @@ unsafe fn make_browser_proxy(cx: *mut JSContext, idx: u32) -> *mut JSObject {
 /// 移除后,Browser Arc 引用计数归零时自动 drop(后续 send_command / recv_event
 /// 返回 ConnectionClosed)。
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn browser_disconnect_fn(
-    _cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn browser_disconnect_fn(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() {
@@ -387,7 +375,9 @@ unsafe extern "C" fn browser_disconnect_fn(
         BROWSER_REGISTRY.with(|reg| {
             let mut reg = reg.borrow_mut();
             if (idx as usize) < reg.len() {
-                reg[idx as usize] = Arc::new(bao_cdp_client::Browser::connect("memory://__disconnected__").unwrap());
+                reg[idx as usize] = Arc::new(
+                    bao_cdp_client::Browser::connect("memory://__disconnected__").unwrap(),
+                );
             }
         });
         args.rval().set(BooleanValue(true));

@@ -32,7 +32,8 @@ fn runtime_evaluate_result_schema_conformance() {
     let b = backend();
 
     // Act
-    let result = dispatch_command(&*b, "Runtime.evaluate", json!({"expression":"1+1"}), "1").unwrap();
+    let result =
+        dispatch_command(&*b, "Runtime.evaluate", json!({"expression":"1+1"}), "1").unwrap();
 
     // Assert — CDP spec: result field is RemoteObject
     let remote = &result["result"];
@@ -50,7 +51,14 @@ fn runtime_evaluate_result_schema_conformance() {
     assert!(
         matches!(
             t,
-            "object" | "function" | "undefined" | "string" | "number" | "boolean" | "symbol" | "bigint"
+            "object"
+                | "function"
+                | "undefined"
+                | "string"
+                | "number"
+                | "boolean"
+                | "symbol"
+                | "bigint"
         ),
         "CDP spec: type must be valid RemoteObjectType, got: {}",
         t
@@ -258,7 +266,10 @@ fn runtime_get_properties_property_descriptor_schema() {
     let props = result["result"].as_array().unwrap();
     // Mock 返回空数组 — 验证 schema 准备好(当真实数据出现时立即 conformance)
     for p in props {
-        assert!(p["name"].is_string(), "PropertyDescriptor.name must be string");
+        assert!(
+            p["name"].is_string(),
+            "PropertyDescriptor.name must be string"
+        );
         assert!(
             p["configurable"].is_boolean(),
             "PropertyDescriptor.configurable must be boolean"

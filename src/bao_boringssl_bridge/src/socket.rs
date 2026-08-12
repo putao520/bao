@@ -6,8 +6,8 @@
 //! which in Bao holds a `Box<TlsConnection>` pointer.
 
 use core::ffi::c_int;
-use std::ffi::c_void;
 use std::ffi::c_uint;
+use std::ffi::c_void;
 
 use crate::connection::{TlsConnection, TlsError};
 
@@ -23,14 +23,23 @@ pub struct VerifyError {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn UpgradedDuplex__ssl_error(this: *const c_void) -> VerifyError {
     if this.is_null() {
-        return VerifyError { error: 2, reason: b"invalid TLS connection\0".as_ptr() };
+        return VerifyError {
+            error: 2,
+            reason: b"invalid TLS connection\0".as_ptr(),
+        };
     }
     unsafe {
         let conn = &mut *(this as *mut TlsConnection);
         if conn.is_handshaking() {
-            VerifyError { error: 1, reason: b"handshake in progress\0".as_ptr() }
+            VerifyError {
+                error: 1,
+                reason: b"handshake in progress\0".as_ptr(),
+            }
         } else {
-            VerifyError { error: 0, reason: core::ptr::null() }
+            VerifyError {
+                error: 0,
+                reason: core::ptr::null(),
+            }
         }
     }
 }

@@ -29,9 +29,7 @@ impl SystemError {
         inner.errno = -errno;
         inner.syscall = bun_core::String::clone_utf8(syscall.as_bytes());
         inner.path = bun_core::String::clone_utf8(path.as_bytes());
-        inner.message = bun_core::String::clone_utf8(
-            format!("{}: {}", syscall, errno).as_bytes()
-        );
+        inner.message = bun_core::String::clone_utf8(format!("{}: {}", syscall, errno).as_bytes());
         SystemError(inner)
     }
 

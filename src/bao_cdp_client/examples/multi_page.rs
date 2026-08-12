@@ -66,10 +66,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let desktop = Viewport::default();
 
-    println!("Mobile viewport:  {}x{} (scale={})",
-        mobile.width, mobile.height, mobile.device_scale_factor);
-    println!("Desktop viewport: {}x{} (scale={})",
-        desktop.width, desktop.height, desktop.device_scale_factor);
+    println!(
+        "Mobile viewport:  {}x{} (scale={})",
+        mobile.width, mobile.height, mobile.device_scale_factor
+    );
+    println!(
+        "Desktop viewport: {}x{} (scale={})",
+        desktop.width, desktop.height, desktop.device_scale_factor
+    );
 
     // 路由校验
     let browser = Browser::connect("memory://bao")?;

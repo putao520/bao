@@ -35,7 +35,13 @@ fn mouse_path_no_sharp_angles() {
             assert!(
                 cos_angle > -0.99,
                 "Extreme angle detected: cos={} at ({},{}) -> ({},{}) -> ({},{})",
-                cos_angle, ax, ay, bx, by, cx, cy
+                cos_angle,
+                ax,
+                ay,
+                bx,
+                by,
+                cx,
+                cy
             );
         }
     }
@@ -152,8 +158,12 @@ fn double_click_interval_in_human_range() {
     let sim = BehaviorSimulator::new(42);
     let events = sim.generate_double_click_sequence(100.0, 200.0, 20.0);
     // Find the second mousedown — interval between first click and second mousedown
-    let first_click = events.iter().position(|e| e.event_type == ClickEventType::Click);
-    let second_down = events.iter().rposition(|e| e.event_type == ClickEventType::MouseDown);
+    let first_click = events
+        .iter()
+        .position(|e| e.event_type == ClickEventType::Click);
+    let second_down = events
+        .iter()
+        .rposition(|e| e.event_type == ClickEventType::MouseDown);
     if let (Some(fc), Some(sd)) = (first_click, second_down) {
         if sd > fc {
             let interval: u64 = events[fc + 1..=sd].iter().map(|e| e.delay_after_ms).sum();
@@ -192,7 +202,9 @@ fn typing_delay_coefficient_of_variation_in_human_range() {
 fn typing_delays_follow_normal_distribution() {
     // Shapiro-like check: skewness should be near 0, kurtosis near 3
     let sim = BehaviorSimulator::new(42);
-    let events = sim.generate_human_typing("a long piece of text to type out for statistical analysis purposes");
+    let events = sim.generate_human_typing(
+        "a long piece of text to type out for statistical analysis purposes",
+    );
     let delays: Vec<f64> = events.iter().map(|e| e.delay_before_ms as f64).collect();
     let n = delays.len() as f64;
     let mean = delays.iter().sum::<f64>() / n;
@@ -205,11 +217,7 @@ fn typing_delays_follow_normal_distribution() {
             .sum::<f64>()
             / n;
         // Skewness should be moderate (not heavily skewed)
-        assert!(
-            skewness.abs() < 5.0,
-            "Skewness={} too extreme",
-            skewness
-        );
+        assert!(skewness.abs() < 5.0, "Skewness={} too extreme", skewness);
     }
 }
 
@@ -300,11 +308,7 @@ fn scroll_deltas_all_same_sign() {
     let sim = BehaviorSimulator::new(42);
     let deltas = sim.generate_inertia_scroll(30.0);
     // All non-overshoot deltas should be positive (positive initial speed)
-    let main_phase: Vec<f64> = deltas
-        .iter()
-        .take_while(|d| **d > 0.0)
-        .copied()
-        .collect();
+    let main_phase: Vec<f64> = deltas.iter().take_while(|d| **d > 0.0).copied().collect();
     assert!(
         main_phase.len() > 0,
         "Should have at least some positive deltas"
@@ -348,7 +352,11 @@ fn multiple_seeds_produce_diverse_paths() {
     // All pairs should differ
     for i in 0..paths.len() {
         for j in (i + 1)..paths.len() {
-            assert_ne!(paths[i], paths[j], "Seeds {} and {} produced same path", i, j);
+            assert_ne!(
+                paths[i], paths[j],
+                "Seeds {} and {} produced same path",
+                i, j
+            );
         }
     }
 }
@@ -362,7 +370,10 @@ fn firefox_and_chrome_produce_distinct_fingerprints() {
     // Mouse path different
     let ff_path = ff.generate_human_mouse_path((0.0, 0.0), (500.0, 300.0), 20.0);
     let ch_path = ch.generate_human_mouse_path((0.0, 0.0), (500.0, 300.0), 20.0);
-    assert_ne!(ff_path, ch_path, "Firefox and Chrome mouse paths should differ");
+    assert_ne!(
+        ff_path, ch_path,
+        "Firefox and Chrome mouse paths should differ"
+    );
 
     // Click timing different
     let ff_click = ff.generate_click_sequence(100.0, 200.0, 20.0);

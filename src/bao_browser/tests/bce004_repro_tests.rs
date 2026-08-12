@@ -60,7 +60,9 @@ fn bce004_double_external_navigation() {
         return;
     }
     wait_for_load(&page, 8000);
-    let r1 = page.evaluate_js_web("document.readyState").unwrap_or_default();
+    let r1 = page
+        .evaluate_js_web("document.readyState")
+        .unwrap_or_default();
     eprintln!("[bce004] step 3 done: readyState={:?}", r1);
 
     eprintln!("[bce004] step 4: navigate #2 → https://example.org/");
@@ -69,7 +71,9 @@ fn bce004_double_external_navigation() {
         return;
     }
     wait_for_load(&page, 8000);
-    let r2 = page.evaluate_js_web("document.readyState").unwrap_or_default();
+    let r2 = page
+        .evaluate_js_web("document.readyState")
+        .unwrap_or_default();
     eprintln!("[bce004] step 4 done: readyState={:?}", r2);
 
     eprintln!("[bce004] step 5: navigate #3 → https://www.example.net/");

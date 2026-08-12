@@ -178,7 +178,18 @@ pub unsafe fn start(
     body: Option<Vec<u8>>,
 ) {
     // SAFETY: delegate to the kind-aware start with the default Response form.
-    unsafe { start_with_kind(cx, promise_val, profile, method, url, headers, body, ResolveKind::Response) }
+    unsafe {
+        start_with_kind(
+            cx,
+            promise_val,
+            profile,
+            method,
+            url,
+            headers,
+            body,
+            ResolveKind::Response,
+        )
+    }
 }
 
 /// Schedule a TLS handshake probe: a single stealth HTTPS HEAD against
@@ -190,12 +201,7 @@ pub unsafe fn start(
 ///
 /// - `cx` must be a live `JSContext*` on the current thread.
 /// - `promise_val` must be an Object JSVal holding a *pending* Promise.
-pub unsafe fn start_tls_probe(
-    cx: *mut JSContext,
-    promise_val: JSVal,
-    host: String,
-    port: u16,
-) {
+pub unsafe fn start_tls_probe(cx: *mut JSContext, promise_val: JSVal, host: String, port: u16) {
     let test_url = format!("https://{}:{}", host, port);
     // Capture the host string on the JS thread; the resolver looks it up by
     // index so the HTTPThread never touches JS state.
@@ -262,10 +268,11 @@ unsafe fn start_with_kind(
         outcome: Arc::clone(&outcome),
         kind,
         mini_loop_ptr: ::std::ptr::null(), // filled below
-        concurrent_task: bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(),
+        concurrent_task: bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(
+        ),
         has_schedule_callback: AtomicBool::new(false),
-        url_owned: None,    // filled after url lift below
-        body_owned: None,   // filled after body lift below
+        url_owned: None,     // filled after url lift below
+        body_owned: None,    // filled after body lift below
         headers_owned: None, // filled after headers_buf lift below
     });
     let pending_ptr = Box::into_raw(pending);
@@ -278,8 +285,7 @@ unsafe fn start_with_kind(
 
     // Build the HTTPClientResultCallback that will fire on the HTTPThread.
     // INV-5: on_http_done must never call SM API (only touches pure Rust).
-    let callback =
-        bun_http::HTTPClientResultCallback::new(pending_ptr, on_http_done);
+    let callback = bun_http::HTTPClientResultCallback::new(pending_ptr, on_http_done);
 
     // Parse URL and build header entries.
     //
@@ -342,7 +348,9 @@ unsafe fn start_with_kind(
     } else {
         // No headers — reclaim immediately, use empty static slice.
         // SAFETY: just allocated via Box::into_raw above.
-        unsafe { drop(Box::from_raw(headers_owned_ptr)); }
+        unsafe {
+            drop(Box::from_raw(headers_owned_ptr));
+        }
         &[]
     };
     // Stash the owning pointer for reclaim (alongside url/body), only if
@@ -356,8 +364,7 @@ unsafe fn start_with_kind(
     let entry_list = hb.entries;
 
     // Response buffer (heap-allocated, owned by AsyncHTTP).
-    let response_buffer =
-        Box::into_raw(Box::new(bun_core::string::MutableString::default()));
+    let response_buffer = Box::into_raw(Box::new(bun_core::string::MutableString::default()));
 
     // Request body slice. Lift to 'static (body owned bytes) — reclaimed by
     // resolve_tasklet. Empty body shares a static empty slice (no reclaim needed).
@@ -375,8 +382,7 @@ unsafe fn start_with_kind(
 
     // TLS fingerprint: StealthProfile → SSLConfig → SSLConfigSharedPtr.
     let tls_props = {
-        let ssl_config =
-            crate::stealth_http::stealth_profile_to_ssl_config(&profile);
+        let ssl_config = crate::stealth_http::stealth_profile_to_ssl_config(&profile);
         Some(bun_http::ssl_config::SharedPtr::new(ssl_config))
     };
 
@@ -411,8 +417,8 @@ unsafe fn start_with_kind(
     //     the HTTPThread and calls `bun_core::heap::take` to reclaim + drop it
     //     after the result is copied out (single-consumer: completion path is
     //     the sole deallocator).
-    let async_http_box: *mut bun_http::AsyncHTTP<'static> = bun_core::heap::into_raw(Box::new(
-        bun_http::AsyncHTTP::init(
+    let async_http_box: *mut bun_http::AsyncHTTP<'static> =
+        bun_core::heap::into_raw(Box::new(bun_http::AsyncHTTP::init(
             method,
             parsed_url,
             entry_list,
@@ -422,8 +428,7 @@ unsafe fn start_with_kind(
             callback,
             bun_http::FetchRedirect::Follow,
             options,
-        ),
-    ));
+        )));
 
     // Capture the MiniEventLoop pointer for concurrent-task scheduling.
     // SAFETY: with_event_loop borrows the MiniEventLoop on the current thread;
@@ -532,7 +537,9 @@ fn on_http_done(
             .unwrap_or_default();
 
         // Headers from picohttp Response.
-        let headers: smallvec::SmallVec<[(compact_str::CompactString, compact_str::CompactString); 8]> = result
+        let headers: smallvec::SmallVec<
+            [(compact_str::CompactString, compact_str::CompactString); 8],
+        > = result
             .metadata
             .as_ref()
             .map(|m| {
@@ -588,11 +595,10 @@ fn on_http_done(
         let loop_ptr = unsafe { &*this }.mini_loop_ptr;
         if !loop_ptr.is_null() {
             // SAFETY: the MiniEventLoop is alive for the thread's lifetime.
-            let loop_ref = unsafe { &mut *(
-                loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>
-            ) };
-            let concurrent_task_ptr =
-                unsafe { core::ptr::addr_of_mut!((*this).concurrent_task) };
+            let loop_ref = unsafe {
+                &mut *(loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>)
+            };
+            let concurrent_task_ptr = unsafe { core::ptr::addr_of_mut!((*this).concurrent_task) };
             // SAFETY: concurrent_task_ptr is a valid pointer to the
             // AnyTaskWithExtraContext embedded in PendingFetch.
             loop_ref.enqueue_task_concurrent(unsafe {
@@ -776,9 +782,9 @@ fn schedule_resolve_on_js_thread(pending_ptr: *mut PendingFetch) {
     {
         let loop_ptr = unsafe { &*pending_ptr }.mini_loop_ptr;
         if !loop_ptr.is_null() {
-            let loop_ref = unsafe { &mut *(
-                loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>
-            ) };
+            let loop_ref = unsafe {
+                &mut *(loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>)
+            };
             let concurrent_task_ptr =
                 unsafe { core::ptr::addr_of_mut!((*pending_ptr).concurrent_task) };
             loop_ref.enqueue_task_concurrent(unsafe {
@@ -811,17 +817,35 @@ unsafe fn build_tls_socket_js(cx: *mut JSContext, host: &str) -> *mut JSObject {
     let obj_handle = obj.handle().into();
 
     rooted!(&in(cx_ref) let auth_val = mozjs::jsval::BooleanValue(true));
-    JS_DefineProperty(cx, obj_handle, c"authorized".as_ptr(), auth_val.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj_handle,
+        c"authorized".as_ptr(),
+        auth_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     rooted!(&in(cx_ref) let enc_val = mozjs::jsval::BooleanValue(true));
-    JS_DefineProperty(cx, obj_handle, c"encrypted".as_ptr(), enc_val.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj_handle,
+        c"encrypted".as_ptr(),
+        enc_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     if !host.is_empty() {
         let c_host = ZBox::from_bytes(host.as_bytes());
         let host_js = JS_NewStringCopyZ(cx, c_host.as_ptr());
         if !host_js.is_null() {
             rooted!(&in(cx_ref) let hv = StringValue(&*host_js));
-            JS_DefineProperty(cx, obj_handle, c"servername".as_ptr(), hv.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx,
+                obj_handle,
+                c"servername".as_ptr(),
+                hv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 
@@ -848,11 +872,23 @@ unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mu
 
     // status: int32
     rooted!(&in(cx_ref) let status_val = mozjs::jsval::Int32Value(resp.status_code as i32));
-    JS_DefineProperty(cx, obj_handle, c"status".as_ptr(), status_val.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj_handle,
+        c"status".as_ptr(),
+        status_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // ok: boolean (2xx)
     rooted!(&in(cx_ref) let ok_val = mozjs::jsval::BooleanValue((200..300).contains(&resp.status_code)));
-    JS_DefineProperty(cx, obj_handle, c"ok".as_ptr(), ok_val.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj_handle,
+        c"ok".as_ptr(),
+        ok_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // statusText
     {
@@ -944,11 +980,7 @@ unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mu
 /// `.text()` method: reads `_bodyText` off the Response and returns it.
 #[allow(non_snake_case)]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn response_text_fn(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn response_text_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() {
@@ -980,11 +1012,7 @@ unsafe extern "C" fn response_text_fn(
 ///
 /// `cx` must be live on the current thread.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn reject_with_message(
-    cx: *mut JSContext,
-    promise_h: Handle<*mut JSObject>,
-    msg: &str,
-) {
+unsafe fn reject_with_message(cx: *mut JSContext, promise_h: Handle<*mut JSObject>, msg: &str) {
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -1070,7 +1098,8 @@ mod tests {
                 .is_ok()
         );
         assert!(pf.has_schedule_callback.load(AtomicOrdering::Relaxed));
-        pf.has_schedule_callback.store(false, AtomicOrdering::Release);
+        pf.has_schedule_callback
+            .store(false, AtomicOrdering::Release);
         assert!(!pf.has_schedule_callback.load(AtomicOrdering::Relaxed));
     }
 

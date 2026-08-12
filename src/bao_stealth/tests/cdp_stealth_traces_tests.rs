@@ -17,7 +17,7 @@
 // stealth_diagnostic_detection_tests.rs (JsContext-based); here we verify
 // the hook SOURCE STRING has the required content.
 
-use bao_stealth::{StealthProfile, StealthHooks};
+use bao_stealth::{StealthHooks, StealthProfile};
 
 // ===========================================================================
 // 1. navigator.webdriver — CDP default is true, must be forced false
@@ -30,9 +30,16 @@ fn cdp_webdriver_override_forced_false() {
     // Arrange — CDP-attached Chrome sets navigator.webdriver = true
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
@@ -57,15 +64,23 @@ fn cdp_webdriver_override_non_configurable() {
     //           to detect a spoof. A configurable:true override would be detected.
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
 
     // Find the webdriver line
-    let webdriver_line = js.lines()
+    let webdriver_line = js
+        .lines()
         .find(|l| l.contains("navigator, 'webdriver'"))
         .unwrap_or("");
 
@@ -131,9 +146,16 @@ fn cdp_permissions_api_not_broken_by_hooks() {
     //           remove or break the Permissions API itself.
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
@@ -164,9 +186,16 @@ fn cdp_no_cdc_globals_in_hooks() {
     //           so these must never appear.
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let combined = hooks.combined_js();
@@ -195,9 +224,16 @@ fn cdp_no_devtools_console_helpers_in_hooks() {
     //           bao_stealth JS hooks must NOT inject these.
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let combined = hooks.combined_js();
@@ -226,9 +262,16 @@ fn cdp_combined_js_has_all_overrides() {
     // Arrange
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let combined = hooks.combined_js();
@@ -259,28 +302,39 @@ fn cdp_individual_hooks_nonempty() {
     // Arrange
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
 
     // Assert — each hook must produce non-trivial JS
     assert!(
         hooks.canvas_js().len() > 100,
-        "Canvas JS hook must be non-trivial (>100 chars), got: {}", hooks.canvas_js().len()
+        "Canvas JS hook must be non-trivial (>100 chars), got: {}",
+        hooks.canvas_js().len()
     );
     assert!(
         hooks.audio_js().len() > 100,
-        "Audio JS hook must be non-trivial (>100 chars), got: {}", hooks.audio_js().len()
+        "Audio JS hook must be non-trivial (>100 chars), got: {}",
+        hooks.audio_js().len()
     );
     assert!(
         hooks.navigator_js().len() > 500,
-        "Navigator JS hook must be substantial (>500 chars), got: {}", hooks.navigator_js().len()
+        "Navigator JS hook must be substantial (>500 chars), got: {}",
+        hooks.navigator_js().len()
     );
     assert!(
         hooks.combined_js().len() > 700,
-        "Combined JS must be >700 chars, got: {}", hooks.combined_js().len()
+        "Combined JS must be >700 chars, got: {}",
+        hooks.combined_js().len()
     );
 }
 
@@ -295,9 +349,16 @@ fn cdp_webgl1_and_webgl2_both_patched() {
     // Arrange — CDP detection may probe either WebGL1 or WebGL2 context
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
@@ -329,9 +390,16 @@ fn cdp_webgl_extensions_patched_both_contexts() {
     // Arrange
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
@@ -343,7 +411,8 @@ fn cdp_webgl_extensions_patched_both_contexts() {
     );
     // WebGL2 check is inside an `if (typeof WebGL2RenderingContext !== 'undefined')` block
     assert!(
-        js.contains("typeof WebGL2RenderingContext") || js.contains("WebGL2RenderingContext.prototype.getSupportedExtensions"),
+        js.contains("typeof WebGL2RenderingContext")
+            || js.contains("WebGL2RenderingContext.prototype.getSupportedExtensions"),
         "WebGL2 getSupportedExtensions must be conditionally patched — CDP WebGL2 extension probe"
     );
 }
@@ -359,18 +428,33 @@ fn cdp_all_screen_properties_overridden() {
     // Arrange — CDP-attached session may have screen object manipulated
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
 
     // Assert — all screen properties must be overridden
-    for prop in &["width", "height", "availWidth", "availHeight", "colorDepth", "pixelDepth"] {
+    for prop in &[
+        "width",
+        "height",
+        "availWidth",
+        "availHeight",
+        "colorDepth",
+        "pixelDepth",
+    ] {
         assert!(
             js.contains(&format!("screen, '{}'", prop)),
-            "screen.{} must be overridden — CDP screen probe", prop
+            "screen.{} must be overridden — CDP screen probe",
+            prop
         );
     }
     // devicePixelRatio on window
@@ -391,21 +475,36 @@ fn cdp_all_navigator_properties_overridden() {
     // Arrange
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
 
     // Assert — all critical navigator properties CDP may probe
     for prop in &[
-        "userAgent", "platform", "hardwareConcurrency", "language", "languages",
-        "vendor", "deviceMemory", "maxTouchPoints", "webdriver",
+        "userAgent",
+        "platform",
+        "hardwareConcurrency",
+        "language",
+        "languages",
+        "vendor",
+        "deviceMemory",
+        "maxTouchPoints",
+        "webdriver",
     ] {
         assert!(
             js.contains(&format!("navigator, '{}'", prop)),
-            "navigator.{} must be overridden — CDP navigator probe", prop
+            "navigator.{} must be overridden — CDP navigator probe",
+            prop
         );
     }
 }
@@ -423,33 +522,51 @@ fn cdp_hook_output_deterministic() {
 
     // Act
     let hooks1 = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let hooks2 = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
 
     // Assert — same profile must produce identical hook JS
     assert_eq!(
-        hooks1.canvas_js(), hooks2.canvas_js(),
+        hooks1.canvas_js(),
+        hooks2.canvas_js(),
         "Canvas JS must be deterministic for same profile — CDP session consistency"
     );
     assert_eq!(
-        hooks1.audio_js(), hooks2.audio_js(),
+        hooks1.audio_js(),
+        hooks2.audio_js(),
         "Audio JS must be deterministic for same profile — CDP session consistency"
     );
     assert_eq!(
-        hooks1.navigator_js(), hooks2.navigator_js(),
+        hooks1.navigator_js(),
+        hooks2.navigator_js(),
         "Navigator JS must be deterministic for same profile — CDP session consistency"
     );
     assert_eq!(
-        hooks1.combined_js(), hooks2.combined_js(),
+        hooks1.combined_js(),
+        hooks2.combined_js(),
         "Combined JS must be deterministic for same profile — CDP session consistency"
     );
 }
@@ -464,26 +581,42 @@ fn cdp_firefox_chrome_hooks_differ() {
 
     // Act
     let ff_hooks = StealthHooks::from_profile(
-        &ff_profile.canvas, &ff_profile.audio, &ff_profile.navigator,
-        &ff_profile.screen, &ff_profile.webgl, &ff_profile.font, &ff_profile.battery,
-        ff_profile.webrtc_mode, &ff_profile.timing, &ff_profile.clientrects,
+        &ff_profile.canvas,
+        &ff_profile.audio,
+        &ff_profile.navigator,
+        &ff_profile.screen,
+        &ff_profile.webgl,
+        &ff_profile.font,
+        &ff_profile.battery,
+        ff_profile.webrtc_mode,
+        &ff_profile.timing,
+        &ff_profile.clientrects,
         &ff_profile.screen_display,
     );
     let ch_hooks = StealthHooks::from_profile(
-        &ch_profile.canvas, &ch_profile.audio, &ch_profile.navigator,
-        &ch_profile.screen, &ch_profile.webgl, &ch_profile.font, &ch_profile.battery,
-        ch_profile.webrtc_mode, &ch_profile.timing, &ch_profile.clientrects,
+        &ch_profile.canvas,
+        &ch_profile.audio,
+        &ch_profile.navigator,
+        &ch_profile.screen,
+        &ch_profile.webgl,
+        &ch_profile.font,
+        &ch_profile.battery,
+        ch_profile.webrtc_mode,
+        &ch_profile.timing,
+        &ch_profile.clientrects,
         &ch_profile.screen_display,
     );
 
     // Assert — navigator JS must differ (different UA, vendor, platform)
     assert_ne!(
-        ff_hooks.navigator_js(), ch_hooks.navigator_js(),
+        ff_hooks.navigator_js(),
+        ch_hooks.navigator_js(),
         "Firefox/Chrome navigator JS must differ — engine distinguishability"
     );
     // Canvas JS differs only in seed (42 vs 137)
     assert_ne!(
-        ff_hooks.canvas_js(), ch_hooks.canvas_js(),
+        ff_hooks.canvas_js(),
+        ch_hooks.canvas_js(),
         "Firefox/Chrome canvas JS must differ (seed) — session distinguishability"
     );
 }

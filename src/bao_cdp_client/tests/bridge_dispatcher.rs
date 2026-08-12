@@ -117,13 +117,8 @@ fn unknown_target_id_returns_page_not_found() {
     let b = backend();
 
     // Act
-    let err = dispatch_command(
-        &*b,
-        "Page.navigate",
-        json!({"url":"https://x"}),
-        "999",
-    )
-    .unwrap_err();
+    let err =
+        dispatch_command(&*b, "Page.navigate", json!({"url":"https://x"}), "999").unwrap_err();
 
     // Assert
     assert!(matches!(err, BridgeError::PageNotFound(_)));
@@ -418,7 +413,8 @@ fn target_id_non_numeric_string_routes_to_page_not_found() {
     let b = backend();
 
     // Act
-    let err = dispatch_command(&*b, "Page.navigate", json!({"url":"https://x"}), "abc").unwrap_err();
+    let err =
+        dispatch_command(&*b, "Page.navigate", json!({"url":"https://x"}), "abc").unwrap_err();
 
     // Assert
     assert!(matches!(err, BridgeError::PageNotFound(_)));
@@ -551,13 +547,7 @@ fn params_large_string_does_not_panic() {
     let big_url = "x".repeat(1_048_576);
 
     // Act
-    let r = dispatch_command(
-        &*b,
-        "Page.navigate",
-        json!({"url": big_url}),
-        "1",
-    )
-    .unwrap();
+    let r = dispatch_command(&*b, "Page.navigate", json!({"url": big_url}), "1").unwrap();
 
     // Assert — 路由成功(mock 不验证 URL 长度)
     assert!(r["frameId"].is_string());
@@ -594,12 +584,8 @@ fn concurrent_dispatch_is_thread_safe() {
             barrier_clone.wait();
             // 100 次连续 dispatch
             for _ in 0..100 {
-                let result = dispatch_command(
-                    &*b_clone,
-                    method,
-                    json!({"url":"https://x","depth":1}),
-                    "1",
-                );
+                let result =
+                    dispatch_command(&*b_clone, method, json!({"url":"https://x","depth":1}), "1");
                 // 全部必须 Ok(无竞态 panic / 无 corrupted state)
                 assert!(result.is_ok(), "thread {i} dispatch {method} failed");
             }
@@ -613,7 +599,10 @@ fn concurrent_dispatch_is_thread_safe() {
 
     // 验证 call_log 不被并发写损坏(Mutex 保护下应连续递增)
     let total = mock.call_log.lock().unwrap().len();
-    assert_eq!(total, 800, "expected 800 (8 threads × 100 calls) call_log entries");
+    assert_eq!(
+        total, 800,
+        "expected 800 (8 threads × 100 calls) call_log entries"
+    );
 }
 
 #[test]
@@ -744,26 +733,64 @@ fn b_class_all_52_methods_route_to_handler_not_method_not_found() {
     // 全部 52 个 B 类 method(按 b_class_handlers.rs 分类)
     let b_class_methods: &[&str] = &[
         // Page domain (33)
-        "Page.title", "Page.url", "Page.content", "Page.viewport", "Page.setViewport",
-        "Page.opener", "Page.frames", "Page.mainFrame",
-        "Page.setDefaultNavigationTimeout", "Page.setDefaultTimeout",
-        "Page.waitForLoadState", "Page.waitForURL", "Page.waitForRequest",
-        "Page.waitForResponse", "Page.waitForEvent", "Page.goBack", "Page.goForward",
-        "Page.emulateMedia", "Page.addScriptTag", "Page.addStyleTag",
-        "Page.exposeFunction", "Page.pdf", "Page.screenshot", "Page.tap",
-        "Page.hover", "Page.focus", "Page.type", "Page.fill", "Page.press",
-        "Page.check", "Page.uncheck", "Page.selectOption", "Page.setInputFiles",
+        "Page.title",
+        "Page.url",
+        "Page.content",
+        "Page.viewport",
+        "Page.setViewport",
+        "Page.opener",
+        "Page.frames",
+        "Page.mainFrame",
+        "Page.setDefaultNavigationTimeout",
+        "Page.setDefaultTimeout",
+        "Page.waitForLoadState",
+        "Page.waitForURL",
+        "Page.waitForRequest",
+        "Page.waitForResponse",
+        "Page.waitForEvent",
+        "Page.goBack",
+        "Page.goForward",
+        "Page.emulateMedia",
+        "Page.addScriptTag",
+        "Page.addStyleTag",
+        "Page.exposeFunction",
+        "Page.pdf",
+        "Page.screenshot",
+        "Page.tap",
+        "Page.hover",
+        "Page.focus",
+        "Page.type",
+        "Page.fill",
+        "Page.press",
+        "Page.check",
+        "Page.uncheck",
+        "Page.selectOption",
+        "Page.setInputFiles",
         "Page.requestGC",
         // ElementHandle domain (16)
-        "ElementHandle.click", "ElementHandle.contentFrame", "ElementHandle.ownerFrame",
-        "ElementHandle.getAttribute", "ElementHandle.innerHTML", "ElementHandle.innerText",
-        "ElementHandle.textContent", "ElementHandle.isChecked", "ElementHandle.isDisabled",
-        "ElementHandle.isEditable", "ElementHandle.isEnabled", "ElementHandle.isHidden",
-        "ElementHandle.isVisible", "ElementHandle.scrollIntoViewIfNeeded",
-        "ElementHandle.waitForElementState", "ElementHandle.waitForSelector",
+        "ElementHandle.click",
+        "ElementHandle.contentFrame",
+        "ElementHandle.ownerFrame",
+        "ElementHandle.getAttribute",
+        "ElementHandle.innerHTML",
+        "ElementHandle.innerText",
+        "ElementHandle.textContent",
+        "ElementHandle.isChecked",
+        "ElementHandle.isDisabled",
+        "ElementHandle.isEditable",
+        "ElementHandle.isEnabled",
+        "ElementHandle.isHidden",
+        "ElementHandle.isVisible",
+        "ElementHandle.scrollIntoViewIfNeeded",
+        "ElementHandle.waitForElementState",
+        "ElementHandle.waitForSelector",
         // JSHandle domain (7)
-        "JSHandle.asElement", "JSHandle.dispose", "JSHandle.evaluate",
-        "JSHandle.evaluateHandle", "JSHandle.getProperties", "JSHandle.getProperty",
+        "JSHandle.asElement",
+        "JSHandle.dispose",
+        "JSHandle.evaluate",
+        "JSHandle.evaluateHandle",
+        "JSHandle.getProperties",
+        "JSHandle.getProperty",
         "JSHandle.jsonValue",
     ];
 
@@ -909,7 +936,11 @@ fn e_class_all_e_domains_return_32601() {
             matches!(err, BridgeError::NotSupported(_)),
             "{domain} should be E-class (NotSupported)"
         );
-        assert_eq!(err.cdp_error_code(), -32601, "{domain} should map to -32601");
+        assert_eq!(
+            err.cdp_error_code(),
+            -32601,
+            "{domain} should map to -32601"
+        );
     }
 }
 

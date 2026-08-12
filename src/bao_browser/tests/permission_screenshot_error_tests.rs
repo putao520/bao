@@ -1,8 +1,8 @@
 // @trace TEST-BRW-014-PERM-SCREENSHOT [req:REQ-LIB-003,REQ-LIB-004,REQ-BRW-001,REQ-BRW-002] [level:unit]
 // Permission sandbox deep tests + screenshot encoding + BrowserError variants.
 
-use bao_browser::{Permission, PermissionGuard, PermissionDenied, BrowserError};
 use bao_browser::{encode_image, ScreenshotFormat};
+use bao_browser::{BrowserError, Permission, PermissionDenied, PermissionGuard};
 
 // ---- Permission: read ----
 
@@ -16,7 +16,10 @@ fn test_permission_read_none_allows_all() {
 
 #[test]
 fn test_permission_read_whitelist() {
-    let perm = Permission { read: Some(vec!["/data/".into(), "/tmp/".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/data/".into(), "/tmp/".into()]),
+        ..Default::default()
+    };
     assert!(perm.is_read_allowed("/data/file.txt"));
     assert!(perm.is_read_allowed("/tmp/cache"));
     assert!(!perm.is_read_allowed("/etc/passwd"));
@@ -26,14 +29,20 @@ fn test_permission_read_whitelist() {
 
 #[test]
 fn test_permission_read_empty_whitelist_blocks_all() {
-    let perm = Permission { read: Some(vec![]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec![]),
+        ..Default::default()
+    };
     assert!(!perm.is_read_allowed("/anything"));
     assert!(!perm.is_read_allowed(""));
 }
 
 #[test]
 fn test_permission_read_long_path() {
-    let perm = Permission { read: Some(vec!["/data/".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/data/".into()]),
+        ..Default::default()
+    };
     let long_path = format!("/data/{}", "a".repeat(10000));
     assert!(perm.is_read_allowed(&long_path));
 }
@@ -48,14 +57,20 @@ fn test_permission_write_none_allows_all() {
 
 #[test]
 fn test_permission_write_whitelist() {
-    let perm = Permission { write: Some(vec!["/out/".into()]), ..Default::default() };
+    let perm = Permission {
+        write: Some(vec!["/out/".into()]),
+        ..Default::default()
+    };
     assert!(perm.is_write_allowed("/out/result.json"));
     assert!(!perm.is_write_allowed("/var/log"));
 }
 
 #[test]
 fn test_permission_write_empty_blocks_all() {
-    let perm = Permission { write: Some(vec![]), ..Default::default() };
+    let perm = Permission {
+        write: Some(vec![]),
+        ..Default::default()
+    };
     assert!(!perm.is_write_allowed("/anything"));
 }
 
@@ -70,7 +85,10 @@ fn test_permission_net_none_allows_all() {
 
 #[test]
 fn test_permission_net_whitelist() {
-    let perm = Permission { net: Some(vec!["example.com".into()]), ..Default::default() };
+    let perm = Permission {
+        net: Some(vec!["example.com".into()]),
+        ..Default::default()
+    };
     assert!(perm.is_net_allowed("example.com"));
     assert!(perm.is_net_allowed("sub.example.com"));
     assert!(perm.is_net_allowed("deep.sub.example.com"));
@@ -80,13 +98,19 @@ fn test_permission_net_whitelist() {
 
 #[test]
 fn test_permission_net_empty_blocks_all() {
-    let perm = Permission { net: Some(vec![]), ..Default::default() };
+    let perm = Permission {
+        net: Some(vec![]),
+        ..Default::default()
+    };
     assert!(!perm.is_net_allowed("any.com"));
 }
 
 #[test]
 fn test_permission_net_subdomain_matching() {
-    let perm = Permission { net: Some(vec!["api.example.com".into()]), ..Default::default() };
+    let perm = Permission {
+        net: Some(vec!["api.example.com".into()]),
+        ..Default::default()
+    };
     assert!(perm.is_net_allowed("api.example.com"));
     assert!(perm.is_net_allowed("v2.api.example.com"));
     assert!(!perm.is_net_allowed("example.com"));
@@ -102,13 +126,19 @@ fn test_permission_env_default_allowed() {
 
 #[test]
 fn test_permission_env_explicit_true() {
-    let perm = Permission { env: Some(true), ..Default::default() };
+    let perm = Permission {
+        env: Some(true),
+        ..Default::default()
+    };
     assert!(perm.is_env_allowed());
 }
 
 #[test]
 fn test_permission_env_false() {
-    let perm = Permission { env: Some(false), ..Default::default() };
+    let perm = Permission {
+        env: Some(false),
+        ..Default::default()
+    };
     assert!(!perm.is_env_allowed());
 }
 
@@ -122,7 +152,10 @@ fn test_permission_run_default_allowed() {
 
 #[test]
 fn test_permission_run_false() {
-    let perm = Permission { run: Some(false), ..Default::default() };
+    let perm = Permission {
+        run: Some(false),
+        ..Default::default()
+    };
     assert!(!perm.is_run_allowed());
 }
 
@@ -136,7 +169,7 @@ fn test_permission_clone() {
         net: Some(vec!["h.com".into()]),
         env: Some(false),
         run: Some(false),
-    ..Default::default()
+        ..Default::default()
     };
     let cloned = perm.clone();
     assert!(cloned.is_read_allowed("/r/file"));
@@ -145,7 +178,10 @@ fn test_permission_clone() {
 
 #[test]
 fn test_permission_debug() {
-    let perm = Permission { read: Some(vec!["/x/".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/x/".into()]),
+        ..Default::default()
+    };
     let debug = format!("{:?}", perm);
     assert!(debug.contains("read"));
 }

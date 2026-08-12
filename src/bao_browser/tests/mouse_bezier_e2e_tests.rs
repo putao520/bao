@@ -144,7 +144,9 @@ fn dispatch_mousemove(page: &PageHandle, x: f64, y: f64) -> Result<(), String> {
         x = x,
         y = y
     );
-    let result = page.evaluate_js_web(&js).map_err(|e| format!("eval: {}", e))?;
+    let result = page
+        .evaluate_js_web(&js)
+        .map_err(|e| format!("eval: {}", e))?;
     if result == "OK" {
         Ok(())
     } else {
@@ -169,7 +171,10 @@ fn mouse_bezier_e2e() {
     let runtime = match BaoRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] BaoRuntime::new failed (likely missing servo runtime): {}", e);
+            eprintln!(
+                "[skip] BaoRuntime::new failed (likely missing servo runtime): {}",
+                e
+            );
             return;
         }
     };
@@ -184,7 +189,11 @@ fn mouse_bezier_e2e() {
     report.finish();
 
     // Hard failures are real regressions in mouse-path generation or dispatch.
-    assert_eq!(report.failed, 0, "{} sub-assertions failed — see stderr above", report.failed);
+    assert_eq!(
+        report.failed, 0,
+        "{} sub-assertions failed — see stderr above",
+        report.failed
+    );
 }
 
 /// Firefox profile + cubic Bezier: dispatch full path, read back, assert non-linear.
@@ -252,7 +261,10 @@ fn scenario_firefox_bezier_dispatch(pool: &PagePool, report: &mut Report) {
         .collect();
 
     if recorded_pts.len() < 6 {
-        report.skip(name, &format!("recorded path too short: {}", recorded_pts.len()));
+        report.skip(
+            name,
+            &format!("recorded path too short: {}", recorded_pts.len()),
+        );
         let _ = page.close();
         return;
     }
@@ -307,7 +319,10 @@ fn scenario_firefox_bezier_dispatch(pool: &PagePool, report: &mut Report) {
             };
             report.assert_actual(
                 mid_avg > first_avg * 0.7,
-                &format!("{}::ease_in_out_speed (mid={:.1} >= first_avg*0.7={:.1})", name, mid_avg, first_avg),
+                &format!(
+                    "{}::ease_in_out_speed (mid={:.1} >= first_avg*0.7={:.1})",
+                    name, mid_avg, first_avg
+                ),
                 &format!("{}::ease_in_out_speed (no speed variation)", name),
             );
         }
@@ -319,8 +334,14 @@ fn scenario_firefox_bezier_dispatch(pool: &PagePool, report: &mut Report) {
     let end_dy = (last.1 - end.1).abs();
     report.assert_actual(
         end_dx < 10.0 && end_dy < 10.0,
-        &format!("{}::endpoint_reached (dx={:.1},dy={:.1})", name, end_dx, end_dy),
-        &format!("{}::endpoint_reached (dx={:.1},dy={:.1} too far)", name, end_dx, end_dy),
+        &format!(
+            "{}::endpoint_reached (dx={:.1},dy={:.1})",
+            name, end_dx, end_dy
+        ),
+        &format!(
+            "{}::endpoint_reached (dx={:.1},dy={:.1} too far)",
+            name, end_dx, end_dy
+        ),
     );
 
     let _ = page.close();
@@ -381,7 +402,10 @@ fn scenario_chrome_bezier_dispatch(pool: &PagePool, report: &mut Report) {
         .filter_map(|s| s.trim().parse::<f64>().ok())
         .collect();
     if recorded_pts.len() < 6 {
-        report.skip(name, &format!("recorded path too short: {}", recorded_pts.len()));
+        report.skip(
+            name,
+            &format!("recorded path too short: {}", recorded_pts.len()),
+        );
         let _ = page.close();
         return;
     }
@@ -410,7 +434,12 @@ fn scenario_chrome_bezier_dispatch(pool: &PagePool, report: &mut Report) {
         &format!("{}::non_linear_curvature (all collinear)", name),
     );
 
-    report.pass(&format!("{}::dispatched_{}_recorded_{}", name, path.len(), recorded_pairs.len()));
+    report.pass(&format!(
+        "{}::dispatched_{}_recorded_{}",
+        name,
+        path.len(),
+        recorded_pairs.len()
+    ));
 
     let _ = page.close();
 }
@@ -439,13 +468,20 @@ fn scenario_short_distance_no_crash(pool: &PagePool, report: &mut Report) {
     report.assert_actual(
         path.len() == 1,
         &format!("{}::single_point_returned", name),
-        &format!("{}::single_point_returned (got {} points)", name, path.len()),
+        &format!(
+            "{}::single_point_returned (got {} points)",
+            name,
+            path.len()
+        ),
     );
 
     // Dispatch the single point — must not error.
     match dispatch_mousemove(&page, path[0].0, path[0].1) {
         Ok(()) => report.pass(&format!("{}::dispatch_no_crash", name)),
-        Err(e) => report.fail(&format!("{}::dispatch_no_crash", name), &format!("err: {}", e)),
+        Err(e) => report.fail(
+            &format!("{}::dispatch_no_crash", name),
+            &format!("err: {}", e),
+        ),
     }
 
     let _ = page.close();

@@ -189,7 +189,10 @@ mod tests {
     #[test]
     fn bytecode_symbol_linked() {
         let result = bytecode::generate_cached_bytecode_for_test();
-        assert!(result.is_none(), "Phase 1: SM bytecode cache should return None");
+        assert!(
+            result.is_none(),
+            "Phase 1: SM bytecode cache should return None"
+        );
     }
 
     // ── Build API tests ────────────────────────────────────────────────────
@@ -247,7 +250,8 @@ mod tests {
     fn build_transpiles_typescript() {
         // New capability: the bundler pipeline strips TypeScript annotations
         // via the real SWC transpiler (`bun_transpiler`).
-        let input = "const x: number = 1;\nfunction add(a: number, b: number): number { return a + b; }\n";
+        let input =
+            "const x: number = 1;\nfunction add(a: number, b: number): number { return a + b; }\n";
         let dir = std::env::temp_dir().join("bao_bundler_test_ts");
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("entry.ts");

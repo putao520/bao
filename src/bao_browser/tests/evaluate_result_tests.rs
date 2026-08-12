@@ -131,7 +131,10 @@ fn evaluate_result_clone_default() {
 fn evaluate_result_debug_ok() {
     let result = EvaluateResult::ok("42".into());
     let debug = format!("{:?}", result);
-    assert!(debug.contains("EvaluateResult"), "Debug should contain type name");
+    assert!(
+        debug.contains("EvaluateResult"),
+        "Debug should contain type name"
+    );
     assert!(debug.contains("42"), "Debug should contain value");
 }
 
@@ -139,7 +142,10 @@ fn evaluate_result_debug_ok() {
 fn evaluate_result_debug_err() {
     let result = EvaluateResult::err("fail".into());
     let debug = format!("{:?}", result);
-    assert!(debug.contains("EvaluateResult"), "Debug should contain type name");
+    assert!(
+        debug.contains("EvaluateResult"),
+        "Debug should contain type name"
+    );
     assert!(debug.contains("fail"), "Debug should contain error");
 }
 
@@ -254,15 +260,18 @@ fn evaluate_in_node_realm_does_not_discard_result() {
     let source = include_str!("../src/runtime_bridge.rs");
 
     // Find the evaluate_in_node_realm function body
-    let func_start = source.find("pub unsafe fn evaluate_in_node_realm")
+    let func_start = source
+        .find("pub unsafe fn evaluate_in_node_realm")
         .expect("evaluate_in_node_realm function not found");
-    let func_body_start = source[func_start..].find('{')
+    let func_body_start = source[func_start..]
+        .find('{')
         .expect("function body start not found");
     let search_limit = source[func_start + func_body_start..]
         .find("unsafe fn create_node_realm_native")
         .unwrap_or(2000)
         .min(4000);
-    let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+    let func_body =
+        &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
     // Verify there is no "let _result" or "let _ =" discarding the evaluate_script return value
     assert!(
@@ -283,15 +292,18 @@ fn evaluate_in_node_realm_does_not_discard_result() {
 #[test]
 fn evaluate_in_node_realm_reports_null_node_global_error() {
     let source = include_str!("../src/runtime_bridge.rs");
-    let func_start = source.find("pub unsafe fn evaluate_in_node_realm")
+    let func_start = source
+        .find("pub unsafe fn evaluate_in_node_realm")
         .expect("evaluate_in_node_realm function not found");
-    let func_body_start = source[func_start..].find('{')
+    let func_body_start = source[func_start..]
+        .find('{')
         .expect("function body start not found");
     let search_limit = source[func_start + func_body_start..]
         .find("unsafe fn create_node_realm_native")
         .unwrap_or(2000)
         .min(4000);
-    let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+    let func_body =
+        &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
     assert!(
         func_body.contains("EvaluateResult::err"),
@@ -307,15 +319,18 @@ fn evaluate_in_node_realm_reports_null_node_global_error() {
 #[test]
 fn evaluate_in_node_realm_reports_null_context_error() {
     let source = include_str!("../src/runtime_bridge.rs");
-    let func_start = source.find("pub unsafe fn evaluate_in_node_realm")
+    let func_start = source
+        .find("pub unsafe fn evaluate_in_node_realm")
         .expect("evaluate_in_node_realm function not found");
-    let func_body_start = source[func_start..].find('{')
+    let func_body_start = source[func_start..]
+        .find('{')
         .expect("function body start not found");
     let search_limit = source[func_start + func_body_start..]
         .find("unsafe fn create_node_realm_native")
         .unwrap_or(2000)
         .min(4000);
-    let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+    let func_body =
+        &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
     assert!(
         func_body.contains("JSContext pointer is null"),
@@ -327,15 +342,18 @@ fn evaluate_in_node_realm_reports_null_context_error() {
 #[test]
 fn evaluate_in_node_realm_serializes_value_types() {
     let source = include_str!("../src/runtime_bridge.rs");
-    let func_start = source.find("pub unsafe fn evaluate_in_node_realm")
+    let func_start = source
+        .find("pub unsafe fn evaluate_in_node_realm")
         .expect("evaluate_in_node_realm function not found");
-    let func_body_start = source[func_start..].find('{')
+    let func_body_start = source[func_start..]
+        .find('{')
         .expect("function body start not found");
     let search_limit = source[func_start + func_body_start..]
         .find("/// Bridge callback: create Node Realm")
         .unwrap_or(3000)
         .min(5000);
-    let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+    let func_body =
+        &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
     // Must handle: string, number, boolean, null, undefined, object
     assert!(

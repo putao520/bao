@@ -16,8 +16,8 @@
 
 use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool, PageState};
 use bao_stealth::StealthProfile;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -256,7 +256,15 @@ fn pagepool_chaos_memory_safety() {
             5..=7 => Action::EvaluateNodeSync,
             8..=9 => Action::EvaluateWeb,
             10 => Action::NavigatePage,
-            11 => if rng.next_bool() { Action::CheckStats } else if rng.next_bool() { Action::ReleaseToIdle } else { Action::CloseAll },
+            11 => {
+                if rng.next_bool() {
+                    Action::CheckStats
+                } else if rng.next_bool() {
+                    Action::ReleaseToIdle
+                } else {
+                    Action::CloseAll
+                }
+            }
             _ => unreachable!(),
         };
 
@@ -304,11 +312,17 @@ fn pagepool_chaos_memory_safety() {
                         report.check(
                             &format!("round {}: page #{} stealth={}", round, id, has_stealth),
                             stealth_match,
-                            &format!("stealth_profile mismatch: expected={}, got={}", use_stealth, has_stealth),
+                            &format!(
+                                "stealth_profile mismatch: expected={}, got={}",
+                                use_stealth, has_stealth
+                            ),
                         );
                     }
                     Err(e) => {
-                        report.fail(&format!("round {}: create page", round), &format!("create_page: {}", e));
+                        report.fail(
+                            &format!("round {}: create page", round),
+                            &format!("create_page: {}", e),
+                        );
                     }
                 }
             }
@@ -339,7 +353,10 @@ fn pagepool_chaos_memory_safety() {
                         );
                     }
                     Err(e) => {
-                        report.fail(&format!("round {}: close page #{}", round, id), &format!("close: {}", e));
+                        report.fail(
+                            &format!("round {}: close page #{}", round, id),
+                            &format!("close: {}", e),
+                        );
                     }
                 }
 
@@ -348,20 +365,29 @@ fn pagepool_chaos_memory_safety() {
                 report.check(
                     &format!("round {}: use-after-close page #{}", round, id),
                     eval_result.is_err(),
-                    &format!("evaluate_js on closed page should fail, got: {:?}", eval_result),
+                    &format!(
+                        "evaluate_js on closed page should fail, got: {:?}",
+                        eval_result
+                    ),
                 );
                 // Verify Node.js use-after-close also errors
                 let node_result = page.evaluate_js(NODE_SYNC_JS[0]);
                 report.check(
                     &format!("round {}: node-after-close page #{}", round, id),
                     node_result.is_err(),
-                    &format!("Node.js evaluate on closed page should fail, got: {:?}", node_result),
+                    &format!(
+                        "Node.js evaluate on closed page should fail, got: {:?}",
+                        node_result
+                    ),
                 );
             }
 
             Action::EvaluatePrivileged => {
                 if live_pages.is_empty() {
-                    report.skip(&format!("round {}: eval_priv (no pages)", round), "empty pool");
+                    report.skip(
+                        &format!("round {}: eval_priv (no pages)", round),
+                        "empty pool",
+                    );
                     continue;
                 }
                 let idx = rng.next_usize(live_pages.len());
@@ -370,28 +396,47 @@ fn pagepool_chaos_memory_safety() {
 
                 match page.evaluate_js(snippet) {
                     Ok(result) => {
-                        report.pass(&format!("round {}: eval_js page #{} -> ok", round, page.id()));
+                        report.pass(&format!(
+                            "round {}: eval_js page #{} -> ok",
+                            round,
+                            page.id()
+                        ));
                         if snippet.contains("typeof require") {
                             if result.contains("function") || result.contains("object") {
-                                report.pass(&format!("round {}: typeof require on page #{}", round, page.id()));
+                                report.pass(&format!(
+                                    "round {}: typeof require on page #{}",
+                                    round,
+                                    page.id()
+                                ));
                             } else {
                                 // Node.js API bridge not yet available — not a memory safety issue
                                 report.skip(
-                                    &format!("round {}: typeof require on page #{}", round, page.id()),
+                                    &format!(
+                                        "round {}: typeof require on page #{}",
+                                        round,
+                                        page.id()
+                                    ),
                                     &format!("Node.js API bridge not available, got: {}", result),
                                 );
                             }
                         }
                     }
                     Err(_) => {
-                        report.pass(&format!("round {}: eval_js page #{} -> err (ok)", round, page.id()));
+                        report.pass(&format!(
+                            "round {}: eval_js page #{} -> err (ok)",
+                            round,
+                            page.id()
+                        ));
                     }
                 }
             }
 
             Action::EvaluateNodeSync => {
                 if live_pages.is_empty() {
-                    report.skip(&format!("round {}: eval_node (no pages)", round), "empty pool");
+                    report.skip(
+                        &format!("round {}: eval_node (no pages)", round),
+                        "empty pool",
+                    );
                     continue;
                 }
                 let idx = rng.next_usize(live_pages.len());
@@ -400,64 +445,132 @@ fn pagepool_chaos_memory_safety() {
 
                 match page.evaluate_js(snippet) {
                     Ok(result) => {
-                        report.pass(&format!("round {}: eval_node page #{} -> ok", round, page.id()));
+                        report.pass(&format!(
+                            "round {}: eval_node page #{} -> ok",
+                            round,
+                            page.id()
+                        ));
                         // When Node.js APIs return valid results, record as pass.
                         // When they return undefined/error-like values, skip — API bridge may not be ready.
                         if snippet.contains("require('path')") {
                             if !result.is_empty() && !result.contains("undefined") {
-                                report.pass(&format!("round {}: node path on page #{}", round, page.id()));
+                                report.pass(&format!(
+                                    "round {}: node path on page #{}",
+                                    round,
+                                    page.id()
+                                ));
                             } else {
-                                report.skip(&format!("round {}: node path on page #{}", round, page.id()), &format!("API not ready, got: {}", result));
+                                report.skip(
+                                    &format!("round {}: node path on page #{}", round, page.id()),
+                                    &format!("API not ready, got: {}", result),
+                                );
                             }
                         }
                         if snippet.contains("process.platform") {
-                            if result.contains("linux") || result.contains("win") || result.contains("mac") || result.contains("darwin") {
-                                report.pass(&format!("round {}: node process.platform on page #{}", round, page.id()));
+                            if result.contains("linux")
+                                || result.contains("win")
+                                || result.contains("mac")
+                                || result.contains("darwin")
+                            {
+                                report.pass(&format!(
+                                    "round {}: node process.platform on page #{}",
+                                    round,
+                                    page.id()
+                                ));
                             } else {
-                                report.skip(&format!("round {}: node process.platform on page #{}", round, page.id()), &format!("API not ready, got: {}", result));
+                                report.skip(
+                                    &format!(
+                                        "round {}: node process.platform on page #{}",
+                                        round,
+                                        page.id()
+                                    ),
+                                    &format!("API not ready, got: {}", result),
+                                );
                             }
                         }
                         if snippet.contains("Buffer") {
-                            if result.contains("ok") || result.contains("len") || result.contains("=") {
-                                report.pass(&format!("round {}: node Buffer on page #{}", round, page.id()));
+                            if result.contains("ok")
+                                || result.contains("len")
+                                || result.contains("=")
+                            {
+                                report.pass(&format!(
+                                    "round {}: node Buffer on page #{}",
+                                    round,
+                                    page.id()
+                                ));
                             } else {
-                                report.skip(&format!("round {}: node Buffer on page #{}", round, page.id()), &format!("API not ready, got: {}", result));
+                                report.skip(
+                                    &format!("round {}: node Buffer on page #{}", round, page.id()),
+                                    &format!("API not ready, got: {}", result),
+                                );
                             }
                         }
                         if snippet.contains("require('fs')") {
                             if !result.is_empty() && !result.contains("undefined") {
-                                report.pass(&format!("round {}: node fs on page #{}", round, page.id()));
+                                report.pass(&format!(
+                                    "round {}: node fs on page #{}",
+                                    round,
+                                    page.id()
+                                ));
                             } else {
-                                report.skip(&format!("round {}: node fs on page #{}", round, page.id()), &format!("API not ready, got: {}", result));
+                                report.skip(
+                                    &format!("round {}: node fs on page #{}", round, page.id()),
+                                    &format!("API not ready, got: {}", result),
+                                );
                             }
                         }
                         if snippet.contains("require('url')") {
                             if result.contains("ok") || result.contains("example") {
-                                report.pass(&format!("round {}: node url on page #{}", round, page.id()));
+                                report.pass(&format!(
+                                    "round {}: node url on page #{}",
+                                    round,
+                                    page.id()
+                                ));
                             } else {
-                                report.skip(&format!("round {}: node url on page #{}", round, page.id()), &format!("API not ready, got: {}", result));
+                                report.skip(
+                                    &format!("round {}: node url on page #{}", round, page.id()),
+                                    &format!("API not ready, got: {}", result),
+                                );
                             }
                         }
                         // Mixed DOM+Node scripts: verify both sides worked (when API ready)
                         if snippet.contains("document") && snippet.contains("require") {
                             if !result.contains("undefined") || result.contains("has_") {
-                                report.pass(&format!("round {}: node+dom mixed on page #{}", round, page.id()));
+                                report.pass(&format!(
+                                    "round {}: node+dom mixed on page #{}",
+                                    round,
+                                    page.id()
+                                ));
                             } else {
-                                report.skip(&format!("round {}: node+dom mixed on page #{}", round, page.id()), &format!("API not ready, got: {}", result));
+                                report.skip(
+                                    &format!(
+                                        "round {}: node+dom mixed on page #{}",
+                                        round,
+                                        page.id()
+                                    ),
+                                    &format!("API not ready, got: {}", result),
+                                );
                             }
                         }
                     }
                     Err(_) => {
                         // Some Node APIs may not be fully implemented yet — error is OK,
                         // but must not crash
-                        report.pass(&format!("round {}: eval_node page #{} -> err (ok)", round, page.id()));
+                        report.pass(&format!(
+                            "round {}: eval_node page #{} -> err (ok)",
+                            round,
+                            page.id()
+                        ));
                     }
                 }
             }
 
             Action::EvaluateWeb => {
                 if live_pages.is_empty() {
-                    report.skip(&format!("round {}: eval_web (no pages)", round), "empty pool");
+                    report.skip(
+                        &format!("round {}: eval_web (no pages)", round),
+                        "empty pool",
+                    );
                     continue;
                 }
                 let idx = rng.next_usize(live_pages.len());
@@ -466,25 +579,41 @@ fn pagepool_chaos_memory_safety() {
 
                 match page.evaluate_js_web(snippet) {
                     Ok(result) => {
-                        report.pass(&format!("round {}: eval_web page #{} -> ok", round, page.id()));
+                        report.pass(&format!(
+                            "round {}: eval_web page #{} -> ok",
+                            round,
+                            page.id()
+                        ));
                         // Web context should NOT see Node APIs
                         if snippet.contains("typeof require") {
                             report.check(
-                                &format!("round {}: web typeof require on page #{}", round, page.id()),
+                                &format!(
+                                    "round {}: web typeof require on page #{}",
+                                    round,
+                                    page.id()
+                                ),
                                 result.contains("undefined"),
                                 &format!("web context must not see require, got: {}", result),
                             );
                         }
                         if snippet.contains("typeof process") {
                             report.check(
-                                &format!("round {}: web typeof process on page #{}", round, page.id()),
+                                &format!(
+                                    "round {}: web typeof process on page #{}",
+                                    round,
+                                    page.id()
+                                ),
                                 result.contains("undefined"),
                                 &format!("web context must not see process, got: {}", result),
                             );
                         }
                         if snippet.contains("typeof Buffer") {
                             report.check(
-                                &format!("round {}: web typeof Buffer on page #{}", round, page.id()),
+                                &format!(
+                                    "round {}: web typeof Buffer on page #{}",
+                                    round,
+                                    page.id()
+                                ),
                                 result.contains("undefined"),
                                 &format!("web context must not see Buffer, got: {}", result),
                             );
@@ -498,14 +627,21 @@ fn pagepool_chaos_memory_safety() {
                         }
                     }
                     Err(_) => {
-                        report.pass(&format!("round {}: eval_web page #{} -> err (ok)", round, page.id()));
+                        report.pass(&format!(
+                            "round {}: eval_web page #{} -> err (ok)",
+                            round,
+                            page.id()
+                        ));
                     }
                 }
             }
 
             Action::NavigatePage => {
                 if live_pages.is_empty() {
-                    report.skip(&format!("round {}: navigate (no pages)", round), "empty pool");
+                    report.skip(
+                        &format!("round {}: navigate (no pages)", round),
+                        "empty pool",
+                    );
                     continue;
                 }
                 let idx = rng.next_usize(live_pages.len());
@@ -518,7 +654,10 @@ fn pagepool_chaos_memory_safety() {
                         report.pass(&format!("round {}: navigate page #{}", round, page.id()));
                     }
                     Err(e) => {
-                        report.fail(&format!("round {}: navigate page #{}", round, page.id()), &format!("navigate: {}", e));
+                        report.fail(
+                            &format!("round {}: navigate page #{}", round, page.id()),
+                            &format!("navigate: {}", e),
+                        );
                     }
                 }
             }
@@ -530,20 +669,35 @@ fn pagepool_chaos_memory_safety() {
                 let idle_count = stats.idle;
 
                 report.check(
-                    &format!("round {}: stats.active={} >= live={}", round, active_count, live_count),
+                    &format!(
+                        "round {}: stats.active={} >= live={}",
+                        round, active_count, live_count
+                    ),
                     active_count + idle_count >= live_count || live_count == 0,
-                    &format!("stats({}/{}) inconsistent with live_pages({})", active_count, idle_count, live_count),
+                    &format!(
+                        "stats({}/{}) inconsistent with live_pages({})",
+                        active_count, idle_count, live_count
+                    ),
                 );
                 report.check(
-                    &format!("round {}: stats.total_created={} >= actual={}", round, stats.total_created, total_created),
+                    &format!(
+                        "round {}: stats.total_created={} >= actual={}",
+                        round, stats.total_created, total_created
+                    ),
                     stats.total_created >= total_created || total_created == 0,
-                    &format!("total_created mismatch: pool={}, local={}", stats.total_created, total_created),
+                    &format!(
+                        "total_created mismatch: pool={}, local={}",
+                        stats.total_created, total_created
+                    ),
                 );
             }
 
             Action::ReleaseToIdle => {
                 if live_pages.is_empty() {
-                    report.skip(&format!("round {}: release_idle (no pages)", round), "empty pool");
+                    report.skip(
+                        &format!("round {}: release_idle (no pages)", round),
+                        "empty pool",
+                    );
                     continue;
                 }
                 let idx = rng.next_usize(live_pages.len());
@@ -560,7 +714,10 @@ fn pagepool_chaos_memory_safety() {
                         "page not alive after get_page from idle",
                     );
                 } else {
-                    report.skip(&format!("round {}: re-get page #{}", round, id), "evicted or not found");
+                    report.skip(
+                        &format!("round {}: re-get page #{}", round, id),
+                        "evicted or not found",
+                    );
                     live_pages.swap_remove(idx);
                 }
             }
@@ -576,7 +733,10 @@ fn pagepool_chaos_memory_safety() {
                     );
                 }
                 _total_closed += count_before;
-                report.pass(&format!("round {}: close_all ({} pages)", round, count_before));
+                report.pass(&format!(
+                    "round {}: close_all ({} pages)",
+                    round, count_before
+                ));
 
                 let stats = pool.stats();
                 report.check(
@@ -593,12 +753,23 @@ fn pagepool_chaos_memory_safety() {
     live_pages.clear();
 
     let stats = pool.stats();
-    report.check("post-chaos: active == 0", stats.active == 0, &format!("active={}", stats.active));
-    report.check("post-chaos: idle == 0", stats.idle == 0, &format!("idle={}", stats.idle));
+    report.check(
+        "post-chaos: active == 0",
+        stats.active == 0,
+        &format!("active={}", stats.active),
+    );
+    report.check(
+        "post-chaos: idle == 0",
+        stats.idle == 0,
+        &format!("idle={}", stats.idle),
+    );
     report.check(
         "post-chaos: total_destroyed >= total_created",
         stats.total_destroyed >= total_created || total_created == 0,
-        &format!("destroyed={}, created={}", stats.total_destroyed, total_created),
+        &format!(
+            "destroyed={}, created={}",
+            stats.total_destroyed, total_created
+        ),
     );
 
     // ---- Phase 3: Rapid create-close stress (no JS, pure lifecycle) ----
@@ -610,10 +781,21 @@ fn pagepool_chaos_memory_safety() {
         match pool.create_page(&cfg) {
             Ok(page) => {
                 let id = page.id();
-                report.check(&format!("stress {}: create page #{}", i, id), page.is_alive(), "not alive after create");
+                report.check(
+                    &format!("stress {}: create page #{}", i, id),
+                    page.is_alive(),
+                    "not alive after create",
+                );
                 match pool.close_page(id) {
-                    Ok(()) => report.check(&format!("stress {}: close page #{}", i, id), !page.is_alive(), "still alive after close"),
-                    Err(e) => report.fail(&format!("stress {}: close page #{}", i, id), &format!("{}", e)),
+                    Ok(()) => report.check(
+                        &format!("stress {}: close page #{}", i, id),
+                        !page.is_alive(),
+                        "still alive after close",
+                    ),
+                    Err(e) => report.fail(
+                        &format!("stress {}: close page #{}", i, id),
+                        &format!("{}", e),
+                    ),
                 }
             }
             Err(e) => report.fail(&format!("stress {}: create page", i), &format!("{}", e)),
@@ -621,7 +803,11 @@ fn pagepool_chaos_memory_safety() {
     }
 
     // ---- Phase 4: Alternating stealth profiles create-close ----
-    let profiles = [Some(StealthProfile::firefox_default()), Some(StealthProfile::chrome_default()), None];
+    let profiles = [
+        Some(StealthProfile::firefox_default()),
+        Some(StealthProfile::chrome_default()),
+        None,
+    ];
     for i in 0..15 {
         let profile = &profiles[i % profiles.len()];
         let cfg = PageConfig {
@@ -635,9 +821,18 @@ fn pagepool_chaos_memory_safety() {
                 let id = page.id();
                 let applied = page.stealth_profile();
                 report.check(
-                    &format!("stealth-chaos {}: page #{} profile applied={}", i, id, applied.is_some()),
+                    &format!(
+                        "stealth-chaos {}: page #{} profile applied={}",
+                        i,
+                        id,
+                        applied.is_some()
+                    ),
                     applied.is_some() == profile.is_some(),
-                    &format!("profile mismatch: expected={}, got={}", profile.is_some(), applied.is_some()),
+                    &format!(
+                        "profile mismatch: expected={}, got={}",
+                        profile.is_some(),
+                        applied.is_some()
+                    ),
                 );
 
                 let _ = page.evaluate_js("1+1");
@@ -651,11 +846,21 @@ fn pagepool_chaos_memory_safety() {
                 }
 
                 match pool.close_page(id) {
-                    Ok(()) => report.check(&format!("stealth-chaos {}: close page #{}", i, id), !page.is_alive(), "still alive after close"),
-                    Err(e) => report.fail(&format!("stealth-chaos {}: close page #{}", i, id), &format!("{}", e)),
+                    Ok(()) => report.check(
+                        &format!("stealth-chaos {}: close page #{}", i, id),
+                        !page.is_alive(),
+                        "still alive after close",
+                    ),
+                    Err(e) => report.fail(
+                        &format!("stealth-chaos {}: close page #{}", i, id),
+                        &format!("{}", e),
+                    ),
                 }
             }
-            Err(e) => report.fail(&format!("stealth-chaos {}: create page", i), &format!("{}", e)),
+            Err(e) => report.fail(
+                &format!("stealth-chaos {}: create page", i),
+                &format!("{}", e),
+            ),
         }
     }
 
@@ -699,7 +904,10 @@ fn pagepool_chaos_memory_safety() {
                     // not a memory safety issue, just incomplete feature.
                     report.skip(
                         &format!("node-sync-stress: page #{} Node.js calls", id),
-                        &format!("0/{} calls passed — Node.js API bridge not yet available", node_passes + node_fails),
+                        &format!(
+                            "0/{} calls passed — Node.js API bridge not yet available",
+                            node_passes + node_fails
+                        ),
                     );
                 }
 
@@ -707,15 +915,25 @@ fn pagepool_chaos_memory_safety() {
                 let web_require = page.evaluate_js_web("typeof require");
                 if let Ok(r) = web_require {
                     report.check(
-                        &format!("node-sync-stress: page #{} web isolation after node stress", id),
+                        &format!(
+                            "node-sync-stress: page #{} web isolation after node stress",
+                            id
+                        ),
                         r.contains("undefined"),
                         &format!("require leaked to web after Node stress, got: {}", r),
                     );
                 }
 
                 match pool.close_page(id) {
-                    Ok(()) => report.check(&format!("node-sync-stress: close page #{}", id), !page.is_alive(), "still alive after close"),
-                    Err(e) => report.fail(&format!("node-sync-stress: close page #{}", id), &format!("{}", e)),
+                    Ok(()) => report.check(
+                        &format!("node-sync-stress: close page #{}", id),
+                        !page.is_alive(),
+                        "still alive after close",
+                    ),
+                    Err(e) => report.fail(
+                        &format!("node-sync-stress: close page #{}", id),
+                        &format!("{}", e),
+                    ),
                 }
             }
             Err(e) => report.fail("node-sync-stress: create page", &format!("{}", e)),
@@ -774,8 +992,15 @@ fn pagepool_chaos_memory_safety() {
                 }
 
                 match pool.close_page(id) {
-                    Ok(()) => report.check(&format!("interleave: close page #{}", id), !page.is_alive(), "still alive"),
-                    Err(e) => report.fail(&format!("interleave: close page #{}", id), &format!("{}", e)),
+                    Ok(()) => report.check(
+                        &format!("interleave: close page #{}", id),
+                        !page.is_alive(),
+                        "still alive",
+                    ),
+                    Err(e) => report.fail(
+                        &format!("interleave: close page #{}", id),
+                        &format!("{}", e),
+                    ),
                 }
             }
             Err(e) => report.fail("interleave: create page", &format!("{}", e)),
@@ -797,9 +1022,16 @@ fn pagepool_chaos_memory_safety() {
             report.check(
                 &format!("double-close: page #{} second close is safe", id),
                 second_close.is_ok(),
-                &format!("second close should be safe (no-op), got: {:?}", second_close),
+                &format!(
+                    "second close should be safe (no-op), got: {:?}",
+                    second_close
+                ),
             );
-            report.check("double-close: page not alive", !page.is_alive(), "page alive after double close");
+            report.check(
+                "double-close: page not alive",
+                !page.is_alive(),
+                "page alive after double close",
+            );
         }
     }
 
@@ -809,15 +1041,24 @@ fn pagepool_chaos_memory_safety() {
     // ---- Results ----
     report.finish();
 
-    assert_eq!(report.failed, 0,
-        "{} chaos assertions FAILED — memory safety compromised!", report.failed);
-    assert!(report.passed >= 80,
-        "too few assertions passed ({}) — test may be skipping too much", report.passed);
+    assert_eq!(
+        report.failed, 0,
+        "{} chaos assertions FAILED — memory safety compromised!",
+        report.failed
+    );
+    assert!(
+        report.passed >= 80,
+        "too few assertions passed ({}) — test may be skipping too much",
+        report.passed
+    );
 
     let total_non_skip = report.passed + report.failed;
     let ratio = report.passed as f64 / total_non_skip as f64;
-    assert!(ratio >= 1.0,
-        "pass ratio {:.1}% < 100% — chaos test gate failed", ratio * 100.0);
+    assert!(
+        ratio >= 1.0,
+        "pass ratio {:.1}% < 100% — chaos test gate failed",
+        ratio * 100.0
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -878,7 +1119,10 @@ fn bce20260627_003_chaos_decision_trace_is_deterministic() {
 
     // Sanity: the trace must be non-trivial (not all zeros — that would indicate
     // a broken seed initialization in `Rng::seed`).
-    let non_zero = trace_a.iter().filter(|(a, p, _)| *a != 0 || *p != 0).count();
+    let non_zero = trace_a
+        .iter()
+        .filter(|(a, p, _)| *a != 0 || *p != 0)
+        .count();
     assert!(
         non_zero > ROUNDS / 2,
         "trace suspiciously uniform (only {} non-zero entries in {} rounds) — \

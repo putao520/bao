@@ -16,9 +16,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use crate::api::browser::Browser as HighLevelBrowser;
 use super::event_emitter::{EventEmitter, EventEmitterInner};
 use super::page::Page;
+use crate::api::browser::Browser as HighLevelBrowser;
 
 /// Permission override 类型(CDP Permission name)。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -129,7 +129,9 @@ impl BrowserContext {
         // 实践中 Browser 持有 BrowserContext 的强引用,所以 upgrade 总成功。
         // 若 Browser 已 drop,context 也已 drop,所以这是死代码路径(返回临时强引用
         // 不可行)。这里 unwrap_or_else panic 是合理的契约保证。
-        self.browser.upgrade().expect("BrowserContext::browser: parent Browser dropped")
+        self.browser
+            .upgrade()
+            .expect("BrowserContext::browser: parent Browser dropped")
     }
 
     /// Pages 列表(克隆)。
@@ -185,7 +187,9 @@ impl BrowserContext {
     ///
     /// @trace REQ-BAO-API-006 [class:BrowserContext]
     pub fn override_permissions(&self, origin: impl Into<String>, perms: Vec<PermissionOverride>) {
-        self.permission_overrides.borrow_mut().insert(origin.into(), perms);
+        self.permission_overrides
+            .borrow_mut()
+            .insert(origin.into(), perms);
     }
 
     /// 清除所有 permission overrides(本地状态)。
@@ -224,7 +228,9 @@ impl BrowserContext {
     ///
     /// @trace REQ-BAO-API-006 [class:BrowserContext]
     pub fn remove_page(&self, target_id: &str) {
-        self.pages.borrow_mut().retain(|p| p.target_id() != target_id);
+        self.pages
+            .borrow_mut()
+            .retain(|p| p.target_id() != target_id);
     }
 
     /// 按 target_id 查找 Page。
@@ -280,8 +286,8 @@ impl BrowserContext {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::event_emitter::EventHandler;
+    use super::*;
 
     fn make_browser() -> Rc<HighLevelBrowser> {
         Rc::new(HighLevelBrowser::new_for_test("ws://x"))
@@ -402,9 +408,18 @@ mod tests {
 
     #[test]
     fn permission_override_from_str() {
-        assert_eq!(PermissionOverride::from_str("geolocation"), PermissionOverride::Geolocation);
-        assert_eq!(PermissionOverride::from_str("notifications"), PermissionOverride::Notifications);
-        assert_eq!(PermissionOverride::from_str("custom"), PermissionOverride::Other("custom".into()));
+        assert_eq!(
+            PermissionOverride::from_str("geolocation"),
+            PermissionOverride::Geolocation
+        );
+        assert_eq!(
+            PermissionOverride::from_str("notifications"),
+            PermissionOverride::Notifications
+        );
+        assert_eq!(
+            PermissionOverride::from_str("custom"),
+            PermissionOverride::Other("custom".into())
+        );
     }
 
     #[test]

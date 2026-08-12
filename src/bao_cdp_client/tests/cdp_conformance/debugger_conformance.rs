@@ -15,7 +15,9 @@
 //! @trace REQ-CDP-003 [domain:Debugger] [level:integration]
 //! @trace BUG-CDP-006 [domain:Debugger] [level:integration]
 
-use bao_cdp_client::{dispatch_command, translate_event, BridgeError, MockServoBackend, ServoBackend, ServoEvent};
+use bao_cdp_client::{
+    dispatch_command, translate_event, BridgeError, MockServoBackend, ServoBackend, ServoEvent,
+};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -58,10 +60,10 @@ fn debugger_set_breakpoint_by_url_returns_breakpoint_id() {
     .unwrap();
     // CDP spec: { breakpointId, locations: [{scriptId, lineNumber, columnNumber}] }
     assert!(r["breakpointId"].is_string(), "breakpointId must be string");
-    assert!(r["breakpointId"]
-        .as_str()
-        .unwrap()
-        .contains('5'), "breakpointId should encode line");
+    assert!(
+        r["breakpointId"].as_str().unwrap().contains('5'),
+        "breakpointId should encode line"
+    );
     let locs = r["locations"].as_array().expect("locations must be array");
     assert_eq!(locs.len(), 1);
     assert!(locs[0]["scriptId"].is_string());
@@ -150,7 +152,10 @@ fn debugger_evaluate_on_call_frame_returns_remote_object() {
     )
     .unwrap();
     // CDP spec: { result: RemoteObject, exceptionDetails?: ExceptionDetails }
-    assert!(r["result"]["type"].is_string(), "result.type must be string");
+    assert!(
+        r["result"]["type"].is_string(),
+        "result.type must be string"
+    );
 }
 
 #[test]
@@ -235,7 +240,11 @@ fn debugger_script_parsed_event_schema_conformance() {
     let events = translate_event(servo_event);
 
     // Assert — exactly one CdpEvent
-    assert_eq!(events.len(), 1, "ScriptParsed → exactly 1 Debugger.scriptParsed");
+    assert_eq!(
+        events.len(),
+        1,
+        "ScriptParsed → exactly 1 Debugger.scriptParsed"
+    );
     let ev = &events[0];
 
     // CDP spec: method = "Debugger.scriptParsed"

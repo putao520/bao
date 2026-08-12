@@ -1,12 +1,12 @@
 // REQ-STL-004: Stealth runtime JS hook injection  @trace REQ-STL-004
 use crate::canvas::CanvasNoise;
 use crate::navigator::{NavigatorProfile, ScreenProfile};
-use crate::webgl_audio::{AudioProfile, WebGLProfile};
 use crate::profile::{
-    FontConfig, BatteryConfig, WebRtcMode, TimingConfig, ClientRectsConfig, ScreenDisplayConfig,
-    PluginConfig, SpeechConfig, MediaDevicesConfig, PermissionsConfig,
-    WebGLContextConfig, ConnectionConfig, IframeConfig,
+    BatteryConfig, ClientRectsConfig, ConnectionConfig, FontConfig, IframeConfig,
+    MediaDevicesConfig, PermissionsConfig, PluginConfig, ScreenDisplayConfig, SpeechConfig,
+    TimingConfig, WebGLContextConfig, WebRtcMode,
 };
+use crate::webgl_audio::{AudioProfile, WebGLProfile};
 
 pub struct StealthHooks {
     canvas_js: String,
@@ -327,10 +327,10 @@ impl StealthHooks {
         screen: &ScreenProfile,
         webgl: &WebGLProfile,
     ) -> String {
-        let languages_json = serde_json::to_string(&nav.languages)
-            .unwrap_or_else(|_| r#"["en-US","en"]"#.into());
-        let extensions_json = serde_json::to_string(&webgl.extensions)
-            .unwrap_or_else(|_| "[]".into());
+        let languages_json =
+            serde_json::to_string(&nav.languages).unwrap_or_else(|_| r#"["en-US","en"]"#.into());
+        let extensions_json =
+            serde_json::to_string(&webgl.extensions).unwrap_or_else(|_| "[]".into());
 
         format!(
             r#"(function() {{
@@ -424,8 +424,8 @@ impl StealthHooks {
     fn build_font_js(font: &FontConfig) -> String {
         let seed = font.seed;
         let extra_count = font.extra_font_count;
-        let hidden_fonts_json = serde_json::to_string(&font.hidden_fonts)
-            .unwrap_or_else(|_| "[]".into());
+        let hidden_fonts_json =
+            serde_json::to_string(&font.hidden_fonts).unwrap_or_else(|_| "[]".into());
 
         format!(
             r#"(function() {{
@@ -551,7 +551,8 @@ impl StealthHooks {
       throw new DOMException('WebRTC is disabled', 'NotAllowedError');
     };
   }
-})();"#.to_string(),
+})();"#
+                .to_string(),
 
             WebRtcMode::Default => r#"(function() {
   if (typeof RTCPeerConnection !== 'undefined') {
@@ -575,7 +576,8 @@ impl StealthHooks {
       return origAddEventListener.call(this, type, listener, options);
     };
   }
-})();"#.to_string(),
+})();"#
+                .to_string(),
 
             WebRtcMode::Strict => r#"(function() {
   if (typeof RTCPeerConnection !== 'undefined') {
@@ -615,7 +617,8 @@ impl StealthHooks {
       });
     };
   }
-})();"#.to_string(),
+})();"#
+                .to_string(),
         }
     }
 
@@ -787,10 +790,9 @@ impl StealthHooks {
     // ── Plugin/MimeType spoofing ────────────────────────────────
 
     fn build_plugin_js(config: &PluginConfig) -> String {
-        let plugins_json = serde_json::to_string(&config.plugins)
-            .unwrap_or_else(|_| "[]".into());
-        let mime_types_json = serde_json::to_string(&config.mime_types)
-            .unwrap_or_else(|_| "[]".into());
+        let plugins_json = serde_json::to_string(&config.plugins).unwrap_or_else(|_| "[]".into());
+        let mime_types_json =
+            serde_json::to_string(&config.mime_types).unwrap_or_else(|_| "[]".into());
         // Clamp plugin_count to actual plugins length to avoid fingerprint-detectable
         // inconsistency where navigator.plugins.length reports fewer items than are
         // actually accessible by index.
@@ -880,8 +882,7 @@ impl StealthHooks {
         if !config.enabled {
             return String::new();
         }
-        let voices_json = serde_json::to_string(&config.voices)
-            .unwrap_or_else(|_| "[]".into());
+        let voices_json = serde_json::to_string(&config.voices).unwrap_or_else(|_| "[]".into());
 
         format!(
             r#"(function() {{
@@ -1007,7 +1008,9 @@ impl StealthHooks {
         if !config.enabled {
             return String::new();
         }
-        let states_json: Vec<String> = config.states.iter()
+        let states_json: Vec<String> = config
+            .states
+            .iter()
             .map(|(k, v)| format!("'{}': '{}'", k, v))
             .collect();
         let states_map = states_json.join(", ");
@@ -1765,10 +1768,24 @@ mod tests {
         let connection = ConnectionConfig::default();
         let iframe = IframeConfig::default();
         let hooks = StealthHooks::from_profile(
-            &canvas, &audio, &nav, &screen, &webgl, &font, &battery,
-            WebRtcMode::Default, &timing, &clientrects, &screen_display,
-            &plugin, &speech, &media_devices, &permissions, &webgl_context,
-            &connection, &iframe,
+            &canvas,
+            &audio,
+            &nav,
+            &screen,
+            &webgl,
+            &font,
+            &battery,
+            WebRtcMode::Default,
+            &timing,
+            &clientrects,
+            &screen_display,
+            &plugin,
+            &speech,
+            &media_devices,
+            &permissions,
+            &webgl_context,
+            &connection,
+            &iframe,
         );
         let js = hooks.navigator_js();
         assert!(
@@ -1803,10 +1820,7 @@ mod tests {
             js.starts_with("(function() {") || js.starts_with("(function(){{"),
             "Audio JS must be an IIFE"
         );
-        assert!(
-            js.ends_with("})();"),
-            "Audio JS must end with IIFE closure"
-        );
+        assert!(js.ends_with("})();"), "Audio JS must end with IIFE closure");
     }
 
     #[test]
@@ -1853,10 +1867,7 @@ mod tests {
             js.starts_with("(function() {") || js.starts_with("(function(){{"),
             "Font JS must be an IIFE"
         );
-        assert!(
-            js.ends_with("})();"),
-            "Font JS must end with IIFE closure"
-        );
+        assert!(js.ends_with("})();"), "Font JS must end with IIFE closure");
     }
 
     #[test]
@@ -1971,10 +1982,7 @@ mod tests {
             js.contains("performance.now"),
             "timing JS must override performance.now"
         );
-        assert!(
-            js.contains("Date.now"),
-            "timing JS must override Date.now"
-        );
+        assert!(js.contains("Date.now"), "timing JS must override Date.now");
         assert!(
             js.contains("timeStamp"),
             "timing JS must override Event.timeStamp"
@@ -2094,7 +2102,8 @@ mod tests {
         let ff = firefox_hooks();
         let ch = chrome_hooks();
         assert_ne!(
-            ff.font_js(), ch.font_js(),
+            ff.font_js(),
+            ch.font_js(),
             "Firefox and Chrome should produce different font JS (different seeds)"
         );
     }
@@ -2104,7 +2113,8 @@ mod tests {
         let ff = firefox_hooks();
         let ch = chrome_hooks();
         assert_ne!(
-            ff.clientrects_js(), ch.clientrects_js(),
+            ff.clientrects_js(),
+            ch.clientrects_js(),
             "Firefox and Chrome should produce different clientrects JS (different seeds)"
         );
     }

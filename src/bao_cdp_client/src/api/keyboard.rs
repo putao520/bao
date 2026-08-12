@@ -83,10 +83,18 @@ impl Keyboard {
     pub fn modifier_count(&self) -> u8 {
         let m = *self.modifiers.borrow();
         let mut n = 0;
-        if m & MOD_SHIFT != 0 { n += 1; }
-        if m & MOD_CONTROL != 0 { n += 1; }
-        if m & MOD_ALT != 0 { n += 1; }
-        if m & MOD_META != 0 { n += 1; }
+        if m & MOD_SHIFT != 0 {
+            n += 1;
+        }
+        if m & MOD_CONTROL != 0 {
+            n += 1;
+        }
+        if m & MOD_ALT != 0 {
+            n += 1;
+        }
+        if m & MOD_META != 0 {
+            n += 1;
+        }
         n
     }
 

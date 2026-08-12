@@ -8,11 +8,11 @@
 use ::std::cell::Cell;
 use ::std::path::{Path, PathBuf};
 
-use bun_resolver::Resolver;
-use bun_resolver::options::BundleOptions;
-use bun_resolver::fs::FileSystem;
-use bun_ast::Log;
 use bun_ast::ImportKind;
+use bun_ast::Log;
+use bun_resolver::Resolver;
+use bun_resolver::fs::FileSystem;
+use bun_resolver::options::BundleOptions;
 
 thread_local! {
     static RESOLVER: ::std::cell::RefCell<::std::option::Option<Resolver<'static>>> = const { ::std::cell::RefCell::new(None) };
@@ -69,7 +69,8 @@ fn resolve_via_bun_resolver(specifier: &str, base_dir: Option<&Path>) -> Option<
         dir.to_str().map(|s| s.as_bytes().to_vec())
     } else {
         Some(bun_core_cwd().into_bytes())
-    }.unwrap_or_else(|| b".".to_vec());
+    }
+    .unwrap_or_else(|| b".".to_vec());
 
     RESOLVER.with(|r| {
         let mut guard = r.borrow_mut();
@@ -128,7 +129,10 @@ mod tests {
     fn test_resolve_via_bun_resolver_not_found() {
         bao_uloop::force_link();
         install();
-        let result = resolve_via_bun_resolver("./nonexistent", Some(PathBuf::from(bun_core_cwd()).as_path()));
+        let result = resolve_via_bun_resolver(
+            "./nonexistent",
+            Some(PathBuf::from(bun_core_cwd()).as_path()),
+        );
         assert!(result.is_none());
     }
 

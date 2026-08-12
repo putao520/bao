@@ -111,22 +111,24 @@ fn cdp_full_chain_memory_transport_roundtrip() {
         .get("frameId")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    assert!(!frame_id.is_empty(), "frameId must be non-empty after navigate");
+    assert!(
+        !frame_id.is_empty(),
+        "frameId must be non-empty after navigate"
+    );
     let loader_id = nav_resp
         .get("loaderId")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    assert!(!loader_id.is_empty(), "loaderId must be non-empty after navigate");
+    assert!(
+        !loader_id.is_empty(),
+        "loaderId must be non-empty after navigate"
+    );
 
     // ── §5 Page.captureScreenshot — screenshot 命令链 ────────────────────
     //
     // Act
     let screenshot_resp = transport
-        .send_command(
-            "Page.captureScreenshot",
-            json!({"format": "png"}),
-            None,
-        )
+        .send_command("Page.captureScreenshot", json!({"format": "png"}), None)
         .expect("Page.captureScreenshot");
     //
     // Assert — 返回 data 字段(base64-encoded PNG)
@@ -202,7 +204,10 @@ fn cdp_full_chain_memory_transport_roundtrip() {
     let close_result = transport.close();
     // close 不应 panic(实现可能返回 Ok 或 Err,具体看 transport 状态)
     let _ = close_result;
-    assert!(transport.is_closed(), "transport must be closed after close()");
+    assert!(
+        transport.is_closed(),
+        "transport must be closed after close()"
+    );
 }
 
 // ─── §9 错误路径 — invalid URL scheme 抛 ConnectError ────────────────────────

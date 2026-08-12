@@ -1,7 +1,7 @@
 // @trace REQ-ENG-007 [entity:BaoRuntime]
 use ::std::cell::RefCell;
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use bun_sha_hmac;
 use bun_sha_hmac::hmac::EVP_MAX_MD_SIZE;
@@ -24,12 +24,23 @@ thread_local! {
 
 /// Define a numeric constant property on a JS object (used for crypto.constants).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn define_constant_number(cx: *mut JSContext, obj: *mut JSObject, name: *const i8, val: f64) {
+unsafe fn define_constant_number(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: *const i8,
+    val: f64,
+) {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_root = obj);
     rooted!(&in(cx_ref) let v = mozjs::jsval::DoubleValue(val));
-    JS_DefineProperty(cx, obj_root.handle().into(), name, v.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj_root.handle().into(),
+        name,
+        v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
@@ -40,101 +51,532 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
     unsafe {
         // --- Core hash / HMAC / random ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createHash".as_ptr(), Some(crypto_create_hash), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createHmac".as_ptr(), Some(crypto_create_hmac), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"randomBytes".as_ptr(), Some(crypto_random_bytes), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"randomUUID".as_ptr(), Some(crypto_random_uuid), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"getRandomValues".as_ptr(), Some(crypto_get_random_values), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"randomInt".as_ptr(), Some(crypto_random_int), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"randomFill".as_ptr(), Some(crypto_random_fill), 4, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"randomFillSync".as_ptr(), Some(crypto_random_fill_sync), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createHash".as_ptr(),
+            Some(crypto_create_hash),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createHmac".as_ptr(),
+            Some(crypto_create_hmac),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"randomBytes".as_ptr(),
+            Some(crypto_random_bytes),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"randomUUID".as_ptr(),
+            Some(crypto_random_uuid),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"getRandomValues".as_ptr(),
+            Some(crypto_get_random_values),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"randomInt".as_ptr(),
+            Some(crypto_random_int),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"randomFill".as_ptr(),
+            Some(crypto_random_fill),
+            4,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"randomFillSync".as_ptr(),
+            Some(crypto_random_fill_sync),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- KDF ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"pbkdf2Sync".as_ptr(), Some(crypto_pbkdf2_sync), 5, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"pbkdf2".as_ptr(), Some(crypto_pbkdf2), 6, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"scryptSync".as_ptr(), Some(crypto_scrypt_sync), 5, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"scrypt".as_ptr(), Some(crypto_scrypt), 5, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"hkdfSync".as_ptr(), Some(crypto_hkdf_sync), 5, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"hkdf".as_ptr(), Some(crypto_hkdf), 6, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"pbkdf2Sync".as_ptr(),
+            Some(crypto_pbkdf2_sync),
+            5,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"pbkdf2".as_ptr(),
+            Some(crypto_pbkdf2),
+            6,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"scryptSync".as_ptr(),
+            Some(crypto_scrypt_sync),
+            5,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"scrypt".as_ptr(),
+            Some(crypto_scrypt),
+            5,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"hkdfSync".as_ptr(),
+            Some(crypto_hkdf_sync),
+            5,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"hkdf".as_ptr(),
+            Some(crypto_hkdf),
+            6,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- Cipher ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createCipheriv".as_ptr(), Some(crypto_create_cipher_iv), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createDecipheriv".as_ptr(), Some(crypto_create_decipher_iv), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"getCiphers".as_ptr(), Some(crypto_get_ciphers), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"getCipherInfo".as_ptr(), Some(crypto_get_cipher_info), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createCipheriv".as_ptr(),
+            Some(crypto_create_cipher_iv),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createDecipheriv".as_ptr(),
+            Some(crypto_create_decipher_iv),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"getCiphers".as_ptr(),
+            Some(crypto_get_ciphers),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"getCipherInfo".as_ptr(),
+            Some(crypto_get_cipher_info),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- Hash info ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"getHashes".as_ptr(), Some(crypto_get_hashes), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"getCurves".as_ptr(), Some(crypto_get_curves), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"hash".as_ptr(), Some(crypto_hash), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"getHashes".as_ptr(),
+            Some(crypto_get_hashes),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"getCurves".as_ptr(),
+            Some(crypto_get_curves),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"hash".as_ptr(),
+            Some(crypto_hash),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- Sign / Verify ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createSign".as_ptr(), Some(crypto_create_sign), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createVerify".as_ptr(), Some(crypto_create_verify), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"sign".as_ptr(), Some(crypto_sign_sync), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"verify".as_ptr(), Some(crypto_verify_sync), 4, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"timingSafeEqual".as_ptr(), Some(crypto_timing_safe_equal), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createSign".as_ptr(),
+            Some(crypto_create_sign),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createVerify".as_ptr(),
+            Some(crypto_create_verify),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"sign".as_ptr(),
+            Some(crypto_sign_sync),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"verify".as_ptr(),
+            Some(crypto_verify_sync),
+            4,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"timingSafeEqual".as_ptr(),
+            Some(crypto_timing_safe_equal),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- Key generation / KeyObject ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createSecretKey".as_ptr(), Some(crypto_create_secret_key), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createPublicKey".as_ptr(), Some(crypto_create_public_key), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createPrivateKey".as_ptr(), Some(crypto_create_private_key), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"KeyObject".as_ptr(), Some(crypto_key_object), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"generateKeyPairSync".as_ptr(), Some(crypto_generate_key_pair_sync), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"generateKeyPair".as_ptr(), Some(crypto_generate_key_pair), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"generateKey".as_ptr(), Some(crypto_generate_key), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"generateKeySync".as_ptr(), Some(crypto_generate_key_sync), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createSecretKey".as_ptr(),
+            Some(crypto_create_secret_key),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createPublicKey".as_ptr(),
+            Some(crypto_create_public_key),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createPrivateKey".as_ptr(),
+            Some(crypto_create_private_key),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"KeyObject".as_ptr(),
+            Some(crypto_key_object),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"generateKeyPairSync".as_ptr(),
+            Some(crypto_generate_key_pair_sync),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"generateKeyPair".as_ptr(),
+            Some(crypto_generate_key_pair),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"generateKey".as_ptr(),
+            Some(crypto_generate_key),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"generateKeySync".as_ptr(),
+            Some(crypto_generate_key_sync),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- RSA encrypt/decrypt ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"publicEncrypt".as_ptr(), Some(crypto_public_encrypt), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"publicDecrypt".as_ptr(), Some(crypto_public_decrypt), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"privateEncrypt".as_ptr(), Some(crypto_private_encrypt), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"privateDecrypt".as_ptr(), Some(crypto_private_decrypt), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"publicEncrypt".as_ptr(),
+            Some(crypto_public_encrypt),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"publicDecrypt".as_ptr(),
+            Some(crypto_public_decrypt),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"privateEncrypt".as_ptr(),
+            Some(crypto_private_encrypt),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"privateDecrypt".as_ptr(),
+            Some(crypto_private_decrypt),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- ECDH ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createECDH".as_ptr(), Some(crypto_create_ecdh), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createECDH".as_ptr(),
+            Some(crypto_create_ecdh),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- DH ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createDiffieHellman".as_ptr(), Some(crypto_create_dh), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createDiffieHellmanGroup".as_ptr(), Some(crypto_diffie_hellman_group), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"getDiffieHellman".as_ptr(), Some(crypto_diffie_hellman_group), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"diffieHellman".as_ptr(), Some(crypto_diffie_hellman), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createDiffieHellman".as_ptr(),
+            Some(crypto_create_dh),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"createDiffieHellmanGroup".as_ptr(),
+            Some(crypto_diffie_hellman_group),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"getDiffieHellman".as_ptr(),
+            Some(crypto_diffie_hellman_group),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"diffieHellman".as_ptr(),
+            Some(crypto_diffie_hellman),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- X509 ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"X509Certificate".as_ptr(), Some(crypto_x509_certificate), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"X509".as_ptr(), Some(crypto_x509), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"X509Certificate".as_ptr(),
+            Some(crypto_x509_certificate),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"X509".as_ptr(),
+            Some(crypto_x509),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- Certificate (SPKAC) ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"Certificate".as_ptr(), Some(crypto_certificate_ctor), 0, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"Certificate".as_ptr(),
+            Some(crypto_certificate_ctor),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- Prime ---
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"generatePrimeSync".as_ptr(), Some(crypto_generate_prime_sync), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"generatePrime".as_ptr(), Some(crypto_generate_prime), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"checkPrime".as_ptr(), Some(crypto_check_prime), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"checkPrimeSync".as_ptr(), Some(crypto_check_prime_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"generatePrimeSync".as_ptr(),
+            Some(crypto_generate_prime_sync),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"generatePrime".as_ptr(),
+            Some(crypto_generate_prime),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"checkPrime".as_ptr(),
+            Some(crypto_check_prime),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"checkPrimeSync".as_ptr(),
+            Some(crypto_check_prime_sync),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- crypto.constants ---
         {
-            let mut wrapped_cx2 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+            let mut wrapped_cx2 =
+                mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
             let cx2 = &mut wrapped_cx2;
             rooted!(&in(cx2) let constants_obj = w2::JS_NewPlainObject(cx2));
             if !constants_obj.get().is_null() {
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"SSL_OP_ALL".as_ptr(), 0x80000404u32 as f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION".as_ptr(), 0x00000400u32 as f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"SSL_OP_NO_SSLv2".as_ptr(), 0x0u32 as f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"SSL_OP_NO_SSLv3".as_ptr(), 0x02000000u32 as f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"SSL_OP_NO_TLSv1".as_ptr(), 0x04000000u32 as f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"SSL_OP_NO_TLSv1_1".as_ptr(), 0x08000000u32 as f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"SSL_OP_NO_TLSv1_2".as_ptr(), 0x10000000u32 as f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"SSL_OP_NO_TLSv1_3".as_ptr(), 0x20000000u32 as f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"RSA_PKCS1_PADDING".as_ptr(), 1f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"RSA_PKCS1_OAEP_PADDING".as_ptr(), 4f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"RSA_NO_PADDING".as_ptr(), 3f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"RSA_PKCS1_PSS_PADDING".as_ptr(), 6f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"POINT_CONVERSION_UNCOMPRESSED".as_ptr(), 4f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"POINT_CONVERSION_COMPRESSED".as_ptr(), 2f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"POINT_CONVERSION_HYBRID".as_ptr(), 6f64);
-                define_constant_number(cx.raw_cx(), constants_obj.get(), c"OPENSSL_VERSION_NUMBER".as_ptr(), 0x1010107fu64 as f64);
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"SSL_OP_ALL".as_ptr(),
+                    0x80000404u32 as f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION".as_ptr(),
+                    0x00000400u32 as f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"SSL_OP_NO_SSLv2".as_ptr(),
+                    0x0u32 as f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"SSL_OP_NO_SSLv3".as_ptr(),
+                    0x02000000u32 as f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"SSL_OP_NO_TLSv1".as_ptr(),
+                    0x04000000u32 as f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"SSL_OP_NO_TLSv1_1".as_ptr(),
+                    0x08000000u32 as f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"SSL_OP_NO_TLSv1_2".as_ptr(),
+                    0x10000000u32 as f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"SSL_OP_NO_TLSv1_3".as_ptr(),
+                    0x20000000u32 as f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"RSA_PKCS1_PADDING".as_ptr(),
+                    1f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"RSA_PKCS1_OAEP_PADDING".as_ptr(),
+                    4f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"RSA_NO_PADDING".as_ptr(),
+                    3f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"RSA_PKCS1_PSS_PADDING".as_ptr(),
+                    6f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"POINT_CONVERSION_UNCOMPRESSED".as_ptr(),
+                    4f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"POINT_CONVERSION_COMPRESSED".as_ptr(),
+                    2f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"POINT_CONVERSION_HYBRID".as_ptr(),
+                    6f64,
+                );
+                define_constant_number(
+                    cx.raw_cx(),
+                    constants_obj.get(),
+                    c"OPENSSL_VERSION_NUMBER".as_ptr(),
+                    0x1010107fu64 as f64,
+                );
                 rooted!(&in(cx) let const_val = mozjs::jsval::ObjectValue(constants_obj.get()));
                 JS_DefineProperty(
                     cx.raw_cx(),
@@ -152,28 +594,58 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         if !global.is_null() {
             rooted!(&in(cx) let global_root = global);
             let mut global_crypto = UndefinedValue();
-            JS_GetProperty(cx.raw_cx(), global_root.handle().into(), c"crypto".as_ptr(), MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData, ptr: &mut global_crypto,
-            });
+            JS_GetProperty(
+                cx.raw_cx(),
+                global_root.handle().into(),
+                c"crypto".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut global_crypto,
+                },
+            );
             if global_crypto.is_object() {
                 rooted!(&in(cx) let crypto_global = global_crypto.to_object());
-                JS_GetProperty(cx.raw_cx(), crypto_global.handle().into(), c"subtle".as_ptr(), MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData, ptr: &mut subtle,
-                });
+                JS_GetProperty(
+                    cx.raw_cx(),
+                    crypto_global.handle().into(),
+                    c"subtle".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut subtle,
+                    },
+                );
                 // webcrypto = globalThis.crypto
                 let mut webcrypto_val = UndefinedValue();
-                JS_GetProperty(cx.raw_cx(), global_root.handle().into(), c"crypto".as_ptr(), MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData, ptr: &mut webcrypto_val,
-                });
+                JS_GetProperty(
+                    cx.raw_cx(),
+                    global_root.handle().into(),
+                    c"crypto".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut webcrypto_val,
+                    },
+                );
                 if webcrypto_val.is_object() {
                     rooted!(&in(cx) let webcrypto_rooted = webcrypto_val);
-                    JS_DefineProperty(cx.raw_cx(), crypto_obj.handle().into(), c"webcrypto".as_ptr(), webcrypto_rooted.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(
+                        cx.raw_cx(),
+                        crypto_obj.handle().into(),
+                        c"webcrypto".as_ptr(),
+                        webcrypto_rooted.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
                 }
             }
         }
         if subtle.is_object() {
             rooted!(&in(cx) let subtle_rooted = subtle);
-            JS_DefineProperty(cx.raw_cx(), crypto_obj.handle().into(), c"subtle".as_ptr(), subtle_rooted.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                crypto_obj.handle().into(),
+                c"subtle".as_ptr(),
+                subtle_rooted.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 
@@ -238,9 +710,30 @@ unsafe extern "C" fn crypto_create_hash(cx: *mut JSContext, argc: u32, vp: *mut 
     HASH_ALGO.with(|a| *a.borrow_mut() = algo);
     HASH_DATA.with(|d| d.borrow_mut().clear());
 
-    w2::JS_DefineFunction(cx_ref, hash_obj.handle(), c"update".as_ptr(), Some(hash_update), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, hash_obj.handle(), c"digest".as_ptr(), Some(hash_digest), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, hash_obj.handle(), c"copy".as_ptr(), Some(hash_copy), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        hash_obj.handle(),
+        c"update".as_ptr(),
+        Some(hash_update),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        hash_obj.handle(),
+        c"digest".as_ptr(),
+        Some(hash_digest),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        hash_obj.handle(),
+        c"copy".as_ptr(),
+        Some(hash_copy),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
 
     args.rval().set(mozjs::jsval::ObjectValue(hash_obj.get()));
     true
@@ -264,10 +757,19 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let input_encoding = if input.is_string() && argc >= 2 {
         arg_to_string(cx, *args.get(1).ptr)
             .map(|s| s.to_lowercase())
-            .filter(|s| matches!(
-                s.as_str(),
-                "hex" | "base64" | "base64url" | "utf8" | "utf-8" | "utf-16le" | "latin1" | "ascii"
-            ))
+            .filter(|s| {
+                matches!(
+                    s.as_str(),
+                    "hex"
+                        | "base64"
+                        | "base64url"
+                        | "utf8"
+                        | "utf-8"
+                        | "utf-16le"
+                        | "latin1"
+                        | "ascii"
+                )
+            })
     } else {
         None
     };
@@ -312,19 +814,29 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 // Try plain ArrayBuffer via JS::GetObjectAsArrayBuffer.
                 let mut ab_length: usize = 0;
                 let mut ab_data: *mut u8 = ptr::null_mut();
-                let ab_unwrapped = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj_root.get(), &mut ab_length, &mut ab_data);
+                let ab_unwrapped = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(
+                    obj_root.get(),
+                    &mut ab_length,
+                    &mut ab_data,
+                );
                 if !ab_unwrapped.is_null() && !ab_data.is_null() && ab_length > 0 {
                     let slice = ::std::slice::from_raw_parts(ab_data, ab_length);
                     slice.to_vec()
                 } else if !ab_unwrapped.is_null() {
                     Vec::new()
                 } else {
-                    return throw_type_error(cx, "hash.update() data must be a string, Buffer, TypedArray, or DataView");
+                    return throw_type_error(
+                        cx,
+                        "hash.update() data must be a string, Buffer, TypedArray, or DataView",
+                    );
                 }
             }
         }
     } else {
-        return throw_type_error(cx, "hash.update() data must be a string, Buffer, TypedArray, or DataView");
+        return throw_type_error(
+            cx,
+            "hash.update() data must be a string, Buffer, TypedArray, or DataView",
+        );
     };
 
     HASH_DATA.with(|d| d.borrow_mut().extend_from_slice(&data));
@@ -400,7 +912,9 @@ unsafe extern "C" fn hash_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         "hex" => return_string(cx, &args, &hex::encode(&result)),
         "base64" => {
             let encoded_bytes = bun_base64::encode_alloc(&result);
-            let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
+            let encoded = ::std::str::from_utf8(&encoded_bytes)
+                .unwrap_or("")
+                .to_owned();
             return_string(cx, &args, &encoded)
         }
         _ => return_string(cx, &args, &hex::encode(&result)),
@@ -424,9 +938,30 @@ unsafe extern "C" fn hash_copy(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -
     }
     HASH_ALGO.with(|a| *a.borrow_mut() = algo);
     HASH_DATA.with(|d| *d.borrow_mut() = data);
-    w2::JS_DefineFunction(cx_ref, hash_obj.handle(), c"update".as_ptr(), Some(hash_update), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, hash_obj.handle(), c"digest".as_ptr(), Some(hash_digest), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, hash_obj.handle(), c"copy".as_ptr(), Some(hash_copy), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        hash_obj.handle(),
+        c"update".as_ptr(),
+        Some(hash_update),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        hash_obj.handle(),
+        c"digest".as_ptr(),
+        Some(hash_digest),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        hash_obj.handle(),
+        c"copy".as_ptr(),
+        Some(hash_copy),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(hash_obj.get()));
     true
 }
@@ -461,8 +996,22 @@ unsafe extern "C" fn crypto_create_hmac(cx: *mut JSContext, argc: u32, vp: *mut 
     HMAC_KEY.with(|k| *k.borrow_mut() = key);
     HMAC_DATA.with(|d| d.borrow_mut().clear());
 
-    w2::JS_DefineFunction(cx_ref, hmac_obj.handle(), c"update".as_ptr(), Some(hmac_update), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, hmac_obj.handle(), c"digest".as_ptr(), Some(hmac_digest), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        hmac_obj.handle(),
+        c"update".as_ptr(),
+        Some(hmac_update),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        hmac_obj.handle(),
+        c"digest".as_ptr(),
+        Some(hmac_digest),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
 
     args.rval().set(mozjs::jsval::ObjectValue(hmac_obj.get()));
     true
@@ -481,10 +1030,19 @@ unsafe extern "C" fn hmac_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let input_encoding = if input.is_string() && argc >= 2 {
         arg_to_string(cx, *args.get(1).ptr)
             .map(|s| s.to_lowercase())
-            .filter(|s| matches!(
-                s.as_str(),
-                "hex" | "base64" | "base64url" | "utf8" | "utf-8" | "utf-16le" | "latin1" | "ascii"
-            ))
+            .filter(|s| {
+                matches!(
+                    s.as_str(),
+                    "hex"
+                        | "base64"
+                        | "base64url"
+                        | "utf8"
+                        | "utf-8"
+                        | "utf-16le"
+                        | "latin1"
+                        | "ascii"
+                )
+            })
     } else {
         None
     };
@@ -553,7 +1111,9 @@ unsafe extern "C" fn hmac_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         "hex" => return_string(cx, &args, &hex::encode(&result)),
         "base64" => {
             let encoded_bytes = bun_base64::encode_alloc(&result);
-            let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
+            let encoded = ::std::str::from_utf8(&encoded_bytes)
+                .unwrap_or("")
+                .to_owned();
             return_string(cx, &args, &encoded)
         }
         _ => return_string(cx, &args, &hex::encode(&result)),
@@ -600,7 +1160,10 @@ unsafe extern "C" fn crypto_random_bytes(cx: *mut JSContext, argc: u32, vp: *mut
 unsafe extern "C" fn crypto_pbkdf2_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 5 {
-        return throw_type_error(cx, "pbkdf2Sync() requires (password, salt, iterations, keylen, digest)");
+        return throw_type_error(
+            cx,
+            "pbkdf2Sync() requires (password, salt, iterations, keylen, digest)",
+        );
     }
 
     let password = match arg_to_string(cx, *args.get(0).ptr) {
@@ -613,11 +1176,19 @@ unsafe extern "C" fn crypto_pbkdf2_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     };
     let iterations = {
         let v = *args.get(2).ptr;
-        if v.is_int32() { v.to_int32() as u32 } else { return throw_type_error(cx, "pbkdf2Sync() iterations must be a number"); }
+        if v.is_int32() {
+            v.to_int32() as u32
+        } else {
+            return throw_type_error(cx, "pbkdf2Sync() iterations must be a number");
+        }
     };
     let key_len = {
         let v = *args.get(3).ptr;
-        if v.is_int32() { v.to_int32() as usize } else { return throw_type_error(cx, "pbkdf2Sync() keylen must be a number"); }
+        if v.is_int32() {
+            v.to_int32() as usize
+        } else {
+            return throw_type_error(cx, "pbkdf2Sync() keylen must be a number");
+        }
     };
     let digest_name = match arg_to_string(cx, *args.get(4).ptr) {
         Some(s) => s.to_lowercase(),
@@ -628,7 +1199,9 @@ unsafe extern "C" fn crypto_pbkdf2_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     // bao_crypto::kdf (sha_hmac::pbkdf2 removed). Supports sha1/sha256/sha512.
     let pbkdf2_hash = match bao_crypto::kdf::parse_pbkdf2_hash(&digest_name) {
         Ok(h) => h,
-        Err(_) => return throw_type_error(cx, &format!("Unsupported PBKDF2 digest: {}", digest_name)),
+        Err(_) => {
+            return throw_type_error(cx, &format!("Unsupported PBKDF2 digest: {}", digest_name));
+        }
     };
     let result = match bao_crypto::kdf::pbkdf2(&password, &salt, iterations, pbkdf2_hash, key_len) {
         Ok(out) => out,
@@ -647,7 +1220,15 @@ unsafe extern "C" fn crypto_pbkdf2_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     for (i, &byte) in result.iter().enumerate() {
         let val = mozjs::jsval::Int32Value(byte as i32);
         rooted!(&in(cx_ref) let v = val);
-        unsafe { JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32); }
+        unsafe {
+            JS_DefineElement(
+                cx,
+                arr.handle().into(),
+                i as u32,
+                v.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
     }
 
     args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
@@ -673,13 +1254,23 @@ unsafe extern "C" fn crypto_scrypt_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     };
     let key_len = {
         let v = *args.get(2).ptr;
-        if v.is_int32() { v.to_int32() as usize } else { return throw_type_error(cx, "scryptSync() keylen must be a number"); }
+        if v.is_int32() {
+            v.to_int32() as usize
+        } else {
+            return throw_type_error(cx, "scryptSync() keylen must be a number");
+        }
     };
 
     let log_n: u8 = if argc > 3 {
         let v = *args.get(3).ptr;
-        if v.is_int32() { (v.to_int32() as f64).log2() as u8 } else { 14 }
-    } else { 14 };
+        if v.is_int32() {
+            (v.to_int32() as f64).log2() as u8
+        } else {
+            14
+        }
+    } else {
+        14
+    };
     let n = 1u64 << log_n;
 
     let out = vec![0u8; key_len];
@@ -699,7 +1290,15 @@ unsafe extern "C" fn crypto_scrypt_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     for (i, &byte) in out.iter().enumerate() {
         let val = mozjs::jsval::Int32Value(byte as i32);
         rooted!(&in(cx_ref) let v = val);
-        unsafe { JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32); }
+        unsafe {
+            JS_DefineElement(
+                cx,
+                arr.handle().into(),
+                i as u32,
+                v.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
     }
 
     args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
@@ -721,17 +1320,35 @@ fn uuid_v4() -> String {
     bao_crypto::random::rand_bytes(&mut bytes).unwrap();
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9], bytes[10], bytes[11],
-        bytes[12], bytes[13], bytes[14], bytes[15])
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
 }
 
 // --- getRandomValues ---
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_get_random_values(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_object() {
         return throw_type_error(cx, "getRandomValues() requires a typed array");
@@ -741,10 +1358,20 @@ unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp:
     rooted!(&in(cx_ref) let arr = (*args.get(0).ptr).to_object());
 
     let mut len_val = UndefinedValue();
-    JS_GetProperty(cx, arr.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
-    });
-    let len = if len_val.is_int32() { len_val.to_int32() as usize } else { return throw_type_error(cx, "getRandomValues() invalid array") };
+    JS_GetProperty(
+        cx,
+        arr.handle().into(),
+        c"length".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut len_val,
+        },
+    );
+    let len = if len_val.is_int32() {
+        len_val.to_int32() as usize
+    } else {
+        return throw_type_error(cx, "getRandomValues() invalid array");
+    };
 
     let mut random_bytes = vec![0u8; len];
     // Use BoringSSL CSPRNG instead of rand
@@ -784,8 +1411,9 @@ unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp:
 unsafe fn decode_input_string(s: &str, input_encoding: Option<&str>) -> Vec<u8> {
     match input_encoding {
         Some("hex") => hex::decode(s).unwrap_or_else(|_| s.as_bytes().to_vec()),
-        Some("base64") => bun_base64::decode_alloc(s.as_bytes())
-            .unwrap_or_else(|_| s.as_bytes().to_vec()),
+        Some("base64") => {
+            bun_base64::decode_alloc(s.as_bytes()).unwrap_or_else(|_| s.as_bytes().to_vec())
+        }
         // utf8 / utf-8 / buffer / latin1 / ascii: raw bytes (latin1/ascii map 1:1).
         _ => s.as_bytes().to_vec(),
     }
@@ -805,7 +1433,9 @@ unsafe fn encode_output_bytes(
         Some("hex") => return_string(cx, args, &hex::encode(bytes)),
         Some("base64") => {
             let encoded_bytes = bun_base64::encode_alloc(bytes);
-            let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
+            let encoded = ::std::str::from_utf8(&encoded_bytes)
+                .unwrap_or("")
+                .to_owned();
             return_string(cx, args, &encoded)
         }
         Some("utf8") | Some("utf-8") | Some("utf-16le") | Some("latin1") | Some("ascii") => {
@@ -899,7 +1529,9 @@ unsafe fn extract_key_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
 
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
-    if !val.is_object() { return Vec::new(); }
+    if !val.is_object() {
+        return Vec::new();
+    }
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_root = val.to_object());
@@ -936,17 +1568,37 @@ pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec
     }
     // Plain number[] array fallback.
     let mut len_val = UndefinedValue();
-    JS_GetProperty(cx, obj_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
-    });
-    let len = if len_val.is_int32() { len_val.to_int32() as usize } else { return Vec::new() };
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"length".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut len_val,
+        },
+    );
+    let len = if len_val.is_int32() {
+        len_val.to_int32() as usize
+    } else {
+        return Vec::new();
+    };
     let mut bytes = Vec::with_capacity(len);
     for i in 0u32..len as u32 {
         let mut byte_val = UndefinedValue();
-        JS_GetElement(cx, obj_root.handle().into(), i, MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
+        JS_GetElement(
+            cx,
+            obj_root.handle().into(),
+            i,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut byte_val,
+            },
+        );
+        bytes.push(if byte_val.is_int32() {
+            byte_val.to_int32() as u8
+        } else {
+            0
         });
-        bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
     }
     bytes
 }
@@ -962,7 +1614,13 @@ unsafe fn bytes_to_js_array(cx: *mut JSContext, bytes: &[u8]) -> *mut JSObject {
     for (i, &byte) in bytes.iter().enumerate() {
         let val = mozjs::jsval::Int32Value(byte as i32);
         rooted!(&in(cx_ref) let v = val);
-        JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineElement(
+            cx,
+            arr.handle().into(),
+            i as u32,
+            v.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
     arr.get()
 }
@@ -989,9 +1647,15 @@ unsafe fn read_cipher_id(cx: *mut JSContext, obj: *mut JSObject) -> Option<u32> 
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_rooted = obj);
     let mut id_val = UndefinedValue();
-    JS_GetProperty(cx, obj_rooted.handle().into(), c"__bao_cipher_id".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut id_val,
-    });
+    JS_GetProperty(
+        cx,
+        obj_rooted.handle().into(),
+        c"__bao_cipher_id".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut id_val,
+        },
+    );
     if id_val.is_int32() {
         Some(id_val.to_int32() as u32)
     } else {
@@ -1010,7 +1674,11 @@ unsafe fn read_cipher_id_from_this(cx: *mut JSContext, args: &CallArgs) -> Optio
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_create_cipher_iv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_create_cipher_iv(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 3 {
         return throw_type_error(cx, "createCipheriv() requires (algorithm, key, iv)");
@@ -1046,17 +1714,56 @@ unsafe extern "C" fn crypto_create_cipher_iv(cx: *mut JSContext, argc: u32, vp: 
         return true;
     }
     store_cipher_id(cx, obj.get(), id);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"update".as_ptr(), Some(cipher_update), 3, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"final".as_ptr(), Some(cipher_final), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getAuthTag".as_ptr(), Some(cipher_get_auth_tag), 0, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"setAuthTag".as_ptr(), Some(cipher_set_auth_tag), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"setAAD".as_ptr(), Some(cipher_set_aad), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"update".as_ptr(),
+        Some(cipher_update),
+        3,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"final".as_ptr(),
+        Some(cipher_final),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getAuthTag".as_ptr(),
+        Some(cipher_get_auth_tag),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"setAuthTag".as_ptr(),
+        Some(cipher_set_auth_tag),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"setAAD".as_ptr(),
+        Some(cipher_set_aad),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_create_decipher_iv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_create_decipher_iv(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 3 {
         return throw_type_error(cx, "createDecipheriv() requires (algorithm, key, iv)");
@@ -1092,11 +1799,46 @@ unsafe extern "C" fn crypto_create_decipher_iv(cx: *mut JSContext, argc: u32, vp
         return true;
     }
     store_cipher_id(cx, obj.get(), id);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"update".as_ptr(), Some(cipher_update), 3, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"final".as_ptr(), Some(cipher_final), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getAuthTag".as_ptr(), Some(cipher_get_auth_tag), 0, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"setAuthTag".as_ptr(), Some(cipher_set_auth_tag), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"setAAD".as_ptr(), Some(cipher_set_aad), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"update".as_ptr(),
+        Some(cipher_update),
+        3,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"final".as_ptr(),
+        Some(cipher_final),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getAuthTag".as_ptr(),
+        Some(cipher_get_auth_tag),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"setAuthTag".as_ptr(),
+        Some(cipher_set_auth_tag),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"setAAD".as_ptr(),
+        Some(cipher_set_aad),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -1113,10 +1855,19 @@ unsafe fn parse_update_args(cx: *mut JSContext, args: &CallArgs, argc: u32) -> O
     let input_encoding = if input.is_string() && argc >= 2 {
         arg_to_string(cx, *args.get(1).ptr)
             .map(|s| s.to_lowercase())
-            .filter(|s| matches!(
-                s.as_str(),
-                "hex" | "base64" | "base64url" | "utf8" | "utf-8" | "utf-16le" | "latin1" | "ascii"
-            ))
+            .filter(|s| {
+                matches!(
+                    s.as_str(),
+                    "hex"
+                        | "base64"
+                        | "base64url"
+                        | "utf8"
+                        | "utf-8"
+                        | "utf-16le"
+                        | "latin1"
+                        | "ascii"
+                )
+            })
     } else {
         None
     };
@@ -1258,7 +2009,11 @@ unsafe extern "C" fn cipher_set_aad(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 // --- timingSafeEqual ---
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_timing_safe_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_timing_safe_equal(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 {
         return throw_type_error(cx, "timingSafeEqual() requires two buffer arguments");
@@ -1282,7 +2037,17 @@ unsafe extern "C" fn crypto_get_hashes(cx: *mut JSContext, _argc: u32, vp: *mut 
     let args = CallArgs::from_vp(vp, _argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    let hashes = ["sha1", "sha224", "sha256", "sha384", "sha512", "md5", "md4", "md2", "ripemd160"];
+    let hashes = [
+        "sha1",
+        "sha224",
+        "sha256",
+        "sha384",
+        "sha512",
+        "md5",
+        "md4",
+        "md2",
+        "ripemd160",
+    ];
     rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, hashes.len()));
     if !arr.get().is_null() {
         for (i, name) in hashes.iter().enumerate() {
@@ -1290,7 +2055,13 @@ unsafe extern "C" fn crypto_get_hashes(cx: *mut JSContext, _argc: u32, vp: *mut 
             let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
             if !js_str.is_null() {
                 rooted!(&in(cx_ref) let v = mozjs::jsval::StringValue(&*js_str));
-                JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineElement(
+                    cx,
+                    arr.handle().into(),
+                    i as u32,
+                    v.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
         args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
@@ -1308,11 +2079,21 @@ unsafe extern "C" fn crypto_get_ciphers(cx: *mut JSContext, _argc: u32, vp: *mut
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     let ciphers = [
-        "aes-128-cbc", "aes-128-ecb", "aes-128-gcm",
-        "aes-192-cbc", "aes-192-ecb", "aes-192-gcm",
-        "aes-256-cbc", "aes-256-ecb", "aes-256-gcm",
-        "chacha20-poly1305", "aes-128-cfb", "aes-256-cfb",
-        "aes-128-ctr", "aes-256-ctr", "des-ede3-cbc",
+        "aes-128-cbc",
+        "aes-128-ecb",
+        "aes-128-gcm",
+        "aes-192-cbc",
+        "aes-192-ecb",
+        "aes-192-gcm",
+        "aes-256-cbc",
+        "aes-256-ecb",
+        "aes-256-gcm",
+        "chacha20-poly1305",
+        "aes-128-cfb",
+        "aes-256-cfb",
+        "aes-128-ctr",
+        "aes-256-ctr",
+        "des-ede3-cbc",
     ];
     rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, ciphers.len()));
     if !arr.get().is_null() {
@@ -1321,7 +2102,13 @@ unsafe extern "C" fn crypto_get_ciphers(cx: *mut JSContext, _argc: u32, vp: *mut
             let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
             if !js_str.is_null() {
                 rooted!(&in(cx_ref) let v = mozjs::jsval::StringValue(&*js_str));
-                JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineElement(
+                    cx,
+                    arr.handle().into(),
+                    i as u32,
+                    v.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
         args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
@@ -1351,9 +2138,26 @@ unsafe extern "C" fn crypto_create_sign(cx: *mut JSContext, argc: u32, vp: *mut 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
-    if obj.get().is_null() { args.rval().set(UndefinedValue()); return true; }
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"update".as_ptr(), Some(sign_update), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"sign".as_ptr(), Some(sign_sign), 2, JSPROP_ENUMERATE as u32);
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"update".as_ptr(),
+        Some(sign_update),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"sign".as_ptr(),
+        Some(sign_sign),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -1361,7 +2165,9 @@ unsafe extern "C" fn crypto_create_sign(cx: *mut JSContext, argc: u32, vp: *mut 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn sign_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 { return throw_type_error(cx, "sign.update() requires data"); }
+    if argc == 0 {
+        return throw_type_error(cx, "sign.update() requires data");
+    }
     let input = *args.get(0).ptr;
     let data = if input.is_string() {
         crate::js_to_rust_string(cx, input).into_bytes()
@@ -1383,10 +2189,15 @@ fn resolve_sign_algorithm(algo: &str) -> Option<bao_crypto::sign::SignAlgorithm>
     use bao_crypto::sign::{RsaHash, SignAlgorithm};
     let lower = algo.to_lowercase();
     let rsa_hash = |name: &str| -> Option<RsaHash> {
-        if name.contains("256") { Some(RsaHash::Sha256) }
-        else if name.contains("384") { Some(RsaHash::Sha384) }
-        else if name.contains("512") { Some(RsaHash::Sha512) }
-        else { Some(RsaHash::Sha256) }
+        if name.contains("256") {
+            Some(RsaHash::Sha256)
+        } else if name.contains("384") {
+            Some(RsaHash::Sha384)
+        } else if name.contains("512") {
+            Some(RsaHash::Sha512)
+        } else {
+            Some(RsaHash::Sha256)
+        }
     };
     // RSA-PSS family.
     if lower.contains("rsa-pss") || lower.contains("pss") {
@@ -1422,8 +2233,13 @@ fn looks_like_pem_key(key_bytes: &[u8]) -> bool {
 unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let encoding = if argc > 1 {
-        match arg_to_string(cx, *args.get(1).ptr) { Some(s) => s, None => "hex".to_string() }
-    } else { "hex".to_string() };
+        match arg_to_string(cx, *args.get(1).ptr) {
+            Some(s) => s,
+            None => "hex".to_string(),
+        }
+    } else {
+        "hex".to_string()
+    };
     // @trace REQ-ENG-007 [api:node:crypto sign.sign] [entity:bao_crypto]
     // Real asymmetric signing via bao_crypto::sign::Signer for RSA-PKCS1v15/PSS,
     // ECDSA P256/P384, Ed25519. HMAC remains for HMAC algorithms / raw keys.
@@ -1434,7 +2250,9 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             Some(s) => s.into_bytes(),
             None => extract_buffer_bytes(cx, *args.get(0).ptr),
         }
-    } else { Vec::new() };
+    } else {
+        Vec::new()
+    };
 
     let result: Vec<u8> = if let Some(sign_algo) = resolve_sign_algorithm(&algo) {
         // Asymmetric path. Key must be a PEM or DER private key.
@@ -1472,7 +2290,9 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         "hex" => return_string(cx, &args, &hex::encode(&result)),
         "base64" => {
             let encoded_bytes = bun_base64::encode_alloc(&result);
-            let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
+            let encoded = ::std::str::from_utf8(&encoded_bytes)
+                .unwrap_or("")
+                .to_owned();
             return_string(cx, &args, &encoded)
         }
         "buffer" => {
@@ -1495,16 +2315,38 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 unsafe extern "C" fn crypto_create_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let algo = if argc > 0 {
-        match arg_to_string(cx, *args.get(0).ptr) { Some(s) => s.to_lowercase(), None => "sha256".to_string() }
-    } else { "sha256".to_string() };
+        match arg_to_string(cx, *args.get(0).ptr) {
+            Some(s) => s.to_lowercase(),
+            None => "sha256".to_string(),
+        }
+    } else {
+        "sha256".to_string()
+    };
     HASH_ALGO.with(|a| *a.borrow_mut() = algo);
     HASH_DATA.with(|d| d.borrow_mut().clear());
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
-    if obj.get().is_null() { args.rval().set(UndefinedValue()); return true; }
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"update".as_ptr(), Some(sign_update), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"verify".as_ptr(), Some(verify_verify), 3, JSPROP_ENUMERATE as u32);
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"update".as_ptr(),
+        Some(sign_update),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"verify".as_ptr(),
+        Some(verify_verify),
+        3,
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -1516,7 +2358,9 @@ unsafe extern "C" fn verify_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     // Real asymmetric verification via bao_crypto::verify::Verifier for
     // RSA-PKCS1v15/PSS, ECDSA P256/P384, Ed25519. HMAC path retained for
     // HMAC algorithms / raw keys (compared constant-time).
-    if argc < 2 { return throw_type_error(cx, "verify.verify() requires (key, signature)"); }
+    if argc < 2 {
+        return throw_type_error(cx, "verify.verify() requires (key, signature)");
+    }
     let key = match arg_to_string(cx, *args.get(0).ptr) {
         Some(s) => s.into_bytes(),
         None => extract_buffer_bytes(cx, *args.get(0).ptr),
@@ -1570,15 +2414,28 @@ unsafe extern "C" fn verify_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 // --- createSecretKey ---
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_create_secret_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_create_secret_key(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
-    if obj.get().is_null() { args.rval().set(UndefinedValue()); return true; }
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
 
     rooted!(&in(cx_ref) let kv = mozjs::jsval::StringValue(&*JS_NewStringCopyZ(cx, c"secret".as_ptr())));
-    JS_DefineProperty(cx, obj.handle().into(), c"type".as_ptr(), kv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"type".as_ptr(),
+        kv.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
     if argc > 0 {
         let bytes = if (*args.get(0).ptr).is_object() {
             extract_buffer_bytes(cx, *args.get(0).ptr)
@@ -1588,10 +2445,20 @@ unsafe extern "C" fn crypto_create_secret_key(cx: *mut JSContext, argc: u32, vp:
             Vec::new()
         };
         let exported = hex::encode(&bytes);
-        let exp_str = JS_NewStringCopyN(cx, exported.as_ptr() as *const ::std::os::raw::c_char, exported.len());
+        let exp_str = JS_NewStringCopyN(
+            cx,
+            exported.as_ptr() as *const ::std::os::raw::c_char,
+            exported.len(),
+        );
         if !exp_str.is_null() {
             rooted!(&in(cx_ref) let ev = mozjs::jsval::StringValue(&*exp_str));
-            JS_DefineProperty(cx, obj.handle().into(), c"export".as_ptr(), ev.handle().into(), 0);
+            JS_DefineProperty(
+                cx,
+                obj.handle().into(),
+                c"export".as_ptr(),
+                ev.handle().into(),
+                0,
+            );
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
@@ -1601,7 +2468,11 @@ unsafe extern "C" fn crypto_create_secret_key(cx: *mut JSContext, argc: u32, vp:
 // --- generateKeyPairSync ---
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_generate_key_pair_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_generate_key_pair_sync(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     // @trace REQ-ENG-007 [api:node:crypto generateKeyPairSync] [entity:bao_crypto]
     // Node signature: generateKeyPairSync(type, options) where type is
     // 'rsa' | 'ec' | 'ed25519' | 'x25519'. Returns {publicKey, privateKey} as
@@ -1617,7 +2488,9 @@ unsafe extern "C" fn crypto_generate_key_pair_sync(cx: *mut JSContext, argc: u32
     let kp_type = match kp_type_str.as_str() {
         "rsa" => {
             let bits = read_option_number(cx, &args, argc, 1, "modulusLength", 2048);
-            bao_crypto::keypair::KeyPairType::Rsa { bits: bits as usize }
+            bao_crypto::keypair::KeyPairType::Rsa {
+                bits: bits as usize,
+            }
         }
         "ec" => {
             let curve_name = read_option_string(cx, &args, argc, 1, "namedCurve", "P-256");
@@ -1672,9 +2545,15 @@ unsafe fn read_option_string(
                 "modulusLength" => b"modulusLength\0",
                 _ => b"\0",
             };
-            JS_GetProperty(cx, obj.handle().into(), prop_c.as_ptr() as *const _, MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData, ptr: &mut v,
-            });
+            JS_GetProperty(
+                cx,
+                obj.handle().into(),
+                prop_c.as_ptr() as *const _,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut v,
+                },
+            );
             if v.is_string() {
                 return crate::js_to_rust_string(cx, v);
             }
@@ -1703,9 +2582,15 @@ unsafe fn read_option_number(
                 "modulusLength" => b"modulusLength\0",
                 _ => b"\0",
             };
-            JS_GetProperty(cx, obj.handle().into(), prop_c.as_ptr() as *const _, MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData, ptr: &mut v,
-            });
+            JS_GetProperty(
+                cx,
+                obj.handle().into(),
+                prop_c.as_ptr() as *const _,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut v,
+                },
+            );
             if v.is_int32() {
                 return v.to_int32() as i64;
             } else if v.is_double() {
@@ -1717,14 +2602,25 @@ unsafe fn read_option_number(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn set_string_prop(cx: *mut JSContext, obj: *mut JSObject, name: *const core::ffi::c_char, value: &str) {
+unsafe fn set_string_prop(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: *const core::ffi::c_char,
+    value: &str,
+) {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_rooted = obj);
     let js_str = JS_NewStringCopyN(cx, value.as_ptr() as *const core::ffi::c_char, value.len());
     if !js_str.is_null() {
         rooted!(&in(cx_ref) let v = mozjs::jsval::StringValue(&*js_str));
-        JS_DefineProperty(cx, obj_rooted.handle().into(), name, v.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            obj_rooted.handle().into(),
+            name,
+            v.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 }
 
@@ -1781,9 +2677,30 @@ unsafe extern "C" fn crypto_create_ecdh(cx: *mut JSContext, argc: u32, vp: *mut 
         return true;
     }
     store_ecdh_id(cx, obj.get(), id);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPublicKey".as_ptr(), Some(ecdh_get_public_key), 0, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"computeSecret".as_ptr(), Some(ecdh_compute_secret), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"convertKey".as_ptr(), Some(ecdh_convert_key), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getPublicKey".as_ptr(),
+        Some(ecdh_get_public_key),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"computeSecret".as_ptr(),
+        Some(ecdh_compute_secret),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"convertKey".as_ptr(),
+        Some(ecdh_convert_key),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -1795,7 +2712,13 @@ unsafe fn store_ecdh_id(cx: *mut JSContext, obj: *mut JSObject, id: u32) {
     rooted!(&in(cx_ref) let obj_rooted = obj);
     let id_val = mozjs::jsval::Int32Value(id as i32);
     rooted!(&in(cx_ref) let idv = id_val);
-    JS_DefineProperty(cx, obj_rooted.handle().into(), c"__bao_ecdh_id".as_ptr(), idv.handle().into(), 0);
+    JS_DefineProperty(
+        cx,
+        obj_rooted.handle().into(),
+        c"__bao_ecdh_id".as_ptr(),
+        idv.handle().into(),
+        0,
+    );
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1808,9 +2731,15 @@ unsafe fn read_ecdh_id_from_this(cx: *mut JSContext, args: &CallArgs) -> Option<
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = this.to_object());
     let mut id_val = UndefinedValue();
-    JS_GetProperty(cx, obj.handle().into(), c"__bao_ecdh_id".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut id_val,
-    });
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"__bao_ecdh_id".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut id_val,
+        },
+    );
     if id_val.is_int32() {
         Some(id_val.to_int32() as u32)
     } else {
@@ -1826,7 +2755,10 @@ unsafe extern "C" fn ecdh_get_public_key(cx: *mut JSContext, _argc: u32, vp: *mu
         None => return throw_type_error(cx, "ecdh.getPublicKey() invalid receiver"),
     };
     let pub_bytes = ECDH_REGISTRY.with(|reg| {
-        reg.borrow().get(id as usize).and_then(|s| s.as_ref()).map(|kp| kp.public_key_bytes())
+        reg.borrow()
+            .get(id as usize)
+            .and_then(|s| s.as_ref())
+            .map(|kp| kp.public_key_bytes())
     });
     let pub_bytes = match pub_bytes {
         Some(b) => b,
@@ -1853,9 +2785,10 @@ unsafe extern "C" fn ecdh_compute_secret(cx: *mut JSContext, argc: u32, vp: *mut
     }
     let peer_pub = extract_buffer_bytes(cx, *args.get(0).ptr);
     let secret = ECDH_REGISTRY.with(|reg| {
-        reg.borrow().get(id as usize).and_then(|s| s.as_ref()).and_then(|kp| {
-            kp.compute_shared_secret(&peer_pub).ok()
-        })
+        reg.borrow()
+            .get(id as usize)
+            .and_then(|s| s.as_ref())
+            .and_then(|kp| kp.compute_shared_secret(&peer_pub).ok())
     });
     let secret = match secret {
         Some(s) => s,
@@ -1874,14 +2807,29 @@ unsafe extern "C" fn ecdh_compute_secret(cx: *mut JSContext, argc: u32, vp: *mut
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn ecdh_convert_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let id = match read_ecdh_id_from_this(cx, &args) { Some(id) => id, None => return throw_type_error(cx, "ecdh.convertKey() invalid receiver") };
-    if argc < 1 { return throw_type_error(cx, "ecdh.convertKey() requires key data"); }
-    let key_data = extract_buffer_bytes(cx, *args.get(0).ptr);
-    let curve = ECDH_REGISTRY.with(|reg| reg.borrow().get(id as usize).and_then(|s| s.as_ref()).map(|kp| kp.curve()));
-    let curve = match curve { Some(c) => c, None => return throw_type_error(cx, "ecdh.convertKey() stale context") };
-    let reconstructed = match bao_crypto::key_exchange::EcdhKeyPair::reconstruct_keypair(curve, &key_data) {
-        Ok(kp) => kp, Err(e) => return throw_type_error(cx, &format!("ecdh.convertKey() failed: {}", e)),
+    let id = match read_ecdh_id_from_this(cx, &args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "ecdh.convertKey() invalid receiver"),
     };
+    if argc < 1 {
+        return throw_type_error(cx, "ecdh.convertKey() requires key data");
+    }
+    let key_data = extract_buffer_bytes(cx, *args.get(0).ptr);
+    let curve = ECDH_REGISTRY.with(|reg| {
+        reg.borrow()
+            .get(id as usize)
+            .and_then(|s| s.as_ref())
+            .map(|kp| kp.curve())
+    });
+    let curve = match curve {
+        Some(c) => c,
+        None => return throw_type_error(cx, "ecdh.convertKey() stale context"),
+    };
+    let reconstructed =
+        match bao_crypto::key_exchange::EcdhKeyPair::reconstruct_keypair(curve, &key_data) {
+            Ok(kp) => kp,
+            Err(e) => return throw_type_error(cx, &format!("ecdh.convertKey() failed: {}", e)),
+        };
     let pub_bytes = reconstructed.public_key_bytes();
     let arr = bytes_to_js_array(cx, &pub_bytes);
     if arr.is_null() {
@@ -1895,7 +2843,11 @@ unsafe extern "C" fn ecdh_convert_key(cx: *mut JSContext, argc: u32, vp: *mut JS
 // --- X509Certificate ---
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_x509_certificate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_x509_certificate(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     // @trace REQ-ENG-007 [api:node:crypto X509Certificate] [entity:bao_crypto]
     let args = CallArgs::from_vp(vp, argc);
     if argc < 1 {
@@ -1918,11 +2870,26 @@ unsafe extern "C" fn crypto_x509_certificate(cx: *mut JSContext, argc: u32, vp: 
     }
     set_string_prop(cx, obj.get(), c"subject".as_ptr(), &cert.subject());
     set_string_prop(cx, obj.get(), c"issuer".as_ptr(), &cert.issuer());
-    set_string_prop(cx, obj.get(), c"serialNumber".as_ptr(), &cert.serial_number());
+    set_string_prop(
+        cx,
+        obj.get(),
+        c"serialNumber".as_ptr(),
+        &cert.serial_number(),
+    );
     set_string_prop(cx, obj.get(), c"validFrom".as_ptr(), &cert.valid_from());
     set_string_prop(cx, obj.get(), c"validTo".as_ptr(), &cert.valid_to());
-    set_string_prop(cx, obj.get(), c"fingerprint256".as_ptr(), &cert.fingerprint_sha256());
-    set_string_prop(cx, obj.get(), c"fingerprint".as_ptr(), &cert.fingerprint_sha1());
+    set_string_prop(
+        cx,
+        obj.get(),
+        c"fingerprint256".as_ptr(),
+        &cert.fingerprint_sha256(),
+    );
+    set_string_prop(
+        cx,
+        obj.get(),
+        c"fingerprint".as_ptr(),
+        &cert.fingerprint_sha1(),
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -1965,11 +2932,26 @@ unsafe extern "C" fn crypto_x509(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     }
     set_string_prop(cx, obj.get(), c"subject".as_ptr(), &cert.subject());
     set_string_prop(cx, obj.get(), c"issuer".as_ptr(), &cert.issuer());
-    set_string_prop(cx, obj.get(), c"serialNumber".as_ptr(), &cert.serial_number());
+    set_string_prop(
+        cx,
+        obj.get(),
+        c"serialNumber".as_ptr(),
+        &cert.serial_number(),
+    );
     set_string_prop(cx, obj.get(), c"validFrom".as_ptr(), &cert.valid_from());
     set_string_prop(cx, obj.get(), c"validTo".as_ptr(), &cert.valid_to());
-    set_string_prop(cx, obj.get(), c"fingerprint256".as_ptr(), &cert.fingerprint_sha256());
-    set_string_prop(cx, obj.get(), c"fingerprint".as_ptr(), &cert.fingerprint_sha1());
+    set_string_prop(
+        cx,
+        obj.get(),
+        c"fingerprint256".as_ptr(),
+        &cert.fingerprint_sha256(),
+    );
+    set_string_prop(
+        cx,
+        obj.get(),
+        c"fingerprint".as_ptr(),
+        &cert.fingerprint_sha1(),
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -1983,10 +2965,7 @@ unsafe extern "C" fn crypto_x509(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 unsafe extern "C" fn crypto_hkdf_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 5 {
-        return throw_type_error(
-            cx,
-            "hkdfSync() requires (digest, key, salt, info, length)",
-        );
+        return throw_type_error(cx, "hkdfSync() requires (digest, key, salt, info, length)");
     }
     let digest_name = match arg_to_string(cx, *args.get(0).ptr) {
         Some(s) => s.to_lowercase(),
@@ -2101,9 +3080,15 @@ unsafe fn read_dh_id_from_this(cx: *mut JSContext, args: &CallArgs) -> Option<u3
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = this.to_object());
     let mut id_val = UndefinedValue();
-    JS_GetProperty(cx, obj.handle().into(), c"__bao_dh_id".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut id_val,
-    });
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"__bao_dh_id".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut id_val,
+        },
+    );
     if id_val.is_int32() {
         Some(id_val.to_int32() as u32)
     } else {
@@ -2120,11 +3105,7 @@ unsafe extern "C" fn crypto_create_dh(cx: *mut JSContext, argc: u32, vp: *mut JS
     let arg0 = *args.get(0).ptr;
     let generator = if argc >= 2 {
         let g = *args.get(1).ptr;
-        if g.is_int32() {
-            g.to_int32()
-        } else {
-            2
-        }
+        if g.is_int32() { g.to_int32() } else { 2 }
     } else {
         2
     };
@@ -2166,12 +3147,54 @@ unsafe extern "C" fn crypto_create_dh(cx: *mut JSContext, argc: u32, vp: *mut JS
         return true;
     }
     store_dh_id(cx, obj.get(), id);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"generateKeys".as_ptr(), Some(dh_generate_keys), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"computeSecret".as_ptr(), Some(dh_compute_secret), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPrime".as_ptr(), Some(dh_get_prime), 0, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getGenerator".as_ptr(), Some(dh_get_generator), 0, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPublicKey".as_ptr(), Some(dh_get_public_key), 0, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPrivateKey".as_ptr(), Some(dh_get_private_key), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"generateKeys".as_ptr(),
+        Some(dh_generate_keys),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"computeSecret".as_ptr(),
+        Some(dh_compute_secret),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getPrime".as_ptr(),
+        Some(dh_get_prime),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getGenerator".as_ptr(),
+        Some(dh_get_generator),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getPublicKey".as_ptr(),
+        Some(dh_get_public_key),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getPrivateKey".as_ptr(),
+        Some(dh_get_private_key),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -2209,9 +3232,10 @@ unsafe extern "C" fn dh_compute_secret(cx: *mut JSContext, argc: u32, vp: *mut J
     }
     let peer_pub = extract_buffer_bytes(cx, *args.get(0).ptr);
     let secret = DH_REGISTRY.with(|reg| {
-        reg.borrow().get(id as usize).and_then(|s| s.as_ref()).and_then(|dh| {
-            dh.compute_secret(&peer_pub).ok()
-        })
+        reg.borrow()
+            .get(id as usize)
+            .and_then(|s| s.as_ref())
+            .and_then(|dh| dh.compute_secret(&peer_pub).ok())
     });
     let secret = match secret {
         Some(s) => s,
@@ -2237,7 +3261,10 @@ unsafe fn dh_read_bytes_prop(
         None => return throw_type_error(cx, "invalid diffiehellman receiver"),
     };
     let bytes = DH_REGISTRY.with(|reg| {
-        reg.borrow().get(id as usize).and_then(|s| s.as_ref()).map(f)
+        reg.borrow()
+            .get(id as usize)
+            .and_then(|s| s.as_ref())
+            .map(f)
     });
     let bytes = match bytes {
         Some(b) => b,
@@ -2296,26 +3323,54 @@ fn alloc_key_object(key_bytes: Vec<u8>) -> usize {
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn make_key_object_js(cx: *mut JSContext, idx: usize, key_type: &str) -> *mut JSObject {
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
     rooted!(&in(cx_ref) let obj = JS_NewPlainObject(cx));
-    if obj.get().is_null() { return ::std::ptr::null_mut(); }
+    if obj.get().is_null() {
+        return ::std::ptr::null_mut();
+    }
 
     let idx_val = mozjs::jsval::Int32Value(idx as i32);
     rooted!(&in(cx_ref) let idx_rooted = idx_val);
-    JS_DefineProperty(cx, obj.handle().into(), c"_keyIdx".as_ptr(), idx_rooted.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"_keyIdx".as_ptr(),
+        idx_rooted.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
     let c_type = ZBox::from_bytes(key_type.as_bytes());
     let js_type = JS_NewStringCopyZ(cx, c_type.as_ptr());
     if !js_type.is_null() {
         rooted!(&in(cx_ref) let type_val = mozjs::jsval::StringValue(&*js_type));
-        JS_DefineProperty(cx, obj.handle().into(), c"type".as_ptr(), type_val.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            obj.handle().into(),
+            c"type".as_ptr(),
+            type_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"export".as_ptr(), Some(key_object_export), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"export".as_ptr(),
+        Some(key_object_export),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
     // symmetric property: true for "secret" keys, false otherwise
     let symmetric_val = mozjs::jsval::BooleanValue(key_type == "secret");
     rooted!(&in(cx_ref) let sym_rooted = symmetric_val);
-    JS_DefineProperty(cx, obj.handle().into(), c"symmetric".as_ptr(), sym_rooted.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"symmetric".as_ptr(),
+        sym_rooted.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
     obj.get()
 }
 
@@ -2323,14 +3378,23 @@ unsafe fn make_key_object_js(cx: *mut JSContext, idx: usize, key_type: &str) -> 
 unsafe extern "C" fn crypto_key_object(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // KeyObject(key, type) — internal constructor
-    let key_bytes = if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let key_bytes = if argc > 0 {
+        extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
     let key_type = if argc > 1 && (*args.get(1).ptr).is_string() {
         crate::jsstr_to_rust_string(cx, (*args.get(1).ptr).to_string())
-    } else { "secret".to_string() };
+    } else {
+        "secret".to_string()
+    };
 
     let idx = alloc_key_object(key_bytes);
     let obj = make_key_object_js(cx, idx, &key_type);
-    if obj.is_null() { args.rval().set(UndefinedValue()); return false; }
+    if obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return false;
+    }
     args.rval().set(mozjs::jsval::ObjectValue(obj));
     true
 }
@@ -2338,18 +3402,29 @@ unsafe extern "C" fn crypto_key_object(cx: *mut JSContext, argc: u32, vp: *mut J
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn key_object_export(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if !args.thisv().is_object() { return false; }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    if !args.thisv().is_object() {
+        return false;
+    }
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this = args.thisv().to_object());
     let mut idx_val = UndefinedValue();
-    JS_GetProperty(cx, this.handle().into(), c"_keyIdx".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut idx_val });
-    if !idx_val.is_int32() { return false; }
+    JS_GetProperty(
+        cx,
+        this.handle().into(),
+        c"_keyIdx".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut idx_val,
+        },
+    );
+    if !idx_val.is_int32() {
+        return false;
+    }
     let idx = idx_val.to_int32() as usize;
 
-    let key_bytes = KEY_OBJECTS.with(|v| {
-        v.borrow_mut().get_mut(idx).and_then(|k| k.take())
-    });
+    let key_bytes = KEY_OBJECTS.with(|v| v.borrow_mut().get_mut(idx).and_then(|k| k.take()));
 
     if let Some(bytes) = key_bytes {
         let buf_obj = crate::globals::create_buffer_object(cx, &bytes);
@@ -2363,23 +3438,45 @@ unsafe extern "C" fn key_object_export(cx: *mut JSContext, argc: u32, vp: *mut J
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_create_public_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_create_public_key(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let key_bytes = if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let key_bytes = if argc > 0 {
+        extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
     let idx = alloc_key_object(key_bytes);
     let obj = make_key_object_js(cx, idx, "public");
-    if obj.is_null() { args.rval().set(UndefinedValue()); return false; }
+    if obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return false;
+    }
     args.rval().set(mozjs::jsval::ObjectValue(obj));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_create_private_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_create_private_key(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let key_bytes = if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let key_bytes = if argc > 0 {
+        extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
     let idx = alloc_key_object(key_bytes);
     let obj = make_key_object_js(cx, idx, "private");
-    if obj.is_null() { args.rval().set(UndefinedValue()); return false; }
+    if obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return false;
+    }
     args.rval().set(mozjs::jsval::ObjectValue(obj));
     true
 }
@@ -2395,14 +3492,25 @@ unsafe extern "C" fn crypto_create_private_key(cx: *mut JSContext, argc: u32, vp
 unsafe extern "C" fn crypto_public_encrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // Args: (key, buffer) — key can be KeyObject, PEM string, or options object
-    let data = if argc > 1 { extract_buffer_bytes(cx, *args.get(1).ptr) } else {
-        if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() }
+    let data = if argc > 1 {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        if argc > 0 {
+            extract_buffer_bytes(cx, *args.get(0).ptr)
+        } else {
+            Vec::new()
+        }
     };
 
     // Try to get key PEM from first arg
     let key_pem = if argc > 0 && (*args.get(0).ptr).is_string() {
-        Some(crate::jsstr_to_rust_string(cx, (*args.get(0).ptr).to_string()))
-    } else { None };
+        Some(crate::jsstr_to_rust_string(
+            cx,
+            (*args.get(0).ptr).to_string(),
+        ))
+    } else {
+        None
+    };
 
     if let Some(pem) = key_pem {
         // Use BoringSSL RSA_public_encrypt via EVP_PKEY
@@ -2410,8 +3518,12 @@ unsafe extern "C" fn crypto_public_encrypt(cx: *mut JSContext, argc: u32, vp: *m
         match result {
             Ok(encrypted) => {
                 let buf_obj = crate::globals::create_buffer_object(cx, &encrypted);
-                if !buf_obj.is_null() { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); return true; }
-                args.rval().set(UndefinedValue()); true
+                if !buf_obj.is_null() {
+                    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+                    return true;
+                }
+                args.rval().set(UndefinedValue());
+                true
             }
             Err(e) => {
                 let c_msg = ZBox::from_bytes(format!("publicEncrypt: {}", e).as_bytes());
@@ -2428,20 +3540,35 @@ unsafe extern "C" fn crypto_public_encrypt(cx: *mut JSContext, argc: u32, vp: *m
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_public_decrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 1 { extract_buffer_bytes(cx, *args.get(1).ptr) } else {
-        if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() }
+    let data = if argc > 1 {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        if argc > 0 {
+            extract_buffer_bytes(cx, *args.get(0).ptr)
+        } else {
+            Vec::new()
+        }
     };
     let key_pem = if argc > 0 && (*args.get(0).ptr).is_string() {
-        Some(crate::jsstr_to_rust_string(cx, (*args.get(0).ptr).to_string()))
-    } else { None };
+        Some(crate::jsstr_to_rust_string(
+            cx,
+            (*args.get(0).ptr).to_string(),
+        ))
+    } else {
+        None
+    };
 
     if let Some(pem) = key_pem {
         let result = rsa_public_decrypt_pem(&data, &pem);
         match result {
             Ok(decrypted) => {
                 let buf_obj = crate::globals::create_buffer_object(cx, &decrypted);
-                if !buf_obj.is_null() { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); return true; }
-                args.rval().set(UndefinedValue()); true
+                if !buf_obj.is_null() {
+                    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+                    return true;
+                }
+                args.rval().set(UndefinedValue());
+                true
             }
             Err(e) => {
                 let c_msg = ZBox::from_bytes(format!("publicDecrypt: {}", e).as_bytes());
@@ -2458,12 +3585,23 @@ unsafe extern "C" fn crypto_public_decrypt(cx: *mut JSContext, argc: u32, vp: *m
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_private_encrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 1 { extract_buffer_bytes(cx, *args.get(1).ptr) } else {
-        if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() }
+    let data = if argc > 1 {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        if argc > 0 {
+            extract_buffer_bytes(cx, *args.get(0).ptr)
+        } else {
+            Vec::new()
+        }
     };
     let key_pem = if argc > 0 && (*args.get(0).ptr).is_string() {
-        Some(crate::jsstr_to_rust_string(cx, (*args.get(0).ptr).to_string()))
-    } else { None };
+        Some(crate::jsstr_to_rust_string(
+            cx,
+            (*args.get(0).ptr).to_string(),
+        ))
+    } else {
+        None
+    };
 
     if let Some(pem) = key_pem {
         // privateEncrypt = RSA signing with PKCS1 padding (no digest)
@@ -2471,8 +3609,12 @@ unsafe extern "C" fn crypto_private_encrypt(cx: *mut JSContext, argc: u32, vp: *
         match result {
             Ok(signed) => {
                 let buf_obj = crate::globals::create_buffer_object(cx, &signed);
-                if !buf_obj.is_null() { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); return true; }
-                args.rval().set(UndefinedValue()); true
+                if !buf_obj.is_null() {
+                    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+                    return true;
+                }
+                args.rval().set(UndefinedValue());
+                true
             }
             Err(e) => {
                 let c_msg = ZBox::from_bytes(format!("privateEncrypt: {}", e).as_bytes());
@@ -2489,20 +3631,35 @@ unsafe extern "C" fn crypto_private_encrypt(cx: *mut JSContext, argc: u32, vp: *
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_private_decrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 1 { extract_buffer_bytes(cx, *args.get(1).ptr) } else {
-        if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() }
+    let data = if argc > 1 {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        if argc > 0 {
+            extract_buffer_bytes(cx, *args.get(0).ptr)
+        } else {
+            Vec::new()
+        }
     };
     let key_pem = if argc > 0 && (*args.get(0).ptr).is_string() {
-        Some(crate::jsstr_to_rust_string(cx, (*args.get(0).ptr).to_string()))
-    } else { None };
+        Some(crate::jsstr_to_rust_string(
+            cx,
+            (*args.get(0).ptr).to_string(),
+        ))
+    } else {
+        None
+    };
 
     if let Some(pem) = key_pem {
         let result = rsa_private_decrypt_pem(&data, &pem);
         match result {
             Ok(decrypted) => {
                 let buf_obj = crate::globals::create_buffer_object(cx, &decrypted);
-                if !buf_obj.is_null() { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); return true; }
-                args.rval().set(UndefinedValue()); true
+                if !buf_obj.is_null() {
+                    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+                    return true;
+                }
+                args.rval().set(UndefinedValue());
+                true
             }
             Err(e) => {
                 let c_msg = ZBox::from_bytes(format!("privateDecrypt: {}", e).as_bytes());
@@ -2523,13 +3680,28 @@ unsafe extern "C" fn crypto_private_decrypt(cx: *mut JSContext, argc: u32, vp: *
 
 fn rsa_public_encrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u8>, String> {
     unsafe {
-        let bio = bun_boringssl_sys::BIO_new_mem_buf(pem.as_ptr() as *const ::std::ffi::c_void, pem.len() as isize);
-        if bio.is_null() { return Err("BIO_new_mem_buf failed".into()); }
-        let pkey = bun_boringssl_sys::PEM_read_bio_PUBKEY(bio, ::std::ptr::null_mut(), None::<bun_boringssl_sys::pem_password_cb>, ::std::ptr::null_mut());
+        let bio = bun_boringssl_sys::BIO_new_mem_buf(
+            pem.as_ptr() as *const ::std::ffi::c_void,
+            pem.len() as isize,
+        );
+        if bio.is_null() {
+            return Err("BIO_new_mem_buf failed".into());
+        }
+        let pkey = bun_boringssl_sys::PEM_read_bio_PUBKEY(
+            bio,
+            ::std::ptr::null_mut(),
+            None::<bun_boringssl_sys::pem_password_cb>,
+            ::std::ptr::null_mut(),
+        );
         bun_boringssl_sys::BIO_free(bio);
-        if pkey.is_null() { return Err("PEM_read_bio_PUBKEY failed".into()); }
+        if pkey.is_null() {
+            return Err("PEM_read_bio_PUBKEY failed".into());
+        }
         let rsa = bun_boringssl_sys::EVP_PKEY_get0_RSA(pkey);
-        if rsa.is_null() { bun_boringssl_sys::EVP_PKEY_free(pkey); return Err("Not an RSA key".into()); }
+        if rsa.is_null() {
+            bun_boringssl_sys::EVP_PKEY_free(pkey);
+            return Err("Not an RSA key".into());
+        }
         let result = rsa_encrypt_inner(rsa, data);
         bun_boringssl_sys::EVP_PKEY_free(pkey);
         result
@@ -2538,13 +3710,28 @@ fn rsa_public_encrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u
 
 fn rsa_public_decrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u8>, String> {
     unsafe {
-        let bio = bun_boringssl_sys::BIO_new_mem_buf(pem.as_ptr() as *const ::std::ffi::c_void, pem.len() as isize);
-        if bio.is_null() { return Err("BIO_new_mem_buf failed".into()); }
-        let pkey = bun_boringssl_sys::PEM_read_bio_PUBKEY(bio, ::std::ptr::null_mut(), None::<bun_boringssl_sys::pem_password_cb>, ::std::ptr::null_mut());
+        let bio = bun_boringssl_sys::BIO_new_mem_buf(
+            pem.as_ptr() as *const ::std::ffi::c_void,
+            pem.len() as isize,
+        );
+        if bio.is_null() {
+            return Err("BIO_new_mem_buf failed".into());
+        }
+        let pkey = bun_boringssl_sys::PEM_read_bio_PUBKEY(
+            bio,
+            ::std::ptr::null_mut(),
+            None::<bun_boringssl_sys::pem_password_cb>,
+            ::std::ptr::null_mut(),
+        );
         bun_boringssl_sys::BIO_free(bio);
-        if pkey.is_null() { return Err("PEM_read_bio_PUBKEY failed".into()); }
+        if pkey.is_null() {
+            return Err("PEM_read_bio_PUBKEY failed".into());
+        }
         let rsa = bun_boringssl_sys::EVP_PKEY_get0_RSA(pkey);
-        if rsa.is_null() { bun_boringssl_sys::EVP_PKEY_free(pkey); return Err("Not an RSA key".into()); }
+        if rsa.is_null() {
+            bun_boringssl_sys::EVP_PKEY_free(pkey);
+            return Err("Not an RSA key".into());
+        }
         let result = rsa_public_decrypt_inner(rsa, data);
         bun_boringssl_sys::EVP_PKEY_free(pkey);
         result
@@ -2553,13 +3740,28 @@ fn rsa_public_decrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u
 
 fn rsa_private_encrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u8>, String> {
     unsafe {
-        let bio = bun_boringssl_sys::BIO_new_mem_buf(pem.as_ptr() as *const ::std::ffi::c_void, pem.len() as isize);
-        if bio.is_null() { return Err("BIO_new_mem_buf failed".into()); }
-        let pkey = bun_boringssl_sys::PEM_read_bio_PrivateKey(bio, ::std::ptr::null_mut(), None::<bun_boringssl_sys::pem_password_cb>, ::std::ptr::null_mut());
+        let bio = bun_boringssl_sys::BIO_new_mem_buf(
+            pem.as_ptr() as *const ::std::ffi::c_void,
+            pem.len() as isize,
+        );
+        if bio.is_null() {
+            return Err("BIO_new_mem_buf failed".into());
+        }
+        let pkey = bun_boringssl_sys::PEM_read_bio_PrivateKey(
+            bio,
+            ::std::ptr::null_mut(),
+            None::<bun_boringssl_sys::pem_password_cb>,
+            ::std::ptr::null_mut(),
+        );
         bun_boringssl_sys::BIO_free(bio);
-        if pkey.is_null() { return Err("PEM_read_bio_PrivateKey failed".into()); }
+        if pkey.is_null() {
+            return Err("PEM_read_bio_PrivateKey failed".into());
+        }
         let rsa = bun_boringssl_sys::EVP_PKEY_get0_RSA(pkey);
-        if rsa.is_null() { bun_boringssl_sys::EVP_PKEY_free(pkey); return Err("Not an RSA key".into()); }
+        if rsa.is_null() {
+            bun_boringssl_sys::EVP_PKEY_free(pkey);
+            return Err("Not an RSA key".into());
+        }
         let result = rsa_private_encrypt_inner(rsa, data);
         bun_boringssl_sys::EVP_PKEY_free(pkey);
         result
@@ -2568,51 +3770,110 @@ fn rsa_private_encrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<
 
 fn rsa_private_decrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u8>, String> {
     unsafe {
-        let bio = bun_boringssl_sys::BIO_new_mem_buf(pem.as_ptr() as *const ::std::ffi::c_void, pem.len() as isize);
-        if bio.is_null() { return Err("BIO_new_mem_buf failed".into()); }
-        let pkey = bun_boringssl_sys::PEM_read_bio_PrivateKey(bio, ::std::ptr::null_mut(), None::<bun_boringssl_sys::pem_password_cb>, ::std::ptr::null_mut());
+        let bio = bun_boringssl_sys::BIO_new_mem_buf(
+            pem.as_ptr() as *const ::std::ffi::c_void,
+            pem.len() as isize,
+        );
+        if bio.is_null() {
+            return Err("BIO_new_mem_buf failed".into());
+        }
+        let pkey = bun_boringssl_sys::PEM_read_bio_PrivateKey(
+            bio,
+            ::std::ptr::null_mut(),
+            None::<bun_boringssl_sys::pem_password_cb>,
+            ::std::ptr::null_mut(),
+        );
         bun_boringssl_sys::BIO_free(bio);
-        if pkey.is_null() { return Err("PEM_read_bio_PrivateKey failed".into()); }
+        if pkey.is_null() {
+            return Err("PEM_read_bio_PrivateKey failed".into());
+        }
         let rsa = bun_boringssl_sys::EVP_PKEY_get0_RSA(pkey);
-        if rsa.is_null() { bun_boringssl_sys::EVP_PKEY_free(pkey); return Err("Not an RSA key".into()); }
+        if rsa.is_null() {
+            bun_boringssl_sys::EVP_PKEY_free(pkey);
+            return Err("Not an RSA key".into());
+        }
         let result = rsa_private_decrypt_inner(rsa, data);
         bun_boringssl_sys::EVP_PKEY_free(pkey);
         result
     }
 }
 
-unsafe fn rsa_encrypt_inner(rsa: *mut bun_boringssl_sys::RSA, data: &[u8]) -> ::std::result::Result<Vec<u8>, String> {
+unsafe fn rsa_encrypt_inner(
+    rsa: *mut bun_boringssl_sys::RSA,
+    data: &[u8],
+) -> ::std::result::Result<Vec<u8>, String> {
     let key_size = bun_boringssl_sys::RSA_size(rsa) as usize;
     let mut out = vec![0u8; key_size];
-    let len = bun_boringssl_sys::RSA_public_encrypt(data.len(), data.as_ptr(), out.as_mut_ptr(), rsa, bun_boringssl_sys::RSA_PKCS1_PADDING);
-    if len < 0 { return Err("RSA_public_encrypt failed".into()); }
+    let len = bun_boringssl_sys::RSA_public_encrypt(
+        data.len(),
+        data.as_ptr(),
+        out.as_mut_ptr(),
+        rsa,
+        bun_boringssl_sys::RSA_PKCS1_PADDING,
+    );
+    if len < 0 {
+        return Err("RSA_public_encrypt failed".into());
+    }
     out.truncate(len as usize);
     Ok(out)
 }
 
-unsafe fn rsa_public_decrypt_inner(rsa: *mut bun_boringssl_sys::RSA, data: &[u8]) -> ::std::result::Result<Vec<u8>, String> {
+unsafe fn rsa_public_decrypt_inner(
+    rsa: *mut bun_boringssl_sys::RSA,
+    data: &[u8],
+) -> ::std::result::Result<Vec<u8>, String> {
     let key_size = bun_boringssl_sys::RSA_size(rsa) as usize;
     let mut out = vec![0u8; key_size];
-    let len = bun_boringssl_sys::RSA_public_decrypt(data.len(), data.as_ptr(), out.as_mut_ptr(), rsa, bun_boringssl_sys::RSA_PKCS1_PADDING);
-    if len < 0 { return Err("RSA_public_decrypt failed".into()); }
+    let len = bun_boringssl_sys::RSA_public_decrypt(
+        data.len(),
+        data.as_ptr(),
+        out.as_mut_ptr(),
+        rsa,
+        bun_boringssl_sys::RSA_PKCS1_PADDING,
+    );
+    if len < 0 {
+        return Err("RSA_public_decrypt failed".into());
+    }
     out.truncate(len as usize);
     Ok(out)
 }
 
-unsafe fn rsa_private_encrypt_inner(rsa: *mut bun_boringssl_sys::RSA, data: &[u8]) -> ::std::result::Result<Vec<u8>, String> {
+unsafe fn rsa_private_encrypt_inner(
+    rsa: *mut bun_boringssl_sys::RSA,
+    data: &[u8],
+) -> ::std::result::Result<Vec<u8>, String> {
     let key_size = bun_boringssl_sys::RSA_size(rsa) as usize;
     let mut out = vec![0u8; key_size];
-    let len = bun_boringssl_sys::RSA_private_encrypt(data.len(), data.as_ptr(), out.as_mut_ptr(), rsa, bun_boringssl_sys::RSA_PKCS1_PADDING);
-    if len < 0 { return Err("RSA_private_encrypt failed".into()); }
+    let len = bun_boringssl_sys::RSA_private_encrypt(
+        data.len(),
+        data.as_ptr(),
+        out.as_mut_ptr(),
+        rsa,
+        bun_boringssl_sys::RSA_PKCS1_PADDING,
+    );
+    if len < 0 {
+        return Err("RSA_private_encrypt failed".into());
+    }
     out.truncate(len as usize);
     Ok(out)
 }
 
-unsafe fn rsa_private_decrypt_inner(rsa: *mut bun_boringssl_sys::RSA, data: &[u8]) -> ::std::result::Result<Vec<u8>, String> {
+unsafe fn rsa_private_decrypt_inner(
+    rsa: *mut bun_boringssl_sys::RSA,
+    data: &[u8],
+) -> ::std::result::Result<Vec<u8>, String> {
     let key_size = bun_boringssl_sys::RSA_size(rsa) as usize;
     let mut out = vec![0u8; key_size];
-    let len = bun_boringssl_sys::RSA_private_decrypt(data.len(), data.as_ptr(), out.as_mut_ptr(), rsa, bun_boringssl_sys::RSA_PKCS1_PADDING);
-    if len < 0 { return Err("RSA_private_decrypt failed".into()); }
+    let len = bun_boringssl_sys::RSA_private_decrypt(
+        data.len(),
+        data.as_ptr(),
+        out.as_mut_ptr(),
+        rsa,
+        bun_boringssl_sys::RSA_PKCS1_PADDING,
+    );
+    if len < 0 {
+        return Err("RSA_private_decrypt failed".into());
+    }
     out.truncate(len as usize);
     Ok(out)
 }
@@ -2638,7 +3899,11 @@ unsafe fn schedule_crypto_defer(ctx_ptr: usize) {
         let _ = Box::from_raw(ctx_ptr as *mut CryptoAsyncCtx);
         return;
     }
-    bao_uloop::uws_loop_defer(loop_, ctx_ptr as *mut ::std::ffi::c_void, crypto_async_defer_callback);
+    bao_uloop::uws_loop_defer(
+        loop_,
+        ctx_ptr as *mut ::std::ffi::c_void,
+        crypto_async_defer_callback,
+    );
 }
 
 unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
@@ -2650,24 +3915,43 @@ unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_voi
     let result_opt = result_guard.take();
     ::std::mem::drop(result_guard);
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
     rooted!(&in(cx_ref) let cb = callback);
     rooted!(&in(cx_ref) let cb_val = mozjs::jsval::ObjectValue(cb.get()));
     let global = CurrentGlobalOrNull(cx);
-    if global.is_null() { return; }
+    if global.is_null() {
+        return;
+    }
     rooted!(&in(cx_ref) let global_rooted = global);
 
     match result_opt {
         Some(Ok(data)) => {
             let buf_obj = crate::globals::create_buffer_object(cx, &data);
-            let val = if buf_obj.is_null() { UndefinedValue() } else { mozjs::jsval::ObjectValue(buf_obj) };
+            let val = if buf_obj.is_null() {
+                UndefinedValue()
+            } else {
+                mozjs::jsval::ObjectValue(buf_obj)
+            };
             rooted!(&in(cx_ref) let val_rooted = val);
             let args_arr = [UndefinedValue(), val_rooted.get()];
-            let cb_args = HandleValueArray { length_: 2, elements_: args_arr.as_ptr() };
+            let cb_args = HandleValueArray {
+                length_: 2,
+                elements_: args_arr.as_ptr(),
+            };
             let mut rval = UndefinedValue();
-            JS_CallFunctionValue(cx, global_rooted.handle().into(), cb_val.handle().into(), &cb_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+            JS_CallFunctionValue(
+                cx,
+                global_rooted.handle().into(),
+                cb_val.handle().into(),
+                &cb_args,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
             JS_ClearPendingException(cx);
         }
         Some(Err(msg)) => {
@@ -2677,14 +3961,32 @@ unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_voi
                 let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
                 if !js_str.is_null() {
                     rooted!(&in(cx_ref) let msg_val = mozjs::jsval::StringValue(&*js_str));
-                    JS_DefineProperty(cx, err_obj.handle().into(), c"message".as_ptr(), msg_val.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(
+                        cx,
+                        err_obj.handle().into(),
+                        c"message".as_ptr(),
+                        msg_val.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
                 }
             }
             rooted!(&in(cx_ref) let err_val = mozjs::jsval::ObjectValue(err_obj.get()));
             let args_arr = [err_val.get()];
-            let cb_args = HandleValueArray { length_: 1, elements_: args_arr.as_ptr() };
+            let cb_args = HandleValueArray {
+                length_: 1,
+                elements_: args_arr.as_ptr(),
+            };
             let mut rval = UndefinedValue();
-            JS_CallFunctionValue(cx, global_rooted.handle().into(), cb_val.handle().into(), &cb_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+            JS_CallFunctionValue(
+                cx,
+                global_rooted.handle().into(),
+                cb_val.handle().into(),
+                &cb_args,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
             JS_ClearPendingException(cx);
         }
         None => {}
@@ -2701,15 +4003,25 @@ where
     F: FnOnce() -> ::std::result::Result<Vec<u8>, String> + Send + 'static,
 {
     let mut cb_val = mozjs::jsval::ObjectValue(callback);
-    let rooted = AddRawValueRoot(cx, &mut cb_val, b"crypto_async_cb\0".as_ptr() as *const ::std::os::raw::c_char);
+    let rooted = AddRawValueRoot(
+        cx,
+        &mut cb_val,
+        b"crypto_async_cb\0".as_ptr() as *const ::std::os::raw::c_char,
+    );
 
-    let result_slot: ::std::sync::Arc<::std::sync::Mutex<Option<::std::result::Result<Vec<u8>, String>>>> = ::std::sync::Arc::new(::std::sync::Mutex::new(None));
+    let result_slot: ::std::sync::Arc<
+        ::std::sync::Mutex<Option<::std::result::Result<Vec<u8>, String>>>,
+    > = ::std::sync::Arc::new(::std::sync::Mutex::new(None));
     let result_clone = result_slot.clone();
 
     let op_name_owned = op_name.to_string();
 
     let ctx = Box::new(CryptoAsyncCtx {
-        cx, callback, result: result_slot, op_name: op_name_owned, rooted,
+        cx,
+        callback,
+        result: result_slot,
+        op_name: op_name_owned,
+        rooted,
     });
     let ctx_ptr = Box::into_raw(ctx) as usize;
 
@@ -2719,7 +4031,9 @@ where
             let mut slot = result_clone.lock().unwrap();
             *slot = Some(result);
         }
-        unsafe { schedule_crypto_defer(ctx_ptr); }
+        unsafe {
+            schedule_crypto_defer(ctx_ptr);
+        }
     });
 }
 
@@ -2731,13 +4045,31 @@ where
 unsafe extern "C" fn crypto_pbkdf2(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // Args: password, salt, iterations, keylen, digest[, callback]
-    let password = if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let salt = if argc > 1 { extract_buffer_bytes(cx, *args.get(1).ptr) } else { Vec::new() };
-    let iterations = if argc > 2 && (*args.get(2).ptr).is_int32() { (*args.get(2).ptr).to_int32() as u32 } else { 100000 };
-    let keylen = if argc > 3 && (*args.get(3).ptr).is_int32() { (*args.get(3).ptr).to_int32() as usize } else { 32 };
+    let password = if argc > 0 {
+        extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let salt = if argc > 1 {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        Vec::new()
+    };
+    let iterations = if argc > 2 && (*args.get(2).ptr).is_int32() {
+        (*args.get(2).ptr).to_int32() as u32
+    } else {
+        100000
+    };
+    let keylen = if argc > 3 && (*args.get(3).ptr).is_int32() {
+        (*args.get(3).ptr).to_int32() as usize
+    } else {
+        32
+    };
     let digest_name = if argc > 4 && (*args.get(4).ptr).is_string() {
         crate::jsstr_to_rust_string(cx, (*args.get(4).ptr).to_string())
-    } else { "sha256".to_string() };
+    } else {
+        "sha256".to_string()
+    };
 
     let has_callback = argc > 5 && (*args.get(5).ptr).is_object();
     if has_callback {
@@ -2756,15 +4088,20 @@ unsafe extern "C" fn crypto_pbkdf2(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             Ok(hash) => match bao_crypto::kdf::pbkdf2(&password, &salt, iterations, hash, keylen) {
                 Ok(key) => {
                     let buf_obj = crate::globals::create_buffer_object(cx, &key);
-                    if !buf_obj.is_null() { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); true }
-                    else { args.rval().set(UndefinedValue()); true }
+                    if !buf_obj.is_null() {
+                        args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+                        true
+                    } else {
+                        args.rval().set(UndefinedValue());
+                        true
+                    }
                 }
                 Err(e) => {
                     let c_msg = ZBox::from_bytes(format!("pbkdf2: {}", e).as_bytes());
                     JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                     false
                 }
-            }
+            },
             Err(e) => {
                 let c_msg = ZBox::from_bytes(format!("pbkdf2: {}", e).as_bytes());
                 JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
@@ -2781,26 +4118,87 @@ unsafe extern "C" fn crypto_pbkdf2(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_scrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let password = if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let salt = if argc > 1 { extract_buffer_bytes(cx, *args.get(1).ptr) } else { Vec::new() };
-    let keylen = if argc > 2 && (*args.get(2).ptr).is_int32() { (*args.get(2).ptr).to_int32() as usize } else { 32 };
-    let options_val = if argc > 3 { *args.get(3).ptr } else { UndefinedValue() };
+    let password = if argc > 0 {
+        extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let salt = if argc > 1 {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        Vec::new()
+    };
+    let keylen = if argc > 2 && (*args.get(2).ptr).is_int32() {
+        (*args.get(2).ptr).to_int32() as usize
+    } else {
+        32
+    };
+    let options_val = if argc > 3 {
+        *args.get(3).ptr
+    } else {
+        UndefinedValue()
+    };
 
     let (n, r, p) = if options_val.is_object() {
-        let mut wrapped_cx2 = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let mut wrapped_cx2 =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let cx_ref2 = &mut wrapped_cx2;
         rooted!(&in(cx_ref2) let opts_obj = options_val.to_object());
         let mut n_val = UndefinedValue();
-        JS_GetProperty(cx, opts_obj.handle().into(), c"N".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut n_val });
-        let n = if n_val.is_int32() { n_val.to_int32() as u64 } else if n_val.is_double() { n_val.to_double() as u64 } else { 16384 };
+        JS_GetProperty(
+            cx,
+            opts_obj.handle().into(),
+            c"N".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut n_val,
+            },
+        );
+        let n = if n_val.is_int32() {
+            n_val.to_int32() as u64
+        } else if n_val.is_double() {
+            n_val.to_double() as u64
+        } else {
+            16384
+        };
         let mut r_val = UndefinedValue();
-        JS_GetProperty(cx, opts_obj.handle().into(), c"r".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut r_val });
-        let r = if r_val.is_int32() { r_val.to_int32() as u64 } else if r_val.is_double() { r_val.to_double() as u64 } else { 8 };
+        JS_GetProperty(
+            cx,
+            opts_obj.handle().into(),
+            c"r".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut r_val,
+            },
+        );
+        let r = if r_val.is_int32() {
+            r_val.to_int32() as u64
+        } else if r_val.is_double() {
+            r_val.to_double() as u64
+        } else {
+            8
+        };
         let mut p_val = UndefinedValue();
-        JS_GetProperty(cx, opts_obj.handle().into(), c"p".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut p_val });
-        let p = if p_val.is_int32() { p_val.to_int32() as u64 } else if p_val.is_double() { p_val.to_double() as u64 } else { 1 };
+        JS_GetProperty(
+            cx,
+            opts_obj.handle().into(),
+            c"p".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut p_val,
+            },
+        );
+        let p = if p_val.is_int32() {
+            p_val.to_int32() as u64
+        } else if p_val.is_double() {
+            p_val.to_double() as u64
+        } else {
+            1
+        };
         (n, r, p)
-    } else { (16384, 8, 1) };
+    } else {
+        (16384, 8, 1)
+    };
 
     let has_callback = argc > 4 && (*args.get(4).ptr).is_object();
     if has_callback {
@@ -2815,8 +4213,13 @@ unsafe extern "C" fn crypto_scrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         match bao_crypto::kdf::scrypt(&password, &salt, n, r, p, keylen) {
             Ok(key) => {
                 let buf_obj = crate::globals::create_buffer_object(cx, &key);
-                if !buf_obj.is_null() { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); true }
-                else { args.rval().set(UndefinedValue()); true }
+                if !buf_obj.is_null() {
+                    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+                    true
+                } else {
+                    args.rval().set(UndefinedValue());
+                    true
+                }
             }
             Err(e) => {
                 let c_msg = ZBox::from_bytes(format!("scrypt: {}", e).as_bytes());
@@ -2832,26 +4235,57 @@ unsafe extern "C" fn crypto_scrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 // ============================================================
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_generate_key_pair(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_generate_key_pair(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let key_type = if argc > 0 && (*args.get(0).ptr).is_string() {
         crate::jsstr_to_rust_string(cx, (*args.get(0).ptr).to_string())
-    } else { "rsa".to_string() };
+    } else {
+        "rsa".to_string()
+    };
 
     // Parse options from arg 1
-    let options_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let options_val = if argc > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
     let mut rsa_bits = 2048usize;
     let mut ec_curve = "P-256".to_string();
     if options_val.is_object() {
-        let mut wrapped_cx2 = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let mut wrapped_cx2 =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let cx_ref2 = &mut wrapped_cx2;
         rooted!(&in(cx_ref2) let opts_obj = options_val.to_object());
         let mut len_val = UndefinedValue();
-        JS_GetProperty(cx, opts_obj.handle().into(), c"modulusLength".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
-        if len_val.is_int32() { rsa_bits = len_val.to_int32() as usize; }
+        JS_GetProperty(
+            cx,
+            opts_obj.handle().into(),
+            c"modulusLength".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            },
+        );
+        if len_val.is_int32() {
+            rsa_bits = len_val.to_int32() as usize;
+        }
         let mut curve_val = UndefinedValue();
-        JS_GetProperty(cx, opts_obj.handle().into(), c"namedCurve".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut curve_val });
-        if curve_val.is_string() { ec_curve = crate::jsstr_to_rust_string(cx, curve_val.to_string()); }
+        JS_GetProperty(
+            cx,
+            opts_obj.handle().into(),
+            c"namedCurve".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut curve_val,
+            },
+        );
+        if curve_val.is_string() {
+            ec_curve = crate::jsstr_to_rust_string(cx, curve_val.to_string());
+        }
     }
 
     let has_callback = argc > 2 && (*args.get(2).ptr).is_object();
@@ -2889,7 +4323,11 @@ unsafe extern "C" fn crypto_generate_key_pair(cx: *mut JSContext, argc: u32, vp:
 // ============================================================
 
 #[allow(dead_code, unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_random_bytes_async(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_random_bytes_async(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         return throw_type_error(cx, "randomBytes() requires a size");
@@ -2934,16 +4372,30 @@ unsafe extern "C" fn crypto_random_bytes_async(cx: *mut JSContext, argc: u32, vp
 
 fn parse_sign_algorithm(algo: &str) -> bao_crypto::sign::SignAlgorithm {
     match algo.to_uppercase().as_str() {
-        "SHA256" | "RS256" => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 { hash: bao_crypto::sign::RsaHash::Sha256 },
-        "SHA384" | "RS384" => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 { hash: bao_crypto::sign::RsaHash::Sha384 },
-        "SHA512" | "RS512" => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 { hash: bao_crypto::sign::RsaHash::Sha512 },
-        "PS256" => bao_crypto::sign::SignAlgorithm::RsaPss { hash: bao_crypto::sign::RsaHash::Sha256 },
-        "PS384" => bao_crypto::sign::SignAlgorithm::RsaPss { hash: bao_crypto::sign::RsaHash::Sha384 },
-        "PS512" => bao_crypto::sign::SignAlgorithm::RsaPss { hash: bao_crypto::sign::RsaHash::Sha512 },
+        "SHA256" | "RS256" => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 {
+            hash: bao_crypto::sign::RsaHash::Sha256,
+        },
+        "SHA384" | "RS384" => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 {
+            hash: bao_crypto::sign::RsaHash::Sha384,
+        },
+        "SHA512" | "RS512" => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 {
+            hash: bao_crypto::sign::RsaHash::Sha512,
+        },
+        "PS256" => bao_crypto::sign::SignAlgorithm::RsaPss {
+            hash: bao_crypto::sign::RsaHash::Sha256,
+        },
+        "PS384" => bao_crypto::sign::SignAlgorithm::RsaPss {
+            hash: bao_crypto::sign::RsaHash::Sha384,
+        },
+        "PS512" => bao_crypto::sign::SignAlgorithm::RsaPss {
+            hash: bao_crypto::sign::RsaHash::Sha512,
+        },
         "ECDSA" | "ES256" => bao_crypto::sign::SignAlgorithm::EcdsaP256,
         "ES384" => bao_crypto::sign::SignAlgorithm::EcdsaP384,
         "ED25519" => bao_crypto::sign::SignAlgorithm::Ed25519,
-        _ => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 { hash: bao_crypto::sign::RsaHash::Sha256 },
+        _ => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 {
+            hash: bao_crypto::sign::RsaHash::Sha256,
+        },
     }
 }
 
@@ -2953,9 +4405,19 @@ unsafe extern "C" fn crypto_sign_sync(cx: *mut JSContext, argc: u32, vp: *mut JS
     // Args: algorithm, data, key
     let algo = if argc > 0 && (*args.get(0).ptr).is_string() {
         crate::jsstr_to_rust_string(cx, (*args.get(0).ptr).to_string())
-    } else { "SHA256".to_string() };
-    let data = if argc > 1 { extract_buffer_bytes(cx, *args.get(1).ptr) } else { Vec::new() };
-    let key_val = if argc > 2 { *args.get(2).ptr } else { UndefinedValue() };
+    } else {
+        "SHA256".to_string()
+    };
+    let data = if argc > 1 {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        Vec::new()
+    };
+    let key_val = if argc > 2 {
+        *args.get(2).ptr
+    } else {
+        UndefinedValue()
+    };
 
     let sign_algo = parse_sign_algorithm(&algo);
 
@@ -2965,42 +4427,63 @@ unsafe extern "C" fn crypto_sign_sync(cx: *mut JSContext, argc: u32, vp: *mut JS
         bao_crypto::sign::Signer::from_pkcs8_pem(&sign_algo, &pem)
     } else if key_val.is_object() {
         // Check for _keyIdx (KeyObject) or try as buffer (DER key)
-        let mut wrapped_cx2 = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let mut wrapped_cx2 =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let cx_ref2 = &mut wrapped_cx2;
         rooted!(&in(cx_ref2) let obj = key_val.to_object());
         let mut idx_val = UndefinedValue();
-        JS_GetProperty(cx, obj.handle().into(), c"_keyIdx".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut idx_val });
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"_keyIdx".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut idx_val,
+            },
+        );
         if idx_val.is_int32() {
             let idx = idx_val.to_int32() as usize;
             let key_bytes = KEY_OBJECTS.with(|v| {
-                v.borrow().get(idx).map(|k| k.as_ref().map(|b| b.clone())).flatten()
+                v.borrow()
+                    .get(idx)
+                    .map(|k| k.as_ref().map(|b| b.clone()))
+                    .flatten()
             });
             if let Some(der) = key_bytes {
                 bao_crypto::sign::Signer::from_pkcs8_der(&sign_algo, &der)
             } else {
-                Err(bao_crypto::CryptoError::InvalidKey("KeyObject key data not available".into()))
+                Err(bao_crypto::CryptoError::InvalidKey(
+                    "KeyObject key data not available".into(),
+                ))
             }
         } else {
             let der = extract_buffer_bytes(cx, key_val);
             bao_crypto::sign::Signer::from_pkcs8_der(&sign_algo, &der)
         }
     } else {
-        Err(bao_crypto::CryptoError::InvalidKey("sign: key argument required".into()))
+        Err(bao_crypto::CryptoError::InvalidKey(
+            "sign: key argument required".into(),
+        ))
     };
 
     match signer {
         Ok(s) => match s.sign(&data, bao_crypto::sign::SignatureFormat::Der) {
             Ok(sig) => {
                 let buf_obj = crate::globals::create_buffer_object(cx, &sig);
-                if !buf_obj.is_null() { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); true }
-                else { args.rval().set(UndefinedValue()); true }
+                if !buf_obj.is_null() {
+                    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+                    true
+                } else {
+                    args.rval().set(UndefinedValue());
+                    true
+                }
             }
             Err(e) => {
                 let c_msg = ZBox::from_bytes(format!("sign: {}", e).as_bytes());
                 JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                 false
             }
-        }
+        },
         Err(e) => {
             let c_msg = ZBox::from_bytes(format!("sign: {}", e).as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
@@ -3015,10 +4498,24 @@ unsafe extern "C" fn crypto_verify_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     // Args: algorithm, data, key, signature
     let algo = if argc > 0 && (*args.get(0).ptr).is_string() {
         crate::jsstr_to_rust_string(cx, (*args.get(0).ptr).to_string())
-    } else { "SHA256".to_string() };
-    let data = if argc > 1 { extract_buffer_bytes(cx, *args.get(1).ptr) } else { Vec::new() };
-    let key_val = if argc > 2 { *args.get(2).ptr } else { UndefinedValue() };
-    let signature = if argc > 3 { extract_buffer_bytes(cx, *args.get(3).ptr) } else { Vec::new() };
+    } else {
+        "SHA256".to_string()
+    };
+    let data = if argc > 1 {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        Vec::new()
+    };
+    let key_val = if argc > 2 {
+        *args.get(2).ptr
+    } else {
+        UndefinedValue()
+    };
+    let signature = if argc > 3 {
+        extract_buffer_bytes(cx, *args.get(3).ptr)
+    } else {
+        Vec::new()
+    };
 
     let sign_algo = parse_sign_algorithm(&algo);
 
@@ -3028,21 +4525,35 @@ unsafe extern "C" fn crypto_verify_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         bao_crypto::verify::Verifier::from_public_pem(&sign_algo, &pem)
             .or_else(|_| bao_crypto::verify::Verifier::from_pkcs8_pem(&sign_algo, &pem))
     } else if key_val.is_object() {
-        let mut wrapped_cx2 = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let mut wrapped_cx2 =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let cx_ref2 = &mut wrapped_cx2;
         rooted!(&in(cx_ref2) let obj = key_val.to_object());
         let mut idx_val = UndefinedValue();
-        JS_GetProperty(cx, obj.handle().into(), c"_keyIdx".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut idx_val });
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"_keyIdx".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut idx_val,
+            },
+        );
         if idx_val.is_int32() {
             let idx = idx_val.to_int32() as usize;
             let key_bytes = KEY_OBJECTS.with(|v| {
-                v.borrow().get(idx).map(|k| k.as_ref().map(|b| b.clone())).flatten()
+                v.borrow()
+                    .get(idx)
+                    .map(|k| k.as_ref().map(|b| b.clone()))
+                    .flatten()
             });
             if let Some(der) = key_bytes {
                 bao_crypto::verify::Verifier::from_public_der(&sign_algo, &der)
                     .or_else(|_| bao_crypto::verify::Verifier::from_pkcs8_der(&sign_algo, &der))
             } else {
-                Err(bao_crypto::CryptoError::InvalidKey("KeyObject key data not available".into()))
+                Err(bao_crypto::CryptoError::InvalidKey(
+                    "KeyObject key data not available".into(),
+                ))
             }
         } else {
             let der = extract_buffer_bytes(cx, key_val);
@@ -3050,7 +4561,9 @@ unsafe extern "C" fn crypto_verify_sync(cx: *mut JSContext, argc: u32, vp: *mut 
                 .or_else(|_| bao_crypto::verify::Verifier::from_pkcs8_der(&sign_algo, &der))
         }
     } else {
-        Err(bao_crypto::CryptoError::InvalidKey("verify: key argument required".into()))
+        Err(bao_crypto::CryptoError::InvalidKey(
+            "verify: key argument required".into(),
+        ))
     };
 
     match verifier {
@@ -3064,7 +4577,7 @@ unsafe extern "C" fn crypto_verify_sync(cx: *mut JSContext, argc: u32, vp: *mut 
                 JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                 false
             }
-        }
+        },
         Err(e) => {
             let c_msg = ZBox::from_bytes(format!("verify: {}", e).as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
@@ -3082,18 +4595,36 @@ unsafe extern "C" fn crypto_generate_key(cx: *mut JSContext, argc: u32, vp: *mut
     let args = CallArgs::from_vp(vp, argc);
     let _type = if argc > 0 && (*args.get(0).ptr).is_string() {
         crate::jsstr_to_rust_string(cx, (*args.get(0).ptr).to_string())
-    } else { "hmac".to_string() };
-    let options_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    } else {
+        "hmac".to_string()
+    };
+    let options_val = if argc > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
 
     let mut length = 32usize;
     if options_val.is_object() {
-        let mut wrapped_cx2 = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let mut wrapped_cx2 =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let cx_ref2 = &mut wrapped_cx2;
         rooted!(&in(cx_ref2) let opts_obj = options_val.to_object());
         let mut len_val = UndefinedValue();
-        JS_GetProperty(cx, opts_obj.handle().into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
-        if len_val.is_int32() { length = len_val.to_int32() as usize; }
-        else if len_val.is_double() { length = len_val.to_double() as usize; }
+        JS_GetProperty(
+            cx,
+            opts_obj.handle().into(),
+            c"length".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            },
+        );
+        if len_val.is_int32() {
+            length = len_val.to_int32() as usize;
+        } else if len_val.is_double() {
+            length = len_val.to_double() as usize;
+        }
     }
 
     let has_callback = argc > 2 && (*args.get(2).ptr).is_object();
@@ -3114,29 +4645,54 @@ unsafe extern "C" fn crypto_generate_key(cx: *mut JSContext, argc: u32, vp: *mut
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_generate_key_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_generate_key_sync(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let _type = if argc > 0 && (*args.get(0).ptr).is_string() {
         crate::jsstr_to_rust_string(cx, (*args.get(0).ptr).to_string())
-    } else { "hmac".to_string() };
-    let options_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    } else {
+        "hmac".to_string()
+    };
+    let options_val = if argc > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
 
     let mut length = 32usize;
     if options_val.is_object() {
-        let mut wrapped_cx2 = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let mut wrapped_cx2 =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let cx_ref2 = &mut wrapped_cx2;
         rooted!(&in(cx_ref2) let opts_obj = options_val.to_object());
         let mut len_val = UndefinedValue();
-        JS_GetProperty(cx, opts_obj.handle().into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
-        if len_val.is_int32() { length = len_val.to_int32() as usize; }
-        else if len_val.is_double() { length = len_val.to_double() as usize; }
+        JS_GetProperty(
+            cx,
+            opts_obj.handle().into(),
+            c"length".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            },
+        );
+        if len_val.is_int32() {
+            length = len_val.to_int32() as usize;
+        } else if len_val.is_double() {
+            length = len_val.to_double() as usize;
+        }
     }
 
     let mut buf = vec![0u8; length];
     bao_crypto::random::rand_bytes(&mut buf).unwrap();
     let idx = alloc_key_object(buf);
     let obj = make_key_object_js(cx, idx, "secret");
-    if obj.is_null() { args.rval().set(UndefinedValue()); return false; }
+    if obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return false;
+    }
     args.rval().set(mozjs::jsval::ObjectValue(obj));
     true
 }
@@ -3157,11 +4713,29 @@ unsafe extern "C" fn crypto_hkdf(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, argc);
     let digest = if argc > 0 && (*args.get(0).ptr).is_string() {
         crate::jsstr_to_rust_string(cx, (*args.get(0).ptr).to_string())
-    } else { "SHA256".to_string() };
-    let ikm = if argc > 1 { extract_buffer_bytes(cx, *args.get(1).ptr) } else { Vec::new() };
-    let salt = if argc > 2 { extract_buffer_bytes(cx, *args.get(2).ptr) } else { Vec::new() };
-    let info = if argc > 3 { extract_buffer_bytes(cx, *args.get(3).ptr) } else { Vec::new() };
-    let keylen = if argc > 4 && (*args.get(4).ptr).is_int32() { (*args.get(4).ptr).to_int32() as usize } else { 32 };
+    } else {
+        "SHA256".to_string()
+    };
+    let ikm = if argc > 1 {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        Vec::new()
+    };
+    let salt = if argc > 2 {
+        extract_buffer_bytes(cx, *args.get(2).ptr)
+    } else {
+        Vec::new()
+    };
+    let info = if argc > 3 {
+        extract_buffer_bytes(cx, *args.get(3).ptr)
+    } else {
+        Vec::new()
+    };
+    let keylen = if argc > 4 && (*args.get(4).ptr).is_int32() {
+        (*args.get(4).ptr).to_int32() as usize
+    } else {
+        32
+    };
 
     let has_callback = argc > 5 && (*args.get(5).ptr).is_object();
     if has_callback {
@@ -3178,8 +4752,13 @@ unsafe extern "C" fn crypto_hkdf(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         match bao_crypto::kdf::hkdf(hash, &salt, &ikm, &info, keylen) {
             Ok(key) => {
                 let buf_obj = crate::globals::create_buffer_object(cx, &key);
-                if !buf_obj.is_null() { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); true }
-                else { args.rval().set(UndefinedValue()); true }
+                if !buf_obj.is_null() {
+                    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+                    true
+                } else {
+                    args.rval().set(UndefinedValue());
+                    true
+                }
             }
             Err(e) => {
                 let c_msg = ZBox::from_bytes(format!("hkdf: {}", e).as_bytes());
@@ -3198,7 +4777,11 @@ unsafe extern "C" fn crypto_hkdf(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_check_prime(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let candidate = if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let candidate = if argc > 0 {
+        extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
 
     let has_callback = argc > 1 && (*args.get(1).ptr).is_object();
     if has_callback {
@@ -3216,9 +4799,17 @@ unsafe extern "C" fn crypto_check_prime(cx: *mut JSContext, argc: u32, vp: *mut 
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_check_prime_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_check_prime_sync(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let candidate = if argc > 0 { extract_buffer_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let candidate = if argc > 0 {
+        extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
 
     let is_prime = check_prime_boringssl(&candidate);
     args.rval().set(mozjs::jsval::BooleanValue(is_prime));
@@ -3228,9 +4819,17 @@ unsafe extern "C" fn crypto_check_prime_sync(cx: *mut JSContext, argc: u32, vp: 
 fn check_prime_boringssl(bytes: &[u8]) -> bool {
     unsafe {
         let bn = bun_boringssl_sys::BN_bin2bn(bytes.as_ptr(), bytes.len(), ::std::ptr::null_mut());
-        if bn.is_null() { return false; }
+        if bn.is_null() {
+            return false;
+        }
         // BN_is_prime_fasttest_ex checks with 64 rounds of Miller-Rabin
-        let result = bun_boringssl_sys::BN_is_prime_fasttest_ex(bn, 64, ::std::ptr::null_mut(), 0, ::std::ptr::null_mut());
+        let result = bun_boringssl_sys::BN_is_prime_fasttest_ex(
+            bn,
+            64,
+            ::std::ptr::null_mut(),
+            0,
+            ::std::ptr::null_mut(),
+        );
         bun_boringssl_sys::BN_free(bn);
         result == 1
     }
@@ -3272,37 +4871,95 @@ unsafe fn parse_spkac(der: &[u8]) -> Option<*mut NETSCAPE_SPKAC> {
 }
 
 fn extract_spkac_challenge(der: &[u8]) -> String {
-    if der.len() < 4 { return String::new(); }
+    if der.len() < 4 {
+        return String::new();
+    }
     let mut pos = 0;
-    if der[pos] != 0x30 { return String::new(); }
+    if der[pos] != 0x30 {
+        return String::new();
+    }
     pos += 1;
     pos += asn1_length_size(&der[pos..]);
-    if pos >= der.len() || der[pos] != 0x16 { return String::new(); }
+    if pos >= der.len() || der[pos] != 0x16 {
+        return String::new();
+    }
     pos += 1;
-    if pos >= der.len() { return String::new(); }
+    if pos >= der.len() {
+        return String::new();
+    }
     let str_len = der[pos] as usize;
     pos += 1;
-    if pos + str_len > der.len() { return String::new(); }
+    if pos + str_len > der.len() {
+        return String::new();
+    }
     String::from_utf8_lossy(&der[pos..pos + str_len]).into_owned()
 }
 
 fn asn1_length_size(buf: &[u8]) -> usize {
-    if buf.is_empty() { return 1; }
-    if buf[0] & 0x80 == 0 { 1 } else { 1 + (buf[0] & 0x7f) as usize }
+    if buf.is_empty() {
+        return 1;
+    }
+    if buf[0] & 0x80 == 0 {
+        1
+    } else {
+        1 + (buf[0] & 0x7f) as usize
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_certificate_ctor(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_certificate_ctor(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, 0);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
-    if obj.get().is_null() { args.rval().set(UndefinedValue()); return true; }
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"verifySpkac".as_ptr(), Some(cert_verify_spkac), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"exportPublicKey".as_ptr(), Some(cert_export_public_key), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"exportChallenge".as_ptr(), Some(cert_export_challenge), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"exportSpkac".as_ptr(), Some(cert_export_spkac), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"verifyPublicKey".as_ptr(), Some(cert_verify_public_key), 1, JSPROP_ENUMERATE as u32);
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"verifySpkac".as_ptr(),
+        Some(cert_verify_spkac),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"exportPublicKey".as_ptr(),
+        Some(cert_export_public_key),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"exportChallenge".as_ptr(),
+        Some(cert_export_challenge),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"exportSpkac".as_ptr(),
+        Some(cert_export_spkac),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"verifyPublicKey".as_ptr(),
+        Some(cert_verify_public_key),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -3310,9 +4967,16 @@ unsafe extern "C" fn crypto_certificate_ctor(cx: *mut JSContext, _argc: u32, vp:
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn cert_verify_spkac(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return throw_type_error(cx, "verifySpkac() requires a buffer"); }
+    if argc < 1 {
+        return throw_type_error(cx, "verifySpkac() requires a buffer");
+    }
     let buf = extract_buffer_bytes(cx, *args.get(0).ptr);
-    let valid = if let Some(spkac) = parse_spkac(&buf) { NETSCAPE_SPKAC_free(spkac); true } else { false };
+    let valid = if let Some(spkac) = parse_spkac(&buf) {
+        NETSCAPE_SPKAC_free(spkac);
+        true
+    } else {
+        false
+    };
     args.rval().set(mozjs::jsval::BooleanValue(valid));
     true
 }
@@ -3320,17 +4984,25 @@ unsafe extern "C" fn cert_verify_spkac(cx: *mut JSContext, argc: u32, vp: *mut J
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn cert_export_public_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return throw_type_error(cx, "exportPublicKey() requires a buffer"); }
+    if argc < 1 {
+        return throw_type_error(cx, "exportPublicKey() requires a buffer");
+    }
     let buf = extract_buffer_bytes(cx, *args.get(0).ptr);
     let buf_obj = crate::globals::create_buffer_object(cx, &buf);
-    if buf_obj.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); }
+    if buf_obj.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+    }
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn cert_export_challenge(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return throw_type_error(cx, "exportChallenge() requires a buffer"); }
+    if argc < 1 {
+        return throw_type_error(cx, "exportChallenge() requires a buffer");
+    }
     let buf = extract_buffer_bytes(cx, *args.get(0).ptr);
     let challenge = extract_spkac_challenge(&buf);
     return_string(cx, &args, &challenge)
@@ -3339,22 +5011,39 @@ unsafe extern "C" fn cert_export_challenge(cx: *mut JSContext, argc: u32, vp: *m
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn cert_export_spkac(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return throw_type_error(cx, "exportSpkac() requires a buffer"); }
+    if argc < 1 {
+        return throw_type_error(cx, "exportSpkac() requires a buffer");
+    }
     let buf = extract_buffer_bytes(cx, *args.get(0).ptr);
     let buf_obj = crate::globals::create_buffer_object(cx, &buf);
-    if buf_obj.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); }
+    if buf_obj.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+    }
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn cert_verify_public_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return throw_type_error(cx, "verifyPublicKey() requires a key buffer"); }
+    if argc < 1 {
+        return throw_type_error(cx, "verifyPublicKey() requires a key buffer");
+    }
     let key_bytes = extract_buffer_bytes(cx, *args.get(0).ptr);
     let valid = {
         let mut p = key_bytes.as_ptr();
-        let pkey = bun_boringssl_sys::d2i_PUBKEY(::std::ptr::null_mut(), &mut p, key_bytes.len() as libc::c_long);
-        if pkey.is_null() { false } else { bun_boringssl_sys::EVP_PKEY_free(pkey); true }
+        let pkey = bun_boringssl_sys::d2i_PUBKEY(
+            ::std::ptr::null_mut(),
+            &mut p,
+            key_bytes.len() as libc::c_long,
+        );
+        if pkey.is_null() {
+            false
+        } else {
+            bun_boringssl_sys::EVP_PKEY_free(pkey);
+            true
+        }
     };
     args.rval().set(mozjs::jsval::BooleanValue(valid));
     true
@@ -3367,15 +5056,37 @@ unsafe extern "C" fn crypto_get_curves(cx: *mut JSContext, _argc: u32, vp: *mut 
     let args = CallArgs::from_vp(vp, 0);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    let curves = ["P-256", "prime256v1", "secp256r1", "P-384", "secp384r1", "P-521", "secp521r1", "X25519", "Ed25519", "X448", "Ed448", "secp256k1"];
+    let curves = [
+        "P-256",
+        "prime256v1",
+        "secp256r1",
+        "P-384",
+        "secp384r1",
+        "P-521",
+        "secp521r1",
+        "X25519",
+        "Ed25519",
+        "X448",
+        "Ed448",
+        "secp256k1",
+    ];
     rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, curves.len()));
-    if arr.get().is_null() { args.rval().set(UndefinedValue()); return true; }
+    if arr.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
     for (i, name) in curves.iter().enumerate() {
         let c_name = ZBox::from_bytes(name.as_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
         if !js_str.is_null() {
             rooted!(&in(cx_ref) let v = mozjs::jsval::StringValue(&*js_str));
-            JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineElement(
+                cx,
+                arr.handle().into(),
+                i as u32,
+                v.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
@@ -3387,14 +5098,19 @@ unsafe extern "C" fn crypto_get_curves(cx: *mut JSContext, _argc: u32, vp: *mut 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_get_cipher_info(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return throw_type_error(cx, "getCipherInfo() requires a cipher name"); }
+    if argc < 1 {
+        return throw_type_error(cx, "getCipherInfo() requires a cipher name");
+    }
     let name = match arg_to_string(cx, *args.get(0).ptr) {
         Some(s) => s.to_lowercase(),
         None => return throw_type_error(cx, "getCipherInfo() name must be a string"),
     };
     let algo = match bao_crypto::cipher::parse_algorithm(&name) {
         Ok(a) => a,
-        Err(_) => { args.rval().set(UndefinedValue()); return true; }
+        Err(_) => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
     };
     let (key_len, iv_len, mode, block_size) = match algo {
         bao_crypto::cipher::CipherAlgorithm::Aes128Cbc => (16, 16, "cbc", 16),
@@ -3412,18 +5128,39 @@ unsafe extern "C" fn crypto_get_cipher_info(cx: *mut JSContext, argc: u32, vp: *
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
-    if obj.get().is_null() { args.rval().set(UndefinedValue()); return true; }
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
     set_string_prop(cx, obj.get(), c"name".as_ptr(), &name);
     let v = mozjs::jsval::Int32Value(key_len as i32);
     rooted!(&in(cx_ref) let kv = v);
-    JS_DefineProperty(cx, obj.handle().into(), c"keyLength".as_ptr(), kv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"keyLength".as_ptr(),
+        kv.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
     let v2 = mozjs::jsval::Int32Value(iv_len as i32);
     rooted!(&in(cx_ref) let ivv = v2);
-    JS_DefineProperty(cx, obj.handle().into(), c"ivLength".as_ptr(), ivv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"ivLength".as_ptr(),
+        ivv.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
     set_string_prop(cx, obj.get(), c"mode".as_ptr(), mode);
     let v3 = mozjs::jsval::Int32Value(block_size as i32);
     rooted!(&in(cx_ref) let bsv = v3);
-    JS_DefineProperty(cx, obj.handle().into(), c"blockSize".as_ptr(), bsv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"blockSize".as_ptr(),
+        bsv.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -3431,10 +5168,16 @@ unsafe extern "C" fn crypto_get_cipher_info(cx: *mut JSContext, argc: u32, vp: *
 // ---- randomInt ----
 
 fn next_pow2(v: u64) -> u64 {
-    if v == 0 { return 1; }
+    if v == 0 {
+        return 1;
+    }
     let mut n = v - 1;
-    n |= n >> 1; n |= n >> 2; n |= n >> 4; n |= n >> 8;
-    n |= n >> 16; n |= n >> 32;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    n |= n >> 32;
     n + 1
 }
 
@@ -3443,25 +5186,56 @@ unsafe extern "C" fn crypto_random_int(cx: *mut JSContext, argc: u32, vp: *mut J
     let args = CallArgs::from_vp(vp, argc);
     let (min, max) = if argc == 1 {
         let v = *args.get(0).ptr;
-        let m = if v.is_int32() { v.to_int32() as i64 } else if v.is_double() { v.to_double() as i64 } else { return throw_type_error(cx, "randomInt() argument must be a number"); };
+        let m = if v.is_int32() {
+            v.to_int32() as i64
+        } else if v.is_double() {
+            v.to_double() as i64
+        } else {
+            return throw_type_error(cx, "randomInt() argument must be a number");
+        };
         (0i64, m)
     } else if argc >= 2 {
-        let v0 = *args.get(0).ptr; let v1 = *args.get(1).ptr;
-        let lo = if v0.is_int32() { v0.to_int32() as i64 } else if v0.is_double() { v0.to_double() as i64 } else { return throw_type_error(cx, "randomInt() min must be a number"); };
-        let hi = if v1.is_int32() { v1.to_int32() as i64 } else if v1.is_double() { v1.to_double() as i64 } else { return throw_type_error(cx, "randomInt() max must be a number"); };
+        let v0 = *args.get(0).ptr;
+        let v1 = *args.get(1).ptr;
+        let lo = if v0.is_int32() {
+            v0.to_int32() as i64
+        } else if v0.is_double() {
+            v0.to_double() as i64
+        } else {
+            return throw_type_error(cx, "randomInt() min must be a number");
+        };
+        let hi = if v1.is_int32() {
+            v1.to_int32() as i64
+        } else if v1.is_double() {
+            v1.to_double() as i64
+        } else {
+            return throw_type_error(cx, "randomInt() max must be a number");
+        };
         (lo, hi)
-    } else { return throw_type_error(cx, "randomInt() requires at least one argument"); };
-    if min >= max { return throw_type_error(cx, "randomInt() min must be less than max"); }
+    } else {
+        return throw_type_error(cx, "randomInt() requires at least one argument");
+    };
+    if min >= max {
+        return throw_type_error(cx, "randomInt() min must be less than max");
+    }
     let range = (max - min) as u64;
-    let mask = if range.is_power_of_two() { range - 1 } else { next_pow2(range) - 1 };
+    let mask = if range.is_power_of_two() {
+        range - 1
+    } else {
+        next_pow2(range) - 1
+    };
     let num_bytes = ((64 - mask.leading_zeros() + 7) / 8) as usize;
     let mut buf = [0u8; 8];
     let result = loop {
         bao_crypto::random::rand_bytes(&mut buf[..num_bytes]).unwrap();
         let mut r = 0u64;
-        for &b in &buf[..num_bytes] { r = (r << 8) | b as u64; }
+        for &b in &buf[..num_bytes] {
+            r = (r << 8) | b as u64;
+        }
         r &= mask;
-        if r < range { break min + r as i64; }
+        if r < range {
+            break min + r as i64;
+        }
     };
     args.rval().set(mozjs::jsval::DoubleValue(result as f64));
     true
@@ -3470,25 +5244,70 @@ unsafe extern "C" fn crypto_random_int(cx: *mut JSContext, argc: u32, vp: *mut J
 // ---- randomFillSync / randomFill ----
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_random_fill_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_random_fill_sync(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 || !(*args.get(0).ptr).is_object() { return throw_type_error(cx, "randomFillSync() requires a buffer"); }
+    if argc < 1 || !(*args.get(0).ptr).is_object() {
+        return throw_type_error(cx, "randomFillSync() requires a buffer");
+    }
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let buf_obj = (*args.get(0).ptr).to_object());
-    let offset = if argc > 1 { let v = *args.get(1).ptr; if v.is_int32() { v.to_int32() as usize } else if v.is_double() { v.to_double() as usize } else { 0 } } else { 0 };
+    let offset = if argc > 1 {
+        let v = *args.get(1).ptr;
+        if v.is_int32() {
+            v.to_int32() as usize
+        } else if v.is_double() {
+            v.to_double() as usize
+        } else {
+            0
+        }
+    } else {
+        0
+    };
     let mut length: usize = 0;
     let mut is_shared = false;
     let mut data_ptr: *mut u8 = ptr::null_mut();
-    let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(buf_obj.get(), &mut length, &mut is_shared, &mut data_ptr);
+    let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+        buf_obj.get(),
+        &mut length,
+        &mut is_shared,
+        &mut data_ptr,
+    );
     if unwrapped.is_null() {
-        let mut vl: usize = 0; let mut vs = false; let mut vd: *mut u8 = ptr::null_mut();
-        let vu = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(buf_obj.get(), &mut vl, &mut vs, &mut vd);
-        if vu.is_null() { return throw_type_error(cx, "randomFillSync() requires a TypedArray"); }
-        length = vl; data_ptr = vd;
+        let mut vl: usize = 0;
+        let mut vs = false;
+        let mut vd: *mut u8 = ptr::null_mut();
+        let vu = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+            buf_obj.get(),
+            &mut vl,
+            &mut vs,
+            &mut vd,
+        );
+        if vu.is_null() {
+            return throw_type_error(cx, "randomFillSync() requires a TypedArray");
+        }
+        length = vl;
+        data_ptr = vd;
     }
-    let size = if argc > 2 { let v = *args.get(2).ptr; if v.is_int32() { v.to_int32() as usize } else if v.is_double() { v.to_double() as usize } else { length - offset } } else { length - offset };
-    if offset + size > length { return throw_type_error(cx, "randomFillSync() offset + size exceeds buffer length"); }
+    let size = if argc > 2 {
+        let v = *args.get(2).ptr;
+        if v.is_int32() {
+            v.to_int32() as usize
+        } else if v.is_double() {
+            v.to_double() as usize
+        } else {
+            length - offset
+        }
+    } else {
+        length - offset
+    };
+    if offset + size > length {
+        return throw_type_error(cx, "randomFillSync() offset + size exceeds buffer length");
+    }
     if !data_ptr.is_null() && size > 0 {
         let slice = ::std::slice::from_raw_parts_mut(data_ptr.add(offset), size);
         bao_crypto::random::rand_bytes(slice).unwrap();
@@ -3500,45 +5319,96 @@ unsafe extern "C" fn crypto_random_fill_sync(cx: *mut JSContext, argc: u32, vp: 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_random_fill(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 || !(*args.get(0).ptr).is_object() { return throw_type_error(cx, "randomFill() requires a buffer"); }
-    let callback_idx = if argc > 3 && (*args.get(3).ptr).is_object() { Some(3u32) }
-        else if argc > 2 && (*args.get(2).ptr).is_object() && !(*args.get(2).ptr).is_number() { Some(2u32) }
-        else if argc > 1 && (*args.get(1).ptr).is_object() && !(*args.get(1).ptr).is_number() { Some(1u32) }
-        else { None };
+    if argc < 1 || !(*args.get(0).ptr).is_object() {
+        return throw_type_error(cx, "randomFill() requires a buffer");
+    }
+    let callback_idx = if argc > 3 && (*args.get(3).ptr).is_object() {
+        Some(3u32)
+    } else if argc > 2 && (*args.get(2).ptr).is_object() && !(*args.get(2).ptr).is_number() {
+        Some(2u32)
+    } else if argc > 1 && (*args.get(1).ptr).is_object() && !(*args.get(1).ptr).is_number() {
+        Some(1u32)
+    } else {
+        None
+    };
     if let Some(idx) = callback_idx {
         let buf_data = extract_buffer_bytes(cx, *args.get(0).ptr);
         let callback = (*args.get(idx).ptr).to_object();
         spawn_crypto_async(cx, "randomFill", callback, move || {
             let mut filled = buf_data;
-            bao_crypto::random::rand_bytes(&mut filled).map(|_| filled).map_err(|e| format!("randomFill: {}", e))
+            bao_crypto::random::rand_bytes(&mut filled)
+                .map(|_| filled)
+                .map_err(|e| format!("randomFill: {}", e))
         });
         args.rval().set(UndefinedValue());
         true
-    } else { crypto_random_fill_sync(cx, argc, vp) }
+    } else {
+        crypto_random_fill_sync(cx, argc, vp)
+    }
 }
 
 // ---- generatePrimeSync / generatePrime ----
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_generate_prime_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_generate_prime_sync(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return throw_type_error(cx, "generatePrimeSync() requires a bit size"); }
+    if argc < 1 {
+        return throw_type_error(cx, "generatePrimeSync() requires a bit size");
+    }
     let size_val = *args.get(0).ptr;
-    let bits = if size_val.is_int32() { size_val.to_int32() } else if size_val.is_double() { size_val.to_double() as i32 } else { return throw_type_error(cx, "generatePrimeSync() size must be a number"); };
-    if bits < 2 { return throw_type_error(cx, "generatePrimeSync() size must be at least 2"); }
+    let bits = if size_val.is_int32() {
+        size_val.to_int32()
+    } else if size_val.is_double() {
+        size_val.to_double() as i32
+    } else {
+        return throw_type_error(cx, "generatePrimeSync() size must be a number");
+    };
+    if bits < 2 {
+        return throw_type_error(cx, "generatePrimeSync() size must be at least 2");
+    }
     let safe = if argc > 1 && (*args.get(1).ptr).is_object() {
         let mut wcx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cr = &mut wcx;
         rooted!(&in(cr) let opts = (*args.get(1).ptr).to_object());
         let mut sv = UndefinedValue();
-        JS_GetProperty(cx, opts.handle().into(), c"safe".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut sv });
-        if sv.is_boolean() { sv.to_boolean() } else { true }
-    } else { true };
+        JS_GetProperty(
+            cx,
+            opts.handle().into(),
+            c"safe".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut sv,
+            },
+        );
+        if sv.is_boolean() {
+            sv.to_boolean()
+        } else {
+            true
+        }
+    } else {
+        true
+    };
     let prime_bytes = {
         let bn = bun_boringssl_sys::BN_new();
-        if bn.is_null() { return throw_type_error(cx, "generatePrimeSync() BN_new failed"); }
-        let result = BN_generate_prime_ex(bn, bits, if safe { 1 } else { 0 }, ::std::ptr::null(), ::std::ptr::null(), ::std::ptr::null_mut());
-        if result != 1 { bun_boringssl_sys::BN_free(bn); return throw_type_error(cx, "generatePrimeSync() generation failed"); }
+        if bn.is_null() {
+            return throw_type_error(cx, "generatePrimeSync() BN_new failed");
+        }
+        let result = BN_generate_prime_ex(
+            bn,
+            bits,
+            if safe { 1 } else { 0 },
+            ::std::ptr::null(),
+            ::std::ptr::null(),
+            ::std::ptr::null_mut(),
+        );
+        if result != 1 {
+            bun_boringssl_sys::BN_free(bn);
+            return throw_type_error(cx, "generatePrimeSync() generation failed");
+        }
         let num_bytes = ((bun_boringssl_sys::BN_num_bits(bn) + 7) / 8) as usize;
         let mut out = vec![0u8; num_bytes];
         bun_boringssl_sys::BN_bn2bin(bn, out.as_mut_ptr());
@@ -3546,30 +5416,71 @@ unsafe extern "C" fn crypto_generate_prime_sync(cx: *mut JSContext, argc: u32, v
         out
     };
     let buf_obj = crate::globals::create_buffer_object(cx, &prime_bytes);
-    if buf_obj.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); }
+    if buf_obj.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+    }
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_generate_prime(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let bits = if argc > 0 { let v = *args.get(0).ptr; if v.is_int32() { v.to_int32() } else if v.is_double() { v.to_double() as i32 } else { 256 } } else { 256 };
+    let bits = if argc > 0 {
+        let v = *args.get(0).ptr;
+        if v.is_int32() {
+            v.to_int32()
+        } else if v.is_double() {
+            v.to_double() as i32
+        } else {
+            256
+        }
+    } else {
+        256
+    };
     let safe = if argc > 1 && (*args.get(1).ptr).is_object() {
         let mut wcx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cr = &mut wcx;
         rooted!(&in(cr) let opts = (*args.get(1).ptr).to_object());
         let mut sv = UndefinedValue();
-        JS_GetProperty(cx, opts.handle().into(), c"safe".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut sv });
-        if sv.is_boolean() { sv.to_boolean() } else { true }
-    } else { true };
+        JS_GetProperty(
+            cx,
+            opts.handle().into(),
+            c"safe".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut sv,
+            },
+        );
+        if sv.is_boolean() {
+            sv.to_boolean()
+        } else {
+            true
+        }
+    } else {
+        true
+    };
     let has_callback = argc > 2 && (*args.get(2).ptr).is_object();
     if has_callback {
         let callback = (*args.get(2).ptr).to_object();
         spawn_crypto_async(cx, "generatePrime", callback, move || {
             let bn = bun_boringssl_sys::BN_new();
-            if bn.is_null() { return Err("generatePrime: BN_new failed".into()); }
-            let result = BN_generate_prime_ex(bn, bits, if safe { 1 } else { 0 }, ::std::ptr::null(), ::std::ptr::null(), ::std::ptr::null_mut());
-            if result != 1 { bun_boringssl_sys::BN_free(bn); return Err("generatePrime: generation failed".into()); }
+            if bn.is_null() {
+                return Err("generatePrime: BN_new failed".into());
+            }
+            let result = BN_generate_prime_ex(
+                bn,
+                bits,
+                if safe { 1 } else { 0 },
+                ::std::ptr::null(),
+                ::std::ptr::null(),
+                ::std::ptr::null_mut(),
+            );
+            if result != 1 {
+                bun_boringssl_sys::BN_free(bn);
+                return Err("generatePrime: generation failed".into());
+            }
             let num_bytes = ((bun_boringssl_sys::BN_num_bits(bn) + 7) / 8) as usize;
             let mut out = vec![0u8; num_bytes];
             bun_boringssl_sys::BN_bn2bin(bn, out.as_mut_ptr());
@@ -3578,7 +5489,9 @@ unsafe extern "C" fn crypto_generate_prime(cx: *mut JSContext, argc: u32, vp: *m
         });
         args.rval().set(UndefinedValue());
         true
-    } else { crypto_generate_prime_sync(cx, argc, vp) }
+    } else {
+        crypto_generate_prime_sync(cx, argc, vp)
+    }
 }
 
 // ---- crypto.hash (one-shot) ----
@@ -3586,20 +5499,74 @@ unsafe extern "C" fn crypto_generate_prime(cx: *mut JSContext, argc: u32, vp: *m
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 { return throw_type_error(cx, "crypto.hash() requires algorithm and input"); }
-    let algo = match arg_to_string(cx, *args.get(0).ptr) { Some(s) => s.to_lowercase(), None => return throw_type_error(cx, "crypto.hash() algorithm must be a string") };
-    let input = if (*args.get(1).ptr).is_string() { crate::js_to_rust_string(cx, *args.get(1).ptr).into_bytes() }
-        else if (*args.get(1).ptr).is_object() { extract_buffer_bytes(cx, *args.get(1).ptr) }
-        else { return throw_type_error(cx, "crypto.hash() input must be a string or Buffer") };
-    let output_encoding = if argc > 2 { arg_to_string(cx, *args.get(2).ptr).map(|s| s.to_lowercase()) } else { Some("hex".to_string()) };
+    if argc < 2 {
+        return throw_type_error(cx, "crypto.hash() requires algorithm and input");
+    }
+    let algo = match arg_to_string(cx, *args.get(0).ptr) {
+        Some(s) => s.to_lowercase(),
+        None => return throw_type_error(cx, "crypto.hash() algorithm must be a string"),
+    };
+    let input = if (*args.get(1).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(1).ptr).into_bytes()
+    } else if (*args.get(1).ptr).is_object() {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        return throw_type_error(cx, "crypto.hash() input must be a string or Buffer");
+    };
+    let output_encoding = if argc > 2 {
+        arg_to_string(cx, *args.get(2).ptr).map(|s| s.to_lowercase())
+    } else {
+        Some("hex".to_string())
+    };
     let result = match algo.as_str() {
-        "sha256" => { let mut h = bun_sha_hmac::SHA256::init(); h.update(&input); let mut out = [0u8; 32]; h.r#final(&mut out); out.to_vec() }
-        "sha512" => { let mut h = bun_sha_hmac::SHA512::init(); h.update(&input); let mut out = [0u8; 64]; h.r#final(&mut out); out.to_vec() }
-        "sha384" => { let mut h = bun_sha_hmac::SHA384::init(); h.update(&input); let mut out = [0u8; 48]; h.r#final(&mut out); out.to_vec() }
-        "sha224" => { let mut h = bun_sha_hmac::SHA224::init(); h.update(&input); let mut out = [0u8; 28]; h.r#final(&mut out); out.to_vec() }
-        "sha1" => { let mut h = bun_sha_hmac::SHA1::init(); h.update(&input); let mut out = [0u8; 20]; h.r#final(&mut out); out.to_vec() }
-        "md5" => { let mut h = bun_sha_hmac::MD5::init(); h.update(&input); let mut out = [0u8; 16]; h.r#final(&mut out); out.to_vec() }
-        _ => return throw_type_error(cx, &format!("crypto.hash() unsupported algorithm: {}", algo)),
+        "sha256" => {
+            let mut h = bun_sha_hmac::SHA256::init();
+            h.update(&input);
+            let mut out = [0u8; 32];
+            h.r#final(&mut out);
+            out.to_vec()
+        }
+        "sha512" => {
+            let mut h = bun_sha_hmac::SHA512::init();
+            h.update(&input);
+            let mut out = [0u8; 64];
+            h.r#final(&mut out);
+            out.to_vec()
+        }
+        "sha384" => {
+            let mut h = bun_sha_hmac::SHA384::init();
+            h.update(&input);
+            let mut out = [0u8; 48];
+            h.r#final(&mut out);
+            out.to_vec()
+        }
+        "sha224" => {
+            let mut h = bun_sha_hmac::SHA224::init();
+            h.update(&input);
+            let mut out = [0u8; 28];
+            h.r#final(&mut out);
+            out.to_vec()
+        }
+        "sha1" => {
+            let mut h = bun_sha_hmac::SHA1::init();
+            h.update(&input);
+            let mut out = [0u8; 20];
+            h.r#final(&mut out);
+            out.to_vec()
+        }
+        "md5" => {
+            let mut h = bun_sha_hmac::MD5::init();
+            h.update(&input);
+            let mut out = [0u8; 16];
+            h.r#final(&mut out);
+            out.to_vec()
+        }
+        _ => {
+            return throw_type_error(
+                cx,
+                &format!("crypto.hash() unsupported algorithm: {}", algo),
+            );
+        }
     };
     match output_encoding.as_deref() {
         Some("hex") => return_string(cx, &args, &hex::encode(&result)),
@@ -3610,7 +5577,11 @@ unsafe extern "C" fn crypto_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
         Some("buffer") => {
             let bo = crate::globals::create_buffer_object(cx, &result);
-            if bo.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::ObjectValue(bo)); }
+            if bo.is_null() {
+                args.rval().set(UndefinedValue());
+            } else {
+                args.rval().set(mozjs::jsval::ObjectValue(bo));
+            }
             true
         }
         _ => return_string(cx, &args, &hex::encode(&result)),
@@ -3621,34 +5592,104 @@ unsafe extern "C" fn crypto_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
 fn modp_prime(group: &str) -> Option<Vec<u8>> {
     let hex = match group {
-        "modp1" => "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF",
-        "modp2" => "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF",
-        "modp5" => "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AA9420000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-        "modp14" => "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF",
+        "modp1" => {
+            "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF"
+        }
+        "modp2" => {
+            "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF"
+        }
+        "modp5" => {
+            "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AA9420000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+        "modp14" => {
+            "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF"
+        }
         _ => return None,
     };
     Some(hex::decode(hex).unwrap_or_default())
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_diffie_hellman_group(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn crypto_diffie_hellman_group(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return throw_type_error(cx, "createDiffieHellmanGroup() requires a group name"); }
-    let group_name = match arg_to_string(cx, *args.get(0).ptr) { Some(s) => s.to_lowercase(), None => return throw_type_error(cx, "group must be a string") };
-    let prime = match modp_prime(&group_name) { Some(p) => p, None => return throw_type_error(cx, &format!("Unsupported DH group: {}", group_name)) };
-    let dh = match bao_crypto::dh::DiffieHellman::from_prime(&prime, 2) { Ok(d) => d, Err(e) => return throw_type_error(cx, &format!("createDiffieHellmanGroup() failed: {}", e)) };
+    if argc < 1 {
+        return throw_type_error(cx, "createDiffieHellmanGroup() requires a group name");
+    }
+    let group_name = match arg_to_string(cx, *args.get(0).ptr) {
+        Some(s) => s.to_lowercase(),
+        None => return throw_type_error(cx, "group must be a string"),
+    };
+    let prime = match modp_prime(&group_name) {
+        Some(p) => p,
+        None => return throw_type_error(cx, &format!("Unsupported DH group: {}", group_name)),
+    };
+    let dh = match bao_crypto::dh::DiffieHellman::from_prime(&prime, 2) {
+        Ok(d) => d,
+        Err(e) => {
+            return throw_type_error(cx, &format!("createDiffieHellmanGroup() failed: {}", e));
+        }
+    };
     let id = dh_registry_insert(dh);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
-    if obj.get().is_null() { args.rval().set(UndefinedValue()); return true; }
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
     store_dh_id(cx, obj.get(), id);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"generateKeys".as_ptr(), Some(dh_generate_keys), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"computeSecret".as_ptr(), Some(dh_compute_secret), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPrime".as_ptr(), Some(dh_get_prime), 0, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getGenerator".as_ptr(), Some(dh_get_generator), 0, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPublicKey".as_ptr(), Some(dh_get_public_key), 0, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPrivateKey".as_ptr(), Some(dh_get_private_key), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"generateKeys".as_ptr(),
+        Some(dh_generate_keys),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"computeSecret".as_ptr(),
+        Some(dh_compute_secret),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getPrime".as_ptr(),
+        Some(dh_get_prime),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getGenerator".as_ptr(),
+        Some(dh_get_generator),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getPublicKey".as_ptr(),
+        Some(dh_get_public_key),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        obj.handle(),
+        c"getPrivateKey".as_ptr(),
+        Some(dh_get_private_key),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -3656,15 +5697,34 @@ unsafe extern "C" fn crypto_diffie_hellman_group(cx: *mut JSContext, argc: u32, 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_diffie_hellman(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 { return throw_type_error(cx, "diffieHellman() requires two key arguments"); }
+    if argc < 2 {
+        return throw_type_error(cx, "diffieHellman() requires two key arguments");
+    }
     let key1 = extract_buffer_bytes(cx, *args.get(0).ptr);
     let key2 = extract_buffer_bytes(cx, *args.get(1).ptr);
-    let dh = match bao_crypto::dh::DiffieHellman::from_prime(&key1, 2) { Ok(d) => d, Err(e) => return throw_type_error(cx, &format!("diffieHellman() failed: {}", e)) };
+    let dh = match bao_crypto::dh::DiffieHellman::from_prime(&key1, 2) {
+        Ok(d) => d,
+        Err(e) => return throw_type_error(cx, &format!("diffieHellman() failed: {}", e)),
+    };
     let mut dh_obj = dh;
-    let _pub_key = match dh_obj.generate_keys() { Ok(k) => k, Err(e) => return throw_type_error(cx, &format!("diffieHellman() generateKeys failed: {}", e)) };
-    let secret = match dh_obj.compute_secret(&key2) { Ok(s) => s, Err(e) => return throw_type_error(cx, &format!("diffieHellman() computeSecret failed: {}", e)) };
+    let _pub_key = match dh_obj.generate_keys() {
+        Ok(k) => k,
+        Err(e) => {
+            return throw_type_error(cx, &format!("diffieHellman() generateKeys failed: {}", e));
+        }
+    };
+    let secret = match dh_obj.compute_secret(&key2) {
+        Ok(s) => s,
+        Err(e) => {
+            return throw_type_error(cx, &format!("diffieHellman() computeSecret failed: {}", e));
+        }
+    };
     let buf_obj = crate::globals::create_buffer_object(cx, &secret);
-    if buf_obj.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::ObjectValue(buf_obj)); }
+    if buf_obj.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+    }
     true
 }
 
@@ -3687,7 +5747,11 @@ mod tests {
         let u = uuid_v4();
         assert_eq!(&u[14..15], "4", "version nibble must be 4");
         let v = u.as_bytes()[19];
-        assert!(matches!(v, b'8' | b'9' | b'a' | b'b'), "variant must be 8/9/a/b, got {}", v as char);
+        assert!(
+            matches!(v, b'8' | b'9' | b'a' | b'b'),
+            "variant must be 8/9/a/b, got {}",
+            v as char
+        );
     }
 
     #[test]

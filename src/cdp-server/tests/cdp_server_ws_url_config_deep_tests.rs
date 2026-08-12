@@ -2,9 +2,9 @@
 // CdpServer construction, port(), ws_url_for_target(), registry/broadcaster accessors,
 // ServerConfig + ServerConfigBuilder exhaustive field verification.
 
-use cdp_server::{CdpServer, ServerConfig, DomainRegistry, EventBroadcaster};
-use cdp_server::{CdpMessage, CdpEvent, SessionError, SessionState};
-use cdp_server::{TargetInfo, is_websocket_upgrade};
+use cdp_server::{is_websocket_upgrade, TargetInfo};
+use cdp_server::{CdpEvent, CdpMessage, SessionError, SessionState};
+use cdp_server::{CdpServer, DomainRegistry, EventBroadcaster, ServerConfig};
 
 use serde_json::json;
 
@@ -163,7 +163,10 @@ fn test_broadcaster_clone() {
 
 #[test]
 fn test_cdp_message_deserialize_all_fields() {
-    let msg: CdpMessage = serde_json::from_str(r#"{"id":42,"method":"Page.navigate","params":{"url":"http://x"},"session_id":"s1"}"#).unwrap();
+    let msg: CdpMessage = serde_json::from_str(
+        r#"{"id":42,"method":"Page.navigate","params":{"url":"http://x"},"session_id":"s1"}"#,
+    )
+    .unwrap();
     assert_eq!(msg.id, Some(42));
     assert_eq!(msg.method, "Page.navigate");
     assert_eq!(msg.params.as_ref().unwrap()["url"], "http://x");
@@ -226,10 +229,15 @@ fn test_cdp_event_serialize_no_params_skipped() {
 
 #[test]
 fn test_session_state_all_variants() {
-    let states = [SessionState::Created, SessionState::Active, SessionState::Closing, SessionState::Closed];
+    let states = [
+        SessionState::Created,
+        SessionState::Active,
+        SessionState::Closing,
+        SessionState::Closed,
+    ];
     // All distinct
     for i in 0..states.len() {
-        for j in (i+1)..states.len() {
+        for j in (i + 1)..states.len() {
             assert_ne!(states[i], states[j]);
         }
     }
@@ -401,10 +409,7 @@ fn test_builder_chaining_order() {
 
 #[test]
 fn test_builder_overwrite() {
-    let config = ServerConfig::builder()
-        .port(1000)
-        .port(2000)
-        .build();
+    let config = ServerConfig::builder().port(1000).port(2000).build();
     assert_eq!(config.port, 2000);
 }
 
@@ -426,17 +431,23 @@ fn test_builder_empty_strings() {
 
 #[test]
 fn test_is_ws_upgrade_uppercase() {
-    assert!(is_websocket_upgrade("GET / HTTP/1.1\r\nUpgrade: websocket\r\n"));
+    assert!(is_websocket_upgrade(
+        "GET / HTTP/1.1\r\nUpgrade: websocket\r\n"
+    ));
 }
 
 #[test]
 fn test_is_ws_upgrade_lowercase() {
-    assert!(is_websocket_upgrade("GET / HTTP/1.1\r\nupgrade: websocket\r\n"));
+    assert!(is_websocket_upgrade(
+        "GET / HTTP/1.1\r\nupgrade: websocket\r\n"
+    ));
 }
 
 #[test]
 fn test_is_ws_upgrade_no_upgrade() {
-    assert!(!is_websocket_upgrade("GET / HTTP/1.1\r\nHost: localhost\r\n"));
+    assert!(!is_websocket_upgrade(
+        "GET / HTTP/1.1\r\nHost: localhost\r\n"
+    ));
 }
 
 #[test]

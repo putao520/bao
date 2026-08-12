@@ -43,12 +43,18 @@ fn dom_get_document_result_schema_conformance() {
         "CDP spec: root must be Node object, got: {:?}",
         root
     );
-    assert!(root["nodeId"].is_i64() || root["nodeId"].is_u64(), "nodeId must be int");
+    assert!(
+        root["nodeId"].is_i64() || root["nodeId"].is_u64(),
+        "nodeId must be int"
+    );
     assert!(
         root["backendNodeId"].is_i64() || root["backendNodeId"].is_u64(),
         "backendNodeId must be int"
     );
-    assert!(root["nodeType"].is_i64() || root["nodeType"].is_u64(), "nodeType must be int");
+    assert!(
+        root["nodeType"].is_i64() || root["nodeType"].is_u64(),
+        "nodeType must be int"
+    );
     assert!(root["nodeName"].is_string(), "nodeName must be string");
     assert!(root["nodeValue"].is_string(), "nodeValue must be string");
 }
@@ -91,7 +97,13 @@ fn dom_get_document_with_depth_param_accepted() {
     let b = backend();
 
     // Act
-    let result = dispatch_command(&*b, "DOM.getDocument", json!({"depth":2, "pierce":true}), "1").unwrap();
+    let result = dispatch_command(
+        &*b,
+        "DOM.getDocument",
+        json!({"depth":2, "pierce":true}),
+        "1",
+    )
+    .unwrap();
 
     // Assert
     assert!(result["root"].is_object());
@@ -129,13 +141,8 @@ fn dom_query_selector_result_schema_conformance() {
 fn dom_query_selector_missing_node_id_returns_32602() {
     // @trace REQ-BAO-API-007 [domain:DOM] [level:integration]
     let b = backend();
-    let err = dispatch_command(
-        &*b,
-        "DOM.querySelector",
-        json!({"selector":"div"}),
-        "1",
-    )
-    .unwrap_err();
+    let err =
+        dispatch_command(&*b, "DOM.querySelector", json!({"selector":"div"}), "1").unwrap_err();
     assert!(matches!(err, BridgeError::InvalidParams(_)));
     assert_eq!(err.cdp_error_code(), -32602);
 }
@@ -163,7 +170,10 @@ fn dom_query_selector_not_found_returns_node_id_zero() {
     )
     .unwrap();
     let id = result["nodeId"].as_i64().unwrap();
-    assert!(id >= 0, "CDP spec: nodeId must be non-negative (0 = not found)");
+    assert!(
+        id >= 0,
+        "CDP spec: nodeId must be non-negative (0 = not found)"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -227,10 +237,22 @@ fn dom_get_box_model_returns_box_data_conformance() {
         "CDP spec: response must wrap fields under `model`, got: {:?}",
         model
     );
-    assert!(model["content"].is_array(), "CDP spec: content must be Quad array");
-    assert!(model["padding"].is_array(), "CDP spec: padding must be Quad array");
-    assert!(model["border"].is_array(), "CDP spec: border must be Quad array");
-    assert!(model["margin"].is_array(), "CDP spec: margin must be Quad array");
+    assert!(
+        model["content"].is_array(),
+        "CDP spec: content must be Quad array"
+    );
+    assert!(
+        model["padding"].is_array(),
+        "CDP spec: padding must be Quad array"
+    );
+    assert!(
+        model["border"].is_array(),
+        "CDP spec: border must be Quad array"
+    );
+    assert!(
+        model["margin"].is_array(),
+        "CDP spec: margin must be Quad array"
+    );
     assert!(
         model["width"].is_i64() || model["width"].is_u64(),
         "width must be int"
@@ -277,13 +299,7 @@ fn dom_resolve_node_result_schema_conformance() {
     let b = backend();
 
     // Act
-    let result = dispatch_command(
-        &*b,
-        "DOM.resolveNode",
-        json!({"backendNodeId":1}),
-        "1",
-    )
-    .unwrap();
+    let result = dispatch_command(&*b, "DOM.resolveNode", json!({"backendNodeId":1}), "1").unwrap();
 
     // Assert
     let obj = &result["object"];
@@ -292,7 +308,10 @@ fn dom_resolve_node_result_schema_conformance() {
         "CDP spec: object must be RemoteObject, got: {:?}",
         obj
     );
-    assert!(obj["type"].is_string(), "CDP spec: RemoteObject.type must be string");
+    assert!(
+        obj["type"].is_string(),
+        "CDP spec: RemoteObject.type must be string"
+    );
 }
 
 #[test]
@@ -320,7 +339,10 @@ fn dom_describe_node_result_schema_conformance() {
     // Assert
     let node = &result["node"];
     assert!(node.is_object(), "CDP spec: node must be Node object");
-    assert!(node["nodeId"].is_i64() || node["nodeId"].is_u64(), "node.nodeId must be int");
+    assert!(
+        node["nodeId"].is_i64() || node["nodeId"].is_u64(),
+        "node.nodeId must be int"
+    );
     assert!(node["nodeName"].is_string(), "node.nodeName must be string");
 }
 

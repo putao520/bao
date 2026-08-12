@@ -103,8 +103,18 @@ fn test_mouse_path_same_start_end() {
     assert!(!path.is_empty());
     // All points should be near (50, 50)
     for (x, y) in &path {
-        assert!((x - 50.0).abs() < 150.0, "Point too far from start: ({}, {})", x, y);
-        assert!((y - 50.0).abs() < 150.0, "Point too far from start: ({}, {})", x, y);
+        assert!(
+            (x - 50.0).abs() < 150.0,
+            "Point too far from start: ({}, {})",
+            x,
+            y
+        );
+        assert!(
+            (y - 50.0).abs() < 150.0,
+            "Point too far from start: ({}, {})",
+            x,
+            y
+        );
     }
 }
 
@@ -126,7 +136,11 @@ fn test_typing_delays_at_least_count() {
     // With human typing, may produce extra events (typo correction)
     let sim = BehaviorSimulator::new(42);
     let delays = sim.generate_typing_delays(10);
-    assert!(delays.len() >= 10, "Expected >= 10 delays, got {}", delays.len());
+    assert!(
+        delays.len() >= 10,
+        "Expected >= 10 delays, got {}",
+        delays.len()
+    );
 }
 
 #[test]
@@ -141,7 +155,11 @@ fn test_typing_delays_large_count() {
     let sim = BehaviorSimulator::new(42);
     let delays = sim.generate_typing_delays(1000);
     // May have extra backspace events from typo correction
-    assert!(delays.len() >= 1000, "Expected >= 1000 delays, got {}", delays.len());
+    assert!(
+        delays.len() >= 1000,
+        "Expected >= 1000 delays, got {}",
+        delays.len()
+    );
 }
 
 #[test]
@@ -201,8 +219,12 @@ fn test_scroll_deltas_sum_approximates_total() {
     let total = 1000.0;
     let deltas = sim.generate_scroll_deltas(total, 20);
     let sum: f64 = deltas.iter().sum();
-    assert!((sum - total).abs() < total * 0.5,
-        "Sum {} too far from total {}", sum, total);
+    assert!(
+        (sum - total).abs() < total * 0.5,
+        "Sum {} too far from total {}",
+        sum,
+        total
+    );
 }
 
 #[test]

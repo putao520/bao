@@ -253,8 +253,14 @@ mod tests {
 
     #[test]
     fn to_display_string_infinity() {
-        assert_eq!(JsValue::Number(f64::INFINITY).to_display_string(), "Infinity");
-        assert_eq!(JsValue::Number(f64::NEG_INFINITY).to_display_string(), "-Infinity");
+        assert_eq!(
+            JsValue::Number(f64::INFINITY).to_display_string(),
+            "Infinity"
+        );
+        assert_eq!(
+            JsValue::Number(f64::NEG_INFINITY).to_display_string(),
+            "-Infinity"
+        );
     }
 
     #[test]
@@ -264,7 +270,10 @@ mod tests {
 
     #[test]
     fn to_display_string_object() {
-        assert_eq!(JsValue::Object(ptr::null_mut()).to_display_string(), "[object Object]");
+        assert_eq!(
+            JsValue::Object(ptr::null_mut()).to_display_string(),
+            "[object Object]"
+        );
     }
 
     #[test]
@@ -322,13 +331,9 @@ pub unsafe fn jsval_to_jsvalue(cx: *mut JSContext, val: JSVal) -> JsValue {
 /// # Safety
 /// `cx` must be a valid JSContext. `obj` must be a valid JSObject pointer.
 #[allow(unsafe_op_in_unsafe_fn)]
-pub unsafe fn get_property(
-    cx: *mut JSContext,
-    obj: *mut JSObject,
-    name: &str,
-) -> JsValue {
-    let c_name = ::std::ffi::CString::new(name)
-        .unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
+pub unsafe fn get_property(cx: *mut JSContext, obj: *mut JSObject, name: &str) -> JsValue {
+    let c_name =
+        ::std::ffi::CString::new(name).unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
     let mut val = mozjs::jsval::UndefinedValue();
     let handle = MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,
@@ -355,12 +360,17 @@ pub unsafe fn set_property(
     name: &str,
     value: &JsValue,
 ) -> bool {
-    let c_name = ::std::ffi::CString::new(name)
-        .unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
+    let c_name =
+        ::std::ffi::CString::new(name).unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
     let js_val = value.to_jsval(cx);
     // BCE-20260619-012: root obj and js_val before passing as Handle to JS API.
     let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(cx_ref) let obj_root = obj);
     rooted!(&in(cx_ref) let js_val_root = js_val);
-    JS_SetProperty(cx, obj_root.handle().into(), c_name.as_ptr(), js_val_root.handle().into())
+    JS_SetProperty(
+        cx,
+        obj_root.handle().into(),
+        c_name.as_ptr(),
+        js_val_root.handle().into(),
+    )
 }

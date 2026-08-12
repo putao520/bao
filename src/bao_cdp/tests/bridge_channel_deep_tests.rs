@@ -2,11 +2,11 @@
 // Bridge channel deep tests: all BridgeCommand variants, timeout handling,
 // fire-and-forget, is_alive, drain, clone, concurrent send, edge cases.
 
-use bao_cdp::{BridgeCommand, BridgeResponse, bridge_channel};
+use bao_cdp::{bridge_channel, BridgeCommand, BridgeResponse};
 use serde_json::json;
-use std::time::Duration;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 const TID: &str = "test-target";
 
@@ -42,17 +42,22 @@ fn test_bridge_channel_long_timeout() {
 fn test_send_navigate_success() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::Navigate { url, .. } => {
-                    assert_eq!(url, "https://example.com");
-                    BridgeResponse { result: Ok(json!({"frameId": "main"})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::Navigate { url, .. } => {
+                assert_eq!(url, "https://example.com");
+                BridgeResponse {
+                    result: Ok(json!({"frameId": "main"})),
                 }
-                _ => BridgeResponse { result: Err("unexpected command".into()) },
             }
+            _ => BridgeResponse {
+                result: Err("unexpected command".into()),
+            },
         });
     });
-    let resp = tx.send(BridgeCommand::Navigate { target_id: TID.into(), url: "https://example.com".into() });
+    let resp = tx.send(BridgeCommand::Navigate {
+        target_id: TID.into(),
+        url: "https://example.com".into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -60,18 +65,26 @@ fn test_send_navigate_success() {
 fn test_send_evaluate_js_success() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::EvaluateJs { expression, return_by_value, .. } => {
-                    assert_eq!(expression, "1+1");
-                    assert!(return_by_value);
-                    BridgeResponse { result: Ok(json!({"result": {"type": "number", "value": 2}})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::EvaluateJs {
+                expression,
+                return_by_value,
+                ..
+            } => {
+                assert_eq!(expression, "1+1");
+                assert!(return_by_value);
+                BridgeResponse {
+                    result: Ok(json!({"result": {"type": "number", "value": 2}})),
                 }
-                _ => panic!("Unexpected command type"),
             }
+            _ => panic!("Unexpected command type"),
         });
     });
-    let resp = tx.send(BridgeCommand::EvaluateJs { target_id: TID.into(), expression: "1+1".into(), return_by_value: true });
+    let resp = tx.send(BridgeCommand::EvaluateJs {
+        target_id: TID.into(),
+        expression: "1+1".into(),
+        return_by_value: true,
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -79,18 +92,24 @@ fn test_send_evaluate_js_success() {
 fn test_send_take_screenshot() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::TakeScreenshot { format, quality, .. } => {
-                    assert_eq!(format, "png");
-                    assert!(quality.is_none());
-                    BridgeResponse { result: Ok(json!({"data": "base64data"})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::TakeScreenshot {
+                format, quality, ..
+            } => {
+                assert_eq!(format, "png");
+                assert!(quality.is_none());
+                BridgeResponse {
+                    result: Ok(json!({"data": "base64data"})),
                 }
-                _ => panic!("Unexpected command"),
             }
+            _ => panic!("Unexpected command"),
         });
     });
-    let resp = tx.send(BridgeCommand::TakeScreenshot { target_id: TID.into(), format: "png".into(), quality: None });
+    let resp = tx.send(BridgeCommand::TakeScreenshot {
+        target_id: TID.into(),
+        format: "png".into(),
+        quality: None,
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -98,18 +117,24 @@ fn test_send_take_screenshot() {
 fn test_send_screenshot_with_quality() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::TakeScreenshot { format, quality, .. } => {
-                    assert_eq!(format, "jpeg");
-                    assert_eq!(quality, Some(80));
-                    BridgeResponse { result: Ok(json!({"data": "jpegdata"})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::TakeScreenshot {
+                format, quality, ..
+            } => {
+                assert_eq!(format, "jpeg");
+                assert_eq!(quality, Some(80));
+                BridgeResponse {
+                    result: Ok(json!({"data": "jpegdata"})),
                 }
-                _ => panic!("Unexpected command"),
             }
+            _ => panic!("Unexpected command"),
         });
     });
-    let resp = tx.send(BridgeCommand::TakeScreenshot { target_id: TID.into(), format: "jpeg".into(), quality: Some(80) });
+    let resp = tx.send(BridgeCommand::TakeScreenshot {
+        target_id: TID.into(),
+        format: "jpeg".into(),
+        quality: Some(80),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -117,14 +142,16 @@ fn test_send_screenshot_with_quality() {
 fn test_send_get_title() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Test Page")) },
-                _ => panic!("Unexpected"),
-            }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::GetTitle { .. } => BridgeResponse {
+                result: Ok(json!("Test Page")),
+            },
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    let resp = tx.send(BridgeCommand::GetTitle {
+        target_id: TID.into(),
+    });
     assert_eq!(resp.result.unwrap(), json!("Test Page"));
 }
 
@@ -132,14 +159,16 @@ fn test_send_get_title() {
 fn test_send_get_url() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("https://example.com")) },
-                _ => panic!("Unexpected"),
-            }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::GetUrl { .. } => BridgeResponse {
+                result: Ok(json!("https://example.com")),
+            },
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::GetUrl { target_id: TID.into() });
+    let resp = tx.send(BridgeCommand::GetUrl {
+        target_id: TID.into(),
+    });
     assert_eq!(resp.result.unwrap(), json!("https://example.com"));
 }
 
@@ -149,21 +178,24 @@ fn test_send_query_selector() {
     thread::spawn(move || {
         // Loop until command arrives
         loop {
-            if rx.try_process(|cmd| {
-                match cmd {
-                    BridgeCommand::QuerySelector { selector, .. } => {
-                        assert_eq!(selector, "div.container");
-                        BridgeResponse { result: Ok(json!({"nodeId": 42})) }
+            if rx.try_process(|cmd| match cmd {
+                BridgeCommand::QuerySelector { selector, .. } => {
+                    assert_eq!(selector, "div.container");
+                    BridgeResponse {
+                        result: Ok(json!({"nodeId": 42})),
                     }
-                    _ => panic!("Unexpected"),
                 }
+                _ => panic!("Unexpected"),
             }) {
                 break;
             }
             thread::sleep(Duration::from_millis(1));
         }
     });
-    let resp = tx.send(BridgeCommand::QuerySelector { target_id: TID.into(), selector: "div.container".into() });
+    let resp = tx.send(BridgeCommand::QuerySelector {
+        target_id: TID.into(),
+        selector: "div.container".into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -171,17 +203,20 @@ fn test_send_query_selector() {
 fn test_send_query_selector_all() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::QuerySelectorAll { selector, .. } => {
-                    assert_eq!(selector, "li");
-                    BridgeResponse { result: Ok(json!({"nodeIds": [1, 2, 3]})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::QuerySelectorAll { selector, .. } => {
+                assert_eq!(selector, "li");
+                BridgeResponse {
+                    result: Ok(json!({"nodeIds": [1, 2, 3]})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::QuerySelectorAll { target_id: TID.into(), selector: "li".into() });
+    let resp = tx.send(BridgeCommand::QuerySelectorAll {
+        target_id: TID.into(),
+        selector: "li".into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -189,24 +224,35 @@ fn test_send_query_selector_all() {
 fn test_send_dispatch_mouse_event() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count, .. } => {
-                    assert_eq!(event_type, "mousePressed");
-                    assert_eq!(x, 100.0);
-                    assert_eq!(y, 200.0);
-                    assert_eq!(button, Some(0));
-                    assert_eq!(click_count, Some(1));
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::DispatchMouseEvent {
+                event_type,
+                x,
+                y,
+                button,
+                click_count,
+                ..
+            } => {
+                assert_eq!(event_type, "mousePressed");
+                assert_eq!(x, 100.0);
+                assert_eq!(y, 200.0);
+                assert_eq!(button, Some(0));
+                assert_eq!(click_count, Some(1));
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::DispatchMouseEvent { target_id: TID.into(), event_type: "mousePressed".into(),
-        x: 100.0, y: 200.0,
+    let resp = tx.send(BridgeCommand::DispatchMouseEvent {
+        target_id: TID.into(),
+        event_type: "mousePressed".into(),
+        x: 100.0,
+        y: 200.0,
         button: Some(0),
-        click_count: Some(1), });
+        click_count: Some(1),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -214,23 +260,32 @@ fn test_send_dispatch_mouse_event() {
 fn test_send_dispatch_key_event() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::DispatchKeyEvent { event_type, key, code, text, .. } => {
-                    assert_eq!(event_type, "keyDown");
-                    assert_eq!(key, "a");
-                    assert_eq!(code, "KeyA");
-                    assert_eq!(text, Some("a".into()));
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::DispatchKeyEvent {
+                event_type,
+                key,
+                code,
+                text,
+                ..
+            } => {
+                assert_eq!(event_type, "keyDown");
+                assert_eq!(key, "a");
+                assert_eq!(code, "KeyA");
+                assert_eq!(text, Some("a".into()));
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::DispatchKeyEvent { target_id: TID.into(), event_type: "keyDown".into(),
+    let resp = tx.send(BridgeCommand::DispatchKeyEvent {
+        target_id: TID.into(),
+        event_type: "keyDown".into(),
         key: "a".into(),
         code: "KeyA".into(),
-        text: Some("a".into()), });
+        text: Some("a".into()),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -238,17 +293,20 @@ fn test_send_dispatch_key_event() {
 fn test_send_insert_text() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::InsertText { text, .. } => {
-                    assert_eq!(text, "hello world");
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::InsertText { text, .. } => {
+                assert_eq!(text, "hello world");
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::InsertText { target_id: TID.into(), text: "hello world".into() });
+    let resp = tx.send(BridgeCommand::InsertText {
+        target_id: TID.into(),
+        text: "hello world".into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -256,19 +314,29 @@ fn test_send_insert_text() {
 fn test_send_set_viewport() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::SetViewport { width, height, device_scale_factor, .. } => {
-                    assert_eq!(width, 1920);
-                    assert_eq!(height, 1080);
-                    assert_eq!(device_scale_factor, Some(2.0));
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::SetViewport {
+                width,
+                height,
+                device_scale_factor,
+                ..
+            } => {
+                assert_eq!(width, 1920);
+                assert_eq!(height, 1080);
+                assert_eq!(device_scale_factor, Some(2.0));
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::SetViewport { target_id: TID.into(), width: 1920, height: 1080, device_scale_factor: Some(2.0), });
+    let resp = tx.send(BridgeCommand::SetViewport {
+        target_id: TID.into(),
+        width: 1920,
+        height: 1080,
+        device_scale_factor: Some(2.0),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -276,17 +344,20 @@ fn test_send_set_viewport() {
 fn test_send_get_cookies() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::GetCookies { urls, .. } => {
-                    assert_eq!(urls, vec!["https://example.com"]);
-                    BridgeResponse { result: Ok(json!({"cookies": []})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::GetCookies { urls, .. } => {
+                assert_eq!(urls, vec!["https://example.com"]);
+                BridgeResponse {
+                    result: Ok(json!({"cookies": []})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::GetCookies { target_id: TID.into(), urls: vec!["https://example.com".into()] });
+    let resp = tx.send(BridgeCommand::GetCookies {
+        target_id: TID.into(),
+        urls: vec!["https://example.com".into()],
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -294,23 +365,32 @@ fn test_send_get_cookies() {
 fn test_send_set_cookie() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::SetCookie { name, value, url, domain, .. } => {
-                    assert_eq!(name, "session");
-                    assert_eq!(value, "abc123");
-                    assert_eq!(url, Some("https://example.com".into()));
-                    assert!(domain.is_none());
-                    BridgeResponse { result: Ok(json!({"success": true})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::SetCookie {
+                name,
+                value,
+                url,
+                domain,
+                ..
+            } => {
+                assert_eq!(name, "session");
+                assert_eq!(value, "abc123");
+                assert_eq!(url, Some("https://example.com".into()));
+                assert!(domain.is_none());
+                BridgeResponse {
+                    result: Ok(json!({"success": true})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::SetCookie { target_id: TID.into(), name: "session".into(),
+    let resp = tx.send(BridgeCommand::SetCookie {
+        target_id: TID.into(),
+        name: "session".into(),
         value: "abc123".into(),
         url: Some("https://example.com".into()),
-        domain: None, });
+        domain: None,
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -318,17 +398,21 @@ fn test_send_set_cookie() {
 fn test_send_delete_cookie() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::DeleteCookie { name, url: _, .. } => {
-                    assert_eq!(name, "session");
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::DeleteCookie { name, url: _, .. } => {
+                assert_eq!(name, "session");
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::DeleteCookie { target_id: TID.into(), name: "session".into(), url: None });
+    let resp = tx.send(BridgeCommand::DeleteCookie {
+        target_id: TID.into(),
+        name: "session".into(),
+        url: None,
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -336,17 +420,20 @@ fn test_send_delete_cookie() {
 fn test_send_reload() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::Reload { ignore_cache, .. } => {
-                    assert!(ignore_cache);
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::Reload { ignore_cache, .. } => {
+                assert!(ignore_cache);
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::Reload { target_id: TID.into(), ignore_cache: true });
+    let resp = tx.send(BridgeCommand::Reload {
+        target_id: TID.into(),
+        ignore_cache: true,
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -354,14 +441,16 @@ fn test_send_reload() {
 fn test_send_go_back() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::GoBack { .. } => BridgeResponse { result: Ok(json!({})) },
-                _ => panic!("Unexpected"),
-            }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::GoBack { .. } => BridgeResponse {
+                result: Ok(json!({})),
+            },
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::GoBack { target_id: TID.into() });
+    let resp = tx.send(BridgeCommand::GoBack {
+        target_id: TID.into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -369,14 +458,16 @@ fn test_send_go_back() {
 fn test_send_go_forward() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::GoForward { .. } => BridgeResponse { result: Ok(json!({})) },
-                _ => panic!("Unexpected"),
-            }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::GoForward { .. } => BridgeResponse {
+                result: Ok(json!({})),
+            },
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::GoForward { target_id: TID.into() });
+    let resp = tx.send(BridgeCommand::GoForward {
+        target_id: TID.into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -384,14 +475,16 @@ fn test_send_go_forward() {
 fn test_send_stop_loading() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::StopLoading { .. } => BridgeResponse { result: Ok(json!({})) },
-                _ => panic!("Unexpected"),
-            }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::StopLoading { .. } => BridgeResponse {
+                result: Ok(json!({})),
+            },
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::StopLoading { target_id: TID.into() });
+    let resp = tx.send(BridgeCommand::StopLoading {
+        target_id: TID.into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -399,14 +492,16 @@ fn test_send_stop_loading() {
 fn test_send_close_page() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::ClosePage { .. } => BridgeResponse { result: Ok(json!({})) },
-                _ => panic!("Unexpected"),
-            }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::ClosePage { .. } => BridgeResponse {
+                result: Ok(json!({})),
+            },
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::ClosePage { target_id: TID.into() });
+    let resp = tx.send(BridgeCommand::ClosePage {
+        target_id: TID.into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -414,17 +509,19 @@ fn test_send_close_page() {
 fn test_send_add_script() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::AddScriptToEvaluateOnNewDocument { source, .. } => {
-                    assert!(source.contains("navigator"));
-                    BridgeResponse { result: Ok(json!({"identifier": "1"})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::AddScriptToEvaluateOnNewDocument { source, .. } => {
+                assert!(source.contains("navigator"));
+                BridgeResponse {
+                    result: Ok(json!({"identifier": "1"})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id: TID.into(), source: "Object.defineProperty(navigator, 'languages', {get: () => ['en'] })".into(),
+    let resp = tx.send(BridgeCommand::AddScriptToEvaluateOnNewDocument {
+        target_id: TID.into(),
+        source: "Object.defineProperty(navigator, 'languages', {get: () => ['en'] })".into(),
     });
     assert!(resp.result.is_ok());
 }
@@ -433,19 +530,29 @@ fn test_send_add_script() {
 fn test_send_set_attribute_value() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::SetAttributeValue { node_id, name, value, .. } => {
-                    assert_eq!(node_id, 5);
-                    assert_eq!(name, "class");
-                    assert_eq!(value, "active");
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::SetAttributeValue {
+                node_id,
+                name,
+                value,
+                ..
+            } => {
+                assert_eq!(node_id, 5);
+                assert_eq!(name, "class");
+                assert_eq!(value, "active");
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::SetAttributeValue { target_id: TID.into(), node_id: 5, name: "class".into(), value: "active".into(), });
+    let resp = tx.send(BridgeCommand::SetAttributeValue {
+        target_id: TID.into(),
+        node_id: 5,
+        name: "class".into(),
+        value: "active".into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -453,17 +560,20 @@ fn test_send_set_attribute_value() {
 fn test_send_get_outer_html() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::GetOuterHtml { node_id, .. } => {
-                    assert_eq!(node_id, Some(3));
-                    BridgeResponse { result: Ok(json!({"outerHTML": "<div>hello</div>"})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::GetOuterHtml { node_id, .. } => {
+                assert_eq!(node_id, Some(3));
+                BridgeResponse {
+                    result: Ok(json!({"outerHTML": "<div>hello</div>"})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::GetOuterHtml { target_id: TID.into(), node_id: Some(3) });
+    let resp = tx.send(BridgeCommand::GetOuterHtml {
+        target_id: TID.into(),
+        node_id: Some(3),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -471,17 +581,20 @@ fn test_send_get_outer_html() {
 fn test_send_get_response_body() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::GetResponseBody { request_id, .. } => {
-                    assert_eq!(request_id, "req-123");
-                    BridgeResponse { result: Ok(json!({"body": "content", "base64Encoded": false})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::GetResponseBody { request_id, .. } => {
+                assert_eq!(request_id, "req-123");
+                BridgeResponse {
+                    result: Ok(json!({"body": "content", "base64Encoded": false})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::GetResponseBody { target_id: TID.into(), request_id: "req-123".into() });
+    let resp = tx.send(BridgeCommand::GetResponseBody {
+        target_id: TID.into(),
+        request_id: "req-123".into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -489,17 +602,20 @@ fn test_send_get_response_body() {
 fn test_send_set_user_agent() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::SetUserAgent { user_agent, .. } => {
-                    assert!(user_agent.contains("Firefox"));
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::SetUserAgent { user_agent, .. } => {
+                assert!(user_agent.contains("Firefox"));
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::SetUserAgent { target_id: TID.into(), user_agent: "Mozilla/5.0 Firefox/128.0".into(), });
+    let resp = tx.send(BridgeCommand::SetUserAgent {
+        target_id: TID.into(),
+        user_agent: "Mozilla/5.0 Firefox/128.0".into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -513,7 +629,9 @@ fn test_send_error_response() {
             result: Err("page not found".into()),
         });
     });
-    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    let resp = tx.send(BridgeCommand::GetTitle {
+        target_id: TID.into(),
+    });
     assert!(resp.result.is_err());
     assert!(resp.result.unwrap_err().contains("page not found"));
 }
@@ -522,7 +640,9 @@ fn test_send_error_response() {
 fn test_send_timeout() {
     let (tx, _rx) = bridge_channel(Duration::from_millis(10));
     // Don't process on receiver side — should timeout
-    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    let resp = tx.send(BridgeCommand::GetTitle {
+        target_id: TID.into(),
+    });
     assert!(resp.result.is_err());
     assert!(resp.result.unwrap_err().contains("timeout"));
 }
@@ -531,7 +651,9 @@ fn test_send_timeout() {
 fn test_send_after_receiver_dropped() {
     let (tx, rx) = bridge_channel(Duration::from_millis(50));
     drop(rx);
-    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    let resp = tx.send(BridgeCommand::GetTitle {
+        target_id: TID.into(),
+    });
     assert!(resp.result.is_err());
     assert!(resp.result.unwrap_err().contains("closed"));
 }
@@ -541,9 +663,13 @@ fn test_send_after_receiver_dropped() {
 #[test]
 fn test_fire_and_forget_does_not_block() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetTitle {
+        target_id: TID.into(),
+    });
     // Should be able to receive it
-    let processed = rx.try_process(|_| BridgeResponse { result: Ok(json!({})) });
+    let processed = rx.try_process(|_| BridgeResponse {
+        result: Ok(json!({})),
+    });
     assert!(processed);
 }
 
@@ -553,16 +679,23 @@ fn test_fire_and_forget_does_not_block() {
 fn test_drain_multiple_commands() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
     for i in 0..10 {
-        tx.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url: format!("https://{ }.com", i) });
+        tx.send_fire_and_forget(BridgeCommand::Navigate {
+            target_id: TID.into(),
+            url: format!("https://{ }.com", i),
+        });
     }
-    let count = rx.drain(|_| BridgeResponse { result: Ok(json!({})) });
+    let count = rx.drain(|_| BridgeResponse {
+        result: Ok(json!({})),
+    });
     assert_eq!(count, 10);
 }
 
 #[test]
 fn test_drain_empty() {
     let (_tx, rx) = bridge_channel(Duration::from_secs(5));
-    let count = rx.drain(|_| BridgeResponse { result: Ok(json!({})) });
+    let count = rx.drain(|_| BridgeResponse {
+        result: Ok(json!({})),
+    });
     assert_eq!(count, 0);
 }
 
@@ -577,16 +710,24 @@ fn test_sender_clone_shares_channel() {
     let handler = thread::spawn(move || {
         let mut count = 0;
         for _ in 0..200 {
-            let n = rx.drain(|_| BridgeResponse { result: Ok(json!("ok")) });
+            let n = rx.drain(|_| BridgeResponse {
+                result: Ok(json!("ok")),
+            });
             count += n;
-            if count >= 2 { break; }
+            if count >= 2 {
+                break;
+            }
             thread::sleep(Duration::from_millis(5));
         }
         count
     });
 
-    let resp1 = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
-    let resp2 = tx2.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    let resp1 = tx.send(BridgeCommand::GetTitle {
+        target_id: TID.into(),
+    });
+    let resp2 = tx2.send(BridgeCommand::GetTitle {
+        target_id: TID.into(),
+    });
     assert!(resp1.result.is_ok());
     assert!(resp2.result.is_ok());
     let _ = handler.join();
@@ -596,14 +737,18 @@ fn test_sender_clone_shares_channel() {
 
 #[test]
 fn test_bridge_response_debug_ok() {
-    let resp = BridgeResponse { result: Ok(json!({"key": "value"})) };
+    let resp = BridgeResponse {
+        result: Ok(json!({"key": "value"})),
+    };
     let debug = format!("{:?}", resp);
     assert!(debug.contains("Ok"));
 }
 
 #[test]
 fn test_bridge_response_debug_err() {
-    let resp = BridgeResponse { result: Err("fail".into()) };
+    let resp = BridgeResponse {
+        result: Err("fail".into()),
+    };
     let debug = format!("{:?}", resp);
     assert!(debug.contains("Err"));
     assert!(debug.contains("fail"));
@@ -615,17 +760,20 @@ fn test_bridge_response_debug_err() {
 fn test_navigate_unicode_url() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::Navigate { url, .. } => {
-                    assert!(url.contains("日本語"));
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::Navigate { url, .. } => {
+                assert!(url.contains("日本語"));
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::Navigate { target_id: TID.into(), url: "https://example.com/日本語".into() });
+    let resp = tx.send(BridgeCommand::Navigate {
+        target_id: TID.into(),
+        url: "https://example.com/日本語".into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -633,17 +781,19 @@ fn test_navigate_unicode_url() {
 fn test_evaluate_js_special_chars() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::EvaluateJs { expression, .. } => {
-                    assert!(expression.contains("\\n"));
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::EvaluateJs { expression, .. } => {
+                assert!(expression.contains("\\n"));
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::EvaluateJs { target_id: TID.into(), expression: "JSON.stringify({a: '\\n' })".into(),
+    let resp = tx.send(BridgeCommand::EvaluateJs {
+        target_id: TID.into(),
+        expression: "JSON.stringify({a: '\\n' })".into(),
         return_by_value: true,
     });
     assert!(resp.result.is_ok());
@@ -653,17 +803,20 @@ fn test_evaluate_js_special_chars() {
 fn test_insert_text_multibyte() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::InsertText { text, .. } => {
-                    assert_eq!(text, "こんにちは世界");
-                    BridgeResponse { result: Ok(json!({})) }
+        rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+            BridgeCommand::InsertText { text, .. } => {
+                assert_eq!(text, "こんにちは世界");
+                BridgeResponse {
+                    result: Ok(json!({})),
                 }
-                _ => panic!("Unexpected"),
             }
+            _ => panic!("Unexpected"),
         });
     });
-    let resp = tx.send(BridgeCommand::InsertText { target_id: TID.into(), text: "こんにちは世界".into() });
+    let resp = tx.send(BridgeCommand::InsertText {
+        target_id: TID.into(),
+        text: "こんにちは世界".into(),
+    });
     assert!(resp.result.is_ok());
 }
 
@@ -680,8 +833,8 @@ fn test_concurrent_sends() {
         let mut count = 0;
         for _ in 0..5 {
             let guard = rx.lock().unwrap();
-            guard.recv_and_process(Duration::from_secs(5), |_| {
-                BridgeResponse { result: Ok(json!({})) }
+            guard.recv_and_process(Duration::from_secs(5), |_| BridgeResponse {
+                result: Ok(json!({})),
             });
             drop(guard);
             count += 1;
@@ -689,12 +842,17 @@ fn test_concurrent_sends() {
         count
     });
 
-    let txes: Vec<_> = (0..5).map(|i| {
-        let tx = tx.clone();
-        thread::spawn(move || {
-            tx.send(BridgeCommand::Navigate { target_id: TID.into(), url: format!("https://{ }.com", i) })
+    let txes: Vec<_> = (0..5)
+        .map(|i| {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                tx.send(BridgeCommand::Navigate {
+                    target_id: TID.into(),
+                    url: format!("https://{ }.com", i),
+                })
+            })
         })
-    }).collect();
+        .collect();
 
     for t in txes {
         let resp = t.join().unwrap();

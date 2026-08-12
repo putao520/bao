@@ -76,13 +76,8 @@ fn emulation_set_device_metrics_override_accepts_optional_fields() {
 fn emulation_clear_device_metrics_override_returns_empty_object() {
     // @trace REQ-CDP-001 [domain:Emulation] [level:integration]
     let b = backend();
-    let result = dispatch_command(
-        &*b,
-        "Emulation.clearDeviceMetricsOverride",
-        json!({}),
-        "1",
-    )
-    .unwrap();
+    let result =
+        dispatch_command(&*b, "Emulation.clearDeviceMetricsOverride", json!({}), "1").unwrap();
     assert!(
         result.as_object().map(|o| o.is_empty()).unwrap_or(false),
         "CDP spec: clearDeviceMetricsOverride returns empty object"

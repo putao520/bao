@@ -113,7 +113,10 @@ impl OneShotHttpServer {
                 responder(request, &mut stream);
             }
         });
-        Self { addr, _handle: handle }
+        Self {
+            addr,
+            _handle: handle,
+        }
     }
 }
 
@@ -139,7 +142,9 @@ fn e2e_playwright_http_discovery_json_version() {
     let mut stream = TcpStream::connect(&server.addr).unwrap();
     let _ = stream.write_all(b"GET /json/version HTTP/1.1\r\nHost: localhost\r\n\r\n");
     let mut buf = Vec::new();
-    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
     let mut tmp = [0u8; 4096];
     while let Ok(n) = stream.read(&mut tmp) {
         if n == 0 {
@@ -150,7 +155,10 @@ fn e2e_playwright_http_discovery_json_version() {
     let body = String::from_utf8_lossy(&buf);
     // Assert
     assert!(body.contains("webSocketDebuggerUrl"), "must contain ws url");
-    assert!(body.contains("HeadlessChrome"), "must contain browser version");
+    assert!(
+        body.contains("HeadlessChrome"),
+        "must contain browser version"
+    );
     let json_start = body.find('{').unwrap();
     let obj: Value = serde_json::from_str(&body[json_start..]).unwrap();
     let ws = obj["webSocketDebuggerUrl"].as_str().unwrap();
@@ -179,7 +187,9 @@ fn e2e_playwright_http_discovery_json_list() {
     let mut stream = TcpStream::connect(&server.addr).unwrap();
     let _ = stream.write_all(b"GET /json/list HTTP/1.1\r\nHost: localhost\r\n\r\n");
     let mut buf = Vec::new();
-    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
     let mut tmp = [0u8; 4096];
     while let Ok(n) = stream.read(&mut tmp) {
         if n == 0 {
@@ -194,7 +204,10 @@ fn e2e_playwright_http_discovery_json_list() {
     // Assert
     assert!(!arr.is_empty(), "must have at least 1 page");
     assert_eq!(arr[0]["type"], "page");
-    assert!(arr[0]["webSocketDebuggerUrl"].as_str().unwrap().contains("/devtools/page/"));
+    assert!(arr[0]["webSocketDebuggerUrl"]
+        .as_str()
+        .unwrap()
+        .contains("/devtools/page/"));
 }
 
 #[test]
@@ -214,9 +227,12 @@ fn e2e_playwright_http_discovery_json_new() {
     });
 
     let mut stream = TcpStream::connect(&server.addr).unwrap();
-    let _ = stream.write_all(b"GET /json/new?https://example.org HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    let _ =
+        stream.write_all(b"GET /json/new?https://example.org HTTP/1.1\r\nHost: localhost\r\n\r\n");
     let mut buf = Vec::new();
-    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
     let mut tmp = [0u8; 4096];
     while let Ok(n) = stream.read(&mut tmp) {
         if n == 0 {
@@ -366,14 +382,20 @@ fn e2e_playwright_flat_mode_command_with_session_id() {
     let mut t = WebSocketTransport::connect(&url).unwrap();
 
     // 第一个命令无 session(browser-level)
-    let r = t.send_command("Browser.getVersion", json!({}), None).unwrap();
+    let r = t
+        .send_command("Browser.getVersion", json!({}), None)
+        .unwrap();
     // Assert
     assert_eq!(r["ok"], true);
     assert_eq!(r["echoedSession"], Value::Null);
 
     // 第二个命令带 session(flat mode sub-target)
     let r = t
-        .send_command("Page.navigate", json!({"url":"https://x"}), Some("SESSION-FLAT-1"))
+        .send_command(
+            "Page.navigate",
+            json!({"url":"https://x"}),
+            Some("SESSION-FLAT-1"),
+        )
         .unwrap();
     assert_eq!(r["ok"], true);
     assert_eq!(r["echoedSession"], "SESSION-FLAT-1");

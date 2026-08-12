@@ -3,7 +3,7 @@
 // PageState ordering, clone/copy/debug, PageHandle id/permission
 // (where possible without servo instance).
 
-use bao_browser::{PageState, BaoConfig, PageConfig, PermissionGuard};
+use bao_browser::{BaoConfig, PageConfig, PageState, PermissionGuard};
 
 // ---- PageState ----
 

@@ -16,7 +16,7 @@
 // > 0.7 (human-like). These tests verify the statistical properties of the
 // generated behavior that reCAPTCHA v3 measures.
 
-use bao_stealth::{BehaviorSimulator, BehaviorConfig};
+use bao_stealth::{BehaviorConfig, BehaviorSimulator};
 
 // ===========================================================================
 // 1. Mouse movement entropy (reCAPTCHA primary signal)
@@ -34,7 +34,8 @@ fn recaptcha_mouse_path_speed_entropy_is_high() {
     let path = sim.generate_human_mouse_path((50.0, 50.0), (850.0, 550.0), 30.0);
 
     // Assert — compute per-segment speeds, verify variance
-    let speeds: Vec<f64> = path.windows(2)
+    let speeds: Vec<f64> = path
+        .windows(2)
         .map(|w| {
             let dx = w[1].0 - w[0].0;
             let dy = w[1].1 - w[0].1;
@@ -44,9 +45,8 @@ fn recaptcha_mouse_path_speed_entropy_is_high() {
     assert!(speeds.len() > 3, "Need ≥4 segments for entropy calc");
 
     let mean = speeds.iter().sum::<f64>() / speeds.len() as f64;
-    let variance: f64 = speeds.iter()
-        .map(|s| (s - mean).powi(2))
-        .sum::<f64>() / speeds.len() as f64;
+    let variance: f64 =
+        speeds.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / speeds.len() as f64;
     let stddev = variance.sqrt();
     let cv = stddev / mean.max(1e-9); // coefficient of variation
 
@@ -69,9 +69,7 @@ fn recaptcha_mouse_path_deviation_from_linear() {
     let path = sim.generate_human_mouse_path((0.0, 0.0), (1000.0, 0.0), 20.0);
 
     // Assert — points should deviate from the straight line (y should vary)
-    let max_y_deviation: f64 = path.iter()
-        .map(|(_, y, _)| y.abs())
-        .fold(0.0_f64, f64::max);
+    let max_y_deviation: f64 = path.iter().map(|(_, y, _)| y.abs()).fold(0.0_f64, f64::max);
     assert!(
         max_y_deviation > 5.0,
         "Mouse path must deviate > 5px from straight line — got max y={:.2} — reCAPTCHA linearity",
@@ -114,7 +112,10 @@ fn recaptcha_click_press_duration_has_variance() {
         let sim = BehaviorSimulator::new(seed);
         let events = sim.generate_click_sequence(300.0, 300.0, 20.0);
         // mouseup.delay_after_ms = press duration (mousedown→mouseup gap)
-        if let Some(up) = events.iter().find(|e| e.event_type == bao_stealth::ClickEventType::MouseUp) {
+        if let Some(up) = events
+            .iter()
+            .find(|e| e.event_type == bao_stealth::ClickEventType::MouseUp)
+        {
             press_durations.push(up.delay_after_ms);
         }
     }
@@ -129,7 +130,8 @@ fn recaptcha_click_press_duration_has_variance() {
     assert!(
         max > min,
         "Click press durations must vary across sessions (min={}, max={}) — reCAPTCHA timing",
-        min, max
+        min,
+        max
     );
     // All durations must be in human range [40, 200]ms
     for d in &press_durations {
@@ -154,18 +156,24 @@ fn recaptcha_click_sequence_has_multiple_timings() {
     let events = sim.generate_click_sequence(200.0, 200.0, 20.0);
 
     // Act — extract the three timing components
-    let mousedown = events.iter()
+    let mousedown = events
+        .iter()
         .find(|e| e.event_type == bao_stealth::ClickEventType::MouseDown)
         .expect("Must have MouseDown event");
-    let mouseup = events.iter()
+    let mouseup = events
+        .iter()
         .find(|e| e.event_type == bao_stealth::ClickEventType::MouseUp)
         .expect("Must have MouseUp event");
-    let click = events.iter()
+    let click = events
+        .iter()
         .find(|e| e.event_type == bao_stealth::ClickEventType::Click)
         .expect("Must have Click event");
 
     // Assert — all three timings must be positive
-    assert!(mousedown.delay_after_ms > 0, "Pre-click settling must be > 0");
+    assert!(
+        mousedown.delay_after_ms > 0,
+        "Pre-click settling must be > 0"
+    );
     assert!(mouseup.delay_after_ms > 0, "Press duration must be > 0");
     assert!(click.delay_after_ms > 0, "Post-click delay must be > 0");
 
@@ -192,7 +200,8 @@ fn recaptcha_consecutive_clicks_advance_rng_state() {
     let mut press_durations: Vec<u64> = Vec::new();
     for _ in 0..10 {
         let events = sim.generate_click_sequence(150.0, 250.0, 20.0);
-        if let Some(up) = events.iter()
+        if let Some(up) = events
+            .iter()
             .find(|e| e.event_type == bao_stealth::ClickEventType::MouseUp)
         {
             press_durations.push(up.delay_after_ms);
@@ -245,7 +254,8 @@ fn recaptcha_click_has_arrival_settling_delay() {
     let events = sim.generate_click_sequence(300.0, 300.0, 25.0);
 
     // Assert — first event (MouseDown) must have delay_after_ms > 0 (settling)
-    let mousedown = events.iter()
+    let mousedown = events
+        .iter()
         .find(|e| e.event_type == bao_stealth::ClickEventType::MouseDown)
         .expect("Click sequence must start with MouseDown");
     assert!(
@@ -268,7 +278,8 @@ fn recaptcha_typing_delay_variance_in_human_range() {
 
     // Act — type a longer string to gather statistics
     let events = sim.generate_human_typing("the quick brown fox jumps");
-    let delays: Vec<f64> = events.iter()
+    let delays: Vec<f64> = events
+        .iter()
         .filter(|e| !e.is_backspace)
         .map(|e| e.delay_before_ms as f64)
         .collect();
@@ -276,9 +287,8 @@ fn recaptcha_typing_delay_variance_in_human_range() {
     assert!(delays.len() >= 10, "Need ≥10 keystrokes for CV calc");
 
     let mean = delays.iter().sum::<f64>() / delays.len() as f64;
-    let variance: f64 = delays.iter()
-        .map(|d| (d - mean).powi(2))
-        .sum::<f64>() / delays.len() as f64;
+    let variance: f64 =
+        delays.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / delays.len() as f64;
     let cv = variance.sqrt() / mean.max(1e-9);
 
     // Assert — CV must be in human range
@@ -299,7 +309,8 @@ fn recaptcha_typing_has_thinking_pauses() {
 
     // Act — type a multi-word string to trigger word-boundary pauses
     let events = sim.generate_human_typing("hello world this is a test");
-    let delays: Vec<u64> = events.iter()
+    let delays: Vec<u64> = events
+        .iter()
         .filter(|e| !e.is_backspace)
         .map(|e| e.delay_before_ms)
         .collect();
@@ -310,7 +321,8 @@ fn recaptcha_typing_has_thinking_pauses() {
     assert!(
         max_delay > mean_delay,
         "Max typing delay {} must exceed mean {} — reCAPTCHA thinking-pause signal",
-        max_delay, mean_delay
+        max_delay,
+        mean_delay
     );
 }
 
@@ -335,7 +347,8 @@ fn recaptcha_scroll_velocity_decays_exponentially() {
     assert!(
         last < first,
         "Scroll delta must decay: first={}, last={} — reCAPTCHA inertia signal",
-        first, last
+        first,
+        last
     );
 
     // Assert — decay is roughly exponential (each step smaller than previous)
@@ -424,11 +437,14 @@ fn recaptcha_double_click_produces_dblclick_event() {
 
     // Assert
     assert!(
-        events.iter().any(|e| e.event_type == bao_stealth::ClickEventType::DoubleClick),
+        events
+            .iter()
+            .any(|e| e.event_type == bao_stealth::ClickEventType::DoubleClick),
         "Double-click sequence must contain DoubleClick event — reCAPTCHA dblclick probe"
     );
     // Must have ≥2 click cycles (each = mousedown+mouseup+click)
-    let click_count = events.iter()
+    let click_count = events
+        .iter()
         .filter(|e| e.event_type == bao_stealth::ClickEventType::Click)
         .count();
     assert!(

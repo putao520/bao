@@ -54,7 +54,11 @@ fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
     // bounded by the process. The guard is only dropped when the test function
     // returns. This transmute extends the lifetime bound to 'static, matching
     // the actual underlying static Mutex.
-    unsafe { std::mem::transmute::<std::sync::MutexGuard<'_, ()>, std::sync::MutexGuard<'static, ()>>(guard) }
+    unsafe {
+        std::mem::transmute::<std::sync::MutexGuard<'_, ()>, std::sync::MutexGuard<'static, ()>>(
+            guard,
+        )
+    }
 }
 
 /// URL-encode a JS worker body for data: URL (minimal percent-encoding).
@@ -100,11 +104,7 @@ fn make_concurrent_worker_driver(worker_script_body: &str, count: usize) -> Stri
 }
 
 /// Poll a JS condition until true or timeout.
-fn wait_for_js_condition(
-    page: &bao_browser::PageHandle,
-    expr: &str,
-    timeout: Duration,
-) -> bool {
+fn wait_for_js_condition(page: &bao_browser::PageHandle, expr: &str, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if let Ok(s) = page.evaluate_js_web(expr) {
@@ -154,7 +154,10 @@ fn c18_concurrent_create_destroy_zero_crash() {
     };
 
     // Wait for page pipeline ready.
-    if page.wait_for_pipeline_ready(Duration::from_secs(5)).is_err() {
+    if page
+        .wait_for_pipeline_ready(Duration::from_secs(5))
+        .is_err()
+    {
         eprintln!("[skip] pipeline not ready");
         return;
     }
@@ -222,7 +225,10 @@ fn c18_concurrent_terminate_closing_flag_consistent() {
             return;
         }
     };
-    if page.wait_for_pipeline_ready(Duration::from_secs(5)).is_err() {
+    if page
+        .wait_for_pipeline_ready(Duration::from_secs(5))
+        .is_err()
+    {
         eprintln!("[skip] pipeline not ready");
         return;
     }
@@ -235,7 +241,11 @@ fn c18_concurrent_terminate_closing_flag_consistent() {
         match runtime.create_worker_with_url(&page, &worker_url) {
             Ok(handle) => {
                 // Verify initial state.
-                assert!(!handle.is_closing(), "worker {} should not be closing initially", i);
+                assert!(
+                    !handle.is_closing(),
+                    "worker {} should not be closing initially",
+                    i
+                );
                 handles.push(handle);
             }
             Err(e) => {
@@ -306,7 +316,10 @@ fn c18_three_path_teardown_crash_free() {
                 return;
             }
         };
-        if page.wait_for_pipeline_ready(Duration::from_secs(3)).is_err() {
+        if page
+            .wait_for_pipeline_ready(Duration::from_secs(3))
+            .is_err()
+        {
             eprintln!("[skip] pipeline not ready for path 1");
             return;
         }
@@ -346,7 +359,10 @@ fn c18_three_path_teardown_crash_free() {
                 return;
             }
         };
-        if page.wait_for_pipeline_ready(Duration::from_secs(3)).is_err() {
+        if page
+            .wait_for_pipeline_ready(Duration::from_secs(3))
+            .is_err()
+        {
             eprintln!("[skip] pipeline not ready for path 2");
             return;
         }
@@ -380,7 +396,10 @@ fn c18_three_path_teardown_crash_free() {
                 return;
             }
         };
-        if page.wait_for_pipeline_ready(Duration::from_secs(3)).is_err() {
+        if page
+            .wait_for_pipeline_ready(Duration::from_secs(3))
+            .is_err()
+        {
             eprintln!("[skip] pipeline not ready for path 3");
             return;
         }

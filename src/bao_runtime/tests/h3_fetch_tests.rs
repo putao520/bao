@@ -221,7 +221,10 @@ fn h3_connection_reuse_multiple_requests() {
                     i,
                     resp.status_code
                 );
-                eprintln!("REQ-H3-001-C3: request #{} OK (status={})", i, resp.status_code);
+                eprintln!(
+                    "REQ-H3-001-C3: request #{} OK (status={})",
+                    i, resp.status_code
+                );
             }
             Err(e) => {
                 eprintln!("REQ-H3-001-C3: request #{} error: {}", i, e);
@@ -331,12 +334,7 @@ fn h3_stream_multiplexing_stability() {
     let mut successes = 0;
     for path in &paths {
         let url = format!("https://cloudflare-quic.com{}", path);
-        match bun_runtime::http_client::http_request(
-            bun_http::Method::GET,
-            &url,
-            &[],
-            None,
-        ) {
+        match bun_runtime::http_client::http_request(bun_http::Method::GET, &url, &[], None) {
             Ok(resp) => {
                 eprintln!(
                     "REQ-H3-001: stream test {} status={}",

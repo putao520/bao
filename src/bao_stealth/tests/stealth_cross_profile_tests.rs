@@ -4,10 +4,7 @@
 // validation, engine-layer property injection, default engine, custom
 // profile assembly, clone/debug, profile component independence.
 
-use bao_stealth::{
-    StealthEngine, StealthProfile,
-    CanvasNoise, ScreenProfile, WebGLProfile,
-};
+use bao_stealth::{CanvasNoise, ScreenProfile, StealthEngine, StealthProfile, WebGLProfile};
 
 // ---- StealthEngine construction ----
 
@@ -50,7 +47,10 @@ fn test_engine_http2_config_matches_profile() {
     let http2 = engine.http2_config();
     let profile_http2 = &engine.profile().http2;
     assert_eq!(http2.header_table_size, profile_http2.header_table_size);
-    assert_eq!(http2.akamai_fingerprint(), profile_http2.akamai_fingerprint());
+    assert_eq!(
+        http2.akamai_fingerprint(),
+        profile_http2.akamai_fingerprint()
+    );
 }
 
 #[test]
@@ -143,7 +143,10 @@ fn test_firefox_vs_chrome_webgl_differ() {
 fn test_firefox_vs_chrome_navigator_differ() {
     let ff_engine = StealthEngine::new(StealthProfile::firefox_default());
     let ch_engine = StealthEngine::new(StealthProfile::chrome_default());
-    assert_ne!(ff_engine.navigator().user_agent, ch_engine.navigator().user_agent);
+    assert_ne!(
+        ff_engine.navigator().user_agent,
+        ch_engine.navigator().user_agent
+    );
 }
 
 // ---- Profile component independence ----
@@ -151,7 +154,9 @@ fn test_firefox_vs_chrome_navigator_differ() {
 #[test]
 fn test_canvas_noise_independent_of_tls() {
     let engine = StealthEngine::default_engine();
-    let canvas_val = engine.canvas_noise().apply_to_pixel(100, 100, 100, 255, 5, 5);
+    let canvas_val = engine
+        .canvas_noise()
+        .apply_to_pixel(100, 100, 100, 255, 5, 5);
     // Canvas noise doesn't depend on TLS cipher suites
     let _ = engine.tls_config().cipher_suites.len();
 }
@@ -197,7 +202,7 @@ fn test_engine_with_firefox_tls_chrome_webgl() {
     let engine = StealthEngine::new(profile);
     // TLS should be Firefox
     assert!(engine.tls_config().cipher_suites.len() > 12); // Firefox has more
-    // WebGL should be Chrome
+                                                           // WebGL should be Chrome
     assert!(engine.webgl().vendor.contains("Google"));
 }
 
@@ -217,10 +222,14 @@ fn test_engine_with_custom_canvas_noise() {
     let mut profile = StealthProfile::firefox_default();
     profile.canvas = CanvasNoise::new(12345);
     let engine = StealthEngine::new(profile);
-    let val = engine.canvas_noise().apply_to_pixel(200, 200, 200, 255, 10, 10);
+    let val = engine
+        .canvas_noise()
+        .apply_to_pixel(200, 200, 200, 255, 10, 10);
     // Different seed → different result from default
     let default_engine = StealthEngine::default_engine();
-    let _default_val = default_engine.canvas_noise().apply_to_pixel(200, 200, 200, 255, 10, 10);
+    let _default_val = default_engine
+        .canvas_noise()
+        .apply_to_pixel(200, 200, 200, 255, 10, 10);
     // Most likely different (not guaranteed for all coords, but highly probable)
     // Just check the custom seed produces valid values
 }
@@ -251,8 +260,15 @@ fn test_all_engines_support_h2() {
         StealthEngine::new(StealthProfile::chrome_default()),
     ];
     for engine in &engines {
-        assert!(engine.tls_config().alpn_strings().iter().any(|s| s == &"h2"));
-        assert!(engine.http2_config().pseudo_header_order.contains(&":method"));
+        assert!(engine
+            .tls_config()
+            .alpn_strings()
+            .iter()
+            .any(|s| s == &"h2"));
+        assert!(engine
+            .http2_config()
+            .pseudo_header_order
+            .contains(&":method"));
     }
 }
 
@@ -263,8 +279,10 @@ fn test_canvas_noise_produces_valid_rgba() {
     let engine = StealthEngine::default_engine();
     for x in 0..10u32 {
         for y in 0..10u32 {
-            let (r, g, b, a) = engine.canvas_noise().apply_to_pixel(128, 128, 128, 255, x, y);
-                                        }
+            let (r, g, b, a) = engine
+                .canvas_noise()
+                .apply_to_pixel(128, 128, 128, 255, x, y);
+        }
     }
 }
 
@@ -275,7 +293,12 @@ fn test_audio_noise_produces_valid_samples() {
     let engine = StealthEngine::default_engine();
     for i in 0..100u32 {
         let sample = engine.audio().apply_noise(0.5, i);
-        assert!(sample > -1.0 && sample < 1.0, "Sample {} out of range: {}", i, sample);
+        assert!(
+            sample > -1.0 && sample < 1.0,
+            "Sample {} out of range: {}",
+            i,
+            sample
+        );
     }
 }
 

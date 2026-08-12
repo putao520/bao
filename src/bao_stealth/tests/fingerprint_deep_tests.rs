@@ -2,7 +2,7 @@
 // TLS/HTTP2 fingerprint deep validation: JA3/JA4 computation, Akamai fingerprint,
 // cipher suite classification, ALPN handling, header ordering, profile differentiation.
 
-use bao_stealth::{TlsFingerprint, Http2Fingerprint, StealthProfile};
+use bao_stealth::{Http2Fingerprint, StealthProfile, TlsFingerprint};
 
 // ---- JA3 hash computation ----
 
@@ -255,13 +255,19 @@ fn test_chrome_settings_has_push_disabled() {
 #[test]
 fn test_chrome_pseudo_header_order() {
     let h2 = Http2Fingerprint::chrome();
-    assert_eq!(h2.pseudo_header_order, vec![":method", ":authority", ":scheme", ":path"]);
+    assert_eq!(
+        h2.pseudo_header_order,
+        vec![":method", ":authority", ":scheme", ":path"]
+    );
 }
 
 #[test]
 fn test_firefox_pseudo_header_order() {
     let h2 = Http2Fingerprint::firefox();
-    assert_eq!(h2.pseudo_header_order, vec![":method", ":path", ":authority", ":scheme"]);
+    assert_eq!(
+        h2.pseudo_header_order,
+        vec![":method", ":path", ":authority", ":scheme"]
+    );
 }
 
 #[test]
@@ -286,9 +292,7 @@ fn test_ordered_headers_places_pseudo_first() {
 #[test]
 fn test_ordered_headers_preserves_all() {
     let h2 = Http2Fingerprint::chrome();
-    let headers = vec![
-        ("a", "1"), ("b", "2"), ("c", "3"),
-    ];
+    let headers = vec![("a", "1"), ("b", "2"), ("c", "3")];
     let ordered = h2.ordered_headers(&headers);
     assert_eq!(ordered.len(), 3);
 }
@@ -346,8 +350,14 @@ fn test_stealth_profile_tls_matches_standalone() {
 fn test_stealth_profile_http2_matches_standalone() {
     let profile = StealthProfile::chrome_default();
     let standalone = Http2Fingerprint::chrome();
-    assert_eq!(profile.http2.header_table_size, standalone.header_table_size);
-    assert_eq!(profile.http2.akamai_fingerprint(), standalone.akamai_fingerprint());
+    assert_eq!(
+        profile.http2.header_table_size,
+        standalone.header_table_size
+    );
+    assert_eq!(
+        profile.http2.akamai_fingerprint(),
+        standalone.akamai_fingerprint()
+    );
 }
 
 #[test]

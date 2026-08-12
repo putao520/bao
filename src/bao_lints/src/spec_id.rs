@@ -316,8 +316,15 @@ mod tests {
     fn method_path_ids_are_flagged() {
         assert_eq!(classify("post-/vm/sandbox"), Some(Reason::MethodPath));
         assert_eq!(classify("get-/json/version"), Some(Reason::MethodPath));
-        assert_eq!(classify("delete-/json/close/{targetid}"), Some(Reason::MethodPath));
-        assert_eq!(classify("PUT-/foo"), Some(Reason::MethodPath), "大小写不敏感");
+        assert_eq!(
+            classify("delete-/json/close/{targetid}"),
+            Some(Reason::MethodPath)
+        );
+        assert_eq!(
+            classify("PUT-/foo"),
+            Some(Reason::MethodPath),
+            "大小写不敏感"
+        );
     }
 
     #[test]
@@ -331,7 +338,11 @@ mod tests {
         // 非 API-{DOMAIN}-{N}、非豁免类别 → Other
         assert_eq!(classify("artifact-interface-protocol"), Some(Reason::Other));
         assert_eq!(classify("artifact-module"), Some(Reason::Other));
-        assert_eq!(classify("API-FOO-1"), Some(Reason::Other), "未认可的 DOMAIN");
+        assert_eq!(
+            classify("API-FOO-1"),
+            Some(Reason::Other),
+            "未认可的 DOMAIN"
+        );
         assert_eq!(classify("API-ENG-"), Some(Reason::Other), "缺 N");
         assert_eq!(classify("API-ENG-x"), Some(Reason::Other), "N 非数字");
     }
@@ -369,7 +380,11 @@ mod tests {
         // 但即便误标了 data-api=,id 也应被豁免。
         let html = r#"<section data-api="POST /cdp-client/connect" id="bao-cdp-client::transport"></section>"#;
         let findings = scan_html(Path::new("t.html"), html);
-        assert!(findings.is_empty(), "bao-cdp-client:: 应豁免, got {:?}", findings);
+        assert!(
+            findings.is_empty(),
+            "bao-cdp-client:: 应豁免, got {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -406,10 +421,19 @@ mod tests {
 
     #[test]
     fn baseline_suppresses_listed_ids() {
-        let dir = tempdir_with("test_spec", &[
-            ("a.html", r#"<section data-api="POST /old" id="post-/old"></section>"#),
-            ("b.html", r#"<section data-api="POST /new" id="post-/new"></section>"#),
-        ]);
+        let dir = tempdir_with(
+            "test_spec",
+            &[
+                (
+                    "a.html",
+                    r#"<section data-api="POST /old" id="post-/old"></section>"#,
+                ),
+                (
+                    "b.html",
+                    r#"<section data-api="POST /new" id="post-/new"></section>"#,
+                ),
+            ],
+        );
         let baseline = dir.join("baseline.txt");
         std::fs::write(&baseline, "# historical\npost-/old\n").unwrap();
 
@@ -439,10 +463,19 @@ mod tests {
 
     #[test]
     fn scan_path_baseline_stats() {
-        let dir = tempdir_with("baseline_stats", &[
-            ("a.html", r#"<section data-api="POST /old" id="post-/old"></section>"#),
-            ("b.html", r#"<section data-api="POST /new" id="post-/new"></section>"#),
-        ]);
+        let dir = tempdir_with(
+            "baseline_stats",
+            &[
+                (
+                    "a.html",
+                    r#"<section data-api="POST /old" id="post-/old"></section>"#,
+                ),
+                (
+                    "b.html",
+                    r#"<section data-api="POST /new" id="post-/new"></section>"#,
+                ),
+            ],
+        );
         let baseline = dir.join("baseline.txt");
         std::fs::write(&baseline, "# historical\npost-/old\nphantom-entry\n").unwrap();
 

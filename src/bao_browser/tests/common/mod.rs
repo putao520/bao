@@ -2,8 +2,8 @@
 // Test helper utilities for deterministic wait conditions.
 // Replaces magic-number sleep polling with explicit timeout + predicate.
 
-use std::time::{Duration, Instant};
 use std::thread;
+use std::time::{Duration, Instant};
 
 /// Wait for a condition to become true, with explicit timeout.
 ///
@@ -115,7 +115,10 @@ mod tests {
         let start = Instant::now();
         let result = wait_for_condition(Duration::from_secs(1), || true);
         assert!(result, "immediate true should return true");
-        assert!(start.elapsed() < Duration::from_millis(50), "should not wait");
+        assert!(
+            start.elapsed() < Duration::from_millis(50),
+            "should not wait"
+        );
     }
 
     #[test]
@@ -123,7 +126,10 @@ mod tests {
         let start = Instant::now();
         let result = wait_for_condition(Duration::from_millis(100), || false);
         assert!(!result, "always false should timeout and return false");
-        assert!(start.elapsed() >= Duration::from_millis(90), "should wait full timeout");
+        assert!(
+            start.elapsed() >= Duration::from_millis(90),
+            "should wait full timeout"
+        );
     }
 
     #[test]
@@ -138,13 +144,16 @@ mod tests {
         });
 
         let start = Instant::now();
-        let result = wait_for_condition(
-            Duration::from_secs(1),
-            || flag.load(Ordering::Acquire),
-        );
+        let result = wait_for_condition(Duration::from_secs(1), || flag.load(Ordering::Acquire));
         assert!(result, "flag should become true");
         let elapsed = start.elapsed();
-        assert!(elapsed >= Duration::from_millis(40), "should wait at least ~50ms");
-        assert!(elapsed < Duration::from_millis(300), "should not wait too long");
+        assert!(
+            elapsed >= Duration::from_millis(40),
+            "should wait at least ~50ms"
+        );
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "should not wait too long"
+        );
     }
 }

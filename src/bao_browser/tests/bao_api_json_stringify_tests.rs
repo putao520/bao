@@ -229,11 +229,7 @@ fn boundary_char_roundtrip() {
         LINE_SEPARATOR.to_string(),
         PARAGRAPH_SEPARATOR.to_string(),
         format!("{}{}", LINE_SEPARATOR, PARAGRAPH_SEPARATOR),
-        format!(
-            "{a}{b}{a}{b}",
-            a = LINE_SEPARATOR,
-            b = PARAGRAPH_SEPARATOR
-        ),
+        format!("{a}{b}{a}{b}", a = LINE_SEPARATOR, b = PARAGRAPH_SEPARATOR),
         "plain text with no special chars".to_string(),
         "numbers 12345 in text".to_string(),
         "unicode beyond BMP: 🔥🚀🌟".to_string(),

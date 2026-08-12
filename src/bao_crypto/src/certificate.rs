@@ -11,17 +11,18 @@ pub struct X509Certificate {
 impl X509Certificate {
     pub fn from_pem(pem: &str) -> Result<X509Certificate, CryptoError> {
         unsafe {
-            let bio = bssl::BIO_new_mem_buf(
-                pem.as_ptr() as *const _,
-                pem.len() as _,
-            );
+            let bio = bssl::BIO_new_mem_buf(pem.as_ptr() as *const _, pem.len() as _);
             if bio.is_null() {
-                return Err(CryptoError::InvalidCertificate("BIO_new_mem_buf failed".into()));
+                return Err(CryptoError::InvalidCertificate(
+                    "BIO_new_mem_buf failed".into(),
+                ));
             }
             let x509 = bssl::PEM_read_bio_X509(bio, ptr::null_mut(), None, ptr::null_mut());
             bssl::BIO_free(bio);
             if x509.is_null() {
-                return Err(CryptoError::InvalidCertificate("PEM_read_bio_X509 failed".into()));
+                return Err(CryptoError::InvalidCertificate(
+                    "PEM_read_bio_X509 failed".into(),
+                ));
             }
             let der_bytes = encode_der(x509);
             Ok(X509Certificate { der_bytes, x509 })
@@ -103,7 +104,9 @@ fn x509_name_to_string(name: *mut bssl::X509_NAME) -> String {
     if ret.is_null() {
         return String::new();
     }
-    unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr(buf.as_ptr()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn asn1_time_to_string(time: *mut bssl::ASN1_TIME) -> String {

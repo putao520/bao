@@ -4,11 +4,10 @@
 // CdpSession lifecycle, detach, event handler registration, InternalBackend
 // command routing, error paths, clone/debug.
 
-use bao_cdp::{CdpRouter, BackendKind, CdpError, CdpMessage, handle_command, bridge_channel};
+use bao_cdp::{bridge_channel, handle_command, BackendKind, CdpError, CdpMessage, CdpRouter};
 
 const TID: &str = "test-target";
 use serde_json::json;
-
 
 // ---- CdpRouter construction ----
 
@@ -298,7 +297,11 @@ fn test_send_command_after_detach_fails() {
 fn test_session_send_page_navigate() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t-1");
-    let result = session.send(&router, "Page.navigate", Some(json!({"url": "https://example.com"})));
+    let result = session.send(
+        &router,
+        "Page.navigate",
+        Some(json!({"url": "https://example.com"})),
+    );
     assert!(result.is_ok());
     let val = result.unwrap();
     assert!(val.get("frameId").is_some());
@@ -312,7 +315,11 @@ fn test_session_send_enables_domain_tracking() {
     session.send(&router, "Page.enable", None).unwrap();
     // Session tracks enabled domains internally
     // Verify by sending another command in same domain
-    let result = session.send(&router, "Page.navigate", Some(json!({"url": "about:blank"})));
+    let result = session.send(
+        &router,
+        "Page.navigate",
+        Some(json!({"url": "about:blank"})),
+    );
     assert!(result.is_ok());
 }
 
@@ -350,28 +357,37 @@ fn test_session_on_overwrite_handler() {
     let session = router.create_internal_session("t-1");
     session.on("Page.loadEventFired", |_p| {});
     session.on("Page.loadEventFired", |_p| {}); // overwrite
-    // No panic
+                                                // No panic
 }
 
 // ---- CdpError ----
 
 #[test]
 fn test_cdp_error_fields() {
-    let err = CdpError { code: -32601, message: "test error".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "test error".into(),
+    };
     assert_eq!(err.code, -32601);
     assert_eq!(err.message, "test error");
 }
 
 #[test]
 fn test_cdp_error_construction() {
-    let err = CdpError { code: -32000, message: "internal error".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "internal error".into(),
+    };
     assert_eq!(err.code, -32000);
     assert_eq!(err.message, "internal error");
 }
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32601, message: "method not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "method not found".into(),
+    };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32601"));
 }
@@ -385,7 +401,11 @@ fn test_multiple_sessions_independent() {
     let s2 = router.create_internal_session("t-2");
 
     let r1 = router.send_command(s1.session_id(), "Page.enable", None);
-    let r2 = router.send_command(s2.session_id(), "Runtime.evaluate", Some(json!({"expression": "42"})));
+    let r2 = router.send_command(
+        s2.session_id(),
+        "Runtime.evaluate",
+        Some(json!({"expression": "42"})),
+    );
 
     assert!(r1.is_ok());
     assert!(r2.is_ok());
@@ -454,7 +474,10 @@ fn test_internal_dispatch_runtime_get_properties() {
 
 #[test]
 fn test_internal_dispatch_target_create_target() {
-    let result = internal_dispatch("Target.createTarget", Some(json!({"url": "https://example.com"})));
+    let result = internal_dispatch(
+        "Target.createTarget",
+        Some(json!({"url": "https://example.com"})),
+    );
     assert!(result.get("targetId").is_some());
 }
 
@@ -484,13 +507,19 @@ fn test_internal_dispatch_css_get_inline_styles() {
 
 #[test]
 fn test_internal_dispatch_emulation_set_focus_emulation() {
-    let result = internal_dispatch("Emulation.setFocusEmulationEnabled", Some(json!({"enabled": true})));
+    let result = internal_dispatch(
+        "Emulation.setFocusEmulationEnabled",
+        Some(json!({"enabled": true})),
+    );
     assert!(result.is_object());
 }
 
 #[test]
 fn test_internal_dispatch_input_dispatch_key_event() {
-    let result = internal_dispatch("Input.dispatchKeyEvent", Some(json!({"type": "keyDown", "key": "Enter"})));
+    let result = internal_dispatch(
+        "Input.dispatchKeyEvent",
+        Some(json!({"type": "keyDown", "key": "Enter"})),
+    );
     assert!(result.is_object());
 }
 

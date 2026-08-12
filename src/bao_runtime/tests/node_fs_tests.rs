@@ -28,23 +28,47 @@ fn test_node_fs_all() {
     let _ = ::std::fs::remove_dir_all(&dir);
     ::std::fs::create_dir_all(&dir).unwrap();
 
-    let d = dir.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let d = dir
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let f1 = dir.join("hello.txt");
-    let p1 = f1.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let p1 = f1
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let f2 = dir.join("renamed.txt");
-    let p2 = f2.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let p2 = f2
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let f3 = dir.join("copy.txt");
-    let p3 = f3.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let p3 = f3
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let subdir = dir.join("subdir");
-    let ps = subdir.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let ps = subdir
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let noexist = dir.join("nonexistent.txt");
-    let pn = noexist.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let pn = noexist
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let rm_dir = dir.join("rm_test");
     ::std::fs::create_dir_all(&rm_dir).unwrap();
-    let pr = rm_dir.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let pr = rm_dir
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
 
     // All JS in one eval to share global scope
-    let results = eval_string(&mut ctx, &format!(r#"
+    let results = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
         var fs = require('fs');
         var errors = [];
         var results = [];
@@ -96,7 +120,16 @@ fn test_node_fs_all() {
         check("realpathSync", function() {{ var rp = fs.realpathSync("{p2}"); return typeof rp === "string" && rp.length > 0; }});
 
         results.join("|")
-    "#, d = d, p1 = p1, p2 = p2, p3 = p3, ps = ps, pn = pn, pr = pr));
+    "#,
+            d = d,
+            p1 = p1,
+            p2 = p2,
+            p3 = p3,
+            ps = ps,
+            pn = pn,
+            pr = pr
+        ),
+    );
 
     // Parse results
     let mut all_passed = true;
@@ -113,7 +146,11 @@ fn test_node_fs_all() {
     }
 
     // Verify file content from Rust side
-    assert_eq!(::std::fs::read_to_string(&f2).unwrap(), "hello world!!", "Rust-side file content check");
+    assert_eq!(
+        ::std::fs::read_to_string(&f2).unwrap(),
+        "hello world!!",
+        "Rust-side file content check"
+    );
 
     // cleanup
     let _ = ::std::fs::remove_dir_all(&dir);

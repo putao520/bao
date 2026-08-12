@@ -129,7 +129,9 @@ fn test_builder_max_sessions_one() {
 
 #[test]
 fn test_builder_browser_name() {
-    let cfg = ServerConfig::builder().browser_name("CustomBrowser/1.0").build();
+    let cfg = ServerConfig::builder()
+        .browser_name("CustomBrowser/1.0")
+        .build();
     assert_eq!(cfg.browser_name, "CustomBrowser/1.0");
 }
 
@@ -183,10 +185,7 @@ fn test_builder_full_chain() {
 
 #[test]
 fn test_builder_partial_chain() {
-    let cfg = ServerConfig::builder()
-        .port(9999)
-        .max_sessions(10)
-        .build();
+    let cfg = ServerConfig::builder().port(9999).max_sessions(10).build();
     assert_eq!(cfg.port, 9999);
     assert_eq!(cfg.max_sessions, 10);
     // Non-set fields should be defaults
@@ -196,10 +195,7 @@ fn test_builder_partial_chain() {
 
 #[test]
 fn test_builder_override_order() {
-    let cfg = ServerConfig::builder()
-        .port(1111)
-        .port(2222)
-        .build();
+    let cfg = ServerConfig::builder().port(1111).port(2222).build();
     assert_eq!(cfg.port, 2222);
 }
 
@@ -218,7 +214,7 @@ fn test_builder_browser_name_long() {
 
 // ---- DomainRegistry edge cases ----
 
-use cdp_server::{DomainRegistry, DomainHandler, EventSender, CdpError};
+use cdp_server::{CdpError, DomainHandler, DomainRegistry, EventSender};
 use serde_json::{json, Value};
 
 struct TestDomain {
@@ -226,7 +222,9 @@ struct TestDomain {
 }
 
 impl DomainHandler for TestDomain {
-    fn domain_name(&self) -> &'static str { self.name }
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
 
     fn handle_command(
         &self,
@@ -236,7 +234,10 @@ impl DomainHandler for TestDomain {
     ) -> Result<Value, CdpError> {
         match command {
             "Test.ping" => Ok(json!({"pong": true})),
-            _ => Err(CdpError { code: -32601, message: "not found".into() }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: "not found".into(),
+            }),
         }
     }
 }
@@ -392,10 +393,15 @@ use cdp_server::SessionState;
 
 #[test]
 fn test_session_state_variants() {
-    let states = [SessionState::Created, SessionState::Active, SessionState::Closing, SessionState::Closed];
+    let states = [
+        SessionState::Created,
+        SessionState::Active,
+        SessionState::Closing,
+        SessionState::Closed,
+    ];
     // All variants are distinct
     for i in 0..states.len() {
-        for j in (i+1)..states.len() {
+        for j in (i + 1)..states.len() {
             assert_ne!(states[i], states[j]);
         }
     }

@@ -5,8 +5,8 @@
 //! for loading TLS credentials. PEM parsing is done via `PEM_read_bio_X509`
 //! and `PEM_read_bio_PrivateKey`.
 
-use core::ffi::{c_long, c_void};
 use bun_boringssl_sys::boringssl::*;
+use core::ffi::{c_long, c_void};
 
 use crate::connection::{TlsConnection, TlsError};
 
@@ -77,18 +77,16 @@ impl TlsServer {
                     BIO_free(cert_bio);
                     SSL_CTX_free(ctx);
                 }
-                return Err(TlsError::InvalidCertKey("failed to load certificate".to_string()));
+                return Err(TlsError::InvalidCertKey(
+                    "failed to load certificate".to_string(),
+                ));
             }
         }
         unsafe { BIO_free(cert_bio) };
 
         // Load private key from PEM
-        let key_bio = unsafe {
-            BIO_new_mem_buf(
-                pem_key.as_ptr() as *const c_void,
-                pem_key.len() as isize,
-            )
-        };
+        let key_bio =
+            unsafe { BIO_new_mem_buf(pem_key.as_ptr() as *const c_void, pem_key.len() as isize) };
         if key_bio.is_null() {
             unsafe { SSL_CTX_free(ctx) };
             return Err(TlsError::BoringSSL("BIO_new_mem_buf failed for key"));
@@ -102,7 +100,9 @@ impl TlsServer {
                 BIO_free(key_bio);
                 SSL_CTX_free(ctx);
             }
-            return Err(TlsError::InvalidCertKey("failed to parse private key".to_string()));
+            return Err(TlsError::InvalidCertKey(
+                "failed to parse private key".to_string(),
+            ));
         }
 
         let ok = unsafe { SSL_CTX_use_PrivateKey(ctx, pkey) };
@@ -111,7 +111,9 @@ impl TlsServer {
 
         if ok == 0 {
             unsafe { SSL_CTX_free(ctx) };
-            return Err(TlsError::InvalidCertKey("failed to load private key".to_string()));
+            return Err(TlsError::InvalidCertKey(
+                "failed to load private key".to_string(),
+            ));
         }
 
         Ok(Self { ctx })
@@ -139,12 +141,12 @@ impl TlsServer {
         }
 
         // Load certificate from DER
-        let ok = unsafe {
-            SSL_CTX_use_certificate_ASN1(ctx, cert_der.len(), cert_der.as_ptr())
-        };
+        let ok = unsafe { SSL_CTX_use_certificate_ASN1(ctx, cert_der.len(), cert_der.as_ptr()) };
         if ok == 0 {
             unsafe { SSL_CTX_free(ctx) };
-            return Err(TlsError::InvalidCertKey("failed to load DER certificate".to_string()));
+            return Err(TlsError::InvalidCertKey(
+                "failed to load DER certificate".to_string(),
+            ));
         }
 
         // Load private key from DER (EVP_PKEY_RSA = 6)
@@ -153,7 +155,9 @@ impl TlsServer {
         };
         if ok == 0 {
             unsafe { SSL_CTX_free(ctx) };
-            return Err(TlsError::InvalidCertKey("failed to load DER private key".to_string()));
+            return Err(TlsError::InvalidCertKey(
+                "failed to load DER private key".to_string(),
+            ));
         }
 
         Ok(Self { ctx })

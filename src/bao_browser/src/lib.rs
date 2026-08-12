@@ -8,8 +8,8 @@
 // REQ-BRW-4: Worker/SharedWorker/ServiceWorker constructors on JS global object
 // REQ-CLI-002: bao browser 子命令 → servo 初始化 + CDP 端口输出
 // REQ-LIB-004: BaoRuntime top-level coordinator
-mod config;
 mod cdp_handler;
+mod config;
 mod delegate;
 mod error;
 mod page;
@@ -20,48 +20,42 @@ mod screenshot;
 
 pub use config::{BaoConfig, BrowserConfig, PageConfig};
 pub use delegate::{
-    BaoServoDelegate, BaoWebViewDelegate, WorkerHandle, WorkerId,
-    WorkerMessageDirection, WorkerMessageEvent,
-    WorkerErrorEvent, WorkerLifecycleState, WorkerTeardownPath,
-    WorkerTeardownResult, crash_safe_teardown_worker,
-    WorkerScopeConfig, AutoCloseWorker,
-    SharedWorkerId, SharedWorkerHandle, SharedWorkerConnectEvent,
-    SharedWorkerScopeConfig, SharedWorkerPortRef,
-    SharedWorkerGlobalScopeState, SharedWorkerChannelBridge,
-    SharedWorkerPortChannel, SharedWorkerPortEndpoints,
-    StructuredClonePayload, WorkerStructuredMessage,
-    WorkerChannelBridge, WorkerChannelEndpoints,
-    WorkerLocation, WorkerNavigator, WorkerNetworkInformation,
-    WorkerGlobalScopeState, DedicatedWorkerGlobalScopeState,
-    WorkerScriptSource, WorkerScriptLoadResult, WorkerScriptLoadError,
-    WorkerScriptType, WorkerScriptLoader, WorkerScriptLoadState,
-    is_javascript_mime_type,
-    BaoWebViewState,
-    ServiceWorkerHandle, ServiceWorkerRegistrationId,
-    ServiceWorkerRegistrationState, ServiceWorkerFetchInterceptMode,
-    ServiceWorkerGlobalScopeState, ServiceWorkerScopeConfig,
-    ServiceWorkerFetchEvent, ServiceWorkerRegistrationTracking,
+    crash_safe_teardown_worker, is_javascript_mime_type, AutoCloseWorker, BaoServoDelegate,
+    BaoWebViewDelegate, BaoWebViewState, DedicatedWorkerGlobalScopeState, ServiceWorkerFetchEvent,
+    ServiceWorkerFetchInterceptMode, ServiceWorkerGlobalScopeState, ServiceWorkerHandle,
+    ServiceWorkerRegistrationId, ServiceWorkerRegistrationState, ServiceWorkerRegistrationTracking,
+    ServiceWorkerScopeConfig, SharedWorkerChannelBridge, SharedWorkerConnectEvent,
+    SharedWorkerGlobalScopeState, SharedWorkerHandle, SharedWorkerId, SharedWorkerPortChannel,
+    SharedWorkerPortEndpoints, SharedWorkerPortRef, SharedWorkerScopeConfig,
+    StructuredClonePayload, WorkerChannelBridge, WorkerChannelEndpoints, WorkerErrorEvent,
+    WorkerGlobalScopeState, WorkerHandle, WorkerId, WorkerLifecycleState, WorkerLocation,
+    WorkerMessageDirection, WorkerMessageEvent, WorkerNavigator, WorkerNetworkInformation,
+    WorkerScopeConfig, WorkerScriptLoadError, WorkerScriptLoadResult, WorkerScriptLoadState,
+    WorkerScriptLoader, WorkerScriptSource, WorkerScriptType, WorkerStructuredMessage,
+    WorkerTeardownPath, WorkerTeardownResult,
 };
 pub use error::BrowserError;
 pub use page::{PageHandle, PageState};
 pub use page_pool::PagePool;
 pub use permission::{Permission, PermissionDenied, PermissionGuard};
+pub use runtime_bridge::{
+    register_worker_scope_callback_native, BridgeChannel, BridgeCommand, BridgeReceiver,
+    BridgeResponse, EvaluateResult, RuntimeBridge, WorkerScopeInitFn,
+};
 pub use screenshot::{encode_image, ScreenshotFormat};
-pub use runtime_bridge::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, EvaluateResult, RuntimeBridge,
-    WorkerScopeInitFn, register_worker_scope_callback_native};
 
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use servo::{
-    Opts, Servo, ServoBuilder,
-};
+use servo::{Opts, Servo, ServoBuilder};
 
 use bao_cdp::domains::ServoTargetProvider;
 use bao_cdp::servo_bridge::bridge_channel;
 use bao_cdp_client::bridge::{translate, ServoEvent};
-use cdp_server::{CdpServer, DomainRegistry, EmptyHandler, EventBroadcaster, EventSender, ServerConfig};
+use cdp_server::{
+    CdpServer, DomainRegistry, EmptyHandler, EventBroadcaster, EventSender, ServerConfig,
+};
 
 // BAO PATCH (BCE-20260627-009): Process-global servo opts initialization.
 // servo's `opts::initialize_options` uses an `OnceLock<Opts>` that panics on re-init,
@@ -164,34 +158,32 @@ impl BaoRuntime {
         // `force_isolate_event_loops == false`). Our config sets it `true`,
         // so observing `true` here means a prior BaoRuntime already won.
         let servo_already_initialized = servo::opts::is_initialized();
-        let servo: Rc<Servo> = Rc::new(
-            if servo_already_initialized {
-                // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls
-                // `initialize_options(opts.unwrap_or_default())` — if we pass no
-                // `.opts(...)`, it would invoke `initialize_options(Default)`
-                // with (force_isolate_event_loops=false, disable_script_debugger=false),
-                // which DIFFERS from the already-set (true, true) and would trip
-                // the "conflicting bao config" panic in the patched
-                // `initialize_options`. To stay idempotent, we clone the
-                // already-stored opts and re-pass them: `Servo::new`'s internal
-                // `initialize_options(existing.clone())` then sees identical
-                // bao fields and becomes a no-op. This is the only way to keep
-                // `Servo::new`'s unconditional `initialize_options` call safe
-                // across multiple BaoRuntime instances.
-                //
-                // NOTE: we use `is_initialized()` (pure read, no side effect),
-                // NOT `opts::get()`. `opts::get()` uses `get_or_init(Default)`,
-                // which would itself populate the `OnceLock` with defaults on the
-                // very first call — racing against `Servo::new`'s real
-                // `initialize_options((true, true))` and causing a spurious
-                // "conflicting config" panic.
-                ServoBuilder::default()
-                    .opts(servo::opts::get().clone())
-                    .build()
-            } else {
-                ServoBuilder::default().opts(desired_opts).build()
-            },
-        );
+        let servo: Rc<Servo> = Rc::new(if servo_already_initialized {
+            // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls
+            // `initialize_options(opts.unwrap_or_default())` — if we pass no
+            // `.opts(...)`, it would invoke `initialize_options(Default)`
+            // with (force_isolate_event_loops=false, disable_script_debugger=false),
+            // which DIFFERS from the already-set (true, true) and would trip
+            // the "conflicting bao config" panic in the patched
+            // `initialize_options`. To stay idempotent, we clone the
+            // already-stored opts and re-pass them: `Servo::new`'s internal
+            // `initialize_options(existing.clone())` then sees identical
+            // bao fields and becomes a no-op. This is the only way to keep
+            // `Servo::new`'s unconditional `initialize_options` call safe
+            // across multiple BaoRuntime instances.
+            //
+            // NOTE: we use `is_initialized()` (pure read, no side effect),
+            // NOT `opts::get()`. `opts::get()` uses `get_or_init(Default)`,
+            // which would itself populate the `OnceLock` with defaults on the
+            // very first call — racing against `Servo::new`'s real
+            // `initialize_options((true, true))` and causing a spurious
+            // "conflicting config" panic.
+            ServoBuilder::default()
+                .opts(servo::opts::get().clone())
+                .build()
+        } else {
+            ServoBuilder::default().opts(desired_opts).build()
+        });
 
         let delegate = Rc::new(BaoServoDelegate::new());
         servo.set_delegate(Rc::clone(&delegate) as Rc<dyn servo::ServoDelegate>);
@@ -309,16 +301,18 @@ impl BaoRuntime {
         // thread, bao still tracks the bidirectional structured-clone traffic
         // for CDP observability and message logging.
         // @trace REQ-BRW-004 [criterion:6] DF-WK-4 / DF-WK-5
-        let _endpoints = webview_state.borrow_mut().create_worker_channel(worker_id.clone());
+        let _endpoints = webview_state
+            .borrow_mut()
+            .create_worker_channel(worker_id.clone());
 
         // Register DedicatedWorkerGlobalScope state for CDP observability
         // and stealth consistency verification.
         // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
-        let scope_state = crate::delegate::DedicatedWorkerGlobalScopeState::new(
-            worker_id.clone(),
-            &scope_config,
-        );
-        webview_state.borrow_mut().register_dedicated_worker_scope(worker_id.clone(), scope_state);
+        let scope_state =
+            crate::delegate::DedicatedWorkerGlobalScopeState::new(worker_id.clone(), &scope_config);
+        webview_state
+            .borrow_mut()
+            .register_dedicated_worker_scope(worker_id.clone(), scope_state);
 
         // Track the WorkerHandle with AutoCloseWorker — ensures termination on
         // page unload (SPEC criterion #10: GlobalScope::track_worker).
@@ -467,18 +461,21 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         // connected WebSocket sessions.
         // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
         let registry = Arc::new(DomainRegistry::<EmptyHandler>::new());
-        let config = ServerConfig::builder()
-            .host("127.0.0.1")
-            .port(port)
-            .build();
-        let target_id = format!("{:016x}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64);
-        let mut server = CdpServer::with_registry(config, registry);
-        let provider = Arc::new(
-            ServoTargetProvider::new(bridge_tx, target_id, "127.0.0.1".into(), port)
+        let config = ServerConfig::builder().host("127.0.0.1").port(port).build();
+        let target_id = format!(
+            "{:016x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
         );
+        let mut server = CdpServer::with_registry(config, registry);
+        let provider = Arc::new(ServoTargetProvider::new(
+            bridge_tx,
+            target_id,
+            "127.0.0.1".into(),
+            port,
+        ));
         server.set_target_provider(provider);
         server.set_console_receiver(console_rx);
         // Clone the broadcaster before moving server into the thread.

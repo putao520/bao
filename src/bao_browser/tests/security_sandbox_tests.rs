@@ -141,7 +141,9 @@ fn security_sandbox_verification() {
     report.finish();
 
     // Hard failure on any security assertion failure
-    let sec_fails = report.messages.iter()
+    let sec_fails = report
+        .messages
+        .iter()
         .filter(|m| m.starts_with("FAIL"))
         .count();
     assert_eq!(
@@ -157,7 +159,9 @@ fn security_sandbox_verification() {
         assert!(
             pass_ratio >= 0.3,
             "too few sub-assertions passed: {}/{} (ratio {:.2})",
-            report.passed, total, pass_ratio
+            report.passed,
+            total,
+            pass_ratio
         );
     }
 }
@@ -192,8 +196,14 @@ fn scenario_cors_cross_origin_fetch(pool: &PagePool, report: &mut Report) {
         Ok(s) if s == "function" => {
             report.pass(&format!("{}::fetch_available", name));
         }
-        Ok(s) => report.skip(&format!("{}::fetch_available", name), &format!("typeof fetch: {}", s)),
-        Err(e) => report.skip(&format!("{}::fetch_available", name), &format!("eval: {}", e)),
+        Ok(s) => report.skip(
+            &format!("{}::fetch_available", name),
+            &format!("typeof fetch: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::fetch_available", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // Verify no synchronous CORS block — fetch() call itself should not throw
@@ -201,21 +211,30 @@ fn scenario_cors_cross_origin_fetch(pool: &PagePool, report: &mut Report) {
         Ok(s) if s == "fetch_callable" => {
             report.pass(&format!("{}::fetch_not_blocked", name));
         }
-        Ok(s) => report.skip(&format!("{}::fetch_not_blocked", name), &format!("result: {}", s)),
-        Err(e) => report.skip(&format!("{}::fetch_not_blocked", name), &format!("eval: {}", e)),
+        Ok(s) => report.skip(
+            &format!("{}::fetch_not_blocked", name),
+            &format!("result: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::fetch_not_blocked", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // Test: verify no CORS-related errors in basic cross-origin XHR pattern
-    match page.evaluate_js(
-        "typeof XMLHttpRequest !== 'undefined' ? 'xhr_available' : 'xhr_unavailable'"
-    ) {
+    match page
+        .evaluate_js("typeof XMLHttpRequest !== 'undefined' ? 'xhr_available' : 'xhr_unavailable'")
+    {
         Ok(s) if s.contains("xhr_available") => {
             report.pass(&format!("{}::xhr_available", name));
         }
         Ok(s) => {
             report.skip(&format!("{}::xhr_available", name), &format!("xhr: {}", s));
         }
-        Err(e) => report.skip(&format!("{}::xhr_available", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::xhr_available", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -261,39 +280,70 @@ fn scenario_node_api_absent_from_page(pool: &PagePool, report: &mut Report) {
                 report.pass(&format!("{}::{}_undefined", name, api));
             }
             Ok(s) => {
-                report.fail(&format!("{}::{}_undefined", name, api),
-                    &format!("{} ({}) is accessible on page global: typeof={}", api, desc, s));
+                report.fail(
+                    &format!("{}::{}_undefined", name, api),
+                    &format!(
+                        "{} ({}) is accessible on page global: typeof={}",
+                        api, desc, s
+                    ),
+                );
             }
-            Err(e) => report.skip(&format!("{}::{}_undefined", name, api), &format!("evaluate_js_web: {}", e)),
+            Err(e) => report.skip(
+                &format!("{}::{}_undefined", name, api),
+                &format!("evaluate_js_web: {}", e),
+            ),
         }
     }
 
     // Verify Node.js built-in modules are NOT accessible
     let node_modules = [
-        "fs", "path", "crypto", "http", "https", "os", "net", "dns",
-        "child_process", "stream", "zlib", "vm", "tls", "readline",
+        "fs",
+        "path",
+        "crypto",
+        "http",
+        "https",
+        "os",
+        "net",
+        "dns",
+        "child_process",
+        "stream",
+        "zlib",
+        "vm",
+        "tls",
+        "readline",
     ];
 
     for module in &node_modules {
         // Try require() — should fail since require is undefined
-        let js = format!("try {{ require('{}'); 'accessible' }} catch(e) {{ e.message }}", module);
+        let js = format!(
+            "try {{ require('{}'); 'accessible' }} catch(e) {{ e.message }}",
+            module
+        );
         match page.evaluate_js_web(&js) {
             Ok(s) if s.contains("require is not defined") || s.contains("is not defined") => {
                 report.pass(&format!("{}::module_{}_blocked", name, module));
             }
             Ok(s) if s.contains("accessible") => {
-                report.fail(&format!("{}::module_{}_blocked", name, module),
-                    &format!("node module '{}' accessible from page!", module));
+                report.fail(
+                    &format!("{}::module_{}_blocked", name, module),
+                    &format!("node module '{}' accessible from page!", module),
+                );
             }
             Ok(s) => {
                 // Some other error — might be that require itself is undefined
                 if s.contains("not defined") {
                     report.pass(&format!("{}::module_{}_blocked", name, module));
                 } else {
-                    report.skip(&format!("{}::module_{}_blocked", name, module), &format!("unexpected: {}", s));
+                    report.skip(
+                        &format!("{}::module_{}_blocked", name, module),
+                        &format!("unexpected: {}", s),
+                    );
                 }
             }
-            Err(e) => report.skip(&format!("{}::module_{}_blocked", name, module), &format!("evaluate_js_web: {}", e)),
+            Err(e) => report.skip(
+                &format!("{}::module_{}_blocked", name, module),
+                &format!("evaluate_js_web: {}", e),
+            ),
         }
     }
 
@@ -327,8 +377,13 @@ fn scenario_node_realm_diagnostic(runtime: &BaoRuntime, report: &mut Report) {
     if has_page_global && has_node_realm {
         report.pass(&format!("{}::realm_pointers_valid", name));
     } else {
-        report.skip(&format!("{}::realm_pointers_valid", name),
-            &format!("page_global={}, node_realm={} — Node Realm creation may have failed silently", has_page_global, has_node_realm));
+        report.skip(
+            &format!("{}::realm_pointers_valid", name),
+            &format!(
+                "page_global={}, node_realm={} — Node Realm creation may have failed silently",
+                has_page_global, has_node_realm
+            ),
+        );
     }
 
     // Test: can we enter Node Realm and evaluate?
@@ -337,10 +392,16 @@ fn scenario_node_realm_diagnostic(runtime: &BaoRuntime, report: &mut Report) {
             report.pass(&format!("{}::evaluate_in_node_realm_works", name));
         }
         Ok(s) => {
-            report.skip(&format!("{}::evaluate_in_node_realm_works", name), &format!("unexpected result: {}", s));
+            report.skip(
+                &format!("{}::evaluate_in_node_realm_works", name),
+                &format!("unexpected result: {}", s),
+            );
         }
         Err(e) => {
-            report.skip(&format!("{}::evaluate_in_node_realm_works", name), &format!("evaluate_js error: {}", e));
+            report.skip(
+                &format!("{}::evaluate_in_node_realm_works", name),
+                &format!("evaluate_js error: {}", e),
+            );
         }
     }
 
@@ -350,24 +411,41 @@ fn scenario_node_realm_diagnostic(runtime: &BaoRuntime, report: &mut Report) {
             if s != "undefined" {
                 report.pass(&format!("{}::require_type_check", name));
             } else {
-                report.skip(&format!("{}::require_type_check", name), &format!("typeof require = undefined (pg={}, nr={})", has_page_global, has_node_realm));
+                report.skip(
+                    &format!("{}::require_type_check", name),
+                    &format!(
+                        "typeof require = undefined (pg={}, nr={})",
+                        has_page_global, has_node_realm
+                    ),
+                );
             }
         }
         Err(e) => {
-            report.skip(&format!("{}::require_type_check", name), &format!("evaluate_js error: {}", e));
+            report.skip(
+                &format!("{}::require_type_check", name),
+                &format!("evaluate_js error: {}", e),
+            );
         }
     }
 
     // Verify Node Realm global has expected API surface
-    match page.evaluate_js("Object.keys(typeof globalThis !== 'undefined' ? globalThis : {}).slice(0, 10).join(',')") {
+    match page.evaluate_js(
+        "Object.keys(typeof globalThis !== 'undefined' ? globalThis : {}).slice(0, 10).join(',')",
+    ) {
         Ok(s) if s.contains("require") && s.contains("process") => {
             report.pass(&format!("{}::node_realm_has_node_apis", name));
         }
         Ok(s) => {
-            report.skip(&format!("{}::node_realm_has_node_apis", name), &format!("global keys: {}", s));
+            report.skip(
+                &format!("{}::node_realm_has_node_apis", name),
+                &format!("global keys: {}", s),
+            );
         }
         Err(e) => {
-            report.skip(&format!("{}::node_realm_has_node_apis", name), &format!("evaluate_js: {}", e));
+            report.skip(
+                &format!("{}::node_realm_has_node_apis", name),
+                &format!("evaluate_js: {}", e),
+            );
         }
     }
 
@@ -416,22 +494,36 @@ fn scenario_evaluate_js_has_node_apis(runtime: &BaoRuntime, report: &mut Report)
                 report.skip(&format!("{}::{}_available", name, api),
                     &format!("{} ({}) not available — dual-Realm pending servo callback isolation: typeof={}", api, desc, s));
             }
-            Err(e) => report.skip(&format!("{}::{}_available", name, api), &format!("evaluate_js: {}", e)),
+            Err(e) => report.skip(
+                &format!("{}::{}_available", name, api),
+                &format!("evaluate_js: {}", e),
+            ),
         }
     }
 
     // Test: require('path') should work in privileged context
-    match page.evaluate_js("try { const path = require('path'); typeof path.join } catch(e) { 'error: ' + e.message }") {
+    match page.evaluate_js(
+        "try { const path = require('path'); typeof path.join } catch(e) { 'error: ' + e.message }",
+    ) {
         Ok(s) if s == "function" => {
             report.pass(&format!("{}::require_path", name));
         }
         Ok(s) if s.contains("error") => {
-            report.skip(&format!("{}::require_path", name), &format!("require failed: {}", s));
+            report.skip(
+                &format!("{}::require_path", name),
+                &format!("require failed: {}", s),
+            );
         }
         Ok(s) => {
-            report.skip(&format!("{}::require_path", name), &format!("path.join type: {}", s));
+            report.skip(
+                &format!("{}::require_path", name),
+                &format!("path.join type: {}", s),
+            );
         }
-        Err(e) => report.skip(&format!("{}::require_path", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::require_path", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Test: process.env should work in privileged context
@@ -440,9 +532,15 @@ fn scenario_evaluate_js_has_node_apis(runtime: &BaoRuntime, report: &mut Report)
             report.pass(&format!("{}::process_env", name));
         }
         Ok(s) => {
-            report.skip(&format!("{}::process_env", name), &format!("process.env type: {}", s));
+            report.skip(
+                &format!("{}::process_env", name),
+                &format!("process.env type: {}", s),
+            );
         }
-        Err(e) => report.skip(&format!("{}::process_env", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::process_env", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -495,18 +593,29 @@ fn scenario_web_apis_available(pool: &PagePool, report: &mut Report) {
                 report.pass(&format!("{}::{}_available", name, api));
             }
             Ok(s) => {
-                report.fail(&format!("{}::{}_available", name, api),
-                    &format!("{} ({}) missing from page global: typeof={}", api, desc, s));
+                report.fail(
+                    &format!("{}::{}_available", name, api),
+                    &format!("{} ({}) missing from page global: typeof={}", api, desc, s),
+                );
             }
-            Err(e) => report.skip(&format!("{}::{}_available", name, api), &format!("evaluate_js_web: {}", e)),
+            Err(e) => report.skip(
+                &format!("{}::{}_available", name, api),
+                &format!("evaluate_js_web: {}", e),
+            ),
         }
     }
 
     // Verify fetch is functional (not just present)
     match page.evaluate_js_web("typeof fetch === 'function' ? 'yes' : 'no'") {
         Ok(s) if s == "yes" => report.pass(&format!("{}::fetch_functional", name)),
-        Ok(s) => report.fail(&format!("{}::fetch_functional", name), &format!("fetch not a function: {}", s)),
-        Err(e) => report.skip(&format!("{}::fetch_functional", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::fetch_functional", name),
+            &format!("fetch not a function: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::fetch_functional", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Verify crypto.getRandomValues is functional
@@ -584,18 +693,29 @@ fn scenario_malicious_node_api_injection(pool: &PagePool, report: &mut Report) {
             Ok(s) if s.contains("HACKED") => {
                 // The fake require from Attack 1 — still not the real Node require
                 report.pass(&format!("{}::fs_attack_{}_fake_require", name, i));
-                eprintln!("  [malicious] attack {} hit fake require (not real Node)", i);
+                eprintln!(
+                    "  [malicious] attack {} hit fake require (not real Node)",
+                    i
+                );
             }
             Ok(s) => {
                 // Check if this is actually the real fs module
                 if s.contains("readFileSync") || s.contains("writeFileSync") {
-                    report.fail(&format!("{}::fs_attack_{}_blocked", name, i),
-                        &format!("REAL fs module accessible via attack {}!", i));
+                    report.fail(
+                        &format!("{}::fs_attack_{}_blocked", name, i),
+                        &format!("REAL fs module accessible via attack {}!", i),
+                    );
                 } else {
-                    report.skip(&format!("{}::fs_attack_{}_blocked", name, i), &format!("result: {}", s));
+                    report.skip(
+                        &format!("{}::fs_attack_{}_blocked", name, i),
+                        &format!("result: {}", s),
+                    );
                 }
             }
-            Err(e) => report.skip(&format!("{}::fs_attack_{}_blocked", name, i), &format!("evaluate_js_web: {}", e)),
+            Err(e) => report.skip(
+                &format!("{}::fs_attack_{}_blocked", name, i),
+                &format!("evaluate_js_web: {}", e),
+            ),
         }
     }
 
@@ -638,7 +758,7 @@ fn scenario_malicious_prototype_pollution(pool: &PagePool, report: &mut Report) 
 
     // Attack: Try to pollute Object.prototype to inject Node-like APIs
     match page.evaluate_js_web(
-        "Object.prototype.require = function(m) { return 'POLLUTED:' + m; }; 'polluted'"
+        "Object.prototype.require = function(m) { return 'POLLUTED:' + m; }; 'polluted'",
     ) {
         Ok(s) if s == "polluted" => {
             // Prototype pollution succeeded (JS allows this), but it's not the real require
@@ -646,27 +766,39 @@ fn scenario_malicious_prototype_pollution(pool: &PagePool, report: &mut Report) 
             eprintln!("  [proto] Object.prototype.require set (harmless — not real Node require)");
         }
         Ok(s) => {
-            report.skip(&format!("{}::pollution_harmless", name), &format!("result: {}", s));
+            report.skip(
+                &format!("{}::pollution_harmless", name),
+                &format!("result: {}", s),
+            );
         }
-        Err(e) => report.skip(&format!("{}::pollution_harmless", name), &format!("evaluate_js_web: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::pollution_harmless", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Verify the polluted require is NOT the real Node require
-    match page.evaluate_js_web(
-        "({}).require('fs')"
-    ) {
+    match page.evaluate_js_web("({}).require('fs')") {
         Ok(s) if s.contains("POLLUTED") => {
             report.pass(&format!("{}::polluted_not_real_require", name));
             eprintln!("  [proto] polluted require returns fake value (not real Node require)");
         }
         Ok(s) if s.contains("readFileSync") => {
-            report.fail(&format!("{}::polluted_not_real_require", name),
-                "prototype pollution exposed real fs module!");
+            report.fail(
+                &format!("{}::polluted_not_real_require", name),
+                "prototype pollution exposed real fs module!",
+            );
         }
         Ok(s) => {
-            report.skip(&format!("{}::polluted_not_real_require", name), &format!("result: {}", s));
+            report.skip(
+                &format!("{}::polluted_not_real_require", name),
+                &format!("result: {}", s),
+            );
         }
-        Err(e) => report.skip(&format!("{}::polluted_not_real_require", name), &format!("evaluate_js_web: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::polluted_not_real_require", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Cleanup: remove the pollution
@@ -697,56 +829,80 @@ fn scenario_malicious_global_escape(pool: &PagePool, report: &mut Report) {
 
     // Attack 1: Try to access Node APIs via Function constructor
     match page.evaluate_js_web(
-        "try { new Function('return typeof require')() } catch(e) { 'error: ' + e.message }"
+        "try { new Function('return typeof require')() } catch(e) { 'error: ' + e.message }",
     ) {
         Ok(s) if s == "undefined" => {
             report.pass(&format!("{}::function_constructor_no_require", name));
         }
         Ok(s) if s == "function" => {
-            report.fail(&format!("{}::function_constructor_no_require", name),
-                "Function constructor can access require!");
+            report.fail(
+                &format!("{}::function_constructor_no_require", name),
+                "Function constructor can access require!",
+            );
         }
         Ok(s) => {
-            report.skip(&format!("{}::function_constructor_no_require", name), &format!("result: {}", s));
+            report.skip(
+                &format!("{}::function_constructor_no_require", name),
+                &format!("result: {}", s),
+            );
         }
-        Err(e) => report.skip(&format!("{}::function_constructor_no_require", name), &format!("evaluate_js_web: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::function_constructor_no_require", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Attack 2: Try to access Node APIs via indirect eval
-    match page.evaluate_js_web(
-        "try { (0, eval)('typeof process') } catch(e) { 'error: ' + e.message }"
-    ) {
+    match page
+        .evaluate_js_web("try { (0, eval)('typeof process') } catch(e) { 'error: ' + e.message }")
+    {
         Ok(s) if s == "undefined" => {
             report.pass(&format!("{}::indirect_eval_no_process", name));
         }
         Ok(s) if s == "object" => {
-            report.fail(&format!("{}::indirect_eval_no_process", name),
-                "indirect eval can access process!");
+            report.fail(
+                &format!("{}::indirect_eval_no_process", name),
+                "indirect eval can access process!",
+            );
         }
         Ok(s) => {
-            report.skip(&format!("{}::indirect_eval_no_process", name), &format!("result: {}", s));
+            report.skip(
+                &format!("{}::indirect_eval_no_process", name),
+                &format!("result: {}", s),
+            );
         }
-        Err(e) => report.skip(&format!("{}::indirect_eval_no_process", name), &format!("evaluate_js_web: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::indirect_eval_no_process", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Attack 3: Try to access Node APIs via with statement (if available)
-    match page.evaluate_js_web(
-        "try { with(window) { typeof Bun } } catch(e) { 'error: ' + e.message }"
-    ) {
+    match page
+        .evaluate_js_web("try { with(window) { typeof Bun } } catch(e) { 'error: ' + e.message }")
+    {
         Ok(s) if s == "undefined" => {
             report.pass(&format!("{}::with_statement_no_bun", name));
         }
         Ok(s) if s != "undefined" => {
-            report.fail(&format!("{}::with_statement_no_bun", name),
-                &format!("with statement can access Bun: typeof={}", s));
+            report.fail(
+                &format!("{}::with_statement_no_bun", name),
+                &format!("with statement can access Bun: typeof={}", s),
+            );
         }
         Ok(s) => {
-            report.skip(&format!("{}::with_statement_no_bun", name), &format!("result: {}", s));
+            report.skip(
+                &format!("{}::with_statement_no_bun", name),
+                &format!("result: {}", s),
+            );
         }
         Err(e) => {
             // with statement may not be available in strict mode — that's fine
             report.pass(&format!("{}::with_statement_no_bun", name));
-            eprintln!("  [escape] with statement not available (strict mode): {}", e);
+            eprintln!(
+                "  [escape] with statement not available (strict mode): {}",
+                e
+            );
         }
     }
 
@@ -766,16 +922,21 @@ fn scenario_malicious_global_escape(pool: &PagePool, report: &mut Report) {
 
     // Attack 5: Try to access Node APIs via Reflect
     match page.evaluate_js_web(
-        "try { Reflect.get(window, 'require') } catch(e) { 'error: ' + e.message }"
+        "try { Reflect.get(window, 'require') } catch(e) { 'error: ' + e.message }",
     ) {
         Ok(s) if s == "undefined" => {
             report.pass(&format!("{}::reflect_no_require", name));
         }
         Ok(_) => {
-            report.fail(&format!("{}::reflect_no_require", name),
-                "Reflect.get can access require on window!");
+            report.fail(
+                &format!("{}::reflect_no_require", name),
+                "Reflect.get can access require on window!",
+            );
         }
-        Err(e) => report.skip(&format!("{}::reflect_no_require", name), &format!("evaluate_js_web: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::reflect_no_require", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -802,14 +963,19 @@ fn scenario_privileged_dom_access(runtime: &BaoRuntime, report: &mut Report) {
     wait_for_load(&page, 3000);
 
     // Privileged evaluate_js should have DOM access
-    match page.evaluate_js("document.getElementById('t') ? document.getElementById('t').textContent : 'no_element'") {
+    match page.evaluate_js(
+        "document.getElementById('t') ? document.getElementById('t').textContent : 'no_element'",
+    ) {
         Ok(s) if s.contains("Hello") => {
             report.pass(&format!("{}::dom_read", name));
         }
         Ok(s) => {
             report.skip(&format!("{}::dom_read", name), &format!("result: {}", s));
         }
-        Err(e) => report.skip(&format!("{}::dom_read", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::dom_read", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Privileged evaluate_js should have window/navigator access
@@ -818,9 +984,15 @@ fn scenario_privileged_dom_access(runtime: &BaoRuntime, report: &mut Report) {
             report.pass(&format!("{}::window_navigator", name));
         }
         Ok(s) => {
-            report.skip(&format!("{}::window_navigator", name), &format!("result: {}", s));
+            report.skip(
+                &format!("{}::window_navigator", name),
+                &format!("result: {}", s),
+            );
         }
-        Err(e) => report.skip(&format!("{}::window_navigator", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::window_navigator", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Privileged evaluate_js can modify DOM AND use Node APIs in same script
@@ -840,14 +1012,22 @@ fn scenario_privileged_dom_access(runtime: &BaoRuntime, report: &mut Report) {
     }
 
     // Verify DOM was actually modified
-    match page.evaluate_js_web("document.getElementById('t') ? document.getElementById('t').textContent : 'no_element'") {
+    match page.evaluate_js_web(
+        "document.getElementById('t') ? document.getElementById('t').textContent : 'no_element'",
+    ) {
         Ok(s) if s.contains("Modified") => {
             report.pass(&format!("{}::dom_modified_verified", name));
         }
         Ok(s) => {
-            report.skip(&format!("{}::dom_modified_verified", name), &format!("textContent: {}", s));
+            report.skip(
+                &format!("{}::dom_modified_verified", name),
+                &format!("textContent: {}", s),
+            );
         }
-        Err(e) => report.skip(&format!("{}::dom_modified_verified", name), &format!("evaluate_js_web: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::dom_modified_verified", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -880,44 +1060,86 @@ fn scenario_node_api_no_persistence_after_evaluate(runtime: &BaoRuntime, report:
     // After evaluate_js completes, Node APIs must NOT be on globalThis
     match page.evaluate_js_web("typeof globalThis.require") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::require_gone", name)),
-        Ok(s) => report.fail(&format!("{}::require_gone", name), &format!("require still on global: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::require_gone", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::require_gone", name),
+            &format!("require still on global: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::require_gone", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     match page.evaluate_js_web("typeof globalThis.Bun") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::bun_gone", name)),
-        Ok(s) => report.fail(&format!("{}::bun_gone", name), &format!("Bun still on global: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::bun_gone", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::bun_gone", name),
+            &format!("Bun still on global: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::bun_gone", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     match page.evaluate_js_web("typeof globalThis.process") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::process_gone", name)),
-        Ok(s) => report.fail(&format!("{}::process_gone", name), &format!("process still on global: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::process_gone", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::process_gone", name),
+            &format!("process still on global: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::process_gone", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     match page.evaluate_js_web("typeof globalThis.Buffer") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::buffer_gone", name)),
-        Ok(s) => report.fail(&format!("{}::buffer_gone", name), &format!("Buffer still on global: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::buffer_gone", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::buffer_gone", name),
+            &format!("Buffer still on global: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::buffer_gone", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     match page.evaluate_js_web("typeof globalThis.module") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::module_gone", name)),
-        Ok(s) => report.fail(&format!("{}::module_gone", name), &format!("module still on global: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::module_gone", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::module_gone", name),
+            &format!("module still on global: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::module_gone", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     match page.evaluate_js_web("typeof globalThis.__dirname") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::dirname_gone", name)),
-        Ok(s) => report.fail(&format!("{}::dirname_gone", name), &format!("__dirname still on global: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::dirname_gone", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::dirname_gone", name),
+            &format!("__dirname still on global: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::dirname_gone", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     match page.evaluate_js_web("typeof globalThis.__filename") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::filename_gone", name)),
-        Ok(s) => report.fail(&format!("{}::filename_gone", name), &format!("__filename still on global: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::filename_gone", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::filename_gone", name),
+            &format!("__filename still on global: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::filename_gone", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Verify scope object itself is deleted (randomized name — check no __bao_ prefix remains)
@@ -932,16 +1154,28 @@ fn scenario_node_api_no_persistence_after_evaluate(runtime: &BaoRuntime, report:
     // Verify Object.getOwnPropertyDescriptor returns undefined for require
     match page.evaluate_js_web("String(Object.getOwnPropertyDescriptor(globalThis, 'require'))") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::require_no_descriptor", name)),
-        Ok(s) => report.fail(&format!("{}::require_no_descriptor", name), &format!("descriptor exists: {}", s)),
-        Err(e) => report.skip(&format!("{}::require_no_descriptor", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::require_no_descriptor", name),
+            &format!("descriptor exists: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::require_no_descriptor", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Verify re-injection is idempotent
     let _ = page.evaluate_js("typeof require !== 'undefined' ? 'has_require_2' : 'no_require_2'");
     match page.evaluate_js_web("typeof globalThis.require") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::require_gone_after_rerun", name)),
-        Ok(s) => report.fail(&format!("{}::require_gone_after_rerun", name), &format!("require re-appeared: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::require_gone_after_rerun", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::require_gone_after_rerun", name),
+            &format!("require re-appeared: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::require_gone_after_rerun", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Verify no leak after repeated evaluate_js calls
@@ -950,8 +1184,14 @@ fn scenario_node_api_no_persistence_after_evaluate(runtime: &BaoRuntime, report:
     }
     match page.evaluate_js_web("typeof globalThis.require") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::no_leak_after_repeated", name)),
-        Ok(s) => report.fail(&format!("{}::no_leak_after_repeated", name), &format!("require leaked: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::no_leak_after_repeated", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::no_leak_after_repeated", name),
+            &format!("require leaked: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::no_leak_after_repeated", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -993,15 +1233,27 @@ fn scenario_scope_cleanup_after_evaluate(runtime: &BaoRuntime, report: &mut Repo
     // Verify env helpers are NOT on globalThis (they're inside scope object now)
     match page.evaluate_js_web("'__bao_setEnv' in globalThis || '__bao_delEnv' in globalThis") {
         Ok(s) if s == "false" => report.pass(&format!("{}::env_helpers_not_on_global", name)),
-        Ok(s) => report.fail(&format!("{}::env_helpers_not_on_global", name), &format!("env helpers found on global: {}", s)),
-        Err(e) => report.skip(&format!("{}::env_helpers_not_on_global", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::env_helpers_not_on_global", name),
+            &format!("env helpers found on global: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::env_helpers_not_on_global", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Verify Buffer is not a direct property of globalThis
     match page.evaluate_js_web("'Buffer' in globalThis") {
         Ok(s) if s == "false" => report.pass(&format!("{}::buffer_not_in_global", name)),
-        Ok(s) => report.fail(&format!("{}::buffer_not_in_global", name), &format!("Buffer in global: {}", s)),
-        Err(e) => report.skip(&format!("{}::buffer_not_in_global", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::buffer_not_in_global", name),
+            &format!("Buffer in global: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::buffer_not_in_global", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Verify Reflect.ownKeys does not contain Node API names or __bao_ prefixed keys
@@ -1016,15 +1268,27 @@ fn scenario_scope_cleanup_after_evaluate(runtime: &BaoRuntime, report: &mut Repo
     // Verify indirect eval cannot access Node APIs
     match page.evaluate_js_web("(0,eval)('typeof require')") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::indirect_eval_safe", name)),
-        Ok(s) => report.fail(&format!("{}::indirect_eval_safe", name), &format!("indirect eval found: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::indirect_eval_safe", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::indirect_eval_safe", name),
+            &format!("indirect eval found: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::indirect_eval_safe", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // Verify Function constructor cannot access Node APIs
     match page.evaluate_js_web("new Function('return typeof require')()") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::function_ctor_safe", name)),
-        Ok(s) => report.fail(&format!("{}::function_ctor_safe", name), &format!("Function ctor found: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::function_ctor_safe", name), &format!("evaluate_js_web: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::function_ctor_safe", name),
+            &format!("Function ctor found: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::function_ctor_safe", name),
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -1056,38 +1320,74 @@ fn scenario_dual_realm_compartment_isolation(runtime: &BaoRuntime, report: &mut 
 
     // ---- Criterion 1: Page JS typeof require === 'undefined' ----
     match page.evaluate_js_web("typeof require") {
-        Ok(s) if s == "undefined" => report.pass(&format!("{}::page_typeof_require_undefined", name)),
-        Ok(s) => report.fail(&format!("{}::page_typeof_require_undefined", name), &format!("expected 'undefined', got '{}'", s)),
-        Err(e) => report.skip(&format!("{}::page_typeof_require_undefined", name), &format!("eval: {}", e)),
+        Ok(s) if s == "undefined" => {
+            report.pass(&format!("{}::page_typeof_require_undefined", name))
+        }
+        Ok(s) => report.fail(
+            &format!("{}::page_typeof_require_undefined", name),
+            &format!("expected 'undefined', got '{}'", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::page_typeof_require_undefined", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Criterion 2: Page JS typeof Bun === 'undefined' ----
     match page.evaluate_js_web("typeof Bun") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::page_typeof_bun_undefined", name)),
-        Ok(s) => report.fail(&format!("{}::page_typeof_bun_undefined", name), &format!("expected 'undefined', got '{}'", s)),
-        Err(e) => report.skip(&format!("{}::page_typeof_bun_undefined", name), &format!("eval: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::page_typeof_bun_undefined", name),
+            &format!("expected 'undefined', got '{}'", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::page_typeof_bun_undefined", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Criterion 3: Trusted script can use require ----
     // Dual-Realm pending servo callback isolation fix
     match page.evaluate_js("typeof require") {
-        Ok(s) if s == "function" => report.pass(&format!("{}::trusted_typeof_require_function", name)),
-        Ok(s) => report.skip(&format!("{}::trusted_typeof_require_function", name), &format!("dual-Realm pending servo callback isolation: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::trusted_typeof_require_function", name), &format!("eval: {}", e)),
+        Ok(s) if s == "function" => {
+            report.pass(&format!("{}::trusted_typeof_require_function", name))
+        }
+        Ok(s) => report.skip(
+            &format!("{}::trusted_typeof_require_function", name),
+            &format!("dual-Realm pending servo callback isolation: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::trusted_typeof_require_function", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Criterion 4: Trusted script can use Bun ----
     match page.evaluate_js("typeof Bun") {
-        Ok(s) if s == "object" || s == "function" => report.pass(&format!("{}::trusted_typeof_bun_available", name)),
-        Ok(s) => report.skip(&format!("{}::trusted_typeof_bun_available", name), &format!("dual-Realm pending servo callback isolation: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::trusted_typeof_bun_available", name), &format!("eval: {}", e)),
+        Ok(s) if s == "object" || s == "function" => {
+            report.pass(&format!("{}::trusted_typeof_bun_available", name))
+        }
+        Ok(s) => report.skip(
+            &format!("{}::trusted_typeof_bun_available", name),
+            &format!("dual-Realm pending servo callback isolation: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::trusted_typeof_bun_available", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Criterion 5: Trusted script can access DOM (via JS_WrapObject proxy) ----
     match page.evaluate_js("typeof window") {
         Ok(s) if s == "object" => report.pass(&format!("{}::trusted_typeof_window_object", name)),
-        Ok(s) => report.fail(&format!("{}::trusted_typeof_window_object", name), &format!("expected 'object', got '{}'", s)),
-        Err(e) => report.skip(&format!("{}::trusted_typeof_window_object", name), &format!("eval: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::trusted_typeof_window_object", name),
+            &format!("expected 'object', got '{}'", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::trusted_typeof_window_object", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Criterion 6: Reflect.ownKeys on page global must not find Node APIs ----
@@ -1102,29 +1402,53 @@ fn scenario_dual_realm_compartment_isolation(runtime: &BaoRuntime, report: &mut 
     // ---- Criterion 7: Indirect eval from page JS cannot access Node APIs ----
     match page.evaluate_js_web("(0,eval)('typeof require')") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::page_indirect_eval_safe", name)),
-        Ok(s) => report.fail(&format!("{}::page_indirect_eval_safe", name), &format!("indirect eval found: {}", s)),
-        Err(e) => report.skip(&format!("{}::page_indirect_eval_safe", name), &format!("eval: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::page_indirect_eval_safe", name),
+            &format!("indirect eval found: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::page_indirect_eval_safe", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Criterion 8: Function constructor from page JS cannot access Node APIs ----
     match page.evaluate_js_web("new Function('return typeof require')()") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::page_function_ctor_safe", name)),
-        Ok(s) => report.fail(&format!("{}::page_function_ctor_safe", name), &format!("Function ctor found: {}", s)),
-        Err(e) => report.skip(&format!("{}::page_function_ctor_safe", name), &format!("eval: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::page_function_ctor_safe", name),
+            &format!("Function ctor found: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::page_function_ctor_safe", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Criterion 9: Trusted script can use process ----
     match page.evaluate_js("typeof process") {
         Ok(s) if s == "object" => report.pass(&format!("{}::trusted_typeof_process_object", name)),
-        Ok(s) => report.skip(&format!("{}::trusted_typeof_process_object", name), &format!("dual-Realm pending servo callback isolation: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::trusted_typeof_process_object", name), &format!("eval: {}", e)),
+        Ok(s) => report.skip(
+            &format!("{}::trusted_typeof_process_object", name),
+            &format!("dual-Realm pending servo callback isolation: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::trusted_typeof_process_object", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Criterion 10: evaluate_js_web has no Realm switch (stays in Page Realm) ----
     match page.evaluate_js_web("typeof Buffer") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::web_mode_no_buffer", name)),
-        Ok(s) => report.fail(&format!("{}::web_mode_no_buffer", name), &format!("expected 'undefined', got '{}'", s)),
-        Err(e) => report.skip(&format!("{}::web_mode_no_buffer", name), &format!("eval: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::web_mode_no_buffer", name),
+            &format!("expected 'undefined', got '{}'", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::web_mode_no_buffer", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -1155,13 +1479,18 @@ fn scenario_symbol_cross_compartment_leaks(pool: &PagePool, report: &mut Report)
     wait_for_load(&page, 3000);
 
     // ---- Attack 1: Symbol.for() cannot discover Node API keys ----
-    match page.evaluate_js_web(
-        "const sym = Symbol.for('require'); typeof window[sym]"
-    ) {
-        Ok(s) if s == "undefined" => report.pass(&format!("{}::symbol_for_require_undefined", name)),
-        Ok(s) => report.fail(&format!("{}::symbol_for_require_undefined", name),
-            &format!("Symbol.for('require') found something: {}", s)),
-        Err(e) => report.skip(&format!("{}::symbol_for_require_undefined", name), &format!("eval: {}", e)),
+    match page.evaluate_js_web("const sym = Symbol.for('require'); typeof window[sym]") {
+        Ok(s) if s == "undefined" => {
+            report.pass(&format!("{}::symbol_for_require_undefined", name))
+        }
+        Ok(s) => report.fail(
+            &format!("{}::symbol_for_require_undefined", name),
+            &format!("Symbol.for('require') found something: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::symbol_for_require_undefined", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 2: Symbol.for('node') and similar cannot find Node globals ----
@@ -1175,14 +1504,16 @@ fn scenario_symbol_cross_compartment_leaks(pool: &PagePool, report: &mut Report)
     }
 
     // ---- Attack 3: Page global's Symbol-keyed properties must not contain Node APIs ----
-    match page.evaluate_js_web(
-        "Reflect.ownKeys(window).filter(k => typeof k === 'symbol').length"
-    ) {
+    match page.evaluate_js_web("Reflect.ownKeys(window).filter(k => typeof k === 'symbol').length")
+    {
         Ok(s) => {
             report.pass(&format!("{}::symbol_keys_count_ok", name));
             eprintln!("  [symbol] Page global has {} symbol-keyed properties", s);
         }
-        Err(e) => report.skip(&format!("{}::symbol_keys_count_ok", name), &format!("eval: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::symbol_keys_count_ok", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 4: Symbol-keyed properties on page global do not reveal Node APIs ----
@@ -1238,14 +1569,18 @@ fn scenario_symbol_cross_compartment_leaks(pool: &PagePool, report: &mut Report)
 
     // ---- Attack 8: Trusted script using Symbol.for — must not leak to page ----
     let _ = page.evaluate_js("Symbol.for('bao_internal_test')");
-    match page.evaluate_js_web(
-        "typeof Symbol.for('bao_internal_test')"
-    ) {
+    match page.evaluate_js_web("typeof Symbol.for('bao_internal_test')") {
         Ok(s) if s == "symbol" => {
             report.pass(&format!("{}::symbol_for_shared_symbol_ok", name));
         }
-        Ok(s) => report.skip(&format!("{}::symbol_for_shared_symbol_ok", name), &format!("typeof: {}", s)),
-        Err(e) => report.skip(&format!("{}::symbol_for_shared_symbol_ok", name), &format!("eval: {}", e)),
+        Ok(s) => report.skip(
+            &format!("{}::symbol_for_shared_symbol_ok", name),
+            &format!("typeof: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::symbol_for_shared_symbol_ok", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -1275,113 +1610,158 @@ fn scenario_error_stack_realm_leaks(pool: &PagePool, report: &mut Report) {
     wait_for_load(&page, 3000);
 
     // ---- Attack 1: Page JS Error.stack must not contain Node API references ----
-    match page.evaluate_js_web(
-        "try { throw new Error('page_error'); } catch(e) { e.stack || '' }"
-    ) {
+    match page.evaluate_js_web("try { throw new Error('page_error'); } catch(e) { e.stack || '' }")
+    {
         Ok(s) => {
-            let has_node_refs = s.contains("require") || s.contains("node_modules")
-                || s.contains("bun_runtime") || s.contains("bao_engine")
-                || s.contains("__dirname") || s.contains("__filename");
+            let has_node_refs = s.contains("require")
+                || s.contains("node_modules")
+                || s.contains("bun_runtime")
+                || s.contains("bao_engine")
+                || s.contains("__dirname")
+                || s.contains("__filename");
             if !has_node_refs {
                 report.pass(&format!("{}::page_error_stack_clean", name));
             } else {
-                report.fail(&format!("{}::page_error_stack_clean", name),
-                    &format!("Page error stack contains Node references: {}", s));
+                report.fail(
+                    &format!("{}::page_error_stack_clean", name),
+                    &format!("Page error stack contains Node references: {}", s),
+                );
             }
         }
-        Err(e) => report.skip(&format!("{}::page_error_stack_clean", name), &format!("eval: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::page_error_stack_clean", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 2: Error created in page JS — constructor must be from page Realm ----
     match page.evaluate_js_web(
-        "const e = new Error('test'); Error === e.constructor ? 'same_realm' : 'cross_realm'"
+        "const e = new Error('test'); Error === e.constructor ? 'same_realm' : 'cross_realm'",
     ) {
-        Ok(s) if s == "same_realm" => report.pass(&format!("{}::error_constructor_same_realm", name)),
-        Ok(s) => report.fail(&format!("{}::error_constructor_same_realm", name),
-            &format!("Error constructor from wrong Realm: {}", s)),
-        Err(e) => report.skip(&format!("{}::error_constructor_same_realm", name), &format!("eval: {}", e)),
+        Ok(s) if s == "same_realm" => {
+            report.pass(&format!("{}::error_constructor_same_realm", name))
+        }
+        Ok(s) => report.fail(
+            &format!("{}::error_constructor_same_realm", name),
+            &format!("Error constructor from wrong Realm: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::error_constructor_same_realm", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 3: Error.stack from indirect eval must not leak Node Realm ----
     match page.evaluate_js_web(
-        "try { (0,eval)('throw new Error(\"indirect_eval_error\")'); } catch(e) { e.stack || '' }"
+        "try { (0,eval)('throw new Error(\"indirect_eval_error\")'); } catch(e) { e.stack || '' }",
     ) {
         Ok(s) => {
-            let has_node_refs = s.contains("require") || s.contains("bun_runtime")
-                || s.contains("bao_engine") || s.contains("node_modules");
+            let has_node_refs = s.contains("require")
+                || s.contains("bun_runtime")
+                || s.contains("bao_engine")
+                || s.contains("node_modules");
             if !has_node_refs {
                 report.pass(&format!("{}::indirect_eval_error_stack_clean", name));
             } else {
-                report.fail(&format!("{}::indirect_eval_error_stack_clean", name),
-                    &format!("Indirect eval error stack contains Node refs: {}", s));
+                report.fail(
+                    &format!("{}::indirect_eval_error_stack_clean", name),
+                    &format!("Indirect eval error stack contains Node refs: {}", s),
+                );
             }
         }
-        Err(e) => report.skip(&format!("{}::indirect_eval_error_stack_clean", name), &format!("eval: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::indirect_eval_error_stack_clean", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 4: Error.stack from Function constructor must not leak Node Realm ----
     match page.evaluate_js_web(
-        "try { new Function('throw new Error(\"fn_ctor_error\")')(); } catch(e) { e.stack || '' }"
+        "try { new Function('throw new Error(\"fn_ctor_error\")')(); } catch(e) { e.stack || '' }",
     ) {
         Ok(s) => {
-            let has_node_refs = s.contains("require") || s.contains("bun_runtime")
-                || s.contains("bao_engine") || s.contains("node_modules");
+            let has_node_refs = s.contains("require")
+                || s.contains("bun_runtime")
+                || s.contains("bao_engine")
+                || s.contains("node_modules");
             if !has_node_refs {
                 report.pass(&format!("{}::fn_ctor_error_stack_clean", name));
             } else {
-                report.fail(&format!("{}::fn_ctor_error_stack_clean", name),
-                    &format!("Function ctor error stack contains Node refs: {}", s));
+                report.fail(
+                    &format!("{}::fn_ctor_error_stack_clean", name),
+                    &format!("Function ctor error stack contains Node refs: {}", s),
+                );
             }
         }
-        Err(e) => report.skip(&format!("{}::fn_ctor_error_stack_clean", name), &format!("eval: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::fn_ctor_error_stack_clean", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 5: TypeError from accessing undefined Node API — must not leak Realm info ----
     // SpiderMonkey's e.stack may contain only location info (e.g. "@:1:7") without the
     // error message. We check both e.message and e.stack for completeness.
     match page.evaluate_js_web(
-        "try { require('fs'); } catch(e) { (e.message || '') + ' | ' + (e.stack || '') }"
+        "try { require('fs'); } catch(e) { (e.message || '') + ' | ' + (e.stack || '') }",
     ) {
         Ok(s) => {
-            let _has_clean_error = s.contains("not defined") || s.contains("ReferenceError")
-                || s.contains("require");
-            let has_node_leak = s.contains("bun_runtime") || s.contains("bao_engine")
-                || s.contains("node_modules") || s.contains("NativeModule");
+            let _has_clean_error =
+                s.contains("not defined") || s.contains("ReferenceError") || s.contains("require");
+            let has_node_leak = s.contains("bun_runtime")
+                || s.contains("bao_engine")
+                || s.contains("node_modules")
+                || s.contains("NativeModule");
             if !has_node_leak {
                 report.pass(&format!("{}::type_error_no_realm_leak", name));
             } else {
-                report.fail(&format!("{}::type_error_no_realm_leak", name),
-                    &format!("Error leaked Node Realm info: {}", s));
+                report.fail(
+                    &format!("{}::type_error_no_realm_leak", name),
+                    &format!("Error leaked Node Realm info: {}", s),
+                );
             }
         }
-        Err(e) => report.skip(&format!("{}::type_error_no_realm_leak", name), &format!("eval: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::type_error_no_realm_leak", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 6: Error.captureStackTrace (if available) must not reveal Node APIs ----
     match page.evaluate_js_web(
-        "typeof Error.captureStackTrace === 'function' ? 'available' : 'unavailable'"
+        "typeof Error.captureStackTrace === 'function' ? 'available' : 'unavailable'",
     ) {
         Ok(s) if s == "available" => {
             match page.evaluate_js_web(
-                "(function() { var e = {}; Error.captureStackTrace(e); return e.stack || ''; })()"
+                "(function() { var e = {}; Error.captureStackTrace(e); return e.stack || ''; })()",
             ) {
                 Ok(stack) => {
-                    let has_node_refs = stack.contains("bun_runtime") || stack.contains("bao_engine")
-                        || stack.contains("node_modules") || stack.contains("NativeModule");
+                    let has_node_refs = stack.contains("bun_runtime")
+                        || stack.contains("bao_engine")
+                        || stack.contains("node_modules")
+                        || stack.contains("NativeModule");
                     if !has_node_refs {
                         report.pass(&format!("{}::capture_stack_trace_clean", name));
                     } else {
-                        report.fail(&format!("{}::capture_stack_trace_clean", name),
-                            &format!("Error.captureStackTrace leaked: {}", stack));
+                        report.fail(
+                            &format!("{}::capture_stack_trace_clean", name),
+                            &format!("Error.captureStackTrace leaked: {}", stack),
+                        );
                     }
                 }
-                Err(e) => report.skip(&format!("{}::capture_stack_trace_clean", name), &format!("eval: {}", e)),
+                Err(e) => report.skip(
+                    &format!("{}::capture_stack_trace_clean", name),
+                    &format!("eval: {}", e),
+                ),
             }
         }
         Ok(_) => {
             report.pass(&format!("{}::capture_stack_trace_not_available", name));
         }
-        Err(e) => report.skip(&format!("{}::capture_stack_trace_not_available", name), &format!("eval: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::capture_stack_trace_not_available", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -1429,15 +1809,18 @@ fn scenario_async_boundary_cross_realm_leaks(pool: &PagePool, report: &mut Repor
 
     // ---- Attack 2: async function body — verify typeof in async context (synchronous check) ----
     // The async keyword does not change Compartment — typeof require is the same.
-    match page.evaluate_js_web(
-        "typeof require + ' ' + typeof Bun + ' ' + typeof process"
-    ) {
+    match page.evaluate_js_web("typeof require + ' ' + typeof Bun + ' ' + typeof process") {
         Ok(s) if s.split_whitespace().all(|p| p == "undefined") => {
             report.pass(&format!("{}::async_await_no_node_apis", name));
         }
-        Ok(s) => report.fail(&format!("{}::async_await_no_node_apis", name),
-            &format!("async context found Node APIs: {}", s)),
-        Err(e) => report.skip(&format!("{}::async_await_no_node_apis", name), &format!("eval: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::async_await_no_node_apis", name),
+            &format!("async context found Node APIs: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::async_await_no_node_apis", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 3: queueMicrotask from page JS — callback cannot access Node APIs ----
@@ -1456,7 +1839,7 @@ fn scenario_async_boundary_cross_realm_leaks(pool: &PagePool, report: &mut Repor
 
     // ---- Attack 4: setTimeout callback from page JS — cannot access Node APIs ----
     match page.evaluate_js_web(
-        "typeof setTimeout !== 'undefined' ? 'timer_available' : 'timer_unavailable'"
+        "typeof setTimeout !== 'undefined' ? 'timer_available' : 'timer_unavailable'",
     ) {
         Ok(s) if s == "timer_available" => {
             match page.evaluate_js_web(
@@ -1473,17 +1856,33 @@ fn scenario_async_boundary_cross_realm_leaks(pool: &PagePool, report: &mut Repor
                 Err(e) => report.skip(&format!("{}::settimeout_no_node_apis", name), &format!("eval: {}", e)),
             }
         }
-        Ok(_) => report.skip(&format!("{}::settimeout_no_node_apis", name), "setTimeout not available"),
-        Err(e) => report.skip(&format!("{}::settimeout_no_node_apis", name), &format!("eval: {}", e)),
+        Ok(_) => report.skip(
+            &format!("{}::settimeout_no_node_apis", name),
+            "setTimeout not available",
+        ),
+        Err(e) => report.skip(
+            &format!("{}::settimeout_no_node_apis", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 5: Page JS tries to capture Node APIs via trusted evaluate_js + Promise ----
     let _ = page.evaluate_js("typeof require");
     match page.evaluate_js_web("typeof globalThis.require") {
-        Ok(s) if s == "undefined" => report.pass(&format!("{}::no_leak_after_trusted_promise", name)),
-        Ok(s) => report.fail(&format!("{}::no_leak_after_trusted_promise", name),
-            &format!("Node APIs leaked to page after trusted evaluate_js: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::no_leak_after_trusted_promise", name), &format!("eval: {}", e)),
+        Ok(s) if s == "undefined" => {
+            report.pass(&format!("{}::no_leak_after_trusted_promise", name))
+        }
+        Ok(s) => report.fail(
+            &format!("{}::no_leak_after_trusted_promise", name),
+            &format!(
+                "Node APIs leaked to page after trusted evaluate_js: typeof={}",
+                s
+            ),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::no_leak_after_trusted_promise", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 6: Nested function scope — verify closure chain cannot access Node APIs ----
@@ -1502,14 +1901,19 @@ fn scenario_async_boundary_cross_realm_leaks(pool: &PagePool, report: &mut Repor
     // ---- Attack 7: Generator function from page JS — cannot access Node APIs ----
     match page.evaluate_js_web(
         "function* gen() { yield typeof require; yield typeof Bun; yield typeof process; }; \
-         const vals = [...gen()]; vals.join(',')"
+         const vals = [...gen()]; vals.join(',')",
     ) {
         Ok(s) if s.split(',').all(|p| p.trim() == "undefined") => {
             report.pass(&format!("{}::generator_no_node_apis", name));
         }
-        Ok(s) => report.fail(&format!("{}::generator_no_node_apis", name),
-            &format!("Generator found Node APIs: {}", s)),
-        Err(e) => report.skip(&format!("{}::generator_no_node_apis", name), &format!("eval: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::generator_no_node_apis", name),
+            &format!("Generator found Node APIs: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::generator_no_node_apis", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -1526,7 +1930,9 @@ fn scenario_advanced_reflection_cross_realm_attacks(pool: &PagePool, report: &mu
     let name = "advanced_reflection";
 
     let page = match pool.create_page(&PageConfig {
-        url: Some("data:text/html,<html><body><h1 id='adv'>Advanced Test</h1></body></html>".into()),
+        url: Some(
+            "data:text/html,<html><body><h1 id='adv'>Advanced Test</h1></body></html>".into(),
+        ),
         ..Default::default()
     }) {
         Ok(p) => p,
@@ -1591,7 +1997,9 @@ fn scenario_advanced_reflection_cross_realm_attacks(pool: &PagePool, report: &mu
     }
 
     // ---- Attack 4: FinalizationRegistry cannot observe Node Realm cleanup ----
-    match page.evaluate_js_web("typeof FinalizationRegistry !== 'undefined' ? 'available' : 'unavailable'") {
+    match page.evaluate_js_web(
+        "typeof FinalizationRegistry !== 'undefined' ? 'available' : 'unavailable'",
+    ) {
         Ok(s) if s == "available" => {
             match page.evaluate_js_web(
                 "(function() { var leaked = false; \
@@ -1601,16 +2009,29 @@ fn scenario_advanced_reflection_cross_realm_attacks(pool: &PagePool, report: &mu
                  var target = { test: true }; \
                  fr.register(target, 'test_token'); \
                  target = null; \
-                 return leaked ? 'leaked' : 'clean'; })()"
+                 return leaked ? 'leaked' : 'clean'; })()",
             ) {
-                Ok(s) if s == "clean" => report.pass(&format!("{}::finalization_reg_no_node_apis", name)),
-                Ok(s) => report.fail(&format!("{}::finalization_reg_no_node_apis", name),
-                    &format!("FinalizationRegistry callback accessed Node APIs: {}", s)),
-                Err(e) => report.skip(&format!("{}::finalization_reg_no_node_apis", name), &format!("eval: {}", e)),
+                Ok(s) if s == "clean" => {
+                    report.pass(&format!("{}::finalization_reg_no_node_apis", name))
+                }
+                Ok(s) => report.fail(
+                    &format!("{}::finalization_reg_no_node_apis", name),
+                    &format!("FinalizationRegistry callback accessed Node APIs: {}", s),
+                ),
+                Err(e) => report.skip(
+                    &format!("{}::finalization_reg_no_node_apis", name),
+                    &format!("eval: {}", e),
+                ),
             }
         }
-        Ok(_) => report.skip(&format!("{}::finalization_reg_no_node_apis", name), "FinalizationRegistry not available"),
-        Err(e) => report.skip(&format!("{}::finalization_reg_no_node_apis", name), &format!("eval: {}", e)),
+        Ok(_) => report.skip(
+            &format!("{}::finalization_reg_no_node_apis", name),
+            "FinalizationRegistry not available",
+        ),
+        Err(e) => report.skip(
+            &format!("{}::finalization_reg_no_node_apis", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 5: SharedArrayBuffer — not a cross-Realm communication channel for Node APIs ----
@@ -1622,26 +2043,42 @@ fn scenario_advanced_reflection_cross_realm_attacks(pool: &PagePool, report: &mu
             match page.evaluate_js_web(
                 "const sab = new SharedArrayBuffer(1024); const view = new Int32Array(sab); \
                  Atomics.store(view, 0, 42); \
-                 typeof require + ' ' + typeof Atomics.load(view, 0)"
+                 typeof require + ' ' + typeof Atomics.load(view, 0)",
             ) {
                 Ok(s) if s.starts_with("undefined") => {
                     report.pass(&format!("{}::shared_array_buffer_no_node_leak", name));
                 }
-                Ok(s) => report.fail(&format!("{}::shared_array_buffer_no_node_leak", name),
-                    &format!("SharedArrayBuffer test unexpected: {}", s)),
-                Err(e) => report.skip(&format!("{}::shared_array_buffer_no_node_leak", name), &format!("eval: {}", e)),
+                Ok(s) => report.fail(
+                    &format!("{}::shared_array_buffer_no_node_leak", name),
+                    &format!("SharedArrayBuffer test unexpected: {}", s),
+                ),
+                Err(e) => report.skip(
+                    &format!("{}::shared_array_buffer_no_node_leak", name),
+                    &format!("eval: {}", e),
+                ),
             }
         }
-        Ok(s) => report.skip(&format!("{}::shared_array_buffer", name), &format!("typeof: {}", s)),
-        Err(e) => report.skip(&format!("{}::shared_array_buffer", name), &format!("eval: {}", e)),
+        Ok(s) => report.skip(
+            &format!("{}::shared_array_buffer", name),
+            &format!("typeof: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::shared_array_buffer", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 6: Realm identity via globalThis comparison ----
     match page.evaluate_js_web("globalThis === window ? 'is_window' : 'not_window'") {
         Ok(s) if s == "is_window" => report.pass(&format!("{}::globalthis_is_window", name)),
-        Ok(s) => report.fail(&format!("{}::globalthis_is_window", name),
-            &format!("globalThis is not window: {}", s)),
-        Err(e) => report.skip(&format!("{}::globalthis_is_window", name), &format!("eval: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::globalthis_is_window", name),
+            &format!("globalThis is not window: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::globalthis_is_window", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 7: Object.prototype.toString reveals Realm type ----
@@ -1649,8 +2086,14 @@ fn scenario_advanced_reflection_cross_realm_attacks(pool: &PagePool, report: &mu
         Ok(s) if s.contains("Window") || s.contains("global") => {
             report.pass(&format!("{}::tostring_reveals_window", name));
         }
-        Ok(s) => report.skip(&format!("{}::tostring_reveals_window", name), &format!("result: {}", s)),
-        Err(e) => report.skip(&format!("{}::tostring_reveals_window", name), &format!("eval: {}", e)),
+        Ok(s) => report.skip(
+            &format!("{}::tostring_reveals_window", name),
+            &format!("result: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::tostring_reveals_window", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 8: Import-like attempts — dynamic import() from page JS ----
@@ -1688,17 +2131,29 @@ fn scenario_advanced_reflection_cross_realm_attacks(pool: &PagePool, report: &mu
     match page.evaluate_js_web(
         "const sandbox = Object.create(null); \
          sandbox.window = window; \
-         try { sandbox.require } catch(e) { 'no_require_in_null_proto: ' + e.message }"
+         try { sandbox.require } catch(e) { 'no_require_in_null_proto: ' + e.message }",
     ) {
-        Ok(s) if s.contains("no_require_in_null_proto") || s.contains("not defined") || s == "undefined" => {
+        Ok(s)
+            if s.contains("no_require_in_null_proto")
+                || s.contains("not defined")
+                || s == "undefined" =>
+        {
             report.pass(&format!("{}::null_proto_sandbox_safe", name));
         }
         Ok(s) if s == "function" => {
-            report.fail(&format!("{}::null_proto_sandbox_safe", name),
-                "Object.create(null) sandbox found require!");
+            report.fail(
+                &format!("{}::null_proto_sandbox_safe", name),
+                "Object.create(null) sandbox found require!",
+            );
         }
-        Ok(s) => report.skip(&format!("{}::null_proto_sandbox_safe", name), &format!("result: {}", s)),
-        Err(e) => report.skip(&format!("{}::null_proto_sandbox_safe", name), &format!("eval: {}", e)),
+        Ok(s) => report.skip(
+            &format!("{}::null_proto_sandbox_safe", name),
+            &format!("result: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::null_proto_sandbox_safe", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // ---- Attack 10: Cross-Realm via postMessage — no Node API references in messages ----
@@ -1741,15 +2196,28 @@ fn scenario_sec003_full_lifecycle_sandbox(runtime: &BaoRuntime, report: &mut Rep
         ..Default::default()
     }) {
         Ok(p) => p,
-        Err(e) => { report.skip(name, &format!("page creation: {e}")); return; }
+        Err(e) => {
+            report.skip(name, &format!("page creation: {e}"));
+            return;
+        }
     };
     wait_for_load(&page, 3000);
 
-    for api in ["require", "Buffer", "process", "Bun", "module", "__filename", "__dirname"] {
+    for api in [
+        "require",
+        "Buffer",
+        "process",
+        "Bun",
+        "module",
+        "__filename",
+        "__dirname",
+    ] {
         match page.evaluate_js_web(&format!("typeof {}", api)) {
             Ok(s) if s == "undefined" => report.pass(&format!("{}::page_no_{}", name, api)),
-            Ok(s) => report.fail(&format!("{}::page_no_{}", name, api),
-                &format!("{} leaked to page global: typeof={}", api, s)),
+            Ok(s) => report.fail(
+                &format!("{}::page_no_{}", name, api),
+                &format!("{} leaked to page global: typeof={}", api, s),
+            ),
             Err(e) => report.skip(&format!("{}::page_no_{}", name, api), &format!("eval: {e}")),
         }
     }
@@ -1757,26 +2225,43 @@ fn scenario_sec003_full_lifecycle_sandbox(runtime: &BaoRuntime, report: &mut Rep
     // Step 2: evaluate_js (privileged) — Node APIs MUST work
     match page.evaluate_js("typeof require !== 'undefined' ? 'yes' : 'no'") {
         Ok(s) if s == "yes" => report.pass(&format!("{}::privileged_require", name)),
-        Ok(s) => report.fail(&format!("{}::privileged_require", name),
-            &format!("privileged context missing require: {}", s)),
-        Err(e) => report.skip(&format!("{}::privileged_require", name), &format!("eval: {e}")),
+        Ok(s) => report.fail(
+            &format!("{}::privileged_require", name),
+            &format!("privileged context missing require: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::privileged_require", name),
+            &format!("eval: {e}"),
+        ),
     }
 
     // Step 3: After evaluate_js, page global STILL must not have Node APIs
     match page.evaluate_js_web("typeof require") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::post_privileged_no_leak", name)),
-        Ok(s) => report.fail(&format!("{}::post_privileged_no_leak", name),
-            &format!("require leaked to page after evaluate_js: typeof={}", s)),
-        Err(e) => report.skip(&format!("{}::post_privileged_no_leak", name), &format!("eval: {e}")),
+        Ok(s) => report.fail(
+            &format!("{}::post_privileged_no_leak", name),
+            &format!("require leaked to page after evaluate_js: typeof={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::post_privileged_no_leak", name),
+            &format!("eval: {e}"),
+        ),
     }
 
     // Step 4: Web APIs still available in both contexts
     for web_api in ["console", "fetch", "URL"] {
         match page.evaluate_js_web(&format!("typeof {}", web_api)) {
-            Ok(s) if s != "undefined" => report.pass(&format!("{}::web_{}_available", name, web_api)),
-            Ok(_) => report.fail(&format!("{}::web_{}_available", name, web_api),
-                &format!("Web API {} missing from page context", web_api)),
-            Err(e) => report.skip(&format!("{}::web_{}_available", name, web_api), &format!("eval: {e}")),
+            Ok(s) if s != "undefined" => {
+                report.pass(&format!("{}::web_{}_available", name, web_api))
+            }
+            Ok(_) => report.fail(
+                &format!("{}::web_{}_available", name, web_api),
+                &format!("Web API {} missing from page context", web_api),
+            ),
+            Err(e) => report.skip(
+                &format!("{}::web_{}_available", name, web_api),
+                &format!("eval: {e}"),
+            ),
         }
     }
 
@@ -1786,16 +2271,24 @@ fn scenario_sec003_full_lifecycle_sandbox(runtime: &BaoRuntime, report: &mut Rep
         ..Default::default()
     }) {
         Ok(p) => p,
-        Err(e) => { report.skip(&format!("{}::page2", name), &format!("page2 creation: {e}")); return; }
+        Err(e) => {
+            report.skip(&format!("{}::page2", name), &format!("page2 creation: {e}"));
+            return;
+        }
     };
     wait_for_load(&page2, 3000);
 
     // Page 2 page global must not have Node APIs
     match page2.evaluate_js_web("typeof require") {
         Ok(s) if s == "undefined" => report.pass(&format!("{}::page2_no_require", name)),
-        Ok(s) => report.fail(&format!("{}::page2_no_require", name),
-            &format!("page2 leaked require: {}", s)),
-        Err(e) => report.skip(&format!("{}::page2_no_require", name), &format!("eval: {e}")),
+        Ok(s) => report.fail(
+            &format!("{}::page2_no_require", name),
+            &format!("page2 leaked require: {}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::page2_no_require", name),
+            &format!("eval: {e}"),
+        ),
     }
 
     let _ = page.close();

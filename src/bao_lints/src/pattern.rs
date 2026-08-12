@@ -19,7 +19,9 @@ pub fn last_path_segment(path: &syn::Path) -> Option<&Ident> {
 /// Returns true if the path's last segment is `Handle` (covers `Handle`,
 /// `mozjs::jsapi::Handle`, `mozjs::sys::jsapi::Handle`, etc.).
 pub fn is_handle_path(path: &syn::Path) -> bool {
-    last_path_segment(path).map(|i| i == "Handle").unwrap_or(false)
+    last_path_segment(path)
+        .map(|i| i == "Handle")
+        .unwrap_or(false)
 }
 
 /// Returns true if the path's last segment is `MutableHandle`.
@@ -146,9 +148,11 @@ const NULL_SOURCES: &[&str] = &["null_mut", "null"];
 pub fn is_null_construction(expr: &Expr) -> bool {
     let path = match expr {
         Expr::Call(c) => &c.func,
-        Expr::Path(p) => return NULL_SOURCES
-            .iter()
-            .any(|n| last_path_segment(&p.path).map(|i| i == n).unwrap_or(false)),
+        Expr::Path(p) => {
+            return NULL_SOURCES
+                .iter()
+                .any(|n| last_path_segment(&p.path).map(|i| i == n).unwrap_or(false));
+        }
         _ => return false,
     };
     // `null_mut()` — call form

@@ -3,7 +3,7 @@
 // compute_ja3/ja4 format validation, alpn_strings, tls13/tls12 suite classification,
 // StealthProfile cross-preset completeness, clone/debug, edge cases.
 
-use bao_stealth::{TlsFingerprint, StealthProfile, StealthEngine};
+use bao_stealth::{StealthEngine, StealthProfile, TlsFingerprint};
 
 // ---- TlsFingerprint firefox ----
 
@@ -28,7 +28,10 @@ fn test_tls_firefox_signature_algorithms_count() {
 #[test]
 fn test_tls_firefox_supported_groups() {
     let fp = TlsFingerprint::firefox();
-    assert_eq!(fp.supported_groups, vec![0x001D, 0x0017, 0x0018, 0x0019, 0x0100, 0x0101]);
+    assert_eq!(
+        fp.supported_groups,
+        vec![0x001D, 0x0017, 0x0018, 0x0019, 0x0100, 0x0101]
+    );
 }
 
 #[test]

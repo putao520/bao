@@ -24,7 +24,9 @@ fn test_realworld_crypto_workflows() {
     // ═══════════════════════════════════════════════════════════════
     // 1. Password hashing (salted) — user registration & login flow
     // ═══════════════════════════════════════════════════════════════
-    let password_hash = eval_string(&mut ctx, r#"
+    let password_hash = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         try {
             var crypto = require('crypto');
@@ -96,32 +98,65 @@ fn test_realworld_crypto_workflows() {
             results.push('SCENARIO_1_ERR:' + (e.message || e));
         }
         results.join('|')
-    "#);
-    assert!(password_hash.contains("hash_len_correct=yes"),
-        "sha256 hex hash is 64 chars: {}", password_hash);
-    assert!(password_hash.contains("salt_len_correct=yes"),
-        "16-byte salt is 32 hex chars: {}", password_hash);
-    assert!(password_hash.contains("login_alice_ok=yes"),
-        "correct password authenticates: {}", password_hash);
-    assert!(password_hash.contains("login_alice_reason=match"),
-        "match reason: {}", password_hash);
-    assert!(password_hash.contains("login_alice_wrong=no"),
-        "wrong password rejected: {}", password_hash);
-    assert!(password_hash.contains("login_alice_wrong_reason=mismatch"),
-        "mismatch reason: {}", password_hash);
-    assert!(password_hash.contains("login_nobody_reason=no_user"),
-        "unknown user rejected: {}", password_hash);
-    assert!(password_hash.contains("same_pwd_diff_salt=diff"),
-        "different salts → different hashes: {}", password_hash);
-    assert!(password_hash.contains("deterministic=yes"),
-        "hash is deterministic: {}", password_hash);
-    assert!(password_hash.contains("SCENARIO_1_PASSED"),
-        "scenario 1 complete: {}", password_hash);
+    "#,
+    );
+    assert!(
+        password_hash.contains("hash_len_correct=yes"),
+        "sha256 hex hash is 64 chars: {}",
+        password_hash
+    );
+    assert!(
+        password_hash.contains("salt_len_correct=yes"),
+        "16-byte salt is 32 hex chars: {}",
+        password_hash
+    );
+    assert!(
+        password_hash.contains("login_alice_ok=yes"),
+        "correct password authenticates: {}",
+        password_hash
+    );
+    assert!(
+        password_hash.contains("login_alice_reason=match"),
+        "match reason: {}",
+        password_hash
+    );
+    assert!(
+        password_hash.contains("login_alice_wrong=no"),
+        "wrong password rejected: {}",
+        password_hash
+    );
+    assert!(
+        password_hash.contains("login_alice_wrong_reason=mismatch"),
+        "mismatch reason: {}",
+        password_hash
+    );
+    assert!(
+        password_hash.contains("login_nobody_reason=no_user"),
+        "unknown user rejected: {}",
+        password_hash
+    );
+    assert!(
+        password_hash.contains("same_pwd_diff_salt=diff"),
+        "different salts → different hashes: {}",
+        password_hash
+    );
+    assert!(
+        password_hash.contains("deterministic=yes"),
+        "hash is deterministic: {}",
+        password_hash
+    );
+    assert!(
+        password_hash.contains("SCENARIO_1_PASSED"),
+        "scenario 1 complete: {}",
+        password_hash
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 2. HMAC-SHA256 API signature verification (Stripe/GitHub webhook)
     // ═══════════════════════════════════════════════════════════════
-    let hmac_sig = eval_string(&mut ctx, r#"
+    let hmac_sig = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         try {
             var crypto = require('crypto');
@@ -187,30 +222,60 @@ fn test_realworld_crypto_workflows() {
             results.push('SCENARIO_2_ERR:' + (e.message || e));
         }
         results.join('|')
-    "#);
-    assert!(hmac_sig.contains("sig_len=64"),
-        "HMAC-SHA256 hex is 64 chars: {}", hmac_sig);
-    assert!(hmac_sig.contains("sig_hex=yes"),
-        "HMAC digest is hex: {}", hmac_sig);
-    assert!(hmac_sig.contains("verify_legit=yes"),
-        "legitimate signature verifies: {}", hmac_sig);
-    assert!(hmac_sig.contains("caught_tamper=yes"),
-        "tampered payload rejected: {}", hmac_sig);
-    assert!(hmac_sig.contains("caught_wrong_secret=yes"),
-        "wrong secret rejected: {}", hmac_sig);
-    assert!(hmac_sig.contains("caught_short_sig=yes"),
-        "truncated signature rejected: {}", hmac_sig);
-    assert!(hmac_sig.contains("sig_diff_payloads=diff"),
-        "different payloads produce different sigs: {}", hmac_sig);
-    assert!(hmac_sig.contains("sig_deterministic=yes"),
-        "HMAC is deterministic: {}", hmac_sig);
-    assert!(hmac_sig.contains("SCENARIO_2_PASSED"),
-        "scenario 2 complete: {}", hmac_sig);
+    "#,
+    );
+    assert!(
+        hmac_sig.contains("sig_len=64"),
+        "HMAC-SHA256 hex is 64 chars: {}",
+        hmac_sig
+    );
+    assert!(
+        hmac_sig.contains("sig_hex=yes"),
+        "HMAC digest is hex: {}",
+        hmac_sig
+    );
+    assert!(
+        hmac_sig.contains("verify_legit=yes"),
+        "legitimate signature verifies: {}",
+        hmac_sig
+    );
+    assert!(
+        hmac_sig.contains("caught_tamper=yes"),
+        "tampered payload rejected: {}",
+        hmac_sig
+    );
+    assert!(
+        hmac_sig.contains("caught_wrong_secret=yes"),
+        "wrong secret rejected: {}",
+        hmac_sig
+    );
+    assert!(
+        hmac_sig.contains("caught_short_sig=yes"),
+        "truncated signature rejected: {}",
+        hmac_sig
+    );
+    assert!(
+        hmac_sig.contains("sig_diff_payloads=diff"),
+        "different payloads produce different sigs: {}",
+        hmac_sig
+    );
+    assert!(
+        hmac_sig.contains("sig_deterministic=yes"),
+        "HMAC is deterministic: {}",
+        hmac_sig
+    );
+    assert!(
+        hmac_sig.contains("SCENARIO_2_PASSED"),
+        "scenario 2 complete: {}",
+        hmac_sig
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 3. JWT-like token (header.payload.signature)
     // ═══════════════════════════════════════════════════════════════
-    let jwt = eval_string(&mut ctx, r#"
+    let jwt = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         try {
             var crypto = require('crypto');
@@ -307,36 +372,71 @@ fn test_realworld_crypto_workflows() {
             results.push('SCENARIO_3_ERR:' + (e.message || e));
         }
         results.join('|')
-    "#);
-    assert!(jwt.contains("token_parts=3"),
-        "token has 3 parts: {}", jwt);
-    assert!(jwt.contains("sig_part_len=64"),
-        "signature is 64 hex chars: {}", jwt);
-    assert!(jwt.contains("header_alg=HS256"),
-        "header alg preserved: {}", jwt);
-    assert!(jwt.contains("header_typ=JWT"),
-        "header typ preserved: {}", jwt);
-    assert!(jwt.contains("verify_ok=yes"),
-        "valid token verifies: {}", jwt);
-    assert!(jwt.contains("verify_sub=user-42"),
-        "payload sub preserved: {}", jwt);
-    assert!(jwt.contains("verify_name=Alice"),
-        "payload name preserved: {}", jwt);
-    assert!(jwt.contains("forged_reason=bad_sig"),
-        "forged signature rejected: {}", jwt);
-    assert!(jwt.contains("malformed_reason=malformed"),
-        "malformed token rejected: {}", jwt);
-    assert!(jwt.contains("expired_reason=expired"),
-        "expired token rejected: {}", jwt);
-    assert!(jwt.contains("tamper_payload_reason=bad_sig"),
-        "payload tampering caught: {}", jwt);
-    assert!(jwt.contains("SCENARIO_3_PASSED"),
-        "scenario 3 complete: {}", jwt);
+    "#,
+    );
+    assert!(jwt.contains("token_parts=3"), "token has 3 parts: {}", jwt);
+    assert!(
+        jwt.contains("sig_part_len=64"),
+        "signature is 64 hex chars: {}",
+        jwt
+    );
+    assert!(
+        jwt.contains("header_alg=HS256"),
+        "header alg preserved: {}",
+        jwt
+    );
+    assert!(
+        jwt.contains("header_typ=JWT"),
+        "header typ preserved: {}",
+        jwt
+    );
+    assert!(
+        jwt.contains("verify_ok=yes"),
+        "valid token verifies: {}",
+        jwt
+    );
+    assert!(
+        jwt.contains("verify_sub=user-42"),
+        "payload sub preserved: {}",
+        jwt
+    );
+    assert!(
+        jwt.contains("verify_name=Alice"),
+        "payload name preserved: {}",
+        jwt
+    );
+    assert!(
+        jwt.contains("forged_reason=bad_sig"),
+        "forged signature rejected: {}",
+        jwt
+    );
+    assert!(
+        jwt.contains("malformed_reason=malformed"),
+        "malformed token rejected: {}",
+        jwt
+    );
+    assert!(
+        jwt.contains("expired_reason=expired"),
+        "expired token rejected: {}",
+        jwt
+    );
+    assert!(
+        jwt.contains("tamper_payload_reason=bad_sig"),
+        "payload tampering caught: {}",
+        jwt
+    );
+    assert!(
+        jwt.contains("SCENARIO_3_PASSED"),
+        "scenario 3 complete: {}",
+        jwt
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 4. Symmetric encryption — try AES via createCipheriv, fallback to XOR+base64
     // ═══════════════════════════════════════════════════════════════
-    let encryption = eval_string(&mut ctx, r#"
+    let encryption = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         try {
             var crypto = require('crypto');
@@ -406,20 +506,35 @@ fn test_realworld_crypto_workflows() {
             results.push('SCENARIO_4_ERR:' + (e.message || e));
         }
         results.join('|')
-    "#);
-    assert!(encryption.contains("aes_roundtrip=match"),
-        "encryption round-trips: {}", encryption);
-    assert!(encryption.contains("aes_ct_diff_pt=yes"),
-        "ciphertext != plaintext: {}", encryption);
-    assert!(encryption.contains("aes_mode="),
-        "encryption mode reported: {}", encryption);
-    assert!(encryption.contains("SCENARIO_4_PASSED"),
-        "scenario 4 complete: {}", encryption);
+    "#,
+    );
+    assert!(
+        encryption.contains("aes_roundtrip=match"),
+        "encryption round-trips: {}",
+        encryption
+    );
+    assert!(
+        encryption.contains("aes_ct_diff_pt=yes"),
+        "ciphertext != plaintext: {}",
+        encryption
+    );
+    assert!(
+        encryption.contains("aes_mode="),
+        "encryption mode reported: {}",
+        encryption
+    );
+    assert!(
+        encryption.contains("SCENARIO_4_PASSED"),
+        "scenario 4 complete: {}",
+        encryption
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 5. Random byte generation — salts, session tokens, nonces
     // ═══════════════════════════════════════════════════════════════
-    let random = eval_string(&mut ctx, r#"
+    let random = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         try {
             var crypto = require('crypto');
@@ -470,31 +585,68 @@ fn test_realworld_crypto_workflows() {
             results.push('SCENARIO_5_ERR:' + (e.message || e));
         }
         results.join('|')
-    "#);
-    assert!(random.contains("len_16=16"),
-        "randomBytes(16) returns 16 bytes: {}", random);
-    assert!(random.contains("len_32=32"),
-        "randomBytes(32) returns 32 bytes: {}", random);
-    assert!(random.contains("hex_16=32"),
-        "16-byte hex is 32 chars: {}", random);
-    assert!(random.contains("hex_32=64"),
-        "32-byte hex is 64 chars: {}", random);
-    assert!(random.contains("b64_nonempty=yes"),
-        "base64 encoding works: {}", random);
-    assert!(random.contains("random_different=yes"),
-        "consecutive random calls differ: {}", random);
-    assert!(random.contains("hex_chars_valid=yes"),
-        "hex encoding is valid: {}", random);
-    assert!(random.contains("empty_random=yes"),
-        "randomBytes(0) is empty: {}", random);
-    assert!(random.contains("tokens_unique=yes"),
-        "5 session tokens are unique: {}", random);
-    assert!(random.contains("token_len=64"),
-        "32-byte session token is 64 hex chars: {}", random);
-    assert!(random.contains("nonce_nonempty=yes"),
-        "nonce generation works: {}", random);
-    assert!(random.contains("SCENARIO_5_PASSED"),
-        "scenario 5 complete: {}", random);
+    "#,
+    );
+    assert!(
+        random.contains("len_16=16"),
+        "randomBytes(16) returns 16 bytes: {}",
+        random
+    );
+    assert!(
+        random.contains("len_32=32"),
+        "randomBytes(32) returns 32 bytes: {}",
+        random
+    );
+    assert!(
+        random.contains("hex_16=32"),
+        "16-byte hex is 32 chars: {}",
+        random
+    );
+    assert!(
+        random.contains("hex_32=64"),
+        "32-byte hex is 64 chars: {}",
+        random
+    );
+    assert!(
+        random.contains("b64_nonempty=yes"),
+        "base64 encoding works: {}",
+        random
+    );
+    assert!(
+        random.contains("random_different=yes"),
+        "consecutive random calls differ: {}",
+        random
+    );
+    assert!(
+        random.contains("hex_chars_valid=yes"),
+        "hex encoding is valid: {}",
+        random
+    );
+    assert!(
+        random.contains("empty_random=yes"),
+        "randomBytes(0) is empty: {}",
+        random
+    );
+    assert!(
+        random.contains("tokens_unique=yes"),
+        "5 session tokens are unique: {}",
+        random
+    );
+    assert!(
+        random.contains("token_len=64"),
+        "32-byte session token is 64 hex chars: {}",
+        random
+    );
+    assert!(
+        random.contains("nonce_nonempty=yes"),
+        "nonce generation works: {}",
+        random
+    );
+    assert!(
+        random.contains("SCENARIO_5_PASSED"),
+        "scenario 5 complete: {}",
+        random
+    );
 
     bun_runtime::shutdown_thread_sm();
 }

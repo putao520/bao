@@ -8,7 +8,6 @@ use serde_json::json;
 
 // ---- Path detection logic (unit tests of string matching) ----
 
-
 // TestDispatch — enum dispatch for multi-handler tests
 enum TestDispatch {
     Count(CountHandler),
@@ -17,10 +16,21 @@ enum TestDispatch {
 
 impl DomainHandler for TestDispatch {
     fn domain_name(&self) -> &'static str {
-        match self { Self::Count(h) => h.domain_name(), Self::Fail(h) => h.domain_name() }
+        match self {
+            Self::Count(h) => h.domain_name(),
+            Self::Fail(h) => h.domain_name(),
+        }
     }
-    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
-        match self { Self::Count(h) => h.handle_command(cmd, params, sender), Self::Fail(h) => h.handle_command(cmd, params, sender) }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: serde_json::Value,
+        sender: &dyn EventSender,
+    ) -> Result<serde_json::Value, CdpError> {
+        match self {
+            Self::Count(h) => h.handle_command(cmd, params, sender),
+            Self::Fail(h) => h.handle_command(cmd, params, sender),
+        }
     }
 }
 
@@ -175,12 +185,16 @@ fn test_target_info_unicode_title() {
 fn test_target_info_array_serde() {
     let targets = vec![
         TargetInfo {
-            id: "t-1".into(), target_type: "page".into(), title: "Page 1".into(),
+            id: "t-1".into(),
+            target_type: "page".into(),
+            title: "Page 1".into(),
             url: "https://a.com".into(),
             web_socket_debugger_url: "ws://127.0.0.1:9222/devtools/page/t-1".into(),
         },
         TargetInfo {
-            id: "t-2".into(), target_type: "iframe".into(), title: "Page 2".into(),
+            id: "t-2".into(),
+            target_type: "iframe".into(),
+            title: "Page 2".into(),
             url: "https://b.com".into(),
             web_socket_debugger_url: "ws://127.0.0.1:9222/devtools/page/t-2".into(),
         },
@@ -194,8 +208,11 @@ fn test_target_info_array_serde() {
 #[test]
 fn test_target_info_all_empty_strings() {
     let info = TargetInfo {
-        id: String::new(), target_type: String::new(), title: String::new(),
-        url: String::new(), web_socket_debugger_url: String::new(),
+        id: String::new(),
+        target_type: String::new(),
+        title: String::new(),
+        url: String::new(),
+        web_socket_debugger_url: String::new(),
     };
     let json_str = serde_json::to_string(&info).unwrap();
     let parsed: TargetInfo = serde_json::from_str(&json_str).unwrap();
@@ -207,7 +224,9 @@ fn test_target_info_all_empty_strings() {
 fn test_target_info_long_fields() {
     let long = "a".repeat(10000);
     let info = TargetInfo {
-        id: long.clone(), target_type: "page".into(), title: long.clone(),
+        id: long.clone(),
+        target_type: "page".into(),
+        title: long.clone(),
         url: format!("https://example.com/{}", long),
         web_socket_debugger_url: format!("ws://127.0.0.1:9222/devtools/page/{}", long),
     };
@@ -284,7 +303,9 @@ fn test_server_config_wildcard_host() {
 
 #[test]
 fn test_server_config_custom_browser_name() {
-    let config = ServerConfig::builder().browser_name("TestBrowser/2.0").build();
+    let config = ServerConfig::builder()
+        .browser_name("TestBrowser/2.0")
+        .build();
     assert_eq!(config.browser_name, "TestBrowser/2.0");
 }
 
@@ -337,12 +358,20 @@ fn test_cdp_server_broadcaster_accessible() {
 
 #[test]
 fn test_session_state_all_variants() {
-    let states = [SessionState::Created, SessionState::Active, SessionState::Closing, SessionState::Closed];
+    let states = [
+        SessionState::Created,
+        SessionState::Active,
+        SessionState::Closing,
+        SessionState::Closed,
+    ];
     assert_eq!(states.len(), 4);
     for i in 0..states.len() {
         for j in 0..states.len() {
-            if i == j { assert_eq!(states[i], states[j]); }
-            else { assert_ne!(states[i], states[j]); }
+            if i == j {
+                assert_eq!(states[i], states[j]);
+            } else {
+                assert_ne!(states[i], states[j]);
+            }
         }
     }
 }
@@ -413,7 +442,10 @@ fn test_cdp_response_error_serialization() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -459,14 +491,20 @@ fn test_cdp_event_without_params() {
 
 #[test]
 fn test_cdp_error_fields() {
-    let err = CdpError { code: -32600, message: "invalid".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "invalid".into(),
+    };
     assert_eq!(err.code, -32600);
     assert_eq!(err.message, "invalid");
 }
 
 #[test]
 fn test_cdp_error_serialization() {
-    let err = CdpError { code: -32000, message: "internal".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "internal".into(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(parsed["code"], -32000);
@@ -475,7 +513,10 @@ fn test_cdp_error_serialization() {
 
 #[test]
 fn test_cdp_error_empty_message() {
-    let err = CdpError { code: -1, message: String::new() };
+    let err = CdpError {
+        code: -1,
+        message: String::new(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(parsed["message"], "");
@@ -483,7 +524,10 @@ fn test_cdp_error_empty_message() {
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32700, message: "parse error".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "parse error".into(),
+    };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32700"));
     assert!(debug.contains("parse error"));
@@ -496,8 +540,15 @@ struct CountHandler {
 }
 
 impl DomainHandler for CountHandler {
-    fn domain_name(&self) -> &'static str { self.name }
-    fn handle_command(&self, cmd: &str, params: serde_json::Value, _: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: serde_json::Value,
+        _: &dyn EventSender,
+    ) -> Result<serde_json::Value, CdpError> {
         Ok(json!({"cmd": cmd, "params": params}))
     }
     fn on_session_created(&self, _session_id: &str) {}
@@ -507,9 +558,19 @@ impl DomainHandler for CountHandler {
 struct FailHandler;
 
 impl DomainHandler for FailHandler {
-    fn domain_name(&self) -> &'static str { "Fail" }
-    fn handle_command(&self, cmd: &str, _: serde_json::Value, _: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
-        Err(CdpError { code: -32000, message: format!("failed: {}", cmd) })
+    fn domain_name(&self) -> &'static str {
+        "Fail"
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        _: serde_json::Value,
+        _: &dyn EventSender,
+    ) -> Result<serde_json::Value, CdpError> {
+        Err(CdpError {
+            code: -32000,
+            message: format!("failed: {}", cmd),
+        })
     }
     fn on_session_created(&self, _session_id: &str) {}
     fn on_session_destroyed(&self, _session_id: &str) {}
@@ -536,7 +597,11 @@ fn test_registry_multiple_domains() {
 fn test_registry_dispatch_success() {
     let reg = DomainRegistry::<CountHandler>::new();
     reg.register(CountHandler { name: "Page" }).unwrap();
-    let result = reg.dispatch_command("Page.navigate", json!({"url": "https://example.com"}), &NopSender);
+    let result = reg.dispatch_command(
+        "Page.navigate",
+        json!({"url": "https://example.com"}),
+        &NopSender,
+    );
     let resp = result.unwrap().unwrap();
     assert_eq!(resp["cmd"], "Page.navigate");
     assert_eq!(resp["params"]["url"], "https://example.com");
@@ -555,13 +620,17 @@ fn test_registry_dispatch_error() {
 #[test]
 fn test_registry_dispatch_unknown_domain() {
     let reg = DomainRegistry::<CountHandler>::new();
-    assert!(reg.dispatch_command("Unknown.method", json!({}), &NopSender).is_none());
+    assert!(reg
+        .dispatch_command("Unknown.method", json!({}), &NopSender)
+        .is_none());
 }
 
 #[test]
 fn test_registry_dispatch_no_dot() {
     let reg = DomainRegistry::<CountHandler>::new();
-    assert!(reg.dispatch_command("NoDotMethod", json!({}), &NopSender).is_none());
+    assert!(reg
+        .dispatch_command("NoDotMethod", json!({}), &NopSender)
+        .is_none());
 }
 
 #[test]

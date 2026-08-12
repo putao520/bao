@@ -183,10 +183,7 @@ macro_rules! product_process_exit {
             #[inline]
             pub unsafe fn install_on(&mut self, process: &mut Process) {
                 process.set_exit_handler(unsafe {
-                    bun_spawn::ProcessExit::new(
-                        ProcessExitKind::$variant,
-                        self as *mut Self,
-                    )
+                    bun_spawn::ProcessExit::new(ProcessExitKind::$variant, self as *mut Self)
                 });
             }
         }
@@ -311,12 +308,7 @@ mod tests {
         assert!(owner.state.release_on_exit);
 
         static mut HOOK_ARMED: bool = false;
-        unsafe fn hook(
-            _ctx: *mut (),
-            _process: &mut Process,
-            _status: Status,
-            _rusage: &Rusage,
-        ) {
+        unsafe fn hook(_ctx: *mut (), _process: &mut Process, _status: Status, _rusage: &Rusage) {
             unsafe { HOOK_ARMED = true };
         }
         owner.set_hook(ptr::null_mut(), Some(hook));

@@ -1,5 +1,5 @@
-use crate::sign::{raw_ecdsa_sig_to_der, RsaHash, SignAlgorithm, SignatureFormat};
 use crate::CryptoError;
+use crate::sign::{RsaHash, SignAlgorithm, SignatureFormat, raw_ecdsa_sig_to_der};
 use bun_boringssl_sys::*;
 use core::ffi::{c_long, c_void};
 use core::ptr;
@@ -47,11 +47,16 @@ impl Verifier {
             );
             BIO_free(bio);
             if pkey.is_null() {
-                return Err(CryptoError::InvalidKey("PEM_read_bio_PrivateKey failed".into()));
+                return Err(CryptoError::InvalidKey(
+                    "PEM_read_bio_PrivateKey failed".into(),
+                ));
             }
             pkey
         };
-        Ok(Verifier { pkey, algo: algo.clone() })
+        Ok(Verifier {
+            pkey,
+            algo: algo.clone(),
+        })
     }
 
     pub fn from_pkcs8_der(algo: &SignAlgorithm, der: &[u8]) -> Result<Verifier, CryptoError> {
@@ -63,14 +68,20 @@ impl Verifier {
             }
             pkey
         };
-        Ok(Verifier { pkey, algo: algo.clone() })
+        Ok(Verifier {
+            pkey,
+            algo: algo.clone(),
+        })
     }
 
     pub fn from_pkey(pkey: *mut EVP_PKEY, algo: &SignAlgorithm) -> Result<Verifier, CryptoError> {
         if pkey.is_null() {
             return Err(CryptoError::InvalidKey("null EVP_PKEY".into()));
         }
-        Ok(Verifier { pkey, algo: algo.clone() })
+        Ok(Verifier {
+            pkey,
+            algo: algo.clone(),
+        })
     }
 
     /// Load from a PEM-encoded SubjectPublicKeyInfo (public key).
@@ -80,14 +91,22 @@ impl Verifier {
             if bio.is_null() {
                 return Err(CryptoError::InvalidKey("BIO_new_mem_buf failed".into()));
             }
-            let pkey = PEM_read_bio_PUBKEY(bio, ptr::null_mut(), None::<pem_password_cb>, ptr::null_mut());
+            let pkey = PEM_read_bio_PUBKEY(
+                bio,
+                ptr::null_mut(),
+                None::<pem_password_cb>,
+                ptr::null_mut(),
+            );
             BIO_free(bio);
             if pkey.is_null() {
                 return Err(CryptoError::InvalidKey("PEM_read_bio_PUBKEY failed".into()));
             }
             pkey
         };
-        Ok(Verifier { pkey, algo: algo.clone() })
+        Ok(Verifier {
+            pkey,
+            algo: algo.clone(),
+        })
     }
 
     /// Load from a DER-encoded SubjectPublicKeyInfo (public key).
@@ -100,7 +119,10 @@ impl Verifier {
             }
             pkey
         };
-        Ok(Verifier { pkey, algo: algo.clone() })
+        Ok(Verifier {
+            pkey,
+            algo: algo.clone(),
+        })
     }
 
     pub fn verify(
@@ -135,7 +157,9 @@ impl Verifier {
 
             if init_result != 1 {
                 EVP_MD_CTX_cleanup(&mut md_ctx);
-                return Err(CryptoError::VerifyFailed("EVP_DigestVerifyInit failed".into()));
+                return Err(CryptoError::VerifyFailed(
+                    "EVP_DigestVerifyInit failed".into(),
+                ));
             }
 
             if let SignAlgorithm::RsaPss { .. } = self.algo {
@@ -145,9 +169,12 @@ impl Verifier {
                 }
             }
 
-            if EVP_DigestVerifyUpdate(&mut md_ctx, data.as_ptr() as *const c_void, data.len()) != 1 {
+            if EVP_DigestVerifyUpdate(&mut md_ctx, data.as_ptr() as *const c_void, data.len()) != 1
+            {
                 EVP_MD_CTX_cleanup(&mut md_ctx);
-                return Err(CryptoError::VerifyFailed("EVP_DigestVerifyUpdate failed".into()));
+                return Err(CryptoError::VerifyFailed(
+                    "EVP_DigestVerifyUpdate failed".into(),
+                ));
             }
 
             let sig_bytes = match self.algo {
@@ -170,12 +197,27 @@ impl Verifier {
             let mut md_ctx: EVP_MD_CTX = core::mem::zeroed();
             EVP_MD_CTX_init(&mut md_ctx);
 
-            if EVP_DigestVerifyInit(&mut md_ctx, ptr::null_mut(), ptr::null(), ptr::null_mut(), self.pkey) != 1 {
+            if EVP_DigestVerifyInit(
+                &mut md_ctx,
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null_mut(),
+                self.pkey,
+            ) != 1
+            {
                 EVP_MD_CTX_cleanup(&mut md_ctx);
-                return Err(CryptoError::VerifyFailed("EVP_DigestVerifyInit failed".into()));
+                return Err(CryptoError::VerifyFailed(
+                    "EVP_DigestVerifyInit failed".into(),
+                ));
             }
 
-            let result = EVP_DigestVerify(&mut md_ctx, signature.as_ptr(), signature.len(), data.as_ptr(), data.len());
+            let result = EVP_DigestVerify(
+                &mut md_ctx,
+                signature.as_ptr(),
+                signature.len(),
+                data.as_ptr(),
+                data.len(),
+            );
             EVP_MD_CTX_cleanup(&mut md_ctx);
 
             Ok(result == 1)
@@ -186,7 +228,7 @@ impl Verifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sign::{RsaHash, SignatureFormat, SignAlgorithm, Signer};
+    use crate::sign::{RsaHash, SignAlgorithm, SignatureFormat, Signer};
 
     /// Generate one RSA-2048 keypair and return (private_pem, public_pem).
     fn rsa_keypair_pem() -> (String, String) {
@@ -216,7 +258,11 @@ mod tests {
             );
             let priv_pending = BIO_ctrl_pending(priv_bio);
             let mut priv_buf = vec![0u8; priv_pending];
-            let priv_n = BIO_read(priv_bio, priv_buf.as_mut_ptr() as *mut core::ffi::c_void, priv_pending as core::ffi::c_int);
+            let priv_n = BIO_read(
+                priv_bio,
+                priv_buf.as_mut_ptr() as *mut core::ffi::c_void,
+                priv_pending as core::ffi::c_int,
+            );
             BIO_free(priv_bio);
 
             // Public SubjectPublicKeyInfo PEM.
@@ -224,7 +270,11 @@ mod tests {
             assert_eq!(PEM_write_bio_PUBKEY(pub_bio, pkey), 1);
             let pub_pending = BIO_ctrl_pending(pub_bio);
             let mut pub_buf = vec![0u8; pub_pending];
-            let pub_n = BIO_read(pub_bio, pub_buf.as_mut_ptr() as *mut core::ffi::c_void, pub_pending as core::ffi::c_int);
+            let pub_n = BIO_read(
+                pub_bio,
+                pub_buf.as_mut_ptr() as *mut core::ffi::c_void,
+                pub_pending as core::ffi::c_int,
+            );
             BIO_free(pub_bio);
 
             EVP_PKEY_free(pkey);
@@ -240,7 +290,9 @@ mod tests {
     fn verify_public_key_pem_roundtrip() {
         // Sign with the private key, verify with the matching public key PEM.
         let (priv_pem, pub_pem) = rsa_keypair_pem();
-        let algo = SignAlgorithm::RsaPkcs1v15 { hash: RsaHash::Sha256 };
+        let algo = SignAlgorithm::RsaPkcs1v15 {
+            hash: RsaHash::Sha256,
+        };
         let signer = Signer::from_pkcs8_pem(&algo, &priv_pem).unwrap();
         let data = b"verify with public key pem";
         let sig = signer.sign(data, SignatureFormat::Der).unwrap();
@@ -252,11 +304,17 @@ mod tests {
     #[test]
     fn verify_public_key_pem_rejects_tampered() {
         let (priv_pem, pub_pem) = rsa_keypair_pem();
-        let algo = SignAlgorithm::RsaPkcs1v15 { hash: RsaHash::Sha256 };
+        let algo = SignAlgorithm::RsaPkcs1v15 {
+            hash: RsaHash::Sha256,
+        };
         let signer = Signer::from_pkcs8_pem(&algo, &priv_pem).unwrap();
         let sig = signer.sign(b"original", SignatureFormat::Der).unwrap();
 
         let verifier = Verifier::from_public_pem(&algo, &pub_pem).unwrap();
-        assert!(!verifier.verify(b"tampered", &sig, SignatureFormat::Der).unwrap());
+        assert!(
+            !verifier
+                .verify(b"tampered", &sig, SignatureFormat::Der)
+                .unwrap()
+        );
     }
 }

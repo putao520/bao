@@ -82,7 +82,11 @@ impl DiffieHellman {
         if prime.is_empty() {
             return Err(CryptoError::KeyExchangeError("empty prime".into()));
         }
-        let g = if generator <= 0 { bssl::DH_GENERATOR_2 } else { generator };
+        let g = if generator <= 0 {
+            bssl::DH_GENERATOR_2
+        } else {
+            generator
+        };
         let dh = unsafe { bssl::DH_new() };
         if dh.is_null() {
             return Err(CryptoError::KeyGenerationFailed("DH_new failed".into()));
@@ -94,7 +98,9 @@ impl DiffieHellman {
         if g_bn.is_null() {
             unsafe { bssl::BN_free(p_bn) };
             unsafe { bssl::DH_free(dh) };
-            return Err(CryptoError::KeyGenerationFailed("BN_bin2bn(generator) failed".into()));
+            return Err(CryptoError::KeyGenerationFailed(
+                "BN_bin2bn(generator) failed".into(),
+            ));
         }
         let rc = unsafe { bssl::DH_set0_pqg(dh, p_bn, ptr::null_mut(), g_bn) };
         if rc != 1 {
@@ -102,7 +108,9 @@ impl DiffieHellman {
             unsafe { bssl::BN_free(p_bn) };
             unsafe { bssl::BN_free(g_bn) };
             unsafe { bssl::DH_free(dh) };
-            return Err(CryptoError::KeyGenerationFailed("DH_set0_pqg failed".into()));
+            return Err(CryptoError::KeyGenerationFailed(
+                "DH_set0_pqg failed".into(),
+            ));
         }
         Ok(DiffieHellman {
             dh,
@@ -121,7 +129,11 @@ impl DiffieHellman {
                 prime_bits
             )));
         }
-        let g = if generator <= 0 { bssl::DH_GENERATOR_2 } else { generator };
+        let g = if generator <= 0 {
+            bssl::DH_GENERATOR_2
+        } else {
+            generator
+        };
         let dh = unsafe { bssl::DH_new() };
         if dh.is_null() {
             return Err(CryptoError::KeyGenerationFailed("DH_new failed".into()));
@@ -157,7 +169,9 @@ impl DiffieHellman {
     pub fn generate_keys(&mut self) -> Result<Vec<u8>, CryptoError> {
         let rc = unsafe { bssl::DH_generate_key(self.dh) };
         if rc != 1 {
-            return Err(CryptoError::KeyGenerationFailed("DH_generate_key failed".into()));
+            return Err(CryptoError::KeyGenerationFailed(
+                "DH_generate_key failed".into(),
+            ));
         }
         self.has_keys = true;
         let pub_bn = unsafe { bssl::DH_get0_pub_key(self.dh) };

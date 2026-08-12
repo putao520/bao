@@ -96,7 +96,10 @@ fn test_realworld_data_pipeline_all() {
     // ═══════════════════════════════════════════════════════════════
     // Scenario 1: CSV → JSON conversion
     // ═══════════════════════════════════════════════════════════════
-    let s1 = eval_string(&mut ctx, &format!(r#"
+    let s1 = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
         var results = [];
         try {{
             var fs = require('fs');
@@ -133,24 +136,47 @@ fn test_realworld_data_pipeline_all() {
             results.push("CSV_ERR:" + (e.message || e));
         }}
         results.join("|");
-    "#, csv_p = csv_p, json_op = json_op));
+    "#,
+            csv_p = csv_p,
+            json_op = json_op
+        ),
+    );
 
     println!("scenario1: {}", s1);
     assert!(s1.contains("CSV_DONE"), "CSV→JSON must complete: {}", s1);
-    assert!(s1.contains("csv_lines_6"), "6 lines (1 header + 5 data): {}", s1);
+    assert!(
+        s1.contains("csv_lines_6"),
+        "6 lines (1 header + 5 data): {}",
+        s1
+    );
     assert!(s1.contains("csv_records_5"), "5 records: {}", s1);
-    assert!(s1.contains("csv_first_name_Alice"), "first record name: {}", s1);
-    assert!(s1.contains("csv_total_800"), "sum 100+200+150+50+300=800: {}", s1);
+    assert!(
+        s1.contains("csv_first_name_Alice"),
+        "first record name: {}",
+        s1
+    );
+    assert!(
+        s1.contains("csv_total_800"),
+        "sum 100+200+150+50+300=800: {}",
+        s1
+    );
     assert!(s1.contains("csv_json_len_5"), "output JSON length: {}", s1);
 
     // Verify from Rust side too
     let out1 = fs::read_to_string(&json_out).expect("read output.json");
-    assert!(out1.contains("\"name\":\"Alice\""), "Rust verify output.json: {}", out1);
+    assert!(
+        out1.contains("\"name\":\"Alice\""),
+        "Rust verify output.json: {}",
+        out1
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // Scenario 2: JSON aggregation — group by name, compute count/sum/avg
     // ═══════════════════════════════════════════════════════════════
-    let s2 = eval_string(&mut ctx, &format!(r#"
+    let s2 = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
         var results = [];
         try {{
             var fs = require('fs');
@@ -184,12 +210,24 @@ fn test_realworld_data_pipeline_all() {
             results.push("AGG_ERR:" + (e.message || e));
         }}
         results.join("|");
-    "#, json_op = json_op, agg_op = agg_op));
+    "#,
+            json_op = json_op,
+            agg_op = agg_op
+        ),
+    );
 
     println!("scenario2: {}", s2);
     assert!(s2.contains("AGG_DONE"), "aggregation must complete: {}", s2);
-    assert!(s2.contains("agg_groups_3"), "3 groups (Alice/Bob/Charlie): {}", s2);
-    assert!(s2.contains("agg_alice_Alice_2_250"), "Alice: 2 records, sum 250: {}", s2);
+    assert!(
+        s2.contains("agg_groups_3"),
+        "3 groups (Alice/Bob/Charlie): {}",
+        s2
+    );
+    assert!(
+        s2.contains("agg_alice_Alice_2_250"),
+        "Alice: 2 records, sum 250: {}",
+        s2
+    );
     assert!(s2.contains("agg_bob_sum_250"), "Bob sum 200+50=250: {}", s2);
 
     // ═══════════════════════════════════════════════════════════════
@@ -203,7 +241,10 @@ fn test_realworld_data_pipeline_all() {
     // This exercises: Buffer.alloc, Buffer indexing, Buffer.concat (if present),
     // hex encoding/decoding, fs write/read of text.
     // ═══════════════════════════════════════════════════════════════
-    let s3 = eval_string(&mut ctx, &format!(r#"
+    let s3 = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
         var results = [];
         try {{
             var fs = require('fs');
@@ -296,21 +337,57 @@ fn test_realworld_data_pipeline_all() {
             results.push("CHUNK_ERR:" + (e.message || e));
         }}
         results.join("|");
-    "#, big_p = big_p, chunk_op = chunk_op));
+    "#,
+            big_p = big_p,
+            chunk_op = chunk_op
+        ),
+    );
 
     println!("scenario3: {}", s3);
-    assert!(s3.contains("CHUNK_DONE"), "chunked Buffer must complete: {}", s3);
+    assert!(
+        s3.contains("CHUNK_DONE"),
+        "chunked Buffer must complete: {}",
+        s3
+    );
     assert!(s3.contains("chunk_count_8"), "8 chunks of 32 bytes: {}", s3);
-    assert!(s3.contains("combined_len_256"), "combined length 256: {}", s3);
+    assert!(
+        s3.contains("combined_len_256"),
+        "combined length 256: {}",
+        s3
+    );
     assert!(s3.contains("combined_byte_0_0"), "combined[0]=0: {}", s3);
-    assert!(s3.contains("combined_byte_100_100"), "combined[100]=100: {}", s3);
-    assert!(s3.contains("combined_byte_255_255"), "combined[255]=255: {}", s3);
-    assert!(s3.contains("big_size_positive_true"), "big.bin written: {}", s3);
-    assert!(s3.contains("streamed_size_positive_true"), "streamed file written: {}", s3);
+    assert!(
+        s3.contains("combined_byte_100_100"),
+        "combined[100]=100: {}",
+        s3
+    );
+    assert!(
+        s3.contains("combined_byte_255_255"),
+        "combined[255]=255: {}",
+        s3
+    );
+    assert!(
+        s3.contains("big_size_positive_true"),
+        "big.bin written: {}",
+        s3
+    );
+    assert!(
+        s3.contains("streamed_size_positive_true"),
+        "streamed file written: {}",
+        s3
+    );
     assert!(s3.contains("read_lines_8"), "8 hex lines read back: {}", s3);
-    assert!(s3.contains("decoded_len_256"), "decoded buffer len 256: {}", s3);
+    assert!(
+        s3.contains("decoded_len_256"),
+        "decoded buffer len 256: {}",
+        s3
+    );
     assert!(s3.contains("decoded_byte_0_0"), "decoded[0]=0: {}", s3);
-    assert!(s3.contains("decoded_byte_255_255"), "decoded[255]=255: {}", s3);
+    assert!(
+        s3.contains("decoded_byte_255_255"),
+        "decoded[255]=255: {}",
+        s3
+    );
 
     // Rust verify: big.bin should be a non-empty text file with hex lines.
     let big_meta = fs::metadata(&big_bin).expect("big.bin stat");
@@ -319,7 +396,10 @@ fn test_realworld_data_pipeline_all() {
     // ═══════════════════════════════════════════════════════════════
     // Scenario 4: Data cleaning — filter invalid, rename fields, coerce types
     // ═══════════════════════════════════════════════════════════════
-    let s4 = eval_string(&mut ctx, &format!(r#"
+    let s4 = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
         var results = [];
         try {{
             var fs = require('fs');
@@ -357,21 +437,48 @@ fn test_realworld_data_pipeline_all() {
             results.push("CLEAN_ERR:" + (e.message || e));
         }}
         results.join("|");
-    "#, dirty_p = dirty_p, clean_op = clean_op));
+    "#,
+            dirty_p = dirty_p,
+            clean_op = clean_op
+        ),
+    );
 
     println!("scenario4: {}", s4);
-    assert!(s4.contains("CLEAN_DONE"), "data cleaning must complete: {}", s4);
+    assert!(
+        s4.contains("CLEAN_DONE"),
+        "data cleaning must complete: {}",
+        s4
+    );
     assert!(s4.contains("dirty_count_4"), "4 input records: {}", s4);
-    assert!(s4.contains("skip_empty_name_idx_1"), "skipped empty name at idx 1: {}", s4);
-    assert!(s4.contains("skip_invalid_amount_idx_2"), "skipped NaN at idx 2: {}", s4);
+    assert!(
+        s4.contains("skip_empty_name_idx_1"),
+        "skipped empty name at idx 1: {}",
+        s4
+    );
+    assert!(
+        s4.contains("skip_invalid_amount_idx_2"),
+        "skipped NaN at idx 2: {}",
+        s4
+    );
     assert!(s4.contains("cleaned_count_2"), "2 cleaned records: {}", s4);
-    assert!(s4.contains("verify_first_name_A"), "first name uppercase A: {}", s4);
-    assert!(s4.contains("verify_first_amt_type_number"), "amount is number: {}", s4);
+    assert!(
+        s4.contains("verify_first_name_A"),
+        "first name uppercase A: {}",
+        s4
+    );
+    assert!(
+        s4.contains("verify_first_amt_type_number"),
+        "amount is number: {}",
+        s4
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // Scenario 5: Multi-source join — users + orders by uid
     // ═══════════════════════════════════════════════════════════════
-    let s5 = eval_string(&mut ctx, &format!(r#"
+    let s5 = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
         var results = [];
         try {{
             var fs = require('fs');
@@ -432,7 +539,12 @@ fn test_realworld_data_pipeline_all() {
             results.push("JOIN_ERR:" + (e.message || e));
         }}
         results.join("|");
-    "#, users_p = users_p, orders_p = orders_p, join_op = join_op));
+    "#,
+            users_p = users_p,
+            orders_p = orders_p,
+            join_op = join_op
+        ),
+    );
 
     println!("scenario5: {}", s5);
     assert!(s5.contains("JOIN_DONE"), "join must complete: {}", s5);
@@ -441,21 +553,35 @@ fn test_realworld_data_pipeline_all() {
     assert!(s5.contains("joined_count_4"), "4 joined rows: {}", s5);
     assert!(s5.contains("unmatched_1"), "1 unmatched (uid 999): {}", s5);
     assert!(s5.contains("alice_orders_2"), "Alice has 2 orders: {}", s5);
-    assert!(s5.contains("alice_total_75"), "Alice total 50+25=75: {}", s5);
+    assert!(
+        s5.contains("alice_total_75"),
+        "Alice total 50+25=75: {}",
+        s5
+    );
     assert!(s5.contains("bob_total_75"), "Bob total 75: {}", s5);
     assert!(s5.contains("unknown_count_1"), "1 unknown: {}", s5);
 
     // Rust verify
     let joined_str = fs::read_to_string(&join_out).expect("read joined.json");
-    assert!(joined_str.contains("\"userName\":\"Alice\""), "joined has Alice: {}", joined_str);
-    assert!(joined_str.contains("\"UNKNOWN\"") || joined_str.contains("null"),
-        "joined has unknown user: {}", joined_str);
+    assert!(
+        joined_str.contains("\"userName\":\"Alice\""),
+        "joined has Alice: {}",
+        joined_str
+    );
+    assert!(
+        joined_str.contains("\"UNKNOWN\"") || joined_str.contains("null"),
+        "joined has unknown user: {}",
+        joined_str
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // Cleanup — best-effort
     // ═══════════════════════════════════════════════════════════════
     // Try fs.rmSync via JS; if not available, fall back to Rust fs call.
-    let _ = eval_string(&mut ctx, &format!(r#"
+    let _ = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
         try {{
             var fs = require('fs');
             if (typeof fs.rmSync === 'function') {{
@@ -470,7 +596,10 @@ fn test_realworld_data_pipeline_all() {
         }} catch(e) {{
             "rm_err:" + (e.message || e);
         }}
-    "#, d = d));
+    "#,
+            d = d
+        ),
+    );
     // Always attempt Rust-side cleanup too.
     let _ = fs::remove_dir_all(&dir);
 

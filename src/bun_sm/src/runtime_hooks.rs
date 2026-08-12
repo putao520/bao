@@ -14,10 +14,10 @@
 
 use core::ffi::c_void;
 
-use crate::virtual_machine::VirtualMachine;
 use crate::global_object::JSGlobalObject;
-use crate::js_value::JSValue;
 use crate::js_promise::JSInternalPromise;
+use crate::js_value::JSValue;
+use crate::virtual_machine::VirtualMachine;
 
 /// Type alias for VM pointer used in hook signatures.
 pub type VMPtr = *mut VirtualMachine;
@@ -73,12 +73,8 @@ pub struct RuntimeHooks {
         name_buf: &[u8; 512],
         enable_ansi_colors: bool,
     ) -> Result<bool, bun_core::Error>,
-    pub apply_standalone_runtime_flags: unsafe fn(
-        transpiler: *mut c_void,
-        graph: *const c_void,
-    ),
-    pub parse_worker_exec_argv_allow_addons:
-        unsafe fn(exec_argv: *const c_void) -> Option<bool>,
+    pub apply_standalone_runtime_flags: unsafe fn(transpiler: *mut c_void, graph: *const c_void),
+    pub parse_worker_exec_argv_allow_addons: unsafe fn(exec_argv: *const c_void) -> Option<bool>,
     pub cron_clear_all_teardown: fn(vm: *mut VirtualMachine),
     pub terminate_all_workers_and_wait: fn(timeout_ms: u64),
     pub cron_clear_all_reload: fn(vm: *mut VirtualMachine),
@@ -94,11 +90,8 @@ pub struct RuntimeHooks {
 /// Mirrors `bun_jsc::ModuleLoader::LoaderHooks`. Populated by
 /// `bao_runtime::jsc_hooks.rs`.
 pub struct LoaderHooks {
-    pub transpile_source_code: unsafe fn(
-        vm: *mut VirtualMachine,
-        args: *const c_void,
-        ret: *mut c_void,
-    ) -> bool,
+    pub transpile_source_code:
+        unsafe fn(vm: *mut VirtualMachine, args: *const c_void, ret: *mut c_void) -> bool,
     pub fetch_builtin_module: unsafe fn(
         vm: *mut VirtualMachine,
         global: *mut JSGlobalObject,
@@ -152,14 +145,13 @@ pub struct LoaderHooks {
 pub struct SqlRuntimeHooks {
     pub sql_rare: unsafe fn(*mut VirtualMachine) -> *mut c_void,
     pub timer_heap: unsafe fn(*mut VirtualMachine) -> *mut c_void,
-    pub timer_insert: unsafe fn(heap: *mut c_void, timer: *mut bun_event_loop::EventLoopTimer::EventLoopTimer),
-    pub timer_remove: unsafe fn(heap: *mut c_void, timer: *mut bun_event_loop::EventLoopTimer::EventLoopTimer),
+    pub timer_insert:
+        unsafe fn(heap: *mut c_void, timer: *mut bun_event_loop::EventLoopTimer::EventLoopTimer),
+    pub timer_remove:
+        unsafe fn(heap: *mut c_void, timer: *mut bun_event_loop::EventLoopTimer::EventLoopTimer),
     pub ssl_ctx_cache: unsafe fn(*mut VirtualMachine) -> *mut c_void,
-    pub ssl_ctx_get_or_create: unsafe fn(
-        cache: *mut c_void,
-        opts: *const c_void,
-        err: *mut c_void,
-    ) -> *mut c_void,
+    pub ssl_ctx_get_or_create:
+        unsafe fn(cache: *mut c_void, opts: *const c_void, err: *mut c_void) -> *mut c_void,
     pub ssl_config_from_js: unsafe fn(*mut JSGlobalObject, JSValue) -> *mut c_void,
     pub ssl_config_free: unsafe fn(*mut c_void),
     pub ssl_config_as_usockets_client: unsafe fn(*const c_void) -> *const c_void,

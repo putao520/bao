@@ -6,11 +6,10 @@
 // EventBroadcaster clone + domain filtering, SessionState transitions.
 
 use cdp_server::{
-    CdpMessage, CdpResponse, CdpError, CdpEvent, SessionError,
-    DomainRegistry, EventBroadcaster, CdpServer, DomainHandler, EventSender,
-    ServerConfig, SessionState,
+    CdpError, CdpEvent, CdpMessage, CdpResponse, CdpServer, DomainHandler, DomainRegistry,
+    EventBroadcaster, EventSender, ServerConfig, SessionError, SessionState,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -28,8 +27,15 @@ struct CountingDomain {
 }
 
 impl DomainHandler for CountingDomain {
-    fn domain_name(&self) -> &'static str { self.name }
-    fn handle_command(&self, cmd: &str, _params: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        _params: Value,
+        _: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         Ok(json!({"handled": cmd}))
     }
     fn on_session_created(&self, _session_id: &str) {
@@ -111,7 +117,12 @@ fn test_cdp_message_clone() {
 
 #[test]
 fn test_cdp_message_debug() {
-    let msg = CdpMessage { id: Some(1), method: "Test".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(1),
+        method: "Test".into(),
+        params: None,
+        session_id: None,
+    };
     assert!(format!("{:?}", msg).contains("Test"));
 }
 
@@ -136,7 +147,10 @@ fn test_cdp_response_error() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -146,7 +160,11 @@ fn test_cdp_response_error() {
 
 #[test]
 fn test_cdp_response_null_id() {
-    let resp = CdpResponse { id: None, result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: None,
+        result: Some(json!({})),
+        error: None,
+    };
     let raw = serde_json::to_string(&resp).unwrap();
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert!(p["id"].is_null());
@@ -156,7 +174,10 @@ fn test_cdp_response_null_id() {
 
 #[test]
 fn test_cdp_error_clone() {
-    let err = CdpError { code: -32601, message: "test".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "test".into(),
+    };
     let cloned = err.clone();
     assert_eq!(cloned.code, -32601);
     assert_eq!(cloned.message, "test");
@@ -164,13 +185,19 @@ fn test_cdp_error_clone() {
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32601, message: "method not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "method not found".into(),
+    };
     assert!(format!("{:?}", err).contains("-32601"));
 }
 
 #[test]
 fn test_cdp_error_serialize() {
-    let err = CdpError { code: -32000, message: "internal error".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "internal error".into(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     assert!(json.contains("-32000"));
     assert!(json.contains("internal error"));
@@ -180,7 +207,10 @@ fn test_cdp_error_serialize() {
 
 #[test]
 fn test_cdp_event_with_params() {
-    let ev = CdpEvent { method: "Page.loadEventFired".into(), params: Some(json!({"ts": 1})) };
+    let ev = CdpEvent {
+        method: "Page.loadEventFired".into(),
+        params: Some(json!({"ts": 1})),
+    };
     let raw = serde_json::to_string(&ev).unwrap();
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["method"], "Page.loadEventFired");
@@ -189,7 +219,10 @@ fn test_cdp_event_with_params() {
 
 #[test]
 fn test_cdp_event_without_params() {
-    let ev = CdpEvent { method: "DOM.updated".into(), params: None };
+    let ev = CdpEvent {
+        method: "DOM.updated".into(),
+        params: None,
+    };
     let raw = serde_json::to_string(&ev).unwrap();
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert!(p.get("params").is_none());
@@ -197,7 +230,10 @@ fn test_cdp_event_without_params() {
 
 #[test]
 fn test_cdp_event_clone() {
-    let ev = CdpEvent { method: "Test.evt".into(), params: Some(json!({})) };
+    let ev = CdpEvent {
+        method: "Test.evt".into(),
+        params: Some(json!({})),
+    };
     let cloned = ev.clone();
     assert_eq!(cloned.method, "Test.evt");
 }
@@ -345,7 +381,8 @@ fn test_registry_notify_session_created_counting() {
         name: "Page",
         create_count: create.clone(),
         destroy_count: destroy.clone(),
-    }).unwrap();
+    })
+    .unwrap();
 
     for i in 0..5 {
         reg.notify_session_created("Page", &format!("s-{}", i));
@@ -363,7 +400,8 @@ fn test_registry_notify_session_destroyed_counting() {
         name: "Page",
         create_count: create.clone(),
         destroy_count: destroy.clone(),
-    }).unwrap();
+    })
+    .unwrap();
 
     reg.notify_session_destroyed(&["Page".to_string()], "s-1");
     reg.notify_session_destroyed(&["Page".to_string()], "s-2");
@@ -388,8 +426,18 @@ fn test_multiple_domains_lifecycle() {
     let c2 = Arc::new(AtomicUsize::new(0));
     let d2 = Arc::new(AtomicUsize::new(0));
 
-    reg.register(CountingDomain { name: "Page", create_count: c1.clone(), destroy_count: d1.clone() }).unwrap();
-    reg.register(CountingDomain { name: "Runtime", create_count: c2.clone(), destroy_count: d2.clone() }).unwrap();
+    reg.register(CountingDomain {
+        name: "Page",
+        create_count: c1.clone(),
+        destroy_count: d1.clone(),
+    })
+    .unwrap();
+    reg.register(CountingDomain {
+        name: "Runtime",
+        create_count: c2.clone(),
+        destroy_count: d2.clone(),
+    })
+    .unwrap();
 
     reg.notify_session_created("Page", "s-1");
     reg.notify_session_created("Runtime", "s-1");
@@ -412,30 +460,42 @@ fn test_dispatch_routes_to_correct_handler() {
         name: "Page",
         create_count: Arc::new(AtomicUsize::new(0)),
         destroy_count: Arc::new(AtomicUsize::new(0)),
-    }).unwrap();
+    })
+    .unwrap();
     reg.register(CountingDomain {
         name: "Runtime",
         create_count: Arc::new(AtomicUsize::new(0)),
         destroy_count: Arc::new(AtomicUsize::new(0)),
-    }).unwrap();
+    })
+    .unwrap();
 
-    let r1 = reg.dispatch_command("Page.navigate", json!({}), &NopSender).unwrap().unwrap();
+    let r1 = reg
+        .dispatch_command("Page.navigate", json!({}), &NopSender)
+        .unwrap()
+        .unwrap();
     assert_eq!(r1["handled"], "Page.navigate");
 
-    let r2 = reg.dispatch_command("Runtime.evaluate", json!({}), &NopSender).unwrap().unwrap();
+    let r2 = reg
+        .dispatch_command("Runtime.evaluate", json!({}), &NopSender)
+        .unwrap()
+        .unwrap();
     assert_eq!(r2["handled"], "Runtime.evaluate");
 }
 
 #[test]
 fn test_dispatch_unregistered_returns_none() {
     let reg = DomainRegistry::<CountingDomain>::new();
-    assert!(reg.dispatch_command("Unknown.method", json!({}), &NopSender).is_none());
+    assert!(reg
+        .dispatch_command("Unknown.method", json!({}), &NopSender)
+        .is_none());
 }
 
 #[test]
 fn test_dispatch_no_dot_returns_none() {
     let reg = DomainRegistry::<CountingDomain>::new();
-    assert!(reg.dispatch_command("NoDotMethod", json!({}), &NopSender).is_none());
+    assert!(reg
+        .dispatch_command("NoDotMethod", json!({}), &NopSender)
+        .is_none());
 }
 
 #[test]
@@ -454,7 +514,8 @@ fn test_cdp_server_register_handler() {
         name: "Page",
         create_count: Arc::new(AtomicUsize::new(0)),
         destroy_count: Arc::new(AtomicUsize::new(0)),
-    }).unwrap();
+    })
+    .unwrap();
     let server = CdpServer::with_registry(ServerConfig::default(), reg);
     assert!(server.registry().has_domain("Page"));
 }

@@ -156,7 +156,11 @@ fn test_settings_frame_payload_all_ids_standard() {
     let payload = fp.settings_frame_payload();
     let valid_ids = [0x01u16, 0x02, 0x03, 0x04, 0x05, 0x06];
     for (id, _) in &payload {
-        assert!(valid_ids.contains(id), "Non-standard setting ID: 0x{:04X}", id);
+        assert!(
+            valid_ids.contains(id),
+            "Non-standard setting ID: 0x{:04X}",
+            id
+        );
     }
 }
 
@@ -166,14 +170,20 @@ fn test_settings_frame_payload_all_ids_standard() {
 fn test_ordered_headers_firefox_pseudo_order() {
     let fp = Http2Fingerprint::firefox();
     // Firefox order: :method, :path, :authority, :scheme
-    assert_eq!(fp.pseudo_header_order, vec![":method", ":path", ":authority", ":scheme"]);
+    assert_eq!(
+        fp.pseudo_header_order,
+        vec![":method", ":path", ":authority", ":scheme"]
+    );
 }
 
 #[test]
 fn test_ordered_headers_chrome_pseudo_order() {
     let fp = Http2Fingerprint::chrome();
     // Chrome order: :method, :authority, :scheme, :path
-    assert_eq!(fp.pseudo_header_order, vec![":method", ":authority", ":scheme", ":path"]);
+    assert_eq!(
+        fp.pseudo_header_order,
+        vec![":method", ":authority", ":scheme", ":path"]
+    );
 }
 
 #[test]
@@ -218,10 +228,7 @@ fn test_ordered_headers_chrome_different() {
 #[test]
 fn test_ordered_headers_no_pseudo() {
     let fp = Http2Fingerprint::firefox();
-    let headers = vec![
-        ("content-type", "text/html"),
-        ("accept", "*/*"),
-    ];
+    let headers = vec![("content-type", "text/html"), ("accept", "*/*")];
     let ordered = fp.ordered_headers(&headers);
     assert_eq!(ordered.len(), 2);
     assert_eq!(ordered[0].0, "content-type");
@@ -256,10 +263,7 @@ fn test_ordered_headers_only_pseudo() {
 #[test]
 fn test_ordered_headers_preserves_values() {
     let fp = Http2Fingerprint::firefox();
-    let headers = vec![
-        (":method", "GET"),
-        (":path", "/test?q=1"),
-    ];
+    let headers = vec![(":method", "GET"), (":path", "/test?q=1")];
     let ordered = fp.ordered_headers(&headers);
     assert_eq!(ordered[0].1, "GET");
     assert_eq!(ordered[1].1, "/test?q=1");
@@ -268,10 +272,7 @@ fn test_ordered_headers_preserves_values() {
 #[test]
 fn test_ordered_headers_missing_pseudo() {
     let fp = Http2Fingerprint::firefox();
-    let headers = vec![
-        (":method", "GET"),
-        ("accept", "*/*"),
-    ];
+    let headers = vec![(":method", "GET"), ("accept", "*/*")];
     let ordered = fp.ordered_headers(&headers);
     assert_eq!(ordered.len(), 2);
     assert_eq!(ordered[0].0, ":method");

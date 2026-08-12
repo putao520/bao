@@ -44,17 +44,24 @@ fn int_perf002_emulation_set_device_metrics_round_trip() {
     // Assert — de-locked handler still produces a well-formed response: an id
     // echo and exactly one of {result, error} present.
     assert_eq!(resp.id, Some(1), "response id echoes request id");
-    assert!(resp.result.is_some() || resp.error.is_some(),
-            "handler must terminate with either result or structured CdpError, never panic");
+    assert!(
+        resp.result.is_some() || resp.error.is_some(),
+        "handler must terminate with either result or structured CdpError, never panic"
+    );
 }
 
 // @trace REQ-PERF-002 [domain:Emulation] [level:integration]
 #[test]
 fn int_perf002_emulation_clear_then_set_is_idempotent() {
     // Boundary: clear → set → clear on the same target must not corrupt state.
-    for (i, method) in ["Emulation.clearDeviceMetricsOverride",
-                        "Emulation.setDeviceMetricsOverride",
-                        "Emulation.clearDeviceMetricsOverride"].iter().enumerate() {
+    for (i, method) in [
+        "Emulation.clearDeviceMetricsOverride",
+        "Emulation.setDeviceMetricsOverride",
+        "Emulation.clearDeviceMetricsOverride",
+    ]
+    .iter()
+    .enumerate()
+    {
         let parsed = msg(i as i64, method).expect("parse Emulation cycle");
         let resp = handle_command(parsed, TID, &None, None);
         assert_eq!(resp.id, Some(i as i64));
@@ -69,7 +76,11 @@ fn int_perf002_network_enable_cycle_no_lock_poisoning() {
     for i in 0..50i64 {
         let parsed = msg(i, "Network.enable").expect("parse Network.enable");
         let resp = handle_command(parsed, TID, &None, None);
-        assert_eq!(resp.id, Some(i), "Network.enable iteration {i} must echo id");
+        assert_eq!(
+            resp.id,
+            Some(i),
+            "Network.enable iteration {i} must echo id"
+        );
     }
 }
 
@@ -99,10 +110,18 @@ fn int_perf003_response_serialization_is_deterministic() {
     use bao_cdp::serialize_response;
     let raw = r#"{"id":7,"method":"Page.navigate","params":{"url":"https://example.com"}}"#;
     let parsed = parse_message(raw).expect("parse Page.navigate");
-    let resp = handle_command(parsed, TID, &Some(json!({"url":"https://example.com"})), None);
+    let resp = handle_command(
+        parsed,
+        TID,
+        &Some(json!({"url":"https://example.com"})),
+        None,
+    );
     let s1 = serialize_response(&resp);
     let s2 = serialize_response(&resp);
-    assert_eq!(s1, s2, "serialize_response must be deterministic (Bytes refcount, no mutation)");
+    assert_eq!(
+        s1, s2,
+        "serialize_response must be deterministic (Bytes refcount, no mutation)"
+    );
 }
 
 // @trace REQ-PERF-003 [crate:compact_str] [level:integration]
@@ -111,13 +130,20 @@ fn int_perf003_session_ids_are_unique_and_short() {
     // Session IDs are short (<=24 bytes) — CompactString stores inline.
     use bao_cdp::CdpRouter;
     let router = CdpRouter::new();
-    let ids: Vec<String> = (0..20).map(|i| {
-        let tid = format!("target-{i}");
-        router.create_internal_session(&tid).session_id().to_string()
-    }).collect();
+    let ids: Vec<String> = (0..20)
+        .map(|i| {
+            let tid = format!("target-{i}");
+            router
+                .create_internal_session(&tid)
+                .session_id()
+                .to_string()
+        })
+        .collect();
     // Assert: 20 sessions → 20 unique, non-empty, short IDs.
-    assert!(ids.iter().all(|s| !s.is_empty() && s.len() <= 24),
-            "session IDs must be non-empty and short (CompactString inline range)");
+    assert!(
+        ids.iter().all(|s| !s.is_empty() && s.len() <= 24),
+        "session IDs must be non-empty and short (CompactString inline range)"
+    );
     let unique: std::collections::HashSet<_> = ids.iter().collect();
     assert_eq!(unique.len(), 20, "20 sessions must produce 20 unique IDs");
 }
@@ -152,10 +178,16 @@ fn int_perf004_enum_dispatch_routes_all_known_domains() {
     // message "'<full method>' wasn't found". The contract is routing.
     let probes: &[(&str, &str)] = &[
         ("Target", "getTargets"),
-        ("Page", "enable"), ("Runtime", "enable"), ("DOM", "enable"),
-        ("Network", "enable"), ("CSS", "enable"),
-        ("Emulation", "setDeviceMetricsOverride"), ("Input", "dispatchMouseEvent"),
-        ("Overlay", "enable"), ("Debugger", "enable"), ("Log", "enable"),
+        ("Page", "enable"),
+        ("Runtime", "enable"),
+        ("DOM", "enable"),
+        ("Network", "enable"),
+        ("CSS", "enable"),
+        ("Emulation", "setDeviceMetricsOverride"),
+        ("Input", "dispatchMouseEvent"),
+        ("Overlay", "enable"),
+        ("Debugger", "enable"),
+        ("Log", "enable"),
         ("Fetch", "enable"),
     ];
     for (i, (domain, sub)) in probes.iter().enumerate() {
@@ -164,11 +196,13 @@ fn int_perf004_enum_dispatch_routes_all_known_domains() {
         let resp = handle_command(parsed, TID, &None, None);
         // Domain-level routing: must NOT return the wildcard "'<method>' wasn't found".
         if let Some(err) = &resp.error {
-            let routed_correctly = !(err.code == -32601
-                && err.message.contains(&format!("'{}'", method)));
-            assert!(routed_correctly,
-                    "domain '{}' must reach its handler arm (got wildcard METHOD_NOT_FOUND: {})",
-                    domain, err.message);
+            let routed_correctly =
+                !(err.code == -32601 && err.message.contains(&format!("'{}'", method)));
+            assert!(
+                routed_correctly,
+                "domain '{}' must reach its handler arm (got wildcard METHOD_NOT_FOUND: {})",
+                domain, err.message
+            );
         }
     }
 }
@@ -197,14 +231,25 @@ fn int_perf004_jsengine_singleton_is_once_lock_not_arc_mutex() {
         Err(e) => {
             // If the test environment cannot host an SM runtime (e.g. another
             // test holds the singleton), skip rather than fail the contract.
-            eprintln!("SKIP int_perf004_jsengine_singleton: for_test unavailable: {:?}", e);
+            eprintln!(
+                "SKIP int_perf004_jsengine_singleton: for_test unavailable: {:?}",
+                e
+            );
             return;
         }
     };
     let r1 = ctx.eval("6 * 7", "perf_test.js");
     let r2 = ctx.eval("6 * 7", "perf_test.js");
-    assert!(r1.is_ok(), "first eval must succeed on OnceLock'd engine: {:?}", r1.err());
-    assert!(r2.is_ok(), "second eval must succeed on the same OnceLock'd engine: {:?}", r2.err());
+    assert!(
+        r1.is_ok(),
+        "first eval must succeed on OnceLock'd engine: {:?}",
+        r1.err()
+    );
+    assert!(
+        r2.is_ok(),
+        "second eval must succeed on the same OnceLock'd engine: {:?}",
+        r2.err()
+    );
     JsContext::shutdown_test_runtime();
 }
 
@@ -233,8 +278,11 @@ fn int_perf005_target_list_returns_iterator_collected_array() {
     let resp = handle_command(parsed, TID, &None, None);
     if let Some(result) = &resp.result {
         if let Some(arr) = result.get("targetInfos").and_then(|v| v.as_array()) {
-            assert_eq!(arr.iter().count(), arr.len(),
-                       "targetInfos must be iterator-collected (count == len)");
+            assert_eq!(
+                arr.iter().count(),
+                arr.len(),
+                "targetInfos must be iterator-collected (count == len)"
+            );
         }
     }
 }
@@ -247,7 +295,10 @@ fn int_perf005_repeated_commands_take_replace_buffers_intact() {
     for i in 0..200i64 {
         let parsed = msg(i, "Log.enable").expect("parse Log.enable");
         let resp = handle_command(parsed, TID, &None, None);
-        assert_eq!(resp.id, Some(i),
-                   "iteration {i} must round-trip correctly under take/replace");
+        assert_eq!(
+            resp.id,
+            Some(i),
+            "iteration {i} must round-trip correctly under take/replace"
+        );
     }
 }

@@ -23,7 +23,7 @@ pub mod server;
 pub mod socket;
 
 pub use client::TlsClient;
-pub use connection::{TlsConnection, TlsError, ProcessResult, TlsState};
+pub use connection::{ProcessResult, TlsConnection, TlsError, TlsState};
 pub use profile::TlsProfile;
 pub use server::TlsServer;
 
@@ -34,8 +34,8 @@ pub use server::TlsServer;
 // DER-encoded bytes. Downstream crates (bun_runtime) use these instead
 // of rustls_pemfile.
 
-use core::ffi::c_void;
 use bun_boringssl_sys::boringssl::*;
+use core::ffi::c_void;
 
 /// Parse PEM certificates and return DER bytes for each.
 pub fn pem_parse_certs(pem: &str) -> Vec<Vec<u8>> {
@@ -45,7 +45,8 @@ pub fn pem_parse_certs(pem: &str) -> Vec<Vec<u8>> {
     }
     let mut ders = Vec::new();
     loop {
-        let x509 = unsafe { PEM_read_bio_X509(bio, std::ptr::null_mut(), None, std::ptr::null_mut()) };
+        let x509 =
+            unsafe { PEM_read_bio_X509(bio, std::ptr::null_mut(), None, std::ptr::null_mut()) };
         if x509.is_null() {
             break;
         }
@@ -81,7 +82,8 @@ pub fn pem_parse_key(pem: &str) -> Option<(KeyFormat, Vec<u8>)> {
     if bio.is_null() {
         return None;
     }
-    let pkey = unsafe { PEM_read_bio_PrivateKey(bio, std::ptr::null_mut(), None, std::ptr::null_mut()) };
+    let pkey =
+        unsafe { PEM_read_bio_PrivateKey(bio, std::ptr::null_mut(), None, std::ptr::null_mut()) };
     unsafe { BIO_free(bio) };
     if pkey.is_null() {
         return None;

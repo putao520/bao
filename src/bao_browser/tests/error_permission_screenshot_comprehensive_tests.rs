@@ -3,8 +3,8 @@
 // Permission field-level checks + PermissionGuard + PermissionDenied,
 // ScreenshotFormat + encode_image with real RGBA data.
 
-use bao_browser::{BrowserError, Permission, PermissionGuard, PermissionDenied};
-use bao_browser::{ScreenshotFormat, encode_image};
+use bao_browser::{encode_image, ScreenshotFormat};
+use bao_browser::{BrowserError, Permission, PermissionDenied, PermissionGuard};
 use image::RgbaImage;
 
 // ---- BrowserError variants ----
@@ -109,7 +109,10 @@ fn test_permission_read_exact_match() {
 
 #[test]
 fn test_permission_read_none_allows() {
-    let perm = Permission { read: None, ..Default::default() };
+    let perm = Permission {
+        read: None,
+        ..Default::default()
+    };
     assert!(perm.is_read_allowed("/anything"));
 }
 
@@ -127,7 +130,10 @@ fn test_permission_write_allowed_prefix() {
 
 #[test]
 fn test_permission_write_none_allows() {
-    let perm = Permission { write: None, ..Default::default() };
+    let perm = Permission {
+        write: None,
+        ..Default::default()
+    };
     assert!(perm.is_write_allowed("/anything"));
 }
 
@@ -164,7 +170,10 @@ fn test_permission_net_no_partial_match() {
 
 #[test]
 fn test_permission_net_none_allows() {
-    let perm = Permission { net: None, ..Default::default() };
+    let perm = Permission {
+        net: None,
+        ..Default::default()
+    };
     assert!(perm.is_net_allowed("any.host"));
 }
 
@@ -183,31 +192,46 @@ fn test_permission_net_multiple_domains() {
 
 #[test]
 fn test_permission_env_allowed_default() {
-    let perm = Permission { env: None, ..Default::default() };
+    let perm = Permission {
+        env: None,
+        ..Default::default()
+    };
     assert!(perm.is_env_allowed());
 }
 
 #[test]
 fn test_permission_env_allowed_true() {
-    let perm = Permission { env: Some(true), ..Default::default() };
+    let perm = Permission {
+        env: Some(true),
+        ..Default::default()
+    };
     assert!(perm.is_env_allowed());
 }
 
 #[test]
 fn test_permission_env_denied() {
-    let perm = Permission { env: Some(false), ..Default::default() };
+    let perm = Permission {
+        env: Some(false),
+        ..Default::default()
+    };
     assert!(!perm.is_env_allowed());
 }
 
 #[test]
 fn test_permission_run_allowed_default() {
-    let perm = Permission { run: None, ..Default::default() };
+    let perm = Permission {
+        run: None,
+        ..Default::default()
+    };
     assert!(perm.is_run_allowed());
 }
 
 #[test]
 fn test_permission_run_denied() {
-    let perm = Permission { run: Some(false), ..Default::default() };
+    let perm = Permission {
+        run: Some(false),
+        ..Default::default()
+    };
     assert!(!perm.is_run_allowed());
 }
 

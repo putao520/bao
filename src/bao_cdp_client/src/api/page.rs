@@ -46,7 +46,6 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::accessibility::Accessibility;
-use crate::api::browser::Browser as HighLevelBrowser;
 use super::browser_context::BrowserContext;
 use super::coverage::Coverage;
 use super::event_emitter::{EventEmitter, EventEmitterInner};
@@ -55,6 +54,7 @@ use super::keyboard::Keyboard;
 use super::mouse::Mouse;
 use super::touchscreen::Touchscreen;
 use super::tracing::Tracing;
+use crate::api::browser::Browser as HighLevelBrowser;
 use crate::connection::Connection;
 use crate::error::CdpError;
 
@@ -67,7 +67,11 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn new(target_id: impl Into<String>, url: impl Into<String>, type_str: impl Into<String>) -> Self {
+    pub fn new(
+        target_id: impl Into<String>,
+        url: impl Into<String>,
+        type_str: impl Into<String>,
+    ) -> Self {
         Self {
             target_id: target_id.into(),
             url: url.into(),
@@ -526,10 +530,7 @@ impl Page {
     ///
     /// @trace REQ-BAO-API-006 [class:Page]
     pub fn goto(&self, url: &str) -> crate::error::Result<Value> {
-        self.send_cdp_command(
-            "Page.navigate",
-            serde_json::json!({"url": url}),
-        )
+        self.send_cdp_command("Page.navigate", serde_json::json!({"url": url}))
     }
 
     /// 在页面上下文中执行 JavaScript 表达式(CDP `Runtime.evaluate`)。
@@ -641,7 +642,10 @@ impl Page {
         session_id: &str,
     ) -> crate::error::Result<Value> {
         match &*self.connection.borrow() {
-            Some(conn) => conn.borrow_mut().send_command_with_session(method, params, Some(session_id)),
+            Some(conn) => {
+                conn.borrow_mut()
+                    .send_command_with_session(method, params, Some(session_id))
+            }
             None => Err(CdpError::ConnectionClosed),
         }
     }
@@ -663,8 +667,8 @@ impl EventEmitter for Page {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::event_emitter::EventHandler;
+    use super::*;
 
     fn make_browser_ctx() -> Rc<BrowserContext> {
         let browser = Rc::new(HighLevelBrowser::new_for_test("ws://x"));
@@ -735,7 +739,11 @@ mod tests {
         let ctx = make_browser_ctx();
         let p = make_page_with_ctx(ctx);
         assert!(p.viewport().is_none());
-        p.set_viewport(Viewport { width: 1920, height: 1080, ..Default::default() });
+        p.set_viewport(Viewport {
+            width: 1920,
+            height: 1080,
+            ..Default::default()
+        });
         let v = p.viewport().unwrap();
         assert_eq!(v.width, 1920);
         assert_eq!(v.height, 1080);
@@ -749,7 +757,10 @@ mod tests {
         p.set_default_timeout(5000);
         p.set_default_navigation_timeout(10000);
         assert_eq!(p.default_timeout(), Some(Duration::from_millis(5000)));
-        assert_eq!(p.default_navigation_timeout(), Some(Duration::from_millis(10000)));
+        assert_eq!(
+            p.default_navigation_timeout(),
+            Some(Duration::from_millis(10000))
+        );
         p.clear_default_timeout();
         assert!(p.default_timeout().is_none());
     }
@@ -783,7 +794,8 @@ mod tests {
         assert_eq!(p.mouse().current_x(), 10.0);
         p.keyboard().set_modifier(1, true); // Shift
         assert!(p.keyboard().is_shift_pressed());
-        p.touchscreen().add_touch(crate::api::touchscreen::TouchPoint::default());
+        p.touchscreen()
+            .add_touch(crate::api::touchscreen::TouchPoint::default());
         assert_eq!(p.touchscreen().touch_count(), 1);
     }
 
@@ -810,11 +822,12 @@ mod tests {
         let ctx = make_browser_ctx();
         let p = make_page_with_ctx(ctx);
         assert!(!p.accessibility().has_snapshot());
-        p.accessibility().add_node(crate::api::accessibility::AXNode {
-            node_id: "1".into(),
-            role: "button".into(),
-            ..Default::default()
-        });
+        p.accessibility()
+            .add_node(crate::api::accessibility::AXNode {
+                node_id: "1".into(),
+                role: "button".into(),
+                ..Default::default()
+            });
         assert_eq!(p.accessibility().node_count(), 1);
     }
 
@@ -824,7 +837,10 @@ mod tests {
         let opener = make_page_with_ctx(ctx.clone());
         let child = Rc::new(Page::new("TARGET-2", Rc::downgrade(&ctx)));
         child.set_opener(Rc::downgrade(&opener));
-        assert_eq!(child.opener().map(|p| p.target_id().to_string()), Some("TARGET-1".into()));
+        assert_eq!(
+            child.opener().map(|p| p.target_id().to_string()),
+            Some("TARGET-1".into())
+        );
     }
 
     #[test]
@@ -923,19 +939,26 @@ mod tests {
     fn page_with_connection_has_connection() {
         let ctx = make_browser_ctx();
         // Create a mock connection via InMemoryTransport + MockBridge
-        use crate::transport::{InMemoryTransport, InMemoryBridge, InMemoryBridgeResponse};
+        use crate::transport::{InMemoryBridge, InMemoryBridgeResponse, InMemoryTransport};
         use std::sync::Arc;
 
         struct MockBridge;
         impl InMemoryBridge for MockBridge {
-            fn dispatch_command(&self, _m: &str, _p: Value, _s: Option<&str>) -> InMemoryBridgeResponse {
+            fn dispatch_command(
+                &self,
+                _m: &str,
+                _p: Value,
+                _s: Option<&str>,
+            ) -> InMemoryBridgeResponse {
                 InMemoryBridgeResponse::Ok(serde_json::json!({"result": 42}))
             }
         }
 
         let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
         let transport = InMemoryTransport::new(bridge);
-        let conn = Rc::new(RefCell::new(Connection::from_transport(Box::new(transport))));
+        let conn = Rc::new(RefCell::new(Connection::from_transport(Box::new(
+            transport,
+        ))));
 
         let p = Rc::new(Page::new_with_connection(
             "TARGET-1",
@@ -951,19 +974,26 @@ mod tests {
         let p = make_page_with_ctx(ctx);
         assert!(!p.has_connection());
 
-        use crate::transport::{InMemoryTransport, InMemoryBridge, InMemoryBridgeResponse};
+        use crate::transport::{InMemoryBridge, InMemoryBridgeResponse, InMemoryTransport};
         use std::sync::Arc;
 
         struct MockBridge;
         impl InMemoryBridge for MockBridge {
-            fn dispatch_command(&self, _m: &str, _p: Value, _s: Option<&str>) -> InMemoryBridgeResponse {
+            fn dispatch_command(
+                &self,
+                _m: &str,
+                _p: Value,
+                _s: Option<&str>,
+            ) -> InMemoryBridgeResponse {
                 InMemoryBridgeResponse::Ok(Value::Null)
             }
         }
 
         let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
         let transport = InMemoryTransport::new(bridge);
-        let conn = Rc::new(RefCell::new(Connection::from_transport(Box::new(transport))));
+        let conn = Rc::new(RefCell::new(Connection::from_transport(Box::new(
+            transport,
+        ))));
 
         p.set_connection(conn);
         assert!(p.has_connection());

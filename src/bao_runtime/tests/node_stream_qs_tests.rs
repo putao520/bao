@@ -21,7 +21,9 @@ fn test_node_stream_qs_all() {
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var stream = require('stream');
         var qs = require('querystring');
         var results = [];
@@ -95,7 +97,8 @@ fn test_node_stream_qs_all() {
         });
 
         results.join("|")
-    "#);
+    "#,
+    );
 
     let mut all_passed = true;
     for item in results.split('|') {

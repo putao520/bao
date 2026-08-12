@@ -123,8 +123,12 @@ pub fn dispatch_command(
         ("DOM", "removeAttribute") => {
             a_class_handlers::dom_remove_attribute(backend, target_id, &params)
         }
-        ("DOM", "getOuterHTML") => a_class_handlers::dom_get_outer_html(backend, target_id, &params),
-        ("DOM", "setOuterHTML") => a_class_handlers::dom_set_outer_html(backend, target_id, &params),
+        ("DOM", "getOuterHTML") => {
+            a_class_handlers::dom_get_outer_html(backend, target_id, &params)
+        }
+        ("DOM", "setOuterHTML") => {
+            a_class_handlers::dom_set_outer_html(backend, target_id, &params)
+        }
         ("DOM", "requestNode") => a_class_handlers::dom_request_node(backend, target_id, &params),
 
         // ============ Network domain (4 method) ============
@@ -202,12 +206,8 @@ pub fn dispatch_command(
         // 接入 servo SM Debugger API(DevtoolScriptControlMsg)。
         // @trace REQ-CDP-003 [domain:Debugger]
         // @trace BUG-CDP-006 [domain:Debugger]
-        ("Debugger", "enable") => {
-            debugger_handlers::debugger_enable(backend, target_id, &params)
-        }
-        ("Debugger", "disable") => {
-            debugger_handlers::debugger_disable(backend, target_id, &params)
-        }
+        ("Debugger", "enable") => debugger_handlers::debugger_enable(backend, target_id, &params),
+        ("Debugger", "disable") => debugger_handlers::debugger_disable(backend, target_id, &params),
         ("Debugger", "setBreakpoint") => {
             debugger_handlers::debugger_set_breakpoint(backend, target_id, &params)
         }
@@ -217,12 +217,8 @@ pub fn dispatch_command(
         ("Debugger", "removeBreakpoint") => {
             debugger_handlers::debugger_remove_breakpoint(backend, target_id, &params)
         }
-        ("Debugger", "pause") => {
-            debugger_handlers::debugger_pause(backend, target_id, &params)
-        }
-        ("Debugger", "resume") => {
-            debugger_handlers::debugger_resume(backend, target_id, &params)
-        }
+        ("Debugger", "pause") => debugger_handlers::debugger_pause(backend, target_id, &params),
+        ("Debugger", "resume") => debugger_handlers::debugger_resume(backend, target_id, &params),
         ("Debugger", "stepOver") => {
             debugger_handlers::debugger_step_over(backend, target_id, &params)
         }
@@ -370,9 +366,7 @@ pub fn dispatch_command(
         ("JSHandle", "asElement") => {
             b_class_handlers::js_handle_as_element(backend, target_id, &params)
         }
-        ("JSHandle", "dispose") => {
-            b_class_handlers::js_handle_dispose(backend, target_id, &params)
-        }
+        ("JSHandle", "dispose") => b_class_handlers::js_handle_dispose(backend, target_id, &params),
         ("JSHandle", "evaluate") => {
             b_class_handlers::js_handle_evaluate(backend, target_id, &params)
         }
@@ -398,8 +392,8 @@ pub fn dispatch_command(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::servo_backend::MockServoBackend;
+    use super::*;
     use serde_json::json;
 
     fn empty_params() -> Value {
@@ -447,7 +441,8 @@ mod tests {
     #[test]
     fn dispatch_heap_profiler_e_class() {
         let b = MockServoBackend::new();
-        let err = dispatch_command(&b, "HeapProfiler.takeHeapSnapshot", empty_params(), "1").unwrap_err();
+        let err =
+            dispatch_command(&b, "HeapProfiler.takeHeapSnapshot", empty_params(), "1").unwrap_err();
         assert!(matches!(err, BridgeError::NotSupported(_)));
         assert_eq!(err.cdp_error_code(), -32601);
     }
@@ -462,14 +457,16 @@ mod tests {
     #[test]
     fn dispatch_dom_storage_e_class() {
         let b = MockServoBackend::new();
-        let err = dispatch_command(&b, "DOMStorage.getDOMStorageItems", empty_params(), "1").unwrap_err();
+        let err =
+            dispatch_command(&b, "DOMStorage.getDOMStorageItems", empty_params(), "1").unwrap_err();
         assert!(matches!(err, BridgeError::NotSupported(_)));
     }
 
     #[test]
     fn dispatch_indexed_db_e_class() {
         let b = MockServoBackend::new();
-        let err = dispatch_command(&b, "IndexedDB.requestDatabaseNames", empty_params(), "1").unwrap_err();
+        let err = dispatch_command(&b, "IndexedDB.requestDatabaseNames", empty_params(), "1")
+            .unwrap_err();
         assert!(matches!(err, BridgeError::NotSupported(_)));
     }
 
@@ -581,13 +578,8 @@ mod tests {
     fn dispatch_element_handle_click_b_class_routes_to_tap() {
         let b = MockServoBackend::new();
         // ElementHandle.click → page_tap(selector)
-        let r = dispatch_command(
-            &b,
-            "ElementHandle.click",
-            json!({"selector":"button"}),
-            "1",
-        )
-        .unwrap();
+        let r =
+            dispatch_command(&b, "ElementHandle.click", json!({"selector":"button"}), "1").unwrap();
         let v = r["result"]["value"].as_str().unwrap();
         assert!(v.contains("var s=__args[0]"));
     }

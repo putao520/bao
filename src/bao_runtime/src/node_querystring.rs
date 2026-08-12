@@ -123,13 +123,24 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         for name in &["parse", "stringify", "escape", "unescape"] {
             let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
-            JS_GetProperty(cx_raw, exports_rooted.handle().into(), cname.as_ptr(), MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut val,
-            });
+            JS_GetProperty(
+                cx_raw,
+                exports_rooted.handle().into(),
+                cname.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut val,
+                },
+            );
             if !val.is_undefined() {
                 rooted!(&in(cx) let val_root = val);
-                JS_DefineProperty(cx_raw, mod_obj.handle().into(), cname.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    cx_raw,
+                    mod_obj.handle().into(),
+                    cname.as_ptr(),
+                    val_root.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 

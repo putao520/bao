@@ -3,8 +3,8 @@
 // is usable from the bao_runtime crate (same thread, no JS engine). When P1-A
 // lands, drain_and_check will use this same API to replace TimerHeap+epoll.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext;
 use bun_event_loop::MiniEventLoop::MiniEventLoop;
@@ -20,7 +20,8 @@ fn force_uloop_link() {
     bao_uloop::force_link();
     // Ensure dispatch module's extern "Rust" symbols survive link-time GC.
     // The module is `pub` in bao_runtime, so just referencing it here is enough.
-    let _ = bun_runtime::dispatch::__bun_run_file_poll as unsafe extern "Rust" fn(*mut bun_io::posix_event_loop::FilePoll, i64);
+    let _ = bun_runtime::dispatch::__bun_run_file_poll
+        as unsafe extern "Rust" fn(*mut bun_io::posix_event_loop::FilePoll, i64);
 }
 
 #[derive(Debug)]
@@ -29,23 +30,36 @@ struct CounterCtx {
 }
 
 fn increment_task(ctx: *mut CounterCtx, _extra: *mut std::ffi::c_void) {
-    unsafe { (*ctx).fired.fetch_add(1, Ordering::SeqCst); }
+    unsafe {
+        (*ctx).fired.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 #[test]
 fn test_minimal_event_loop_init() {
     force_uloop_link();
     let mut loop_ = MiniEventLoop::init();
-    assert!(!loop_.loop_ptr().is_null(), "MiniEventLoop must produce a non-null uSockets loop pointer");
-    assert!(loop_.tasks.readable_length() == 0, "fresh loop must have empty task queue");
-    assert!(!loop_.pipe_read_buffer().is_empty(), "pipe_read_buffer must be initialized on first access");
+    assert!(
+        !loop_.loop_ptr().is_null(),
+        "MiniEventLoop must produce a non-null uSockets loop pointer"
+    );
+    assert!(
+        loop_.tasks.readable_length() == 0,
+        "fresh loop must have empty task queue"
+    );
+    assert!(
+        !loop_.pipe_read_buffer().is_empty(),
+        "pipe_read_buffer must be initialized on first access"
+    );
 }
 
 #[test]
 fn test_minimal_event_loop_enqueue_and_drain() {
     force_uloop_link();
     let mut loop_ = MiniEventLoop::init();
-    let ctx = Box::new(CounterCtx { fired: AtomicUsize::new(0) });
+    let ctx = Box::new(CounterCtx {
+        fired: AtomicUsize::new(0),
+    });
     let ctx_ptr = Box::into_raw(ctx);
 
     // from_callback_auto_deinit wraps the ctx pointer and self-frees the wrapper
@@ -59,7 +73,11 @@ fn test_minimal_event_loop_enqueue_and_drain() {
     let task_nn = unsafe { core::ptr::NonNull::new_unchecked(task_ptr) };
     loop_.enqueue_task_concurrent(task_nn);
 
-    assert_eq!(loop_.tasks.readable_length(), 0, "concurrent queue is not yet flushed into tasks");
+    assert_eq!(
+        loop_.tasks.readable_length(),
+        0,
+        "concurrent queue is not yet flushed into tasks"
+    );
 
     // tick_once first flushes concurrent → tasks, then runs all tasks.
     loop_.tick_once(core::ptr::null_mut());
@@ -69,7 +87,9 @@ fn test_minimal_event_loop_enqueue_and_drain() {
 
     // The wrapper Box was freed inside `function<T>` (auto-deinit). Reclaim
     // ctx_ptr only — the wrapper memory is already dropped.
-    unsafe { drop(Box::from_raw(ctx_ptr)); }
+    unsafe {
+        drop(Box::from_raw(ctx_ptr));
+    }
 }
 
 #[test]
@@ -81,9 +101,14 @@ fn test_minimal_event_loop_tick_until_done() {
 
     // is_done returns true immediately — tick must return on first iteration.
     // An empty loop with is_done=true must not call into uSockets internals.
-    loop_.tick(core::ptr::null_mut(), |_ctx| done_clone.load(Ordering::SeqCst));
+    loop_.tick(core::ptr::null_mut(), |_ctx| {
+        done_clone.load(Ordering::SeqCst)
+    });
 
-    assert!(done.load(Ordering::Relaxed), "done flag unchanged after tick");
+    assert!(
+        done.load(Ordering::Relaxed),
+        "done flag unchanged after tick"
+    );
 }
 
 #[test]

@@ -1,28 +1,30 @@
 #![allow(dead_code, unused_imports)]
 // REQ-STL-007: Stealth engine integration and CDP stealth  @trace REQ-STL-001 [entity:TlsProfile] [entity:StealthProfile]
-mod profile;
-mod tls;
-mod http2;
-mod canvas;
-mod navigator;
-mod webgl_audio;
 mod behavior;
+mod canvas;
 pub mod engine_props;
 pub mod hooks;
+mod http2;
+mod navigator;
+mod profile;
 pub mod stealth_wire;
+mod tls;
+mod webgl_audio;
 
-pub use profile::StealthProfile;
-pub use profile::{FontConfig, BatteryConfig, WebRtcMode, TimingConfig, ClientRectsConfig, ScreenDisplayConfig};
-pub use tls::TlsFingerprint;
-pub use tls::TlsFingerprintConfig;
+pub use behavior::{BehaviorConfig, BehaviorSimulator, ClickEvent, ClickEventType, TypingEvent};
+pub use canvas::CanvasNoise;
+pub use hooks::StealthHooks;
 pub use http2::Http2Fingerprint;
 pub use http2::{PriorityFrame, PriorityFrameMode};
-pub use canvas::CanvasNoise;
 pub use navigator::{NavigatorProfile, ScreenProfile};
-pub use webgl_audio::{WebGLProfile, AudioProfile};
-pub use behavior::{BehaviorConfig, BehaviorSimulator, ClickEventType, ClickEvent, TypingEvent};
-pub use hooks::StealthHooks;
+pub use profile::StealthProfile;
+pub use profile::{
+    BatteryConfig, ClientRectsConfig, FontConfig, ScreenDisplayConfig, TimingConfig, WebRtcMode,
+};
 pub use stealth_wire::StealthTlsWireConfig;
+pub use tls::TlsFingerprint;
+pub use tls::TlsFingerprintConfig;
+pub use webgl_audio::{AudioProfile, WebGLProfile};
 
 pub struct StealthEngine {
     profile: StealthProfile,
@@ -73,7 +75,6 @@ impl StealthEngine {
     pub fn behavior(&self) -> &BehaviorSimulator {
         &self.profile.behavior
     }
-
 }
 
 #[cfg(test)]
@@ -84,14 +85,20 @@ mod tests {
     fn new_stores_profile() {
         let profile = StealthProfile::firefox_default();
         let engine = StealthEngine::new(profile.clone());
-        assert_eq!(engine.profile().navigator.user_agent, profile.navigator.user_agent);
+        assert_eq!(
+            engine.profile().navigator.user_agent,
+            profile.navigator.user_agent
+        );
     }
 
     #[test]
     fn default_engine_is_firefox() {
         let engine = StealthEngine::default_engine();
         let firefox = StealthProfile::firefox_default();
-        assert_eq!(engine.profile().navigator.user_agent, firefox.navigator.user_agent);
+        assert_eq!(
+            engine.profile().navigator.user_agent,
+            firefox.navigator.user_agent
+        );
     }
 
     #[test]
@@ -103,7 +110,10 @@ mod tests {
     #[test]
     fn http2_config_matches_profile() {
         let engine = StealthEngine::default_engine();
-        assert_eq!(engine.http2_config().header_table_size, engine.profile().http2.header_table_size);
+        assert_eq!(
+            engine.http2_config().header_table_size,
+            engine.profile().http2.header_table_size
+        );
     }
 
     #[test]
@@ -115,7 +125,10 @@ mod tests {
     #[test]
     fn navigator_matches_profile() {
         let engine = StealthEngine::default_engine();
-        assert_eq!(engine.navigator().user_agent, engine.profile().navigator.user_agent);
+        assert_eq!(
+            engine.navigator().user_agent,
+            engine.profile().navigator.user_agent
+        );
     }
 
     #[test]
@@ -135,7 +148,10 @@ mod tests {
     #[test]
     fn audio_matches_profile() {
         let engine = StealthEngine::default_engine();
-        assert!((engine.audio().noise_amplitude() - engine.profile().audio.noise_amplitude()).abs() < f64::EPSILON);
+        assert!(
+            (engine.audio().noise_amplitude() - engine.profile().audio.noise_amplitude()).abs()
+                < f64::EPSILON
+        );
     }
 
     #[test]
@@ -143,5 +159,4 @@ mod tests {
         let engine = StealthEngine::default_engine();
         assert_eq!(engine.behavior().seed(), engine.profile().behavior.seed());
     }
-
 }

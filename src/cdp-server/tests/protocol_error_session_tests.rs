@@ -2,21 +2,27 @@
 // CdpError, SessionError, CdpMessage parse edge cases,
 // CdpResponse serialize edge cases, CdpEvent edge cases.
 
-use cdp_server::{CdpError, CdpMessage, CdpResponse, CdpEvent, SessionError};
+use cdp_server::{CdpError, CdpEvent, CdpMessage, CdpResponse, SessionError};
 use serde_json::{json, Value};
 
 // ---- CdpError construction + Serialize ----
 
 #[test]
 fn test_cdp_error_new() {
-    let err = CdpError { code: -32601, message: "not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "not found".into(),
+    };
     assert_eq!(err.code, -32601);
     assert_eq!(err.message, "not found");
 }
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32600, message: "invalid".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "invalid".into(),
+    };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32600"));
     assert!(debug.contains("invalid"));
@@ -24,7 +30,10 @@ fn test_cdp_error_debug() {
 
 #[test]
 fn test_cdp_error_serialize_roundtrip() {
-    let err = CdpError { code: -32700, message: "parse error".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "parse error".into(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(parsed["code"], -32700);
@@ -33,35 +42,50 @@ fn test_cdp_error_serialize_roundtrip() {
 
 #[test]
 fn test_cdp_error_empty_message() {
-    let err = CdpError { code: 0, message: String::new() };
+    let err = CdpError {
+        code: 0,
+        message: String::new(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     assert!(json_str.contains(r#""message":"""#));
 }
 
 #[test]
 fn test_cdp_error_unicode_message() {
-    let err = CdpError { code: -1, message: "エラー発生".into() };
+    let err = CdpError {
+        code: -1,
+        message: "エラー発生".into(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     assert!(json_str.contains("エラー"));
 }
 
 #[test]
 fn test_cdp_error_large_code() {
-    let err = CdpError { code: i64::MIN, message: "min".into() };
+    let err = CdpError {
+        code: i64::MIN,
+        message: "min".into(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     assert!(json_str.contains(&i64::MIN.to_string()));
 }
 
 #[test]
 fn test_cdp_error_positive_code() {
-    let err = CdpError { code: 999, message: "custom".into() };
+    let err = CdpError {
+        code: 999,
+        message: "custom".into(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     assert!(json_str.contains("999"));
 }
 
 #[test]
 fn test_cdp_error_clone() {
-    let err = CdpError { code: -32601, message: "test".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "test".into(),
+    };
     let cloned = err.clone();
     assert_eq!(cloned.code, err.code);
     assert_eq!(cloned.message, err.message);
@@ -174,7 +198,10 @@ fn test_parse_message_nested_params() {
 #[test]
 fn test_parse_message_large_array_params() {
     let data: Vec<i32> = (0..500).collect();
-    let raw = format!(r#"{{"id":1,"method":"Test.run","params":{}}}"#, serde_json::to_string(&data).unwrap());
+    let raw = format!(
+        r#"{{"id":1,"method":"Test.run","params":{}}}"#,
+        serde_json::to_string(&data).unwrap()
+    );
     let msg = parse(&raw).unwrap();
     assert_eq!(msg.params.unwrap().as_array().unwrap().len(), 500);
 }
@@ -213,7 +240,11 @@ fn test_parse_message_max_id() {
 
 #[test]
 fn test_serialize_response_success() {
-    let resp = CdpResponse { id: Some(1), result: Some(json!({"ok": true})), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(json!({"ok": true})),
+        error: None,
+    };
     let json_str = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(parsed["id"], 1);
@@ -226,7 +257,10 @@ fn test_serialize_response_error() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&json_str).unwrap();
@@ -236,14 +270,22 @@ fn test_serialize_response_error() {
 
 #[test]
 fn test_serialize_response_with_null_result() {
-    let resp = CdpResponse { id: Some(1), result: Some(Value::Null), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(Value::Null),
+        error: None,
+    };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains(r#""result":null"#));
 }
 
 #[test]
 fn test_serialize_response_deterministic() {
-    let resp = CdpResponse { id: Some(1), result: Some(json!({"a":1})), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(json!({"a":1})),
+        error: None,
+    };
     let j1 = serde_json::to_string(&resp).unwrap();
     let j2 = serde_json::to_string(&resp).unwrap();
     assert_eq!(j1, j2);
@@ -251,7 +293,11 @@ fn test_serialize_response_deterministic() {
 
 #[test]
 fn test_serialize_response_negative_id() {
-    let resp = CdpResponse { id: Some(-100), result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: Some(-100),
+        result: Some(json!({})),
+        error: None,
+    };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains("-100"));
 }
@@ -259,14 +305,22 @@ fn test_serialize_response_negative_id() {
 #[test]
 fn test_serialize_response_large_result() {
     let data: Vec<i64> = (0..2000).collect();
-    let resp = CdpResponse { id: Some(1), result: Some(json!({"data": data})), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(json!({"data": data})),
+        error: None,
+    };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.len() > 5000);
 }
 
 #[test]
 fn test_serialize_response_empty_result() {
-    let resp = CdpResponse { id: Some(1), result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(json!({})),
+        error: None,
+    };
     let json_str = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&json_str).unwrap();
     assert!(parsed["result"].as_object().unwrap().is_empty());
@@ -276,7 +330,10 @@ fn test_serialize_response_empty_result() {
 
 #[test]
 fn test_cdp_event_serialize_with_params() {
-    let ev = CdpEvent { method: "Page.load".into(), params: Some(json!({"ts": 1})) };
+    let ev = CdpEvent {
+        method: "Page.load".into(),
+        params: Some(json!({"ts": 1})),
+    };
     let json_str = serde_json::to_string(&ev).unwrap();
     let parsed: Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(parsed["method"], "Page.load");
@@ -285,7 +342,10 @@ fn test_cdp_event_serialize_with_params() {
 
 #[test]
 fn test_cdp_event_serialize_without_params() {
-    let ev = CdpEvent { method: "DOM.updated".into(), params: None };
+    let ev = CdpEvent {
+        method: "DOM.updated".into(),
+        params: None,
+    };
     let json_str = serde_json::to_string(&ev).unwrap();
     let parsed: Value = serde_json::from_str(&json_str).unwrap();
     assert!(parsed.get("params").is_none());
@@ -293,14 +353,20 @@ fn test_cdp_event_serialize_without_params() {
 
 #[test]
 fn test_cdp_event_empty_method() {
-    let ev = CdpEvent { method: String::new(), params: None };
+    let ev = CdpEvent {
+        method: String::new(),
+        params: None,
+    };
     let json_str = serde_json::to_string(&ev).unwrap();
     assert!(json_str.contains(r#""method":"""#));
 }
 
 #[test]
 fn test_cdp_event_unicode_method() {
-    let ev = CdpEvent { method: "テスト.イベント".into(), params: Some(json!({"key": "値"})) };
+    let ev = CdpEvent {
+        method: "テスト.イベント".into(),
+        params: Some(json!({"key": "値"})),
+    };
     let json_str = serde_json::to_string(&ev).unwrap();
     assert!(json_str.contains("テスト"));
 }
@@ -308,14 +374,20 @@ fn test_cdp_event_unicode_method() {
 #[test]
 fn test_cdp_event_large_params() {
     let data: Vec<i64> = (0..3000).collect();
-    let ev = CdpEvent { method: "Test.big".into(), params: Some(json!({"data": data})) };
+    let ev = CdpEvent {
+        method: "Test.big".into(),
+        params: Some(json!({"data": data})),
+    };
     let json_str = serde_json::to_string(&ev).unwrap();
     assert!(json_str.len() > 10000);
 }
 
 #[test]
 fn test_cdp_event_clone_independent() {
-    let ev = CdpEvent { method: "Test.ev".into(), params: Some(json!({"x": 1})) };
+    let ev = CdpEvent {
+        method: "Test.ev".into(),
+        params: Some(json!({"x": 1})),
+    };
     let mut cloned = ev.clone();
     cloned.method = "Modified".into();
     assert_eq!(ev.method, "Test.ev");
@@ -324,14 +396,20 @@ fn test_cdp_event_clone_independent() {
 
 #[test]
 fn test_cdp_event_debug() {
-    let ev = CdpEvent { method: "Test.ev".into(), params: None };
+    let ev = CdpEvent {
+        method: "Test.ev".into(),
+        params: None,
+    };
     let debug = format!("{:?}", ev);
     assert!(debug.contains("Test.ev"));
 }
 
 #[test]
 fn test_cdp_event_deterministic() {
-    let ev = CdpEvent { method: "Test.ev".into(), params: Some(json!({"x": 1})) };
+    let ev = CdpEvent {
+        method: "Test.ev".into(),
+        params: Some(json!({"x": 1})),
+    };
     let j1 = serde_json::to_string(&ev).unwrap();
     let j2 = serde_json::to_string(&ev).unwrap();
     assert_eq!(j1, j2);
@@ -344,7 +422,10 @@ fn test_jsonrpc_error_codes_standard() {
     // JSON-RPC 2.0 standard error codes
     let standard_codes = [-32700i64, -32600, -32601, -32602, -32603];
     for code in &standard_codes {
-        let err = CdpError { code: *code, message: "test".into() };
+        let err = CdpError {
+            code: *code,
+            message: "test".into(),
+        };
         let json_str = serde_json::to_string(&err).unwrap();
         assert!(json_str.contains(&code.to_string()));
     }
@@ -353,7 +434,10 @@ fn test_jsonrpc_error_codes_standard() {
 #[test]
 fn test_jsonrpc_error_codes_range() {
     // JSON-RPC 2.0: -32768 to -32000 are reserved
-    let err = CdpError { code: -32000, message: "server error".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "server error".into(),
+    };
     assert!(err.code >= -32768);
     assert!(err.code <= -32000);
 }

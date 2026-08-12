@@ -4,7 +4,7 @@
 // @trace TEST-LIB-003 [req:REQ-LIB-003] [level:unit]
 // Unit tests for browser rendering, runtime bridge, page pool, CDP abstraction
 
-use bao_browser::{BaoConfig, BrowserConfig, PageConfig, BrowserError};
+use bao_browser::{BaoConfig, BrowserConfig, BrowserError, PageConfig};
 use bao_browser::{Permission, PermissionGuard};
 use bao_stealth::StealthProfile;
 

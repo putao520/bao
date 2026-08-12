@@ -90,16 +90,16 @@ pub mod uloop {
 
 // Browser embedding (primary BaoRuntime)
 pub use bao_browser::{
-    encode_image, run_browser, BaoConfig, BaoRuntime, BrowserConfig, BrowserError, PageConfig,
-    PageHandle, PagePool, PageState, Permission, PermissionDenied, PermissionGuard,
-    ScreenshotFormat,
+    BaoConfig, BaoRuntime, BrowserConfig, BrowserError, PageConfig, PageHandle, PagePool,
+    PageState, Permission, PermissionDenied, PermissionGuard, ScreenshotFormat, encode_image,
+    run_browser,
 };
 
 // Stealth (always linked; enable via profile at runtime)
 pub use bao_stealth::{
-    BehaviorConfig, BehaviorSimulator, CanvasNoise, FontConfig, Http2Fingerprint, NavigatorProfile,
-    ScreenProfile, StealthEngine, StealthHooks, StealthProfile, StealthTlsWireConfig, TlsFingerprint,
-    WebGLProfile, AudioProfile,
+    AudioProfile, BehaviorConfig, BehaviorSimulator, CanvasNoise, FontConfig, Http2Fingerprint,
+    NavigatorProfile, ScreenProfile, StealthEngine, StealthHooks, StealthProfile,
+    StealthTlsWireConfig, TlsFingerprint, WebGLProfile,
 };
 
 // CDP client entry

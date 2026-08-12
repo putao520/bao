@@ -71,7 +71,9 @@ fn parse_pem_to_pkey(pem: &str) -> Result<*mut EVP_PKEY, CryptoError> {
         );
         BIO_free(bio);
         if pkey.is_null() {
-            return Err(CryptoError::InvalidKey("PEM_read_bio_PrivateKey failed".into()));
+            return Err(CryptoError::InvalidKey(
+                "PEM_read_bio_PrivateKey failed".into(),
+            ));
         }
         Ok(pkey)
     }
@@ -91,19 +93,28 @@ fn parse_der_to_pkey(der: &[u8]) -> Result<*mut EVP_PKEY, CryptoError> {
 impl Signer {
     pub fn from_pkcs8_pem(algo: &SignAlgorithm, pem: &str) -> Result<Signer, CryptoError> {
         let pkey = parse_pem_to_pkey(pem)?;
-        Ok(Signer { pkey, algo: algo.clone() })
+        Ok(Signer {
+            pkey,
+            algo: algo.clone(),
+        })
     }
 
     pub fn from_pkcs8_der(algo: &SignAlgorithm, der: &[u8]) -> Result<Signer, CryptoError> {
         let pkey = parse_der_to_pkey(der)?;
-        Ok(Signer { pkey, algo: algo.clone() })
+        Ok(Signer {
+            pkey,
+            algo: algo.clone(),
+        })
     }
 
     pub fn from_pkey(pkey: *mut EVP_PKEY, algo: &SignAlgorithm) -> Result<Signer, CryptoError> {
         if pkey.is_null() {
             return Err(CryptoError::InvalidKey("null EVP_PKEY".into()));
         }
-        Ok(Signer { pkey, algo: algo.clone() })
+        Ok(Signer {
+            pkey,
+            algo: algo.clone(),
+        })
     }
 
     pub fn sign(&self, data: &[u8], format: SignatureFormat) -> Result<Vec<u8>, CryptoError> {
@@ -145,13 +156,17 @@ impl Signer {
 
             if EVP_DigestSignUpdate(&mut md_ctx, data.as_ptr() as *const c_void, data.len()) != 1 {
                 EVP_MD_CTX_cleanup(&mut md_ctx);
-                return Err(CryptoError::SignFailed("EVP_DigestSignUpdate failed".into()));
+                return Err(CryptoError::SignFailed(
+                    "EVP_DigestSignUpdate failed".into(),
+                ));
             }
 
             let mut sig_len: usize = 0;
             if EVP_DigestSignFinal(&mut md_ctx, ptr::null_mut(), &mut sig_len) != 1 {
                 EVP_MD_CTX_cleanup(&mut md_ctx);
-                return Err(CryptoError::SignFailed("EVP_DigestSignFinal (size query) failed".into()));
+                return Err(CryptoError::SignFailed(
+                    "EVP_DigestSignFinal (size query) failed".into(),
+                ));
             }
 
             let mut sig = vec![0u8; sig_len];
@@ -178,19 +193,42 @@ impl Signer {
             let mut md_ctx: EVP_MD_CTX = core::mem::zeroed();
             EVP_MD_CTX_init(&mut md_ctx);
 
-            if EVP_DigestSignInit(&mut md_ctx, ptr::null_mut(), ptr::null(), ptr::null_mut(), self.pkey) != 1 {
+            if EVP_DigestSignInit(
+                &mut md_ctx,
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null_mut(),
+                self.pkey,
+            ) != 1
+            {
                 EVP_MD_CTX_cleanup(&mut md_ctx);
                 return Err(CryptoError::SignFailed("EVP_DigestSignInit failed".into()));
             }
 
             let mut sig_len: usize = 0;
-            if EVP_DigestSign(&mut md_ctx, ptr::null_mut(), &mut sig_len, data.as_ptr(), data.len()) != 1 {
+            if EVP_DigestSign(
+                &mut md_ctx,
+                ptr::null_mut(),
+                &mut sig_len,
+                data.as_ptr(),
+                data.len(),
+            ) != 1
+            {
                 EVP_MD_CTX_cleanup(&mut md_ctx);
-                return Err(CryptoError::SignFailed("EVP_DigestSign (size query) failed".into()));
+                return Err(CryptoError::SignFailed(
+                    "EVP_DigestSign (size query) failed".into(),
+                ));
             }
 
             let mut sig = vec![0u8; sig_len];
-            if EVP_DigestSign(&mut md_ctx, sig.as_mut_ptr(), &mut sig_len, data.as_ptr(), data.len()) != 1 {
+            if EVP_DigestSign(
+                &mut md_ctx,
+                sig.as_mut_ptr(),
+                &mut sig_len,
+                data.as_ptr(),
+                data.len(),
+            ) != 1
+            {
                 EVP_MD_CTX_cleanup(&mut md_ctx);
                 return Err(CryptoError::SignFailed("EVP_DigestSign failed".into()));
             }
@@ -206,17 +244,23 @@ impl Signer {
 /// into raw r||s concatenation padded to field size.
 fn der_ecdsa_sig_to_raw(der: &[u8]) -> Result<Vec<u8>, CryptoError> {
     if der.len() < 8 || der[0] != 0x30 {
-        return Err(CryptoError::DecodingFailed("Invalid DER ECDSA signature".into()));
+        return Err(CryptoError::DecodingFailed(
+            "Invalid DER ECDSA signature".into(),
+        ));
     }
 
     let (seq_len, len_size) = read_der_len(der, 1)?;
     let mut pos = 1 + len_size;
     if pos + seq_len > der.len() {
-        return Err(CryptoError::DecodingFailed("DER SEQUENCE length overflow".into()));
+        return Err(CryptoError::DecodingFailed(
+            "DER SEQUENCE length overflow".into(),
+        ));
     }
 
     if der[pos] != 0x02 {
-        return Err(CryptoError::DecodingFailed("Expected INTEGER tag for r".into()));
+        return Err(CryptoError::DecodingFailed(
+            "Expected INTEGER tag for r".into(),
+        ));
     }
     pos += 1;
     let (r_len, len_size) = read_der_len(der, pos)?;
@@ -225,7 +269,9 @@ fn der_ecdsa_sig_to_raw(der: &[u8]) -> Result<Vec<u8>, CryptoError> {
     pos += r_len;
 
     if pos >= der.len() || der[pos] != 0x02 {
-        return Err(CryptoError::DecodingFailed("Expected INTEGER tag for s".into()));
+        return Err(CryptoError::DecodingFailed(
+            "Expected INTEGER tag for s".into(),
+        ));
     }
     pos += 1;
     let (s_len, len_size) = read_der_len(der, pos)?;
@@ -411,7 +457,9 @@ mod tests {
     fn rsa_pkcs1v15_sha256_sign_verify_roundtrip() {
         let pkey = generate_rsa_pkey();
         let pem = pkey_to_pkcs8_pem(pkey);
-        let algo = SignAlgorithm::RsaPkcs1v15 { hash: RsaHash::Sha256 };
+        let algo = SignAlgorithm::RsaPkcs1v15 {
+            hash: RsaHash::Sha256,
+        };
         let signer = Signer::from_pkcs8_pem(&algo, &pem).unwrap();
         let data = b"hello rsa-pkcs1v15-sha256";
         let sig = signer.sign(data, SignatureFormat::Der).unwrap();
@@ -426,7 +474,9 @@ mod tests {
     fn rsa_pkcs1v15_sha256_der_input() {
         let pkey = generate_rsa_pkey();
         let der = pkey_to_pkcs8_der(pkey);
-        let algo = SignAlgorithm::RsaPkcs1v15 { hash: RsaHash::Sha256 };
+        let algo = SignAlgorithm::RsaPkcs1v15 {
+            hash: RsaHash::Sha256,
+        };
         let signer = Signer::from_pkcs8_der(&algo, &der).unwrap();
         let data = b"hello rsa-der";
         let sig = signer.sign(data, SignatureFormat::Der).unwrap();
@@ -440,7 +490,9 @@ mod tests {
     fn rsa_pss_sha256_sign_verify_roundtrip() {
         let pkey = generate_rsa_pkey();
         let pem = pkey_to_pkcs8_pem(pkey);
-        let algo = SignAlgorithm::RsaPss { hash: RsaHash::Sha256 };
+        let algo = SignAlgorithm::RsaPss {
+            hash: RsaHash::Sha256,
+        };
         let signer = Signer::from_pkcs8_pem(&algo, &pem).unwrap();
         let data = b"hello rsa-pss-sha256";
         let sig = signer.sign(data, SignatureFormat::Der).unwrap();
@@ -455,7 +507,9 @@ mod tests {
     fn rsa_pss_sha384_sign_verify_roundtrip() {
         let pkey = generate_rsa_pkey();
         let pem = pkey_to_pkcs8_pem(pkey);
-        let algo = SignAlgorithm::RsaPss { hash: RsaHash::Sha384 };
+        let algo = SignAlgorithm::RsaPss {
+            hash: RsaHash::Sha384,
+        };
         let signer = Signer::from_pkcs8_pem(&algo, &pem).unwrap();
         let data = b"hello rsa-pss-sha384";
         let sig = signer.sign(data, SignatureFormat::Der).unwrap();
@@ -479,8 +533,16 @@ mod tests {
         assert!(!sig_raw.is_empty());
 
         let verifier = crate::verify::Verifier::from_pkcs8_pem(&algo, &pem).unwrap();
-        assert!(verifier.verify(data, &sig_der, SignatureFormat::Der).unwrap());
-        assert!(verifier.verify(data, &sig_raw, SignatureFormat::Raw).unwrap());
+        assert!(
+            verifier
+                .verify(data, &sig_der, SignatureFormat::Der)
+                .unwrap()
+        );
+        assert!(
+            verifier
+                .verify(data, &sig_raw, SignatureFormat::Raw)
+                .unwrap()
+        );
         unsafe { EVP_PKEY_free(pkey) };
     }
 
@@ -520,12 +582,18 @@ mod tests {
     fn sign_wrong_data_fails_verification() {
         let pkey = generate_rsa_pkey();
         let pem = pkey_to_pkcs8_pem(pkey);
-        let algo = SignAlgorithm::RsaPkcs1v15 { hash: RsaHash::Sha256 };
+        let algo = SignAlgorithm::RsaPkcs1v15 {
+            hash: RsaHash::Sha256,
+        };
         let signer = Signer::from_pkcs8_pem(&algo, &pem).unwrap();
         let sig = signer.sign(b"original data", SignatureFormat::Der).unwrap();
 
         let verifier = crate::verify::Verifier::from_pkcs8_pem(&algo, &pem).unwrap();
-        assert!(!verifier.verify(b"tampered data", &sig, SignatureFormat::Der).unwrap());
+        assert!(
+            !verifier
+                .verify(b"tampered data", &sig, SignatureFormat::Der)
+                .unwrap()
+        );
         unsafe { EVP_PKEY_free(pkey) };
     }
 }

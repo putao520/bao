@@ -4,8 +4,8 @@
 //! Phase 1: in-memory sample collection with atomic state.
 //! Phase 2: integrate JS_SetProfilingCallbacks for .cpuprofile output.
 
-use ::std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use ::std::sync::Mutex;
+use ::std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[derive(Debug, Clone)]
 pub struct CPUProfilerConfig {
@@ -15,7 +15,10 @@ pub struct CPUProfilerConfig {
 
 impl Default for CPUProfilerConfig {
     fn default() -> Self {
-        CPUProfilerConfig { interval: 1000, output_path: None }
+        CPUProfilerConfig {
+            interval: 1000,
+            output_path: None,
+        }
     }
 }
 
@@ -42,7 +45,9 @@ impl BunCpuProfiler {
     }
 
     pub fn set_sampling_interval(interval: u32) {
-        Self::get().interval.store(interval as u64, Ordering::Release);
+        Self::get()
+            .interval
+            .store(interval as u64, Ordering::Release);
     }
 
     pub fn start_cpu_profiler(_vm: *mut crate::VirtualMachine) -> Result<(), ()> {
@@ -95,10 +100,16 @@ impl BunCpuProfiler {
                 .unwrap_or(0),
             stack,
         };
-        self.samples.lock().unwrap_or_else(|e| e.into_inner()).push(sample);
+        self.samples
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(sample);
     }
 
     pub fn clear_samples(&self) {
-        self.samples.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.samples
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }

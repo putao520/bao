@@ -4,14 +4,12 @@
 // EventBroadcaster sender/clone, DomainRegistry lifecycle callbacks.
 
 use cdp_server::{
-    CdpServer, ServerConfig, DomainRegistry, DomainHandler, EventSender,
-    CdpError, CdpMessage, CdpResponse, CdpEvent, SessionError, TargetInfo,
-    TargetProvider, EventBroadcaster,
+    CdpError, CdpEvent, CdpMessage, CdpResponse, CdpServer, DomainHandler, DomainRegistry,
+    EventBroadcaster, EventSender, ServerConfig, SessionError, TargetInfo, TargetProvider,
 };
 use serde_json::{json, Value};
 
 // ---- CdpServer constructor + accessors ----
-
 
 // TestDispatch — enum dispatch for multi-handler tests
 enum TestDispatch {
@@ -21,16 +19,33 @@ enum TestDispatch {
 
 impl DomainHandler for TestDispatch {
     fn domain_name(&self) -> &'static str {
-        match self { Self::Echo(h) => h.domain_name(), Self::Lifecycle(h) => h.domain_name() }
+        match self {
+            Self::Echo(h) => h.domain_name(),
+            Self::Lifecycle(h) => h.domain_name(),
+        }
     }
-    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
-        match self { Self::Echo(h) => h.handle_command(cmd, params, sender), Self::Lifecycle(h) => h.handle_command(cmd, params, sender) }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: serde_json::Value,
+        sender: &dyn EventSender,
+    ) -> Result<serde_json::Value, CdpError> {
+        match self {
+            Self::Echo(h) => h.handle_command(cmd, params, sender),
+            Self::Lifecycle(h) => h.handle_command(cmd, params, sender),
+        }
     }
     fn on_session_created(&self, session_id: &str) {
-        match self { Self::Echo(h) => h.on_session_created(session_id), Self::Lifecycle(h) => h.on_session_created(session_id) }
+        match self {
+            Self::Echo(h) => h.on_session_created(session_id),
+            Self::Lifecycle(h) => h.on_session_created(session_id),
+        }
     }
     fn on_session_destroyed(&self, session_id: &str) {
-        match self { Self::Echo(h) => h.on_session_destroyed(session_id), Self::Lifecycle(h) => h.on_session_destroyed(session_id) }
+        match self {
+            Self::Echo(h) => h.on_session_destroyed(session_id),
+            Self::Lifecycle(h) => h.on_session_destroyed(session_id),
+        }
     }
 }
 
@@ -61,7 +76,10 @@ fn test_cdp_server_broadcaster_accessible() {
 
 #[test]
 fn test_cdp_server_ws_url_format() {
-    let cfg = ServerConfig::builder().host("192.168.1.1").port(9333).build();
+    let cfg = ServerConfig::builder()
+        .host("192.168.1.1")
+        .port(9333)
+        .build();
     let server = CdpServer::new(cfg);
     let url = server.ws_url_for_target("page-abc");
     assert_eq!(url, "ws://192.168.1.1:9333/devtools/page/page-abc");
@@ -195,7 +213,9 @@ struct LifecycleDomain {
 }
 
 impl DomainHandler for LifecycleDomain {
-    fn domain_name(&self) -> &'static str { self.name }
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
 
     fn handle_command(
         &self,
@@ -205,7 +225,10 @@ impl DomainHandler for LifecycleDomain {
     ) -> Result<Value, CdpError> {
         match command {
             "Test.ping" => Ok(json!({"pong": true})),
-            _ => Err(CdpError { code: -32601, message: "not found".into() }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: "not found".into(),
+            }),
         }
     }
 
@@ -247,7 +270,10 @@ fn test_registry_notify_multiple_domains_destroyed() {
     let reg = DomainRegistry::<LifecycleDomain>::new();
     reg.register(LifecycleDomain { name: "Alpha" }).unwrap();
     reg.register(LifecycleDomain { name: "Beta" }).unwrap();
-    reg.notify_session_destroyed(&["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()], "sess-x");
+    reg.notify_session_destroyed(
+        &["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()],
+        "sess-x",
+    );
 }
 
 #[test]
@@ -291,7 +317,10 @@ fn test_serialize_response_error() {
     let resp = CdpResponse {
         id: Some(99),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains("-32601"));
@@ -349,7 +378,10 @@ fn test_session_error_io() {
 #[test]
 fn test_session_error_neq() {
     use std::mem::discriminant;
-    assert_ne!(discriminant(&SessionError::Closed), discriminant(&SessionError::Io));
+    assert_ne!(
+        discriminant(&SessionError::Closed),
+        discriminant(&SessionError::Io)
+    );
 }
 
 // ---- CdpMessage edge cases ----
@@ -402,14 +434,20 @@ fn test_cdp_message_no_session_id() {
 
 #[test]
 fn test_cdp_error_fields() {
-    let err = CdpError { code: -32600, message: "invalid request".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "invalid request".into(),
+    };
     assert_eq!(err.code, -32600);
     assert_eq!(err.message, "invalid request");
 }
 
 #[test]
 fn test_cdp_error_serialize() {
-    let err = CdpError { code: -32603, message: "internal error".into() };
+    let err = CdpError {
+        code: -32603,
+        message: "internal error".into(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["code"], -32603);
@@ -418,7 +456,10 @@ fn test_cdp_error_serialize() {
 
 #[test]
 fn test_cdp_error_clone() {
-    let err = CdpError { code: -32601, message: "not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "not found".into(),
+    };
     let cloned = err.clone();
     assert_eq!(cloned.code, err.code);
     assert_eq!(cloned.message, err.message);
@@ -519,10 +560,11 @@ fn test_target_info_debug() {
 
 #[test]
 fn test_event_broadcaster_clone() {
-    use std::sync::Arc;
     use std::collections::HashMap;
-    let sessions: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>> =
-        Arc::new(std::sync::Mutex::new(HashMap::new()));
+    use std::sync::Arc;
+    let sessions: Arc<
+        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>,
+    > = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let bc1 = EventBroadcaster::new(sessions);
     let bc2 = bc1.clone();
     let _ = bc2.sender();
@@ -530,10 +572,11 @@ fn test_event_broadcaster_clone() {
 
 #[test]
 fn test_event_broadcaster_sender_returns_boxed() {
-    use std::sync::Arc;
     use std::collections::HashMap;
-    let sessions: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>> =
-        Arc::new(std::sync::Mutex::new(HashMap::new()));
+    use std::sync::Arc;
+    let sessions: Arc<
+        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>,
+    > = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let bc = EventBroadcaster::new(sessions);
     let sender = bc.sender();
     // Should not panic on empty session map
@@ -542,10 +585,11 @@ fn test_event_broadcaster_sender_returns_boxed() {
 
 #[test]
 fn test_event_broadcaster_send_event_no_sessions() {
-    use std::sync::Arc;
     use std::collections::HashMap;
-    let sessions: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>> =
-        Arc::new(std::sync::Mutex::new(HashMap::new()));
+    use std::sync::Arc;
+    let sessions: Arc<
+        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>,
+    > = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let bc = EventBroadcaster::new(sessions);
     // Should not panic with no active sessions
     bc.send_event("Runtime.consoleAPICalled", json!({"type": "log"}));
@@ -574,7 +618,10 @@ fn test_cdp_server_custom_host_ws_url() {
 
 #[test]
 fn test_cdp_event_method_only() {
-    let ev = CdpEvent { method: "Test.done".into(), params: None };
+    let ev = CdpEvent {
+        method: "Test.done".into(),
+        params: None,
+    };
     let json = serde_json::to_string(&ev).unwrap();
     assert!(json.contains("\"method\":\"Test.done\""));
     assert!(!json.contains("params"));
@@ -594,7 +641,10 @@ fn test_cdp_event_with_params() {
 
 #[test]
 fn test_cdp_event_clone_independence() {
-    let ev = CdpEvent { method: "Test.ev".into(), params: Some(json!({"x": 1})) };
+    let ev = CdpEvent {
+        method: "Test.ev".into(),
+        params: Some(json!({"x": 1})),
+    };
     let mut cloned = ev.clone();
     cloned.method = "Other.ev".into();
     assert_eq!(ev.method, "Test.ev");
@@ -608,7 +658,10 @@ fn test_cdp_response_skip_result_when_error() {
     let resp = CdpResponse {
         id: Some(1),
         result: None,
-        error: Some(CdpError { code: -32000, message: "custom".into() }),
+        error: Some(CdpError {
+            code: -32000,
+            message: "custom".into(),
+        }),
     };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(!json.contains("result"));
@@ -646,31 +699,46 @@ fn test_cdp_response_neither_result_nor_error() {
 #[test]
 fn test_error_code_invalid_request() {
     // ERR_INVALID_REQUEST = -32600 (JSON-RPC 2.0)
-    let err = CdpError { code: -32600, message: "invalid".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "invalid".into(),
+    };
     assert_eq!(err.code, -32600);
 }
 
 #[test]
 fn test_error_code_method_not_found() {
-    let err = CdpError { code: -32601, message: "not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "not found".into(),
+    };
     assert_eq!(err.code, -32601);
 }
 
 #[test]
 fn test_error_code_invalid_params() {
-    let err = CdpError { code: -32602, message: "bad params".into() };
+    let err = CdpError {
+        code: -32602,
+        message: "bad params".into(),
+    };
     assert_eq!(err.code, -32602);
 }
 
 #[test]
 fn test_error_code_internal() {
-    let err = CdpError { code: -32603, message: "internal".into() };
+    let err = CdpError {
+        code: -32603,
+        message: "internal".into(),
+    };
     assert_eq!(err.code, -32603);
 }
 
 #[test]
 fn test_error_code_parse_error() {
-    let err = CdpError { code: -32700, message: "parse".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "parse".into(),
+    };
     assert_eq!(err.code, -32700);
 }
 
@@ -679,7 +747,9 @@ fn test_error_code_parse_error() {
 struct EchoDomain;
 
 impl DomainHandler for EchoDomain {
-    fn domain_name(&self) -> &'static str { "Echo" }
+    fn domain_name(&self) -> &'static str {
+        "Echo"
+    }
 
     fn handle_command(
         &self,
@@ -841,8 +911,10 @@ fn test_registry_multiple_dispatch() {
         fn send_event(&self, _: &str, _: Value) {}
     }
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Lifecycle(LifecycleDomain { name: "Alpha" })).unwrap();
-    reg.register(TestDispatch::Lifecycle(LifecycleDomain { name: "Beta" })).unwrap();
+    reg.register(TestDispatch::Lifecycle(LifecycleDomain { name: "Alpha" }))
+        .unwrap();
+    reg.register(TestDispatch::Lifecycle(LifecycleDomain { name: "Beta" }))
+        .unwrap();
 
     // LifecycleDomain matches "Test.ping", not "Alpha.ping"
     let r1 = reg.dispatch_command("Alpha.ping", json!({}), &Nop);
@@ -877,21 +949,39 @@ fn adversarial_event_serialization_has_no_id_field() {
     let parsed: Value = serde_json::from_str(&json_str).unwrap();
     // Hard contract: a CDP event must NEVER carry an "id" key. If it did,
     // a client could mistake it for a response.
-    assert!(parsed.get("id").is_none(), "event leaked id field: {}", json_str);
-    assert!(parsed.as_object().map(|o| !o.contains_key("id")).unwrap_or(false));
+    assert!(
+        parsed.get("id").is_none(),
+        "event leaked id field: {}",
+        json_str
+    );
+    assert!(parsed
+        .as_object()
+        .map(|o| !o.contains_key("id"))
+        .unwrap_or(false));
 }
 
 #[test]
 fn adversarial_event_method_format_domain_dot_eventname() {
     // SPEC REQ-CDS-005-C4: method 格式为 Domain.eventName
-    for method in ["Page.loadEventFired", "Runtime.consoleAPICalled", "DOM.documentUpdated"] {
-        let ev = CdpEvent { method: method.into(), params: None };
+    for method in [
+        "Page.loadEventFired",
+        "Runtime.consoleAPICalled",
+        "DOM.documentUpdated",
+    ] {
+        let ev = CdpEvent {
+            method: method.into(),
+            params: None,
+        };
         let s = serde_json::to_string(&ev).unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["method"], method);
         // Must contain exactly one '.' separating Domain and eventName
         let dots = method.matches('.').count();
-        assert_eq!(dots, 1, "method {} should have Domain.eventName shape", method);
+        assert_eq!(
+            dots, 1,
+            "method {} should have Domain.eventName shape",
+            method
+        );
     }
 }
 
@@ -902,10 +992,11 @@ fn adversarial_broadcaster_no_dot_method_does_not_panic() {
     // event.rs line 37: domain = method.split('.').next().unwrap_or("")
     // A method with no dot yields the whole string as domain. With no
     // matching enabled session, this must be a no-op, not a panic.
-    use std::sync::Arc;
     use std::collections::HashMap;
-    let sessions: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>> =
-        Arc::new(std::sync::Mutex::new(HashMap::new()));
+    use std::sync::Arc;
+    let sessions: Arc<
+        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>,
+    > = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let bc = EventBroadcaster::new(sessions);
     bc.send_event("noDotMethod", json!({}));
     bc.send_event("", json!({}));
@@ -924,9 +1015,15 @@ fn adversarial_unknown_method_error_code_is_method_not_found() {
     }
     let reg = DomainRegistry::<TestDispatch>::new();
     let result = reg.dispatch_command("Nonexistent.foo", json!({}), &Nop);
-    assert!(result.is_none(), "unknown domain must yield None, not an Err");
+    assert!(
+        result.is_none(),
+        "unknown domain must yield None, not an Err"
+    );
     // The -32601 JSON-RPC code is the contract for method-not-found.
-    let err = CdpError { code: -32601, message: "Method not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "Method not found".into(),
+    };
     assert_eq!(err.code, -32601);
 }
 
@@ -939,9 +1036,12 @@ fn adversarial_handler_error_propagates_code_and_message() {
         fn send_event(&self, _: &str, _: Value) {}
     }
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Lifecycle(LifecycleDomain { name: "Test" })).unwrap();
+    reg.register(TestDispatch::Lifecycle(LifecycleDomain { name: "Test" }))
+        .unwrap();
     let result = reg.dispatch_command("Test.unknownCmd", json!({}), &Nop);
-    let err = result.expect("dispatched to known domain").expect_err("Lifecycle rejects unknown cmd");
+    let err = result
+        .expect("dispatched to known domain")
+        .expect_err("Lifecycle rejects unknown cmd");
     assert_eq!(err.code, -32601);
     assert_eq!(err.message, "not found");
 }
@@ -1030,9 +1130,17 @@ fn adversarial_notify_destroyed_preserves_order_invariants() {
 
     struct CountingDomain;
     impl DomainHandler for CountingDomain {
-        fn domain_name(&self) -> &'static str { "Count" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender)
-            -> Result<Value, CdpError> { Ok(json!({})) }
+        fn domain_name(&self) -> &'static str {
+            "Count"
+        }
+        fn handle_command(
+            &self,
+            _: &str,
+            _: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
+            Ok(json!({}))
+        }
         fn on_session_destroyed(&self, _: &str) {
             DESTROY_COUNT.fetch_add(1, Ordering::SeqCst);
         }
@@ -1043,7 +1151,11 @@ fn adversarial_notify_destroyed_preserves_order_invariants() {
     DESTROY_COUNT.store(0, Ordering::SeqCst);
     // "Count" appears twice → handler fires twice; "Other" is unregistered.
     reg.notify_session_destroyed(
-        &["Count".to_string(), "Other".to_string(), "Count".to_string()],
+        &[
+            "Count".to_string(),
+            "Other".to_string(),
+            "Count".to_string(),
+        ],
         "sess-x",
     );
     assert_eq!(DESTROY_COUNT.load(Ordering::SeqCst), 2);
@@ -1121,17 +1233,36 @@ fn adversarial_cdp_message_empty_method_string_accepted() {
 #[test]
 fn adversarial_response_none_id_serializes_as_explicit_null() {
     // JSON-RPC 2.0: if id is null the response id must be null (not omitted).
-    let resp = CdpResponse { id: None, result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: None,
+        result: Some(json!({})),
+        error: None,
+    };
     let s = serde_json::to_string(&resp).unwrap();
-    assert!(s.contains("\"id\":null"), "None id must serialize to explicit null: {}", s);
+    assert!(
+        s.contains("\"id\":null"),
+        "None id must serialize to explicit null: {}",
+        s
+    );
     let v: Value = serde_json::from_str(&s).unwrap();
     assert!(v["id"].is_null());
 }
 
 #[test]
 fn adversarial_response_id_roundtrip_preserves_value() {
-    for id in [Some(0i64), Some(1), Some(-1), Some(i64::MAX), Some(i64::MIN), None] {
-        let resp = CdpResponse { id, result: Some(json!({})), error: None };
+    for id in [
+        Some(0i64),
+        Some(1),
+        Some(-1),
+        Some(i64::MAX),
+        Some(i64::MIN),
+        None,
+    ] {
+        let resp = CdpResponse {
+            id,
+            result: Some(json!({})),
+            error: None,
+        };
         let s = serde_json::to_string(&resp).unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
         match id {
@@ -1148,7 +1279,10 @@ fn adversarial_response_result_present_error_omitted_in_wire() {
     let resp = CdpResponse {
         id: Some(1),
         result: Some(json!({"v": 1})),
-        error: Some(CdpError { code: -1, message: "should not appear".into() }),
+        error: Some(CdpError {
+            code: -1,
+            message: "should not appear".into(),
+        }),
     };
     // Even if both are set in-memory, serde emits both (no mutual-exclusion
     // enforcement at the type level). Document the actual behavior: both keys
@@ -1167,7 +1301,10 @@ fn adversarial_response_error_code_negative_jsonrpc_range() {
         let resp = CdpResponse {
             id: Some(1),
             result: None,
-            error: Some(CdpError { code, message: "e".into() }),
+            error: Some(CdpError {
+                code,
+                message: "e".into(),
+            }),
         };
         let s = serde_json::to_string(&resp).unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
@@ -1179,7 +1316,10 @@ fn adversarial_response_error_code_negative_jsonrpc_range() {
 
 #[test]
 fn adversarial_cdp_error_clone_is_value_equal() {
-    let err = CdpError { code: -32601, message: "x".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "x".into(),
+    };
     let cloned = err.clone();
     // Mutating original must not affect clone (value semantics).
     let _ = err;
@@ -1189,7 +1329,10 @@ fn adversarial_cdp_error_clone_is_value_equal() {
 
 #[test]
 fn adversarial_cdp_error_message_empty_string_allowed() {
-    let err = CdpError { code: -1, message: String::new() };
+    let err = CdpError {
+        code: -1,
+        message: String::new(),
+    };
     let s = serde_json::to_string(&err).unwrap();
     let v: Value = serde_json::from_str(&s).unwrap();
     assert_eq!(v["message"], "");
@@ -1210,8 +1353,16 @@ fn adversarial_target_info_type_field_rename_roundtrip() {
         web_socket_debugger_url: "ws://x".into(),
     };
     let s = serde_json::to_string(&info).unwrap();
-    assert!(s.contains("\"type\":\"page\""), "wire field must be 'type': {}", s);
-    assert!(!s.contains("target_type"), "Rust field name must not leak: {}", s);
+    assert!(
+        s.contains("\"type\":\"page\""),
+        "wire field must be 'type': {}",
+        s
+    );
+    assert!(
+        !s.contains("target_type"),
+        "Rust field name must not leak: {}",
+        s
+    );
     let back: TargetInfo = serde_json::from_str(&s).unwrap();
     assert_eq!(back.target_type, "page");
 }
@@ -1226,7 +1377,8 @@ fn adversarial_target_info_missing_type_field_deserialize_fails() {
 #[test]
 fn adversarial_target_info_all_fields_required_deserialize() {
     // Each field is required (no #[serde(default)]); omitting any must fail.
-    let full = r#"{"id":"x","type":"page","title":"t","url":"u","web_socket_debugger_url":"ws://x"}"#;
+    let full =
+        r#"{"id":"x","type":"page","title":"t","url":"u","web_socket_debugger_url":"ws://x"}"#;
     assert!(serde_json::from_str::<TargetInfo>(full).is_ok());
     for field in ["id", "type", "title", "url", "web_socket_debugger_url"] {
         let mut v: Value = serde_json::from_str(full).unwrap();
@@ -1235,7 +1387,8 @@ fn adversarial_target_info_all_fields_required_deserialize() {
         let raw = serde_json::to_string(&v).unwrap();
         assert!(
             serde_json::from_str::<TargetInfo>(&raw).is_err(),
-            "removing field '{}' should fail deserialization", field
+            "removing field '{}' should fail deserialization",
+            field
         );
     }
 }
@@ -1249,7 +1402,11 @@ fn adversarial_ws_url_injects_exact_host_and_port() {
         let cfg = ServerConfig::builder().host(host).port(port).build();
         let server = CdpServer::new(cfg);
         let url = server.ws_url_for_target("tid");
-        assert!(url.contains(&format!("{}:{}", host, port)), "url missing host:port: {}", url);
+        assert!(
+            url.contains(&format!("{}:{}", host, port)),
+            "url missing host:port: {}",
+            url
+        );
         assert!(url.starts_with("ws://"));
         assert!(url.ends_with("/tid"));
     }
@@ -1287,7 +1444,11 @@ fn adversarial_register_duplicate_error_mentions_domain_name() {
     let reg = DomainRegistry::<EchoDomain>::new();
     reg.register(EchoDomain).unwrap();
     let err = reg.register(EchoDomain).unwrap_err();
-    assert!(err.contains("'Echo'"), "error must name the conflicting domain: {}", err);
+    assert!(
+        err.contains("'Echo'"),
+        "error must name the conflicting domain: {}",
+        err
+    );
     assert!(err.contains("already registered"));
 }
 
@@ -1295,10 +1456,11 @@ fn adversarial_register_duplicate_error_mentions_domain_name() {
 
 #[test]
 fn adversarial_broadcaster_sender_shares_session_arc() {
-    use std::sync::Arc;
     use std::collections::HashMap;
-    let sessions: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>> =
-        Arc::new(std::sync::Mutex::new(HashMap::new()));
+    use std::sync::Arc;
+    let sessions: Arc<
+        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>,
+    > = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let bc = EventBroadcaster::new(Arc::clone(&sessions));
     let sender = bc.sender();
     // Dropping the broadcaster must not invalidate the sender (Arc-backed).
@@ -1350,7 +1512,7 @@ fn adversarial_jsonrpc_error_constants_match_spec() {
     assert_eq!(-32601i64, -32601); // Method not found
     assert_eq!(-32602i64, -32602); // Invalid params
     assert_eq!(-32603i64, -32603); // Internal error
-    // Server error range is -32000..=-32099
+                                   // Server error range is -32000..=-32099
     for code in [-32000i64, -32099] {
         assert!((-32099..=-32000).contains(&code));
     }
@@ -1361,11 +1523,17 @@ fn adversarial_jsonrpc_error_constants_match_spec() {
 #[test]
 fn adversarial_event_some_null_params_vs_none_differ() {
     // Some(Value::Null) → "params":null on the wire; None → omitted.
-    let ev_with_null = CdpEvent { method: "X.y".into(), params: Some(Value::Null) };
+    let ev_with_null = CdpEvent {
+        method: "X.y".into(),
+        params: Some(Value::Null),
+    };
     let s1 = serde_json::to_string(&ev_with_null).unwrap();
     assert!(s1.contains("\"params\":null"));
 
-    let ev_none = CdpEvent { method: "X.y".into(), params: None };
+    let ev_none = CdpEvent {
+        method: "X.y".into(),
+        params: None,
+    };
     let s2 = serde_json::to_string(&ev_none).unwrap();
     assert!(!s2.contains("params"));
     assert_ne!(s1, s2);
@@ -1375,7 +1543,11 @@ fn adversarial_event_some_null_params_vs_none_differ() {
 
 #[test]
 fn adversarial_response_some_null_result_present_on_wire() {
-    let resp = CdpResponse { id: Some(1), result: Some(Value::Null), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(Value::Null),
+        error: None,
+    };
     let s = serde_json::to_string(&resp).unwrap();
     let v: Value = serde_json::from_str(&s).unwrap();
     // Some(Null) → "result":null appears; None → omitted.
@@ -1410,7 +1582,10 @@ fn adversarial_session_error_only_two_variants_documented() {
     let variants = [SessionError::Closed, SessionError::Io];
     let mut discs = variants.iter().map(discriminant);
     let first = discs.next().unwrap();
-    assert!(discs.all(|d| d != first), "Closed and Io must be distinct variants");
+    assert!(
+        discs.all(|d| d != first),
+        "Closed and Io must be distinct variants"
+    );
 }
 
 // ---- register then dispatch: handler identity preserved ----
@@ -1419,20 +1594,38 @@ fn adversarial_session_error_only_two_variants_documented() {
 fn adversarial_register_then_dispatch_uses_same_handler_instance() {
     // Verify the handler that processes the command is the one registered
     // (no accidental re-instantiation). Use a handler that echoes its name.
-    struct Named { name: &'static str }
+    struct Named {
+        name: &'static str,
+    }
     impl DomainHandler for Named {
-        fn domain_name(&self) -> &'static str { self.name }
-        fn handle_command(&self, cmd: &str, _: Value, _: &dyn EventSender)
-            -> Result<Value, CdpError> { Ok(json!({"saw": self.name, "cmd": cmd})) }
+        fn domain_name(&self) -> &'static str {
+            self.name
+        }
+        fn handle_command(
+            &self,
+            cmd: &str,
+            _: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
+            Ok(json!({"saw": self.name, "cmd": cmd}))
+        }
     }
     struct Nop;
-    impl EventSender for Nop { fn send_event(&self, _: &str, _: Value) {} }
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
 
     let reg = DomainRegistry::<Named>::new();
     reg.register(Named { name: "Alpha" }).unwrap();
     reg.register(Named { name: "Beta" }).unwrap();
-    let ra = reg.dispatch_command("Alpha.x", json!({}), &Nop).unwrap().unwrap();
-    let rb = reg.dispatch_command("Beta.y", json!({}), &Nop).unwrap().unwrap();
+    let ra = reg
+        .dispatch_command("Alpha.x", json!({}), &Nop)
+        .unwrap()
+        .unwrap();
+    let rb = reg
+        .dispatch_command("Beta.y", json!({}), &Nop)
+        .unwrap()
+        .unwrap();
     assert_eq!(ra["saw"], "Alpha");
     assert_eq!(rb["saw"], "Beta");
     // Wrong domain must NOT fall through to another handler.

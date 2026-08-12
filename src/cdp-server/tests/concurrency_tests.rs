@@ -1,15 +1,22 @@
 // @trace TEST-CDS-CONCURRENCY [req:REQ-CDS-007] [level:unit]
 // Concurrency safety tests: Arc<Mutex> DomainRegistry dispatch, EventSender thread safety
 
-use cdp_server::{DomainRegistry, DomainHandler, EventSender, CdpError};
+use cdp_server::{CdpError, DomainHandler, DomainRegistry, EventSender};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 struct EchoHandler;
 impl DomainHandler for EchoHandler {
-    fn domain_name(&self) -> &'static str { "Echo" }
-    fn handle_command(&self, cmd: &str, params: Value, _sender: &dyn EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        "Echo"
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: Value,
+        _sender: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         match cmd {
             "Echo.ping" => Ok(json!({"pong": true, "echo": params})),
             "Echo.add" => {
@@ -17,7 +24,10 @@ impl DomainHandler for EchoHandler {
                 let b = params.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
                 Ok(json!({"result": a + b}))
             }
-            _ => Err(CdpError { code: -32601, message: format!("'{}' not found", cmd) }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' not found", cmd),
+            }),
         }
     }
 }
@@ -27,7 +37,10 @@ struct CollectingSender {
 }
 impl EventSender for CollectingSender {
     fn send_event(&self, method: &str, params: Value) {
-        self.events.lock().unwrap().push((method.to_string(), params));
+        self.events
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params));
     }
 }
 
@@ -45,9 +58,14 @@ fn test_concurrent_dispatch_ping() {
         let r = Arc::clone(&reg);
         handles.push(thread::spawn(move || {
             for _ in 0..100 {
-                let sender = CollectingSender { events: Arc::new(Mutex::new(Vec::new())) };
+                let sender = CollectingSender {
+                    events: Arc::new(Mutex::new(Vec::new())),
+                };
                 let result = r.dispatch_command("Echo.ping", json!({}), &sender);
-                assert!(matches!(result, Some(Ok(_))), "concurrent ping should succeed");
+                assert!(
+                    matches!(result, Some(Ok(_))),
+                    "concurrent ping should succeed"
+                );
             }
         }));
     }
@@ -64,7 +82,9 @@ fn test_concurrent_dispatch_compute() {
         let r = Arc::clone(&reg);
         handles.push(thread::spawn(move || {
             for i in 0..100 {
-                let sender = CollectingSender { events: Arc::new(Mutex::new(Vec::new())) };
+                let sender = CollectingSender {
+                    events: Arc::new(Mutex::new(Vec::new())),
+                };
                 let result = r.dispatch_command("Echo.add", json!({"a": t, "b": i}), &sender);
                 if let Some(Ok(val)) = result {
                     let sum = val.get("result").and_then(|v| v.as_i64()).unwrap();
@@ -81,7 +101,9 @@ fn test_concurrent_dispatch_compute() {
 #[test]
 fn test_sequential_dispatch_thousand() {
     let reg = make_registry();
-    let sender = CollectingSender { events: Arc::new(Mutex::new(Vec::new())) };
+    let sender = CollectingSender {
+        events: Arc::new(Mutex::new(Vec::new())),
+    };
     for i in 0..1000 {
         let result = reg.dispatch_command("Echo.ping", json!({"iter": i}), &sender);
         assert!(matches!(result, Some(Ok(_))));
@@ -96,7 +118,9 @@ fn test_concurrent_unknown_commands() {
         let r = Arc::clone(&reg);
         handles.push(thread::spawn(move || {
             for _ in 0..50 {
-                let sender = CollectingSender { events: Arc::new(Mutex::new(Vec::new())) };
+                let sender = CollectingSender {
+                    events: Arc::new(Mutex::new(Vec::new())),
+                };
                 let result = r.dispatch_command("Echo.nonexistent", json!({}), &sender);
                 assert!(matches!(result, Some(Err(_))));
             }
@@ -152,7 +176,9 @@ fn test_mixed_commands_concurrent() {
         let r = Arc::clone(&reg);
         handles.push(thread::spawn(move || {
             for i in 0..200 {
-                let sender = CollectingSender { events: Arc::new(Mutex::new(Vec::new())) };
+                let sender = CollectingSender {
+                    events: Arc::new(Mutex::new(Vec::new())),
+                };
                 if i % 3 == 0 {
                     let _ = r.dispatch_command("Echo.ping", json!({}), &sender);
                 } else if i % 3 == 1 {
@@ -170,7 +196,10 @@ fn test_mixed_commands_concurrent() {
 
 #[test]
 fn test_error_code_and_message() {
-    let err = CdpError { code: -32601, message: "not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "not found".into(),
+    };
     assert_eq!(err.code, -32601);
     assert_eq!(err.message, "not found");
 }
@@ -184,5 +213,8 @@ fn test_noop_event_sender_trait() {
     let sender = NoopSender;
     sender.send_event("any", json!({}));
     sender.send_event("", json!(null));
-    sender.send_event("long.event.name.with.dots", json!({"nested": {"deep": true}}));
+    sender.send_event(
+        "long.event.name.with.dots",
+        json!({"nested": {"deep": true}}),
+    );
 }

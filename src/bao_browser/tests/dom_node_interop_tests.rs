@@ -198,9 +198,17 @@ fn dom_node_interop_full_chain() {
     );
     // Assert
     match interop_2 {
-        Ok(s) if s.contains("alpha") && s.contains("gamma") => report.pass("§3::dom_nodelist_to_node_array"),
-        Ok(other) => report.fail("§3::dom_nodelist_to_node_array", &format!("got '{}'", other)),
-        Err(e) => report.skip("§3::dom_nodelist_to_node_array", &format!("evaluate_js: {}", e)),
+        Ok(s) if s.contains("alpha") && s.contains("gamma") => {
+            report.pass("§3::dom_nodelist_to_node_array")
+        }
+        Ok(other) => report.fail(
+            "§3::dom_nodelist_to_node_array",
+            &format!("got '{}'", other),
+        ),
+        Err(e) => report.skip(
+            "§3::dom_nodelist_to_node_array",
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // ── §4 互操作场景 3:Node Buffer 字符串编码(Node API 纯函数) ────────
@@ -209,9 +217,7 @@ fn dom_node_interop_full_chain() {
     // 这验证 Node Realm 内 Buffer 的多编码能力(单 API 域内互操作)。
     //
     // Act
-    let interop_3 = page.evaluate_js(
-        "Buffer.from('bao-interop').toString('base64')",
-    );
+    let interop_3 = page.evaluate_js("Buffer.from('bao-interop').toString('base64')");
     // Assert — 'bao-interop' base64 = 'YmFvLWludGVyb3A='
     match interop_3 {
         Ok(s) if s.contains("YmFv") => report.pass("§4::buffer_base64_node_api"),
@@ -225,14 +231,15 @@ fn dom_node_interop_full_chain() {
     // 这验证 Node Realm 内 process 对象的可访问性。
     //
     // Act
-    let interop_4 = page.evaluate_js(
-        "String(process.platform || 'unknown')",
-    );
+    let interop_4 = page.evaluate_js("String(process.platform || 'unknown')");
     // Assert — plat 应该是 'linux' / 'darwin' / 'win32' 之类
     match interop_4 {
         Ok(s) if !s.is_empty() => report.pass("§5::process_platform_node_api"),
         Ok(other) => report.fail("§5::process_platform_node_api", &format!("got '{}'", other)),
-        Err(e) => report.skip("§5::process_platform_node_api", &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            "§5::process_platform_node_api",
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // ── §6 Web Realm 隔离 — evaluate_js_web 看不到 Node APIs ─────────────
@@ -243,8 +250,14 @@ fn dom_node_interop_full_chain() {
     // Act + Assert
     match page.evaluate_js_web("typeof require") {
         Ok(s) if s == "undefined" => report.pass("§6::web_realm_isolated_from_require"),
-        Ok(other) => report.fail("§6::web_realm_isolated_from_require", &format!("got '{}'", other)),
-        Err(e) => report.skip("§6::web_realm_isolated_from_require", &format!("evaluate_js_web: {}", e)),
+        Ok(other) => report.fail(
+            "§6::web_realm_isolated_from_require",
+            &format!("got '{}'", other),
+        ),
+        Err(e) => report.skip(
+            "§6::web_realm_isolated_from_require",
+            &format!("evaluate_js_web: {}", e),
+        ),
     }
 
     // 清理
@@ -259,7 +272,9 @@ fn dom_node_interop_full_chain() {
         assert!(
             pass_ratio >= 0.5,
             "too few interop sub-assertions passed: {}/{} (ratio {:.2})",
-            report.passed, total, pass_ratio
+            report.passed,
+            total,
+            pass_ratio
         );
     }
     assert_eq!(

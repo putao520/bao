@@ -27,7 +27,9 @@ fn test_npm_project_e2e_all() {
     // ═══════════════════════════════════════════════════════════════
     // 1. CJS require — built-in modules (path, assert, process)
     // ═══════════════════════════════════════════════════════════════
-    let cjs_result = eval_string(&mut ctx, r#"
+    let cjs_result = eval_string(
+        &mut ctx,
+        r#"
         var path = require('path');
         var assert = require('assert');
         var results = [];
@@ -50,14 +52,38 @@ fn test_npm_project_e2e_all() {
         results.push('process_pid=' + (typeof process.pid === 'number' ? 'ok' : 'fail'));
 
         results.join('|')
-    "#);
-    assert!(cjs_result.contains("path_sep="), "path module loaded: {}", cjs_result);
-    assert!(cjs_result.contains("path_join=a/b/c") || cjs_result.contains("path_join=a\\b\\c"),
-        "path.join works: {}", cjs_result);
-    assert!(cjs_result.contains("assert_ok=true"), "assert module works: {}", cjs_result);
-    assert!(cjs_result.contains("process_arch="), "process.arch available: {}", cjs_result);
-    assert!(cjs_result.contains("process_version=ok"), "process.version is string: {}", cjs_result);
-    assert!(cjs_result.contains("process_pid=ok"), "process.pid is number: {}", cjs_result);
+    "#,
+    );
+    assert!(
+        cjs_result.contains("path_sep="),
+        "path module loaded: {}",
+        cjs_result
+    );
+    assert!(
+        cjs_result.contains("path_join=a/b/c") || cjs_result.contains("path_join=a\\b\\c"),
+        "path.join works: {}",
+        cjs_result
+    );
+    assert!(
+        cjs_result.contains("assert_ok=true"),
+        "assert module works: {}",
+        cjs_result
+    );
+    assert!(
+        cjs_result.contains("process_arch="),
+        "process.arch available: {}",
+        cjs_result
+    );
+    assert!(
+        cjs_result.contains("process_version=ok"),
+        "process.version is string: {}",
+        cjs_result
+    );
+    assert!(
+        cjs_result.contains("process_pid=ok"),
+        "process.pid is number: {}",
+        cjs_result
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 2. ESM import — built-in modules via import syntax
@@ -65,7 +91,9 @@ fn test_npm_project_e2e_all() {
     // Note: JsContext::eval does not support import syntax directly (no module loader
     // in for_test mode). Instead, test that the same globals are available via require
     // which is the CJS equivalent used in real npm projects.
-    let esm_compat = eval_string(&mut ctx, r#"
+    let esm_compat = eval_string(
+        &mut ctx,
+        r#"
         var path = require('path');
         var assert = require('assert');
         var results = [];
@@ -77,15 +105,22 @@ fn test_npm_project_e2e_all() {
         results.push('ESM_PASSED');
 
         results.join('|')
-    "#);
-    assert!(esm_compat.contains("ESM_PASSED"), "ESM compat: {}", esm_compat);
+    "#,
+    );
+    assert!(
+        esm_compat.contains("ESM_PASSED"),
+        "ESM compat: {}",
+        esm_compat
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 3. Relative require — multi-file project simulation
     // ═══════════════════════════════════════════════════════════════
     // Simulate a multi-file project by defining modules as global variables
     // (since for_test mode has a fresh global per eval, we chain them).
-    let multi_file = eval_string(&mut ctx, r#"
+    let multi_file = eval_string(
+        &mut ctx,
+        r#"
         // --- utils.js (helper module) ---
         var utils = {
             add: function(a, b) { return a + b; },
@@ -130,21 +165,60 @@ fn test_npm_project_e2e_all() {
         results.push('MULTI_FILE_PASSED');
 
         results.join('|')
-    "#);
-    assert!(multi_file.contains("add_2_3=5"), "utils.add: {}", multi_file);
-    assert!(multi_file.contains("multiply_4_5=20"), "utils.multiply: {}", multi_file);
-    assert!(multi_file.contains("greet=Hello, World!"), "utils.greet: {}", multi_file);
-    assert!(multi_file.contains("square_7=49"), "math.square: {}", multi_file);
-    assert!(multi_file.contains("cube_3=27"), "math.cube: {}", multi_file);
-    assert!(multi_file.contains("factorial_5=120"), "math.factorial: {}", multi_file);
-    assert!(multi_file.contains("app_name=e2e-test-project"), "config.appName: {}", multi_file);
-    assert!(multi_file.contains("api_endpoint=https://api.example.com"), "config.endpoints.api: {}", multi_file);
-    assert!(multi_file.contains("MULTI_FILE_PASSED"), "multi-file project: {}", multi_file);
+    "#,
+    );
+    assert!(
+        multi_file.contains("add_2_3=5"),
+        "utils.add: {}",
+        multi_file
+    );
+    assert!(
+        multi_file.contains("multiply_4_5=20"),
+        "utils.multiply: {}",
+        multi_file
+    );
+    assert!(
+        multi_file.contains("greet=Hello, World!"),
+        "utils.greet: {}",
+        multi_file
+    );
+    assert!(
+        multi_file.contains("square_7=49"),
+        "math.square: {}",
+        multi_file
+    );
+    assert!(
+        multi_file.contains("cube_3=27"),
+        "math.cube: {}",
+        multi_file
+    );
+    assert!(
+        multi_file.contains("factorial_5=120"),
+        "math.factorial: {}",
+        multi_file
+    );
+    assert!(
+        multi_file.contains("app_name=e2e-test-project"),
+        "config.appName: {}",
+        multi_file
+    );
+    assert!(
+        multi_file.contains("api_endpoint=https://api.example.com"),
+        "config.endpoints.api: {}",
+        multi_file
+    );
+    assert!(
+        multi_file.contains("MULTI_FILE_PASSED"),
+        "multi-file project: {}",
+        multi_file
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 4. require.resolve — module resolution API
     // ═══════════════════════════════════════════════════════════════
-    let resolve_result = eval_string(&mut ctx, r#"
+    let resolve_result = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         // require.resolve should be a function
         results.push('resolve_fn=' + (typeof require.resolve === 'function' ? 'yes' : 'no'));
@@ -152,14 +226,25 @@ fn test_npm_project_e2e_all() {
         results.push('require_fn=' + (typeof require === 'function' ? 'yes' : 'no'));
         results.push('NPM_RESOLVE_PASSED');
         results.join('|')
-    "#);
-    assert!(resolve_result.contains("require_fn=yes"), "require is function: {}", resolve_result);
-    assert!(resolve_result.contains("NPM_RESOLVE_PASSED"), "npm resolve: {}", resolve_result);
+    "#,
+    );
+    assert!(
+        resolve_result.contains("require_fn=yes"),
+        "require is function: {}",
+        resolve_result
+    );
+    assert!(
+        resolve_result.contains("NPM_RESOLVE_PASSED"),
+        "npm resolve: {}",
+        resolve_result
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 5. Complex project — layered architecture (data → service → controller)
     // ═══════════════════════════════════════════════════════════════
-    let layered = eval_string(&mut ctx, r#"
+    let layered = eval_string(
+        &mut ctx,
+        r#"
         // --- data/repository.js ---
         var Repository = {
             items: [{id: 1, name: 'foo'}, {id: 2, name: 'bar'}, {id: 3, name: 'baz'}],
@@ -229,22 +314,53 @@ fn test_npm_project_e2e_all() {
 
         results.push('LAYERED_PASSED');
         results.join('|')
-    "#);
-    assert!(layered.contains("list_count=3"), "repo has 3 items: {}", layered);
+    "#,
+    );
+    assert!(
+        layered.contains("list_count=3"),
+        "repo has 3 items: {}",
+        layered
+    );
     assert!(layered.contains("list_status=200"), "list ok: {}", layered);
     assert!(layered.contains("get_name=bar"), "get by id: {}", layered);
-    assert!(layered.contains("notfound_status=404"), "not found: {}", layered);
-    assert!(layered.contains("created_name=qux"), "create item: {}", layered);
+    assert!(
+        layered.contains("notfound_status=404"),
+        "not found: {}",
+        layered
+    );
+    assert!(
+        layered.contains("created_name=qux"),
+        "create item: {}",
+        layered
+    );
     assert!(layered.contains("created_id=4"), "created id: {}", layered);
-    assert!(layered.contains("created_status=201"), "created status: {}", layered);
-    assert!(layered.contains("badcreate_status=400"), "validation error: {}", layered);
-    assert!(layered.contains("badcreate_error=name required"), "error message: {}", layered);
-    assert!(layered.contains("LAYERED_PASSED"), "layered project: {}", layered);
+    assert!(
+        layered.contains("created_status=201"),
+        "created status: {}",
+        layered
+    );
+    assert!(
+        layered.contains("badcreate_status=400"),
+        "validation error: {}",
+        layered
+    );
+    assert!(
+        layered.contains("badcreate_error=name required"),
+        "error message: {}",
+        layered
+    );
+    assert!(
+        layered.contains("LAYERED_PASSED"),
+        "layered project: {}",
+        layered
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 6. Node.js built-in modules — fs, crypto, Buffer, URL
     // ═══════════════════════════════════════════════════════════════
-    let builtins = eval_string(&mut ctx, r#"
+    let builtins = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
 
         // Buffer
@@ -273,20 +389,55 @@ fn test_npm_project_e2e_all() {
 
         results.push('BUILTINS_PASSED');
         results.join('|')
-    "#);
-    assert!(builtins.contains("buffer_from=ok"), "Buffer.from: {}", builtins);
-    assert!(builtins.contains("buffer_len=5"), "Buffer length: {}", builtins);
-    assert!(builtins.contains("buffer_str=hello"), "Buffer toString: {}", builtins);
-    assert!(builtins.contains("url_ctor=ok"), "URL constructor: {}", builtins);
-    assert!(builtins.contains("textencoder=ok"), "TextEncoder: {}", builtins);
-    assert!(builtins.contains("textdecoder=ok"), "TextDecoder: {}", builtins);
-    assert!(builtins.contains("settimeout=ok"), "setTimeout: {}", builtins);
-    assert!(builtins.contains("BUILTINS_PASSED"), "builtins: {}", builtins);
+    "#,
+    );
+    assert!(
+        builtins.contains("buffer_from=ok"),
+        "Buffer.from: {}",
+        builtins
+    );
+    assert!(
+        builtins.contains("buffer_len=5"),
+        "Buffer length: {}",
+        builtins
+    );
+    assert!(
+        builtins.contains("buffer_str=hello"),
+        "Buffer toString: {}",
+        builtins
+    );
+    assert!(
+        builtins.contains("url_ctor=ok"),
+        "URL constructor: {}",
+        builtins
+    );
+    assert!(
+        builtins.contains("textencoder=ok"),
+        "TextEncoder: {}",
+        builtins
+    );
+    assert!(
+        builtins.contains("textdecoder=ok"),
+        "TextDecoder: {}",
+        builtins
+    );
+    assert!(
+        builtins.contains("settimeout=ok"),
+        "setTimeout: {}",
+        builtins
+    );
+    assert!(
+        builtins.contains("BUILTINS_PASSED"),
+        "builtins: {}",
+        builtins
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 7. Bun.* / Bao.* API — Bun-specific globals
     // ═══════════════════════════════════════════════════════════════
-    let bun_api = eval_string(&mut ctx, r#"
+    let bun_api = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
 
         // Bun === Bao (same object)
@@ -306,9 +457,14 @@ fn test_npm_project_e2e_all() {
 
         results.push('BUN_API_PASSED');
         results.join('|')
-    "#);
+    "#,
+    );
     assert!(bun_api.contains("bun_eq_bao=yes"), "Bun===Bao: {}", bun_api);
-    assert!(bun_api.contains("bun_version=ok"), "Bun.version: {}", bun_api);
+    assert!(
+        bun_api.contains("bun_version=ok"),
+        "Bun.version: {}",
+        bun_api
+    );
     assert!(bun_api.contains("bun_env=ok"), "Bun.env: {}", bun_api);
     assert!(bun_api.contains("bun_cwd=ok"), "Bun.cwd(): {}", bun_api);
     assert!(bun_api.contains("BUN_API_PASSED"), "Bun API: {}", bun_api);
@@ -316,12 +472,19 @@ fn test_npm_project_e2e_all() {
     // ═══════════════════════════════════════════════════════════════
     // 8. Error handling — JS exceptions propagate correctly
     // ═══════════════════════════════════════════════════════════════
-    let err_result = ctx.eval(r#"
+    let err_result = ctx.eval(
+        r#"
         throw new Error("test_error");
-    "#, "<test>");
+    "#,
+        "<test>",
+    );
     assert!(err_result.is_err(), "JS exception must propagate as Err");
     let err_msg = format!("{:?}", err_result.unwrap_err());
-    assert!(err_msg.contains("test_error"), "Error message preserved: {}", err_msg);
+    assert!(
+        err_msg.contains("test_error"),
+        "Error message preserved: {}",
+        err_msg
+    );
 
     // Syntax error
     let syntax_err = ctx.eval("var x = ;", "<test>");

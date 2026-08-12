@@ -24,30 +24,91 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::ListTargets => cmd_list_targets(pool),
 
         // All other commands require a target_id to look up the page
-        BridgeCommand::Navigate { target_id, url } => with_page(pool, &target_id, |page| cmd_navigate(page, &url)),
-        BridgeCommand::EvaluateJs { target_id, expression, return_by_value } => with_page(pool, &target_id, |page| cmd_evaluate(page, &expression, return_by_value)),
-        BridgeCommand::TakeScreenshot { target_id, format, quality: _ } => with_page(pool, &target_id, |page| cmd_screenshot(page, &format)),
+        BridgeCommand::Navigate { target_id, url } => {
+            with_page(pool, &target_id, |page| cmd_navigate(page, &url))
+        }
+        BridgeCommand::EvaluateJs {
+            target_id,
+            expression,
+            return_by_value,
+        } => with_page(pool, &target_id, |page| {
+            cmd_evaluate(page, &expression, return_by_value)
+        }),
+        BridgeCommand::TakeScreenshot {
+            target_id,
+            format,
+            quality: _,
+        } => with_page(pool, &target_id, |page| cmd_screenshot(page, &format)),
         BridgeCommand::GetTitle { target_id } => with_page(pool, &target_id, cmd_get_title),
         BridgeCommand::GetUrl { target_id } => with_page(pool, &target_id, cmd_get_url),
         BridgeCommand::GetDocument { target_id } => with_page(pool, &target_id, cmd_get_document),
-        BridgeCommand::QuerySelector { target_id, selector } => with_page(pool, &target_id, |page| cmd_query_selector(page, &selector)),
-        BridgeCommand::QuerySelectorAll { target_id, selector } => with_page(pool, &target_id, |page| cmd_query_selector_all(page, &selector)),
-        BridgeCommand::GetOuterHtml { target_id, .. } => with_page(pool, &target_id, cmd_get_outer_html),
-        BridgeCommand::SetAttributeValue { target_id, node_id: _, name, value } => with_page(pool, &target_id, |page| cmd_set_attribute(page, &name, &value)),
-        BridgeCommand::DispatchMouseEvent { target_id, event_type, x, y, button, click_count } => {
-            with_page(pool, &target_id, |page| cmd_mouse_event(page, &event_type, x, y, button, click_count))
+        BridgeCommand::QuerySelector {
+            target_id,
+            selector,
+        } => with_page(pool, &target_id, |page| cmd_query_selector(page, &selector)),
+        BridgeCommand::QuerySelectorAll {
+            target_id,
+            selector,
+        } => with_page(pool, &target_id, |page| {
+            cmd_query_selector_all(page, &selector)
+        }),
+        BridgeCommand::GetOuterHtml { target_id, .. } => {
+            with_page(pool, &target_id, cmd_get_outer_html)
         }
-        BridgeCommand::DispatchKeyEvent { target_id, event_type, key, code, text } => {
-            with_page(pool, &target_id, |page| cmd_key_event(page, &event_type, &key, &code, text.as_deref()))
+        BridgeCommand::SetAttributeValue {
+            target_id,
+            node_id: _,
+            name,
+            value,
+        } => with_page(pool, &target_id, |page| {
+            cmd_set_attribute(page, &name, &value)
+        }),
+        BridgeCommand::DispatchMouseEvent {
+            target_id,
+            event_type,
+            x,
+            y,
+            button,
+            click_count,
+        } => with_page(pool, &target_id, |page| {
+            cmd_mouse_event(page, &event_type, x, y, button, click_count)
+        }),
+        BridgeCommand::DispatchKeyEvent {
+            target_id,
+            event_type,
+            key,
+            code,
+            text,
+        } => with_page(pool, &target_id, |page| {
+            cmd_key_event(page, &event_type, &key, &code, text.as_deref())
+        }),
+        BridgeCommand::InsertText { target_id, text } => {
+            with_page(pool, &target_id, |page| cmd_insert_text(page, &text))
         }
-        BridgeCommand::InsertText { target_id, text } => with_page(pool, &target_id, |page| cmd_insert_text(page, &text)),
-        BridgeCommand::SetViewport { target_id, width, height, device_scale_factor: _ } => with_page(pool, &target_id, |page| cmd_set_viewport(page, width, height)),
-        BridgeCommand::SetUserAgent { target_id, user_agent } => with_page(pool, &target_id, |page| cmd_set_user_agent(page, &user_agent)),
-        BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id, source } => with_page(pool, &target_id, |page| cmd_add_script(page, &source)),
-        BridgeCommand::Reload { target_id, ignore_cache: _ } => with_page(pool, &target_id, cmd_reload),
-        BridgeCommand::GoBack { target_id: _ } | BridgeCommand::GoForward { target_id: _ } | BridgeCommand::StopLoading { target_id: _ } => {
-            Ok(serde_json::json!({}))
+        BridgeCommand::SetViewport {
+            target_id,
+            width,
+            height,
+            device_scale_factor: _,
+        } => with_page(pool, &target_id, |page| {
+            cmd_set_viewport(page, width, height)
+        }),
+        BridgeCommand::SetUserAgent {
+            target_id,
+            user_agent,
+        } => with_page(pool, &target_id, |page| {
+            cmd_set_user_agent(page, &user_agent)
+        }),
+        BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id, source } => {
+            with_page(pool, &target_id, |page| cmd_add_script(page, &source))
         }
+        BridgeCommand::Reload {
+            target_id,
+            ignore_cache: _,
+        } => with_page(pool, &target_id, cmd_reload),
+        BridgeCommand::GoBack { target_id: _ }
+        | BridgeCommand::GoForward { target_id: _ }
+        | BridgeCommand::StopLoading { target_id: _ } => Ok(serde_json::json!({})),
         BridgeCommand::ClosePage { target_id } => {
             let id = parse_target_id(&target_id);
             match id {
@@ -59,29 +120,64 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             }
         }
         // Cookie commands — bridge to servo SiteDataManager
-        BridgeCommand::GetCookies { target_id, urls } => with_page(pool, &target_id, |page| cmd_get_cookies(page, &urls)),
-        BridgeCommand::GetAllCookies { target_id } => with_page(pool, &target_id, cmd_get_all_cookies),
-        BridgeCommand::DeleteCookie { target_id, name, url } => with_page(pool, &target_id, |page| cmd_delete_cookie(page, &name, url.as_deref())),
-        BridgeCommand::SetCookie { target_id, name, value, url, domain } =>
-            with_page(pool, &target_id, |page| cmd_set_cookie(page, &name, &value, url.as_deref(), domain.as_deref())),
-        BridgeCommand::GetResponseBody { .. } => Ok(serde_json::json!({ "body": "", "base64Encoded": false })),
+        BridgeCommand::GetCookies { target_id, urls } => {
+            with_page(pool, &target_id, |page| cmd_get_cookies(page, &urls))
+        }
+        BridgeCommand::GetAllCookies { target_id } => {
+            with_page(pool, &target_id, cmd_get_all_cookies)
+        }
+        BridgeCommand::DeleteCookie {
+            target_id,
+            name,
+            url,
+        } => with_page(pool, &target_id, |page| {
+            cmd_delete_cookie(page, &name, url.as_deref())
+        }),
+        BridgeCommand::SetCookie {
+            target_id,
+            name,
+            value,
+            url,
+            domain,
+        } => with_page(pool, &target_id, |page| {
+            cmd_set_cookie(page, &name, &value, url.as_deref(), domain.as_deref())
+        }),
+        BridgeCommand::GetResponseBody { .. } => {
+            Ok(serde_json::json!({ "body": "", "base64Encoded": false }))
+        }
 
         // Network domain — cache/cookies clearing, enable/disable
         BridgeCommand::NetworkEnable { .. } => ok_empty(),
         BridgeCommand::NetworkDisable { .. } => ok_empty(),
-        BridgeCommand::NetworkSetCacheDisabled { target_id, cache_disabled } =>
-            with_page(pool, &target_id, |page| cmd_network_set_cache_disabled(page, cache_disabled)),
+        BridgeCommand::NetworkSetCacheDisabled {
+            target_id,
+            cache_disabled,
+        } => with_page(pool, &target_id, |page| {
+            cmd_network_set_cache_disabled(page, cache_disabled)
+        }),
         BridgeCommand::NetworkSetExtraHTTPHeaders { .. } => ok_empty(),
-        BridgeCommand::NetworkClearBrowserCache { target_id } =>
-            with_page(pool, &target_id, cmd_network_clear_browser_cache),
-        BridgeCommand::NetworkClearBrowserCookies { target_id } =>
-            with_page(pool, &target_id, cmd_network_clear_browser_cookies),
+        BridgeCommand::NetworkClearBrowserCache { target_id } => {
+            with_page(pool, &target_id, cmd_network_clear_browser_cache)
+        }
+        BridgeCommand::NetworkClearBrowserCookies { target_id } => {
+            with_page(pool, &target_id, cmd_network_clear_browser_cookies)
+        }
 
         // Storage domain — origin-scoped storage queries and clearing
-        BridgeCommand::StorageGetStorageItemsForOrigin { target_id, origin, storage_type } =>
-            with_page(pool, &target_id, |page| cmd_storage_get_items(page, origin, storage_type)),
-        BridgeCommand::StorageClearDataForOrigin { target_id, origin, storage_type } =>
-            with_page(pool, &target_id, |page| cmd_storage_clear_data(page, origin, storage_type)),
+        BridgeCommand::StorageGetStorageItemsForOrigin {
+            target_id,
+            origin,
+            storage_type,
+        } => with_page(pool, &target_id, |page| {
+            cmd_storage_get_items(page, origin, storage_type)
+        }),
+        BridgeCommand::StorageClearDataForOrigin {
+            target_id,
+            origin,
+            storage_type,
+        } => with_page(pool, &target_id, |page| {
+            cmd_storage_clear_data(page, origin, storage_type)
+        }),
 
         // Security domain — enable/disable/certificate override
         BridgeCommand::SecurityEnable { .. } => ok_empty(),
@@ -94,28 +190,67 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         // @trace BUG-CDP-006 [domain:Debugger]: current path is EvaluateJs →
         // servo debugger.js. A future enhancement is direct routing via
         // DevtoolScriptControlMsg once servo's devtools channel is exposed to Bao.
-        BridgeCommand::DebuggerEnable { target_id } => with_page(pool, &target_id, |page| cmd_debugger_enable(page)),
-        BridgeCommand::DebuggerDisable { target_id } => with_page(pool, &target_id, |page| cmd_debugger_disable(page)),
-        BridgeCommand::DebuggerSetBreakpoint { target_id, url, url_regex, line, column } =>
-            with_page(pool, &target_id, |page| cmd_debugger_set_breakpoint(page, url.as_deref(), url_regex.as_deref(), line, column)),
-        BridgeCommand::DebuggerRemoveBreakpoint { target_id, breakpoint_id } =>
-            with_page(pool, &target_id, |page| cmd_debugger_remove_breakpoint(page, &breakpoint_id)),
-        BridgeCommand::DebuggerInterrupt { target_id } => with_page(pool, &target_id, |page| cmd_debugger_interrupt(page)),
-        BridgeCommand::DebuggerResume { target_id, step_type } =>
-            with_page(pool, &target_id, |page| cmd_debugger_resume(page, step_type.as_deref())),
-        BridgeCommand::DebuggerListFrames { target_id } => with_page(pool, &target_id, |page| cmd_debugger_list_frames(page)),
-        BridgeCommand::DebuggerGetEnvironment { target_id, .. } =>
-            with_page(pool, &target_id, |page| cmd_debugger_get_environment(page)),
-        BridgeCommand::DebuggerEval { target_id, expression, frame_actor_id: _ } =>
-            with_page(pool, &target_id, |page| cmd_evaluate(page, &expression, true)),
-        BridgeCommand::DebuggerGetPossibleBreakpoints { target_id, start_script_id } =>
-            with_page(pool, &target_id, |page| cmd_debugger_get_possible_breakpoints(page, &start_script_id)),
-        BridgeCommand::DebuggerGetScriptSource { target_id, script_id } =>
-            with_page(pool, &target_id, |page| cmd_debugger_get_script_source(page, script_id)),
-        BridgeCommand::DebuggerBlackbox { target_id, .. } =>
-            with_page(pool, &target_id, |page| cmd_debugger_blackbox(page)),
-        BridgeCommand::DebuggerUnblackbox { target_id, .. } =>
-            with_page(pool, &target_id, |page| cmd_debugger_unblackbox(page)),
+        BridgeCommand::DebuggerEnable { target_id } => {
+            with_page(pool, &target_id, |page| cmd_debugger_enable(page))
+        }
+        BridgeCommand::DebuggerDisable { target_id } => {
+            with_page(pool, &target_id, |page| cmd_debugger_disable(page))
+        }
+        BridgeCommand::DebuggerSetBreakpoint {
+            target_id,
+            url,
+            url_regex,
+            line,
+            column,
+        } => with_page(pool, &target_id, |page| {
+            cmd_debugger_set_breakpoint(page, url.as_deref(), url_regex.as_deref(), line, column)
+        }),
+        BridgeCommand::DebuggerRemoveBreakpoint {
+            target_id,
+            breakpoint_id,
+        } => with_page(pool, &target_id, |page| {
+            cmd_debugger_remove_breakpoint(page, &breakpoint_id)
+        }),
+        BridgeCommand::DebuggerInterrupt { target_id } => {
+            with_page(pool, &target_id, |page| cmd_debugger_interrupt(page))
+        }
+        BridgeCommand::DebuggerResume {
+            target_id,
+            step_type,
+        } => with_page(pool, &target_id, |page| {
+            cmd_debugger_resume(page, step_type.as_deref())
+        }),
+        BridgeCommand::DebuggerListFrames { target_id } => {
+            with_page(pool, &target_id, |page| cmd_debugger_list_frames(page))
+        }
+        BridgeCommand::DebuggerGetEnvironment { target_id, .. } => {
+            with_page(pool, &target_id, |page| cmd_debugger_get_environment(page))
+        }
+        BridgeCommand::DebuggerEval {
+            target_id,
+            expression,
+            frame_actor_id: _,
+        } => with_page(pool, &target_id, |page| {
+            cmd_evaluate(page, &expression, true)
+        }),
+        BridgeCommand::DebuggerGetPossibleBreakpoints {
+            target_id,
+            start_script_id,
+        } => with_page(pool, &target_id, |page| {
+            cmd_debugger_get_possible_breakpoints(page, &start_script_id)
+        }),
+        BridgeCommand::DebuggerGetScriptSource {
+            target_id,
+            script_id,
+        } => with_page(pool, &target_id, |page| {
+            cmd_debugger_get_script_source(page, script_id)
+        }),
+        BridgeCommand::DebuggerBlackbox { target_id, .. } => {
+            with_page(pool, &target_id, |page| cmd_debugger_blackbox(page))
+        }
+        BridgeCommand::DebuggerUnblackbox { target_id, .. } => {
+            with_page(pool, &target_id, |page| cmd_debugger_unblackbox(page))
+        }
         // ── Profiler commands ──
         BridgeCommand::ProfilerStart { .. } => Ok(serde_json::json!({})),
         BridgeCommand::ProfilerStop { .. } => Ok(serde_json::json!({"profile": {}})),
@@ -126,32 +261,60 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::HeapProfilerStopTracking { .. } => Ok(serde_json::json!({})),
         BridgeCommand::HeapProfilerCollectGarbage { .. } => Ok(serde_json::json!({})),
         // ── Memory commands ──
-        BridgeCommand::MemoryGetDOMCounters { .. } => Ok(serde_json::json!({"documents": 0, "nodes": 0, "jsEventListeners": 0})),
+        BridgeCommand::MemoryGetDOMCounters { .. } => {
+            Ok(serde_json::json!({"documents": 0, "nodes": 0, "jsEventListeners": 0}))
+        }
         BridgeCommand::MemoryPurgeJS { .. } => Ok(serde_json::json!({})),
         // ── Performance commands ──
         BridgeCommand::PerformanceGetMetrics { .. } => Ok(serde_json::json!({"metrics": []})),
 
         // ── CSS domain commands — JS evaluate for computed/matched/inline styles ──
-        BridgeCommand::CssGetComputedStyleForNode { target_id, node_id } =>
-            with_page(pool, &target_id, |page| cmd_css_get_computed_style(page, node_id)),
-        BridgeCommand::CssGetMatchedStylesForNode { target_id, node_id } =>
-            with_page(pool, &target_id, |page| cmd_css_get_matched_styles(page, node_id)),
-        BridgeCommand::CssGetInlineStylesForNode { target_id, node_id } =>
-            with_page(pool, &target_id, |page| cmd_css_get_inline_styles(page, node_id)),
+        BridgeCommand::CssGetComputedStyleForNode { target_id, node_id } => {
+            with_page(pool, &target_id, |page| {
+                cmd_css_get_computed_style(page, node_id)
+            })
+        }
+        BridgeCommand::CssGetMatchedStylesForNode { target_id, node_id } => {
+            with_page(pool, &target_id, |page| {
+                cmd_css_get_matched_styles(page, node_id)
+            })
+        }
+        BridgeCommand::CssGetInlineStylesForNode { target_id, node_id } => {
+            with_page(pool, &target_id, |page| {
+                cmd_css_get_inline_styles(page, node_id)
+            })
+        }
 
         // ── Runtime domain commands — JS evaluate for object inspection and function calls ──
-        BridgeCommand::RuntimeGetProperties { target_id, object_id, own_properties } =>
-            with_page(pool, &target_id, |page| cmd_runtime_get_properties(page, &object_id, own_properties)),
-        BridgeCommand::RuntimeCallFunctionOn { target_id, object_id, function_declaration, arguments, return_by_value } =>
-            with_page(pool, &target_id, |page| cmd_runtime_call_function_on(page, object_id.as_deref(), &function_declaration, arguments.as_ref(), return_by_value)),
+        BridgeCommand::RuntimeGetProperties {
+            target_id,
+            object_id,
+            own_properties,
+        } => with_page(pool, &target_id, |page| {
+            cmd_runtime_get_properties(page, &object_id, own_properties)
+        }),
+        BridgeCommand::RuntimeCallFunctionOn {
+            target_id,
+            object_id,
+            function_declaration,
+            arguments,
+            return_by_value,
+        } => with_page(pool, &target_id, |page| {
+            cmd_runtime_call_function_on(
+                page,
+                object_id.as_deref(),
+                &function_declaration,
+                arguments.as_ref(),
+                return_by_value,
+            )
+        }),
 
         // ServiceWorker domain — terminate a registered ServiceWorker
         // @trace REQ-BRW-004 [entity:ServiceWorker]
-        BridgeCommand::TerminateServiceWorker { target_id, registration_id: _ } => {
-            with_page(pool, &target_id, |_page| {
-                Ok(serde_json::json!({}))
-            })
-        }
+        BridgeCommand::TerminateServiceWorker {
+            target_id,
+            registration_id: _,
+        } => with_page(pool, &target_id, |_page| Ok(serde_json::json!({}))),
 
         // Worker/ServiceWorker target management — CDP Target domain for Workers
         // @trace REQ-BRW-004 [entity:Worker] [entity:ServiceWorker]
@@ -160,28 +323,31 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
                 let state = page.webview_state();
                 let count = state.borrow().active_worker_count();
                 // Worker targets are identified by their script URL
-                let workers: Vec<Value> = (0..count).map(|i| {
-                    serde_json::json!({
-                        "targetId": format!("worker-{}", i),
-                        "type": "worker",
-                        "title": format!("Worker #{}", i),
+                let workers: Vec<Value> = (0..count)
+                    .map(|i| {
+                        serde_json::json!({
+                            "targetId": format!("worker-{}", i),
+                            "type": "worker",
+                            "title": format!("Worker #{}", i),
+                        })
                     })
-                }).collect();
+                    .collect();
                 Ok(serde_json::json!({ "targetInfos": workers }))
             })
         }
-        BridgeCommand::GetWorkerTargetInfo { target_id, worker_id } => {
-            with_page(pool, &target_id, |_page| {
-                Ok(serde_json::json!({
-                    "targetInfo": {
-                        "targetId": worker_id,
-                        "type": "worker",
-                        "title": format!("Worker: {}", worker_id),
-                        "url": worker_id,
-                    }
-                }))
-            })
-        }
+        BridgeCommand::GetWorkerTargetInfo {
+            target_id,
+            worker_id,
+        } => with_page(pool, &target_id, |_page| {
+            Ok(serde_json::json!({
+                "targetInfo": {
+                    "targetId": worker_id,
+                    "type": "worker",
+                    "title": format!("Worker: {}", worker_id),
+                    "url": worker_id,
+                }
+            }))
+        }),
         BridgeCommand::ListServiceWorkerRegistrations { target_id } => {
             with_page(pool, &target_id, |_page| {
                 // ServiceWorker registrations tracked per-webview
@@ -214,9 +380,9 @@ fn with_page<F>(pool: &PagePool, target_id: &str, f: F) -> Result<Value, String>
 where
     F: FnOnce(&PageHandle) -> Result<Value, String>,
 {
-    let id = parse_target_id(target_id)
-        .ok_or_else(|| format!("invalid target_id: {target_id}"))?;
-    let page = pool.get_page(id)
+    let id = parse_target_id(target_id).ok_or_else(|| format!("invalid target_id: {target_id}"))?;
+    let page = pool
+        .get_page(id)
         .ok_or_else(|| format!("page not found: {target_id}"))?;
     f(&page)
 }
@@ -266,7 +432,11 @@ fn sw_registration_to_json(handle: ServiceWorkerHandle) -> Value {
 
 fn cmd_create_target(pool: &PagePool, url: &str) -> Result<Value, String> {
     let config = PageConfig {
-        url: if url.is_empty() { None } else { Some(url.to_string()) },
+        url: if url.is_empty() {
+            None
+        } else {
+            Some(url.to_string())
+        },
         ..Default::default()
     };
     let page = pool.create_page(&config).map_err(|e| format!("{e}"))?;
@@ -294,7 +464,11 @@ fn cmd_navigate(page: &PageHandle, url: &str) -> Result<Value, String> {
     }))
 }
 
-fn cmd_evaluate(page: &PageHandle, expression: &str, return_by_value: bool) -> Result<Value, String> {
+fn cmd_evaluate(
+    page: &PageHandle,
+    expression: &str,
+    return_by_value: bool,
+) -> Result<Value, String> {
     let result = page.evaluate_js(expression).map_err(to_browser_error)?;
     if return_by_value {
         let parsed: Result<Value, _> = serde_json::from_str(&result);
@@ -408,13 +582,26 @@ fn cmd_set_attribute(page: &PageHandle, name: &str, value: &str) -> Result<Value
     Ok(serde_json::json!({}))
 }
 
-fn cmd_mouse_event(_page: &PageHandle, _event_type: &str, _x: f64, _y: f64, _button: Option<i64>, _click_count: Option<i64>) -> Result<Value, String> {
+fn cmd_mouse_event(
+    _page: &PageHandle,
+    _event_type: &str,
+    _x: f64,
+    _y: f64,
+    _button: Option<i64>,
+    _click_count: Option<i64>,
+) -> Result<Value, String> {
     // Mouse event dispatch through servo requires InputEvent API
     // For now, acknowledge the command
     Ok(serde_json::json!({}))
 }
 
-fn cmd_key_event(_page: &PageHandle, _event_type: &str, _key: &str, _code: &str, _text: Option<&str>) -> Result<Value, String> {
+fn cmd_key_event(
+    _page: &PageHandle,
+    _event_type: &str,
+    _key: &str,
+    _code: &str,
+    _text: Option<&str>,
+) -> Result<Value, String> {
     Ok(serde_json::json!({}))
 }
 
@@ -518,14 +705,17 @@ fn cmd_debugger_disable(page: &PageHandle) -> Result<Value, String> {
     Ok(serde_json::json!({}))
 }
 
-fn cmd_debugger_set_breakpoint(page: &PageHandle, url: Option<&str>, url_regex: Option<&str>, line: u32, column: Option<u32>) -> Result<Value, String> {
+fn cmd_debugger_set_breakpoint(
+    page: &PageHandle,
+    url: Option<&str>,
+    url_regex: Option<&str>,
+    line: u32,
+    column: Option<u32>,
+) -> Result<Value, String> {
     let col = column.unwrap_or(0);
     // Build a script filter: match by url (exact) or urlRegex, fall back to line-range match
     let url_filter = match (url, url_regex) {
-        (Some(u), _) => format!(
-            "s.url === {}",
-            serde_json::to_string(u).unwrap_or_default()
-        ),
+        (Some(u), _) => format!("s.url === {}", serde_json::to_string(u).unwrap_or_default()),
         (None, Some(r)) => format!(
             "new RegExp({}).test(s.url)",
             serde_json::to_string(r).unwrap_or_default()
@@ -580,11 +770,17 @@ fn cmd_debugger_get_environment(page: &PageHandle) -> Result<Value, String> {
     parse_js_result(&result)
 }
 
-fn cmd_debugger_get_possible_breakpoints(page: &PageHandle, start_script_id: &str) -> Result<Value, String> {
+fn cmd_debugger_get_possible_breakpoints(
+    page: &PageHandle,
+    start_script_id: &str,
+) -> Result<Value, String> {
     let filter_by_script = if start_script_id.is_empty() {
         "true".to_string()
     } else {
-        format!("String(s.id) === {}", serde_json::to_string(start_script_id).unwrap_or_default())
+        format!(
+            "String(s.id) === {}",
+            serde_json::to_string(start_script_id).unwrap_or_default()
+        )
     };
     let js = format!(
         "(function() {{ try {{ if (!window.__bao_dbg) return JSON.stringify({{locations: []}}); var scripts = window.__bao_dbg.findScripts(); var locs = []; scripts.forEach(function(s) {{ if ({filter}) {{ for (var line = s.startLine; line < s.startLine + s.lineCount; line++) {{ locs.push({{scriptId: String(s.id), lineNumber: line}}); }} }} }}); return JSON.stringify({{locations: locs}}); }} catch(e) {{ return JSON.stringify({{locations: []}}); }} }})()",
@@ -604,12 +800,16 @@ fn cmd_debugger_get_script_source(page: &PageHandle, script_id: u32) -> Result<V
 }
 
 fn cmd_debugger_blackbox(page: &PageHandle) -> Result<Value, String> {
-    let _ = page.evaluate_js("(function() { /* blackbox: not yet supported */ })()").map_err(to_browser_error)?;
+    let _ = page
+        .evaluate_js("(function() { /* blackbox: not yet supported */ })()")
+        .map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
 }
 
 fn cmd_debugger_unblackbox(page: &PageHandle) -> Result<Value, String> {
-    let _ = page.evaluate_js("(function() { /* unblackbox: not yet supported */ })()").map_err(to_browser_error)?;
+    let _ = page
+        .evaluate_js("(function() { /* unblackbox: not yet supported */ })()")
+        .map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
 }
 
@@ -641,7 +841,10 @@ fn resolve_node_by_id(page: &PageHandle, node_id: i64) -> Result<String, String>
         );
         let found = page.evaluate_js(&js).map_err(to_browser_error)?;
         if found.trim() == "found" {
-            Ok(format!("document.querySelector('[data-node-id=\"{}\"]')", node_id))
+            Ok(format!(
+                "document.querySelector('[data-node-id=\"{}\"]')",
+                node_id
+            ))
         } else {
             // Fall back to body.childNodes traversal
             Ok(format!("document.body.childNodes[{}]", node_id - 3))
@@ -801,13 +1004,23 @@ fn resolve_object_by_id(object_id: &str) -> String {
             _ => format!("document.body.childNodes[{}]", idx - 3),
         }
     } else if object_id.starts_with("obj-") {
-        format!("(window.__bao_objs && window.__bao_objs['{}']) || null", object_id)
+        format!(
+            "(window.__bao_objs && window.__bao_objs['{}']) || null",
+            object_id
+        )
     } else {
-        format!("(window.__bao_objs && window.__bao_objs['{}']) || null", object_id)
+        format!(
+            "(window.__bao_objs && window.__bao_objs['{}']) || null",
+            object_id
+        )
     }
 }
 
-fn cmd_runtime_get_properties(page: &PageHandle, object_id: &str, own_properties: Option<bool>) -> Result<Value, String> {
+fn cmd_runtime_get_properties(
+    page: &PageHandle,
+    object_id: &str,
+    own_properties: Option<bool>,
+) -> Result<Value, String> {
     let obj_ref = resolve_object_by_id(object_id);
     let own = own_properties.unwrap_or(true);
     // When own_properties is true, only list own properties (getOwnPropertyNames).
@@ -926,21 +1139,24 @@ fn cmd_runtime_call_function_on(
     arguments: Option<&Value>,
     return_by_value: Option<bool>,
 ) -> Result<Value, String> {
-    let obj_ref = object_id.map(resolve_object_by_id).unwrap_or_else(|| "undefined".to_string());
+    let obj_ref = object_id
+        .map(resolve_object_by_id)
+        .unwrap_or_else(|| "undefined".to_string());
     let rbv = return_by_value.unwrap_or(true);
 
     // Parse arguments array from CDP params
     let args_js = match arguments {
         Some(Value::Array(arr)) => {
-            let args: Vec<String> = arr.iter().map(|a| {
-                match a {
+            let args: Vec<String> = arr
+                .iter()
+                .map(|a| match a {
                     Value::String(s) => serde_json::to_string(s).unwrap_or_default(),
                     Value::Number(n) => n.to_string(),
                     Value::Bool(b) => b.to_string(),
                     Value::Null => "null".to_string(),
                     v => serde_json::to_string(v).unwrap_or_default(),
-                }
-            }).collect();
+                })
+                .collect();
             format!("[{}]", args.join(", "))
         }
         _ => "[]".to_string(),
@@ -1034,7 +1250,8 @@ fn cookie_to_cdp(c: &cookie::Cookie) -> Value {
         Some(cookie::SameSite::None) => "None",
         None => "None",
     };
-    let expires = c.expires_datetime()
+    let expires = c
+        .expires_datetime()
         .map(|dt| dt.unix_timestamp() as f64)
         .unwrap_or(-1.0);
     serde_json::json!({
@@ -1052,7 +1269,12 @@ fn cookie_to_cdp(c: &cookie::Cookie) -> Value {
 }
 
 /// Build a `cookie::Cookie<'static>` from CDP setCookie parameters.
-fn cdp_params_to_cookie(name: &str, value: &str, _url: Option<&str>, domain: Option<&str>) -> cookie::Cookie<'static> {
+fn cdp_params_to_cookie(
+    name: &str,
+    value: &str,
+    _url: Option<&str>,
+    domain: Option<&str>,
+) -> cookie::Cookie<'static> {
     let mut builder = cookie::Cookie::build((name.to_string(), value.to_string()));
     if let Some(d) = domain {
         if d.starts_with('.') {
@@ -1090,7 +1312,11 @@ fn cmd_get_cookies(page: &PageHandle, urls: &[String]) -> Result<Value, String> 
         for url_str in urls {
             if let Ok(parsed) = url::Url::parse(url_str) {
                 for c in sdm.cookies_for_url(parsed, CookieSource::HTTP) {
-                    let key = (c.name().to_string(), c.domain().unwrap_or("").to_string(), c.path().unwrap_or("").to_string());
+                    let key = (
+                        c.name().to_string(),
+                        c.domain().unwrap_or("").to_string(),
+                        c.path().unwrap_or("").to_string(),
+                    );
                     if seen.insert(key) {
                         result.push(cookie_to_cdp(&c));
                     }
@@ -1120,7 +1346,11 @@ fn cmd_get_all_cookies(page: &PageHandle) -> Result<Value, String> {
         };
         if let Ok(parsed) = url::Url::parse(&url_str) {
             for c in sdm.cookies_for_url(parsed, CookieSource::HTTP) {
-                let key = (c.name().to_string(), c.domain().unwrap_or("").to_string(), c.path().unwrap_or("").to_string());
+                let key = (
+                    c.name().to_string(),
+                    c.domain().unwrap_or("").to_string(),
+                    c.path().unwrap_or("").to_string(),
+                );
                 if seen.insert(key) {
                     cookies.push(cookie_to_cdp(&c));
                 }
@@ -1131,17 +1361,26 @@ fn cmd_get_all_cookies(page: &PageHandle) -> Result<Value, String> {
 }
 
 /// Network.setCookie — set a cookie via servo's SiteDataManager.
-fn cmd_set_cookie(page: &PageHandle, name: &str, value: &str, url: Option<&str>, domain: Option<&str>) -> Result<Value, String> {
+fn cmd_set_cookie(
+    page: &PageHandle,
+    name: &str,
+    value: &str,
+    url: Option<&str>,
+    domain: Option<&str>,
+) -> Result<Value, String> {
     let servo = page.servo();
     let sdm = servo.site_data_manager();
     let cookie = cdp_params_to_cookie(name, value, url, domain);
     // Determine the URL to associate the cookie with
     let fallback_url = page.current_url().unwrap_or_default();
     let url_str = url.unwrap_or_else(|| {
-        if fallback_url.is_empty() || fallback_url == "about:blank" { "https://localhost/" } else { fallback_url.as_str() }
+        if fallback_url.is_empty() || fallback_url == "about:blank" {
+            "https://localhost/"
+        } else {
+            fallback_url.as_str()
+        }
     });
-    let parsed = url::Url::parse(url_str)
-        .map_err(|e| format!("invalid URL for setCookie: {e}"))?;
+    let parsed = url::Url::parse(url_str).map_err(|e| format!("invalid URL for setCookie: {e}"))?;
     sdm.set_cookie_for_url(parsed, cookie, None);
     Ok(serde_json::json!({ "success": true }))
 }
@@ -1151,8 +1390,8 @@ fn cmd_delete_cookie(page: &PageHandle, name: &str, url: Option<&str>) -> Result
     let servo = page.servo();
     let sdm = servo.site_data_manager();
     if let Some(url_str) = url {
-        let parsed = url::Url::parse(url_str)
-            .map_err(|e| format!("invalid URL for deleteCookies: {e}"))?;
+        let parsed =
+            url::Url::parse(url_str).map_err(|e| format!("invalid URL for deleteCookies: {e}"))?;
         // Get current cookies for this URL
         let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
         // Clear all cookies for this site, then re-set the ones that don't match the name
@@ -1192,7 +1431,10 @@ fn cmd_delete_cookie(page: &PageHandle, name: &str, url: Option<&str>) -> Result
 }
 
 /// Network.setCacheDisabled — clear cache when cache_disabled is true.
-fn cmd_network_set_cache_disabled(page: &PageHandle, cache_disabled: bool) -> Result<Value, String> {
+fn cmd_network_set_cache_disabled(
+    page: &PageHandle,
+    cache_disabled: bool,
+) -> Result<Value, String> {
     if cache_disabled {
         let servo = page.servo();
         let nm = servo.network_manager();
@@ -1218,15 +1460,23 @@ fn cmd_network_clear_browser_cookies(page: &PageHandle) -> Result<Value, String>
 }
 
 /// Storage.getStorageItemsForOrigin — list storage data for an origin.
-fn cmd_storage_get_items(page: &PageHandle, origin: String, storage_type: String) -> Result<Value, String> {
+fn cmd_storage_get_items(
+    page: &PageHandle,
+    origin: String,
+    storage_type: String,
+) -> Result<Value, String> {
     let servo = page.servo();
     let sdm = servo.site_data_manager();
     let st = parse_storage_type(&storage_type);
     let site_data = sdm.site_data(st);
-    let items: Vec<Value> = site_data.iter()
+    let items: Vec<Value> = site_data
+        .iter()
         .filter(|sd| {
             let site_name = sd.name();
-            origin.is_empty() || site_name == origin || site_name.ends_with(&format!(".{origin}")) || origin.ends_with(&format!(".{site_name}"))
+            origin.is_empty()
+                || site_name == origin
+                || site_name.ends_with(&format!(".{origin}"))
+                || origin.ends_with(&format!(".{site_name}"))
         })
         .map(|sd| {
             serde_json::json!({
@@ -1239,7 +1489,11 @@ fn cmd_storage_get_items(page: &PageHandle, origin: String, storage_type: String
 }
 
 /// Storage.clearDataForOrigin — clear storage data for a specific origin.
-fn cmd_storage_clear_data(page: &PageHandle, origin: String, storage_type: String) -> Result<Value, String> {
+fn cmd_storage_clear_data(
+    page: &PageHandle,
+    origin: String,
+    storage_type: String,
+) -> Result<Value, String> {
     let servo = page.servo();
     let sdm = servo.site_data_manager();
     let st = parse_storage_type(&storage_type);
@@ -1268,10 +1522,8 @@ fn ok_empty() -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::delegate::{ServiceWorkerHandle, ServiceWorkerRegistrationState};
     use serde_json::{json, Value};
-    use crate::delegate::{
-        ServiceWorkerHandle, ServiceWorkerRegistrationState,
-    };
 
     #[test]
     fn json_type_null_returns_undefined() {
@@ -1939,7 +2191,10 @@ mod tests {
 
     #[test]
     fn json_type_mixed_array() {
-        assert_eq!(super::json_type(&json!([1, "two", null, true, {}])), "object");
+        assert_eq!(
+            super::json_type(&json!([1, "two", null, true, {}])),
+            "object"
+        );
     }
 
     // ─── ServiceWorker registration JSON serialization (REQ-BRW-4 C6/C19, DF-WK-8) ───
@@ -1969,11 +2224,7 @@ mod tests {
     #[test]
     fn sw_registration_to_json_activated() {
         // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:6] [criterion:19] DF-WK-8
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
-        );
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         handle.transition_state(ServiceWorkerRegistrationState::Activated);
         handle.enable_fetch_interception();
 
@@ -1990,11 +2241,7 @@ mod tests {
 
     #[test]
     fn sw_registration_to_json_installing_state() {
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
-        );
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         // Default state is Installing
         let json_val = super::sw_registration_to_json(handle);
         assert_eq!(json_val["state"], "installing");
@@ -2014,11 +2261,7 @@ mod tests {
             (ServiceWorkerRegistrationState::Redundant, "redundant"),
         ];
         for (state, expected) in states_and_expected {
-            let handle = ServiceWorkerHandle::new(
-                "sw.js".to_string(),
-                "/".to_string(),
-                None,
-            );
+            let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
             handle.transition_state(state.clone());
             let json_val = super::sw_registration_to_json(handle);
             assert_eq!(json_val["state"], expected, "state mapping for {:?}", state);
@@ -2029,11 +2272,7 @@ mod tests {
     fn sw_registration_terminate_disables_fetch_interception() {
         // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:19] DF-WK-8
         // SPEC criterion #19: "terminate 后正确注销"
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
-        );
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         handle.enable_fetch_interception();
         assert!(handle.is_intercepting_fetch());
 
@@ -2046,11 +2285,7 @@ mod tests {
 
     #[test]
     fn sw_registration_terminate_is_idempotent() {
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
-        );
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         handle.terminate();
         handle.terminate();
         handle.terminate();
@@ -2062,11 +2297,8 @@ mod tests {
         // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:19] DF-WK-10
         // SPEC: SW must inherit registering page's stealth profile.
         let profile = bao_stealth::StealthProfile::chrome_default();
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            Some(profile.clone()),
-        );
+        let handle =
+            ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), Some(profile.clone()));
         assert!(handle.stealth_profile.is_some());
         // Stealth profile is preserved across registry lookups
         let json_val = super::sw_registration_to_json(handle.clone());

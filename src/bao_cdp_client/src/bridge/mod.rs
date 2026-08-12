@@ -46,22 +46,22 @@ pub mod debugger_handlers;
 pub mod e_class;
 pub mod error;
 pub mod eval_synthesizer;
-pub mod servo_backend;
 pub mod event_translator;
+pub mod servo_backend;
 
 pub use cdp_rdp_bridge::CDPRdpBridge;
 pub use command_dispatcher::dispatch_command;
 pub use error::{
     BridgeError, CDP_ERR_INVALID_PARAMS, CDP_ERR_METHOD_NOT_FOUND, CDP_ERR_SERVER_ERROR,
 };
-pub use servo_backend::{
-    BoxModel, CSSComputedStyleProperty, CSSProperty, CSSStyle, DeviceMetrics, EvaluateResult,
-    ExceptionDetails, Frame, FrameTree, KeyEvent, LayoutMetrics, MatchedRule, MatchedStyles,
-    MouseEvent, NavigateResult, NavigationEntry, NavigationHistory, NodeDescriptor,
-    PropertyDescriptor, RemoteObject, ResponseBody, ServoBackend, TargetInfo, TouchPoint,
-    BridgeScreenshotFormat as ScreenshotFormat, MockServoBackend,
-    BreakpointResult, DebuggerEvalResult, DebuggerRemoteObject, DebugStepAction, PossibleBreakpoint,
-};
 pub use event_translator::{
     from_console_message, translate, ConsoleLevel, EventSubscriber, ServoEvent,
+};
+pub use servo_backend::{
+    BoxModel, BreakpointResult, BridgeScreenshotFormat as ScreenshotFormat,
+    CSSComputedStyleProperty, CSSProperty, CSSStyle, DebugStepAction, DebuggerEvalResult,
+    DebuggerRemoteObject, DeviceMetrics, EvaluateResult, ExceptionDetails, Frame, FrameTree,
+    KeyEvent, LayoutMetrics, MatchedRule, MatchedStyles, MockServoBackend, MouseEvent,
+    NavigateResult, NavigationEntry, NavigationHistory, NodeDescriptor, PossibleBreakpoint,
+    PropertyDescriptor, RemoteObject, ResponseBody, ServoBackend, TargetInfo, TouchPoint,
 };

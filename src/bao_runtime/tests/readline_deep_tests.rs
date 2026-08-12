@@ -19,7 +19,9 @@ fn test_readline_deep() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         function check(label, fn) {
             try { var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }
@@ -140,7 +142,8 @@ fn test_readline_deep() {
         check("readline_keys_count", function() { return Object.keys(readline).length >= 1; });
 
         results.join("|")
-    "#);
+    "#,
+    );
 
     let mut pass = 0;
     let mut fail = 0;

@@ -78,7 +78,10 @@ fn bao_cli_e2e_full_lifecycle() {
     let bao = match bao_path() {
         Some(p) => p,
         None => {
-            eprintln!("SKIP: bao binary not found at ./{} — run `cargo build` first", BAO_BIN);
+            eprintln!(
+                "SKIP: bao binary not found at ./{} — run `cargo build` first",
+                BAO_BIN
+            );
             return;
         }
     };
@@ -262,7 +265,14 @@ fn bao_cli_e2e_full_lifecycle() {
     }
 
     // ── §7 stdout 捕获 — 多行 console.log ────────────────────────────────
-    match run_bao(&["run", "--eval", "console.log('line1'); console.log('line2');"], None) {
+    match run_bao(
+        &[
+            "run",
+            "--eval",
+            "console.log('line1'); console.log('line2');",
+        ],
+        None,
+    ) {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.contains("line1") && stdout.contains("line2") {

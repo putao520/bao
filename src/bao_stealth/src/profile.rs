@@ -1,10 +1,10 @@
 // @trace REQ-STL-007
-use crate::tls::TlsFingerprint;
-use crate::http2::Http2Fingerprint;
-use crate::canvas::CanvasNoise;
-use crate::navigator::{NavigatorProfile, ScreenProfile};
-use crate::webgl_audio::{WebGLProfile, AudioProfile};
 use crate::behavior::{BehaviorConfig, BehaviorSimulator};
+use crate::canvas::CanvasNoise;
+use crate::http2::Http2Fingerprint;
+use crate::navigator::{NavigatorProfile, ScreenProfile};
+use crate::tls::TlsFingerprint;
+use crate::webgl_audio::{AudioProfile, WebGLProfile};
 
 /// WebRTC leak protection mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,10 +144,7 @@ impl Default for PluginConfig {
                 "Microsoft Edge PDF Viewer".into(),
                 "WebKit built-in PDF".into(),
             ],
-            mime_types: vec![
-                "application/pdf".into(),
-                "text/pdf".into(),
-            ],
+            mime_types: vec!["application/pdf".into(), "text/pdf".into()],
         }
     }
 }
@@ -340,7 +337,10 @@ impl StealthProfile {
             battery: BatteryConfig::default(),
             webrtc_mode: WebRtcMode::Default,
             timing: TimingConfig::default(),
-            clientrects: ClientRectsConfig { noise_delta: 0.5, seed: 42 },
+            clientrects: ClientRectsConfig {
+                noise_delta: 0.5,
+                seed: 42,
+            },
             screen_display: ScreenDisplayConfig::default(),
             plugin: PluginConfig::default(),
             speech: SpeechConfig::default(),
@@ -366,7 +366,10 @@ impl StealthProfile {
             battery: BatteryConfig::default(),
             webrtc_mode: WebRtcMode::Default,
             timing: TimingConfig::default(),
-            clientrects: ClientRectsConfig { noise_delta: 0.5, seed: 137 },
+            clientrects: ClientRectsConfig {
+                noise_delta: 0.5,
+                seed: 137,
+            },
             screen_display: ScreenDisplayConfig::default(),
             plugin: PluginConfig::default(),
             speech: SpeechConfig::default(),
@@ -471,9 +474,16 @@ mod tests {
     fn firefox_and_chrome_behavior_produce_different_mouse_paths() {
         let ff = StealthProfile::firefox_default();
         let ch = StealthProfile::chrome_default();
-        let ff_path = ff.behavior.generate_human_mouse_path((0.0, 0.0), (200.0, 200.0), 20.0);
-        let ch_path = ch.behavior.generate_human_mouse_path((0.0, 0.0), (200.0, 200.0), 20.0);
-        assert_ne!(ff_path, ch_path, "Firefox and Chrome should produce different mouse paths");
+        let ff_path = ff
+            .behavior
+            .generate_human_mouse_path((0.0, 0.0), (200.0, 200.0), 20.0);
+        let ch_path = ch
+            .behavior
+            .generate_human_mouse_path((0.0, 0.0), (200.0, 200.0), 20.0);
+        assert_ne!(
+            ff_path, ch_path,
+            "Firefox and Chrome should produce different mouse paths"
+        );
     }
 
     #[test]

@@ -22,7 +22,10 @@ fn test_permission_read_none_allows_all() {
 
 #[test]
 fn test_permission_read_exact_match() {
-    let perm = Permission { read: Some(vec!["/tmp".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/tmp".into()]),
+        ..Default::default()
+    };
     assert!(perm.is_read_allowed("/tmp"));
     assert!(perm.is_read_allowed("/tmp/file.txt"));
     assert!(perm.is_read_allowed("/tmpfile")); // starts_with("/tmp") matches
@@ -31,7 +34,10 @@ fn test_permission_read_exact_match() {
 
 #[test]
 fn test_permission_read_multiple_prefixes() {
-    let perm = Permission { read: Some(vec!["/home".into(), "/tmp".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/home".into(), "/tmp".into()]),
+        ..Default::default()
+    };
     assert!(perm.is_read_allowed("/home/user/file"));
     assert!(perm.is_read_allowed("/tmp/data.json"));
     assert!(!perm.is_read_allowed("/etc/config"));
@@ -39,7 +45,10 @@ fn test_permission_read_multiple_prefixes() {
 
 #[test]
 fn test_permission_read_empty_vec_blocks_all() {
-    let perm = Permission { read: Some(vec![]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec![]),
+        ..Default::default()
+    };
     assert!(!perm.is_read_allowed("/anything"));
     assert!(!perm.is_read_allowed(""));
 }
@@ -57,7 +66,10 @@ fn test_permission_write_none_allows_all() {
 
 #[test]
 fn test_permission_write_prefix_match() {
-    let perm = Permission { write: Some(vec!["/var".into()]), ..Default::default() };
+    let perm = Permission {
+        write: Some(vec!["/var".into()]),
+        ..Default::default()
+    };
     assert!(perm.is_write_allowed("/var/log/test.log"));
     assert!(perm.is_write_allowed("/var"));
     assert!(!perm.is_write_allowed("/tmp/write"));
@@ -65,7 +77,10 @@ fn test_permission_write_prefix_match() {
 
 #[test]
 fn test_permission_write_empty_vec_blocks_all() {
-    let perm = Permission { write: Some(vec![]), ..Default::default() };
+    let perm = Permission {
+        write: Some(vec![]),
+        ..Default::default()
+    };
     assert!(!perm.is_write_allowed("/any/path"));
 }
 
@@ -83,7 +98,10 @@ fn test_permission_net_none_allows_all() {
 
 #[test]
 fn test_permission_net_exact_match() {
-    let perm = Permission { net: Some(vec!["example.com".into()]), ..Default::default() };
+    let perm = Permission {
+        net: Some(vec!["example.com".into()]),
+        ..Default::default()
+    };
     assert!(perm.is_net_allowed("example.com"));
     assert!(perm.is_net_allowed("sub.example.com"));
     assert!(!perm.is_net_allowed("notexample.com"));
@@ -92,7 +110,10 @@ fn test_permission_net_exact_match() {
 
 #[test]
 fn test_permission_net_subdomain_match() {
-    let perm = Permission { net: Some(vec!["api.service.io".into()]), ..Default::default() };
+    let perm = Permission {
+        net: Some(vec!["api.service.io".into()]),
+        ..Default::default()
+    };
     assert!(perm.is_net_allowed("api.service.io"));
     assert!(perm.is_net_allowed("v2.api.service.io"));
     assert!(!perm.is_net_allowed("service.io"));
@@ -100,7 +121,10 @@ fn test_permission_net_subdomain_match() {
 
 #[test]
 fn test_permission_net_multiple_domains() {
-    let perm = Permission { net: Some(vec!["a.com".into(), "b.com".into()]), ..Default::default() };
+    let perm = Permission {
+        net: Some(vec!["a.com".into(), "b.com".into()]),
+        ..Default::default()
+    };
     assert!(perm.is_net_allowed("a.com"));
     assert!(perm.is_net_allowed("b.com"));
     assert!(!perm.is_net_allowed("c.com"));
@@ -108,7 +132,10 @@ fn test_permission_net_multiple_domains() {
 
 #[test]
 fn test_permission_net_empty_vec_blocks_all() {
-    let perm = Permission { net: Some(vec![]), ..Default::default() };
+    let perm = Permission {
+        net: Some(vec![]),
+        ..Default::default()
+    };
     assert!(!perm.is_net_allowed("any.host"));
 }
 
@@ -124,13 +151,19 @@ fn test_permission_env_none_allows() {
 
 #[test]
 fn test_permission_env_explicit_true() {
-    let perm = Permission { env: Some(true), ..Default::default() };
+    let perm = Permission {
+        env: Some(true),
+        ..Default::default()
+    };
     assert!(perm.is_env_allowed());
 }
 
 #[test]
 fn test_permission_env_explicit_false() {
-    let perm = Permission { env: Some(false), ..Default::default() };
+    let perm = Permission {
+        env: Some(false),
+        ..Default::default()
+    };
     assert!(!perm.is_env_allowed());
 }
 
@@ -146,13 +179,19 @@ fn test_permission_run_none_allows() {
 
 #[test]
 fn test_permission_run_explicit_true() {
-    let perm = Permission { run: Some(true), ..Default::default() };
+    let perm = Permission {
+        run: Some(true),
+        ..Default::default()
+    };
     assert!(perm.is_run_allowed());
 }
 
 #[test]
 fn test_permission_run_explicit_false() {
-    let perm = Permission { run: Some(false), ..Default::default() };
+    let perm = Permission {
+        run: Some(false),
+        ..Default::default()
+    };
     assert!(!perm.is_run_allowed());
 }
 
@@ -180,7 +219,10 @@ fn test_permission_clone() {
 
 #[test]
 fn test_permission_debug() {
-    let perm = Permission { read: Some(vec!["/test".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/test".into()]),
+        ..Default::default()
+    };
     let s = format!("{:?}", perm);
     assert!(s.contains("Permission"));
     assert!(s.contains("/test"));
@@ -235,21 +277,30 @@ fn test_guard_none_allows_run() {
 
 #[test]
 fn test_guard_restricted_is_restricted() {
-    let perm = Permission { read: Some(vec!["/safe".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/safe".into()]),
+        ..Default::default()
+    };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
 }
 
 #[test]
 fn test_guard_restricted_read_allowed() {
-    let perm = Permission { read: Some(vec!["/safe".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/safe".into()]),
+        ..Default::default()
+    };
     let guard = PermissionGuard::new(perm);
     assert!(guard.check_read("/safe/file.txt").is_ok());
 }
 
 #[test]
 fn test_guard_restricted_read_denied() {
-    let perm = Permission { read: Some(vec!["/safe".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/safe".into()]),
+        ..Default::default()
+    };
     let guard = PermissionGuard::new(perm);
     let err = guard.check_read("/etc/passwd").unwrap_err();
     assert_eq!(err.category, "read");
@@ -258,7 +309,10 @@ fn test_guard_restricted_read_denied() {
 
 #[test]
 fn test_guard_restricted_write_denied() {
-    let perm = Permission { write: Some(vec![]), ..Default::default() };
+    let perm = Permission {
+        write: Some(vec![]),
+        ..Default::default()
+    };
     let guard = PermissionGuard::new(perm);
     let err = guard.check_write("/any").unwrap_err();
     assert_eq!(err.category, "write");
@@ -266,7 +320,10 @@ fn test_guard_restricted_write_denied() {
 
 #[test]
 fn test_guard_restricted_net_denied() {
-    let perm = Permission { net: Some(vec!["trusted.com".into()]), ..Default::default() };
+    let perm = Permission {
+        net: Some(vec!["trusted.com".into()]),
+        ..Default::default()
+    };
     let guard = PermissionGuard::new(perm);
     assert!(guard.check_net("untrusted.com").is_err());
     assert!(guard.check_net("trusted.com").is_ok());
@@ -274,7 +331,10 @@ fn test_guard_restricted_net_denied() {
 
 #[test]
 fn test_guard_restricted_env_denied() {
-    let perm = Permission { env: Some(false), ..Default::default() };
+    let perm = Permission {
+        env: Some(false),
+        ..Default::default()
+    };
     let guard = PermissionGuard::new(perm);
     let err = guard.check_env().unwrap_err();
     assert_eq!(err.category, "env");
@@ -283,7 +343,10 @@ fn test_guard_restricted_env_denied() {
 
 #[test]
 fn test_guard_restricted_run_denied() {
-    let perm = Permission { run: Some(false), ..Default::default() };
+    let perm = Permission {
+        run: Some(false),
+        ..Default::default()
+    };
     let guard = PermissionGuard::new(perm);
     let err = guard.check_run().unwrap_err();
     assert_eq!(err.category, "run");
@@ -292,14 +355,20 @@ fn test_guard_restricted_run_denied() {
 
 #[test]
 fn test_guard_restricted_env_allowed() {
-    let perm = Permission { env: Some(true), ..Default::default() };
+    let perm = Permission {
+        env: Some(true),
+        ..Default::default()
+    };
     let guard = PermissionGuard::new(perm);
     assert!(guard.check_env().is_ok());
 }
 
 #[test]
 fn test_guard_restricted_run_allowed() {
-    let perm = Permission { run: Some(true), ..Default::default() };
+    let perm = Permission {
+        run: Some(true),
+        ..Default::default()
+    };
     let guard = PermissionGuard::new(perm);
     assert!(guard.check_run().is_ok());
 }
@@ -310,7 +379,10 @@ fn test_guard_restricted_run_allowed() {
 
 #[test]
 fn test_guard_clone_preserves_state() {
-    let perm = Permission { read: Some(vec!["/a".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/a".into()]),
+        ..Default::default()
+    };
     let guard = PermissionGuard::new(perm);
     let cloned = guard.clone();
     assert!(cloned.is_restricted());
@@ -506,7 +578,10 @@ fn test_bao_config_validate_ok() {
 
 #[test]
 fn test_bao_config_validate_max_pages_zero() {
-    let config = BaoConfig { max_pages: 0, ..Default::default() };
+    let config = BaoConfig {
+        max_pages: 0,
+        ..Default::default()
+    };
     let err = config.validate().unwrap_err();
     assert!(err.contains("max_pages"));
     assert!(err.contains("0"));
@@ -514,7 +589,10 @@ fn test_bao_config_validate_max_pages_zero() {
 
 #[test]
 fn test_bao_config_validate_viewport_width_low() {
-    let config = BaoConfig { default_viewport_width: 799, ..Default::default() };
+    let config = BaoConfig {
+        default_viewport_width: 799,
+        ..Default::default()
+    };
     let err = config.validate().unwrap_err();
     assert!(err.contains("viewport_width"));
     assert!(err.contains("799"));
@@ -522,7 +600,10 @@ fn test_bao_config_validate_viewport_width_low() {
 
 #[test]
 fn test_bao_config_validate_viewport_height_low() {
-    let config = BaoConfig { default_viewport_height: 599, ..Default::default() };
+    let config = BaoConfig {
+        default_viewport_height: 599,
+        ..Default::default()
+    };
     let err = config.validate().unwrap_err();
     assert!(err.contains("viewport_height"));
     assert!(err.contains("599"));

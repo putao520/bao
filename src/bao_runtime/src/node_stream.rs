@@ -603,7 +603,10 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
         let mut src = mozjs::rust::transform_str_to_source_text(STREAM_JS);
         let mut rval = UndefinedValue();
-        let rval_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+        let rval_handle = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
         let ok = mozjs_sys::jsapi::JS::Evaluate2(cx_raw, opts, &mut src, rval_handle);
         libc::free(opts as *mut _);
 
@@ -614,13 +617,40 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let exports_obj = rval.to_object();
         rooted!(&in(cx) let exports_rooted = exports_obj);
 
-        for name in &["Readable", "Writable", "Duplex", "Transform", "PassThrough", "EventEmitter", "Stream", "finished", "pipeline", "compose", "addAbortSignal", "promises"] {
+        for name in &[
+            "Readable",
+            "Writable",
+            "Duplex",
+            "Transform",
+            "PassThrough",
+            "EventEmitter",
+            "Stream",
+            "finished",
+            "pipeline",
+            "compose",
+            "addAbortSignal",
+            "promises",
+        ] {
             let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
-            JS_GetProperty(cx_raw, exports_rooted.handle().into(), cname.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
+            JS_GetProperty(
+                cx_raw,
+                exports_rooted.handle().into(),
+                cname.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut val,
+                },
+            );
             if !val.is_undefined() {
                 rooted!(&in(cx) let val_root = val);
-                JS_DefineProperty(cx_raw, mod_obj.handle().into(), cname.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    cx_raw,
+                    mod_obj.handle().into(),
+                    cname.as_ptr(),
+                    val_root.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 
@@ -636,14 +666,36 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         if !global.is_null() {
             rooted!(&in(cx) let global_root = global);
             let mut has_readable = false;
-            for name in &["ReadableStream", "WritableStream", "TransformStream", "ByteLengthQueuingStrategy", "CountQueuingStrategy"] {
+            for name in &[
+                "ReadableStream",
+                "WritableStream",
+                "TransformStream",
+                "ByteLengthQueuingStrategy",
+                "CountQueuingStrategy",
+            ] {
                 let cname = ZBox::from_bytes(name.as_bytes());
                 let mut val = UndefinedValue();
-                JS_GetProperty(cx_raw, global_root.handle().into(), cname.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
+                JS_GetProperty(
+                    cx_raw,
+                    global_root.handle().into(),
+                    cname.as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut val,
+                    },
+                );
                 if val.is_object() {
-                    if name == &"ReadableStream" { has_readable = true; }
+                    if name == &"ReadableStream" {
+                        has_readable = true;
+                    }
                     rooted!(&in(cx) let val_root = val);
-                    JS_DefineProperty(cx_raw, mod_obj.handle().into(), cname.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(
+                        cx_raw,
+                        mod_obj.handle().into(),
+                        cname.as_ptr(),
+                        val_root.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
                 }
             }
             // If no global ReadableStream was found (CLI mode), install a
@@ -775,7 +827,10 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 })()"#;
                 let mut wsrc = mozjs::rust::transform_str_to_source_text(web_streams_src);
                 let mut wval = UndefinedValue();
-                let wh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut wval };
+                let wh = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut wval,
+                };
                 let wopts = NewCompileOptions(cx_raw, c"<web-streams>".as_ptr(), 1);
                 if !wopts.is_null() {
                     if JS::Evaluate2(cx_raw, wopts, &mut wsrc, wh) && wval.is_object() {
@@ -784,11 +839,31 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                         for name in &["ReadableStream", "WritableStream", "TransformStream"] {
                             let cname = ZBox::from_bytes(name.as_bytes());
                             let mut v = UndefinedValue();
-                            JS_GetProperty(cx_raw, exports_root.handle().into(), cname.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut v });
+                            JS_GetProperty(
+                                cx_raw,
+                                exports_root.handle().into(),
+                                cname.as_ptr(),
+                                MutableHandle::<Value> {
+                                    _phantom_0: ::std::marker::PhantomData,
+                                    ptr: &mut v,
+                                },
+                            );
                             if v.is_object() {
                                 rooted!(&in(cx) let vr = v);
-                                JS_DefineProperty(cx_raw, mod_obj.handle().into(), cname.as_ptr(), vr.handle().into(), JSPROP_ENUMERATE as u32);
-                                JS_DefineProperty(cx_raw, global_root.handle().into(), cname.as_ptr(), vr.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+                                JS_DefineProperty(
+                                    cx_raw,
+                                    mod_obj.handle().into(),
+                                    cname.as_ptr(),
+                                    vr.handle().into(),
+                                    JSPROP_ENUMERATE as u32,
+                                );
+                                JS_DefineProperty(
+                                    cx_raw,
+                                    global_root.handle().into(),
+                                    cname.as_ptr(),
+                                    vr.handle().into(),
+                                    (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+                                );
                             }
                         }
                     }
@@ -799,10 +874,24 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             let ws_cname = ZBox::from_bytes("WebStream\0".as_bytes());
             let rs_cname = ZBox::from_bytes("ReadableStream\0".as_bytes());
             let mut rs_val = UndefinedValue();
-            JS_GetProperty(cx_raw, mod_obj.handle().into(), rs_cname.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rs_val });
+            JS_GetProperty(
+                cx_raw,
+                mod_obj.handle().into(),
+                rs_cname.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rs_val,
+                },
+            );
             if rs_val.is_object() {
                 rooted!(&in(cx) let rs_root = rs_val);
-                JS_DefineProperty(cx_raw, mod_obj.handle().into(), ws_cname.as_ptr(), rs_root.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    cx_raw,
+                    mod_obj.handle().into(),
+                    ws_cname.as_ptr(),
+                    rs_root.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 

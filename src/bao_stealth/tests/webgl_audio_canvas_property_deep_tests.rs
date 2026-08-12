@@ -4,7 +4,7 @@
 // + noise properties + deterministic reproducibility, CanvasNoise pixel application
 // edge cases + cross-seed divergence + clamping behavior.
 
-use bao_stealth::{WebGLProfile, AudioProfile, CanvasNoise, StealthProfile};
+use bao_stealth::{AudioProfile, CanvasNoise, StealthProfile, WebGLProfile};
 
 // ============================================================================
 // WebGLProfile firefox
@@ -96,19 +96,28 @@ fn test_webgl_chrome_max_viewport_dims() {
 
 #[test]
 fn test_webgl_firefox_chrome_vendor_differ() {
-    assert_ne!(WebGLProfile::firefox().vendor, WebGLProfile::chrome().vendor);
+    assert_ne!(
+        WebGLProfile::firefox().vendor,
+        WebGLProfile::chrome().vendor
+    );
 }
 
 #[test]
 fn test_webgl_firefox_chrome_renderer_differ() {
-    assert_ne!(WebGLProfile::firefox().renderer, WebGLProfile::chrome().renderer);
+    assert_ne!(
+        WebGLProfile::firefox().renderer,
+        WebGLProfile::chrome().renderer
+    );
 }
 
 #[test]
 fn test_webgl_firefox_more_extensions_than_chrome() {
     let ff_exts = WebGLProfile::firefox().extensions.len();
     let cr_exts = WebGLProfile::chrome().extensions.len();
-    assert!(ff_exts > cr_exts, "Firefox should have more WebGL extensions");
+    assert!(
+        ff_exts > cr_exts,
+        "Firefox should have more WebGL extensions"
+    );
 }
 
 #[test]
@@ -417,7 +426,10 @@ fn test_stealth_firefox_webgl_vendor() {
 
 #[test]
 fn test_stealth_chrome_webgl_vendor() {
-    assert!(StealthProfile::chrome_default().webgl.vendor.contains("Google"));
+    assert!(StealthProfile::chrome_default()
+        .webgl
+        .vendor
+        .contains("Google"));
 }
 
 #[test]
@@ -446,7 +458,10 @@ fn test_stealth_firefox_chrome_canvas_seeds_differ() {
 
 #[test]
 fn test_stealth_firefox_webgl_extensions_nonempty() {
-    assert!(!StealthProfile::firefox_default().webgl.extensions.is_empty());
+    assert!(!StealthProfile::firefox_default()
+        .webgl
+        .extensions
+        .is_empty());
 }
 
 #[test]

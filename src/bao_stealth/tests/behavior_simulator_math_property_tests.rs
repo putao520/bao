@@ -152,7 +152,11 @@ fn test_typing_delays_count() {
     let bs = BehaviorSimulator::new(42);
     let delays = bs.generate_typing_delays(20);
     // May have extra backspace events from typo correction
-    assert!(delays.len() >= 20, "Expected >= 20 delays, got {}", delays.len());
+    assert!(
+        delays.len() >= 20,
+        "Expected >= 20 delays, got {}",
+        delays.len()
+    );
 }
 
 #[test]
@@ -239,7 +243,11 @@ fn test_scroll_deltas_approx_sum() {
     let deltas = bs.generate_scroll_deltas(1000.0, 30);
     let sum: f64 = deltas.iter().sum();
     // Legacy API normalizes to match total
-    assert!((sum - 1000.0).abs() < 100.0, "sum {} too far from 1000", sum);
+    assert!(
+        (sum - 1000.0).abs() < 100.0,
+        "sum {} too far from 1000",
+        sum
+    );
 }
 
 #[test]
@@ -283,7 +291,11 @@ fn test_mouse_path_large_steps() {
 fn test_typing_delays_large_count() {
     let bs = BehaviorSimulator::new(42);
     let delays = bs.generate_typing_delays(1000);
-    assert!(delays.len() >= 1000, "Expected >= 1000 delays, got {}", delays.len());
+    assert!(
+        delays.len() >= 1000,
+        "Expected >= 1000 delays, got {}",
+        delays.len()
+    );
     for d in &delays {
         assert!(*d > 0 && *d < 5000, "delay {} out of range", d);
     }
@@ -295,5 +307,9 @@ fn test_scroll_deltas_large_steps() {
     let deltas = bs.generate_scroll_deltas(10000.0, 200);
     assert!(!deltas.is_empty());
     let sum: f64 = deltas.iter().sum();
-    assert!((sum - 10000.0).abs() < 1000.0, "sum {} too far from 10000", sum);
+    assert!(
+        (sum - 10000.0).abs() < 1000.0,
+        "sum {} too far from 10000",
+        sum
+    );
 }

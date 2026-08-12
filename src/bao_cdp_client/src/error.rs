@@ -37,7 +37,11 @@ impl fmt::Display for ConnectError {
         match self {
             ConnectError::InvalidUrl => write!(f, "invalid URL (empty or missing scheme)"),
             ConnectError::InvalidScheme(scheme) => {
-                write!(f, "invalid URL scheme: {:?} (expected memory/ws/wss/http/https)", scheme)
+                write!(
+                    f,
+                    "invalid URL scheme: {:?} (expected memory/ws/wss/http/https)",
+                    scheme
+                )
             }
             ConnectError::LaunchError(msg) => write!(f, "browser launch failed: {}", msg),
             ConnectError::ConnectionFailed(msg) => write!(f, "connection failed: {}", msg),

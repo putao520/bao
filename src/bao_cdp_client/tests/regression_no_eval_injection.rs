@@ -91,7 +91,8 @@ fn find_dangerous_format_patterns(src: &str, file_label: &str) -> Vec<String> {
             || trimmed.contains("\"function(")
             || trimmed.contains("\"this.");
 
-        let has_placeholder = trimmed.contains("{}") || trimmed.contains("{") && trimmed.contains("}");
+        let has_placeholder =
+            trimmed.contains("{}") || trimmed.contains("{") && trimmed.contains("}");
 
         if has_js_string_literal && has_placeholder {
             // 进一步检查:占位符是否对应非常量参数
@@ -339,8 +340,19 @@ fn regression_no_direct_format_concat_with_user_input() {
             // 关键字组合检测
             // pattern: format!(" ... JS_KEYWORD ... {var} ... "
             let js_keywords = [
-                "document.", "window.", "navigator.", "location.", "el.", "this.",
-                "var ", "return ", "function ", "throw ", "if ", "for ", "while ",
+                "document.",
+                "window.",
+                "navigator.",
+                "location.",
+                "el.",
+                "this.",
+                "var ",
+                "return ",
+                "function ",
+                "throw ",
+                "if ",
+                "for ",
+                "while ",
             ];
             let has_format = trimmed.contains("format!");
             let has_string_with_js = js_keywords.iter().any(|k| trimmed.contains(k));
@@ -381,7 +393,8 @@ fn regression_mock_servo_backend_echoes_eval_expression() {
     // runtime_evaluate body 必须把 expression 塞入 value
     // 简化检查:含 expression.to_string() 或 expression 引用
     assert!(
-        SERVO_BACKEND_SRC.contains("expression.to_string()") || SERVO_BACKEND_SRC.contains("expression)"),
+        SERVO_BACKEND_SRC.contains("expression.to_string()")
+            || SERVO_BACKEND_SRC.contains("expression)"),
         "MockServoBackend.runtime_evaluate must echo expression in value"
     );
 }

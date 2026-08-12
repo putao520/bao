@@ -24,31 +24,70 @@ fn test_fs_deep() {
     let _ = ::std::fs::remove_dir_all(&dir);
     ::std::fs::create_dir_all(&dir).unwrap();
 
-    let d = dir.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let d = dir
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let f1 = dir.join("write_read.txt");
-    let p1 = f1.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let p1 = f1
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let f2 = dir.join("append.txt");
-    let p2 = f2.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let p2 = f2
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let f3 = dir.join("renamed.txt");
-    let p3 = f3.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let p3 = f3
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let f4 = dir.join("copy_src.txt");
-    let p4 = f4.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let p4 = f4
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let f5 = dir.join("copy_dst.txt");
-    let p5 = f5.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let p5 = f5
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let subdir = dir.join("subdir_deep");
-    let ps = subdir.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let ps = subdir
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let nested = dir.join("a").join("b").join("c");
-    let pn = nested.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let pn = nested
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let noexist = dir.join("noexist_abcxyz.txt");
-    let pno = noexist.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let pno = noexist
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let roundtrip = dir.join("roundtrip.txt");
-    let prt = roundtrip.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let prt = roundtrip
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let chmod_f = dir.join("chmod_test.txt");
-    let pchmod = chmod_f.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let pchmod = chmod_f
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let trunc_f = dir.join("truncate_test.txt");
-    let ptrunc = trunc_f.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let ptrunc = trunc_f
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let realp = dir.join("realpath_test.txt");
-    let prealp = realp.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let prealp = realp
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
 
     // Pre-create files needed for some tests
     ::std::fs::write(&f4, "copy me").unwrap();
@@ -56,7 +95,10 @@ fn test_fs_deep() {
     ::std::fs::write(&trunc_f, "truncate this content").unwrap();
     ::std::fs::write(&realp, "realpath").unwrap();
 
-    let results = eval_string(&mut ctx, &format!(r#"
+    let results = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
         var results = [];
         function check(label, fn) {{
             try {{ var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }}
@@ -353,8 +395,22 @@ fn test_fs_deep() {
         }});
 
         results.join("|")
-    "#, d=d, p1=p1, p2=p2, p3=p3, p4=p4, p5=p5, ps=ps, pn=pn, pno=pno, prt=prt,
-        pchmod=pchmod, ptrunc=ptrunc, prealp=prealp));
+    "#,
+            d = d,
+            p1 = p1,
+            p2 = p2,
+            p3 = p3,
+            p4 = p4,
+            p5 = p5,
+            ps = ps,
+            pn = pn,
+            pno = pno,
+            prt = prt,
+            pchmod = pchmod,
+            ptrunc = ptrunc,
+            prealp = prealp
+        ),
+    );
 
     let mut pass = 0;
     let mut fail = 0;

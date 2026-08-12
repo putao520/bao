@@ -3,8 +3,11 @@
 // internal response validation, CdpMessage parse edge cases,
 // BridgeReceiver try_process/drain, BackendKind enum.
 
-use bao_cdp::{parse_message, handle_command, serialize_response, serialize_event, CdpMessage, CdpResponse, CdpError, CdpEvent};
 use bao_cdp::{bridge_channel, BridgeCommand, BridgeResponse};
+use bao_cdp::{
+    handle_command, parse_message, serialize_event, serialize_response, CdpError, CdpEvent,
+    CdpMessage, CdpResponse,
+};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -32,7 +35,12 @@ fn dispatch_with_params(method: &str, params: Value) -> CdpResponse {
 }
 
 // Adversarial helper: dispatch with explicit id + params + (optional) session_id.
-fn dispatch_full(id: Option<i64>, method: &str, params: Option<Value>, session_id: Option<&str>) -> CdpResponse {
+fn dispatch_full(
+    id: Option<i64>,
+    method: &str,
+    params: Option<Value>,
+    session_id: Option<&str>,
+) -> CdpResponse {
     let msg = CdpMessage {
         id,
         method: method.to_string(),
@@ -73,7 +81,9 @@ fn test_target_get_target_info() {
     assert_eq!(info["type"], "page");
     assert_eq!(info["attached"], true);
     // getTargetInfo and getTargets must return the SAME live_target_info shape.
-    let other = dispatch(r#"{"id":2,"method":"Target.getTargets"}"#).result.unwrap();
+    let other = dispatch(r#"{"id":2,"method":"Target.getTargets"}"#)
+        .result
+        .unwrap();
     assert_eq!(info, &other["targetInfos"][0]);
 }
 
@@ -116,7 +126,10 @@ fn test_target_attach_to_target() {
     assert!(sid.is_string());
     // sessionId is deterministic: format!("{:016x}", sum of char codes of target_id).
     // For "test-target" the sum is fixed ⇒ the same hex every run.
-    let expected = format!("{:016x}", "test-target".chars().map(|c| c as u64).sum::<u64>());
+    let expected = format!(
+        "{:016x}",
+        "test-target".chars().map(|c| c as u64).sum::<u64>()
+    );
     assert_eq!(sid.as_str().unwrap(), expected);
     assert_eq!(expected.len(), 16);
 }
@@ -193,7 +206,10 @@ fn test_page_navigate_with_url() {
     let result = resp.result.unwrap();
     assert_eq!(result["frameId"], "0");
     // loader_id derived from url.len() — deterministic per url length.
-    assert_eq!(result["loaderId"], format!("{:016x}", "https://example.com".len()));
+    assert_eq!(
+        result["loaderId"],
+        format!("{:016x}", "https://example.com".len())
+    );
 }
 
 #[test]
@@ -244,7 +260,10 @@ fn test_page_get_layout_metrics() {
 #[test]
 fn test_page_add_script() {
     // Empty source ⇒ identifier is always "1" (deterministic stub).
-    let resp = dispatch_with_params("Page.addScriptToEvaluateOnNewDocument", json!({"source": ""}));
+    let resp = dispatch_with_params(
+        "Page.addScriptToEvaluateOnNewDocument",
+        json!({"source": ""}),
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["identifier"], "1");
 }
@@ -252,7 +271,10 @@ fn test_page_add_script() {
 #[test]
 fn test_page_remove_script() {
     // removeScriptToEvaluateOnNewDocument ⇒ ok_empty.
-    let resp = dispatch_with_params("Page.removeScriptToEvaluateOnNewDocument", json!({"identifier": "1"}));
+    let resp = dispatch_with_params(
+        "Page.removeScriptToEvaluateOnNewDocument",
+        json!({"identifier": "1"}),
+    );
     let result = resp.result.unwrap();
     assert!(result.is_object());
 }
@@ -341,9 +363,13 @@ fn test_runtime_get_properties() {
 #[test]
 fn test_runtime_evaluate_async_and_run_script() {
     // Both evaluateAsync and runScript return the same { result: { type: "undefined" } } stub.
-    let a = dispatch(r#"{"id":330,"method":"Runtime.evaluateAsync"}"#).result.unwrap();
+    let a = dispatch(r#"{"id":330,"method":"Runtime.evaluateAsync"}"#)
+        .result
+        .unwrap();
     assert_eq!(a["result"]["type"], "undefined");
-    let b = dispatch(r#"{"id":331,"method":"Runtime.runScript"}"#).result.unwrap();
+    let b = dispatch(r#"{"id":331,"method":"Runtime.runScript"}"#)
+        .result
+        .unwrap();
     assert_eq!(b["result"]["type"], "undefined");
 }
 
@@ -459,7 +485,10 @@ fn test_dom_get_box_model() {
 #[test]
 fn test_dom_set_attribute_value_no_bridge() {
     // Without bridge, setAttributeValue returns ok_empty (no servo routing).
-    let resp = dispatch_with_params("DOM.setAttributeValue", json!({"nodeId": 1, "name": "class", "value": "test"}));
+    let resp = dispatch_with_params(
+        "DOM.setAttributeValue",
+        json!({"nodeId": 1, "name": "class", "value": "test"}),
+    );
     let result = resp.result.unwrap();
     assert!(result.is_object());
 }
@@ -650,7 +679,10 @@ fn test_css_unknown() {
 #[test]
 fn test_emulation_set_device_metrics_no_bridge() {
     // Without bridge ⇒ ok_empty (no servo routing); params parsed but ignored on the no-bridge path.
-    let resp = dispatch_with_params("Emulation.setDeviceMetricsOverride", json!({"width": 800, "height": 600}));
+    let resp = dispatch_with_params(
+        "Emulation.setDeviceMetricsOverride",
+        json!({"width": 800, "height": 600}),
+    );
     let result = resp.result.unwrap();
     assert!(result.is_object());
 }
@@ -710,14 +742,20 @@ fn test_emulation_unknown() {
 #[test]
 fn test_input_dispatch_mouse_no_bridge() {
     // Without bridge ⇒ ok_empty despite full params parsed.
-    let resp = dispatch_with_params("Input.dispatchMouseEvent", json!({"type": "mousePressed", "x": 0, "y": 0}));
+    let resp = dispatch_with_params(
+        "Input.dispatchMouseEvent",
+        json!({"type": "mousePressed", "x": 0, "y": 0}),
+    );
     let result = resp.result.unwrap();
     assert!(result.is_object());
 }
 
 #[test]
 fn test_input_dispatch_key_no_bridge() {
-    let resp = dispatch_with_params("Input.dispatchKeyEvent", json!({"type": "keyDown", "key": "", "code": ""}));
+    let resp = dispatch_with_params(
+        "Input.dispatchKeyEvent",
+        json!({"type": "keyDown", "key": "", "code": ""}),
+    );
     let result = resp.result.unwrap();
     assert!(result.is_object());
 }
@@ -978,7 +1016,9 @@ fn test_fetch_enable_with_patterns() {
 fn test_fetch_enable_pattern_count_matches_array_len() {
     // patternCount must equal patterns.len() exactly (boundary: 0,1,many).
     for n in 0..=3 {
-        let patterns: Vec<Value> = (0..n).map(|i| json!({"urlPattern": format!("p{}", i)})).collect();
+        let patterns: Vec<Value> = (0..n)
+            .map(|i| json!({"urlPattern": format!("p{}", i)}))
+            .collect();
         let resp = dispatch_with_params("Fetch.enable", json!({"patterns": patterns}));
         let result = resp.result.unwrap();
         assert_eq!(result["patternCount"], n as u64);
@@ -1012,7 +1052,10 @@ fn test_fetch_continue_with_response() {
 
 #[test]
 fn test_fetch_fail_request() {
-    let resp = dispatch_with_params("Fetch.failRequest", json!({"requestId": "r-2", "reason": "Aborted"}));
+    let resp = dispatch_with_params(
+        "Fetch.failRequest",
+        json!({"requestId": "r-2", "reason": "Aborted"}),
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["failed"], true);
     // reason must be echoed back verbatim.
@@ -1022,7 +1065,10 @@ fn test_fetch_fail_request() {
 
 #[test]
 fn test_fetch_fulfill_request() {
-    let resp = dispatch_with_params("Fetch.fulfillRequest", json!({"requestId": "r-3", "responseCode": 200, "body": ""}));
+    let resp = dispatch_with_params(
+        "Fetch.fulfillRequest",
+        json!({"requestId": "r-3", "responseCode": 200, "body": ""}),
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["fulfilled"], true);
     assert_eq!(result["responseCode"], 200);
@@ -1044,7 +1090,10 @@ fn test_fetch_fulfill_request_default_status() {
 fn test_fetch_fulfill_request_body_length_tracks_body() {
     // Non-empty body ⇒ bodyLength equals byte length.
     let body = "hello";
-    let resp = dispatch_with_params("Fetch.fulfillRequest", json!({"requestId": "r-3c", "body": body}));
+    let resp = dispatch_with_params(
+        "Fetch.fulfillRequest",
+        json!({"requestId": "r-3c", "body": body}),
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["bodyLength"], body.len());
 }
@@ -1067,7 +1116,10 @@ fn test_fetch_continue_with_auth() {
 
 #[test]
 fn test_fetch_take_response_body_as_stream() {
-    let resp = dispatch_with_params("Fetch.takeResponseBodyAsStream", json!({"requestId": "r-5"}));
+    let resp = dispatch_with_params(
+        "Fetch.takeResponseBodyAsStream",
+        json!({"requestId": "r-5"}),
+    );
     let result = resp.result.unwrap();
     // stream = format!("stream-{requestId}") — verifiable format, not just is_string.
     assert_eq!(result["stream"], "stream-r-5");
@@ -1126,7 +1178,13 @@ fn test_id_propagation_across_domains() {
         (999_999, "Network.enable"),
     ] {
         let resp = dispatch(&format!(r#"{{"id":{},"method":"{}"}}"#, id, method));
-        assert_eq!(resp.id, Some(id), "id propagation failed for {} with id {}", method, id);
+        assert_eq!(
+            resp.id,
+            Some(id),
+            "id propagation failed for {} with id {}",
+            method,
+            id
+        );
         assert!(resp.error.is_none(), "{} should succeed", method);
     }
 }
@@ -1162,7 +1220,9 @@ fn test_parse_message_basic() {
 
 #[test]
 fn test_parse_message_with_params() {
-    let msg = parse_message(r#"{"id":1,"method":"Page.navigate","params":{"url":"https://test.com"}}"#).unwrap();
+    let msg =
+        parse_message(r#"{"id":1,"method":"Page.navigate","params":{"url":"https://test.com"}}"#)
+            .unwrap();
     assert_eq!(msg.params.unwrap()["url"], "https://test.com");
 }
 
@@ -1248,7 +1308,10 @@ fn test_serialize_response_error() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let json_str = serialize_response(&resp);
     let v: Value = serde_json::from_str(&json_str).unwrap();
@@ -1262,7 +1325,11 @@ fn test_serialize_response_error() {
 #[test]
 fn test_serialize_response_null_id() {
     // id:None (notification-style) serializes to "id":null.
-    let resp = CdpResponse { id: None, result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: None,
+        result: Some(json!({})),
+        error: None,
+    };
     let v: Value = serde_json::from_str(&serialize_response(&resp)).unwrap();
     assert!(v["id"].is_null());
 }
@@ -1300,47 +1367,67 @@ fn test_serialize_event_no_params() {
 #[test]
 fn test_bridge_try_process() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetTitle {
+        target_id: TID.into(),
+    });
     let processed = rx.try_process(|cmd| {
         let debug = format!("{:?}", cmd);
         assert!(debug.contains("GetTitle"));
         // target_id is preserved through the channel.
         assert!(debug.contains(TID));
-        BridgeResponse { result: Ok(json!({"title": "Test"})) }
+        BridgeResponse {
+            result: Ok(json!({"title": "Test"})),
+        }
     });
     assert!(processed);
     // After try_process consumes the message, the queue is empty.
-    let again = rx.try_process(|_| BridgeResponse { result: Ok(json!({})) });
+    let again = rx.try_process(|_| BridgeResponse {
+        result: Ok(json!({})),
+    });
     assert!(!again);
 }
 
 #[test]
 fn test_bridge_try_process_empty() {
     let (_tx, rx) = bridge_channel(Duration::from_secs(5));
-    let processed = rx.try_process(|_| BridgeResponse { result: Ok(json!({})) });
+    let processed = rx.try_process(|_| BridgeResponse {
+        result: Ok(json!({})),
+    });
     assert!(!processed);
 }
 
 #[test]
 fn test_bridge_drain_multiple() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
-    tx.send_fire_and_forget(BridgeCommand::GetUrl { target_id: TID.into() });
-    tx.send_fire_and_forget(BridgeCommand::GetDocument { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetTitle {
+        target_id: TID.into(),
+    });
+    tx.send_fire_and_forget(BridgeCommand::GetUrl {
+        target_id: TID.into(),
+    });
+    tx.send_fire_and_forget(BridgeCommand::GetDocument {
+        target_id: TID.into(),
+    });
     let count = rx.drain(|cmd| {
         let _ = format!("{:?}", cmd);
-        BridgeResponse { result: Ok(json!({})) }
+        BridgeResponse {
+            result: Ok(json!({})),
+        }
     });
     assert_eq!(count, 3);
     // drain must empty the queue fully.
-    let again = rx.drain(|_| BridgeResponse { result: Ok(json!({})) });
+    let again = rx.drain(|_| BridgeResponse {
+        result: Ok(json!({})),
+    });
     assert_eq!(again, 0);
 }
 
 #[test]
 fn test_bridge_drain_empty() {
     let (_tx, rx) = bridge_channel(Duration::from_secs(5));
-    let count = rx.drain(|_| BridgeResponse { result: Ok(json!({})) });
+    let count = rx.drain(|_| BridgeResponse {
+        result: Ok(json!({})),
+    });
     assert_eq!(count, 0);
 }
 
@@ -1348,7 +1435,9 @@ fn test_bridge_drain_empty() {
 fn test_bridge_send_fire_and_forget_does_not_block() {
     // fire-and-forget must succeed even when nobody is receiving.
     let (tx, _rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetTitle {
+        target_id: TID.into(),
+    });
     // Reaching here means no panic/timeout.
 }
 
@@ -1378,20 +1467,26 @@ fn test_bridge_sender_alive_when_paired() {
 
 #[test]
 fn test_bridge_response_ok_value() {
-    let resp = BridgeResponse { result: Ok(json!({"x": 42})) };
+    let resp = BridgeResponse {
+        result: Ok(json!({"x": 42})),
+    };
     let val = resp.result.unwrap();
     assert_eq!(val["x"], 42);
 }
 
 #[test]
 fn test_bridge_response_err_value() {
-    let resp = BridgeResponse { result: Err("failed".into()) };
+    let resp = BridgeResponse {
+        result: Err("failed".into()),
+    };
     assert_eq!(resp.result.unwrap_err(), "failed");
 }
 
 #[test]
 fn test_bridge_response_ok_null() {
-    let resp = BridgeResponse { result: Ok(Value::Null) };
+    let resp = BridgeResponse {
+        result: Ok(Value::Null),
+    };
     assert!(resp.result.unwrap().is_null());
 }
 
@@ -1403,7 +1498,9 @@ fn test_bridge_response_ok_complex_json() {
         "str": "hello",
         "num": 3.14
     });
-    let resp = BridgeResponse { result: Ok(payload.clone()) };
+    let resp = BridgeResponse {
+        result: Ok(payload.clone()),
+    };
     let val = resp.result.unwrap();
     assert_eq!(val, payload);
     assert_eq!(val["nested"]["arr"][1], 2);

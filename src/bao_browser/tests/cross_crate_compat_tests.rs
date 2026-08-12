@@ -4,18 +4,12 @@
 // and bao_browser → bao_stealth boundaries.
 
 use bao_browser::{
-    BaoConfig, BrowserConfig, PageConfig, PageState, BrowserError,
-    Permission, PermissionGuard, encode_image, ScreenshotFormat,
+    encode_image, BaoConfig, BrowserConfig, BrowserError, PageConfig, PageState, Permission,
+    PermissionGuard, ScreenshotFormat,
 };
-use bao_cdp::{
-    CdpRouter, BackendKind,
-    bridge_channel, BridgeCommand, BridgeResponse,
-};
+use bao_cdp::{bridge_channel, BackendKind, BridgeCommand, BridgeResponse, CdpRouter};
 use bao_stealth::StealthProfile;
-use cdp_server::{
-    CdpMessage, CdpError, SessionState,
-    DomainRegistry, TargetInfo,
-};
+use cdp_server::{CdpError, CdpMessage, DomainRegistry, SessionState, TargetInfo};
 use serde_json::json;
 
 // ---- BaoConfig ↔ StealthProfile cross-crate ----
@@ -68,7 +62,7 @@ fn test_permission_guard_restricts_net() {
         write: None,
         env: None,
         run: None,
-    ..Default::default()
+        ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -90,14 +84,18 @@ fn test_permission_default_is_unrestricted() {
 fn test_cdp_message_parses_in_bao_cdp_context() {
     let msg: CdpMessage = serde_json::from_str(
         r#"{"id":1,"method":"Page.navigate","params":{"url":"https://example.com"}}"#,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(msg.method, "Page.navigate");
     assert_eq!(msg.params.unwrap()["url"], "https://example.com");
 }
 
 #[test]
 fn test_cdp_error_compatible_across_crates() {
-    let err = CdpError { code: -32601, message: "Not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "Not found".into(),
+    };
     assert_eq!(err.code, -32601);
     let serialized = serde_json::to_string(&err).unwrap();
     assert!(serialized.contains("-32601"));
@@ -127,11 +125,21 @@ fn test_target_info_cross_crate() {
 
 struct CrossDomain;
 impl cdp_server::DomainHandler for CrossDomain {
-    fn domain_name(&self) -> &'static str { "Cross" }
-    fn handle_command(&self, cmd: &str, _params: serde_json::Value, _: &dyn cdp_server::EventSender) -> Result<serde_json::Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        "Cross"
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        _params: serde_json::Value,
+        _: &dyn cdp_server::EventSender,
+    ) -> Result<serde_json::Value, CdpError> {
         match cmd {
             "Cross.ping" => Ok(json!({"pong": true})),
-            _ => Err(CdpError { code: -32601, message: format!("'{}' not found", cmd) }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' not found", cmd),
+            }),
         }
     }
 }
@@ -172,15 +180,42 @@ fn test_backend_kind_cross_crate_copy() {
 #[test]
 fn test_bridge_command_variants() {
     let commands = vec![
-        BridgeCommand::Navigate { target_id: "t".into(), url: "https://example.com".into() },
-        BridgeCommand::EvaluateJs { target_id: "t".into(), expression: "1+1".into(), return_by_value: true },
-        BridgeCommand::TakeScreenshot { target_id: "t".into(), format: "png".into(), quality: None },
-        BridgeCommand::GetTitle { target_id: "t".into() },
-        BridgeCommand::GetUrl { target_id: "t".into() },
-        BridgeCommand::SetViewport { target_id: "t".into(), width: 1920, height: 1080, device_scale_factor: Some(2.0) },
-        BridgeCommand::Reload { target_id: "t".into(), ignore_cache: false },
-        BridgeCommand::StopLoading { target_id: "t".into() },
-        BridgeCommand::ClosePage { target_id: "t".into() },
+        BridgeCommand::Navigate {
+            target_id: "t".into(),
+            url: "https://example.com".into(),
+        },
+        BridgeCommand::EvaluateJs {
+            target_id: "t".into(),
+            expression: "1+1".into(),
+            return_by_value: true,
+        },
+        BridgeCommand::TakeScreenshot {
+            target_id: "t".into(),
+            format: "png".into(),
+            quality: None,
+        },
+        BridgeCommand::GetTitle {
+            target_id: "t".into(),
+        },
+        BridgeCommand::GetUrl {
+            target_id: "t".into(),
+        },
+        BridgeCommand::SetViewport {
+            target_id: "t".into(),
+            width: 1920,
+            height: 1080,
+            device_scale_factor: Some(2.0),
+        },
+        BridgeCommand::Reload {
+            target_id: "t".into(),
+            ignore_cache: false,
+        },
+        BridgeCommand::StopLoading {
+            target_id: "t".into(),
+        },
+        BridgeCommand::ClosePage {
+            target_id: "t".into(),
+        },
     ];
     // Verify all variants construct without panic
     for cmd in &commands {
@@ -192,12 +227,16 @@ fn test_bridge_command_variants() {
 #[test]
 fn test_bridge_response_cross_crate() {
     let (sender, receiver) = bridge_channel(std::time::Duration::from_secs(1));
-    sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: "t".into() });
-    let processed = receiver.try_process(|cmd| {
-        match cmd {
-            BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Test Title")) },
-            _ => BridgeResponse { result: Err("unexpected".into()) },
-        }
+    sender.send_fire_and_forget(BridgeCommand::GetTitle {
+        target_id: "t".into(),
+    });
+    let processed = receiver.try_process(|cmd| match cmd {
+        BridgeCommand::GetTitle { .. } => BridgeResponse {
+            result: Ok(json!("Test Title")),
+        },
+        _ => BridgeResponse {
+            result: Err("unexpected".into()),
+        },
     });
     assert!(processed);
 }
@@ -214,13 +253,16 @@ fn test_page_state_all_variants() {
     // SM PageLifecycle (SPEC 03-PROCESS): 6 states including intermediate Closing.
     // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state in enum
     let states = [
-        PageState::Created, PageState::Navigating,
-        PageState::Interactive, PageState::Idle,
-        PageState::Closing, PageState::Closed,
+        PageState::Created,
+        PageState::Navigating,
+        PageState::Interactive,
+        PageState::Idle,
+        PageState::Closing,
+        PageState::Closed,
     ];
     // All unique
     for i in 0..states.len() {
-        for j in (i+1)..states.len() {
+        for j in (i + 1)..states.len() {
             assert_ne!(states[i], states[j]);
         }
     }

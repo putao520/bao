@@ -5,8 +5,8 @@
 //! The identity-pass functions (to_js_host_call/from_js_host_call) remain
 //! for simple value passthrough; the full call variants use SM API.
 
-use crate::js_value::JSValue;
 use crate::js_error::JsResult;
+use crate::js_value::JSValue;
 use mozjs::rooted;
 
 pub fn to_js_host_call(value: &JSValue) -> JSValue {
@@ -35,7 +35,8 @@ pub unsafe fn call_method_on_object(
     }
 
     // BCE-012: root obj/global/method_val — JS_GetProperty and JS_CallFunctionValue can trigger GC
-    let wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+    let wrapped_cx =
+        unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
 
     let c_method = ::std::ffi::CString::new(method_name).unwrap_or_default();
     let mut method_val = mozjs::jsval::UndefinedValue();
@@ -67,7 +68,10 @@ pub unsafe fn call_method_on_object(
     let call_args = if args.is_empty() {
         mozjs::jsapi::HandleValueArray::empty()
     } else {
-        mozjs::jsapi::HandleValueArray { length_: args.len(), elements_: args.as_ptr() }
+        mozjs::jsapi::HandleValueArray {
+            length_: args.len(),
+            elements_: args.as_ptr(),
+        }
     };
 
     let mut rval = mozjs::jsval::UndefinedValue();
@@ -75,7 +79,17 @@ pub unsafe fn call_method_on_object(
         _phantom_0: ::std::marker::PhantomData,
         ptr: &mut rval,
     };
-    unsafe { mozjs::jsapi::JS_CallFunctionValue(cx, global_root.handle().into(), cb_val_root.handle().into(), &call_args, rval_h); }
-    unsafe { mozjs::jsapi::JS_ClearPendingException(cx); }
+    unsafe {
+        mozjs::jsapi::JS_CallFunctionValue(
+            cx,
+            global_root.handle().into(),
+            cb_val_root.handle().into(),
+            &call_args,
+            rval_h,
+        );
+    }
+    unsafe {
+        mozjs::jsapi::JS_ClearPendingException(cx);
+    }
     rval
 }

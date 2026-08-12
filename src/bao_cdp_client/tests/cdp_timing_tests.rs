@@ -108,12 +108,7 @@ fn cdp_network_enable_timing_under_threshold() {
 
     // Act
     let start = Instant::now();
-    let result = dispatch_command(
-        &*backend,
-        "Network.enable",
-        json!({}),
-        &target_id,
-    );
+    let result = dispatch_command(&*backend, "Network.enable", json!({}), &target_id);
     let elapsed = start.elapsed();
 
     // Assert — TMG-CDP-001: Network.enable < 50ms (5x 容差)
@@ -201,9 +196,21 @@ fn cdp_multi_domain_mixed_sequence_timing() {
     let target_id_owned = target_id.clone();
     let commands: Vec<(&str, Value, Duration)> = vec![
         ("Network.enable", json!({}), Duration::from_millis(50)),
-        ("Runtime.evaluate", json!({"expression": "1"}), Duration::from_millis(250)),
-        ("DOM.querySelector", json!({"nodeId": 1, "selector": "body"}), Duration::from_millis(50)),
-        ("Page.navigate", json!({"url": "data:text/html,<p>x", "frameId": target_id_owned}), Duration::from_millis(3000)),
+        (
+            "Runtime.evaluate",
+            json!({"expression": "1"}),
+            Duration::from_millis(250),
+        ),
+        (
+            "DOM.querySelector",
+            json!({"nodeId": 1, "selector": "body"}),
+            Duration::from_millis(50),
+        ),
+        (
+            "Page.navigate",
+            json!({"url": "data:text/html,<p>x", "frameId": target_id_owned}),
+            Duration::from_millis(3000),
+        ),
     ];
 
     // Act + Assert — 每条命令延迟满足各自阈值
@@ -211,12 +218,7 @@ fn cdp_multi_domain_mixed_sequence_timing() {
         let start = Instant::now();
         let result = dispatch_command(&*backend, method, params.clone(), &target_id);
         let elapsed = start.elapsed();
-        assert!(
-            result.is_ok(),
-            "method {} failed: {:?}",
-            method,
-            result
-        );
+        assert!(result.is_ok(), "method {} failed: {:?}", method, result);
         assert!(
             elapsed < *threshold,
             "TMG-CDP-001 violation: {} must respond < {:?}, got {:?}",
@@ -240,12 +242,7 @@ fn cdp_unknown_method_fail_fast_under_threshold() {
 
     // Act
     let start = Instant::now();
-    let _result = dispatch_command(
-        &*backend,
-        "NonExistent.method",
-        json!({}),
-        &target_id,
-    );
+    let _result = dispatch_command(&*backend, "NonExistent.method", json!({}), &target_id);
     let elapsed = start.elapsed();
 
     // Assert — TMG-CDP-001: 错误路径 < 50ms (fail-fast,不应阻塞)

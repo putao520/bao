@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, FnArg, Ident, ItemFn, ItemStruct, LitStr, Receiver};
+use syn::{FnArg, Ident, ItemFn, ItemStruct, LitStr, Receiver, parse_macro_input};
 
 #[derive(Default)]
 struct HostFnArgs {
@@ -94,14 +94,25 @@ pub fn host_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 fn expand_host_fn(args: &HostFnArgs, func: &ItemFn) -> syn::Result<TokenStream2> {
     let fn_name = &func.sig.ident;
-    let shim_ident = args.export.as_deref().map(|s| format_ident!("{}", s))
+    let shim_ident = args
+        .export
+        .as_deref()
+        .map(|s| format_ident!("{}", s))
         .unwrap_or_else(|| format_ident!("__bao_host_{}", fn_name));
 
-    let has_receiver = func.sig.inputs.first().is_some_and(|a| {
-        matches!(a, FnArg::Receiver(_))
-    });
+    let has_receiver = func
+        .sig
+        .inputs
+        .first()
+        .is_some_and(|a| matches!(a, FnArg::Receiver(_)));
     let receiver_is_shared = func.sig.inputs.first().is_some_and(|a| {
-        matches!(a, FnArg::Receiver(Receiver { mutability: None, .. }))
+        matches!(
+            a,
+            FnArg::Receiver(Receiver {
+                mutability: None,
+                ..
+            })
+        )
     });
 
     match args.kind {
@@ -149,11 +160,7 @@ fn expand_free_fn(shim: &syn::Ident, func: &ItemFn) -> syn::Result<TokenStream2>
     })
 }
 
-fn expand_method_fn(
-    shim: &syn::Ident,
-    func: &ItemFn,
-    shared: bool,
-) -> syn::Result<TokenStream2> {
+fn expand_method_fn(shim: &syn::Ident, func: &ItemFn, shared: bool) -> syn::Result<TokenStream2> {
     let fn_name = &func.sig.ident;
     let body = &func.block;
     let this_reborrow = if shared {
@@ -197,11 +204,7 @@ fn expand_method_fn(
     })
 }
 
-fn expand_getter_fn(
-    shim: &syn::Ident,
-    func: &ItemFn,
-    shared: bool,
-) -> syn::Result<TokenStream2> {
+fn expand_getter_fn(shim: &syn::Ident, func: &ItemFn, shared: bool) -> syn::Result<TokenStream2> {
     let fn_name = &func.sig.ident;
     let body = &func.block;
     let this_reborrow = if shared {
@@ -240,10 +243,7 @@ fn expand_getter_fn(
     })
 }
 
-fn expand_constructor_fn(
-    shim: &syn::Ident,
-    func: &ItemFn,
-) -> syn::Result<TokenStream2> {
+fn expand_constructor_fn(shim: &syn::Ident, func: &ItemFn) -> syn::Result<TokenStream2> {
     let fn_name = &func.sig.ident;
     let body = &func.block;
 
@@ -277,11 +277,7 @@ fn expand_constructor_fn(
     })
 }
 
-fn expand_setter_fn(
-    shim: &syn::Ident,
-    func: &ItemFn,
-    _shared: bool,
-) -> syn::Result<TokenStream2> {
+fn expand_setter_fn(shim: &syn::Ident, func: &ItemFn, _shared: bool) -> syn::Result<TokenStream2> {
     let fn_name = &func.sig.ident;
     let body = &func.block;
 
@@ -493,7 +489,8 @@ pub fn jsc_abi(input: TokenStream) -> TokenStream {
         pub unsafe extern "C" fn #fn_name(#inputs) #output {
             #body
         }
-    }.into()
+    }
+    .into()
 }
 
 // ---------------------------------------------------------------------------

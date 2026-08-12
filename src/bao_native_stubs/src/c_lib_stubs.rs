@@ -39,7 +39,8 @@ pub extern "C" fn bun_ssl_ctx_cache_on_free(
     _index: c_int,
     _argl: i64,
     _argp: *mut c_void,
-) {}
+) {
+}
 
 // us_get_default_ca_store / us_get_shared_default_ca_store — provided by
 // compiled C++ code (root_certs.cpp in libusockets_tls.a).
@@ -96,7 +97,10 @@ pub unsafe extern "C" fn BUN__warn__extra_ca_load_failed(
             .to_string_lossy()
             .into_owned()
     };
-    eprintln!("warn: ignoring extra certs from {}, load failed: {}", filename_str, error_str);
+    eprintln!(
+        "warn: ignoring extra certs from {}, load failed: {}",
+        filename_str, error_str
+    );
 }
 
 // ──────────────────────────────────────────────────────────────

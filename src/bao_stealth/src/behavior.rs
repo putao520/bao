@@ -326,7 +326,10 @@ impl BehaviorSimulator {
         let w = target_width.max(1.0);
         let d = distance.max(1.0);
         let t = self.config.mouse.fitts_a + self.config.mouse.fitts_b * (d / w + 1.0).log2();
-        t.clamp(self.config.mouse.min_move_time_ms, self.config.mouse.max_move_time_ms)
+        t.clamp(
+            self.config.mouse.min_move_time_ms,
+            self.config.mouse.max_move_time_ms,
+        )
     }
 
     /// Generate human-like mouse path using cubic Bezier curves.
@@ -401,11 +404,7 @@ impl BehaviorSimulator {
 
             let time_ms = t_linear * total_time;
 
-            path.push((
-                bx + jitter_x + tremor_x,
-                by + jitter_y + tremor_y,
-                time_ms,
-            ));
+            path.push((bx + jitter_x + tremor_x, by + jitter_y + tremor_y, time_ms));
         }
 
         // Force exact start and end positions
@@ -425,7 +424,14 @@ impl BehaviorSimulator {
 
     /// Legacy API — delegates to cubic Bezier internally.
     /// Returns (x, y) pairs for backward compatibility.
-    pub fn generate_mouse_path(&self, x1: f64, y1: f64, x2: f64, y2: f64, steps: usize) -> Vec<(f64, f64)> {
+    pub fn generate_mouse_path(
+        &self,
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+        steps: usize,
+    ) -> Vec<(f64, f64)> {
         let human_path = self.generate_human_mouse_path((x1, y1), (x2, y2), 20.0);
         // Resample to requested step count
         let total = human_path.len();
@@ -477,7 +483,8 @@ impl BehaviorSimulator {
         };
 
         // Delay before mousedown (arrival settling)
-        let settle_delay = self.config.click.move_to_click_delay_ms as u64 + (self.next_random(&mut rng) * 20.0) as u64;
+        let settle_delay = self.config.click.move_to_click_delay_ms as u64
+            + (self.next_random(&mut rng) * 20.0) as u64;
 
         // MouseDown
         events.push(ClickEvent {
@@ -489,7 +496,11 @@ impl BehaviorSimulator {
 
         // Press duration (Box-Muller normal distribution)
         let press_duration = self
-            .normal_random(&mut rng, self.config.click.press_duration_mean_ms, self.config.click.press_duration_stddev_ms)
+            .normal_random(
+                &mut rng,
+                self.config.click.press_duration_mean_ms,
+                self.config.click.press_duration_stddev_ms,
+            )
             .clamp(40.0, 200.0) as u64;
 
         // MouseUp
@@ -516,7 +527,12 @@ impl BehaviorSimulator {
         events
     }
 
-    pub fn generate_double_click_sequence(&self, x: f64, y: f64, target_width: f64) -> Vec<ClickEvent> {
+    pub fn generate_double_click_sequence(
+        &self,
+        x: f64,
+        y: f64,
+        target_width: f64,
+    ) -> Vec<ClickEvent> {
         // First click advances the persistent click RNG (BUG-STL-008).
         let first_click = self.generate_click_sequence(x, y, target_width);
 
@@ -524,7 +540,11 @@ impl BehaviorSimulator {
         // so the dbl_interval and dblclick jitter also diverge across calls.
         let mut rng = self.click_rng_state.load(Ordering::Relaxed);
         let dbl_interval = self
-            .normal_random(&mut rng, self.config.click.dbl_click_interval_mean_ms, self.config.click.dbl_click_interval_stddev_ms)
+            .normal_random(
+                &mut rng,
+                self.config.click.dbl_click_interval_mean_ms,
+                self.config.click.dbl_click_interval_stddev_ms,
+            )
             .clamp(150.0, 500.0) as u64;
 
         // dblclick jitter draws
@@ -568,9 +588,7 @@ impl BehaviorSimulator {
 
         while i < chars.len() {
             let ch = chars[i];
-            let is_word_start = i == 0
-                || chars[i - 1] == ' '
-                || chars[i - 1] == '\n';
+            let is_word_start = i == 0 || chars[i - 1] == ' ' || chars[i - 1] == '\n';
             let is_after_punct = i > 0 && is_punctuation(chars[i - 1]);
 
             // Decide if this character triggers a typo
@@ -578,11 +596,13 @@ impl BehaviorSimulator {
             if typo_roll < self.config.keyboard.typo_probability && ch.is_alphabetic() {
                 // Insert wrong character
                 let wrong_char = random_adjacent_char(ch, &mut rng);
-                let wrong_delay = self.normal_random(
-                    &mut rng,
-                    self.config.keyboard.base_interval_ms,
-                    self.config.keyboard.interval_stddev_ms,
-                ).clamp(20.0, 300.0) as u64;
+                let wrong_delay = self
+                    .normal_random(
+                        &mut rng,
+                        self.config.keyboard.base_interval_ms,
+                        self.config.keyboard.interval_stddev_ms,
+                    )
+                    .clamp(20.0, 300.0) as u64;
 
                 events.push(TypingEvent {
                     char: wrong_char,
@@ -600,11 +620,13 @@ impl BehaviorSimulator {
                 });
 
                 // Now type the correct character
-                let correct_delay = self.normal_random(
-                    &mut rng,
-                    self.config.keyboard.base_interval_ms,
-                    self.config.keyboard.interval_stddev_ms,
-                ).clamp(20.0, 300.0) as u64;
+                let correct_delay = self
+                    .normal_random(
+                        &mut rng,
+                        self.config.keyboard.base_interval_ms,
+                        self.config.keyboard.interval_stddev_ms,
+                    )
+                    .clamp(20.0, 300.0) as u64;
                 events.push(TypingEvent {
                     char: ch,
                     delay_before_ms: correct_delay,
@@ -612,34 +634,40 @@ impl BehaviorSimulator {
                 });
             } else {
                 // Normal character with appropriate delay
-                let delay = if is_word_start && self.next_random(&mut rng) < self.config.keyboard.thinking_pause_probability {
+                let delay = if is_word_start
+                    && self.next_random(&mut rng) < self.config.keyboard.thinking_pause_probability
+                {
                     // Thinking pause
                     self.normal_random(
                         &mut rng,
                         self.config.keyboard.thinking_pause_mean_ms,
                         self.config.keyboard.thinking_pause_stddev_ms,
-                    ).clamp(100.0, 800.0) as u64
+                    )
+                    .clamp(100.0, 800.0) as u64
                 } else if is_after_punct {
                     // Punctuation pause
                     self.normal_random(
                         &mut rng,
                         self.config.keyboard.punctuation_pause_ms,
                         self.config.keyboard.punctuation_pause_stddev_ms,
-                    ).clamp(50.0, 500.0) as u64
+                    )
+                    .clamp(50.0, 500.0) as u64
                 } else if ch == ' ' {
                     // Word gap
                     self.normal_random(
                         &mut rng,
                         self.config.keyboard.word_gap_mean_ms,
                         self.config.keyboard.word_gap_stddev_ms,
-                    ).clamp(30.0, 400.0) as u64
+                    )
+                    .clamp(30.0, 400.0) as u64
                 } else {
                     // Regular key interval (Box-Muller normal)
                     self.normal_random(
                         &mut rng,
                         self.config.keyboard.base_interval_ms,
                         self.config.keyboard.interval_stddev_ms,
-                    ).clamp(20.0, 300.0) as u64
+                    )
+                    .clamp(20.0, 300.0) as u64
                 };
 
                 events.push(TypingEvent {
@@ -679,7 +707,8 @@ impl BehaviorSimulator {
 
         // Main scroll phase
         while speed > threshold {
-            let noise = 1.0 + (self.next_random(&mut rng) - 0.5) * 2.0 * self.config.scroll.noise_ratio;
+            let noise =
+                1.0 + (self.next_random(&mut rng) - 0.5) * 2.0 * self.config.scroll.noise_ratio;
             deltas.push(direction * speed * noise);
             speed *= friction;
         }
@@ -693,7 +722,8 @@ impl BehaviorSimulator {
 
             // Overshoot forward
             while overshoot_speed > threshold * 0.5 {
-                let noise = 1.0 + (self.next_random(&mut rng) - 0.5) * 2.0 * self.config.scroll.noise_ratio;
+                let noise =
+                    1.0 + (self.next_random(&mut rng) - 0.5) * 2.0 * self.config.scroll.noise_ratio;
                 deltas.push(direction * overshoot_speed * noise);
                 overshoot_speed *= friction;
             }
@@ -701,7 +731,8 @@ impl BehaviorSimulator {
             // Bounce back
             let mut bounce_speed = overshoot_amount * 0.2;
             while bounce_speed > threshold * 0.3 {
-                let noise = 1.0 + (self.next_random(&mut rng) - 0.5) * 2.0 * self.config.scroll.noise_ratio;
+                let noise =
+                    1.0 + (self.next_random(&mut rng) - 0.5) * 2.0 * self.config.scroll.noise_ratio;
                 deltas.push(-direction * bounce_speed * noise);
                 bounce_speed *= friction;
             }
@@ -735,7 +766,10 @@ impl BehaviorSimulator {
 // ---------------------------------------------------------------------------
 
 fn is_punctuation(ch: char) -> bool {
-    matches!(ch, '.' | ',' | '!' | '?' | ';' | ':' | '-' | '(' | ')' | '"' | '\'')
+    matches!(
+        ch,
+        '.' | ',' | '!' | '?' | ';' | ':' | '-' | '(' | ')' | '"' | '\''
+    )
 }
 
 /// Generate a random adjacent key on QWERTY keyboard for typo simulation
@@ -778,7 +812,11 @@ fn random_adjacent_char(ch: char, rng: &mut u64) -> char {
     *rng ^= *rng >> 33;
     let idx = (*rng as usize) % bytes.len();
     let neighbor = bytes[idx] as char;
-    if ch.is_uppercase() { neighbor.to_ascii_uppercase() } else { neighbor }
+    if ch.is_uppercase() {
+        neighbor.to_ascii_uppercase()
+    } else {
+        neighbor
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -850,8 +888,18 @@ mod tests {
         let mid_speed = distance_between(&path[mid_idx], &path[mid_idx + 1]);
         let end_speed = distance_between(&path[path.len() - 2], &path[path.len() - 1]);
         // Middle speed should be greater than start and end speeds
-        assert!(mid_speed > start_speed * 0.8, "mid_speed={} should be > start_speed={}", mid_speed, start_speed);
-        assert!(mid_speed > end_speed * 0.8, "mid_speed={} should be > end_speed={}", mid_speed, end_speed);
+        assert!(
+            mid_speed > start_speed * 0.8,
+            "mid_speed={} should be > start_speed={}",
+            mid_speed,
+            start_speed
+        );
+        assert!(
+            mid_speed > end_speed * 0.8,
+            "mid_speed={} should be > end_speed={}",
+            mid_speed,
+            end_speed
+        );
     }
 
     #[test]
@@ -861,7 +909,12 @@ mod tests {
         let long = sim.generate_human_mouse_path((0.0, 0.0), (1000.0, 0.0), 20.0);
         let short_time = short.last().unwrap().2;
         let long_time = long.last().unwrap().2;
-        assert!(long_time > short_time, "long_time={} should be > short_time={}", long_time, short_time);
+        assert!(
+            long_time > short_time,
+            "long_time={} should be > short_time={}",
+            long_time,
+            short_time
+        );
     }
 
     #[test]
@@ -905,8 +958,11 @@ mod tests {
         let sim = BehaviorSimulator::new(42);
         let events = sim.generate_click_sequence(100.0, 200.0, 20.0);
         let press_duration = events[0].delay_after_ms; // mousedown→mouseup delay
-        assert!(press_duration >= 40 && press_duration <= 200,
-            "press_duration={} out of range [40, 200]", press_duration);
+        assert!(
+            press_duration >= 40 && press_duration <= 200,
+            "press_duration={} out of range [40, 200]",
+            press_duration
+        );
     }
 
     #[test]
@@ -935,16 +991,19 @@ mod tests {
         assert_eq!(e1.len(), e2.len());
         // The MouseUp press duration (delay_after_ms) must differ between the
         // first and second click — this is the exact signal BUG-STL-008 removes.
-        let press1 = e1.iter()
+        let press1 = e1
+            .iter()
             .find(|e| e.event_type == ClickEventType::MouseUp)
             .map(|e| e.delay_after_ms);
-        let press2 = e2.iter()
+        let press2 = e2
+            .iter()
             .find(|e| e.event_type == ClickEventType::MouseUp)
             .map(|e| e.delay_after_ms);
         assert!(
             press1 != press2,
             "press_duration must advance across calls (got {:?} == {:?}) — BUG-STL-008",
-            press1, press2
+            press1,
+            press2
         );
     }
 
@@ -953,7 +1012,9 @@ mod tests {
         let sim = BehaviorSimulator::new(42);
         let events = sim.generate_double_click_sequence(100.0, 200.0, 20.0);
         assert!(events.len() >= 7); // mousedown+mouseup+click × 2 + dblclick
-        assert!(events.iter().any(|e| e.event_type == ClickEventType::DoubleClick));
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == ClickEventType::DoubleClick));
     }
 
     // ---- Human typing ----
@@ -963,7 +1024,8 @@ mod tests {
         let sim = BehaviorSimulator::new(42);
         let events = sim.generate_human_typing("hello");
         // Extract non-backspace chars
-        let typed: String = events.iter()
+        let typed: String = events
+            .iter()
             .filter(|e| !e.is_backspace)
             .map(|e| e.char)
             .collect();
@@ -1007,8 +1069,12 @@ mod tests {
         let space_event = events.iter().find(|e| e.char == ' ' && !e.is_backspace);
         let intra_event = events.iter().find(|e| e.char == 'a' && !e.is_backspace);
         if let (Some(space), Some(intra)) = (space_event, intra_event) {
-            assert!(space.delay_before_ms >= intra.delay_before_ms,
-                "word gap {} should be >= intra-word {}", space.delay_before_ms, intra.delay_before_ms);
+            assert!(
+                space.delay_before_ms >= intra.delay_before_ms,
+                "word gap {} should be >= intra-word {}",
+                space.delay_before_ms,
+                intra.delay_before_ms
+            );
         }
     }
 
@@ -1062,7 +1128,10 @@ mod tests {
         assert_ne!(ff.mouse.fitts_b, ch.mouse.fitts_b);
         assert_ne!(ff.keyboard.base_interval_ms, ch.keyboard.base_interval_ms);
         assert_ne!(ff.scroll.friction, ch.scroll.friction);
-        assert_ne!(ff.click.press_duration_mean_ms, ch.click.press_duration_mean_ms);
+        assert_ne!(
+            ff.click.press_duration_mean_ms,
+            ch.click.press_duration_mean_ms
+        );
     }
 
     #[test]

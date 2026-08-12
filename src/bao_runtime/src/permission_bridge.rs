@@ -19,78 +19,83 @@ pub fn set_permission(check: Option<PermissionCheck>) {
 }
 
 pub fn check_fs_read(path: &str) -> ::std::result::Result<(), String> {
-    PERMISSION_GUARD.with(|g| {
-        match g.borrow().as_ref() {
+    PERMISSION_GUARD.with(|g| match g.borrow().as_ref() {
+        None => Ok(()),
+        Some(perm) => match &perm.read_paths {
             None => Ok(()),
-            Some(perm) => match &perm.read_paths {
-                None => Ok(()),
-                Some(allowed) => {
-                    if allowed.iter().any(|prefix| path.starts_with(prefix.as_str())) {
-                        Ok(())
-                    } else {
-                        Err(format!("Permission denied: read on {}", path))
-                    }
+            Some(allowed) => {
+                if allowed
+                    .iter()
+                    .any(|prefix| path.starts_with(prefix.as_str()))
+                {
+                    Ok(())
+                } else {
+                    Err(format!("Permission denied: read on {}", path))
                 }
             }
-        }
+        },
     })
 }
 
 pub fn check_fs_write(path: &str) -> ::std::result::Result<(), String> {
-    PERMISSION_GUARD.with(|g| {
-        match g.borrow().as_ref() {
+    PERMISSION_GUARD.with(|g| match g.borrow().as_ref() {
+        None => Ok(()),
+        Some(perm) => match &perm.write_paths {
             None => Ok(()),
-            Some(perm) => match &perm.write_paths {
-                None => Ok(()),
-                Some(allowed) => {
-                    if allowed.iter().any(|prefix| path.starts_with(prefix.as_str())) {
-                        Ok(())
-                    } else {
-                        Err(format!("Permission denied: write on {}", path))
-                    }
+            Some(allowed) => {
+                if allowed
+                    .iter()
+                    .any(|prefix| path.starts_with(prefix.as_str()))
+                {
+                    Ok(())
+                } else {
+                    Err(format!("Permission denied: write on {}", path))
                 }
             }
-        }
+        },
     })
 }
 
 pub fn check_net(host: &str) -> ::std::result::Result<(), String> {
-    PERMISSION_GUARD.with(|g| {
-        match g.borrow().as_ref() {
+    PERMISSION_GUARD.with(|g| match g.borrow().as_ref() {
+        None => Ok(()),
+        Some(perm) => match &perm.net_hosts {
             None => Ok(()),
-            Some(perm) => match &perm.net_hosts {
-                None => Ok(()),
-                Some(allowed) => {
-                    if allowed.iter().any(|domain| host == domain || host.ends_with(&format!(".{}", domain))) {
-                        Ok(())
-                    } else {
-                        Err(format!("Permission denied: net on {}", host))
-                    }
+            Some(allowed) => {
+                if allowed
+                    .iter()
+                    .any(|domain| host == domain || host.ends_with(&format!(".{}", domain)))
+                {
+                    Ok(())
+                } else {
+                    Err(format!("Permission denied: net on {}", host))
                 }
             }
-        }
+        },
     })
 }
 
 pub fn check_env() -> ::std::result::Result<(), String> {
-    PERMISSION_GUARD.with(|g| {
-        match g.borrow().as_ref() {
-            None => Ok(()),
-            Some(perm) => {
-                if perm.env_allowed { Ok(()) }
-                else { Err("Permission denied: env".into()) }
+    PERMISSION_GUARD.with(|g| match g.borrow().as_ref() {
+        None => Ok(()),
+        Some(perm) => {
+            if perm.env_allowed {
+                Ok(())
+            } else {
+                Err("Permission denied: env".into())
             }
         }
     })
 }
 
 pub fn check_run() -> ::std::result::Result<(), String> {
-    PERMISSION_GUARD.with(|g| {
-        match g.borrow().as_ref() {
-            None => Ok(()),
-            Some(perm) => {
-                if perm.run_allowed { Ok(()) }
-                else { Err("Permission denied: run".into()) }
+    PERMISSION_GUARD.with(|g| match g.borrow().as_ref() {
+        None => Ok(()),
+        Some(perm) => {
+            if perm.run_allowed {
+                Ok(())
+            } else {
+                Err("Permission denied: run".into())
             }
         }
     })
@@ -269,9 +274,21 @@ mod tests {
             env_allowed: false,
             run_allowed: false,
         }));
-        assert!(check_fs_read("/denied").unwrap_err().contains("read on /denied"));
-        assert!(check_fs_write("/denied").unwrap_err().contains("write on /denied"));
-        assert!(check_net("evil.com").unwrap_err().contains("net on evil.com"));
+        assert!(
+            check_fs_read("/denied")
+                .unwrap_err()
+                .contains("read on /denied")
+        );
+        assert!(
+            check_fs_write("/denied")
+                .unwrap_err()
+                .contains("write on /denied")
+        );
+        assert!(
+            check_net("evil.com")
+                .unwrap_err()
+                .contains("net on evil.com")
+        );
         assert_eq!(check_env().unwrap_err(), "Permission denied: env");
         assert_eq!(check_run().unwrap_err(), "Permission denied: run");
         cleanup();
@@ -287,7 +304,10 @@ mod tests {
             env_allowed: true,
             run_allowed: true,
         }));
-        assert!(check_fs_read("").is_err(), "empty path should not match /tmp prefix");
+        assert!(
+            check_fs_read("").is_err(),
+            "empty path should not match /tmp prefix"
+        );
         cleanup();
     }
 
@@ -301,8 +321,14 @@ mod tests {
             env_allowed: true,
             run_allowed: true,
         }));
-        assert!(check_fs_read("/tmp").is_ok(), "exact prefix match should be allowed");
-        assert!(check_fs_read("/tmp/").is_ok(), "prefix + slash should be allowed");
+        assert!(
+            check_fs_read("/tmp").is_ok(),
+            "exact prefix match should be allowed"
+        );
+        assert!(
+            check_fs_read("/tmp/").is_ok(),
+            "prefix + slash should be allowed"
+        );
         cleanup();
     }
 
@@ -316,7 +342,10 @@ mod tests {
             env_allowed: true,
             run_allowed: true,
         }));
-        assert!(check_net("").is_err(), "empty host should not match any domain");
+        assert!(
+            check_net("").is_err(),
+            "empty host should not match any domain"
+        );
         cleanup();
     }
 

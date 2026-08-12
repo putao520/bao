@@ -28,11 +28,20 @@ fn test_fs_write_buffer_bytes_preserved() {
     ::std::fs::create_dir_all(&dir).unwrap();
 
     let f1 = dir.join("buffer_write.bin");
-    let p1 = f1.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let p1 = f1
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let f2 = dir.join("buffer_append.bin");
-    let p2 = f2.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let p2 = f2
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
 
-    let results = eval_string(&mut ctx, &format!(r#"
+    let results = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
         var results = [];
         function check(label, fn) {{
             try {{ var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }}
@@ -99,7 +108,11 @@ fn test_fs_write_buffer_bytes_preserved() {
         }});
 
         results.join("|")
-    "#, p1=p1, p2=p2));
+    "#,
+            p1 = p1,
+            p2 = p2
+        ),
+    );
 
     let mut pass = 0;
     let mut fail = 0;

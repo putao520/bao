@@ -24,7 +24,11 @@ use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
 
 unsafe extern "C" {
-    fn uws_create_app(loop_: *mut std::ffi::c_void, options: *const std::ffi::c_void, is_ssl: bool) -> *mut std::ffi::c_void;
+    fn uws_create_app(
+        loop_: *mut std::ffi::c_void,
+        options: *const std::ffi::c_void,
+        is_ssl: bool,
+    ) -> *mut std::ffi::c_void;
 }
 
 #[test]

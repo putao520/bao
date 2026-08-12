@@ -3,7 +3,7 @@
 // WebGL/Audio/Screen/Canvas deep validation: profile differentiation,
 // noise determinism, boundary conditions, cross-profile consistency.
 
-use bao_stealth::{CanvasNoise, WebGLProfile, AudioProfile, NavigatorProfile, ScreenProfile};
+use bao_stealth::{AudioProfile, CanvasNoise, NavigatorProfile, ScreenProfile, WebGLProfile};
 
 // ---- WebGLProfile Chrome ----
 
@@ -77,7 +77,10 @@ fn test_webgl_firefox_extensions_not_empty() {
 #[test]
 fn test_webgl_firefox_has_ext_texture_filter() {
     let gl = WebGLProfile::firefox();
-    assert!(gl.extensions.iter().any(|e| e == "EXT_texture_filter_anisotropic"));
+    assert!(gl
+        .extensions
+        .iter()
+        .any(|e| e == "EXT_texture_filter_anisotropic"));
 }
 
 #[test]
@@ -254,9 +257,14 @@ fn test_canvas_noise_different_seeds_differ() {
                 break;
             }
         }
-        if differ { break; }
+        if differ {
+            break;
+        }
     }
-    assert!(differ, "Different seeds should produce different noise somewhere");
+    assert!(
+        differ,
+        "Different seeds should produce different noise somewhere"
+    );
 }
 
 #[test]
@@ -283,7 +291,7 @@ fn test_canvas_noise_many_pixels_dont_clamp_midrange() {
     for x in 0..50u32 {
         for y in 0..50u32 {
             let (r, g, b, a) = cn.apply_to_pixel(128, 128, 128, 255, x, y);
-                                    assert_eq!(a, 255);
+            assert_eq!(a, 255);
         }
     }
 }

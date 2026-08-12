@@ -8,7 +8,7 @@
 #[path = "../conformance_common.rs"]
 mod common;
 
-use common::{eval_string, make_ctx, run_checks, CHECK_SCAFFOLD};
+use common::{CHECK_SCAFFOLD, eval_string, make_ctx, run_checks};
 
 #[test]
 fn test_buffer_conformance_suite() {

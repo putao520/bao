@@ -2,11 +2,7 @@
 // StealthEngine integration tests: full engine lifecycle, cross-component consistency,
 // JS injection output validation, profile switching.
 
-use bao_stealth::{
-    StealthProfile, StealthEngine,
-    CanvasNoise,
-    BehaviorSimulator,
-};
+use bao_stealth::{BehaviorSimulator, CanvasNoise, StealthEngine, StealthProfile};
 
 // ---- StealthEngine lifecycle ----
 
@@ -67,7 +63,11 @@ fn test_canvas_noise_applied_to_pixel_is_deterministic() {
     let noise = CanvasNoise::new(42);
     let (r1, g1, b1, a1) = noise.apply_to_pixel(128, 128, 128, 255, 10, 20);
     let (r2, g2, b2, a2) = noise.apply_to_pixel(128, 128, 128, 255, 10, 20);
-    assert_eq!((r1, g1, b1, a1), (r2, g2, b2, a2), "Same seed+pixel+position should give same result");
+    assert_eq!(
+        (r1, g1, b1, a1),
+        (r2, g2, b2, a2),
+        "Same seed+pixel+position should give same result"
+    );
 }
 
 #[test]
@@ -76,7 +76,10 @@ fn test_canvas_noise_different_positions_differ() {
     let p1 = noise.apply_to_pixel(128, 128, 128, 255, 0, 0);
     let p2 = noise.apply_to_pixel(128, 128, 128, 255, 100, 100);
     // Very unlikely that noise at different positions is identical
-    assert_ne!(p1, p2, "Different positions should generally have different noise");
+    assert_ne!(
+        p1, p2,
+        "Different positions should generally have different noise"
+    );
 }
 
 #[test]
@@ -116,7 +119,11 @@ fn test_behavior_typing_delays_count() {
     let sim = BehaviorSimulator::new(42);
     let delays = sim.generate_typing_delays(20);
     // May have extra backspace events from typo correction
-    assert!(delays.len() >= 20, "Expected >= 20 delays, got {}", delays.len());
+    assert!(
+        delays.len() >= 20,
+        "Expected >= 20 delays, got {}",
+        delays.len()
+    );
 }
 
 #[test]
@@ -241,7 +248,10 @@ fn test_behavior_simulator_different_seeds_differ() {
     let sim2 = BehaviorSimulator::new(99999);
     let path1 = sim1.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 5);
     let path2 = sim2.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 5);
-    assert_ne!(path1, path2, "Different seeds should produce different paths");
+    assert_ne!(
+        path1, path2,
+        "Different seeds should produce different paths"
+    );
 }
 
 #[test]
@@ -250,5 +260,8 @@ fn test_behavior_typing_delays_differ_between_seeds() {
     let sim2 = BehaviorSimulator::new(20);
     let delays1 = sim1.generate_typing_delays(30);
     let delays2 = sim2.generate_typing_delays(30);
-    assert_ne!(delays1, delays2, "Different seeds should produce different delays");
+    assert_ne!(
+        delays1, delays2,
+        "Different seeds should produce different delays"
+    );
 }

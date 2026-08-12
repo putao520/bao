@@ -185,7 +185,7 @@ pub enum PromiseResult {
 
 /// Promise module re-export.
 pub mod js_promise {
-    pub use super::{JSPromise, JSInternalPromise, AnyPromise, PromiseResult};
+    pub use super::{AnyPromise, JSInternalPromise, JSPromise, PromiseResult};
 
     /// Promise unwrap mode.
     #[derive(Debug, Clone, Copy)]

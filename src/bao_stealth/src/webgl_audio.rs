@@ -234,7 +234,9 @@ mod tests {
     fn test_webgl_firefox_extensions_nonempty() {
         let p = WebGLProfile::firefox();
         assert!(!p.extensions.is_empty());
-        assert!(p.extensions.contains(&"WEBGL_debug_renderer_info".to_string()));
+        assert!(p
+            .extensions
+            .contains(&"WEBGL_debug_renderer_info".to_string()));
     }
 
     #[test]
@@ -253,7 +255,9 @@ mod tests {
     fn test_webgl_chrome_extensions_nonempty() {
         let p = WebGLProfile::chrome();
         assert!(!p.extensions.is_empty());
-        assert!(p.extensions.contains(&"WEBGL_debug_renderer_info".to_string()));
+        assert!(p
+            .extensions
+            .contains(&"WEBGL_debug_renderer_info".to_string()));
     }
 
     #[test]

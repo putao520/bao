@@ -10,22 +10,24 @@
 //   - Http2Session / Http2Stream / constants: JS IIFE for the bulk of the API
 //     surface; Rust native functions only for server creation, settings packing,
 //     and async fetch bridging.
-use bun_core::ZBox;
 use ::std::cell::RefCell;
 use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicU64, Ordering};
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, StringValue, ObjectValue, Int32Value, BooleanValue, PrivateValue};
+use mozjs::jsval::{
+    BooleanValue, Int32Value, JSVal, ObjectValue, PrivateValue, StringValue, UndefinedValue,
+};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 use bun_uws_sys::app::App;
-use bun_uws_sys::response::Response;
 use bun_uws_sys::request::Request;
+use bun_uws_sys::response::Response;
 use bun_uws_sys::socket_context::BunSocketContextOptions;
 
-use crate::gc_store::{gc_store_insert_ns, gc_store_get_ns, gc_store_remove_ns};
+use crate::gc_store::{gc_store_get_ns, gc_store_insert_ns, gc_store_remove_ns};
 use crate::require::cache_builtin;
 
 static NEXT_SERVER_ID: AtomicU64 = AtomicU64::new(1);
@@ -43,7 +45,9 @@ pub fn has_active_servers() -> bool {
 }
 
 pub unsafe fn register_active_h2_app(app: *mut App<false>) {
-    if app.is_null() { return; }
+    if app.is_null() {
+        return;
+    }
     ACTIVE_H2_APPS.with(|s| {
         let mut apps = s.borrow_mut();
         if !apps.iter().any(|&p| ::std::ptr::eq(p, app)) {
@@ -53,12 +57,18 @@ pub unsafe fn register_active_h2_app(app: *mut App<false>) {
 }
 
 pub unsafe fn unregister_active_h2_app(app: *mut App<false>) {
-    if app.is_null() { return; }
-    ACTIVE_H2_APPS.with(|s| { s.borrow_mut().retain(|&p| !::std::ptr::eq(p, app)); });
+    if app.is_null() {
+        return;
+    }
+    ACTIVE_H2_APPS.with(|s| {
+        s.borrow_mut().retain(|&p| !::std::ptr::eq(p, app));
+    });
 }
 
 pub unsafe fn register_active_h2_ssl_app(app: *mut App<true>) {
-    if app.is_null() { return; }
+    if app.is_null() {
+        return;
+    }
     ACTIVE_H2_SSL_APPS.with(|s| {
         let mut apps = s.borrow_mut();
         if !apps.iter().any(|&p| ::std::ptr::eq(p, app)) {
@@ -68,8 +78,12 @@ pub unsafe fn register_active_h2_ssl_app(app: *mut App<true>) {
 }
 
 pub unsafe fn unregister_active_h2_ssl_app(app: *mut App<true>) {
-    if app.is_null() { return; }
-    ACTIVE_H2_SSL_APPS.with(|s| { s.borrow_mut().retain(|&p| !::std::ptr::eq(p, app)); });
+    if app.is_null() {
+        return;
+    }
+    ACTIVE_H2_SSL_APPS.with(|s| {
+        s.borrow_mut().retain(|&p| !::std::ptr::eq(p, app));
+    });
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -803,20 +817,65 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         define_int_prop(cx, http2_obj.get(), "NGHTTP2_HTTP_1_1_REQUIRED", 13);
 
         // Default settings constants
-        define_int_prop(cx, http2_obj.get(), "DEFAULT_SETTINGS_HEADER_TABLE_SIZE", 4096);
+        define_int_prop(
+            cx,
+            http2_obj.get(),
+            "DEFAULT_SETTINGS_HEADER_TABLE_SIZE",
+            4096,
+        );
         define_int_prop(cx, http2_obj.get(), "DEFAULT_SETTINGS_ENABLE_PUSH", 0);
-        define_int_prop(cx, http2_obj.get(), "DEFAULT_SETTINGS_INITIAL_WINDOW_SIZE", 65535);
-        define_int_prop(cx, http2_obj.get(), "DEFAULT_SETTINGS_MAX_FRAME_SIZE", 16384);
-        define_int_prop(cx, http2_obj.get(), "DEFAULT_SETTINGS_MAX_CONCURRENT_STREAMS", 100);
-        define_int_prop(cx, http2_obj.get(), "DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE", 65535);
+        define_int_prop(
+            cx,
+            http2_obj.get(),
+            "DEFAULT_SETTINGS_INITIAL_WINDOW_SIZE",
+            65535,
+        );
+        define_int_prop(
+            cx,
+            http2_obj.get(),
+            "DEFAULT_SETTINGS_MAX_FRAME_SIZE",
+            16384,
+        );
+        define_int_prop(
+            cx,
+            http2_obj.get(),
+            "DEFAULT_SETTINGS_MAX_CONCURRENT_STREAMS",
+            100,
+        );
+        define_int_prop(
+            cx,
+            http2_obj.get(),
+            "DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE",
+            65535,
+        );
 
         // Stream states
         define_int_prop(cx, http2_obj.get(), "NGHTTP2_STREAM_STATE_IDLE", 0);
         define_int_prop(cx, http2_obj.get(), "NGHTTP2_STREAM_STATE_OPEN", 1);
-        define_int_prop(cx, http2_obj.get(), "NGHTTP2_STREAM_STATE_RESERVED_LOCAL", 2);
-        define_int_prop(cx, http2_obj.get(), "NGHTTP2_STREAM_STATE_RESERVED_REMOTE", 3);
-        define_int_prop(cx, http2_obj.get(), "NGHTTP2_STREAM_STATE_HALF_CLOSED_LOCAL", 4);
-        define_int_prop(cx, http2_obj.get(), "NGHTTP2_STREAM_STATE_HALF_CLOSED_REMOTE", 5);
+        define_int_prop(
+            cx,
+            http2_obj.get(),
+            "NGHTTP2_STREAM_STATE_RESERVED_LOCAL",
+            2,
+        );
+        define_int_prop(
+            cx,
+            http2_obj.get(),
+            "NGHTTP2_STREAM_STATE_RESERVED_REMOTE",
+            3,
+        );
+        define_int_prop(
+            cx,
+            http2_obj.get(),
+            "NGHTTP2_STREAM_STATE_HALF_CLOSED_LOCAL",
+            4,
+        );
+        define_int_prop(
+            cx,
+            http2_obj.get(),
+            "NGHTTP2_STREAM_STATE_HALF_CLOSED_REMOTE",
+            5,
+        );
         define_int_prop(cx, http2_obj.get(), "NGHTTP2_STREAM_STATE_CLOSED", 6);
 
         // Frame types
@@ -840,61 +899,136 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // ── Native functions ───────────────────────────────────────────
         // Server creation (delegates to JS Http2Server/Http2SecureServer
         // but also registers native uWS App for real HTTP serving)
-        w2::JS_DefineFunction(cx, http2_obj.handle(), c"createServer".as_ptr(), Some(http2_create_server), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, http2_obj.handle(), c"createSecureServer".as_ptr(), Some(http2_create_secure_server), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            http2_obj.handle(),
+            c"createServer".as_ptr(),
+            Some(http2_create_server),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            http2_obj.handle(),
+            c"createSecureServer".as_ptr(),
+            Some(http2_create_secure_server),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // Client fetch bridge
-        w2::JS_DefineFunction(cx, http2_obj.handle(), c"__http2_fetch".as_ptr(), Some(http2_fetch), 4, 0 as u32);
+        w2::JS_DefineFunction(
+            cx,
+            http2_obj.handle(),
+            c"__http2_fetch".as_ptr(),
+            Some(http2_fetch),
+            4,
+            0 as u32,
+        );
 
         // Server listen/close bridges (called from JS)
-        w2::JS_DefineFunction(cx, http2_obj.handle(), c"__http2_server_listen".as_ptr(), Some(http2_server_listen), 3, 0 as u32);
-        w2::JS_DefineFunction(cx, http2_obj.handle(), c"__http2_server_close".as_ptr(), Some(http2_server_close), 2, 0 as u32);
-        w2::JS_DefineFunction(cx, http2_obj.handle(), c"__http2_secure_server_listen".as_ptr(), Some(http2_secure_server_listen), 3, 0 as u32);
-        w2::JS_DefineFunction(cx, http2_obj.handle(), c"__http2_secure_server_close".as_ptr(), Some(http2_secure_server_close), 2, 0 as u32);
+        w2::JS_DefineFunction(
+            cx,
+            http2_obj.handle(),
+            c"__http2_server_listen".as_ptr(),
+            Some(http2_server_listen),
+            3,
+            0 as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            http2_obj.handle(),
+            c"__http2_server_close".as_ptr(),
+            Some(http2_server_close),
+            2,
+            0 as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            http2_obj.handle(),
+            c"__http2_secure_server_listen".as_ptr(),
+            Some(http2_secure_server_listen),
+            3,
+            0 as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            http2_obj.handle(),
+            c"__http2_secure_server_close".as_ptr(),
+            Some(http2_secure_server_close),
+            2,
+            0 as u32,
+        );
 
         // ── Evaluate JS IIFE ───────────────────────────────────────────
         let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"node:http2".as_ptr(), 1);
         if !opts.is_null() {
             let mut src_text = mozjs::rust::transform_str_to_source_text(HTTP2_JS);
             let mut rval = UndefinedValue();
-            if JS::Evaluate2(cx.raw_cx(), opts, &mut src_text, MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
-            }) && rval.is_object() {
+            if JS::Evaluate2(
+                cx.raw_cx(),
+                opts,
+                &mut src_text,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            ) && rval.is_object()
+            {
                 rooted!(&in(cx) let iife_obj = rval.to_object());
                 rooted!(&in(cx) let global = CurrentGlobalOrNull(cx.raw_cx()));
                 if !global.get().is_null() {
                     // Call the IIFE to get the exports object
                     let mut call_rval = UndefinedValue();
                     let call_rval_h = MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval,
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut call_rval,
                     };
                     rooted!(&in(cx) let iife_val = ObjectValue(iife_obj.get()));
-                    JS_CallFunctionValue(cx.raw_cx(), global.handle().into(),
+                    JS_CallFunctionValue(
+                        cx.raw_cx(),
+                        global.handle().into(),
                         iife_val.handle().into(),
-                        &HandleValueArray::empty(), call_rval_h);
+                        &HandleValueArray::empty(),
+                        call_rval_h,
+                    );
 
                     if call_rval.is_object() {
                         rooted!(&in(cx) let exports = call_rval.to_object());
                         // Copy JS-defined properties onto http2_obj
                         let js_props = [
-                            "connect", "Http2Session", "Http2Stream",
-                            "Http2Server", "Http2SecureServer",
-                            "getDefaultSettings", "getPackedSettings",
-                            "getUnpackedSettings", "sensitiveHeaders",
+                            "connect",
+                            "Http2Session",
+                            "Http2Stream",
+                            "Http2Server",
+                            "Http2SecureServer",
+                            "getDefaultSettings",
+                            "getPackedSettings",
+                            "getUnpackedSettings",
+                            "sensitiveHeaders",
                             "performance",
                         ];
                         for &prop in &js_props {
                             let c_prop = ZBox::from_bytes(prop.as_bytes());
                             let mut prop_val = UndefinedValue();
-                            JS_GetProperty(cx.raw_cx(), exports.handle().into(), c_prop.as_ptr(),
+                            JS_GetProperty(
+                                cx.raw_cx(),
+                                exports.handle().into(),
+                                c_prop.as_ptr(),
                                 MutableHandle::<Value> {
-                                    _phantom_0: ::std::marker::PhantomData, ptr: &mut prop_val,
-                                });
+                                    _phantom_0: ::std::marker::PhantomData,
+                                    ptr: &mut prop_val,
+                                },
+                            );
                             if !prop_val.is_undefined() {
                                 rooted!(&in(cx) let pv = prop_val);
-                                JS_DefineProperty(cx.raw_cx(), http2_obj.handle().into(),
-                                    c_prop.as_ptr(), pv.handle().into(),
-                                    (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+                                JS_DefineProperty(
+                                    cx.raw_cx(),
+                                    http2_obj.handle().into(),
+                                    c_prop.as_ptr(),
+                                    pv.handle().into(),
+                                    (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+                                );
                             }
                         }
                     }
@@ -924,7 +1058,11 @@ impl H2ServerUserData {
         let handler_key = format!("http2_server_{}_handler", server_id);
         gc_store_insert_ns(cx, "http2", &global_key, global);
         gc_store_insert_ns(cx, "http2", &handler_key, handler);
-        Self { cx, global_key, handler_key }
+        Self {
+            cx,
+            global_key,
+            handler_key,
+        }
     }
 
     fn global(&self) -> Option<*mut JSObject> {
@@ -957,13 +1095,19 @@ unsafe extern "C" fn uws_h2_route_handler(
 
     let ud = &*(user_data as *const H2ServerUserData);
     let cx = ud.cx;
-    if cx.is_null() { return; }
+    if cx.is_null() {
+        return;
+    }
 
     let Some(global) = ud.global() else { return };
-    if global.is_null() { return; }
+    if global.is_null() {
+        return;
+    }
 
     let Some(handler) = ud.handler() else { return };
-    if handler.is_null() { return; }
+    if handler.is_null() {
+        return;
+    }
 
     let req_ref = bun_opaque::opaque_deref_mut(req);
     let method_bytes = req_ref.method();
@@ -977,7 +1121,9 @@ unsafe extern "C" fn uws_h2_route_handler(
 
     // Build JS stream object (Http2Stream-like)
     rooted!(&in(cx_ref) let stream_obj = w2::JS_NewPlainObject(cx_ref));
-    if stream_obj.get().is_null() { return; }
+    if stream_obj.get().is_null() {
+        return;
+    }
 
     // Set pseudo-headers as properties
     {
@@ -986,7 +1132,13 @@ unsafe extern "C" fn uws_h2_route_handler(
         if !js_method.is_null() {
             let mv = StringValue(&*js_method);
             rooted!(&in(cx_ref) let mvr = mv);
-            JS_DefineProperty(raw_cx, stream_obj.handle().into(), c":method".as_ptr(), mvr.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                raw_cx,
+                stream_obj.handle().into(),
+                c":method".as_ptr(),
+                mvr.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 
@@ -996,7 +1148,13 @@ unsafe extern "C" fn uws_h2_route_handler(
         if !js_path.is_null() {
             let pv = StringValue(&*js_path);
             rooted!(&in(cx_ref) let pvr = pv);
-            JS_DefineProperty(raw_cx, stream_obj.handle().into(), c":path".as_ptr(), pvr.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                raw_cx,
+                stream_obj.handle().into(),
+                c":path".as_ptr(),
+                pvr.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 
@@ -1004,9 +1162,16 @@ unsafe extern "C" fn uws_h2_route_handler(
     rooted!(&in(cx_ref) let headers_obj = w2::JS_NewPlainObject(cx_ref));
     if !headers_obj.get().is_null() {
         let common_headers: &[&[u8]] = &[
-            b"host", b"content-type", b"content-length", b"accept",
-            b"user-agent", b"connection", b"authorization", b"cookie",
-            b":authority", b":scheme",
+            b"host",
+            b"content-type",
+            b"content-length",
+            b"accept",
+            b"user-agent",
+            b"connection",
+            b"authorization",
+            b"cookie",
+            b":authority",
+            b":scheme",
         ];
         for &name in common_headers {
             if let Some(value) = req_ref.header(name) {
@@ -1016,38 +1181,89 @@ unsafe extern "C" fn uws_h2_route_handler(
                 if !js_v.is_null() {
                     let hv = StringValue(&*js_v);
                     rooted!(&in(cx_ref) let hvr = hv);
-                    JS_DefineProperty(raw_cx, headers_obj.handle().into(), c_k.as_ptr(), hvr.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(
+                        raw_cx,
+                        headers_obj.handle().into(),
+                        c_k.as_ptr(),
+                        hvr.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
                 }
             }
         }
         let hdrs_val = ObjectValue(headers_obj.get());
         rooted!(&in(cx_ref) let hdrs_r = hdrs_val);
-        JS_DefineProperty(raw_cx, stream_obj.handle().into(), c"headers".as_ptr(), hdrs_r.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            raw_cx,
+            stream_obj.handle().into(),
+            c"headers".as_ptr(),
+            hdrs_r.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     // Add respond / end / close methods on the stream
-    w2::JS_DefineFunction(cx_ref, stream_obj.handle(), c"respond".as_ptr(), Some(h2_stream_respond), 2, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, stream_obj.handle(), c"end".as_ptr(), Some(h2_stream_end), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, stream_obj.handle(), c"close".as_ptr(), Some(h2_stream_close), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        stream_obj.handle(),
+        c"respond".as_ptr(),
+        Some(h2_stream_respond),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        stream_obj.handle(),
+        c"end".as_ptr(),
+        Some(h2_stream_end),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        stream_obj.handle(),
+        c"close".as_ptr(),
+        Some(h2_stream_close),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
 
     // Store uWS res pointer on the stream object
     let res_ptr_val = PrivateValue(res as *const core::ffi::c_void);
     rooted!(&in(cx_ref) let rv = res_ptr_val);
-    JS_DefineProperty(raw_cx, stream_obj.handle().into(), c"_uwsRes".as_ptr(), rv.handle().into(), 0);
+    JS_DefineProperty(
+        raw_cx,
+        stream_obj.handle().into(),
+        c"_uwsRes".as_ptr(),
+        rv.handle().into(),
+        0,
+    );
 
     // Call the JS handler: handler(stream, headers)
     rooted!(&in(cx_ref) let handler_root = ObjectValue(handler));
     rooted!(&in(cx_ref) let global_root = global);
 
-    let args_vals = [ObjectValue(stream_obj.get()), ObjectValue(headers_obj.get())];
+    let args_vals = [
+        ObjectValue(stream_obj.get()),
+        ObjectValue(headers_obj.get()),
+    ];
     let call_args = HandleValueArray {
         length_: 2,
         elements_: args_vals.as_ptr(),
     };
 
     let mut rval = UndefinedValue();
-    let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-    JS_CallFunctionValue(raw_cx, global_root.handle().into(), handler_root.handle().into(), &call_args, rval_h);
+    let rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    JS_CallFunctionValue(
+        raw_cx,
+        global_root.handle().into(),
+        handler_root.handle().into(),
+        &call_args,
+        rval_h,
+    );
     JS_ClearPendingException(raw_cx);
 }
 
@@ -1061,14 +1277,23 @@ fn val_is_private(v: &JSVal) -> bool {
 }
 
 #[inline]
-unsafe fn get_uws_res(cx: *mut JSContext, obj: *mut JSObject) -> *mut bun_uws_sys::response::c::uws_res {
+unsafe fn get_uws_res(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+) -> *mut bun_uws_sys::response::c::uws_res {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_root = obj);
     let mut ptr_val = UndefinedValue();
-    JS_GetProperty(cx, obj_root.handle().into(), c"_uwsRes".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut ptr_val,
-    });
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"_uwsRes".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ptr_val,
+        },
+    );
     if !val_is_private(&ptr_val) {
         return core::ptr::null_mut();
     }
@@ -1076,11 +1301,7 @@ unsafe fn get_uws_res(cx: *mut JSContext, obj: *mut JSObject) -> *mut bun_uws_sy
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn h2_stream_respond(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn h2_stream_respond(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -1096,8 +1317,15 @@ unsafe extern "C" fn h2_stream_respond(
 
             // Get :status
             let mut status_val = UndefinedValue();
-            JS_GetProperty(cx, hdrs_obj.handle().into(), c":status".as_ptr(),
-                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut status_val });
+            JS_GetProperty(
+                cx,
+                hdrs_obj.handle().into(),
+                c":status".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut status_val,
+                },
+            );
 
             let status = if status_val.is_string() {
                 let s = crate::js_to_rust_string(cx, status_val);
@@ -1116,14 +1344,25 @@ unsafe extern "C" fn h2_stream_respond(
 
                 // Write response headers (skip pseudo-headers starting with ':')
                 let common: &[&[u8]] = &[
-                    b"content-type", b"content-length", b"location",
-                    b"set-cookie", b"cache-control", b"x-",
+                    b"content-type",
+                    b"content-length",
+                    b"location",
+                    b"set-cookie",
+                    b"cache-control",
+                    b"x-",
                 ];
                 for &key in common {
                     let c_key = ZBox::from_bytes(key);
                     let mut hv = UndefinedValue();
-                    JS_GetProperty(cx, hdrs_obj.handle().into(), c_key.as_ptr(),
-                        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hv });
+                    JS_GetProperty(
+                        cx,
+                        hdrs_obj.handle().into(),
+                        c_key.as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut hv,
+                        },
+                    );
                     if hv.is_string() {
                         let val = crate::js_to_rust_string(cx, hv);
                         let c_val = ZBox::from_bytes(val.as_bytes());
@@ -1140,8 +1379,15 @@ unsafe extern "C" fn h2_stream_respond(
         if opts_val.is_object() {
             rooted!(&in(cx_ref) let opts_obj = opts_val.to_object());
             let mut end_stream_val = UndefinedValue();
-            JS_GetProperty(cx, opts_obj.handle().into(), c"endStream".as_ptr(),
-                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut end_stream_val });
+            JS_GetProperty(
+                cx,
+                opts_obj.handle().into(),
+                c"endStream".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut end_stream_val,
+                },
+            );
             if end_stream_val.is_boolean() && end_stream_val.to_boolean() {
                 let uws_res = get_uws_res(cx, obj.get());
                 if !uws_res.is_null() {
@@ -1157,11 +1403,7 @@ unsafe extern "C" fn h2_stream_respond(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn h2_stream_end(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn h2_stream_end(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -1171,7 +1413,10 @@ unsafe extern "C" fn h2_stream_end(
 
     // Get accumulated body
     let mut body_val = UndefinedValue();
-    let body_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
+    let body_mh = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut body_val,
+    };
     JS_GetProperty(cx, obj.handle().into(), c"_body".as_ptr(), body_mh);
     let body = if body_val.is_string() {
         crate::js_to_rust_string(cx, body_val)
@@ -1211,11 +1456,7 @@ unsafe extern "C" fn h2_stream_end(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn h2_stream_close(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn h2_stream_close(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -1241,11 +1482,7 @@ unsafe extern "C" fn h2_stream_close(
 // ──────────────────────────────────────────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn http2_create_server(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn http2_create_server(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -1266,8 +1503,15 @@ unsafe extern "C" fn http2_create_server(
 
     // Get Http2Server constructor
     let mut ctor_val = UndefinedValue();
-    JS_GetProperty(cx, http2_obj.handle().into(), c"Http2Server".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ctor_val });
+    JS_GetProperty(
+        cx,
+        http2_obj.handle().into(),
+        c"Http2Server".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ctor_val,
+        },
+    );
 
     if !ctor_val.is_object() {
         // Fallback: create a plain object with EE methods
@@ -1277,8 +1521,22 @@ unsafe extern "C" fn http2_create_server(
             return true;
         }
         attach_ee_methods(cx, server_obj.get());
-        w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"listen".as_ptr(), Some(http2_server_listen_js), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"close".as_ptr(), Some(http2_server_close_js), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx_ref,
+            server_obj.handle(),
+            c"listen".as_ptr(),
+            Some(http2_server_listen_js),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx_ref,
+            server_obj.handle(),
+            c"close".as_ptr(),
+            Some(http2_server_close_js),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
         store_handler(cx, cx_ref, server_obj.get(), argc, &args);
         args.rval().set(ObjectValue(server_obj.get()));
         return true;
@@ -1289,7 +1547,10 @@ unsafe extern "C" fn http2_create_server(
     rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
 
     let mut new_rval = UndefinedValue();
-    let new_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut new_rval };
+    let new_rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut new_rval,
+    };
 
     // Prepare args: (options, handler)
     let opts_arg = if argc > 0 && (*args.get(0).ptr).is_object() {
@@ -1308,12 +1569,24 @@ unsafe extern "C" fn http2_create_server(
 
     let call_args_vals = [opts_arg, handler_arg];
     let call_args = HandleValueArray {
-        length_: if argc > 1 { 2 } else if argc > 0 { 1 } else { 0 },
+        length_: if argc > 1 {
+            2
+        } else if argc > 0 {
+            1
+        } else {
+            0
+        },
         elements_: call_args_vals.as_ptr(),
     };
 
     rooted!(&in(cx_ref) let ctor_val = ObjectValue(ctor.get()));
-    JS_CallFunctionValue(cx, global.handle().into(), ctor_val.handle().into(), &call_args, new_rval_h);
+    JS_CallFunctionValue(
+        cx,
+        global.handle().into(),
+        ctor_val.handle().into(),
+        &call_args,
+        new_rval_h,
+    );
 
     if new_rval.is_object() {
         rooted!(&in(cx_ref) let server_obj = new_rval.to_object());
@@ -1351,8 +1624,15 @@ unsafe extern "C" fn http2_create_secure_server(
 
     // Get Http2SecureServer constructor
     let mut ctor_val = UndefinedValue();
-    JS_GetProperty(cx, http2_obj.handle().into(), c"Http2SecureServer".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ctor_val });
+    JS_GetProperty(
+        cx,
+        http2_obj.handle().into(),
+        c"Http2SecureServer".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ctor_val,
+        },
+    );
 
     if !ctor_val.is_object() {
         // Fallback: create a plain object with EE methods
@@ -1362,12 +1642,32 @@ unsafe extern "C" fn http2_create_secure_server(
             return true;
         }
         attach_ee_methods(cx, server_obj.get());
-        w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"listen".as_ptr(), Some(http2_secure_server_listen_js), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"close".as_ptr(), Some(http2_secure_server_close_js), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx_ref,
+            server_obj.handle(),
+            c"listen".as_ptr(),
+            Some(http2_secure_server_listen_js),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx_ref,
+            server_obj.handle(),
+            c"close".as_ptr(),
+            Some(http2_secure_server_close_js),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
         store_handler(cx, cx_ref, server_obj.get(), argc, &args);
         // Mark as secure
         rooted!(&in(cx_ref) let secure_val = BooleanValue(true));
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_secure".as_ptr(), secure_val.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_secure".as_ptr(),
+            secure_val.handle().into(),
+            0,
+        );
         args.rval().set(ObjectValue(server_obj.get()));
         return true;
     }
@@ -1377,7 +1677,10 @@ unsafe extern "C" fn http2_create_secure_server(
     rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
 
     let mut new_rval = UndefinedValue();
-    let new_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut new_rval };
+    let new_rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut new_rval,
+    };
 
     let opts_arg = if argc > 0 && (*args.get(0).ptr).is_object() {
         *args.get(0).ptr
@@ -1392,19 +1695,37 @@ unsafe extern "C" fn http2_create_secure_server(
 
     let call_args_vals = [opts_arg, handler_arg];
     let call_args = HandleValueArray {
-        length_: if argc > 1 { 2 } else if argc > 0 { 1 } else { 0 },
+        length_: if argc > 1 {
+            2
+        } else if argc > 0 {
+            1
+        } else {
+            0
+        },
         elements_: call_args_vals.as_ptr(),
     };
 
     rooted!(&in(cx_ref) let ctor_val = ObjectValue(ctor.get()));
-    JS_CallFunctionValue(cx, global.handle().into(), ctor_val.handle().into(), &call_args, new_rval_h);
+    JS_CallFunctionValue(
+        cx,
+        global.handle().into(),
+        ctor_val.handle().into(),
+        &call_args,
+        new_rval_h,
+    );
 
     if new_rval.is_object() {
         rooted!(&in(cx_ref) let server_obj = new_rval.to_object());
         store_handler(cx, cx_ref, server_obj.get(), argc, &args);
         // Mark as secure
         rooted!(&in(cx_ref) let secure_val = BooleanValue(true));
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_secure".as_ptr(), secure_val.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_secure".as_ptr(),
+            secure_val.handle().into(),
+            0,
+        );
         args.rval().set(ObjectValue(server_obj.get()));
     } else {
         args.rval().set(UndefinedValue());
@@ -1436,7 +1757,13 @@ unsafe fn store_handler(
         let cb_val = ObjectValue(cb.get());
         rooted!(&in(cx_ref) let cb_root = cb_val);
         rooted!(&in(cx_ref) let server_root = server_obj);
-        JS_DefineProperty(cx, server_root.handle().into(), c"_onStreamHandler".as_ptr(), cb_root.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_root.handle().into(),
+            c"_onStreamHandler".as_ptr(),
+            cb_root.handle().into(),
+            0,
+        );
     }
 }
 
@@ -1455,12 +1782,24 @@ unsafe fn attach_ee_methods(cx: *mut JSContext, obj: *mut JSObject) {
 
     rooted!(&in(cx_ref) let obj_root = obj);
     for (name, op) in [
-        ("on", ee_on), ("once", ee_once), ("emit", ee_emit),
-        ("off", ee_off), ("addListener", ee_on), ("removeListener", ee_off),
-        ("prependListener", ee_prepend), ("removeAllListeners", ee_remove_all),
+        ("on", ee_on),
+        ("once", ee_once),
+        ("emit", ee_emit),
+        ("off", ee_off),
+        ("addListener", ee_on),
+        ("removeListener", ee_off),
+        ("prependListener", ee_prepend),
+        ("removeAllListeners", ee_remove_all),
     ] {
         let c_name = ZBox::from_bytes(name.as_bytes());
-        mozjs_sys::jsapi::JS_DefineFunction(cx, obj_root.handle().into(), c_name.as_ptr(), op, 2, JSPROP_ENUMERATE as u32);
+        mozjs_sys::jsapi::JS_DefineFunction(
+            cx,
+            obj_root.handle().into(),
+            c_name.as_ptr(),
+            op,
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
     }
 }
 
@@ -1479,11 +1818,7 @@ unsafe extern "C" fn uws_h2_listen_callback(
 
 /// __http2_server_listen(serverObj, port, callback) — called from JS
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn http2_server_listen(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn http2_server_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -1526,8 +1861,16 @@ unsafe extern "C" fn http2_server_listen(
 
     // Get the JS stream handler from the server object
     let mut handler_val = UndefinedValue();
-    let handler_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut handler_val };
-    JS_GetProperty(cx, server_obj.handle().into(), c"_onStreamHandler".as_ptr(), handler_mh);
+    let handler_mh = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut handler_val,
+    };
+    JS_GetProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_onStreamHandler".as_ptr(),
+        handler_mh,
+    );
 
     rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
     if global.get().is_null() || !handler_val.is_object() {
@@ -1543,34 +1886,82 @@ unsafe extern "C" fn http2_server_listen(
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
     // Register catch-all route
-    let safe_handler: Option<extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void)> =
-        unsafe { ::std::mem::transmute(Some(uws_h2_route_handler as unsafe extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void))) };
+    let safe_handler: Option<
+        extern "C" fn(
+            *mut bun_uws_sys::response::c::uws_res,
+            *mut bun_uws_sys::Request,
+            *mut ::std::ffi::c_void,
+        ),
+    > = unsafe {
+        ::std::mem::transmute(Some(
+            uws_h2_route_handler
+                as unsafe extern "C" fn(
+                    *mut bun_uws_sys::response::c::uws_res,
+                    *mut bun_uws_sys::Request,
+                    *mut ::std::ffi::c_void,
+                ),
+        ))
+    };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
     // Store ud pointer on server object
     {
         let ud_val = PrivateValue(ud_ptr as *const core::ffi::c_void);
         rooted!(&in(cx_ref) let udv = ud_val);
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), udv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_udPtr".as_ptr(),
+            udv.handle().into(),
+            0,
+        );
     }
 
     // Listen
-    let safe_listen_cb: extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void) =
-        unsafe { ::std::mem::transmute(uws_h2_listen_callback as unsafe extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void)) };
+    let safe_listen_cb: extern "C" fn(
+        *mut bun_uws_sys::listen_socket::ListenSocket,
+        *mut ::std::ffi::c_void,
+    ) = unsafe {
+        ::std::mem::transmute(
+            uws_h2_listen_callback
+                as unsafe extern "C" fn(
+                    *mut bun_uws_sys::listen_socket::ListenSocket,
+                    *mut ::std::ffi::c_void,
+                ),
+        )
+    };
     (*app_ptr).listen(port as i32, safe_listen_cb, core::ptr::null_mut());
 
     // Store app pointer on server object
     {
         let app_ptr_val = PrivateValue(app_ptr as *const core::ffi::c_void);
         rooted!(&in(cx_ref) let apv = app_ptr_val);
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_appPtr".as_ptr(), apv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_appPtr".as_ptr(),
+            apv.handle().into(),
+            0,
+        );
     }
 
     rooted!(&in(cx_ref) let port_root = Int32Value(port as i32));
-    JS_DefineProperty(cx, server_obj.handle().into(), c"_listeningPort".as_ptr(), port_root.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_listeningPort".as_ptr(),
+        port_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     rooted!(&in(cx_ref) let listening_root = BooleanValue(true));
-    JS_DefineProperty(cx, server_obj.handle().into(), c"listening".as_ptr(), listening_root.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"listening".as_ptr(),
+        listening_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     register_active_h2_app(app_ptr);
 
@@ -1578,8 +1969,17 @@ unsafe extern "C" fn http2_server_listen(
     if let Some(cb) = callback {
         rooted!(&in(cx_ref) let fval_root = ObjectValue(cb));
         let mut rval = UndefinedValue();
-        let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-        JS_CallFunctionValue(cx, global.handle().into(), fval_root.handle().into(), &HandleValueArray::empty(), rval_h);
+        let rval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        JS_CallFunctionValue(
+            cx,
+            global.handle().into(),
+            fval_root.handle().into(),
+            &HandleValueArray::empty(),
+            rval_h,
+        );
         JS_ClearPendingException(cx);
     }
 
@@ -1589,11 +1989,7 @@ unsafe extern "C" fn http2_server_listen(
 
 /// __http2_server_close(serverObj, callback) — called from JS
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn http2_server_close(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn http2_server_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -1620,8 +2016,17 @@ unsafe extern "C" fn http2_server_close(
         if !global.get().is_null() {
             rooted!(&in(cx_ref) let fval_root = ObjectValue(cb));
             let mut rval = UndefinedValue();
-            let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-            JS_CallFunctionValue(cx, global.handle().into(), fval_root.handle().into(), &HandleValueArray::empty(), rval_h);
+            let rval_h = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            };
+            JS_CallFunctionValue(
+                cx,
+                global.handle().into(),
+                fval_root.handle().into(),
+                &HandleValueArray::empty(),
+                rval_h,
+            );
             JS_ClearPendingException(cx);
         }
     }
@@ -1642,9 +2047,15 @@ unsafe fn close_h2_server(
 
     // Destroy the uWS App
     let mut app_ptr_val = UndefinedValue();
-    JS_GetProperty(cx, obj.handle().into(), c"_appPtr".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut app_ptr_val,
-    });
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"_appPtr".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut app_ptr_val,
+        },
+    );
     let app_ptr = if val_is_private(&app_ptr_val) {
         app_ptr_val.to_private() as *mut App<false>
     } else {
@@ -1655,14 +2066,25 @@ unsafe fn close_h2_server(
         App::<false>::destroy(app_ptr);
         unregister_active_h2_app(app_ptr);
         rooted!(&in(cx_ref) let undef_root = UndefinedValue());
-        JS_SetProperty(cx, obj.handle().into(), c"_appPtr".as_ptr(), undef_root.handle().into());
+        JS_SetProperty(
+            cx,
+            obj.handle().into(),
+            c"_appPtr".as_ptr(),
+            undef_root.handle().into(),
+        );
     }
 
     // Cleanup H2ServerUserData
     let mut ud_ptr_val = UndefinedValue();
-    JS_GetProperty(cx, obj.handle().into(), c"_udPtr".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut ud_ptr_val,
-    });
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"_udPtr".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ud_ptr_val,
+        },
+    );
     let ud_ptr = if val_is_private(&ud_ptr_val) {
         ud_ptr_val.to_private() as *mut H2ServerUserData
     } else {
@@ -1672,7 +2094,12 @@ unsafe fn close_h2_server(
         let ud = Box::from_raw(ud_ptr);
         ud.cleanup();
         rooted!(&in(cx_ref) let undef_root2 = UndefinedValue());
-        JS_SetProperty(cx, obj.handle().into(), c"_udPtr".as_ptr(), undef_root2.handle().into());
+        JS_SetProperty(
+            cx,
+            obj.handle().into(),
+            c"_udPtr".as_ptr(),
+            undef_root2.handle().into(),
+        );
     }
 }
 
@@ -1718,23 +2145,44 @@ unsafe extern "C" fn http2_secure_server_listen(
     let mut pem_cert = String::new();
 
     let mut opts_val = UndefinedValue();
-    JS_GetProperty(cx, server_obj.handle().into(), c"_options".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut opts_val });
+    JS_GetProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_options".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut opts_val,
+        },
+    );
     if opts_val.is_object() {
         rooted!(&in(cx_ref) let opts_root = opts_val.to_object());
 
         // Extract key
         let mut key_val = UndefinedValue();
-        JS_GetProperty(cx, opts_root.handle().into(), c"key".as_ptr(),
-            MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut key_val });
+        JS_GetProperty(
+            cx,
+            opts_root.handle().into(),
+            c"key".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut key_val,
+            },
+        );
         if key_val.is_string() {
             pem_key = crate::js_to_rust_string(cx, key_val);
         }
 
         // Extract cert
         let mut cert_val = UndefinedValue();
-        JS_GetProperty(cx, opts_root.handle().into(), c"cert".as_ptr(),
-            MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut cert_val });
+        JS_GetProperty(
+            cx,
+            opts_root.handle().into(),
+            c"cert".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut cert_val,
+            },
+        );
         if cert_val.is_string() {
             pem_cert = crate::js_to_rust_string(cx, cert_val);
         }
@@ -1742,8 +2190,16 @@ unsafe extern "C" fn http2_secure_server_listen(
 
     // Get the JS stream handler
     let mut handler_val = UndefinedValue();
-    let handler_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut handler_val };
-    JS_GetProperty(cx, server_obj.handle().into(), c"_onStreamHandler".as_ptr(), handler_mh);
+    let handler_mh = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut handler_val,
+    };
+    JS_GetProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_onStreamHandler".as_ptr(),
+        handler_mh,
+    );
 
     rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
     if global.get().is_null() || !handler_val.is_object() {
@@ -1785,34 +2241,82 @@ unsafe extern "C" fn http2_secure_server_listen(
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
     // Register catch-all route — use the same handler (uWS handles TLS transparently)
-    let safe_handler: Option<extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void)> =
-        unsafe { ::std::mem::transmute(Some(uws_h2_route_handler as unsafe extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void))) };
+    let safe_handler: Option<
+        extern "C" fn(
+            *mut bun_uws_sys::response::c::uws_res,
+            *mut bun_uws_sys::Request,
+            *mut ::std::ffi::c_void,
+        ),
+    > = unsafe {
+        ::std::mem::transmute(Some(
+            uws_h2_route_handler
+                as unsafe extern "C" fn(
+                    *mut bun_uws_sys::response::c::uws_res,
+                    *mut bun_uws_sys::Request,
+                    *mut ::std::ffi::c_void,
+                ),
+        ))
+    };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
     // Store ud pointer
     {
         let ud_val = PrivateValue(ud_ptr as *const core::ffi::c_void);
         rooted!(&in(cx_ref) let udv = ud_val);
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), udv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_udPtr".as_ptr(),
+            udv.handle().into(),
+            0,
+        );
     }
 
     // Listen
-    let safe_listen_cb: extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void) =
-        unsafe { ::std::mem::transmute(uws_h2_listen_callback as unsafe extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void)) };
+    let safe_listen_cb: extern "C" fn(
+        *mut bun_uws_sys::listen_socket::ListenSocket,
+        *mut ::std::ffi::c_void,
+    ) = unsafe {
+        ::std::mem::transmute(
+            uws_h2_listen_callback
+                as unsafe extern "C" fn(
+                    *mut bun_uws_sys::listen_socket::ListenSocket,
+                    *mut ::std::ffi::c_void,
+                ),
+        )
+    };
     (*app_ptr).listen(port as i32, safe_listen_cb, core::ptr::null_mut());
 
     // Store app pointer (as App<true>)
     {
         let app_ptr_val = PrivateValue(app_ptr as *const core::ffi::c_void);
         rooted!(&in(cx_ref) let apv = app_ptr_val);
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_sslAppPtr".as_ptr(), apv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_sslAppPtr".as_ptr(),
+            apv.handle().into(),
+            0,
+        );
     }
 
     rooted!(&in(cx_ref) let port_root = Int32Value(port as i32));
-    JS_DefineProperty(cx, server_obj.handle().into(), c"_listeningPort".as_ptr(), port_root.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_listeningPort".as_ptr(),
+        port_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     rooted!(&in(cx_ref) let listening_root = BooleanValue(true));
-    JS_DefineProperty(cx, server_obj.handle().into(), c"listening".as_ptr(), listening_root.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"listening".as_ptr(),
+        listening_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     register_active_h2_ssl_app(app_ptr);
 
@@ -1820,8 +2324,17 @@ unsafe extern "C" fn http2_secure_server_listen(
     if let Some(cb) = callback {
         rooted!(&in(cx_ref) let fval_root = ObjectValue(cb));
         let mut rval = UndefinedValue();
-        let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-        JS_CallFunctionValue(cx, global.handle().into(), fval_root.handle().into(), &HandleValueArray::empty(), rval_h);
+        let rval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        JS_CallFunctionValue(
+            cx,
+            global.handle().into(),
+            fval_root.handle().into(),
+            &HandleValueArray::empty(),
+            rval_h,
+        );
         JS_ClearPendingException(cx);
     }
 
@@ -1858,9 +2371,15 @@ unsafe extern "C" fn http2_secure_server_close(
     {
         rooted!(&in(cx_ref) let obj = server_obj.get());
         let mut app_ptr_val = UndefinedValue();
-        JS_GetProperty(cx, obj.handle().into(), c"_sslAppPtr".as_ptr(), MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData, ptr: &mut app_ptr_val,
-        });
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"_sslAppPtr".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut app_ptr_val,
+            },
+        );
         let app_ptr = if val_is_private(&app_ptr_val) {
             app_ptr_val.to_private() as *mut App<true>
         } else {
@@ -1871,7 +2390,12 @@ unsafe extern "C" fn http2_secure_server_close(
             App::<true>::destroy(app_ptr);
             unregister_active_h2_ssl_app(app_ptr);
             rooted!(&in(cx_ref) let undef_root = UndefinedValue());
-            JS_SetProperty(cx, obj.handle().into(), c"_sslAppPtr".as_ptr(), undef_root.handle().into());
+            JS_SetProperty(
+                cx,
+                obj.handle().into(),
+                c"_sslAppPtr".as_ptr(),
+                undef_root.handle().into(),
+            );
         }
     }
 
@@ -1879,9 +2403,15 @@ unsafe extern "C" fn http2_secure_server_close(
     {
         rooted!(&in(cx_ref) let obj = server_obj.get());
         let mut ud_ptr_val = UndefinedValue();
-        JS_GetProperty(cx, obj.handle().into(), c"_udPtr".as_ptr(), MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData, ptr: &mut ud_ptr_val,
-        });
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"_udPtr".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ud_ptr_val,
+            },
+        );
         let ud_ptr = if val_is_private(&ud_ptr_val) {
             ud_ptr_val.to_private() as *mut H2ServerUserData
         } else {
@@ -1891,7 +2421,12 @@ unsafe extern "C" fn http2_secure_server_close(
             let ud = Box::from_raw(ud_ptr);
             ud.cleanup();
             rooted!(&in(cx_ref) let undef_root2 = UndefinedValue());
-            JS_SetProperty(cx, obj.handle().into(), c"_udPtr".as_ptr(), undef_root2.handle().into());
+            JS_SetProperty(
+                cx,
+                obj.handle().into(),
+                c"_udPtr".as_ptr(),
+                undef_root2.handle().into(),
+            );
         }
     }
 
@@ -1900,8 +2435,17 @@ unsafe extern "C" fn http2_secure_server_close(
         if !global.get().is_null() {
             rooted!(&in(cx_ref) let fval_root = ObjectValue(cb));
             let mut rval = UndefinedValue();
-            let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-            JS_CallFunctionValue(cx, global.handle().into(), fval_root.handle().into(), &HandleValueArray::empty(), rval_h);
+            let rval_h = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            };
+            JS_CallFunctionValue(
+                cx,
+                global.handle().into(),
+                fval_root.handle().into(),
+                &HandleValueArray::empty(),
+                rval_h,
+            );
             JS_ClearPendingException(cx);
         }
     }
@@ -1916,11 +2460,7 @@ unsafe extern "C" fn http2_secure_server_close(
 // ──────────────────────────────────────────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn http2_server_listen_js(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn http2_server_listen_js(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     // Delegate to the native __http2_server_listen
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -1931,10 +2471,16 @@ unsafe extern "C" fn http2_server_listen_js(
 
     let port: u16 = if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_int32() { v.to_int32() as u16 }
-        else if v.is_double() { v.to_double() as u16 }
-        else { 3000 }
-    } else { 3000 };
+        if v.is_int32() {
+            v.to_int32() as u16
+        } else if v.is_double() {
+            v.to_double() as u16
+        } else {
+            3000
+        }
+    } else {
+        3000
+    };
 
     let callback = if argc > 1 && (*args.get(1).ptr).is_object() {
         rooted!(&in(cx_ref) let cb = (*args.get(1).ptr).to_object());
@@ -1960,8 +2506,15 @@ unsafe extern "C" fn http2_server_listen_js(
 
     // Get handler
     let mut handler_val = UndefinedValue();
-    JS_GetProperty(cx, server_obj.handle().into(), c"_onStreamHandler".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut handler_val });
+    JS_GetProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_onStreamHandler".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut handler_val,
+        },
+    );
 
     rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
     if global.get().is_null() || !handler_val.is_object() {
@@ -1974,39 +2527,96 @@ unsafe extern "C" fn http2_server_listen_js(
     let ud = Box::new(H2ServerUserData::new(cx, global.get(), handler_root.get()));
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
-    let safe_handler: Option<extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void)> =
-        unsafe { ::std::mem::transmute(Some(uws_h2_route_handler as unsafe extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void))) };
+    let safe_handler: Option<
+        extern "C" fn(
+            *mut bun_uws_sys::response::c::uws_res,
+            *mut bun_uws_sys::Request,
+            *mut ::std::ffi::c_void,
+        ),
+    > = unsafe {
+        ::std::mem::transmute(Some(
+            uws_h2_route_handler
+                as unsafe extern "C" fn(
+                    *mut bun_uws_sys::response::c::uws_res,
+                    *mut bun_uws_sys::Request,
+                    *mut ::std::ffi::c_void,
+                ),
+        ))
+    };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
     {
         let ud_val = PrivateValue(ud_ptr as *const core::ffi::c_void);
         rooted!(&in(cx_ref) let udv = ud_val);
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), udv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_udPtr".as_ptr(),
+            udv.handle().into(),
+            0,
+        );
     }
 
-    let safe_listen_cb: extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void) =
-        unsafe { ::std::mem::transmute(uws_h2_listen_callback as unsafe extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void)) };
+    let safe_listen_cb: extern "C" fn(
+        *mut bun_uws_sys::listen_socket::ListenSocket,
+        *mut ::std::ffi::c_void,
+    ) = unsafe {
+        ::std::mem::transmute(
+            uws_h2_listen_callback
+                as unsafe extern "C" fn(
+                    *mut bun_uws_sys::listen_socket::ListenSocket,
+                    *mut ::std::ffi::c_void,
+                ),
+        )
+    };
     (*app_ptr).listen(port as i32, safe_listen_cb, core::ptr::null_mut());
 
     {
         let app_ptr_val = PrivateValue(app_ptr as *const core::ffi::c_void);
         rooted!(&in(cx_ref) let apv = app_ptr_val);
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_appPtr".as_ptr(), apv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_appPtr".as_ptr(),
+            apv.handle().into(),
+            0,
+        );
     }
 
     rooted!(&in(cx_ref) let port_root = Int32Value(port as i32));
-    JS_DefineProperty(cx, server_obj.handle().into(), c"_listeningPort".as_ptr(), port_root.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_listeningPort".as_ptr(),
+        port_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     rooted!(&in(cx_ref) let listening_root = BooleanValue(true));
-    JS_DefineProperty(cx, server_obj.handle().into(), c"listening".as_ptr(), listening_root.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"listening".as_ptr(),
+        listening_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     register_active_h2_app(app_ptr);
 
     if let Some(cb) = callback {
         rooted!(&in(cx_ref) let fval_root = ObjectValue(cb));
         let mut rval = UndefinedValue();
-        let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-        JS_CallFunctionValue(cx, global.handle().into(), fval_root.handle().into(), &HandleValueArray::empty(), rval_h);
+        let rval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        JS_CallFunctionValue(
+            cx,
+            global.handle().into(),
+            fval_root.handle().into(),
+            &HandleValueArray::empty(),
+            rval_h,
+        );
         JS_ClearPendingException(cx);
     }
 
@@ -2015,11 +2625,7 @@ unsafe extern "C" fn http2_server_listen_js(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn http2_server_close_js(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn http2_server_close_js(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -2049,10 +2655,16 @@ unsafe extern "C" fn http2_secure_server_listen_js(
 
     let port: u16 = if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_int32() { v.to_int32() as u16 }
-        else if v.is_double() { v.to_double() as u16 }
-        else { 3000 }
-    } else { 3000 };
+        if v.is_int32() {
+            v.to_int32() as u16
+        } else if v.is_double() {
+            v.to_double() as u16
+        } else {
+            3000
+        }
+    } else {
+        3000
+    };
 
     let callback = if argc > 1 && (*args.get(1).ptr).is_object() {
         rooted!(&in(cx_ref) let cb = (*args.get(1).ptr).to_object());
@@ -2065,24 +2677,56 @@ unsafe extern "C" fn http2_secure_server_listen_js(
     let mut pem_key = String::new();
     let mut pem_cert = String::new();
     let mut opts_val = UndefinedValue();
-    JS_GetProperty(cx, server_obj.handle().into(), c"_options".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut opts_val });
+    JS_GetProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_options".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut opts_val,
+        },
+    );
     if opts_val.is_object() {
         rooted!(&in(cx_ref) let opts_root = opts_val.to_object());
         let mut key_val = UndefinedValue();
-        JS_GetProperty(cx, opts_root.handle().into(), c"key".as_ptr(),
-            MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut key_val });
-        if key_val.is_string() { pem_key = crate::js_to_rust_string(cx, key_val); }
+        JS_GetProperty(
+            cx,
+            opts_root.handle().into(),
+            c"key".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut key_val,
+            },
+        );
+        if key_val.is_string() {
+            pem_key = crate::js_to_rust_string(cx, key_val);
+        }
         let mut cert_val = UndefinedValue();
-        JS_GetProperty(cx, opts_root.handle().into(), c"cert".as_ptr(),
-            MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut cert_val });
-        if cert_val.is_string() { pem_cert = crate::js_to_rust_string(cx, cert_val); }
+        JS_GetProperty(
+            cx,
+            opts_root.handle().into(),
+            c"cert".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut cert_val,
+            },
+        );
+        if cert_val.is_string() {
+            pem_cert = crate::js_to_rust_string(cx, cert_val);
+        }
     }
 
     // Get handler
     let mut handler_val = UndefinedValue();
-    JS_GetProperty(cx, server_obj.handle().into(), c"_onStreamHandler".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut handler_val });
+    JS_GetProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_onStreamHandler".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut handler_val,
+        },
+    );
 
     rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
     if global.get().is_null() || !handler_val.is_object() {
@@ -2121,39 +2765,96 @@ unsafe extern "C" fn http2_secure_server_listen_js(
     let ud = Box::new(H2ServerUserData::new(cx, global.get(), handler_root.get()));
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
-    let safe_handler: Option<extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void)> =
-        unsafe { ::std::mem::transmute(Some(uws_h2_route_handler as unsafe extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void))) };
+    let safe_handler: Option<
+        extern "C" fn(
+            *mut bun_uws_sys::response::c::uws_res,
+            *mut bun_uws_sys::Request,
+            *mut ::std::ffi::c_void,
+        ),
+    > = unsafe {
+        ::std::mem::transmute(Some(
+            uws_h2_route_handler
+                as unsafe extern "C" fn(
+                    *mut bun_uws_sys::response::c::uws_res,
+                    *mut bun_uws_sys::Request,
+                    *mut ::std::ffi::c_void,
+                ),
+        ))
+    };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
     {
         let ud_val = PrivateValue(ud_ptr as *const core::ffi::c_void);
         rooted!(&in(cx_ref) let udv = ud_val);
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), udv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_udPtr".as_ptr(),
+            udv.handle().into(),
+            0,
+        );
     }
 
-    let safe_listen_cb: extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void) =
-        unsafe { ::std::mem::transmute(uws_h2_listen_callback as unsafe extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void)) };
+    let safe_listen_cb: extern "C" fn(
+        *mut bun_uws_sys::listen_socket::ListenSocket,
+        *mut ::std::ffi::c_void,
+    ) = unsafe {
+        ::std::mem::transmute(
+            uws_h2_listen_callback
+                as unsafe extern "C" fn(
+                    *mut bun_uws_sys::listen_socket::ListenSocket,
+                    *mut ::std::ffi::c_void,
+                ),
+        )
+    };
     (*app_ptr).listen(port as i32, safe_listen_cb, core::ptr::null_mut());
 
     {
         let app_ptr_val = PrivateValue(app_ptr as *const core::ffi::c_void);
         rooted!(&in(cx_ref) let apv = app_ptr_val);
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_sslAppPtr".as_ptr(), apv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_sslAppPtr".as_ptr(),
+            apv.handle().into(),
+            0,
+        );
     }
 
     rooted!(&in(cx_ref) let port_root = Int32Value(port as i32));
-    JS_DefineProperty(cx, server_obj.handle().into(), c"_listeningPort".as_ptr(), port_root.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_listeningPort".as_ptr(),
+        port_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     rooted!(&in(cx_ref) let listening_root = BooleanValue(true));
-    JS_DefineProperty(cx, server_obj.handle().into(), c"listening".as_ptr(), listening_root.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"listening".as_ptr(),
+        listening_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     register_active_h2_ssl_app(app_ptr);
 
     if let Some(cb) = callback {
         rooted!(&in(cx_ref) let fval_root = ObjectValue(cb));
         let mut rval = UndefinedValue();
-        let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-        JS_CallFunctionValue(cx, global.handle().into(), fval_root.handle().into(), &HandleValueArray::empty(), rval_h);
+        let rval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        JS_CallFunctionValue(
+            cx,
+            global.handle().into(),
+            fval_root.handle().into(),
+            &HandleValueArray::empty(),
+            rval_h,
+        );
         JS_ClearPendingException(cx);
     }
 
@@ -2177,9 +2878,15 @@ unsafe extern "C" fn http2_secure_server_close_js(
     // Close the SSL App
     {
         let mut app_ptr_val = UndefinedValue();
-        JS_GetProperty(cx, server_obj.handle().into(), c"_sslAppPtr".as_ptr(), MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData, ptr: &mut app_ptr_val,
-        });
+        JS_GetProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_sslAppPtr".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut app_ptr_val,
+            },
+        );
         let app_ptr = if val_is_private(&app_ptr_val) {
             app_ptr_val.to_private() as *mut App<true>
         } else {
@@ -2190,16 +2897,27 @@ unsafe extern "C" fn http2_secure_server_close_js(
             App::<true>::destroy(app_ptr);
             unregister_active_h2_ssl_app(app_ptr);
             rooted!(&in(cx_ref) let undef_root = UndefinedValue());
-            JS_SetProperty(cx, server_obj.handle().into(), c"_sslAppPtr".as_ptr(), undef_root.handle().into());
+            JS_SetProperty(
+                cx,
+                server_obj.handle().into(),
+                c"_sslAppPtr".as_ptr(),
+                undef_root.handle().into(),
+            );
         }
     }
 
     // Cleanup H2ServerUserData
     {
         let mut ud_ptr_val = UndefinedValue();
-        JS_GetProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData, ptr: &mut ud_ptr_val,
-        });
+        JS_GetProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_udPtr".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ud_ptr_val,
+            },
+        );
         let ud_ptr = if val_is_private(&ud_ptr_val) {
             ud_ptr_val.to_private() as *mut H2ServerUserData
         } else {
@@ -2209,7 +2927,12 @@ unsafe extern "C" fn http2_secure_server_close_js(
             let ud = Box::from_raw(ud_ptr);
             ud.cleanup();
             rooted!(&in(cx_ref) let undef_root2 = UndefinedValue());
-            JS_SetProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), undef_root2.handle().into());
+            JS_SetProperty(
+                cx,
+                server_obj.handle().into(),
+                c"_udPtr".as_ptr(),
+                undef_root2.handle().into(),
+            );
         }
     }
 
@@ -2222,11 +2945,7 @@ unsafe extern "C" fn http2_secure_server_close_js(
 // ──────────────────────────────────────────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn http2_fetch(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn http2_fetch(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let url = if argc > 0 && (*args.get(0).ptr).is_string() {
@@ -2254,8 +2973,8 @@ unsafe extern "C" fn http2_fetch(
     };
 
     // Parse headers from JSON
-    let headers_map: ::std::collections::HashMap<String, String> = serde_json::from_str(&headers_json)
-        .unwrap_or_default();
+    let headers_map: ::std::collections::HashMap<String, String> =
+        serde_json::from_str(&headers_json).unwrap_or_default();
     let headers: Vec<(String, String)> = headers_map
         .into_iter()
         .filter(|(k, _)| !k.starts_with(':')) // Strip pseudo-headers
@@ -2296,7 +3015,11 @@ unsafe extern "C" fn http2_fetch(
     let promise_obj = promise.get();
     let promise_val = ObjectValue(promise_obj);
 
-    let body_bytes = if body.is_empty() { None } else { Some(body.into_bytes()) };
+    let body_bytes = if body.is_empty() {
+        None
+    } else {
+        Some(body.into_bytes())
+    };
 
     // Schedule async fetch
     unsafe {
@@ -2331,12 +3054,23 @@ unsafe extern "C" fn http2_fetch(
 // ──────────────────────────────────────────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn define_int_prop(cx: &mut mozjs::context::JSContext, obj_ptr: *mut JSObject, name: &str, val: i32) {
+unsafe fn define_int_prop(
+    cx: &mut mozjs::context::JSContext,
+    obj_ptr: *mut JSObject,
+    name: &str,
+    val: i32,
+) {
     let c_name = ZBox::from_bytes(name.as_bytes());
     let raw_cx = cx.raw_cx();
     rooted!(&in(cx) let obj = obj_ptr);
     rooted!(&in(cx) let v = Int32Value(val));
-    JS_DefineProperty(raw_cx, obj.handle().into(), c_name.as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        raw_cx,
+        obj.handle().into(),
+        c_name.as_ptr(),
+        v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────

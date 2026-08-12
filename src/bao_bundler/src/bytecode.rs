@@ -56,11 +56,8 @@ mod tests {
     #[test]
     fn bytecode_handles_empty_source() {
         let mut url = bun_core::String::empty();
-        let result = __bun_jsc_generate_cached_bytecode(
-            bun_options_types::Format::Esm,
-            b"",
-            &mut url,
-        );
+        let result =
+            __bun_jsc_generate_cached_bytecode(bun_options_types::Format::Esm, b"", &mut url);
         assert!(result.is_none());
     }
 
@@ -73,7 +70,11 @@ mod tests {
         ] {
             let mut url = bun_core::String::empty();
             let result = __bun_jsc_generate_cached_bytecode(format, b"x", &mut url);
-            assert!(result.is_none(), "Phase 1 should return None for {}", format_name);
+            assert!(
+                result.is_none(),
+                "Phase 1 should return None for {}",
+                format_name
+            );
         }
     }
 

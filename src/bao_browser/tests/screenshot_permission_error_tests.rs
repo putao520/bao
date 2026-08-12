@@ -2,7 +2,7 @@
 // Deep tests: screenshot encode_image with PNG/JPEG, Permission is_*_allowed edge cases,
 // BrowserError Display/Debug variants, PermissionGuard integration.
 
-use bao_browser::{BrowserError, Permission, PermissionGuard, ScreenshotFormat, encode_image};
+use bao_browser::{encode_image, BrowserError, Permission, PermissionGuard, ScreenshotFormat};
 use image::RgbaImage;
 
 // ---- encode_image PNG ----
@@ -229,13 +229,19 @@ fn test_permission_env_none_allowed() {
 
 #[test]
 fn test_permission_env_explicit_true() {
-    let perm = Permission { env: Some(true), ..Default::default() };
+    let perm = Permission {
+        env: Some(true),
+        ..Default::default()
+    };
     assert!(perm.is_env_allowed());
 }
 
 #[test]
 fn test_permission_env_explicit_false() {
-    let perm = Permission { env: Some(false), ..Default::default() };
+    let perm = Permission {
+        env: Some(false),
+        ..Default::default()
+    };
     assert!(!perm.is_env_allowed());
 }
 
@@ -247,7 +253,10 @@ fn test_permission_run_none_allowed() {
 
 #[test]
 fn test_permission_run_explicit_false() {
-    let perm = Permission { run: Some(false), ..Default::default() };
+    let perm = Permission {
+        run: Some(false),
+        ..Default::default()
+    };
     assert!(!perm.is_run_allowed());
 }
 
@@ -374,7 +383,7 @@ fn test_browser_error_all_variants_debug() {
     ];
     // All variants have distinct debug output
     for i in 0..variants.len() {
-        for j in (i+1)..variants.len() {
+        for j in (i + 1)..variants.len() {
             assert_ne!(variants[i], variants[j]);
         }
     }

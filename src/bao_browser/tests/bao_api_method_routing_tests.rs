@@ -166,14 +166,14 @@ fn is_void_method(method: &str) -> bool {
 fn is_known_direct_field_method(method: &str) -> bool {
     // 直接合成路径: 返回特定业务字段(非 CDP RemoteObject 结构)
     const DIRECT_FIELD_METHODS: &[&str] = &[
-        "JSHandle.asElement",       // {isElement: bool}
-        "JSHandle.getProperties",   // {result: [...]}
-        "Page.viewport",            // {width, height, ...}
-        "Page.frames",              // {frames: [...]}
-        "Page.mainFrame",           // {id, url, name, parentId}
-        "Page.screenshot",          // {data: "base64..."}
-        "Page.pdf",                 // {data: "base64..."}
-        "ElementHandle.isChecked",  // {result:{value:bool}} (callFunctionOn,但返回特定结构)
+        "JSHandle.asElement",      // {isElement: bool}
+        "JSHandle.getProperties",  // {result: [...]}
+        "Page.viewport",           // {width, height, ...}
+        "Page.frames",             // {frames: [...]}
+        "Page.mainFrame",          // {id, url, name, parentId}
+        "Page.screenshot",         // {data: "base64..."}
+        "Page.pdf",                // {data: "base64..."}
+        "ElementHandle.isChecked", // {result:{value:bool}} (callFunctionOn,但返回特定结构)
         "ElementHandle.isDisabled",
         "ElementHandle.isEditable",
         "ElementHandle.isEnabled",

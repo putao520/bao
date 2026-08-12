@@ -18,22 +18,34 @@ use crate::js_value::JSValue;
 /// is the actual type used. This ZST exists purely for JSC API compatibility
 /// at the type-name level; actual object references use raw pointers to
 /// `mozjs::jsapi::JSObject`.
-pub struct JSObject { _private: () }
+pub struct JSObject {
+    _private: (),
+}
 
 /// Opaque JS function type (JSC API compatibility).
-pub struct JSFunction { _private: () }
+pub struct JSFunction {
+    _private: (),
+}
 
 /// Opaque JS string type (JSC API compatibility).
-pub struct JSString { _private: () }
+pub struct JSString {
+    _private: (),
+}
 
 /// Opaque JS array iterator type (JSC API compatibility).
-pub struct JSArrayIterator { _private: () }
+pub struct JSArrayIterator {
+    _private: (),
+}
 
 /// Opaque JS array type (JSC API compatibility).
-pub struct JSArray { _private: () }
+pub struct JSArray {
+    _private: (),
+}
 
 /// Opaque JS BigInt type (JSC API compatibility).
-pub struct JSBigInt { _private: () }
+pub struct JSBigInt {
+    _private: (),
+}
 
 // ─── Property operation helpers ────────────────────────────────────────────
 
@@ -42,7 +54,11 @@ pub struct JSBigInt { _private: () }
 /// # Safety
 /// `cx` must be a valid JSContext. `obj` must be a valid JSObject.
 #[allow(unsafe_op_in_unsafe_fn)]
-pub unsafe fn get_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject, name: &str) -> JSValue {
+pub unsafe fn get_property(
+    cx: *mut JSContext,
+    obj: *mut mozjs::jsapi::JSObject,
+    name: &str,
+) -> JSValue {
     let c_name = CString::new(name).unwrap_or_default();
     // BCE-20260619-012: root obj before passing as Handle to JS API.
     let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -65,13 +81,23 @@ pub unsafe fn get_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject,
 /// # Safety
 /// `cx` must be a valid JSContext. `obj` must be a valid JSObject.
 #[allow(unsafe_op_in_unsafe_fn)]
-pub unsafe fn set_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject, name: &str, value: JSVal) {
+pub unsafe fn set_property(
+    cx: *mut JSContext,
+    obj: *mut mozjs::jsapi::JSObject,
+    name: &str,
+    value: JSVal,
+) {
     let c_name = CString::new(name).unwrap_or_default();
     // BCE-20260619-012: root obj and value (may be Object/String JSVal) before passing as Handle.
     let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(cx_ref) let obj_root = obj);
     rooted!(&in(cx_ref) let value_root = value);
-    JS_SetProperty(cx, obj_root.handle().into(), c_name.as_ptr(), value_root.handle().into());
+    JS_SetProperty(
+        cx,
+        obj_root.handle().into(),
+        c_name.as_ptr(),
+        value_root.handle().into(),
+    );
 }
 
 /// Define a property on a JS object with specific attributes.
@@ -91,7 +117,13 @@ pub unsafe fn define_property(
     let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(cx_ref) let obj_root = obj);
     rooted!(&in(cx_ref) let value_root = value);
-    JS_DefineProperty(cx, obj_root.handle().into(), c_name.as_ptr(), value_root.handle().into(), attrs)
+    JS_DefineProperty(
+        cx,
+        obj_root.handle().into(),
+        c_name.as_ptr(),
+        value_root.handle().into(),
+        attrs,
+    )
 }
 
 /// Check if a JS object has a property.
@@ -99,7 +131,11 @@ pub unsafe fn define_property(
 /// # Safety
 /// `cx` must be a valid JSContext. `obj` must be a valid JSObject.
 #[allow(unsafe_op_in_unsafe_fn)]
-pub unsafe fn has_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject, name: &str) -> bool {
+pub unsafe fn has_property(
+    cx: *mut JSContext,
+    obj: *mut mozjs::jsapi::JSObject,
+    name: &str,
+) -> bool {
     let c_name = CString::new(name).unwrap_or_default();
     // BCE-20260619-012: root obj before passing as Handle to JS API.
     let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -114,7 +150,11 @@ pub unsafe fn has_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject,
 /// # Safety
 /// `cx` must be a valid JSContext. `obj` must be a valid JSObject.
 #[allow(unsafe_op_in_unsafe_fn)]
-pub unsafe fn delete_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject, name: &str) -> bool {
+pub unsafe fn delete_property(
+    cx: *mut JSContext,
+    obj: *mut mozjs::jsapi::JSObject,
+    name: &str,
+) -> bool {
     let c_name = CString::new(name).unwrap_or_default();
     // BCE-20260619-012: root obj before passing as Handle to JS API.
     let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));

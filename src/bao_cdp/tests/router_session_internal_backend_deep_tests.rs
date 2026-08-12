@@ -3,11 +3,10 @@
 // BackendKind exhaustiveness, CdpRouter send_command error paths,
 // multiple sessions, session IDs uniqueness, detach_session errors.
 
-use bao_cdp::{CdpRouter, ExternalBrowser, BackendKind};
+use bao_cdp::{BackendKind, CdpRouter, ExternalBrowser};
 
 const TID: &str = "test-target";
 use serde_json::json;
-
 
 // ============================================================================
 // CdpRouter construction
@@ -112,9 +111,12 @@ fn test_create_multiple_sessions() {
         })
         .collect();
     // All session IDs should be unique
-    let ids: Vec<_> = sessions.iter().map(|s| s.session_id().to_string()).collect();
+    let ids: Vec<_> = sessions
+        .iter()
+        .map(|s| s.session_id().to_string())
+        .collect();
     for i in 0..ids.len() {
-        for j in (i+1)..ids.len() {
+        for j in (i + 1)..ids.len() {
             assert_ne!(ids[i], ids[j], "session {} and {} have same ID", i, j);
         }
     }
@@ -186,7 +188,11 @@ fn test_session_send_unknown_command() {
 fn test_session_send_with_params() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session.send(&router, "Runtime.evaluate", Some(json!({"expression": "1+1"})));
+    let result = session.send(
+        &router,
+        "Runtime.evaluate",
+        Some(json!({"expression": "1+1"})),
+    );
     // Internal backend will try to handle but may not have a bridge responder
     // For commands that don't need bridge, should return Ok
     assert!(result.is_ok() || result.is_err());
@@ -259,7 +265,13 @@ fn test_session_send_tracks_enabled_domains() {
     session.send(&router, "DOM.enable", None).ok();
     // Sending additional commands should still work
     assert!(session.send(&router, "Page.getLayoutMetrics", None).is_ok());
-    assert!(session.send(&router, "Runtime.evaluate", Some(json!({"expression": "test"}))).is_ok());
+    assert!(session
+        .send(
+            &router,
+            "Runtime.evaluate",
+            Some(json!({"expression": "test"}))
+        )
+        .is_ok());
 }
 
 // ============================================================================

@@ -6,16 +6,15 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use dpi::PhysicalSize;
 use servo::{
-    AllowOrDenyRequest, ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint,
-    DeviceIntRect, DeviceIntSize, EmbedderControl, EmbedderControlId, LoadStatus,
-    NavigationRequest, PermissionRequest, ScreenGeometry, ServoDelegate,
-    ServoError, WebView, WebViewDelegate,
+    AllowOrDenyRequest, ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntRect,
+    DeviceIntSize, EmbedderControl, EmbedderControlId, LoadStatus, NavigationRequest,
+    PermissionRequest, ScreenGeometry, ServoDelegate, ServoError, WebView, WebViewDelegate,
 };
 
 use bao_cdp::{BaoEvent, ConsoleMessage};
@@ -116,7 +115,8 @@ impl WorkerHandle {
     ///
     /// @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
     pub fn set_worker_global_addr(&self, addr: usize) {
-        self.worker_global_addr.store(addr as u64, Ordering::Release);
+        self.worker_global_addr
+            .store(addr as u64, Ordering::Release);
     }
 
     /// Get the Worker's global object address (0 if not yet set).
@@ -322,7 +322,10 @@ impl WorkerStructuredMessage {
         Self::new(
             worker_id,
             direction,
-            Some(StructuredClonePayload { data, transferable_count }),
+            Some(StructuredClonePayload {
+                data,
+                transferable_count,
+            }),
         )
     }
 }
@@ -441,7 +444,10 @@ impl WorkerChannelBridge {
                 }
             }
         }
-        WorkerDrainResult { messages, disconnected }
+        WorkerDrainResult {
+            messages,
+            disconnected,
+        }
     }
 }
 
@@ -681,7 +687,10 @@ impl SharedWorkerPortChannel {
                 }
             }
         }
-        WorkerDrainResult { messages, disconnected }
+        WorkerDrainResult {
+            messages,
+            disconnected,
+        }
     }
 }
 
@@ -794,9 +803,13 @@ impl SharedWorkerChannelBridge {
         payload: StructuredClonePayload,
     ) -> Result<(), String> {
         match self.port_channels.get(port_index) {
-            Some(port) => port.post_message_to_worker(payload)
+            Some(port) => port
+                .post_message_to_worker(payload)
                 .map_err(|e| format!("SharedWorker port channel closed: {}", e)),
-            None => Err(format!("Invalid port index {} for SharedWorker", port_index)),
+            None => Err(format!(
+                "Invalid port index {} for SharedWorker",
+                port_index
+            )),
         }
     }
 }
@@ -1346,7 +1359,9 @@ impl WorkerLocation {
             port: port.map_or(String::new(), |p| p.to_string()),
             pathname: parsed.path().to_string(),
             search: parsed.query().map_or(String::new(), |q| format!("?{}", q)),
-            hash: parsed.fragment().map_or(String::new(), |f| format!("#{}", f)),
+            hash: parsed
+                .fragment()
+                .map_or(String::new(), |f| format!("#{}", f)),
             origin,
         })
     }
@@ -2087,7 +2102,10 @@ impl WorkerScriptLoader {
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
     pub fn from_source(source: WorkerScriptSource, script_type: WorkerScriptType) -> Self {
-        WorkerScriptLoader { source, script_type }
+        WorkerScriptLoader {
+            source,
+            script_type,
+        }
     }
 
     /// Resolve the script source to loadable content.
@@ -2111,7 +2129,10 @@ impl WorkerScriptLoader {
             WorkerScriptSource::Url(url_str) => {
                 // Validate the URL can be parsed.
                 let parsed = url::Url::parse(url_str).map_err(|e| {
-                    WorkerScriptLoadError::InvalidUrl(format!("Invalid Worker script URL '{}': {}", url_str, e))
+                    WorkerScriptLoadError::InvalidUrl(format!(
+                        "Invalid Worker script URL '{}': {}",
+                        url_str, e
+                    ))
                 })?;
 
                 // For data: URLs, extract the script content directly.
@@ -2190,9 +2211,12 @@ impl WorkerScriptLoader {
             use base64::Engine;
             base64::engine::general_purpose::STANDARD
                 .decode(data)
-                .map_err(|e| WorkerScriptLoadError::Utf8DecodeError(
-                    format!("Failed to decode base64 data: URL: {}", e)
-                ))?
+                .map_err(|e| {
+                    WorkerScriptLoadError::Utf8DecodeError(format!(
+                        "Failed to decode base64 data: URL: {}",
+                        e
+                    ))
+                })?
         } else {
             // For non-base64 data: URLs, the data is percent-encoded ASCII.
             // We decode percent-encoding and validate UTF-8.
@@ -2200,7 +2224,10 @@ impl WorkerScriptLoader {
         };
 
         let script = String::from_utf8(content).map_err(|e| {
-            WorkerScriptLoadError::Utf8DecodeError(format!("data: URL content is not valid UTF-8: {}", e))
+            WorkerScriptLoadError::Utf8DecodeError(format!(
+                "data: URL content is not valid UTF-8: {}",
+                e
+            ))
         })?;
 
         Ok(WorkerScriptSource::Inline(script))
@@ -2214,13 +2241,17 @@ impl WorkerScriptLoader {
     /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
     fn resolve_file_url(parsed: &url::Url) -> Result<WorkerScriptSource, WorkerScriptLoadError> {
         let path = parsed.to_file_path().map_err(|_| {
-            WorkerScriptLoadError::InvalidUrl(format!("Cannot convert file: URL to path: {}", parsed))
+            WorkerScriptLoadError::InvalidUrl(format!(
+                "Cannot convert file: URL to path: {}",
+                parsed
+            ))
         })?;
 
         let content = std::fs::read_to_string(&path).map_err(|e| {
             WorkerScriptLoadError::NetworkError(format!(
                 "Failed to read Worker script file '{}': {}",
-                path.display(), e
+                path.display(),
+                e
             ))
         })?;
 
@@ -2330,9 +2361,11 @@ impl WorkerScriptLoader {
                 state_callback(WorkerScriptLoadState::Validating);
 
                 // Extract Content-Type header (case-insensitive).
-                let ct = response.headers.iter().find(|(k, _)| {
-                    k.eq_ignore_ascii_case("content-type")
-                }).map(|(_, v)| v.to_string());
+                let ct = response
+                    .headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, v)| v.to_string());
 
                 if let Some(ref content_type) = ct {
                     // Per DF-WK-2: "JS MIME 校验" — HTTP responses for Worker
@@ -2357,7 +2390,8 @@ impl WorkerScriptLoader {
 
                 let source = String::from_utf8(response.body.to_vec()).map_err(|e| {
                     WorkerScriptLoadError::Utf8DecodeError(format!(
-                        "Worker script response body is not valid UTF-8: {}", e
+                        "Worker script response body is not valid UTF-8: {}",
+                        e
                     ))
                 })?;
 
@@ -2425,8 +2459,8 @@ fn fetch_worker_script(
     url: &str,
     stealth_profile: &Option<bao_stealth::StealthProfile>,
 ) -> Result<WorkerScriptFetchResponse, String> {
-    use bun_runtime::stealth_http::stealth_http_request;
     use bun_http::Method;
+    use bun_runtime::stealth_http::stealth_http_request;
 
     // @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK
     // The stealth profile is inherited from the parent page so that
@@ -2440,14 +2474,15 @@ fn fetch_worker_script(
         url,
         &[],  // no custom headers for Worker script fetch
         None, // no body for GET request
-    ).map_err(|e| {
-        format!("Failed to fetch Worker script from '{}': {}", url, e)
-    })?;
+    )
+    .map_err(|e| format!("Failed to fetch Worker script from '{}': {}", url, e))?;
 
     // Convert StealthSyncResult to our response type.
     Ok(WorkerScriptFetchResponse {
         status_code: result.status_code,
-        headers: result.headers.into_iter()
+        headers: result
+            .headers
+            .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
         body: result.body.to_vec(),
@@ -2543,13 +2578,14 @@ fn decode_percent_encoded(data: &str) -> Result<Vec<u8>, WorkerScriptLoadError> 
             let hex: String = chars.by_ref().take(2).collect();
             if hex.len() != 2 {
                 return Err(WorkerScriptLoadError::Utf8DecodeError(
-                    "Incomplete percent-encoding in data: URL".to_string()
+                    "Incomplete percent-encoding in data: URL".to_string(),
                 ));
             }
             let byte = u8::from_str_radix(&hex, 16).map_err(|e| {
-                WorkerScriptLoadError::Utf8DecodeError(
-                    format!("Invalid percent-encoding '%{}' in data: URL: {}", hex, e)
-                )
+                WorkerScriptLoadError::Utf8DecodeError(format!(
+                    "Invalid percent-encoding '%{}' in data: URL: {}",
+                    hex, e
+                ))
             })?;
             bytes.push(byte);
         } else if c == '+' {
@@ -2563,7 +2599,10 @@ fn decode_percent_encoded(data: &str) -> Result<Vec<u8>, WorkerScriptLoadError> 
     }
     // Validate UTF-8 by converting to String and back
     String::from_utf8(bytes.clone()).map_err(|e| {
-        WorkerScriptLoadError::Utf8DecodeError(format!("data: URL content is not valid UTF-8: {}", e))
+        WorkerScriptLoadError::Utf8DecodeError(format!(
+            "data: URL content is not valid UTF-8: {}",
+            e
+        ))
     })?;
     Ok(bytes)
 }
@@ -2695,14 +2734,22 @@ impl ServiceWorkerHandle {
     /// Create a new ServiceWorkerHandle in the installing state.
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
-    pub fn new(script_url: String, scope: String, stealth_profile: Option<bao_stealth::StealthProfile>) -> Self {
+    pub fn new(
+        script_url: String,
+        scope: String,
+        stealth_profile: Option<bao_stealth::StealthProfile>,
+    ) -> Self {
         ServiceWorkerHandle {
             script_url,
             scope,
             closing: Arc::new(AtomicBool::new(false)),
             terminated: Arc::new(AtomicBool::new(false)),
-            state: Arc::new(std::sync::Mutex::new(ServiceWorkerRegistrationState::Installing)),
-            fetch_intercept_mode: Arc::new(std::sync::Mutex::new(ServiceWorkerFetchInterceptMode::None)),
+            state: Arc::new(std::sync::Mutex::new(
+                ServiceWorkerRegistrationState::Installing,
+            )),
+            fetch_intercept_mode: Arc::new(std::sync::Mutex::new(
+                ServiceWorkerFetchInterceptMode::None,
+            )),
             stealth_profile,
         }
     }
@@ -2735,21 +2782,30 @@ impl ServiceWorkerHandle {
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorker]
     pub fn registration_state(&self) -> ServiceWorkerRegistrationState {
-        self.state.lock().expect("ServiceWorkerHandle state lock poisoned").clone()
+        self.state
+            .lock()
+            .expect("ServiceWorkerHandle state lock poisoned")
+            .clone()
     }
 
     /// Returns the current fetch interception mode.
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19]
     pub fn fetch_intercept_mode(&self) -> ServiceWorkerFetchInterceptMode {
-        self.fetch_intercept_mode.lock().expect("ServiceWorkerHandle fetch_intercept_mode lock poisoned").clone()
+        self.fetch_intercept_mode
+            .lock()
+            .expect("ServiceWorkerHandle fetch_intercept_mode lock poisoned")
+            .clone()
     }
 
     /// Returns true if the ServiceWorker is actively intercepting fetch requests.
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19]
     pub fn is_intercepting_fetch(&self) -> bool {
-        matches!(self.fetch_intercept_mode(), ServiceWorkerFetchInterceptMode::Intercepting)
+        matches!(
+            self.fetch_intercept_mode(),
+            ServiceWorkerFetchInterceptMode::Intercepting
+        )
     }
 
     /// Transition the registration state to a new state.
@@ -2758,7 +2814,10 @@ impl ServiceWorkerHandle {
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
     pub fn transition_state(&self, new_state: ServiceWorkerRegistrationState) {
-        let mut state = self.state.lock().expect("ServiceWorkerHandle state lock poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .expect("ServiceWorkerHandle state lock poisoned");
         *state = new_state;
     }
 
@@ -2770,7 +2829,10 @@ impl ServiceWorkerHandle {
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19]
     pub fn enable_fetch_interception(&self) {
-        let mut mode = self.fetch_intercept_mode.lock().expect("ServiceWorkerHandle fetch_intercept_mode lock poisoned");
+        let mut mode = self
+            .fetch_intercept_mode
+            .lock()
+            .expect("ServiceWorkerHandle fetch_intercept_mode lock poisoned");
         *mode = ServiceWorkerFetchInterceptMode::Intercepting;
     }
 
@@ -2781,7 +2843,10 @@ impl ServiceWorkerHandle {
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19]
     pub fn disable_fetch_interception(&self) {
-        let mut mode = self.fetch_intercept_mode.lock().expect("ServiceWorkerHandle fetch_intercept_mode lock poisoned");
+        let mut mode = self
+            .fetch_intercept_mode
+            .lock()
+            .expect("ServiceWorkerHandle fetch_intercept_mode lock poisoned");
         *mode = ServiceWorkerFetchInterceptMode::None;
     }
 
@@ -3011,7 +3076,10 @@ impl ServiceWorkerGlobalScopeState {
     /// Create a ServiceWorkerGlobalScopeState for the given ServiceWorker registration.
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorkerGlobalScope] DF-WK-8 / DF-WK-10
-    pub fn new(registration_id: ServiceWorkerRegistrationId, config: &ServiceWorkerScopeConfig) -> Self {
+    pub fn new(
+        registration_id: ServiceWorkerRegistrationId,
+        config: &ServiceWorkerScopeConfig,
+    ) -> Self {
         let worker_url = registration_id.script_url.clone();
         let scope_url = registration_id.scope.clone();
         ServiceWorkerGlobalScopeState {
@@ -3283,7 +3351,8 @@ impl BaoWebViewState {
             .iter()
             .map(|g| WorkerId(g.handle().script_url.clone()))
             .collect();
-        self.dedicated_worker_scopes.retain(|id, _| active_ids.contains(id));
+        self.dedicated_worker_scopes
+            .retain(|id, _| active_ids.contains(id));
         // @trace REQ-BRW-004 [entity:Worker] [criterion:18] reap terminated WebWorkers
         // Drop WebWorker instances for terminated workers. Their Drop impl
         // joins the Worker thread, ensuring clean teardown.
@@ -3294,7 +3363,10 @@ impl BaoWebViewState {
     ///
     /// @trace REQ-BRW-004 [entity:Worker]
     pub fn active_worker_count(&self) -> usize {
-        self.active_workers.iter().filter(|g| !g.handle().is_terminated()).count()
+        self.active_workers
+            .iter()
+            .filter(|g| !g.handle().is_terminated())
+            .count()
     }
 
     /// Terminate a specific Worker via the given teardown path (crash-safe).
@@ -3319,9 +3391,10 @@ impl BaoWebViewState {
         path: WorkerTeardownPath,
     ) -> Option<WorkerTeardownResult> {
         // Find the AutoCloseWorker guard for this Worker
-        let guard_idx = self.active_workers.iter().position(|g| {
-            &WorkerId(g.handle().script_url.clone()) == worker_id
-        })?;
+        let guard_idx = self
+            .active_workers
+            .iter()
+            .position(|g| &WorkerId(g.handle().script_url.clone()) == worker_id)?;
 
         let guard = &mut self.active_workers[guard_idx];
 
@@ -3377,7 +3450,11 @@ impl BaoWebViewState {
     /// state for CDP observability and stealth consistency verification.
     ///
     /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
-    pub fn register_dedicated_worker_scope(&mut self, worker_id: WorkerId, scope: DedicatedWorkerGlobalScopeState) {
+    pub fn register_dedicated_worker_scope(
+        &mut self,
+        worker_id: WorkerId,
+        scope: DedicatedWorkerGlobalScopeState,
+    ) {
         self.dedicated_worker_scopes.insert(worker_id, scope);
     }
 
@@ -3403,21 +3480,30 @@ impl BaoWebViewState {
     /// Get a reference to a DedicatedWorkerGlobalScope state.
     ///
     /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
-    pub fn dedicated_worker_scope(&self, worker_id: &WorkerId) -> Option<&DedicatedWorkerGlobalScopeState> {
+    pub fn dedicated_worker_scope(
+        &self,
+        worker_id: &WorkerId,
+    ) -> Option<&DedicatedWorkerGlobalScopeState> {
         self.dedicated_worker_scopes.get(worker_id)
     }
 
     /// Get a mutable reference to a DedicatedWorkerGlobalScope state.
     ///
     /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
-    pub fn dedicated_worker_scope_mut(&mut self, worker_id: &WorkerId) -> Option<&mut DedicatedWorkerGlobalScopeState> {
+    pub fn dedicated_worker_scope_mut(
+        &mut self,
+        worker_id: &WorkerId,
+    ) -> Option<&mut DedicatedWorkerGlobalScopeState> {
         self.dedicated_worker_scopes.get_mut(worker_id)
     }
 
     /// Remove a DedicatedWorkerGlobalScope state (called when a Worker is reaped).
     ///
     /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
-    pub fn remove_dedicated_worker_scope(&mut self, worker_id: &WorkerId) -> Option<DedicatedWorkerGlobalScopeState> {
+    pub fn remove_dedicated_worker_scope(
+        &mut self,
+        worker_id: &WorkerId,
+    ) -> Option<DedicatedWorkerGlobalScopeState> {
         self.dedicated_worker_scopes.remove(worker_id)
     }
 
@@ -3446,7 +3532,11 @@ impl BaoWebViewState {
     /// Tracks the loading progress for CDP observability.
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
-    pub fn register_worker_script_load_state(&mut self, worker_id: WorkerId, state: WorkerScriptLoadState) {
+    pub fn register_worker_script_load_state(
+        &mut self,
+        worker_id: WorkerId,
+        state: WorkerScriptLoadState,
+    ) {
         self.worker_script_load_states.insert(worker_id, state);
     }
 
@@ -3456,7 +3546,11 @@ impl BaoWebViewState {
     /// (Pending → Fetching → Validating → Decoding → Compiling → Ready/Failed).
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
-    pub fn update_worker_script_load_state(&mut self, worker_id: &WorkerId, state: WorkerScriptLoadState) {
+    pub fn update_worker_script_load_state(
+        &mut self,
+        worker_id: &WorkerId,
+        state: WorkerScriptLoadState,
+    ) {
         if let Some(current) = self.worker_script_load_states.get_mut(worker_id) {
             *current = state;
         }
@@ -3472,7 +3566,10 @@ impl BaoWebViewState {
     /// Remove the script loading state for a Worker (called when reaped).
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
-    pub fn remove_worker_script_load_state(&mut self, worker_id: &WorkerId) -> Option<WorkerScriptLoadState> {
+    pub fn remove_worker_script_load_state(
+        &mut self,
+        worker_id: &WorkerId,
+    ) -> Option<WorkerScriptLoadState> {
         self.worker_script_load_states.remove(worker_id)
     }
 
@@ -3495,7 +3592,8 @@ impl BaoWebViewState {
             .iter()
             .map(|g| WorkerId(g.handle().script_url.clone()))
             .collect();
-        self.worker_script_load_states.retain(|id, _| active_ids.contains(id));
+        self.worker_script_load_states
+            .retain(|id, _| active_ids.contains(id));
     }
 
     /// Returns a snapshot of all active Workers' lifecycle states.
@@ -3562,7 +3660,11 @@ impl BaoWebViewState {
                 WorkerMessageDirection::WorkerToPage => "worker→page",
             };
             let payload_info = match &msg.payload {
-                Some(p) => format!("{} bytes, {} transferable(s)", p.data.len(), p.transferable_count),
+                Some(p) => format!(
+                    "{} bytes, {} transferable(s)",
+                    p.data.len(),
+                    p.transferable_count
+                ),
                 None => "metadata-only (servo handles clone)".to_string(),
             };
             let _ = tx.send(ServoEvent::Console {
@@ -3622,7 +3724,8 @@ impl BaoWebViewState {
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
     pub fn create_worker_channel(&mut self, worker_id: WorkerId) -> WorkerChannelEndpoints {
         let (bridge, endpoints) = WorkerChannelBridge::new(worker_id);
-        self.worker_channels.insert(bridge.worker_id.clone(), bridge);
+        self.worker_channels
+            .insert(bridge.worker_id.clone(), bridge);
         endpoints
     }
 
@@ -3652,7 +3755,8 @@ impl BaoWebViewState {
         payload: StructuredClonePayload,
     ) -> Result<(), String> {
         match self.worker_channels.get(worker_id) {
-            Some(bridge) => bridge.post_message_to_worker(payload)
+            Some(bridge) => bridge
+                .post_message_to_worker(payload)
                 .map_err(|e| format!("Worker channel closed: {}", e)),
             None => Err(format!("No channel bridge for worker: {}", worker_id.0)),
         }
@@ -3787,7 +3891,11 @@ impl BaoWebViewState {
                 text: format!(
                     "[SharedWorker] connect: {} (name={}) from {}",
                     event.shared_worker_id.script_url,
-                    if event.shared_worker_id.name.is_empty() { "<default>" } else { &event.shared_worker_id.name },
+                    if event.shared_worker_id.name.is_empty() {
+                        "<default>"
+                    } else {
+                        &event.shared_worker_id.name
+                    },
                     event.page_url
                 ),
                 url: None,
@@ -3829,7 +3937,10 @@ impl BaoWebViewState {
     /// If no bridge exists for the SharedWorkerId, one is created first.
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
-    pub fn add_shared_worker_port(&mut self, shared_worker_id: SharedWorkerId) -> SharedWorkerPortEndpoints {
+    pub fn add_shared_worker_port(
+        &mut self,
+        shared_worker_id: SharedWorkerId,
+    ) -> SharedWorkerPortEndpoints {
         if !self.shared_worker_channels.contains_key(&shared_worker_id) {
             self.create_shared_worker_channel(shared_worker_id.clone());
         }
@@ -3849,7 +3960,10 @@ impl BaoWebViewState {
     /// Remove a SharedWorker channel bridge.
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
-    pub fn remove_shared_worker_channel(&mut self, id: &SharedWorkerId) -> Option<SharedWorkerChannelBridge> {
+    pub fn remove_shared_worker_channel(
+        &mut self,
+        id: &SharedWorkerId,
+    ) -> Option<SharedWorkerChannelBridge> {
         self.shared_worker_channels.remove(id)
     }
 
@@ -3862,7 +3976,9 @@ impl BaoWebViewState {
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope] DF-WK-7
     /// @trace REQ-BRW-004 [criterion:18] crash-safe teardown detection
-    pub fn drain_all_shared_worker_messages(&self) -> (Vec<WorkerStructuredMessage>, Vec<SharedWorkerId>) {
+    pub fn drain_all_shared_worker_messages(
+        &self,
+    ) -> (Vec<WorkerStructuredMessage>, Vec<SharedWorkerId>) {
         let mut all_messages = Vec::new();
         let mut all_disconnected = Vec::new();
         for (_, bridge) in &self.shared_worker_channels {
@@ -3901,8 +4017,10 @@ impl BaoWebViewState {
     ) -> Result<(), String> {
         match self.shared_worker_channels.get(id) {
             Some(bridge) => bridge.post_to_worker_from_port(port_index, payload),
-            None => Err(format!("No channel bridge for SharedWorker: {}:{}",
-                id.script_url, id.name)),
+            None => Err(format!(
+                "No channel bridge for SharedWorker: {}:{}",
+                id.script_url, id.name
+            )),
         }
     }
 
@@ -3914,14 +4032,18 @@ impl BaoWebViewState {
             bridge.remove_disconnected_ports();
         }
         // Remove bridges with no remaining ports
-        self.shared_worker_channels.retain(|_, bridge| bridge.port_count() > 0);
+        self.shared_worker_channels
+            .retain(|_, bridge| bridge.port_count() > 0);
     }
 
     /// Returns the total number of SharedWorker port channels.
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorker]
     pub fn shared_worker_channel_count(&self) -> usize {
-        self.shared_worker_channels.values().map(|b| b.port_count()).sum()
+        self.shared_worker_channels
+            .values()
+            .map(|b| b.port_count())
+            .sum()
     }
 
     /// Register a SharedWorkerGlobalScope state under the given SharedWorkerId.
@@ -3930,28 +4052,41 @@ impl BaoWebViewState {
     /// for CDP observability and stealth consistency verification (CRIT-STL-WK).
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope]
-    pub fn register_shared_worker_scope(&mut self, id: SharedWorkerId, scope: SharedWorkerGlobalScopeState) {
+    pub fn register_shared_worker_scope(
+        &mut self,
+        id: SharedWorkerId,
+        scope: SharedWorkerGlobalScopeState,
+    ) {
         self.shared_worker_scopes.insert(id, scope);
     }
 
     /// Get a reference to a SharedWorkerGlobalScope state.
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope]
-    pub fn shared_worker_scope(&self, id: &SharedWorkerId) -> Option<&SharedWorkerGlobalScopeState> {
+    pub fn shared_worker_scope(
+        &self,
+        id: &SharedWorkerId,
+    ) -> Option<&SharedWorkerGlobalScopeState> {
         self.shared_worker_scopes.get(id)
     }
 
     /// Get a mutable reference to a SharedWorkerGlobalScope state.
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope]
-    pub fn shared_worker_scope_mut(&mut self, id: &SharedWorkerId) -> Option<&mut SharedWorkerGlobalScopeState> {
+    pub fn shared_worker_scope_mut(
+        &mut self,
+        id: &SharedWorkerId,
+    ) -> Option<&mut SharedWorkerGlobalScopeState> {
         self.shared_worker_scopes.get_mut(id)
     }
 
     /// Remove a SharedWorkerGlobalScope state (called when a SharedWorker is reaped).
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope]
-    pub fn remove_shared_worker_scope(&mut self, id: &SharedWorkerId) -> Option<SharedWorkerGlobalScopeState> {
+    pub fn remove_shared_worker_scope(
+        &mut self,
+        id: &SharedWorkerId,
+    ) -> Option<SharedWorkerGlobalScopeState> {
         self.shared_worker_scopes.remove(id)
     }
 
@@ -4110,10 +4245,7 @@ impl BaoWebViewState {
     /// Per SPEC criterion #19: SW-intercepted fetch uses the same stealth profile.
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorkerGlobalScope] [criterion:19] DF-WK-10
-    pub fn set_service_worker_scope_config(
-        &mut self,
-        config: &ServiceWorkerScopeConfig,
-    ) {
+    pub fn set_service_worker_scope_config(&mut self, config: &ServiceWorkerScopeConfig) {
         if let Some(scope) = &mut self.service_worker_scope {
             scope.scope.navigator = WorkerNavigator::from_service_scope_config(config);
         }
@@ -4238,9 +4370,9 @@ impl BaoServoDelegate {
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorker]
     pub fn reap_terminated_shared_workers(&self) {
-        self.shared_workers.borrow_mut().retain(|h| {
-            !h.is_terminated() || h.connected_page_count() > 0
-        });
+        self.shared_workers
+            .borrow_mut()
+            .retain(|h| !h.is_terminated() || h.connected_page_count() > 0);
     }
 
     /// Returns the number of active SharedWorkers across all pages.
@@ -4278,7 +4410,11 @@ impl BaoServoDelegate {
     /// Returns the handle and whether it was newly created.
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
-    pub fn get_or_create_shared_worker(&self, script_url: &str, name: &str) -> (SharedWorkerHandle, bool) {
+    pub fn get_or_create_shared_worker(
+        &self,
+        script_url: &str,
+        name: &str,
+    ) -> (SharedWorkerHandle, bool) {
         if let Some(existing) = self.find_shared_worker(script_url, name) {
             (existing, false)
         } else {
@@ -4338,7 +4474,11 @@ impl BaoServoDelegate {
     /// Returns a clone of the ServiceWorkerHandle if found, None otherwise.
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
-    pub fn find_service_worker(&self, script_url: &str, scope: &str) -> Option<ServiceWorkerHandle> {
+    pub fn find_service_worker(
+        &self,
+        script_url: &str,
+        scope: &str,
+    ) -> Option<ServiceWorkerHandle> {
         self.service_workers
             .borrow()
             .iter()
@@ -4369,7 +4509,9 @@ impl BaoServoDelegate {
     ///
     /// @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19]
     pub fn reap_terminated_service_workers(&self) {
-        self.service_workers.borrow_mut().retain(|h| !h.is_terminated());
+        self.service_workers
+            .borrow_mut()
+            .retain(|h| !h.is_terminated());
     }
 
     /// Returns the number of active ServiceWorker registrations across all pages.
@@ -4455,7 +4597,8 @@ impl BaoServoDelegate {
                         // Compare key fingerprint-relevant fields.
                         // If any field differs, it's a stealth boundary violation.
                         sw_profile.navigator.user_agent != page_stealth_profile.navigator.user_agent
-                            || sw_profile.navigator.platform != page_stealth_profile.navigator.platform
+                            || sw_profile.navigator.platform
+                                != page_stealth_profile.navigator.platform
                     }
                     None => {
                         // No stealth profile on an intercepting SW — this is always
@@ -4477,7 +4620,9 @@ impl ServoDelegate for BaoServoDelegate {
         // TLS/certificate errors: always use console_log_tx (Path A) since there is no
         // ServoEvent equivalent for SecurityCertificateError. These are rare events
         // that don't map to the 7 ServoEvent categories.
-        if error_str.to_lowercase().contains("certificate") || error_str.to_lowercase().contains("tls") {
+        if error_str.to_lowercase().contains("certificate")
+            || error_str.to_lowercase().contains("tls")
+        {
             if let Some(ref tx) = *self.console_log_tx.borrow() {
                 let _ = tx.send(ConsoleMessage::Event(BaoEvent::SecurityCertificateError {
                     event_id: 0,
@@ -4524,7 +4669,10 @@ impl ServoDelegate for BaoServoDelegate {
         } else if let Some(ref tx) = *self.console_log_tx.borrow() {
             let msg = match BaoEvent::from_console_text(&message) {
                 Some(ConsoleMessage::Event(evt)) => ConsoleMessage::Event(evt),
-                _ => ConsoleMessage::Log { level: level_str.to_string(), text: message },
+                _ => ConsoleMessage::Log {
+                    level: level_str.to_string(),
+                    text: message,
+                },
             };
             let _ = tx.send(msg);
         }
@@ -4552,17 +4700,12 @@ impl BaoWebViewDelegate {
 
 impl WebViewDelegate for BaoWebViewDelegate {
     fn screen_geometry(&self, _webview: WebView) -> Option<ScreenGeometry> {
-        let screen_size = DeviceIntSize::new(
-            self.viewport.width as i32,
-            self.viewport.height as i32,
-        );
+        let screen_size =
+            DeviceIntSize::new(self.viewport.width as i32, self.viewport.height as i32);
         Some(ScreenGeometry {
             size: screen_size,
             available_size: screen_size,
-            window_rect: DeviceIntRect::from_origin_and_size(
-                DeviceIntPoint::zero(),
-                screen_size,
-            ),
+            window_rect: DeviceIntRect::from_origin_and_size(DeviceIntPoint::zero(), screen_size),
         })
     }
 
@@ -4658,7 +4801,9 @@ impl WebViewDelegate for BaoWebViewDelegate {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs_f64();
-                    let _ = tx.send(ConsoleMessage::Event(BaoEvent::PageLoadEventFired { timestamp }));
+                    let _ = tx.send(ConsoleMessage::Event(BaoEvent::PageLoadEventFired {
+                        timestamp,
+                    }));
                 }
             }
             LoadStatus::HeadParsed => {}
@@ -4677,12 +4822,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
         request.allow();
     }
 
-    fn request_create_new(
-        &self,
-        _parent_webview: WebView,
-        _request: CreateNewWebViewRequest,
-    ) {
-    }
+    fn request_create_new(&self, _parent_webview: WebView, _request: CreateNewWebViewRequest) {}
 
     fn show_console_message(&self, _webview: WebView, level: ConsoleLogLevel, message: String) {
         let level_str = match level {
@@ -4719,7 +4859,10 @@ impl WebViewDelegate for BaoWebViewDelegate {
         } else if let Some(ref tx) = self.state.borrow().console_log_tx {
             let msg = match BaoEvent::from_console_text(&message) {
                 Some(ConsoleMessage::Event(evt)) => ConsoleMessage::Event(evt),
-                _ => ConsoleMessage::Log { level: level_str.to_string(), text: message },
+                _ => ConsoleMessage::Log {
+                    level: level_str.to_string(),
+                    text: message,
+                },
             };
             let _ = tx.send(msg);
         }
@@ -4881,7 +5024,12 @@ mod tests {
         delegate.set_console_log_tx(tx);
         // Get a clone and send through it
         let cloned = delegate.console_log_tx().unwrap();
-        cloned.send(ConsoleMessage::Log { level: "info".into(), text: "hello".into() }).unwrap();
+        cloned
+            .send(ConsoleMessage::Log {
+                level: "info".into(),
+                text: "hello".into(),
+            })
+            .unwrap();
         let msg = rx.try_recv().unwrap();
         match msg {
             ConsoleMessage::Log { level, text } => {
@@ -4899,7 +5047,11 @@ mod tests {
         state.console_log_tx = Some(tx);
         // Simulate what show_console_message does
         if let Some(ref tx) = state.console_log_tx {
-            tx.send(ConsoleMessage::Log { level: "warning".into(), text: "test message".into() }).unwrap();
+            tx.send(ConsoleMessage::Log {
+                level: "warning".into(),
+                text: "test message".into(),
+            })
+            .unwrap();
         }
         let msg = rx.try_recv().unwrap();
         match msg {
@@ -4942,7 +5094,11 @@ mod tests {
                 ConsoleLogLevel::Error => "error",
                 ConsoleLogLevel::Trace => "verbose",
             };
-            assert_eq!(mapped, expected_str, "level {:?} should map to {}", level, expected_str);
+            assert_eq!(
+                mapped, expected_str,
+                "level {:?} should map to {}",
+                level, expected_str
+            );
         }
     }
 
@@ -4958,7 +5114,11 @@ mod tests {
 
         // Simulate sending through state's channel (what show_console_message does)
         if let Some(ref tx) = _delegate.state().borrow().console_log_tx {
-            tx.send(ConsoleMessage::Log { level: "error".into(), text: "crash!".into() }).unwrap();
+            tx.send(ConsoleMessage::Log {
+                level: "error".into(),
+                text: "crash!".into(),
+            })
+            .unwrap();
         }
         let msg = rx.try_recv().unwrap();
         match msg {
@@ -4992,12 +5152,17 @@ mod tests {
                 frame_id: "0".to_string(),
                 url: url_str.clone(),
                 loader_id: loader_id.clone(),
-            })).unwrap();
+            }))
+            .unwrap();
         }
 
         let msg = rx.try_recv().unwrap();
         match msg {
-            ConsoleMessage::Event(BaoEvent::PageFrameNavigated { frame_id, url, loader_id: lid }) => {
+            ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
+                frame_id,
+                url,
+                loader_id: lid,
+            }) => {
                 assert_eq!(frame_id, "0");
                 assert!(url.starts_with("https://example.com"));
                 assert_eq!(lid, loader_id);
@@ -5021,12 +5186,17 @@ mod tests {
                 event_id: 0,
                 error_type: "net::ERR_CERT_AUTHORITY_INVALID".to_string(),
                 url: String::new(),
-            })).unwrap();
+            }))
+            .unwrap();
         }
 
         let msg = rx.try_recv().unwrap();
         match msg {
-            ConsoleMessage::Event(BaoEvent::SecurityCertificateError { event_id, error_type, url }) => {
+            ConsoleMessage::Event(BaoEvent::SecurityCertificateError {
+                event_id,
+                error_type,
+                url,
+            }) => {
                 assert_eq!(event_id, 0);
                 assert_eq!(error_type, "net::ERR_CERT_AUTHORITY_INVALID");
                 assert_eq!(url, "");
@@ -5062,7 +5232,8 @@ mod tests {
                 url: None,
                 line: None,
                 column: None,
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         let event = rx.try_recv().unwrap();
@@ -5093,7 +5264,8 @@ mod tests {
                 frame_id: "0".to_string(),
                 url: "https://example.com/".to_string(),
                 name: None,
-            }).unwrap();
+            })
+            .unwrap();
         }
         let event = rx.try_recv().unwrap();
         match event {
@@ -5124,7 +5296,11 @@ mod tests {
                 ConsoleLogLevel::Error => ConsoleLevel::Error,
                 ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
             };
-            assert_eq!(mapped, expected, "servo {:?} should map to {:?}", servo_level, expected);
+            assert_eq!(
+                mapped, expected,
+                "servo {:?} should map to {:?}",
+                servo_level, expected
+            );
         }
     }
 
@@ -5145,12 +5321,16 @@ mod tests {
             tx.send(ServoEvent::FrameStartedLoading {
                 target_id: "0".to_string(),
                 frame_id: "0".to_string(),
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         let event = rx.try_recv().unwrap();
         match event {
-            ServoEvent::FrameStartedLoading { target_id, frame_id } => {
+            ServoEvent::FrameStartedLoading {
+                target_id,
+                frame_id,
+            } => {
                 assert_eq!(target_id, "0");
                 assert_eq!(frame_id, "0");
             }
@@ -5203,9 +5383,15 @@ mod tests {
         let handle = WorkerHandle::new("worker.js".to_string());
         let clone = handle.clone();
         handle.terminate();
-        assert!(clone.is_closing(), "clone should see closing flag from original");
+        assert!(
+            clone.is_closing(),
+            "clone should see closing flag from original"
+        );
         clone.mark_terminated();
-        assert!(handle.is_terminated(), "original should see terminated flag from clone");
+        assert!(
+            handle.is_terminated(),
+            "original should see terminated flag from clone"
+        );
     }
 
     #[test]
@@ -5283,8 +5469,14 @@ mod tests {
 
     #[test]
     fn test_worker_message_direction() {
-        assert_eq!(WorkerMessageDirection::PageToWorker, WorkerMessageDirection::PageToWorker);
-        assert_ne!(WorkerMessageDirection::PageToWorker, WorkerMessageDirection::WorkerToPage);
+        assert_eq!(
+            WorkerMessageDirection::PageToWorker,
+            WorkerMessageDirection::PageToWorker
+        );
+        assert_ne!(
+            WorkerMessageDirection::PageToWorker,
+            WorkerMessageDirection::WorkerToPage
+        );
     }
 
     #[test]
@@ -5393,7 +5585,13 @@ mod tests {
         state.forward_worker_error_event(error);
         let event = rx.try_recv().unwrap();
         match event {
-            ServoEvent::PageError { text, url, line, column, .. } => {
+            ServoEvent::PageError {
+                text,
+                url,
+                line,
+                column,
+                ..
+            } => {
                 assert!(text.contains("worker1.js"));
                 assert!(text.contains("Uncaught Error: boom"));
                 assert_eq!(url.as_deref(), Some("worker1.js"));
@@ -5425,7 +5623,10 @@ mod tests {
     fn test_worker_teardown_path_equality() {
         assert_eq!(WorkerTeardownPath::Terminate, WorkerTeardownPath::Terminate);
         assert_eq!(WorkerTeardownPath::SelfClose, WorkerTeardownPath::SelfClose);
-        assert_eq!(WorkerTeardownPath::PageUnload, WorkerTeardownPath::PageUnload);
+        assert_eq!(
+            WorkerTeardownPath::PageUnload,
+            WorkerTeardownPath::PageUnload
+        );
         assert_ne!(WorkerTeardownPath::Terminate, WorkerTeardownPath::SelfClose);
     }
 
@@ -5441,7 +5642,10 @@ mod tests {
         let handle = WorkerHandle::new("worker.js".to_string());
         let mut guard = AutoCloseWorker::new(handle);
         guard.terminate_via(WorkerTeardownPath::Terminate);
-        assert_eq!(guard.lifecycle_state(), WorkerLifecycleState::Closing(WorkerTeardownPath::Terminate));
+        assert_eq!(
+            guard.lifecycle_state(),
+            WorkerLifecycleState::Closing(WorkerTeardownPath::Terminate)
+        );
     }
 
     #[test]
@@ -5450,7 +5654,10 @@ mod tests {
         let mut guard = AutoCloseWorker::new(handle);
         guard.terminate_via(WorkerTeardownPath::SelfClose);
         guard.handle().mark_terminated();
-        assert_eq!(guard.lifecycle_state(), WorkerLifecycleState::Terminated(WorkerTeardownPath::SelfClose));
+        assert_eq!(
+            guard.lifecycle_state(),
+            WorkerLifecycleState::Terminated(WorkerTeardownPath::SelfClose)
+        );
     }
 
     #[test]
@@ -5483,7 +5690,10 @@ mod tests {
         let mut guard = AutoCloseWorker::new(handle);
         guard.terminate_via(WorkerTeardownPath::Terminate);
         assert!(guard.handle().is_closing());
-        assert_eq!(guard.lifecycle_state(), WorkerLifecycleState::Closing(WorkerTeardownPath::Terminate));
+        assert_eq!(
+            guard.lifecycle_state(),
+            WorkerLifecycleState::Closing(WorkerTeardownPath::Terminate)
+        );
     }
 
     #[test]
@@ -5493,7 +5703,10 @@ mod tests {
         guard.terminate_via(WorkerTeardownPath::Terminate);
         guard.terminate_via(WorkerTeardownPath::SelfClose);
         // Should still be Terminate (first call wins)
-        assert_eq!(guard.lifecycle_state(), WorkerLifecycleState::Closing(WorkerTeardownPath::Terminate));
+        assert_eq!(
+            guard.lifecycle_state(),
+            WorkerLifecycleState::Closing(WorkerTeardownPath::Terminate)
+        );
     }
 
     #[test]
@@ -5558,7 +5771,10 @@ mod tests {
     fn test_worker_handle_unregister_stealth_profile_with_addr() {
         // Register a profile for a fake global address, then unregister it
         let fake_addr = 0x12345678_usize;
-        bao_stealth::engine_props::set_profile_for_global(fake_addr, &bao_stealth::StealthProfile::firefox_default());
+        bao_stealth::engine_props::set_profile_for_global(
+            fake_addr,
+            &bao_stealth::StealthProfile::firefox_default(),
+        );
         // Verify it's registered
         assert!(bao_stealth::engine_props::canvas_seed_for_test(fake_addr).is_some());
         // Unregister via WorkerHandle
@@ -5611,10 +5827,7 @@ mod tests {
     fn test_crash_safe_teardown_no_web_worker() {
         // Test crash-safe teardown for a servo DOM Worker (DEC-WK-001 native path)
         let handle = WorkerHandle::new("worker.js".to_string());
-        let result = crash_safe_teardown_worker(
-            &handle,
-            WorkerTeardownPath::Terminate,
-        );
+        let result = crash_safe_teardown_worker(&handle, WorkerTeardownPath::Terminate);
         assert!(result.closing_flag_set);
         assert!(result.thread_joined); // servo DOM Worker — considered joined
         assert!(!result.realm_profile_unregistered); // no global addr set
@@ -5626,15 +5839,15 @@ mod tests {
     fn test_crash_safe_teardown_with_stealth_profile() {
         // Register a profile for a fake global address, then crash-safe teardown
         let fake_addr = 0xABCD0000_usize;
-        bao_stealth::engine_props::set_profile_for_global(fake_addr, &bao_stealth::StealthProfile::firefox_default());
+        bao_stealth::engine_props::set_profile_for_global(
+            fake_addr,
+            &bao_stealth::StealthProfile::firefox_default(),
+        );
 
         let handle = WorkerHandle::new("worker.js".to_string());
         handle.set_worker_global_addr(fake_addr);
 
-        let result = crash_safe_teardown_worker(
-            &handle,
-            WorkerTeardownPath::SelfClose,
-        );
+        let result = crash_safe_teardown_worker(&handle, WorkerTeardownPath::SelfClose);
         assert!(result.closing_flag_set);
         assert!(result.thread_joined);
         assert!(result.realm_profile_unregistered);
@@ -5648,7 +5861,10 @@ mod tests {
     fn test_auto_close_worker_drop_unregisters_stealth_profile() {
         // @trace REQ-BRW-004 [criterion:18] AutoCloseWorker::drop unregisters REALM_PROFILES
         let fake_addr = 0xBEEF0000_usize;
-        bao_stealth::engine_props::set_profile_for_global(fake_addr, &bao_stealth::StealthProfile::firefox_default());
+        bao_stealth::engine_props::set_profile_for_global(
+            fake_addr,
+            &bao_stealth::StealthProfile::firefox_default(),
+        );
 
         let handle = WorkerHandle::new("worker.js".to_string());
         handle.set_worker_global_addr(fake_addr);
@@ -5667,8 +5883,14 @@ mod tests {
         // @trace REQ-BRW-004 [criterion:18] terminate_all_workers unregisters REALM_PROFILES
         let fake_addr1 = 0xAAAA0001_usize;
         let fake_addr2 = 0xAAAA0002_usize;
-        bao_stealth::engine_props::set_profile_for_global(fake_addr1, &bao_stealth::StealthProfile::firefox_default());
-        bao_stealth::engine_props::set_profile_for_global(fake_addr2, &bao_stealth::StealthProfile::firefox_default());
+        bao_stealth::engine_props::set_profile_for_global(
+            fake_addr1,
+            &bao_stealth::StealthProfile::firefox_default(),
+        );
+        bao_stealth::engine_props::set_profile_for_global(
+            fake_addr2,
+            &bao_stealth::StealthProfile::firefox_default(),
+        );
 
         let mut state = BaoWebViewState::default();
         let h1 = WorkerHandle::new("worker1.js".to_string());
@@ -5690,14 +5912,20 @@ mod tests {
         assert!(bao_stealth::engine_props::canvas_seed_for_test(fake_addr2).is_none());
         // All workers should be closing and terminated
         assert!(state.active_workers.iter().all(|g| g.handle().is_closing()));
-        assert!(state.active_workers.iter().all(|g| g.handle().is_terminated()));
+        assert!(state
+            .active_workers
+            .iter()
+            .all(|g| g.handle().is_terminated()));
     }
 
     #[test]
     fn test_terminate_worker_via_path_terminate() {
         // @trace REQ-BRW-004 [criterion:4] [criterion:18] worker.terminate() path
         let fake_addr = 0xCCCC0001_usize;
-        bao_stealth::engine_props::set_profile_for_global(fake_addr, &bao_stealth::StealthProfile::firefox_default());
+        bao_stealth::engine_props::set_profile_for_global(
+            fake_addr,
+            &bao_stealth::StealthProfile::firefox_default(),
+        );
 
         let mut state = BaoWebViewState::default();
         let handle = WorkerHandle::new("worker.js".to_string());
@@ -5705,10 +5933,7 @@ mod tests {
         let worker_id = WorkerId("worker.js".to_string());
         state.track_worker(handle.clone());
 
-        let result = state.terminate_worker_via_path(
-            &worker_id,
-            WorkerTeardownPath::Terminate,
-        );
+        let result = state.terminate_worker_via_path(&worker_id, WorkerTeardownPath::Terminate);
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.path, WorkerTeardownPath::Terminate);
@@ -5726,7 +5951,10 @@ mod tests {
     fn test_terminate_worker_via_path_self_close() {
         // @trace REQ-BRW-004 [criterion:5] [criterion:18] self.close() path
         let fake_addr = 0xDDDD0001_usize;
-        bao_stealth::engine_props::set_profile_for_global(fake_addr, &bao_stealth::StealthProfile::firefox_default());
+        bao_stealth::engine_props::set_profile_for_global(
+            fake_addr,
+            &bao_stealth::StealthProfile::firefox_default(),
+        );
 
         let mut state = BaoWebViewState::default();
         let handle = WorkerHandle::new("worker.js".to_string());
@@ -5734,10 +5962,7 @@ mod tests {
         let worker_id = WorkerId("worker.js".to_string());
         state.track_worker(handle.clone());
 
-        let result = state.terminate_worker_via_path(
-            &worker_id,
-            WorkerTeardownPath::SelfClose,
-        );
+        let result = state.terminate_worker_via_path(&worker_id, WorkerTeardownPath::SelfClose);
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.path, WorkerTeardownPath::SelfClose);
@@ -5749,35 +5974,55 @@ mod tests {
     fn test_terminate_worker_via_path_not_found() {
         let mut state = BaoWebViewState::default();
         let worker_id = WorkerId("nonexistent.js".to_string());
-        let result = state.terminate_worker_via_path(
-            &worker_id,
-            WorkerTeardownPath::Terminate,
-        );
+        let result = state.terminate_worker_via_path(&worker_id, WorkerTeardownPath::Terminate);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_three_paths_all_crash_safe() {
         // @trace REQ-BRW-004 [criterion:18] all three teardown paths crash-safe
-        for path in [WorkerTeardownPath::Terminate, WorkerTeardownPath::SelfClose, WorkerTeardownPath::PageUnload] {
-            let fake_addr = 0x12340000_usize + match &path {
-                WorkerTeardownPath::Terminate => 1,
-                WorkerTeardownPath::SelfClose => 2,
-                WorkerTeardownPath::PageUnload => 3,
-            };
-            bao_stealth::engine_props::set_profile_for_global(fake_addr, &bao_stealth::StealthProfile::firefox_default());
+        for path in [
+            WorkerTeardownPath::Terminate,
+            WorkerTeardownPath::SelfClose,
+            WorkerTeardownPath::PageUnload,
+        ] {
+            let fake_addr = 0x12340000_usize
+                + match &path {
+                    WorkerTeardownPath::Terminate => 1,
+                    WorkerTeardownPath::SelfClose => 2,
+                    WorkerTeardownPath::PageUnload => 3,
+                };
+            bao_stealth::engine_props::set_profile_for_global(
+                fake_addr,
+                &bao_stealth::StealthProfile::firefox_default(),
+            );
 
             let handle = WorkerHandle::new("worker.js".to_string());
             handle.set_worker_global_addr(fake_addr);
             let result = crash_safe_teardown_worker(&handle, path.clone());
-            assert!(result.closing_flag_set, "closing flag not set for {:?}", path);
+            assert!(
+                result.closing_flag_set,
+                "closing flag not set for {:?}",
+                path
+            );
             assert!(result.thread_joined, "thread not joined for {:?}", path);
-            assert!(result.realm_profile_unregistered, "profile not unregistered for {:?}", path);
+            assert!(
+                result.realm_profile_unregistered,
+                "profile not unregistered for {:?}",
+                path
+            );
             assert!(result.is_crash_safe(), "not crash-safe for {:?}", path);
             assert!(handle.is_closing(), "handle not closing for {:?}", path);
-            assert!(handle.is_terminated(), "handle not terminated for {:?}", path);
-            assert!(bao_stealth::engine_props::canvas_seed_for_test(fake_addr).is_none(),
-                "profile not removed for {:?}", path);
+            assert!(
+                handle.is_terminated(),
+                "handle not terminated for {:?}",
+                path
+            );
+            assert!(
+                bao_stealth::engine_props::canvas_seed_for_test(fake_addr).is_none(),
+                "profile not removed for {:?}",
+                path
+            );
         }
     }
 
@@ -5835,10 +6080,22 @@ mod tests {
 
     #[test]
     fn test_shared_worker_id_equality() {
-        let id1 = SharedWorkerId { script_url: "sw.js".to_string(), name: "myworker".to_string() };
-        let id2 = SharedWorkerId { script_url: "sw.js".to_string(), name: "myworker".to_string() };
-        let id3 = SharedWorkerId { script_url: "sw.js".to_string(), name: "other".to_string() };
-        let id4 = SharedWorkerId { script_url: "other.js".to_string(), name: "myworker".to_string() };
+        let id1 = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "myworker".to_string(),
+        };
+        let id2 = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "myworker".to_string(),
+        };
+        let id3 = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "other".to_string(),
+        };
+        let id4 = SharedWorkerId {
+            script_url: "other.js".to_string(),
+            name: "myworker".to_string(),
+        };
         assert_eq!(id1, id2);
         assert_ne!(id1, id3); // different name
         assert_ne!(id1, id4); // different url
@@ -5846,7 +6103,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_id_default_name() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: String::new() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: String::new(),
+        };
         assert!(id.name.is_empty());
     }
 
@@ -5906,9 +6166,15 @@ mod tests {
         let handle = SharedWorkerHandle::new("sw.js".to_string(), "name".to_string());
         let clone = handle.clone();
         handle.close();
-        assert!(clone.is_closing(), "clone should see closing flag from original");
+        assert!(
+            clone.is_closing(),
+            "clone should see closing flag from original"
+        );
         clone.mark_terminated();
-        assert!(handle.is_terminated(), "original should see terminated flag from clone");
+        assert!(
+            handle.is_terminated(),
+            "original should see terminated flag from clone"
+        );
     }
 
     #[test]
@@ -5926,7 +6192,11 @@ mod tests {
             let _port = SharedWorkerPortRef::new(handle.clone());
             assert_eq!(handle.connected_page_count(), 1);
         }
-        assert_eq!(handle.connected_page_count(), 0, "dropping port should decrement connected count");
+        assert_eq!(
+            handle.connected_page_count(),
+            0,
+            "dropping port should decrement connected count"
+        );
     }
 
     #[test]
@@ -5964,7 +6234,11 @@ mod tests {
         assert_eq!(handle.connected_page_count(), 2);
         state.disconnect_shared_worker_ports();
         assert_eq!(state.shared_worker_port_count(), 0);
-        assert_eq!(handle.connected_page_count(), 0, "disconnect should drop ports and decrement counter");
+        assert_eq!(
+            handle.connected_page_count(),
+            0,
+            "disconnect should drop ports and decrement counter"
+        );
     }
 
     #[test]
@@ -6019,7 +6293,11 @@ mod tests {
         handle.close();
         handle.mark_terminated();
         delegate.reap_terminated_shared_workers();
-        assert_eq!(delegate.shared_worker_count(), 0, "terminated shared worker with zero pages should be reaped");
+        assert_eq!(
+            delegate.shared_worker_count(),
+            0,
+            "terminated shared worker with zero pages should be reaped"
+        );
     }
 
     #[test]
@@ -6032,13 +6310,20 @@ mod tests {
         handle.close();
         handle.mark_terminated();
         delegate.reap_terminated_shared_workers();
-        assert_eq!(delegate.shared_worker_count(), 1, "terminated but still has connected pages — keep in registry");
+        assert_eq!(
+            delegate.shared_worker_count(),
+            1,
+            "terminated but still has connected pages — keep in registry"
+        );
     }
 
     #[test]
     fn test_shared_worker_connect_event_creation() {
         let event = SharedWorkerConnectEvent {
-            shared_worker_id: SharedWorkerId { script_url: "sw.js".to_string(), name: "myname".to_string() },
+            shared_worker_id: SharedWorkerId {
+                script_url: "sw.js".to_string(),
+                name: "myname".to_string(),
+            },
             page_url: "https://example.com/page1".to_string(),
         };
         assert_eq!(event.shared_worker_id.script_url, "sw.js");
@@ -6054,7 +6339,10 @@ mod tests {
             ..Default::default()
         };
         let event = SharedWorkerConnectEvent {
-            shared_worker_id: SharedWorkerId { script_url: "sw.js".to_string(), name: "myname".to_string() },
+            shared_worker_id: SharedWorkerId {
+                script_url: "sw.js".to_string(),
+                name: "myname".to_string(),
+            },
             page_url: "https://example.com".to_string(),
         };
         state.forward_shared_worker_connect_event(event);
@@ -6074,7 +6362,10 @@ mod tests {
     fn test_forward_shared_worker_connect_event_no_tx() {
         let state = BaoWebViewState::default();
         let event = SharedWorkerConnectEvent {
-            shared_worker_id: SharedWorkerId { script_url: "sw.js".to_string(), name: String::new() },
+            shared_worker_id: SharedWorkerId {
+                script_url: "sw.js".to_string(),
+                name: String::new(),
+            },
             page_url: "https://example.com".to_string(),
         };
         // Should not panic
@@ -6319,7 +6610,10 @@ mod tests {
         // Post to non-existent worker
         let result = state.post_to_worker(
             &WorkerId("nonexistent.js".to_string()),
-            StructuredClonePayload { data: vec![], transferable_count: 0 },
+            StructuredClonePayload {
+                data: vec![],
+                transferable_count: 0,
+            },
         );
         assert!(result.is_err());
     }
@@ -6337,11 +6631,13 @@ mod tests {
         tx1.send(WorkerStructuredMessage::metadata_only(
             WorkerId("worker1.js".to_string()),
             WorkerMessageDirection::WorkerToPage,
-        )).unwrap();
+        ))
+        .unwrap();
         tx2.send(WorkerStructuredMessage::metadata_only(
             WorkerId("worker2.js".to_string()),
             WorkerMessageDirection::WorkerToPage,
-        )).unwrap();
+        ))
+        .unwrap();
         // Drain all
         let (messages, disconnected) = state.drain_all_worker_messages();
         assert_eq!(messages.len(), 2);
@@ -6374,7 +6670,9 @@ mod tests {
         state.reap_terminated_workers();
         // worker1's channel should be reaped, worker2's should remain
         assert_eq!(state.worker_channel_count(), 1);
-        assert!(state.worker_channel(&WorkerId("worker2.js".to_string())).is_some());
+        assert!(state
+            .worker_channel(&WorkerId("worker2.js".to_string()))
+            .is_some());
     }
 
     #[test]
@@ -6445,10 +6743,12 @@ mod tests {
         };
         let endpoints = state.create_worker_channel(WorkerId("worker1.js".to_string()));
         let worker_tx = endpoints.worker_to_page_tx.unwrap();
-        worker_tx.send(WorkerStructuredMessage::metadata_only(
-            WorkerId("worker1.js".to_string()),
-            WorkerMessageDirection::WorkerToPage,
-        )).unwrap();
+        worker_tx
+            .send(WorkerStructuredMessage::metadata_only(
+                WorkerId("worker1.js".to_string()),
+                WorkerMessageDirection::WorkerToPage,
+            ))
+            .unwrap();
         // Drain and forward
         let disconnected = state.drain_and_forward_worker_messages();
         assert!(disconnected.is_empty());
@@ -6616,7 +6916,8 @@ mod tests {
             language: "en-US".to_string(),
             languages: vec!["en-US".to_string()],
         };
-        let scope = WorkerGlobalScopeState::new("https://example.com/worker.js".to_string(), &config);
+        let scope =
+            WorkerGlobalScopeState::new("https://example.com/worker.js".to_string(), &config);
         assert_eq!(scope.worker_url, "https://example.com/worker.js");
         assert!(!scope.closing);
         assert!(scope.location.is_some());
@@ -6633,7 +6934,8 @@ mod tests {
             language: "ja".to_string(),
             languages: vec!["ja".to_string()],
         };
-        let scope = WorkerGlobalScopeState::new_shared("https://example.com/sw.js".to_string(), &config);
+        let scope =
+            WorkerGlobalScopeState::new_shared("https://example.com/sw.js".to_string(), &config);
         assert_eq!(scope.worker_url, "https://example.com/sw.js");
         assert_eq!(scope.navigator.user_agent, "Bao/2.0");
     }
@@ -6641,7 +6943,10 @@ mod tests {
     #[test]
     fn test_worker_global_scope_state_location_parsed() {
         let config = WorkerScopeConfig::default();
-        let scope = WorkerGlobalScopeState::new("https://example.com:8080/app/worker.js?debug=true#section".to_string(), &config);
+        let scope = WorkerGlobalScopeState::new(
+            "https://example.com:8080/app/worker.js?debug=true#section".to_string(),
+            &config,
+        );
         let loc = scope.location.unwrap();
         assert_eq!(loc.hostname, "example.com");
         assert_eq!(loc.port, "8080");
@@ -6742,8 +7047,16 @@ mod tests {
         let scope = DedicatedWorkerGlobalScopeState::new(worker_id.clone(), &config);
         state.register_dedicated_worker_scope(worker_id.clone(), scope);
         // Register event handler
-        state.dedicated_worker_scope_mut(&worker_id).unwrap().set_onmessage();
-        assert!(state.dedicated_worker_scope(&worker_id).unwrap().has_onmessage);
+        state
+            .dedicated_worker_scope_mut(&worker_id)
+            .unwrap()
+            .set_onmessage();
+        assert!(
+            state
+                .dedicated_worker_scope(&worker_id)
+                .unwrap()
+                .has_onmessage
+        );
     }
 
     #[test]
@@ -6764,8 +7077,14 @@ mod tests {
         let config = WorkerScopeConfig::default();
         let id1 = WorkerId("worker1.js".to_string());
         let id2 = WorkerId("worker2.js".to_string());
-        state.register_dedicated_worker_scope(id1, DedicatedWorkerGlobalScopeState::new(WorkerId("worker1.js".to_string()), &config));
-        state.register_dedicated_worker_scope(id2, DedicatedWorkerGlobalScopeState::new(WorkerId("worker2.js".to_string()), &config));
+        state.register_dedicated_worker_scope(
+            id1,
+            DedicatedWorkerGlobalScopeState::new(WorkerId("worker1.js".to_string()), &config),
+        );
+        state.register_dedicated_worker_scope(
+            id2,
+            DedicatedWorkerGlobalScopeState::new(WorkerId("worker2.js".to_string()), &config),
+        );
         let scopes = state.dedicated_worker_scopes();
         assert_eq!(scopes.len(), 2);
     }
@@ -6804,7 +7123,9 @@ mod tests {
         state.reap_terminated_workers();
         // worker1's scope should be reaped, worker2's should remain
         assert_eq!(state.dedicated_worker_scope_count(), 1);
-        assert!(state.dedicated_worker_scope(&WorkerId("worker2.js".to_string())).is_some());
+        assert!(state
+            .dedicated_worker_scope(&WorkerId("worker2.js".to_string()))
+            .is_some());
     }
 
     #[test]
@@ -6827,8 +7148,14 @@ mod tests {
     #[test]
     fn test_worker_script_source_url() {
         let source = WorkerScriptSource::Url("https://example.com/worker.js".to_string());
-        assert_eq!(source, WorkerScriptSource::Url("https://example.com/worker.js".to_string()));
-        assert_ne!(source, WorkerScriptSource::Url("https://other.com/worker.js".to_string()));
+        assert_eq!(
+            source,
+            WorkerScriptSource::Url("https://example.com/worker.js".to_string())
+        );
+        assert_ne!(
+            source,
+            WorkerScriptSource::Url("https://other.com/worker.js".to_string())
+        );
     }
 
     #[test]
@@ -6846,7 +7173,10 @@ mod tests {
     #[test]
     fn test_worker_script_load_error_network() {
         let err = WorkerScriptLoadError::NetworkError("404 Not Found".to_string());
-        assert_eq!(err, WorkerScriptLoadError::NetworkError("404 Not Found".to_string()));
+        assert_eq!(
+            err,
+            WorkerScriptLoadError::NetworkError("404 Not Found".to_string())
+        );
     }
 
     #[test]
@@ -6867,13 +7197,19 @@ mod tests {
     #[test]
     fn test_worker_script_load_error_utf8() {
         let err = WorkerScriptLoadError::Utf8DecodeError("invalid UTF-8".to_string());
-        assert_eq!(err, WorkerScriptLoadError::Utf8DecodeError("invalid UTF-8".to_string()));
+        assert_eq!(
+            err,
+            WorkerScriptLoadError::Utf8DecodeError("invalid UTF-8".to_string())
+        );
     }
 
     #[test]
     fn test_worker_script_load_error_invalid_url() {
         let err = WorkerScriptLoadError::InvalidUrl("bad url".to_string());
-        assert_eq!(err, WorkerScriptLoadError::InvalidUrl("bad url".to_string()));
+        assert_eq!(
+            err,
+            WorkerScriptLoadError::InvalidUrl("bad url".to_string())
+        );
     }
 
     #[test]
@@ -6917,7 +7253,9 @@ mod tests {
     fn test_is_javascript_mime_type_with_charset() {
         // MIME type with parameters should still match
         assert!(is_javascript_mime_type("text/javascript; charset=utf-8"));
-        assert!(is_javascript_mime_type("application/javascript;charset=utf-8"));
+        assert!(is_javascript_mime_type(
+            "application/javascript;charset=utf-8"
+        ));
     }
 
     #[test]
@@ -6931,11 +7269,15 @@ mod tests {
 
     #[test]
     fn test_worker_script_loader_inline() {
-        let loader = WorkerScriptLoader::inline("var x = 1;".to_string(), WorkerScriptType::Classic);
+        let loader =
+            WorkerScriptLoader::inline("var x = 1;".to_string(), WorkerScriptType::Classic);
         assert!(loader.script_url().is_none());
         assert!(!loader.requires_fetch());
         let resolved = loader.resolve().unwrap();
-        assert_eq!(resolved, WorkerScriptSource::Inline("var x = 1;".to_string()));
+        assert_eq!(
+            resolved,
+            WorkerScriptSource::Inline("var x = 1;".to_string())
+        );
     }
 
     #[test]
@@ -6947,7 +7289,10 @@ mod tests {
         assert_eq!(loader.script_url(), Some("https://example.com/worker.js"));
         assert!(loader.requires_fetch());
         let resolved = loader.resolve().unwrap();
-        assert_eq!(resolved, WorkerScriptSource::Url("https://example.com/worker.js".to_string()));
+        assert_eq!(
+            resolved,
+            WorkerScriptSource::Url("https://example.com/worker.js".to_string())
+        );
     }
 
     #[test]
@@ -6962,10 +7307,7 @@ mod tests {
 
     #[test]
     fn test_worker_script_loader_url_invalid() {
-        let loader = WorkerScriptLoader::url(
-            "not a url".to_string(),
-            WorkerScriptType::Classic,
-        );
+        let loader = WorkerScriptLoader::url("not a url".to_string(), WorkerScriptType::Classic);
         let result = loader.resolve();
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -7056,9 +7398,12 @@ mod tests {
             WorkerScriptType::Classic,
         );
         let resolved = loader.resolve().unwrap();
-        assert_eq!(resolved, WorkerScriptSource::Url(
-            "blob:https://example.com/550e8400-e29b-41d4-a716-446655440000".to_string()
-        ));
+        assert_eq!(
+            resolved,
+            WorkerScriptSource::Url(
+                "blob:https://example.com/550e8400-e29b-41d4-a716-446655440000".to_string()
+            )
+        );
     }
 
     #[test]
@@ -7076,19 +7421,19 @@ mod tests {
         assert!(WorkerScriptLoader::validate_mime_type(
             "text/javascript",
             "https://example.com/worker.js"
-        ).is_ok());
+        )
+        .is_ok());
         assert!(WorkerScriptLoader::validate_mime_type(
             "application/javascript",
             "https://example.com/worker.js"
-        ).is_ok());
+        )
+        .is_ok());
     }
 
     #[test]
     fn test_worker_script_loader_validate_mime_type_invalid() {
-        let result = WorkerScriptLoader::validate_mime_type(
-            "text/html",
-            "https://example.com/worker.js"
-        );
+        let result =
+            WorkerScriptLoader::validate_mime_type("text/html", "https://example.com/worker.js");
         assert!(result.is_err());
         match result.unwrap_err() {
             WorkerScriptLoadError::InvalidMimeType { received, url } => {
@@ -7122,7 +7467,9 @@ mod tests {
         assert!(!state.is_loading());
         assert!(state.is_ready());
 
-        state = WorkerScriptLoadState::Failed(WorkerScriptLoadError::NetworkError("timeout".to_string()));
+        state = WorkerScriptLoadState::Failed(WorkerScriptLoadError::NetworkError(
+            "timeout".to_string(),
+        ));
         assert!(!state.is_loading());
         assert!(state.is_failed());
     }
@@ -7131,10 +7478,7 @@ mod tests {
     fn test_webview_state_worker_script_load_state_registration() {
         let mut state = BaoWebViewState::default();
         let worker_id = WorkerId("worker1.js".to_string());
-        state.register_worker_script_load_state(
-            worker_id.clone(),
-            WorkerScriptLoadState::Pending,
-        );
+        state.register_worker_script_load_state(worker_id.clone(), WorkerScriptLoadState::Pending);
         assert_eq!(state.worker_script_load_state_count(), 1);
         assert!(state.worker_script_load_state(&worker_id).is_some());
         assert_eq!(
@@ -7147,10 +7491,7 @@ mod tests {
     fn test_webview_state_worker_script_load_state_update() {
         let mut state = BaoWebViewState::default();
         let worker_id = WorkerId("worker1.js".to_string());
-        state.register_worker_script_load_state(
-            worker_id.clone(),
-            WorkerScriptLoadState::Pending,
-        );
+        state.register_worker_script_load_state(worker_id.clone(), WorkerScriptLoadState::Pending);
         state.update_worker_script_load_state(&worker_id, WorkerScriptLoadState::Fetching);
         assert_eq!(
             state.worker_script_load_state(&worker_id).unwrap(),
@@ -7162,10 +7503,7 @@ mod tests {
     fn test_webview_state_worker_script_load_state_remove() {
         let mut state = BaoWebViewState::default();
         let worker_id = WorkerId("worker1.js".to_string());
-        state.register_worker_script_load_state(
-            worker_id.clone(),
-            WorkerScriptLoadState::Ready,
-        );
+        state.register_worker_script_load_state(worker_id.clone(), WorkerScriptLoadState::Ready);
         let removed = state.remove_worker_script_load_state(&worker_id);
         assert!(removed.is_some());
         assert_eq!(removed.unwrap(), WorkerScriptLoadState::Ready);
@@ -7204,7 +7542,9 @@ mod tests {
         state.reap_terminated_workers();
         // worker1's script load state should be reaped, worker2's should remain
         assert_eq!(state.worker_script_load_state_count(), 1);
-        assert!(state.worker_script_load_state(&WorkerId("worker2.js".to_string())).is_some());
+        assert!(state
+            .worker_script_load_state(&WorkerId("worker2.js".to_string()))
+            .is_some());
     }
 
     #[test]
@@ -7251,11 +7591,11 @@ mod tests {
         let worker_id = WorkerId("https://example.com/worker.js".to_string());
 
         // Step 1: Worker created → Pending
-        state.register_worker_script_load_state(
-            worker_id.clone(),
-            WorkerScriptLoadState::Pending,
-        );
-        assert!(state.worker_script_load_state(&worker_id).unwrap().is_loading());
+        state.register_worker_script_load_state(worker_id.clone(), WorkerScriptLoadState::Pending);
+        assert!(state
+            .worker_script_load_state(&worker_id)
+            .unwrap()
+            .is_loading());
 
         // Step 2: Fetch started → Fetching
         state.update_worker_script_load_state(&worker_id, WorkerScriptLoadState::Fetching);
@@ -7275,7 +7615,10 @@ mod tests {
 
         // Step 6: Compilation succeeded → Ready
         state.update_worker_script_load_state(&worker_id, WorkerScriptLoadState::Ready);
-        assert!(state.worker_script_load_state(&worker_id).unwrap().is_ready());
+        assert!(state
+            .worker_script_load_state(&worker_id)
+            .unwrap()
+            .is_ready());
     }
 
     #[test]
@@ -7283,10 +7626,7 @@ mod tests {
         let mut state = BaoWebViewState::default();
         let worker_id = WorkerId("https://example.com/bad-worker.js".to_string());
 
-        state.register_worker_script_load_state(
-            worker_id.clone(),
-            WorkerScriptLoadState::Pending,
-        );
+        state.register_worker_script_load_state(worker_id.clone(), WorkerScriptLoadState::Pending);
 
         // Simulate MIME type failure during validation
         state.update_worker_script_load_state(
@@ -7296,7 +7636,10 @@ mod tests {
                 url: "https://example.com/bad-worker.js".to_string(),
             }),
         );
-        assert!(state.worker_script_load_state(&worker_id).unwrap().is_failed());
+        assert!(state
+            .worker_script_load_state(&worker_id)
+            .unwrap()
+            .is_failed());
     }
 
     // ─── StealthProfile → WorkerScopeConfig conversion (REQ-BRW-004 criteria #12-17) ───
@@ -7307,13 +7650,22 @@ mod tests {
         let profile = bao_stealth::StealthProfile::chrome_default();
         let config = WorkerScopeConfig::from(&profile);
 
-        assert!(config.stealth_profile.is_some(), "stealth_profile must be Some");
+        assert!(
+            config.stealth_profile.is_some(),
+            "stealth_profile must be Some"
+        );
         assert_eq!(config.user_agent, profile.navigator.user_agent);
         assert_eq!(config.platform, profile.navigator.platform);
-        assert_eq!(config.hardware_concurrency, profile.navigator.hardware_concurrency as usize);
+        assert_eq!(
+            config.hardware_concurrency,
+            profile.navigator.hardware_concurrency as usize
+        );
         assert_eq!(config.language, profile.navigator.language);
         assert_eq!(config.languages, profile.navigator.languages);
-        assert!(config.user_agent.contains("Chrome"), "Chrome profile UA must contain Chrome");
+        assert!(
+            config.user_agent.contains("Chrome"),
+            "Chrome profile UA must contain Chrome"
+        );
     }
 
     #[test]
@@ -7321,13 +7673,22 @@ mod tests {
         let profile = bao_stealth::StealthProfile::firefox_default();
         let config = WorkerScopeConfig::from(&profile);
 
-        assert!(config.stealth_profile.is_some(), "stealth_profile must be Some");
+        assert!(
+            config.stealth_profile.is_some(),
+            "stealth_profile must be Some"
+        );
         assert_eq!(config.user_agent, profile.navigator.user_agent);
         assert_eq!(config.platform, profile.navigator.platform);
-        assert_eq!(config.hardware_concurrency, profile.navigator.hardware_concurrency as usize);
+        assert_eq!(
+            config.hardware_concurrency,
+            profile.navigator.hardware_concurrency as usize
+        );
         assert_eq!(config.language, profile.navigator.language);
         assert_eq!(config.languages, profile.navigator.languages);
-        assert!(config.user_agent.contains("Firefox"), "Firefox profile UA must contain Firefox");
+        assert!(
+            config.user_agent.contains("Firefox"),
+            "Firefox profile UA must contain Firefox"
+        );
     }
 
     #[test]
@@ -7335,10 +7696,16 @@ mod tests {
         let profile = bao_stealth::StealthProfile::chrome_default();
         let config = SharedWorkerScopeConfig::from(&profile);
 
-        assert!(config.stealth_profile.is_some(), "stealth_profile must be Some");
+        assert!(
+            config.stealth_profile.is_some(),
+            "stealth_profile must be Some"
+        );
         assert_eq!(config.user_agent, profile.navigator.user_agent);
         assert_eq!(config.platform, profile.navigator.platform);
-        assert_eq!(config.hardware_concurrency, profile.navigator.hardware_concurrency as usize);
+        assert_eq!(
+            config.hardware_concurrency,
+            profile.navigator.hardware_concurrency as usize
+        );
         assert_eq!(config.language, profile.navigator.language);
         assert_eq!(config.languages, profile.navigator.languages);
     }
@@ -7351,16 +7718,29 @@ mod tests {
         let config = WorkerScopeConfig::from(&profile);
         let worker_profile = config.stealth_profile.unwrap();
 
-        assert_eq!(worker_profile.canvas.seed(), profile.canvas.seed(),
-            "Canvas seed must match");
-        assert!((worker_profile.canvas.noise_amplitude() - profile.canvas.noise_amplitude()).abs() < f64::EPSILON,
-            "Canvas amplitude must match");
-        assert_eq!(worker_profile.audio.seed(), profile.audio.seed(),
-            "Audio seed must match");
-        assert_eq!(worker_profile.webgl.vendor, profile.webgl.vendor,
-            "WebGL vendor must match");
-        assert_eq!(worker_profile.webgl.renderer, profile.webgl.renderer,
-            "WebGL renderer must match");
+        assert_eq!(
+            worker_profile.canvas.seed(),
+            profile.canvas.seed(),
+            "Canvas seed must match"
+        );
+        assert!(
+            (worker_profile.canvas.noise_amplitude() - profile.canvas.noise_amplitude()).abs()
+                < f64::EPSILON,
+            "Canvas amplitude must match"
+        );
+        assert_eq!(
+            worker_profile.audio.seed(),
+            profile.audio.seed(),
+            "Audio seed must match"
+        );
+        assert_eq!(
+            worker_profile.webgl.vendor, profile.webgl.vendor,
+            "WebGL vendor must match"
+        );
+        assert_eq!(
+            worker_profile.webgl.renderer, profile.webgl.renderer,
+            "WebGL renderer must match"
+        );
     }
 
     #[test]
@@ -7372,8 +7752,10 @@ mod tests {
         let firefox_config = WorkerScopeConfig::from(&firefox);
 
         assert_ne!(chrome_config.user_agent, firefox_config.user_agent);
-        assert_ne!(chrome_config.stealth_profile.unwrap().canvas.seed(),
-                   firefox_config.stealth_profile.unwrap().canvas.seed());
+        assert_ne!(
+            chrome_config.stealth_profile.unwrap().canvas.seed(),
+            firefox_config.stealth_profile.unwrap().canvas.seed()
+        );
     }
 
     // ─── SharedWorkerGlobalScopeState (REQ-BRW-004 entity) ────────────────
@@ -7381,7 +7763,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_global_scope_state_new() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "myworker".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "myworker".to_string(),
+        };
         let config = SharedWorkerScopeConfig {
             stealth_profile: None,
             user_agent: "Bao/1.0".to_string(),
@@ -7399,7 +7784,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_global_scope_state_location() {
-        let id = SharedWorkerId { script_url: "https://example.com/sw.js".to_string(), name: String::new() };
+        let id = SharedWorkerId {
+            script_url: "https://example.com/sw.js".to_string(),
+            name: String::new(),
+        };
         let config = SharedWorkerScopeConfig::default();
         let scope = SharedWorkerGlobalScopeState::new(id, &config);
         let loc = scope.location().unwrap();
@@ -7409,7 +7797,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_global_scope_state_navigator() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let config = SharedWorkerScopeConfig {
             stealth_profile: None,
             user_agent: "Bao/2.0".to_string(),
@@ -7426,7 +7817,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_global_scope_state_onconnect() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: String::new() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: String::new(),
+        };
         let config = SharedWorkerScopeConfig::default();
         let mut scope = SharedWorkerGlobalScopeState::new(id, &config);
         assert!(!scope.has_onconnect);
@@ -7436,7 +7830,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_global_scope_state_connect_count() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: String::new() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: String::new(),
+        };
         let config = SharedWorkerScopeConfig::default();
         let mut scope = SharedWorkerGlobalScopeState::new(id, &config);
         assert_eq!(scope.connect_count, 0);
@@ -7451,7 +7848,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_port_channel_creation() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let (port, endpoints) = SharedWorkerPortChannel::new(id.clone());
         assert_eq!(port.shared_worker_id, id);
         assert_eq!(endpoints.shared_worker_id, id);
@@ -7461,9 +7861,15 @@ mod tests {
 
     #[test]
     fn test_shared_worker_port_channel_page_to_worker() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: String::new() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: String::new(),
+        };
         let (port, endpoints) = SharedWorkerPortChannel::new(id);
-        let payload = StructuredClonePayload { data: vec![1, 2, 3], transferable_count: 0 };
+        let payload = StructuredClonePayload {
+            data: vec![1, 2, 3],
+            transferable_count: 0,
+        };
         port.post_message_to_worker(payload).unwrap();
         let rx = endpoints.page_to_worker_rx.unwrap();
         let received = rx.try_recv().unwrap();
@@ -7472,7 +7878,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_port_channel_worker_to_page() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: String::new() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: String::new(),
+        };
         let (port, endpoints) = SharedWorkerPortChannel::new(id);
         let msg = WorkerStructuredMessage::with_payload(
             WorkerId("sw.js".to_string()),
@@ -7489,7 +7898,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_port_channel_drain() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: String::new() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: String::new(),
+        };
         let (port, endpoints) = SharedWorkerPortChannel::new(id);
         let tx = endpoints.worker_to_page_tx.unwrap();
         for i in 0..3 {
@@ -7514,7 +7926,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_channel_bridge_new() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let bridge = SharedWorkerChannelBridge::new(id.clone());
         assert_eq!(bridge.shared_worker_id, id);
         assert_eq!(bridge.port_count(), 0);
@@ -7522,7 +7937,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_channel_bridge_add_port() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let mut bridge = SharedWorkerChannelBridge::new(id.clone());
         let endpoints = bridge.add_port();
         assert_eq!(bridge.port_count(), 1);
@@ -7533,7 +7951,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_channel_bridge_multiple_ports() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let mut bridge = SharedWorkerChannelBridge::new(id);
         bridge.add_port(); // Page 1
         bridge.add_port(); // Page 2
@@ -7543,7 +7964,10 @@ mod tests {
 
     #[test]
     fn test_shared_worker_channel_bridge_drain_all() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let mut bridge = SharedWorkerChannelBridge::new(id);
         let endpoints1 = bridge.add_port();
         let endpoints2 = bridge.add_port();
@@ -7553,11 +7977,13 @@ mod tests {
         tx1.send(WorkerStructuredMessage::metadata_only(
             WorkerId("sw.js".to_string()),
             WorkerMessageDirection::WorkerToPage,
-        )).unwrap();
+        ))
+        .unwrap();
         tx2.send(WorkerStructuredMessage::metadata_only(
             WorkerId("sw.js".to_string()),
             WorkerMessageDirection::WorkerToPage,
-        )).unwrap();
+        ))
+        .unwrap();
         let (messages, disconnected) = bridge.drain_all_worker_messages();
         assert_eq!(messages.len(), 2);
         assert!(disconnected.is_empty());
@@ -7565,10 +7991,16 @@ mod tests {
 
     #[test]
     fn test_shared_worker_channel_bridge_post_to_worker() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let mut bridge = SharedWorkerChannelBridge::new(id);
         let endpoints = bridge.add_port();
-        let payload = StructuredClonePayload { data: vec![42], transferable_count: 0 };
+        let payload = StructuredClonePayload {
+            data: vec![42],
+            transferable_count: 0,
+        };
         bridge.post_to_worker_from_port(0, payload).unwrap();
         let rx = endpoints.page_to_worker_rx.unwrap();
         let received = rx.try_recv().unwrap();
@@ -7577,10 +8009,16 @@ mod tests {
 
     #[test]
     fn test_shared_worker_channel_bridge_post_invalid_port() {
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let mut bridge = SharedWorkerChannelBridge::new(id);
         bridge.add_port();
-        let payload = StructuredClonePayload { data: vec![], transferable_count: 0 };
+        let payload = StructuredClonePayload {
+            data: vec![],
+            transferable_count: 0,
+        };
         let result = bridge.post_to_worker_from_port(99, payload);
         assert!(result.is_err());
     }
@@ -7591,7 +8029,10 @@ mod tests {
     #[test]
     fn test_webview_state_shared_worker_channel_registration() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let bridge = SharedWorkerChannelBridge::new(id.clone());
         state.register_shared_worker_channel(bridge);
         assert!(state.shared_worker_channel(&id).is_some());
@@ -7601,7 +8042,10 @@ mod tests {
     #[test]
     fn test_webview_state_create_shared_worker_channel() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         state.create_shared_worker_channel(id.clone());
         assert!(state.shared_worker_channel(&id).is_some());
     }
@@ -7609,7 +8053,10 @@ mod tests {
     #[test]
     fn test_webview_state_add_shared_worker_port() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let endpoints = state.add_shared_worker_port(id.clone());
         assert_eq!(state.shared_worker_channel_count(), 1);
         assert_eq!(endpoints.shared_worker_id, id);
@@ -7620,7 +8067,10 @@ mod tests {
     #[test]
     fn test_webview_state_add_shared_worker_port_multiple() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         state.add_shared_worker_port(id.clone());
         state.add_shared_worker_port(id.clone());
         assert_eq!(state.shared_worker_channel_count(), 2); // 2 ports
@@ -7629,13 +8079,17 @@ mod tests {
     #[test]
     fn test_webview_state_drain_all_shared_worker_messages() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let endpoints = state.add_shared_worker_port(id);
         let tx = endpoints.worker_to_page_tx.unwrap();
         tx.send(WorkerStructuredMessage::metadata_only(
             WorkerId("sw.js".to_string()),
             WorkerMessageDirection::WorkerToPage,
-        )).unwrap();
+        ))
+        .unwrap();
         let (messages, disconnected) = state.drain_all_shared_worker_messages();
         assert_eq!(messages.len(), 1);
         assert!(disconnected.is_empty());
@@ -7648,13 +8102,18 @@ mod tests {
             event_tx: Some(tx),
             ..Default::default()
         };
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let endpoints = state.add_shared_worker_port(id);
         let worker_tx = endpoints.worker_to_page_tx.unwrap();
-        worker_tx.send(WorkerStructuredMessage::metadata_only(
-            WorkerId("sw.js".to_string()),
-            WorkerMessageDirection::WorkerToPage,
-        )).unwrap();
+        worker_tx
+            .send(WorkerStructuredMessage::metadata_only(
+                WorkerId("sw.js".to_string()),
+                WorkerMessageDirection::WorkerToPage,
+            ))
+            .unwrap();
         state.drain_and_forward_shared_worker_messages();
         let event = rx.try_recv().unwrap();
         match event {
@@ -7668,10 +8127,14 @@ mod tests {
     #[test]
     fn test_webview_state_disconnect_shared_worker_clears_channels() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
-        state.track_shared_worker_port(SharedWorkerPortRef::new(
-            SharedWorkerHandle::new("sw.js".to_string(), "test".to_string())
-        ));
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
+        state.track_shared_worker_port(SharedWorkerPortRef::new(SharedWorkerHandle::new(
+            "sw.js".to_string(),
+            "test".to_string(),
+        )));
         state.add_shared_worker_port(id.clone());
         assert_eq!(state.shared_worker_port_count(), 1);
         assert_eq!(state.shared_worker_channel_count(), 1);
@@ -7683,7 +8146,10 @@ mod tests {
     #[test]
     fn test_webview_state_shared_worker_scope_registration() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let config = SharedWorkerScopeConfig::default();
         let scope = SharedWorkerGlobalScopeState::new(id.clone(), &config);
         state.register_shared_worker_scope(id.clone(), scope);
@@ -7694,7 +8160,10 @@ mod tests {
     #[test]
     fn test_webview_state_shared_worker_scope_get_mut() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let config = SharedWorkerScopeConfig::default();
         let scope = SharedWorkerGlobalScopeState::new(id.clone(), &config);
         state.register_shared_worker_scope(id.clone(), scope);
@@ -7705,7 +8174,10 @@ mod tests {
     #[test]
     fn test_webview_state_shared_worker_scope_remove() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let config = SharedWorkerScopeConfig::default();
         let scope = SharedWorkerGlobalScopeState::new(id.clone(), &config);
         state.register_shared_worker_scope(id.clone(), scope);
@@ -7717,15 +8189,35 @@ mod tests {
     #[test]
     fn test_webview_state_shared_worker_scopes_snapshot() {
         let mut state = BaoWebViewState::default();
-        let id1 = SharedWorkerId { script_url: "sw1.js".to_string(), name: "a".to_string() };
-        let id2 = SharedWorkerId { script_url: "sw2.js".to_string(), name: "b".to_string() };
+        let id1 = SharedWorkerId {
+            script_url: "sw1.js".to_string(),
+            name: "a".to_string(),
+        };
+        let id2 = SharedWorkerId {
+            script_url: "sw2.js".to_string(),
+            name: "b".to_string(),
+        };
         let config = SharedWorkerScopeConfig::default();
-        state.register_shared_worker_scope(id1, SharedWorkerGlobalScopeState::new(
-            SharedWorkerId { script_url: "sw1.js".to_string(), name: "a".to_string() }, &config
-        ));
-        state.register_shared_worker_scope(id2, SharedWorkerGlobalScopeState::new(
-            SharedWorkerId { script_url: "sw2.js".to_string(), name: "b".to_string() }, &config
-        ));
+        state.register_shared_worker_scope(
+            id1,
+            SharedWorkerGlobalScopeState::new(
+                SharedWorkerId {
+                    script_url: "sw1.js".to_string(),
+                    name: "a".to_string(),
+                },
+                &config,
+            ),
+        );
+        state.register_shared_worker_scope(
+            id2,
+            SharedWorkerGlobalScopeState::new(
+                SharedWorkerId {
+                    script_url: "sw2.js".to_string(),
+                    name: "b".to_string(),
+                },
+                &config,
+            ),
+        );
         let scopes = state.shared_worker_scopes();
         assert_eq!(scopes.len(), 2);
     }
@@ -7733,11 +8225,21 @@ mod tests {
     #[test]
     fn test_webview_state_disconnect_shared_worker_clears_scopes() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let config = SharedWorkerScopeConfig::default();
-        state.register_shared_worker_scope(id, SharedWorkerGlobalScopeState::new(
-            SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() }, &config
-        ));
+        state.register_shared_worker_scope(
+            id,
+            SharedWorkerGlobalScopeState::new(
+                SharedWorkerId {
+                    script_url: "sw.js".to_string(),
+                    name: "test".to_string(),
+                },
+                &config,
+            ),
+        );
         assert_eq!(state.shared_worker_scope_count(), 1);
         state.disconnect_shared_worker_ports();
         assert_eq!(state.shared_worker_scope_count(), 0);
@@ -7746,10 +8248,21 @@ mod tests {
     #[test]
     fn test_webview_state_set_shared_worker_scope_config() {
         let mut state = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "test".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "test".to_string(),
+        };
         let config = SharedWorkerScopeConfig::default();
-        state.register_shared_worker_scope(id.clone(), SharedWorkerGlobalScopeState::new(id.clone(), &config));
-        assert!(state.shared_worker_scope(&id).unwrap().navigator().user_agent.is_empty());
+        state.register_shared_worker_scope(
+            id.clone(),
+            SharedWorkerGlobalScopeState::new(id.clone(), &config),
+        );
+        assert!(state
+            .shared_worker_scope(&id)
+            .unwrap()
+            .navigator()
+            .user_agent
+            .is_empty());
         let new_config = SharedWorkerScopeConfig {
             stealth_profile: None,
             user_agent: "Bao/1.0".to_string(),
@@ -7759,7 +8272,14 @@ mod tests {
             languages: vec!["en-US".to_string()],
         };
         state.set_shared_worker_scope_config(&id, &new_config);
-        assert_eq!(state.shared_worker_scope(&id).unwrap().navigator().user_agent, "Bao/1.0");
+        assert_eq!(
+            state
+                .shared_worker_scope(&id)
+                .unwrap()
+                .navigator()
+                .user_agent,
+            "Bao/1.0"
+        );
     }
 
     // ─── BaoServoDelegate SharedWorker Routing (REQ-BRW-004 / DF-WK-7) ─────
@@ -7782,7 +8302,10 @@ mod tests {
         let handle2 = SharedWorkerHandle::new("sw.js".to_string(), "myname".to_string());
         delegate.route_shared_worker(handle1);
         let (_, is_new) = delegate.route_shared_worker(handle2);
-        assert!(!is_new, "same (url, name) should return existing, not create new");
+        assert!(
+            !is_new,
+            "same (url, name) should return existing, not create new"
+        );
         assert_eq!(delegate.shared_worker_count(), 1);
     }
 
@@ -7807,7 +8330,10 @@ mod tests {
     #[test]
     fn test_delegate_unregister_shared_worker() {
         let delegate = BaoServoDelegate::new();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "myname".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "myname".to_string(),
+        };
         delegate.get_or_create_shared_worker("sw.js", "myname");
         assert_eq!(delegate.shared_worker_count(), 1);
         let removed = delegate.unregister_shared_worker(&id);
@@ -7818,7 +8344,10 @@ mod tests {
     #[test]
     fn test_delegate_unregister_nonexistent_shared_worker() {
         let delegate = BaoServoDelegate::new();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "nonexistent".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "nonexistent".to_string(),
+        };
         let removed = delegate.unregister_shared_worker(&id);
         assert!(!removed);
     }
@@ -7839,17 +8368,24 @@ mod tests {
         let delegate = BaoServoDelegate::new();
 
         // Page 1 creates SharedWorker
-        let (handle, is_new) = delegate.route_shared_worker(
-            SharedWorkerHandle::new("sw.js".to_string(), "shared".to_string())
-        );
+        let (handle, is_new) = delegate.route_shared_worker(SharedWorkerHandle::new(
+            "sw.js".to_string(),
+            "shared".to_string(),
+        ));
         assert!(is_new);
         assert_eq!(handle.connected_page_count(), 0);
 
         // Page 1 connects
         let mut state1 = BaoWebViewState::default();
-        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: "shared".to_string() };
+        let id = SharedWorkerId {
+            script_url: "sw.js".to_string(),
+            name: "shared".to_string(),
+        };
         let config = SharedWorkerScopeConfig::default();
-        state1.register_shared_worker_scope(id.clone(), SharedWorkerGlobalScopeState::new(id.clone(), &config));
+        state1.register_shared_worker_scope(
+            id.clone(),
+            SharedWorkerGlobalScopeState::new(id.clone(), &config),
+        );
         state1.track_shared_worker_port(SharedWorkerPortRef::new(handle.clone()));
         // SharedWorkerPortRef::new already increments connected_page_count
         assert_eq!(handle.connected_page_count(), 1);
@@ -7858,16 +8394,29 @@ mod tests {
 
         // Page 2 connects (same SharedWorker, but its own channel bridge)
         let mut state2 = BaoWebViewState::default();
-        state2.register_shared_worker_scope(id.clone(), SharedWorkerGlobalScopeState::new(id.clone(), &config));
+        state2.register_shared_worker_scope(
+            id.clone(),
+            SharedWorkerGlobalScopeState::new(id.clone(), &config),
+        );
         state2.track_shared_worker_port(SharedWorkerPortRef::new(handle.clone()));
         let endpoints2 = state2.add_shared_worker_port(id.clone());
         assert_eq!(handle.connected_page_count(), 2);
 
         // Both pages can send messages to the SharedWorker through their own ports
-        let payload1 = StructuredClonePayload { data: vec![1], transferable_count: 0 };
-        state1.post_to_worker_via_shared_port(&id, 0, payload1).unwrap();
-        let payload2 = StructuredClonePayload { data: vec![2], transferable_count: 0 };
-        state2.post_to_worker_via_shared_port(&id, 0, payload2).unwrap();
+        let payload1 = StructuredClonePayload {
+            data: vec![1],
+            transferable_count: 0,
+        };
+        state1
+            .post_to_worker_via_shared_port(&id, 0, payload1)
+            .unwrap();
+        let payload2 = StructuredClonePayload {
+            data: vec![2],
+            transferable_count: 0,
+        };
+        state2
+            .post_to_worker_via_shared_port(&id, 0, payload2)
+            .unwrap();
 
         // Worker thread receives from both pages
         let rx1 = endpoints1.page_to_worker_rx.unwrap();
@@ -7879,11 +8428,15 @@ mod tests {
         let tx1 = endpoints1.worker_to_page_tx.unwrap();
         let tx2 = endpoints2.worker_to_page_tx.unwrap();
         tx1.send(WorkerStructuredMessage::metadata_only(
-            WorkerId("sw.js".to_string()), WorkerMessageDirection::WorkerToPage
-        )).unwrap();
+            WorkerId("sw.js".to_string()),
+            WorkerMessageDirection::WorkerToPage,
+        ))
+        .unwrap();
         tx2.send(WorkerStructuredMessage::metadata_only(
-            WorkerId("sw.js".to_string()), WorkerMessageDirection::WorkerToPage
-        )).unwrap();
+            WorkerId("sw.js".to_string()),
+            WorkerMessageDirection::WorkerToPage,
+        ))
+        .unwrap();
 
         // Page 1 drains its messages
         let (msgs1, disc1) = state1.drain_all_shared_worker_messages();
@@ -7941,47 +8494,50 @@ mod tests {
 
     #[test]
     fn test_service_worker_handle_lifecycle() {
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
-        );
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         assert!(!handle.is_closing());
         assert!(!handle.is_terminated());
-        assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Installing);
+        assert_eq!(
+            handle.registration_state(),
+            ServiceWorkerRegistrationState::Installing
+        );
         assert!(!handle.is_intercepting_fetch());
     }
 
     #[test]
     fn test_service_worker_handle_state_transitions() {
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
-        );
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         // Installing → Installed
         handle.transition_state(ServiceWorkerRegistrationState::Installed);
-        assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Installed);
+        assert_eq!(
+            handle.registration_state(),
+            ServiceWorkerRegistrationState::Installed
+        );
 
         // Installed → Activating
         handle.transition_state(ServiceWorkerRegistrationState::Activating);
-        assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Activating);
+        assert_eq!(
+            handle.registration_state(),
+            ServiceWorkerRegistrationState::Activating
+        );
 
         // Activating → Activated + enable fetch interception
         handle.transition_state(ServiceWorkerRegistrationState::Activated);
         handle.enable_fetch_interception();
-        assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Activated);
+        assert_eq!(
+            handle.registration_state(),
+            ServiceWorkerRegistrationState::Activated
+        );
         assert!(handle.is_intercepting_fetch());
-        assert_eq!(handle.fetch_intercept_mode(), ServiceWorkerFetchInterceptMode::Intercepting);
+        assert_eq!(
+            handle.fetch_intercept_mode(),
+            ServiceWorkerFetchInterceptMode::Intercepting
+        );
     }
 
     #[test]
     fn test_service_worker_handle_terminate_disables_interception() {
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
-        );
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         handle.enable_fetch_interception();
         assert!(handle.is_intercepting_fetch());
 
@@ -7989,7 +8545,10 @@ mod tests {
         handle.terminate();
         assert!(handle.is_closing());
         assert!(!handle.is_intercepting_fetch());
-        assert_eq!(handle.fetch_intercept_mode(), ServiceWorkerFetchInterceptMode::None);
+        assert_eq!(
+            handle.fetch_intercept_mode(),
+            ServiceWorkerFetchInterceptMode::None
+        );
     }
 
     #[test]
@@ -7999,7 +8558,10 @@ mod tests {
         assert!(config.stealth_profile.is_some());
         assert_eq!(config.user_agent, profile.navigator.user_agent);
         assert_eq!(config.platform, profile.navigator.platform);
-        assert_eq!(config.hardware_concurrency, profile.navigator.hardware_concurrency as usize);
+        assert_eq!(
+            config.hardware_concurrency,
+            profile.navigator.hardware_concurrency as usize
+        );
         assert_eq!(config.language, profile.navigator.language);
     }
 
@@ -8041,11 +8603,7 @@ mod tests {
         let mut state = BaoWebViewState::default();
         assert!(!state.is_controlled_by_service_worker());
 
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
-        );
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         state.set_controlling_service_worker(handle);
         assert!(state.is_controlled_by_service_worker());
 
@@ -8064,11 +8622,7 @@ mod tests {
         };
         let config = ServiceWorkerScopeConfig::default();
         let scope = ServiceWorkerGlobalScopeState::new(reg_id, &config);
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/app/".to_string(),
-            None,
-        );
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/app/".to_string(), None);
         state.set_controlling_service_worker(handle);
         state.register_service_worker_scope(scope);
 
@@ -8082,16 +8636,12 @@ mod tests {
         let delegate = BaoServoDelegate::new();
         assert_eq!(delegate.service_worker_count(), 0);
 
-        let (handle, is_new) = delegate.get_or_create_service_worker(
-            "sw.js", "/", None,
-        );
+        let (handle, is_new) = delegate.get_or_create_service_worker("sw.js", "/", None);
         assert!(is_new);
         assert_eq!(delegate.service_worker_count(), 1);
 
         // Re-register same (script_url, scope) returns existing
-        let (handle2, is_new2) = delegate.get_or_create_service_worker(
-            "sw.js", "/", None,
-        );
+        let (handle2, is_new2) = delegate.get_or_create_service_worker("sw.js", "/", None);
         assert!(!is_new2);
         assert_eq!(delegate.service_worker_count(), 1);
     }
@@ -8101,9 +8651,9 @@ mod tests {
         let delegate = BaoServoDelegate::new();
 
         // Register a ServiceWorker for /app/ scope
-        let handle = delegate.get_or_create_service_worker(
-            "sw.js", "/app/", None,
-        ).0;
+        let handle = delegate
+            .get_or_create_service_worker("sw.js", "/app/", None)
+            .0;
 
         // Not intercepting yet — find_service_worker_for_url returns None
         assert!(delegate.find_service_worker_for_url("/app/page1").is_none());
@@ -8118,15 +8668,15 @@ mod tests {
         assert_eq!(found.unwrap().script_url, "sw.js");
 
         // Not found for URLs outside scope
-        assert!(delegate.find_service_worker_for_url("/other/page").is_none());
+        assert!(delegate
+            .find_service_worker_for_url("/other/page")
+            .is_none());
     }
 
     #[test]
     fn test_delegate_service_worker_unregistration() {
         let delegate = BaoServoDelegate::new();
-        let (handle, _) = delegate.get_or_create_service_worker(
-            "sw.js", "/", None,
-        );
+        let (handle, _) = delegate.get_or_create_service_worker("sw.js", "/", None);
         assert_eq!(delegate.service_worker_count(), 1);
 
         let id = handle.id();
@@ -8143,11 +8693,8 @@ mod tests {
         let profile = bao_stealth::StealthProfile::chrome_default();
 
         // Register a ServiceWorker with matching stealth profile
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            Some(profile.clone()),
-        );
+        let handle =
+            ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), Some(profile.clone()));
         delegate.register_service_worker(handle);
         // Activate to enable fetch interception
         let all = delegate.all_service_workers();
@@ -8164,11 +8711,7 @@ mod tests {
         let profile = bao_stealth::StealthProfile::chrome_default();
 
         // Register a ServiceWorker without stealth profile — this is a violation
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
-        );
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         delegate.register_service_worker(handle);
         let all = delegate.all_service_workers();
         all[0].transition_state(ServiceWorkerRegistrationState::Activated);
@@ -8187,9 +8730,8 @@ mod tests {
         let profile = bao_stealth::StealthProfile::chrome_default();
 
         // Page 1 registers a ServiceWorker
-        let (handle, is_new) = delegate.get_or_create_service_worker(
-            "sw.js", "/", Some(profile.clone()),
-        );
+        let (handle, is_new) =
+            delegate.get_or_create_service_worker("sw.js", "/", Some(profile.clone()));
         assert!(is_new);
         handle.transition_state(ServiceWorkerRegistrationState::Activated);
         handle.enable_fetch_interception();
@@ -8202,9 +8744,8 @@ mod tests {
             scope: "/".to_string(),
         };
         let config = ServiceWorkerScopeConfig::from(&profile);
-        page_state.register_service_worker_scope(
-            ServiceWorkerGlobalScopeState::new(reg_id, &config)
-        );
+        page_state
+            .register_service_worker_scope(ServiceWorkerGlobalScopeState::new(reg_id, &config));
         assert!(page_state.is_controlled_by_service_worker());
 
         // Page navigation: clear controlling reference (SW survives in delegate registry)
@@ -8223,40 +8764,56 @@ mod tests {
 
     #[test]
     fn test_service_worker_fetch_intercept_mode() {
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
+        assert_eq!(
+            handle.fetch_intercept_mode(),
+            ServiceWorkerFetchInterceptMode::None
         );
-        assert_eq!(handle.fetch_intercept_mode(), ServiceWorkerFetchInterceptMode::None);
 
         handle.enable_fetch_interception();
-        assert_eq!(handle.fetch_intercept_mode(), ServiceWorkerFetchInterceptMode::Intercepting);
+        assert_eq!(
+            handle.fetch_intercept_mode(),
+            ServiceWorkerFetchInterceptMode::Intercepting
+        );
 
         handle.disable_fetch_interception();
-        assert_eq!(handle.fetch_intercept_mode(), ServiceWorkerFetchInterceptMode::None);
+        assert_eq!(
+            handle.fetch_intercept_mode(),
+            ServiceWorkerFetchInterceptMode::None
+        );
     }
 
     #[test]
     fn test_service_worker_registration_state_all_transitions() {
-        let handle = ServiceWorkerHandle::new(
-            "sw.js".to_string(),
-            "/".to_string(),
-            None,
+        let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
+        assert_eq!(
+            handle.registration_state(),
+            ServiceWorkerRegistrationState::Installing
         );
-        assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Installing);
 
         handle.transition_state(ServiceWorkerRegistrationState::Installed);
-        assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Installed);
+        assert_eq!(
+            handle.registration_state(),
+            ServiceWorkerRegistrationState::Installed
+        );
 
         handle.transition_state(ServiceWorkerRegistrationState::Activating);
-        assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Activating);
+        assert_eq!(
+            handle.registration_state(),
+            ServiceWorkerRegistrationState::Activating
+        );
 
         handle.transition_state(ServiceWorkerRegistrationState::Activated);
-        assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Activated);
+        assert_eq!(
+            handle.registration_state(),
+            ServiceWorkerRegistrationState::Activated
+        );
 
         handle.transition_state(ServiceWorkerRegistrationState::Redundant);
-        assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Redundant);
+        assert_eq!(
+            handle.registration_state(),
+            ServiceWorkerRegistrationState::Redundant
+        );
     }
 
     #[test]
@@ -8296,6 +8853,9 @@ mod tests {
             ..ServiceWorkerScopeConfig::default()
         };
         state.set_service_worker_scope_config(&new_config);
-        assert_eq!(state.service_worker_scope().unwrap().navigator().user_agent, "Updated Agent");
+        assert_eq!(
+            state.service_worker_scope().unwrap().navigator().user_agent,
+            "Updated Agent"
+        );
     }
 }

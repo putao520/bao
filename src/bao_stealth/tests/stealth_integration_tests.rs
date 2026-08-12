@@ -13,21 +13,36 @@ use bao_stealth::*;
 fn test_chrome_profile_ua_contains_chrome() {
     let engine = StealthEngine::new(StealthProfile::chrome_default());
     let ua = &engine.navigator().user_agent;
-    assert!(ua.contains("Chrome") || ua.contains("chrome"), "Chrome profile UA should contain Chrome");
+    assert!(
+        ua.contains("Chrome") || ua.contains("chrome"),
+        "Chrome profile UA should contain Chrome"
+    );
 }
 
 #[test]
 fn test_firefox_profile_ua_contains_firefox() {
     let engine = StealthEngine::new(StealthProfile::firefox_default());
     let ua = &engine.navigator().user_agent;
-    assert!(ua.contains("Firefox") || ua.contains("firefox"), "Firefox profile UA should contain Firefox");
+    assert!(
+        ua.contains("Firefox") || ua.contains("firefox"),
+        "Firefox profile UA should contain Firefox"
+    );
 }
 
 #[test]
 fn test_profiles_have_different_user_agents() {
-    let chrome_ua = StealthEngine::new(StealthProfile::chrome_default()).navigator().user_agent.clone();
-    let firefox_ua = StealthEngine::new(StealthProfile::firefox_default()).navigator().user_agent.clone();
-    assert_ne!(chrome_ua, firefox_ua, "Chrome and Firefox profiles should have different UAs");
+    let chrome_ua = StealthEngine::new(StealthProfile::chrome_default())
+        .navigator()
+        .user_agent
+        .clone();
+    let firefox_ua = StealthEngine::new(StealthProfile::firefox_default())
+        .navigator()
+        .user_agent
+        .clone();
+    assert_ne!(
+        chrome_ua, firefox_ua,
+        "Chrome and Firefox profiles should have different UAs"
+    );
 }
 
 #[test]
@@ -41,7 +56,10 @@ fn test_profiles_have_different_platforms_or_same() {
 
 #[test]
 fn test_screen_profiles_positive_dimensions() {
-    let profiles = [StealthProfile::chrome_default(), StealthProfile::firefox_default()];
+    let profiles = [
+        StealthProfile::chrome_default(),
+        StealthProfile::firefox_default(),
+    ];
     for p in &profiles {
         let engine = StealthEngine::new(p.clone());
         let scr = engine.screen();
@@ -53,12 +71,18 @@ fn test_screen_profiles_positive_dimensions() {
 
 #[test]
 fn test_webgl_profiles_have_vendor_and_renderer() {
-    let profiles = [StealthProfile::chrome_default(), StealthProfile::firefox_default()];
+    let profiles = [
+        StealthProfile::chrome_default(),
+        StealthProfile::firefox_default(),
+    ];
     for p in &profiles {
         let engine = StealthEngine::new(p.clone());
         let gl = engine.webgl();
         assert!(!gl.vendor.is_empty(), "WebGL vendor should be non-empty");
-        assert!(!gl.renderer.is_empty(), "WebGL renderer should be non-empty");
+        assert!(
+            !gl.renderer.is_empty(),
+            "WebGL renderer should be non-empty"
+        );
     }
 }
 
@@ -134,7 +158,11 @@ fn test_canvas_noise_reproducible() {
     let cn2 = CanvasNoise::new(42);
     let (r1, g1, b1, a1) = cn1.apply_to_pixel(128, 128, 128, 255, 10, 10);
     let (r2, g2, b2, a2) = cn2.apply_to_pixel(128, 128, 128, 255, 10, 10);
-    assert_eq!((r1, g1, b1, a1), (r2, g2, b2, a2), "same seed should produce same noise");
+    assert_eq!(
+        (r1, g1, b1, a1),
+        (r2, g2, b2, a2),
+        "same seed should produce same noise"
+    );
 }
 
 #[test]
@@ -155,7 +183,11 @@ fn test_audio_noise_bounded() {
     let ap = AudioProfile::new(42);
     for i in 0..100 {
         let noisy = ap.apply_noise(0.5, i);
-        assert!(noisy >= 0.0 && noisy <= 1.0, "audio noise should stay in [0,1], got {}", noisy);
+        assert!(
+            noisy >= 0.0 && noisy <= 1.0,
+            "audio noise should stay in [0,1], got {}",
+            noisy
+        );
     }
 }
 
@@ -168,7 +200,11 @@ fn test_audio_noise_small_perturbation() {
         sum_diff += (noisy - 0.5).abs();
     }
     let avg_diff = sum_diff / 1000.0;
-    assert!(avg_diff < 0.1, "average noise perturbation should be small, got {}", avg_diff);
+    assert!(
+        avg_diff < 0.1,
+        "average noise perturbation should be small, got {}",
+        avg_diff
+    );
 }
 
 // ---- StealthProfile serialization ----
@@ -183,7 +219,10 @@ fn test_stealth_profile_chrome_default_consistency() {
 
 #[test]
 fn test_all_profile_components_accessible() {
-    let profiles = vec![StealthProfile::chrome_default(), StealthProfile::firefox_default()];
+    let profiles = vec![
+        StealthProfile::chrome_default(),
+        StealthProfile::firefox_default(),
+    ];
     for p in profiles {
         let engine = StealthEngine::new(p);
         // All sub-components should be accessible without panic

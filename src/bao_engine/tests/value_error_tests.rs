@@ -176,7 +176,10 @@ fn to_display_string_integer_numbers() {
     assert_eq!(JsValue::Number(0.0).to_display_string(), "0");
     assert_eq!(JsValue::Number(42.0).to_display_string(), "42");
     assert_eq!(JsValue::Number(-7.0).to_display_string(), "-7");
-    assert_eq!(JsValue::Number(1_000_000_000.0).to_display_string(), "1000000000");
+    assert_eq!(
+        JsValue::Number(1_000_000_000.0).to_display_string(),
+        "1000000000"
+    );
 }
 
 #[test]
@@ -188,19 +191,31 @@ fn to_display_string_float_numbers() {
 #[test]
 fn to_display_string_special_floats() {
     assert_eq!(JsValue::Number(f64::NAN).to_display_string(), "NaN");
-    assert_eq!(JsValue::Number(f64::INFINITY).to_display_string(), "Infinity");
-    assert_eq!(JsValue::Number(f64::NEG_INFINITY).to_display_string(), "-Infinity");
+    assert_eq!(
+        JsValue::Number(f64::INFINITY).to_display_string(),
+        "Infinity"
+    );
+    assert_eq!(
+        JsValue::Number(f64::NEG_INFINITY).to_display_string(),
+        "-Infinity"
+    );
 }
 
 #[test]
 fn to_display_string_string_value() {
-    assert_eq!(JsValue::String("hello world".into()).to_display_string(), "hello world");
+    assert_eq!(
+        JsValue::String("hello world".into()).to_display_string(),
+        "hello world"
+    );
     assert_eq!(JsValue::String(String::new()).to_display_string(), "");
 }
 
 #[test]
 fn to_display_string_object() {
-    assert_eq!(JsValue::Object(ptr::null_mut()).to_display_string(), "[object Object]");
+    assert_eq!(
+        JsValue::Object(ptr::null_mut()).to_display_string(),
+        "[object Object]"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +249,10 @@ fn jsvalue_debug_format_number() {
 
 #[test]
 fn jsvalue_debug_format_string() {
-    assert_eq!(format!("{:?}", JsValue::String("abc".into())), "String(\"abc\")");
+    assert_eq!(
+        format!("{:?}", JsValue::String("abc".into())),
+        "String(\"abc\")"
+    );
 }
 
 #[test]

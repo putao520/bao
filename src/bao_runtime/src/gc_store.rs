@@ -1,8 +1,8 @@
 // @trace REQ-ENG-001 [entity:BaoRuntime]
 use ::std::cell::RefCell;
 use ::std::collections::HashSet;
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
@@ -111,11 +111,7 @@ impl GcStore {
         rooted!(&in(cx_ref) let global_root = global);
         let prop_name = Self::prop_name(namespace, key);
         unsafe {
-            JS_DeleteProperty1(
-                cx,
-                global_root.handle().into(),
-                prop_name.as_ptr(),
-            );
+            JS_DeleteProperty1(cx, global_root.handle().into(), prop_name.as_ptr());
         }
     }
 }
@@ -215,7 +211,10 @@ mod tests {
 
     #[test]
     fn tracking_key_with_namespace() {
-        assert_eq!(GcStore::tracking_key("EmitterState", "data:0"), "EmitterState::data:0");
+        assert_eq!(
+            GcStore::tracking_key("EmitterState", "data:0"),
+            "EmitterState::data:0"
+        );
     }
 
     #[test]
@@ -253,6 +252,9 @@ mod tests {
         let before = GC_KEY_COUNTER.fetch_add(0, Ordering::SeqCst);
         let _ = gc_store_unique_key("test_ns");
         let after = GC_KEY_COUNTER.fetch_add(0, Ordering::SeqCst);
-        assert!(after > before, "counter must increment: before={before}, after={after}");
+        assert!(
+            after > before,
+            "counter must increment: before={before}, after={after}"
+        );
     }
 }

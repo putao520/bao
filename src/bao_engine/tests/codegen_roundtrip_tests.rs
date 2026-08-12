@@ -70,12 +70,20 @@ fn test_generate_bindings_method_in_specs() {
         has_pending_activity: false,
         proto: vec![PropertyDef {
             name: "doSomething".into(),
-            kind: PropertyKind::Method { fn_name: "do_something".into(), length: 0 },
+            kind: PropertyKind::Method {
+                fn_name: "do_something".into(),
+                length: 0,
+            },
         }],
         static_props: vec![],
     };
     let bindings = generate_bindings(&class_def);
-    assert!(bindings.function_specs.iter().any(|s| s.contains("doSomething")));
+    assert!(
+        bindings
+            .function_specs
+            .iter()
+            .any(|s| s.contains("doSomething"))
+    );
 }
 
 #[test]
@@ -89,7 +97,10 @@ fn test_generate_bindings_getter_in_specs() {
         has_pending_activity: false,
         proto: vec![PropertyDef {
             name: "length".into(),
-            kind: PropertyKind::Getter { fn_name: "get_length".into(), cache: false },
+            kind: PropertyKind::Getter {
+                fn_name: "get_length".into(),
+                cache: false,
+            },
         }],
         static_props: vec![],
     };
@@ -109,11 +120,19 @@ fn test_generate_bindings_static_method() {
         proto: vec![],
         static_props: vec![PropertyDef {
             name: "create".into(),
-            kind: PropertyKind::Method { fn_name: "create".into(), length: 1 },
+            kind: PropertyKind::Method {
+                fn_name: "create".into(),
+                length: 1,
+            },
         }],
     };
     let bindings = generate_bindings(&class_def);
-    assert!(bindings.static_function_specs.iter().any(|s| s.contains("create")));
+    assert!(
+        bindings
+            .static_function_specs
+            .iter()
+            .any(|s| s.contains("create"))
+    );
 }
 
 // ---- generate_all batch ----
@@ -123,15 +142,23 @@ fn test_generate_all_multiple_classes() {
     let class_defs = vec![
         ClassDef {
             name: "Alpha".into(),
-            construct: true, no_constructor: false, finalize: false,
-            configurable: false, has_pending_activity: false,
-            proto: vec![], static_props: vec![],
+            construct: true,
+            no_constructor: false,
+            finalize: false,
+            configurable: false,
+            has_pending_activity: false,
+            proto: vec![],
+            static_props: vec![],
         },
         ClassDef {
             name: "Beta".into(),
-            construct: true, no_constructor: false, finalize: false,
-            configurable: false, has_pending_activity: false,
-            proto: vec![], static_props: vec![],
+            construct: true,
+            no_constructor: false,
+            finalize: false,
+            configurable: false,
+            has_pending_activity: false,
+            proto: vec![],
+            static_props: vec![],
         },
     ];
     let all = generate_all(&class_defs);
@@ -150,9 +177,13 @@ fn test_generate_all_empty() {
 fn test_generate_all_single() {
     let class_defs = vec![ClassDef {
         name: "Solo".into(),
-        construct: true, no_constructor: false, finalize: false,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: true,
+        no_constructor: false,
+        finalize: false,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     }];
     let all = generate_all(&class_defs);
     assert_eq!(all.len(), 1);
@@ -165,9 +196,13 @@ fn test_generate_all_single() {
 fn test_generate_module_contains_module_name() {
     let bindings = generate_bindings(&ClassDef {
         name: "Test".into(),
-        construct: true, no_constructor: false, finalize: false,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: true,
+        no_constructor: false,
+        finalize: false,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     });
     let module = generate_module(&[bindings], "test_module");
     assert!(module.contains("test_module"));
@@ -177,15 +212,23 @@ fn test_generate_module_contains_module_name() {
 fn test_generate_module_multiple_bindings() {
     let b1 = generate_bindings(&ClassDef {
         name: "A".into(),
-        construct: true, no_constructor: false, finalize: false,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: true,
+        no_constructor: false,
+        finalize: false,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     });
     let b2 = generate_bindings(&ClassDef {
         name: "B".into(),
-        construct: true, no_constructor: false, finalize: false,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: true,
+        no_constructor: false,
+        finalize: false,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     });
     let module = generate_module(&[b1, b2], "multi");
     assert!(module.contains("A"));
@@ -204,9 +247,13 @@ fn test_generate_module_empty_bindings() {
 fn test_class_def_all_flags_false() {
     let def = ClassDef {
         name: "Plain".into(),
-        construct: false, no_constructor: false, finalize: false,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: false,
+        no_constructor: false,
+        finalize: false,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     };
     assert!(!def.construct);
     assert!(!def.finalize);
@@ -217,9 +264,13 @@ fn test_class_def_all_flags_false() {
 fn test_class_def_all_flags_true() {
     let def = ClassDef {
         name: "Full".into(),
-        construct: true, no_constructor: false, finalize: true,
-        configurable: true, has_pending_activity: true,
-        proto: vec![], static_props: vec![],
+        construct: true,
+        no_constructor: false,
+        finalize: true,
+        configurable: true,
+        has_pending_activity: true,
+        proto: vec![],
+        static_props: vec![],
     };
     assert!(def.construct);
     assert!(def.finalize);
@@ -231,11 +282,17 @@ fn test_class_def_all_flags_true() {
 fn test_class_def_clone() {
     let def = ClassDef {
         name: "Clonable".into(),
-        construct: true, no_constructor: false, finalize: false,
-        configurable: false, has_pending_activity: false,
+        construct: true,
+        no_constructor: false,
+        finalize: false,
+        configurable: false,
+        has_pending_activity: false,
         proto: vec![PropertyDef {
             name: "method".into(),
-            kind: PropertyKind::Method { fn_name: "method".into(), length: 1 },
+            kind: PropertyKind::Method {
+                fn_name: "method".into(),
+                length: 1,
+            },
         }],
         static_props: vec![],
     };
@@ -248,9 +305,13 @@ fn test_class_def_clone() {
 fn test_class_def_debug() {
     let def = ClassDef {
         name: "Debug".into(),
-        construct: true, no_constructor: false, finalize: false,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: true,
+        no_constructor: false,
+        finalize: false,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     };
     let debug = format!("{:?}", def);
     assert!(debug.contains("Debug"));
@@ -260,14 +321,19 @@ fn test_class_def_debug() {
 
 #[test]
 fn test_property_kind_getter() {
-    let kind = PropertyKind::Getter { fn_name: "get_val".into(), cache: true };
+    let kind = PropertyKind::Getter {
+        fn_name: "get_val".into(),
+        cache: true,
+    };
     let debug = format!("{:?}", kind);
     assert!(debug.contains("get_val"));
 }
 
 #[test]
 fn test_property_kind_setter() {
-    let kind = PropertyKind::Setter { fn_name: "set_val".into() };
+    let kind = PropertyKind::Setter {
+        fn_name: "set_val".into(),
+    };
     let debug = format!("{:?}", kind);
     assert!(debug.contains("set_val"));
 }
@@ -286,7 +352,10 @@ fn test_property_kind_accessor() {
 
 #[test]
 fn test_property_kind_method() {
-    let kind = PropertyKind::Method { fn_name: "run".into(), length: 2 };
+    let kind = PropertyKind::Method {
+        fn_name: "run".into(),
+        length: 2,
+    };
     let debug = format!("{:?}", kind);
     assert!(debug.contains("run"));
 }
@@ -300,7 +369,10 @@ fn test_property_kind_value() {
 
 #[test]
 fn test_property_kind_clone() {
-    let kind = PropertyKind::Method { fn_name: "test".into(), length: 0 };
+    let kind = PropertyKind::Method {
+        fn_name: "test".into(),
+        length: 0,
+    };
     let cloned = kind.clone();
     if let PropertyKind::Method { fn_name, length } = cloned {
         assert_eq!(fn_name, "test");
@@ -316,7 +388,10 @@ fn test_property_kind_clone() {
 fn test_property_def_debug() {
     let def = PropertyDef {
         name: "prop".into(),
-        kind: PropertyKind::Getter { fn_name: "get_prop".into(), cache: false },
+        kind: PropertyKind::Getter {
+            fn_name: "get_prop".into(),
+            cache: false,
+        },
     };
     let debug = format!("{:?}", def);
     assert!(debug.contains("prop"));
@@ -338,9 +413,13 @@ fn test_property_def_clone() {
 fn test_generated_bindings_debug() {
     let bindings = generate_bindings(&ClassDef {
         name: "Widget".into(),
-        construct: true, no_constructor: false, finalize: true,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: true,
+        no_constructor: false,
+        finalize: true,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     });
     let debug = format!("{:?}", bindings);
     assert!(debug.contains("Widget"));
@@ -350,9 +429,13 @@ fn test_generated_bindings_debug() {
 fn test_generated_bindings_finalize_when_requested() {
     let bindings = generate_bindings(&ClassDef {
         name: "Res".into(),
-        construct: true, no_constructor: false, finalize: true,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: true,
+        no_constructor: false,
+        finalize: true,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     });
     assert!(bindings.finalize_fn.is_some());
 }
@@ -361,9 +444,13 @@ fn test_generated_bindings_finalize_when_requested() {
 fn test_generated_bindings_no_finalize_when_not_requested() {
     let bindings = generate_bindings(&ClassDef {
         name: "NoFin".into(),
-        construct: true, no_constructor: false, finalize: false,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: true,
+        no_constructor: false,
+        finalize: false,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     });
     assert!(bindings.finalize_fn.is_none());
 }
@@ -372,9 +459,13 @@ fn test_generated_bindings_no_finalize_when_not_requested() {
 fn test_generated_bindings_constructor_when_construct() {
     let bindings = generate_bindings(&ClassDef {
         name: "Ctor".into(),
-        construct: true, no_constructor: false, finalize: false,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: true,
+        no_constructor: false,
+        finalize: false,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     });
     assert!(bindings.constructor_fn.is_some());
 }
@@ -383,9 +474,13 @@ fn test_generated_bindings_constructor_when_construct() {
 fn test_generated_bindings_no_constructor() {
     let bindings = generate_bindings(&ClassDef {
         name: "NoCtor".into(),
-        construct: false, no_constructor: true, finalize: false,
-        configurable: false, has_pending_activity: false,
-        proto: vec![], static_props: vec![],
+        construct: false,
+        no_constructor: true,
+        finalize: false,
+        configurable: false,
+        has_pending_activity: false,
+        proto: vec![],
+        static_props: vec![],
     });
     assert!(bindings.constructor_fn.is_none());
 }
@@ -420,11 +515,17 @@ fn test_full_roundtrip_parse_generate_module() {
         proto: vec![
             PropertyDef {
                 name: "getAttribute".into(),
-                kind: PropertyKind::Method { fn_name: "get_attribute".into(), length: 1 },
+                kind: PropertyKind::Method {
+                    fn_name: "get_attribute".into(),
+                    length: 1,
+                },
             },
             PropertyDef {
                 name: "setAttribute".into(),
-                kind: PropertyKind::Method { fn_name: "set_attribute".into(), length: 2 },
+                kind: PropertyKind::Method {
+                    fn_name: "set_attribute".into(),
+                    length: 2,
+                },
             },
         ],
         static_props: vec![],

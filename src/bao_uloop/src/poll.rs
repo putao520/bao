@@ -150,7 +150,11 @@ unsafe extern "C" {
 
 #[cfg(test)]
 #[allow(non_snake_case)]
-unsafe extern "C" fn Bun__internal_dispatch_ready_poll(_loop_: *mut Loop, _tagged_pointer: *mut c_void) {}
+unsafe extern "C" fn Bun__internal_dispatch_ready_poll(
+    _loop_: *mut Loop,
+    _tagged_pointer: *mut c_void,
+) {
+}
 
 // ──────────────── FFI: us_dispatch_* (from dispatch.zig) ────────────────
 // These are the socket event dispatchers defined in the Zig/C++ layer.
@@ -159,7 +163,12 @@ unsafe extern "C" fn Bun__internal_dispatch_ready_poll(_loop_: *mut Loop, _tagge
 
 #[allow(dead_code)] // Used by 74-C.3 socket dispatch
 unsafe extern "C" {
-    fn us_dispatch_open(s: *mut c_void, is_client: c_int, ip: *mut u8, ip_length: c_int) -> *mut c_void;
+    fn us_dispatch_open(
+        s: *mut c_void,
+        is_client: c_int,
+        ip: *mut u8,
+        ip_length: c_int,
+    ) -> *mut c_void;
     fn us_dispatch_data(s: *mut c_void, data: *mut u8, length: c_int) -> *mut c_void;
     fn us_dispatch_writable(s: *mut c_void) -> *mut c_void;
     fn us_dispatch_close(s: *mut c_void, code: c_int, reason: *mut c_void) -> *mut c_void;
@@ -248,7 +257,9 @@ unsafe fn dispatch_ready_poll(poll: *mut BaoPoll, error: c_int, eof: c_int, even
 unsafe fn accept_poll_event(poll: *mut BaoPoll) -> u64 {
     let fd = unsafe { (*poll).fd() };
     let mut buf: u64 = 0;
-    unsafe { libc::read(fd, &mut buf as *mut u64 as *mut c_void, 8); }
+    unsafe {
+        libc::read(fd, &mut buf as *mut u64 as *mut c_void, 8);
+    }
     buf
 }
 
@@ -303,11 +314,7 @@ unsafe extern "C" {
 
     /// Same as `us_poll_start` but returns the epoll_ctl return code.
     /// Provided by libusockets.a.
-    pub unsafe fn us_poll_start_rc(
-        p: *mut BaoPoll,
-        loop_: *mut Loop,
-        events: c_int,
-    ) -> c_int;
+    pub unsafe fn us_poll_start_rc(p: *mut BaoPoll, loop_: *mut Loop, events: c_int) -> c_int;
 
     /// Modify the events a poll is registered for. Provided by libusockets.a.
     pub unsafe fn us_poll_change(p: *mut BaoPoll, loop_: *mut Loop, events: c_int);
@@ -356,7 +363,9 @@ pub(crate) unsafe fn dispatch_ready_polls(loop_: *mut Loop) {
 
         // Tagged pointer → FilePoll (Bun's own dispatch)
         if is_tagged_pointer(poll_ptr) {
-            unsafe { Bun__internal_dispatch_ready_poll(loop_, poll_ptr); }
+            unsafe {
+                Bun__internal_dispatch_ready_poll(loop_, poll_ptr);
+            }
             continue;
         }
 
@@ -368,7 +377,9 @@ pub(crate) unsafe fn dispatch_ready_polls(loop_: *mut Loop) {
         let filtered_events = events & unsafe { (*poll).events() };
 
         if filtered_events != 0 || error != 0 || eof != 0 {
-            unsafe { dispatch_ready_poll(poll, error, eof, filtered_events); }
+            unsafe {
+                dispatch_ready_poll(poll, error, eof, filtered_events);
+            }
         }
     }
 }
@@ -434,8 +445,13 @@ mod tests {
     #[test]
     fn bao_poll_all_kinds() {
         let mut p: BaoPoll = unsafe { core::mem::zeroed() };
-        for &kind in &[POLL_TYPE_SOCKET, POLL_TYPE_SOCKET_SHUT_DOWN,
-                       POLL_TYPE_SEMI_SOCKET, POLL_TYPE_CALLBACK, POLL_TYPE_UDP] {
+        for &kind in &[
+            POLL_TYPE_SOCKET,
+            POLL_TYPE_SOCKET_SHUT_DOWN,
+            POLL_TYPE_SEMI_SOCKET,
+            POLL_TYPE_CALLBACK,
+            POLL_TYPE_UDP,
+        ] {
             p.set_poll_type(kind);
             assert_eq!(p.kind(), kind, "kind must match for {kind}");
         }
@@ -492,7 +508,9 @@ mod tests {
         let mut p: BaoPoll = unsafe { core::mem::zeroed() };
         p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_IN);
         // Change kind to SHUT_DOWN, should keep POLLING_IN
-        unsafe { us_internal_poll_set_type(&mut p, POLL_TYPE_SOCKET_SHUT_DOWN); }
+        unsafe {
+            us_internal_poll_set_type(&mut p, POLL_TYPE_SOCKET_SHUT_DOWN);
+        }
         assert_eq!(p.kind(), POLL_TYPE_SOCKET_SHUT_DOWN);
         assert_eq!(p.poll_type() & POLL_TYPE_POLLING_MASK, POLL_TYPE_POLLING_IN);
     }
@@ -501,9 +519,14 @@ mod tests {
     fn us_internal_poll_set_type_preserves_polling_out() {
         let mut p: BaoPoll = unsafe { core::mem::zeroed() };
         p.set_poll_type(POLL_TYPE_CALLBACK | POLL_TYPE_POLLING_OUT);
-        unsafe { us_internal_poll_set_type(&mut p, POLL_TYPE_SOCKET); }
+        unsafe {
+            us_internal_poll_set_type(&mut p, POLL_TYPE_SOCKET);
+        }
         assert_eq!(p.kind(), POLL_TYPE_SOCKET);
-        assert_eq!(p.poll_type() & POLL_TYPE_POLLING_MASK, POLL_TYPE_POLLING_OUT);
+        assert_eq!(
+            p.poll_type() & POLL_TYPE_POLLING_MASK,
+            POLL_TYPE_POLLING_OUT
+        );
     }
 
     // ──── us_create_poll / us_poll_free ────
@@ -515,7 +538,9 @@ mod tests {
         assert!(!poll.is_null());
         // Must be 16-byte aligned
         assert_eq!((poll as usize) % 16, 0, "poll must be 16-byte aligned");
-        unsafe { us_poll_free(poll, loop_); }
+        unsafe {
+            us_poll_free(poll, loop_);
+        }
     }
 
     #[test]
@@ -528,7 +553,9 @@ mod tests {
         assert!(!ext_ptr.is_null());
         // ext must be after the 16-byte BaoPoll header
         assert_eq!(ext_ptr as usize, poll as usize + 16);
-        unsafe { us_poll_free(poll, loop_); }
+        unsafe {
+            us_poll_free(poll, loop_);
+        }
     }
 
     #[test]
@@ -538,7 +565,9 @@ mod tests {
         let poll = unsafe { us_create_poll(loop_, 0, 0) };
         let after = unsafe { (*loop_).num_polls };
         assert_eq!(after, before + 1, "fallthrough=0 must increment num_polls");
-        unsafe { us_poll_free(poll, loop_); }
+        unsafe {
+            us_poll_free(poll, loop_);
+        }
     }
 
     #[test]
@@ -549,7 +578,9 @@ mod tests {
         let after = unsafe { (*loop_).num_polls };
         assert_eq!(after, before, "fallthrough=1 must not increment num_polls");
         // Still need to free — but us_poll_free always decrements
-        unsafe { us_poll_free(poll, loop_); }
+        unsafe {
+            us_poll_free(poll, loop_);
+        }
     }
 
     // ──── us_poll_init ────
@@ -558,11 +589,19 @@ mod tests {
     fn us_poll_init_sets_fd_and_type() {
         let loop_ = super::super::uws_get_loop();
         let poll = unsafe { us_create_poll(loop_, 0, 0) };
-        unsafe { us_poll_init(poll, 42, POLL_TYPE_CALLBACK); }
+        unsafe {
+            us_poll_init(poll, 42, POLL_TYPE_CALLBACK);
+        }
         assert_eq!(unsafe { us_poll_fd(poll) }, 42);
         assert_eq!(unsafe { us_internal_poll_type(poll) }, POLL_TYPE_CALLBACK);
-        assert_eq!(unsafe { us_poll_events(poll) }, 0, "no polling direction set");
-        unsafe { us_poll_free(poll, loop_); }
+        assert_eq!(
+            unsafe { us_poll_events(poll) },
+            0,
+            "no polling direction set"
+        );
+        unsafe {
+            us_poll_free(poll, loop_);
+        }
     }
 
     // ──── poll start/stop/change ────
@@ -581,12 +620,16 @@ mod tests {
         // Create and init a poll
         let poll = unsafe { us_create_poll(loop_, 0, 0) };
         assert!(!poll.is_null());
-        unsafe { us_poll_init(poll, rfd, POLL_TYPE_CALLBACK); }
+        unsafe {
+            us_poll_init(poll, rfd, POLL_TYPE_CALLBACK);
+        }
         assert_eq!(unsafe { us_poll_fd(poll) }, rfd);
         assert_eq!(unsafe { us_internal_poll_type(poll) }, POLL_TYPE_CALLBACK);
 
         // Start polling for readable
-        unsafe { us_poll_start(poll, loop_, libc::EPOLLIN); }
+        unsafe {
+            us_poll_start(poll, loop_, libc::EPOLLIN);
+        }
         assert_eq!(unsafe { us_poll_events(poll) }, libc::EPOLLIN);
 
         // Verify it's registered in epoll by checking with epoll_ctl MOD (should succeed)
@@ -597,16 +640,24 @@ mod tests {
         assert_eq!(rc, 0, "epoll_ctl MOD should succeed after poll_start");
 
         // Stop polling
-        unsafe { us_poll_stop(poll, loop_); }
+        unsafe {
+            us_poll_stop(poll, loop_);
+        }
 
         // Verify it's removed from epoll
         let rc2 = unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_MOD, rfd, &mut ev) };
         assert!(rc2 != 0, "epoll_ctl MOD should fail after poll_stop");
 
         // Clean up
-        unsafe { us_poll_free(poll, loop_); }
-        unsafe { libc::close(fds[0]); }
-        unsafe { libc::close(fds[1]); }
+        unsafe {
+            us_poll_free(poll, loop_);
+        }
+        unsafe {
+            libc::close(fds[0]);
+        }
+        unsafe {
+            libc::close(fds[1]);
+        }
     }
 
     #[test]
@@ -620,22 +671,41 @@ mod tests {
 
         let poll = unsafe { us_create_poll(loop_, 0, 0) };
         assert!(!poll.is_null());
-        unsafe { us_poll_init(poll, rfd, POLL_TYPE_CALLBACK); }
-        unsafe { us_poll_start(poll, loop_, libc::EPOLLIN); }
+        unsafe {
+            us_poll_init(poll, rfd, POLL_TYPE_CALLBACK);
+        }
+        unsafe {
+            us_poll_start(poll, loop_, libc::EPOLLIN);
+        }
         assert_eq!(unsafe { us_poll_events(poll) }, libc::EPOLLIN);
 
         // Change to poll for writable
-        unsafe { us_poll_change(poll, loop_, libc::EPOLLOUT); }
+        unsafe {
+            us_poll_change(poll, loop_, libc::EPOLLOUT);
+        }
         assert_eq!(unsafe { us_poll_events(poll) }, libc::EPOLLOUT);
 
         // Change to poll for both
-        unsafe { us_poll_change(poll, loop_, libc::EPOLLIN | libc::EPOLLOUT); }
-        assert_eq!(unsafe { us_poll_events(poll) }, libc::EPOLLIN | libc::EPOLLOUT);
+        unsafe {
+            us_poll_change(poll, loop_, libc::EPOLLIN | libc::EPOLLOUT);
+        }
+        assert_eq!(
+            unsafe { us_poll_events(poll) },
+            libc::EPOLLIN | libc::EPOLLOUT
+        );
 
-        unsafe { us_poll_stop(poll, loop_); }
-        unsafe { us_poll_free(poll, loop_); }
-        unsafe { libc::close(fds[0]); }
-        unsafe { libc::close(fds[1]); }
+        unsafe {
+            us_poll_stop(poll, loop_);
+        }
+        unsafe {
+            us_poll_free(poll, loop_);
+        }
+        unsafe {
+            libc::close(fds[0]);
+        }
+        unsafe {
+            libc::close(fds[1]);
+        }
     }
 
     #[test]
@@ -647,44 +717,64 @@ mod tests {
         let rfd = fds[0];
 
         let poll = unsafe { us_create_poll(loop_, 0, 0) };
-        unsafe { us_poll_init(poll, rfd, POLL_TYPE_CALLBACK); }
+        unsafe {
+            us_poll_init(poll, rfd, POLL_TYPE_CALLBACK);
+        }
         let rc = unsafe { us_poll_start_rc(poll, loop_, libc::EPOLLIN) };
         assert_eq!(rc, 0, "us_poll_start_rc must return 0 on success");
 
-        unsafe { us_poll_stop(poll, loop_); }
-        unsafe { us_poll_free(poll, loop_); }
-        unsafe { libc::close(fds[0]); }
-        unsafe { libc::close(fds[1]); }
+        unsafe {
+            us_poll_stop(poll, loop_);
+        }
+        unsafe {
+            us_poll_free(poll, loop_);
+        }
+        unsafe {
+            libc::close(fds[0]);
+        }
+        unsafe {
+            libc::close(fds[1]);
+        }
     }
 
     #[test]
     fn poll_free_with_null_is_no_op() {
         let loop_ = super::super::uws_get_loop();
-        unsafe { us_poll_free(ptr::null_mut(), loop_); }
+        unsafe {
+            us_poll_free(ptr::null_mut(), loop_);
+        }
     }
 
     #[test]
     fn poll_resize_same_size_returns_same_pointer() {
         let loop_ = super::super::uws_get_loop();
         let poll = unsafe { us_create_poll(loop_, 0, 32) };
-        unsafe { us_poll_init(poll, -1, POLL_TYPE_CALLBACK); }
+        unsafe {
+            us_poll_init(poll, -1, POLL_TYPE_CALLBACK);
+        }
         // Resize to same size → should return same pointer
         let new_p = unsafe { us_poll_resize(poll, loop_, 32, 32) };
         assert_eq!(new_p, poll, "resize to same size must return same pointer");
-        unsafe { us_poll_free(poll, loop_); }
+        unsafe {
+            us_poll_free(poll, loop_);
+        }
     }
 
     #[test]
     fn poll_resize_larger_returns_new_pointer() {
         let loop_ = super::super::uws_get_loop();
         let poll = unsafe { us_create_poll(loop_, 0, 16) };
-        unsafe { us_poll_init(poll, -1, POLL_TYPE_CALLBACK); }
+        unsafe {
+            us_poll_init(poll, -1, POLL_TYPE_CALLBACK);
+        }
         // Resize to larger → should return different pointer
         let new_p = unsafe { us_poll_resize(poll, loop_, 16, 64) };
         // new_p may or may not differ (depends on allocator), but must be non-null
         assert!(!new_p.is_null(), "resize must return non-null");
         // Don't free old poll — resize already accounted for it
-        unsafe { us_poll_free(new_p, loop_); }
+        unsafe {
+            us_poll_free(new_p, loop_);
+        }
     }
 
     // ──── BaoPoll edge cases ────────────────────────────────────────
@@ -765,8 +855,14 @@ mod tests {
         let poll = unsafe { us_create_poll(loop_, 0, 32) };
         let ext = unsafe { us_poll_ext(poll) };
         assert!(!ext.is_null());
-        assert_eq!(ext as usize, poll as usize + 16, "ext must be 16 bytes after poll");
-        unsafe { us_poll_free(poll, loop_); }
+        assert_eq!(
+            ext as usize,
+            poll as usize + 16,
+            "ext must be 16 bytes after poll"
+        );
+        unsafe {
+            us_poll_free(poll, loop_);
+        }
     }
 
     // ──── tagged pointer edge cases ─────────────────────────────────

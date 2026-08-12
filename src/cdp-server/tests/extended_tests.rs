@@ -3,8 +3,8 @@
 // @trace TEST-CDS-011 [req:REQ-CDS-006] [level:unit]
 // @trace TEST-CDS-012 [req:REQ-CDS-008] [level:unit]
 
-use cdp_server::{CdpError, DomainHandler, EventSender, DomainRegistry, ServerConfig, TargetInfo};
-use cdp_server::{CdpMessage, CdpResponse, CdpEvent};
+use cdp_server::{CdpError, DomainHandler, DomainRegistry, EventSender, ServerConfig, TargetInfo};
+use cdp_server::{CdpEvent, CdpMessage, CdpResponse};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -34,21 +34,37 @@ impl LifecycleHandler {
 }
 
 impl DomainHandler for LifecycleHandler {
-    fn domain_name(&self) -> &'static str { "Lifecycle" }
+    fn domain_name(&self) -> &'static str {
+        "Lifecycle"
+    }
 
-    fn handle_command(&self, command: &str, _params: Value, _es: &dyn EventSender) -> Result<Value, CdpError> {
+    fn handle_command(
+        &self,
+        command: &str,
+        _params: Value,
+        _es: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         match command {
             "Lifecycle.status" => Ok(json!({ "status": "ok" })),
-            _ => Err(CdpError { code: -32601, message: format!("'{}' wasn't found", command) }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' wasn't found", command),
+            }),
         }
     }
 
     fn on_session_created(&self, session_id: &str) {
-        self.session_created.lock().unwrap().push(session_id.to_string());
+        self.session_created
+            .lock()
+            .unwrap()
+            .push(session_id.to_string());
     }
 
     fn on_session_destroyed(&self, session_id: &str) {
-        self.session_destroyed.lock().unwrap().push(session_id.to_string());
+        self.session_destroyed
+            .lock()
+            .unwrap()
+            .push(session_id.to_string());
     }
 }
 
@@ -78,7 +94,10 @@ struct CapturingEventSender {
 
 impl EventSender for CapturingEventSender {
     fn send_event(&self, method: &str, params: Value) {
-        self.captured.lock().unwrap().push((method.to_string(), params));
+        self.captured
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params));
     }
 }
 
@@ -90,10 +109,19 @@ impl EventSender for CapturingEventSender {
 fn test_registry_concurrent_registration() {
     use std::thread;
 
-    struct Handler { name: &'static str }
+    struct Handler {
+        name: &'static str,
+    }
     impl DomainHandler for Handler {
-        fn domain_name(&self) -> &'static str { self.name }
-        fn handle_command(&self, _cmd: &str, _p: Value, _es: &dyn EventSender) -> Result<Value, CdpError> {
+        fn domain_name(&self) -> &'static str {
+            self.name
+        }
+        fn handle_command(
+            &self,
+            _cmd: &str,
+            _p: Value,
+            _es: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
             Ok(json!({}))
         }
     }
@@ -236,14 +264,24 @@ fn test_event_sender_clone_independence() {
 fn test_handler_with_event_sender() {
     struct EventEmitHandler;
     impl DomainHandler for EventEmitHandler {
-        fn domain_name(&self) -> &'static str { "Emit" }
-        fn handle_command(&self, cmd: &str, _p: Value, es: &dyn EventSender) -> Result<Value, CdpError> {
+        fn domain_name(&self) -> &'static str {
+            "Emit"
+        }
+        fn handle_command(
+            &self,
+            cmd: &str,
+            _p: Value,
+            es: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
             match cmd {
                 "Emit.trigger" => {
                     es.send_event("Emit.triggered", json!({"fired": true}));
                     Ok(json!({ "emitted": true }))
                 }
-                _ => Err(CdpError { code: -32601, message: "not found".into() }),
+                _ => Err(CdpError {
+                    code: -32601,
+                    message: "not found".into(),
+                }),
             }
         }
     }
@@ -387,7 +425,10 @@ fn test_cdp_response_error_serialization() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32000, message: "server error".into() }),
+        error: Some(CdpError {
+            code: -32000,
+            message: "server error".into(),
+        }),
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains(r#""error""#));
@@ -396,7 +437,10 @@ fn test_cdp_response_error_serialization() {
 
 #[test]
 fn test_cdp_error_debug_format() {
-    let err = CdpError { code: -32601, message: "test error".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "test error".into(),
+    };
     let debug_str = format!("{:?}", err);
     assert!(debug_str.contains("-32601"));
     assert!(debug_str.contains("test error"));
@@ -410,10 +454,20 @@ fn test_cdp_error_debug_format() {
 fn test_registry_dispatch_multiple_domains_order() {
     let registry = DomainRegistry::<OrderHandler>::new();
 
-    struct OrderHandler { name: &'static str, order: Arc<Mutex<Vec<&'static str>>> }
+    struct OrderHandler {
+        name: &'static str,
+        order: Arc<Mutex<Vec<&'static str>>>,
+    }
     impl DomainHandler for OrderHandler {
-        fn domain_name(&self) -> &'static str { self.name }
-        fn handle_command(&self, _cmd: &str, _p: Value, _es: &dyn EventSender) -> Result<Value, CdpError> {
+        fn domain_name(&self) -> &'static str {
+            self.name
+        }
+        fn handle_command(
+            &self,
+            _cmd: &str,
+            _p: Value,
+            _es: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
             self.order.lock().unwrap().push(self.name);
             Ok(json!({}))
         }
@@ -421,14 +475,38 @@ fn test_registry_dispatch_multiple_domains_order() {
 
     let order = Arc::new(Mutex::new(Vec::new()));
 
-    registry.register(OrderHandler { name: "Alpha", order: Arc::clone(&order) }).unwrap();
-    registry.register(OrderHandler { name: "Beta", order: Arc::clone(&order) }).unwrap();
-    registry.register(OrderHandler { name: "Gamma", order: Arc::clone(&order) }).unwrap();
+    registry
+        .register(OrderHandler {
+            name: "Alpha",
+            order: Arc::clone(&order),
+        })
+        .unwrap();
+    registry
+        .register(OrderHandler {
+            name: "Beta",
+            order: Arc::clone(&order),
+        })
+        .unwrap();
+    registry
+        .register(OrderHandler {
+            name: "Gamma",
+            order: Arc::clone(&order),
+        })
+        .unwrap();
 
     let es = NoopEventSender;
-    registry.dispatch_command("Alpha.ping", json!({}), &es).unwrap().unwrap();
-    registry.dispatch_command("Gamma.ping", json!({}), &es).unwrap().unwrap();
-    registry.dispatch_command("Beta.ping", json!({}), &es).unwrap().unwrap();
+    registry
+        .dispatch_command("Alpha.ping", json!({}), &es)
+        .unwrap()
+        .unwrap();
+    registry
+        .dispatch_command("Gamma.ping", json!({}), &es)
+        .unwrap()
+        .unwrap();
+    registry
+        .dispatch_command("Beta.ping", json!({}), &es)
+        .unwrap()
+        .unwrap();
 
     let o = order.lock().unwrap();
     assert_eq!(*o, vec!["Alpha", "Gamma", "Beta"]);
@@ -442,8 +520,15 @@ fn test_registry_dispatch_multiple_domains_order() {
 fn test_default_on_session_created_no_panic() {
     struct MinimalHandler;
     impl DomainHandler for MinimalHandler {
-        fn domain_name(&self) -> &'static str { "Minimal" }
-        fn handle_command(&self, _cmd: &str, _p: Value, _es: &dyn EventSender) -> Result<Value, CdpError> {
+        fn domain_name(&self) -> &'static str {
+            "Minimal"
+        }
+        fn handle_command(
+            &self,
+            _cmd: &str,
+            _p: Value,
+            _es: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
             Ok(json!({}))
         }
     }
@@ -464,10 +549,7 @@ fn test_notify_destroyed_multiple_domains() {
     let registry = DomainRegistry::<LifecycleHandler>::new();
     registry.register(h1).unwrap();
 
-    registry.notify_session_destroyed(
-        &["Lifecycle".to_string()],
-        "sess-final",
-    );
+    registry.notify_session_destroyed(&["Lifecycle".to_string()], "sess-final");
 
     let d1 = destroyed1.lock().unwrap();
     assert_eq!(d1.len(), 1);

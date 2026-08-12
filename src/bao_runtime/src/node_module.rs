@@ -1,6 +1,6 @@
 // @trace REQ-ENG-005
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
@@ -38,34 +38,100 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
 
         // createRequire
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"createRequire".as_ptr(), Some(module_create_require), 1, 0);
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"createRequire".as_ptr(),
+            Some(module_create_require),
+            1,
+            0,
+        );
 
         // _cache — shared module cache object
         rooted!(&in(cx) let cache_obj = w2::JS_NewPlainObject(cx));
         if !cache_obj.get().is_null() {
-            JS_DefineProperty3(cx.raw_cx(), mod_obj.handle().into(), c"_cache".as_ptr(), cache_obj.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty3(
+                cx.raw_cx(),
+                mod_obj.handle().into(),
+                c"_cache".as_ptr(),
+                cache_obj.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // _extensions
         rooted!(&in(cx) let ext_obj = w2::JS_NewPlainObject(cx));
         if !ext_obj.get().is_null() {
-            JS_DefineProperty3(cx.raw_cx(), ext_obj.handle().into(), c".js".as_ptr(), ext_obj.handle().into(), JSPROP_ENUMERATE as u32);
-            JS_DefineProperty3(cx.raw_cx(), ext_obj.handle().into(), c".json".as_ptr(), ext_obj.handle().into(), JSPROP_ENUMERATE as u32);
-            JS_DefineProperty3(cx.raw_cx(), mod_obj.handle().into(), c"_extensions".as_ptr(), ext_obj.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty3(
+                cx.raw_cx(),
+                ext_obj.handle().into(),
+                c".js".as_ptr(),
+                ext_obj.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            JS_DefineProperty3(
+                cx.raw_cx(),
+                ext_obj.handle().into(),
+                c".json".as_ptr(),
+                ext_obj.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            JS_DefineProperty3(
+                cx.raw_cx(),
+                mod_obj.handle().into(),
+                c"_extensions".as_ptr(),
+                ext_obj.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // _resolveFilename
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"_resolveFilename".as_ptr(), Some(module_resolve_filename), 2, 0);
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"_resolveFilename".as_ptr(),
+            Some(module_resolve_filename),
+            2,
+            0,
+        );
 
         // _nodeModulePaths
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"_nodeModulePaths".as_ptr(), Some(module_node_module_paths), 1, 0);
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"_nodeModulePaths".as_ptr(),
+            Some(module_node_module_paths),
+            1,
+            0,
+        );
 
         // builtinModules array
         let builtins = [
-            "assert", "buffer", "child_process", "crypto", "dns", "events",
-            "fs", "http", "https", "net", "os", "path", "querystring",
-            "readline", "stream", "string_decoder", "tls", "tty", "url",
-            "util", "vm", "zlib", "perf_hooks", "process", "timers",
+            "assert",
+            "buffer",
+            "child_process",
+            "crypto",
+            "dns",
+            "events",
+            "fs",
+            "http",
+            "https",
+            "net",
+            "os",
+            "path",
+            "querystring",
+            "readline",
+            "stream",
+            "string_decoder",
+            "tls",
+            "tty",
+            "url",
+            "util",
+            "vm",
+            "zlib",
+            "perf_hooks",
+            "process",
+            "timers",
         ];
         rooted!(&in(cx) let arr = w2::NewArrayObject1(cx, builtins.len()));
         if !arr.get().is_null() {
@@ -83,37 +149,65 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     );
                 }
             }
-            JS_DefineProperty3(cx.raw_cx(), mod_obj.handle().into(), c"builtinModules".as_ptr(), arr.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty3(
+                cx.raw_cx(),
+                mod_obj.handle().into(),
+                c"builtinModules".as_ptr(),
+                arr.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // globalPaths
         rooted!(&in(cx) let gp = w2::NewArrayObject1(cx, 0));
         if !gp.get().is_null() {
-            JS_DefineProperty3(cx.raw_cx(), mod_obj.handle().into(), c"globalPaths".as_ptr(), gp.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty3(
+                cx.raw_cx(),
+                mod_obj.handle().into(),
+                c"globalPaths".as_ptr(),
+                gp.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // _pathCache
         rooted!(&in(cx) let pc = w2::JS_NewPlainObject(cx));
         if !pc.get().is_null() {
-            JS_DefineProperty3(cx.raw_cx(), mod_obj.handle().into(), c"_pathCache".as_ptr(), pc.handle().into(), 0);
+            JS_DefineProperty3(
+                cx.raw_cx(),
+                mod_obj.handle().into(),
+                c"_pathCache".as_ptr(),
+                pc.handle().into(),
+                0,
+            );
         }
 
         // wrapSafe — returns the module source wrapper
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"wrapSafe".as_ptr(), Some(module_wrap_safe), 2, 0);
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"wrapSafe".as_ptr(),
+            Some(module_wrap_safe),
+            2,
+            0,
+        );
 
         // syncBuiltinLoader
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"SyncModuleLoader".as_ptr(), Some(module_sync_loader), 0, 0);
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"SyncModuleLoader".as_ptr(),
+            Some(module_sync_loader),
+            0,
+            0,
+        );
     }
 
     cache_builtin(cx, "module", mod_obj.get());
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn module_ctor(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn module_ctor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -134,7 +228,13 @@ unsafe extern "C" fn module_ctor(
     let id_str = JS_NewStringCopyN(cx, id.as_ptr() as *const ::std::os::raw::c_char, id.len());
     if !id_str.is_null() {
         rooted!(&in(cx_ref) let iv = mozjs::jsval::StringValue(&*id_str));
-        JS_DefineProperty(cx, obj.handle().into(), c"id".as_ptr(), iv.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            obj.handle().into(),
+            c"id".as_ptr(),
+            iv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     // filename
@@ -143,20 +243,42 @@ unsafe extern "C" fn module_ctor(
     } else {
         id.clone()
     };
-    let fn_str = JS_NewStringCopyN(cx, filename.as_ptr() as *const ::std::os::raw::c_char, filename.len());
+    let fn_str = JS_NewStringCopyN(
+        cx,
+        filename.as_ptr() as *const ::std::os::raw::c_char,
+        filename.len(),
+    );
     if !fn_str.is_null() {
         rooted!(&in(cx_ref) let fv = mozjs::jsval::StringValue(&*fn_str));
-        JS_DefineProperty(cx, obj.handle().into(), c"filename".as_ptr(), fv.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            obj.handle().into(),
+            c"filename".as_ptr(),
+            fv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     // loaded = false
     rooted!(&in(cx_ref) let lv = mozjs::jsval::BooleanValue(false));
-    JS_DefineProperty(cx, obj.handle().into(), c"loaded".as_ptr(), lv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"loaded".as_ptr(),
+        lv.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // exports = {}
     rooted!(&in(cx_ref) let exports_obj = w2::JS_NewPlainObject(cx_ref));
     if !exports_obj.get().is_null() {
-        JS_DefineProperty3(cx, obj.handle().into(), c"exports".as_ptr(), exports_obj.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty3(
+            cx,
+            obj.handle().into(),
+            c"exports".as_ptr(),
+            exports_obj.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     // require (uses the global require)
@@ -168,11 +290,20 @@ unsafe extern "C" fn module_ctor(
             cx,
             global_root.handle().into(),
             c"require".as_ptr(),
-            MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut req_val },
+            MutableHandle::<JSVal> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut req_val,
+            },
         );
         if req_val.is_object() {
             rooted!(&in(cx_ref) let rv = req_val);
-            JS_DefineProperty(cx, obj.handle().into(), c"require".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx,
+                obj.handle().into(),
+                c"require".as_ptr(),
+                rv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 
@@ -181,11 +312,7 @@ unsafe extern "C" fn module_ctor(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn module_create_require(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn module_create_require(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     // createRequire returns the global require function
@@ -198,7 +325,10 @@ unsafe extern "C" fn module_create_require(
             cx,
             global_root.handle().into(),
             c"require".as_ptr(),
-            MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut req_val },
+            MutableHandle::<JSVal> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut req_val,
+            },
         );
         if req_val.is_object() {
             args.rval().set(req_val);
@@ -240,11 +370,7 @@ unsafe extern "C" fn module_node_module_paths(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn module_wrap_safe(
-    _cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn module_wrap_safe(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // Return the source as-is wrapped in a function
     if argc > 0 && (*args.get(0).ptr).is_string() {
@@ -255,11 +381,7 @@ unsafe extern "C" fn module_wrap_safe(
     true
 }
 
-unsafe extern "C" fn module_sync_loader(
-    _cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn module_sync_loader(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     args.rval().set(UndefinedValue());
     true

@@ -1,10 +1,10 @@
 // @trace REQ-ENG-007
-use bun_core::ZBox;
-use ::std::path::{Path, PathBuf, MAIN_SEPARATOR};
+use ::std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue};
+use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -17,24 +17,107 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"join".as_ptr(), Some(path_join), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"resolve".as_ptr(), Some(path_resolve), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"dirname".as_ptr(), Some(path_dirname), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"basename".as_ptr(), Some(path_basename), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"extname".as_ptr(), Some(path_extname), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"normalize".as_ptr(), Some(path_normalize), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"isAbsolute".as_ptr(), Some(path_is_absolute), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"relative".as_ptr(), Some(path_relative), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"parse".as_ptr(), Some(path_parse), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"format".as_ptr(), Some(path_format), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, path_obj.handle(), c"toNamespacedPath".as_ptr(), Some(path_to_namespaced), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"join".as_ptr(),
+            Some(path_join),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"resolve".as_ptr(),
+            Some(path_resolve),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"dirname".as_ptr(),
+            Some(path_dirname),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"basename".as_ptr(),
+            Some(path_basename),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"extname".as_ptr(),
+            Some(path_extname),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"normalize".as_ptr(),
+            Some(path_normalize),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"isAbsolute".as_ptr(),
+            Some(path_is_absolute),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"relative".as_ptr(),
+            Some(path_relative),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"parse".as_ptr(),
+            Some(path_parse),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"format".as_ptr(),
+            Some(path_format),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            path_obj.handle(),
+            c"toNamespacedPath".as_ptr(),
+            Some(path_to_namespaced),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
 
         let sep_cstr = ZBox::from_bytes(if MAIN_SEPARATOR == '/' { "/" } else { "\\" }.as_bytes());
         let sep_str = JS_NewStringCopyZ(cx.raw_cx(), sep_cstr.as_ptr());
         if !sep_str.is_null() {
             let sep_val = mozjs::jsval::StringValue(&*sep_str);
             rooted!(&in(cx) let sep_root = sep_val);
-            JS_DefineProperty(cx.raw_cx(), path_obj.handle().into(), c"sep".as_ptr(), sep_root.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                path_obj.handle().into(),
+                c"sep".as_ptr(),
+                sep_root.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         let delim_cstr = ZBox::from_bytes(if cfg!(windows) { b";" } else { b":" });
@@ -42,13 +125,25 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         if !delim_str.is_null() {
             let delim_val = mozjs::jsval::StringValue(&*delim_str);
             rooted!(&in(cx) let delim_root = delim_val);
-            JS_DefineProperty(cx.raw_cx(), path_obj.handle().into(), c"delimiter".as_ptr(), delim_root.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                path_obj.handle().into(),
+                c"delimiter".as_ptr(),
+                delim_root.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 
     // path.posix — self-reference to the path module (host-platform impl).
     unsafe {
-        w2::JS_DefineProperty3(cx, path_obj.handle(), c"posix".as_ptr(), path_obj.handle(), JSPROP_ENUMERATE as u32);
+        w2::JS_DefineProperty3(
+            cx,
+            path_obj.handle(),
+            c"posix".as_ptr(),
+            path_obj.handle(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     // path.win32 — Node.js ships a real Windows-flavoured path object on all
@@ -63,8 +158,17 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             // constants differ. Methods are forwarded by assigning the same
             // function references the host module already exposes.
             for fn_name in &[
-                "join", "resolve", "dirname", "basename", "extname", "normalize",
-                "isAbsolute", "relative", "parse", "format", "toNamespaced",
+                "join",
+                "resolve",
+                "dirname",
+                "basename",
+                "extname",
+                "normalize",
+                "isAbsolute",
+                "relative",
+                "parse",
+                "format",
+                "toNamespaced",
             ] {
                 let c_name = ZBox::from_bytes(fn_name.as_bytes());
                 let mut fn_val = UndefinedValue();
@@ -116,10 +220,28 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 );
             }
             // win32.win32 / win32.posix self-refs (matches Node.js shape)
-            w2::JS_DefineProperty3(cx, win32_obj.handle(), c"win32".as_ptr(), win32_obj.handle(), JSPROP_ENUMERATE as u32);
-            w2::JS_DefineProperty3(cx, win32_obj.handle(), c"posix".as_ptr(), path_obj.handle(), JSPROP_ENUMERATE as u32);
+            w2::JS_DefineProperty3(
+                cx,
+                win32_obj.handle(),
+                c"win32".as_ptr(),
+                win32_obj.handle(),
+                JSPROP_ENUMERATE as u32,
+            );
+            w2::JS_DefineProperty3(
+                cx,
+                win32_obj.handle(),
+                c"posix".as_ptr(),
+                path_obj.handle(),
+                JSPROP_ENUMERATE as u32,
+            );
 
-            w2::JS_DefineProperty3(cx, path_obj.handle(), c"win32".as_ptr(), win32_obj.handle(), JSPROP_ENUMERATE as u32);
+            w2::JS_DefineProperty3(
+                cx,
+                path_obj.handle(),
+                c"win32".as_ptr(),
+                win32_obj.handle(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 
@@ -176,8 +298,10 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             let global = CurrentGlobalOrNull(cx.raw_cx());
             if !global.is_null()
                 && JS::Evaluate2(cx.raw_cx(), mopts, &mut msrc, mh)
-                && mval.is_object() {
-                let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                && mval.is_object()
+            {
+                let wrapped_cx =
+                    mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                 rooted!(&in(wrapped_cx) let global_root = global);
                 rooted!(&in(wrapped_cx) let path_val_root = ObjectValue(path_obj.get()));
                 let args_arr = HandleValueArray {
@@ -207,7 +331,10 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> ::std::option::Option<::std::string::String> {
+unsafe fn arg_to_string(
+    cx: *mut JSContext,
+    val: JSVal,
+) -> ::std::option::Option<::std::string::String> {
     if val.is_undefined() || val.is_null() {
         return ::std::option::Option::None;
     }
@@ -297,10 +424,15 @@ unsafe extern "C" fn path_dirname(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             return false;
         }
     };
-    let result = Path::new(&s).parent()
+    let result = Path::new(&s)
+        .parent()
         .map(|p| {
             let pstr = p.to_string_lossy().into_owned();
-            if pstr.is_empty() { ".".to_string() } else { pstr }
+            if pstr.is_empty() {
+                ".".to_string()
+            } else {
+                pstr
+            }
         })
         .unwrap_or_else(|| ".".to_string());
     return_string(cx, &args, &result)
@@ -321,16 +453,19 @@ unsafe extern "C" fn path_basename(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             return false;
         }
     };
-    let mut base = Path::new(&s).file_name()
+    let mut base = Path::new(&s)
+        .file_name()
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_else(|| s.clone());
 
     if argc >= 2 {
         let ext_val = *args.get(1).ptr;
         if let Some(ext) = arg_to_string(cx, ext_val)
-            && base.ends_with(&ext) && !ext.is_empty() {
-                base.truncate(base.len() - ext.len());
-            }
+            && base.ends_with(&ext)
+            && !ext.is_empty()
+        {
+            base.truncate(base.len() - ext.len());
+        }
     }
     return_string(cx, &args, &base)
 }
@@ -350,7 +485,8 @@ unsafe extern "C" fn path_extname(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             return false;
         }
     };
-    let ext = Path::new(&s).extension()
+    let ext = Path::new(&s)
+        .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
     return_string(cx, &args, &ext)
@@ -391,7 +527,8 @@ unsafe extern "C" fn path_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut JS
             return true;
         }
     };
-    args.rval().set(mozjs::jsval::BooleanValue(Path::new(&s).is_absolute()));
+    args.rval()
+        .set(mozjs::jsval::BooleanValue(Path::new(&s).is_absolute()));
     true
 }
 
@@ -399,7 +536,10 @@ unsafe extern "C" fn path_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut JS
 unsafe extern "C" fn path_relative(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 {
-        JS_ReportErrorUTF8(cx, c"The \"from\" and \"to\" arguments must be of type string".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"The \"from\" and \"to\" arguments must be of type string".as_ptr(),
+        );
         return false;
     }
     let from_val = *args.get(0).ptr;
@@ -417,7 +557,11 @@ unsafe extern "C" fn path_relative(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let to_abs = make_absolute(&to_str);
 
     let result = pathdiff(&to_abs, &from_abs);
-    return_string(cx, &args, result.unwrap_or_default().to_string_lossy().as_ref())
+    return_string(
+        cx,
+        &args,
+        result.unwrap_or_default().to_string_lossy().as_ref(),
+    )
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -437,10 +581,23 @@ unsafe extern "C" fn path_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     };
 
     let p = Path::new(&s);
-    let root = if p.is_absolute() { "/".to_string() } else { String::new() };
-    let dir = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
-    let file_name = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let root = if p.is_absolute() {
+        "/".to_string()
+    } else {
+        String::new()
+    };
+    let dir = p
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let file_name = p
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = p
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
     let name = if !file_name.is_empty() && !ext.is_empty() {
         file_name[..file_name.len() - ext.len()].to_string()
     } else {
@@ -469,12 +626,18 @@ unsafe extern "C" fn path_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 unsafe extern "C" fn path_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, c"The \"pathObject\" argument must be of type object".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"The \"pathObject\" argument must be of type object".as_ptr(),
+        );
         return false;
     }
     let val = *args.get(0).ptr;
     if !val.is_object() {
-        JS_ReportErrorUTF8(cx, c"The \"pathObject\" argument must be of type object".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"The \"pathObject\" argument must be of type object".as_ptr(),
+        );
         return false;
     }
     let obj = val.to_object();
@@ -603,7 +766,11 @@ pub(crate) fn posix_join(parts: &[::std::string::String]) -> ::std::string::Stri
         }
     }
 
-    let mut result = if has_root { "/".to_string() } else { String::new() };
+    let mut result = if has_root {
+        "/".to_string()
+    } else {
+        String::new()
+    };
     result.push_str(&normalized.join("/"));
 
     // Trailing slash: only when last non-empty part had trailing slash AND result is relative
@@ -628,10 +795,11 @@ pub(crate) fn normalize_path(path: &::std::path::Path) -> PathBuf {
             ::std::path::Component::CurDir => {}
             ::std::path::Component::ParentDir => {
                 if let Some(last) = components.last()
-                    && last != &".." {
-                        components.pop();
-                        continue;
-                    }
+                    && last != &".."
+                {
+                    components.pop();
+                    continue;
+                }
                 components.push("..");
             }
             ::std::path::Component::Normal(s) => {
@@ -676,28 +844,33 @@ pub(crate) fn pathdiff(to: &Path, from: &Path) -> ::std::option::Option<PathBuf>
         to.to_string_lossy().into_owned()
     } else {
         // Make `to` absolute against the cwd via bun_paths.
-        let resolved = resolve_path::join_abs_string::<Posix>(&cwd, &[to.to_string_lossy().as_bytes()]);
+        let resolved =
+            resolve_path::join_abs_string::<Posix>(&cwd, &[to.to_string_lossy().as_bytes()]);
         String::from_utf8_lossy(resolved).into_owned()
     };
     let from_abs = if from.is_absolute() {
         from.to_string_lossy().into_owned()
     } else {
-        let resolved = resolve_path::join_abs_string::<Posix>(&cwd, &[from.to_string_lossy().as_bytes()]);
+        let resolved =
+            resolve_path::join_abs_string::<Posix>(&cwd, &[from.to_string_lossy().as_bytes()]);
         String::from_utf8_lossy(resolved).into_owned()
     };
 
     // @trace REQ-ENG-007 [code:bun_paths] — relative-path computation delegated
     // to bun_paths::resolve_path::relative_platform (Zig `relativePath`, POSIX).
     // ALWAYS_COPY=true so the result owns its bytes (does not alias TLS scratch).
-    let rel = resolve_path::relative_platform::<Posix, true>(
-        from_abs.as_bytes(),
-        to_abs.as_bytes(),
-    );
+    let rel =
+        resolve_path::relative_platform::<Posix, true>(from_abs.as_bytes(), to_abs.as_bytes());
     ::std::option::Option::Some(PathBuf::from(String::from_utf8_lossy(rel).into_owned()))
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn define_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, name: &str, value: &str) {
+unsafe fn define_string_prop(
+    cx: *mut JSContext,
+    obj: Handle<*mut JSObject>,
+    name: &str,
+    value: &str,
+) {
     let c_name = ZBox::from_bytes(name.as_bytes());
     let c_val = ZBox::from_bytes(value.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_val.as_ptr());
@@ -705,15 +878,28 @@ unsafe fn define_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, nam
         let val = mozjs::jsval::StringValue(&*js_str);
         let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let val_root = val);
-        JS_DefineProperty(cx, obj, c_name.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            obj,
+            c_name.as_ptr(),
+            val_root.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn get_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, name: &str) -> ::std::option::Option<::std::string::String> {
+unsafe fn get_string_prop(
+    cx: *mut JSContext,
+    obj: Handle<*mut JSObject>,
+    name: &str,
+) -> ::std::option::Option<::std::string::String> {
     let c_name = ZBox::from_bytes(name.as_bytes());
     let mut val = UndefinedValue();
-    let handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
+    let handle = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut val,
+    };
     JS_GetProperty(cx, obj, c_name.as_ptr(), handle);
     arg_to_string(cx, val)
 }
@@ -736,14 +922,20 @@ mod tests {
 
     #[test]
     fn test_posix_join_multiple() {
-        assert_eq!(posix_join(&["a".to_string(), "b".to_string(), "c".to_string()]), "a/b/c");
+        assert_eq!(
+            posix_join(&["a".to_string(), "b".to_string(), "c".to_string()]),
+            "a/b/c"
+        );
     }
 
     // posix_join: absolute parts after first are joined as relative, NOT overriding
     #[test]
     fn test_posix_join_absolute_part() {
         // Leading / in non-first part is stripped (posix join behavior)
-        assert_eq!(posix_join(&["a".to_string(), "/b".to_string(), "c".to_string()]), "a/b/c");
+        assert_eq!(
+            posix_join(&["a".to_string(), "/b".to_string(), "c".to_string()]),
+            "a/b/c"
+        );
     }
 
     #[test]
@@ -758,7 +950,10 @@ mod tests {
 
     #[test]
     fn test_posix_join_empty_parts_skipped() {
-        assert_eq!(posix_join(&["a".to_string(), "".to_string(), "b".to_string()]), "a/b");
+        assert_eq!(
+            posix_join(&["a".to_string(), "".to_string(), "b".to_string()]),
+            "a/b"
+        );
     }
 
     #[test]
@@ -768,52 +963,79 @@ mod tests {
 
     #[test]
     fn test_posix_join_dot_dot_normalizes() {
-        assert_eq!(posix_join(&["a".to_string(), "b".to_string(), "..".to_string()]), "a");
+        assert_eq!(
+            posix_join(&["a".to_string(), "b".to_string(), "..".to_string()]),
+            "a"
+        );
     }
 
     // posix_join: .. beyond root resolves within root (absolute path can't go beyond root)
     #[test]
     fn test_posix_join_dot_dot_beyond_root_stays() {
         // For relative path, .. resolves upward; extra .. stays as ..
-        assert_eq!(posix_join(&["a".to_string(), "..".to_string(), "..".to_string()]), "..");
+        assert_eq!(
+            posix_join(&["a".to_string(), "..".to_string(), "..".to_string()]),
+            ".."
+        );
     }
 
     // --- normalize_path (Path-based) ---
 
     #[test]
     fn test_normalize_path_dot_dot() {
-        assert_eq!(normalize_path(::std::path::Path::new("/a/b/../c")), PathBuf::from("/a/c"));
+        assert_eq!(
+            normalize_path(::std::path::Path::new("/a/b/../c")),
+            PathBuf::from("/a/c")
+        );
     }
 
     #[test]
     fn test_normalize_path_dot() {
-        assert_eq!(normalize_path(::std::path::Path::new("/a/./b")), PathBuf::from("/a/b"));
+        assert_eq!(
+            normalize_path(::std::path::Path::new("/a/./b")),
+            PathBuf::from("/a/b")
+        );
     }
 
     #[test]
     fn test_normalize_path_root() {
-        assert_eq!(normalize_path(::std::path::Path::new("/")), PathBuf::from("/"));
+        assert_eq!(
+            normalize_path(::std::path::Path::new("/")),
+            PathBuf::from("/")
+        );
     }
 
     #[test]
     fn test_normalize_path_relative() {
-        assert_eq!(normalize_path(::std::path::Path::new("a/b/../c")), PathBuf::from("a/c"));
+        assert_eq!(
+            normalize_path(::std::path::Path::new("a/b/../c")),
+            PathBuf::from("a/c")
+        );
     }
 
     #[test]
     fn test_normalize_path_double_dot_beyond_root() {
         // Implementation preserves .. beyond root as /../b
-        assert_eq!(normalize_path(::std::path::Path::new("/a/../../b")), PathBuf::from("/../b"));
+        assert_eq!(
+            normalize_path(::std::path::Path::new("/a/../../b")),
+            PathBuf::from("/../b")
+        );
     }
 
     #[test]
     fn test_normalize_path_empty_relative() {
-        assert_eq!(normalize_path(::std::path::Path::new(".")), PathBuf::from("."));
+        assert_eq!(
+            normalize_path(::std::path::Path::new(".")),
+            PathBuf::from(".")
+        );
     }
 
     #[test]
     fn test_normalize_path_multiple_dots() {
-        assert_eq!(normalize_path(::std::path::Path::new("/a/b/c/../../d")), PathBuf::from("/a/d"));
+        assert_eq!(
+            normalize_path(::std::path::Path::new("/a/b/c/../../d")),
+            PathBuf::from("/a/d")
+        );
     }
 
     // --- make_absolute ---
@@ -826,7 +1048,11 @@ mod tests {
     #[test]
     fn test_make_absolute_relative() {
         let result = make_absolute("foo/bar");
-        assert!(result.is_absolute(), "result should be absolute: {:?}", result);
+        assert!(
+            result.is_absolute(),
+            "result should be absolute: {:?}",
+            result
+        );
         assert!(result.to_str().unwrap().contains("foo/bar"));
     }
 

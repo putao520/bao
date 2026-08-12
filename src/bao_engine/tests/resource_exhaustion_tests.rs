@@ -57,7 +57,9 @@ fn resource_exhaustion() {
             }
             "ok"
         "#;
-        let result = ctx.eval(js, "100k_jobs.js").map_err(|e| format!("eval: {e}"))?;
+        let result = ctx
+            .eval(js, "100k_jobs.js")
+            .map_err(|e| format!("eval: {e}"))?;
         // Verify the script completed by checking the result string
         let display = result.to_display_string();
         if display != "ok" {
@@ -79,7 +81,8 @@ fn resource_exhaustion() {
             }
             "ok"
         "#;
-        ctx.eval(js, "large_payload.js").map_err(|e| format!("eval: {e}"))?;
+        ctx.eval(js, "large_payload.js")
+            .map_err(|e| format!("eval: {e}"))?;
         Ok(())
     });
 
@@ -135,7 +138,9 @@ fn resource_exhaustion() {
     run!("Large string: 10 MB eval", {
         let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new: {e}"))?;
         let js = r#""a".repeat(10 * 1024 * 1024)"#;
-        let result = ctx.eval(js, "large_string.js").map_err(|e| format!("eval: {e}"))?;
+        let result = ctx
+            .eval(js, "large_string.js")
+            .map_err(|e| format!("eval: {e}"))?;
         let s = result.to_display_string();
         if s.len() != 10 * 1024 * 1024 {
             return Err(format!("expected 10485760 chars, got {}", s.len()));
@@ -211,7 +216,8 @@ fn resource_exhaustion() {
         // Create and drop multiple contexts in sequence to verify
         // no resource leak in the normal path
         for i in 0..10 {
-            let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new #{}: {e}", i))?;
+            let mut ctx =
+                JsContext::for_test().map_err(|e| format!("JsContext::new #{}: {e}", i))?;
             ctx.eval(&format!("1 + {}", i), "seq.js")
                 .map_err(|e| format!("eval #{}: {e}", i))?;
         } // each ctx drops here — Runtime::drop runs each time
@@ -240,7 +246,9 @@ fn resource_exhaustion() {
         // Runtime check: verify that a fresh context works correctly
         // (i.e., the per-thread init path is sound)
         let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new: {e}"))?;
-        let result = ctx.eval("42", "check.js").map_err(|e| format!("eval: {e}"))?;
+        let result = ctx
+            .eval("42", "check.js")
+            .map_err(|e| format!("eval: {e}"))?;
         let n = result.to_display_string();
         if n != "42" {
             return Err(format!("expected 42, got '{n}'"));

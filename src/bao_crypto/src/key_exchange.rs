@@ -94,7 +94,9 @@ impl Drop for PkeyCtxGuard {
 fn ec_extract_private_bytes(key: *mut EC_KEY, priv_len: usize) -> Result<Vec<u8>, CryptoError> {
     let priv_bn = unsafe { EC_KEY_get0_private_key(key) };
     if priv_bn.is_null() {
-        return Err(CryptoError::KeyGenerationFailed("EC_KEY private key null".into()));
+        return Err(CryptoError::KeyGenerationFailed(
+            "EC_KEY private key null".into(),
+        ));
     }
     let num_bits = unsafe { BN_num_bits(priv_bn) } as usize;
     let bn_len = (num_bits + 7) / 8;
@@ -106,14 +108,13 @@ fn ec_extract_private_bytes(key: *mut EC_KEY, priv_len: usize) -> Result<Vec<u8>
     Ok(priv_buf)
 }
 
-fn ec_extract_public_bytes(
-    key: *mut EC_KEY,
-    ctx: *mut BN_CTX,
-) -> Result<Vec<u8>, CryptoError> {
+fn ec_extract_public_bytes(key: *mut EC_KEY, ctx: *mut BN_CTX) -> Result<Vec<u8>, CryptoError> {
     let pub_point = unsafe { EC_KEY_get0_public_key(key) };
     let group = unsafe { EC_KEY_get0_group(key) };
     if pub_point.is_null() || group.is_null() {
-        return Err(CryptoError::KeyGenerationFailed("EC_KEY public key/group null".into()));
+        return Err(CryptoError::KeyGenerationFailed(
+            "EC_KEY public key/group null".into(),
+        ));
     }
     let pub_len = unsafe {
         EC_POINT_point2oct(
@@ -126,7 +127,9 @@ fn ec_extract_public_bytes(
         )
     };
     if pub_len == 0 {
-        return Err(CryptoError::KeyGenerationFailed("EC_POINT_point2oct size query failed".into()));
+        return Err(CryptoError::KeyGenerationFailed(
+            "EC_POINT_point2oct size query failed".into(),
+        ));
     }
     let mut pub_buf = vec![0u8; pub_len];
     let written = unsafe {
@@ -140,7 +143,9 @@ fn ec_extract_public_bytes(
         )
     };
     if written == 0 {
-        return Err(CryptoError::KeyGenerationFailed("EC_POINT_point2oct failed".into()));
+        return Err(CryptoError::KeyGenerationFailed(
+            "EC_POINT_point2oct failed".into(),
+        ));
     }
     Ok(pub_buf)
 }
@@ -151,10 +156,14 @@ fn boringssl_ec_generate(curve: EcCurve) -> Result<(Vec<u8>, Vec<u8>), CryptoErr
 
     let key = EcKeyGuard(unsafe { EC_KEY_new_by_curve_name(nid) });
     if key.0.is_null() {
-        return Err(CryptoError::KeyGenerationFailed("EC_KEY_new_by_curve_name failed".into()));
+        return Err(CryptoError::KeyGenerationFailed(
+            "EC_KEY_new_by_curve_name failed".into(),
+        ));
     }
     if unsafe { EC_KEY_generate_key(key.0) } != 1 {
-        return Err(CryptoError::KeyGenerationFailed("EC_KEY_generate_key failed".into()));
+        return Err(CryptoError::KeyGenerationFailed(
+            "EC_KEY_generate_key failed".into(),
+        ));
     }
 
     let ctx = BnCtxGuard(unsafe { BN_CTX_new() });
@@ -167,10 +176,7 @@ fn boringssl_ec_generate(curve: EcCurve) -> Result<(Vec<u8>, Vec<u8>), CryptoErr
     Ok((priv_bytes, pub_bytes))
 }
 
-fn boringssl_ec_reconstruct(
-    curve: EcCurve,
-    private_bytes: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
+fn boringssl_ec_reconstruct(curve: EcCurve, private_bytes: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let nid = curve_nid(curve);
     let priv_len = curve_priv_len(curve);
 
@@ -183,7 +189,9 @@ fn boringssl_ec_reconstruct(
 
     let key = EcKeyGuard(unsafe { EC_KEY_new_by_curve_name(nid) });
     if key.0.is_null() {
-        return Err(CryptoError::InvalidKey("EC_KEY_new_by_curve_name failed".into()));
+        return Err(CryptoError::InvalidKey(
+            "EC_KEY_new_by_curve_name failed".into(),
+        ));
     }
 
     let priv_bn = BnGuard(unsafe {
@@ -198,7 +206,9 @@ fn boringssl_ec_reconstruct(
     }
 
     if unsafe { EC_KEY_set_private_key(key.0, priv_bn.0) } != 1 {
-        return Err(CryptoError::InvalidKey("EC_KEY_set_private_key failed".into()));
+        return Err(CryptoError::InvalidKey(
+            "EC_KEY_set_private_key failed".into(),
+        ));
     }
 
     let group = unsafe { EC_KEY_get0_group(key.0) };
@@ -221,12 +231,15 @@ fn boringssl_ec_reconstruct(
             std::ptr::null(),
             ctx.0,
         )
-    } != 1 {
+    } != 1
+    {
         return Err(CryptoError::InvalidKey("EC_POINT_mul failed".into()));
     }
 
     if unsafe { EC_KEY_set_public_key(key.0, pub_point.0) } != 1 {
-        return Err(CryptoError::InvalidKey("EC_KEY_set_public_key failed".into()));
+        return Err(CryptoError::InvalidKey(
+            "EC_KEY_set_public_key failed".into(),
+        ));
     }
 
     ec_extract_public_bytes(key.0, ctx.0)
@@ -247,25 +260,35 @@ fn x25519_generate() -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
             seed.len(),
         ));
         if pkey.0.is_null() {
-            return Err(CryptoError::KeyGenerationFailed("EVP_PKEY_from_raw_private_key (x25519) failed".into()));
+            return Err(CryptoError::KeyGenerationFailed(
+                "EVP_PKEY_from_raw_private_key (x25519) failed".into(),
+            ));
         }
 
         let mut priv_len: usize = 0;
         if EVP_PKEY_get_raw_private_key(pkey.0, std::ptr::null_mut(), &mut priv_len) != 1 {
-            return Err(CryptoError::KeyGenerationFailed("EVP_PKEY_get_raw_private_key size query failed".into()));
+            return Err(CryptoError::KeyGenerationFailed(
+                "EVP_PKEY_get_raw_private_key size query failed".into(),
+            ));
         }
         let mut priv_bytes = vec![0u8; priv_len];
         if EVP_PKEY_get_raw_private_key(pkey.0, priv_bytes.as_mut_ptr(), &mut priv_len) != 1 {
-            return Err(CryptoError::KeyGenerationFailed("EVP_PKEY_get_raw_private_key failed".into()));
+            return Err(CryptoError::KeyGenerationFailed(
+                "EVP_PKEY_get_raw_private_key failed".into(),
+            ));
         }
 
         let mut pub_len: usize = 0;
         if EVP_PKEY_get_raw_public_key(pkey.0, std::ptr::null_mut(), &mut pub_len) != 1 {
-            return Err(CryptoError::KeyGenerationFailed("EVP_PKEY_get_raw_public_key size query failed".into()));
+            return Err(CryptoError::KeyGenerationFailed(
+                "EVP_PKEY_get_raw_public_key size query failed".into(),
+            ));
         }
         let mut pub_bytes = vec![0u8; pub_len];
         if EVP_PKEY_get_raw_public_key(pkey.0, pub_bytes.as_mut_ptr(), &mut pub_len) != 1 {
-            return Err(CryptoError::KeyGenerationFailed("EVP_PKEY_get_raw_public_key failed".into()));
+            return Err(CryptoError::KeyGenerationFailed(
+                "EVP_PKEY_get_raw_public_key failed".into(),
+            ));
         }
 
         Ok((priv_bytes, pub_bytes))
@@ -287,16 +310,22 @@ fn x25519_reconstruct(private_bytes: &[u8]) -> Result<Vec<u8>, CryptoError> {
             private_bytes.len(),
         ));
         if pkey.0.is_null() {
-            return Err(CryptoError::InvalidKey("EVP_PKEY_from_raw_private_key failed".into()));
+            return Err(CryptoError::InvalidKey(
+                "EVP_PKEY_from_raw_private_key failed".into(),
+            ));
         }
 
         let mut pub_len: usize = 0;
         if EVP_PKEY_get_raw_public_key(pkey.0, std::ptr::null_mut(), &mut pub_len) != 1 {
-            return Err(CryptoError::InvalidKey("EVP_PKEY_get_raw_public_key size query failed".into()));
+            return Err(CryptoError::InvalidKey(
+                "EVP_PKEY_get_raw_public_key size query failed".into(),
+            ));
         }
         let mut pub_bytes = vec![0u8; pub_len];
         if EVP_PKEY_get_raw_public_key(pkey.0, pub_bytes.as_mut_ptr(), &mut pub_len) != 1 {
-            return Err(CryptoError::InvalidKey("EVP_PKEY_get_raw_public_key failed".into()));
+            return Err(CryptoError::InvalidKey(
+                "EVP_PKEY_get_raw_public_key failed".into(),
+            ));
         }
 
         Ok(pub_bytes)
@@ -324,7 +353,9 @@ fn x25519_derive(private_bytes: &[u8], peer_public: &[u8]) -> Result<Vec<u8>, Cr
             private_bytes.len(),
         ));
         if our_pkey.0.is_null() {
-            return Err(CryptoError::SharedSecretFailed("EVP_PKEY_from_raw_private_key failed".into()));
+            return Err(CryptoError::SharedSecretFailed(
+                "EVP_PKEY_from_raw_private_key failed".into(),
+            ));
         }
 
         let peer_pkey = PkeyGuard(EVP_PKEY_from_raw_public_key(
@@ -333,29 +364,41 @@ fn x25519_derive(private_bytes: &[u8], peer_public: &[u8]) -> Result<Vec<u8>, Cr
             peer_public.len(),
         ));
         if peer_pkey.0.is_null() {
-            return Err(CryptoError::InvalidKey("EVP_PKEY_from_raw_public_key for peer failed".into()));
+            return Err(CryptoError::InvalidKey(
+                "EVP_PKEY_from_raw_public_key for peer failed".into(),
+            ));
         }
 
         let ctx = PkeyCtxGuard(EVP_PKEY_CTX_new(our_pkey.0, std::ptr::null_mut()));
         if ctx.0.is_null() {
-            return Err(CryptoError::SharedSecretFailed("EVP_PKEY_CTX_new failed".into()));
+            return Err(CryptoError::SharedSecretFailed(
+                "EVP_PKEY_CTX_new failed".into(),
+            ));
         }
 
         if EVP_PKEY_derive_init(ctx.0) != 1 {
-            return Err(CryptoError::SharedSecretFailed("EVP_PKEY_derive_init failed".into()));
+            return Err(CryptoError::SharedSecretFailed(
+                "EVP_PKEY_derive_init failed".into(),
+            ));
         }
         if EVP_PKEY_derive_set_peer(ctx.0, peer_pkey.0) != 1 {
-            return Err(CryptoError::SharedSecretFailed("EVP_PKEY_derive_set_peer failed".into()));
+            return Err(CryptoError::SharedSecretFailed(
+                "EVP_PKEY_derive_set_peer failed".into(),
+            ));
         }
 
         let mut key_len: usize = 0;
         if EVP_PKEY_derive(ctx.0, std::ptr::null_mut(), &mut key_len) != 1 {
-            return Err(CryptoError::SharedSecretFailed("EVP_PKEY_derive size query failed".into()));
+            return Err(CryptoError::SharedSecretFailed(
+                "EVP_PKEY_derive size query failed".into(),
+            ));
         }
 
         let mut shared = vec![0u8; key_len];
         if EVP_PKEY_derive(ctx.0, shared.as_mut_ptr(), &mut key_len) != 1 {
-            return Err(CryptoError::SharedSecretFailed("EVP_PKEY_derive failed".into()));
+            return Err(CryptoError::SharedSecretFailed(
+                "EVP_PKEY_derive failed".into(),
+            ));
         }
 
         Ok(shared)
@@ -403,7 +446,9 @@ impl EcdhKeyPair {
 
                 let key = EcKeyGuard(unsafe { EC_KEY_new_by_curve_name(nid) });
                 if key.0.is_null() {
-                    return Err(CryptoError::SharedSecretFailed("EC_KEY_new_by_curve_name failed".into()));
+                    return Err(CryptoError::SharedSecretFailed(
+                        "EC_KEY_new_by_curve_name failed".into(),
+                    ));
                 }
 
                 let priv_bn = BnGuard(unsafe {
@@ -417,13 +462,17 @@ impl EcdhKeyPair {
                     return Err(CryptoError::SharedSecretFailed("BN_bin2bn failed".into()));
                 }
                 if unsafe { EC_KEY_set_private_key(key.0, priv_bn.0) } != 1 {
-                    return Err(CryptoError::SharedSecretFailed("EC_KEY_set_private_key failed".into()));
+                    return Err(CryptoError::SharedSecretFailed(
+                        "EC_KEY_set_private_key failed".into(),
+                    ));
                 }
 
                 let group = unsafe { EC_KEY_get0_group(key.0) };
                 let pub_point = EcPointGuard(unsafe { EC_POINT_new(group) });
                 if pub_point.0.is_null() {
-                    return Err(CryptoError::SharedSecretFailed("EC_POINT_new failed".into()));
+                    return Err(CryptoError::SharedSecretFailed(
+                        "EC_POINT_new failed".into(),
+                    ));
                 }
 
                 let ctx = BnCtxGuard(unsafe { BN_CTX_new() });
@@ -440,16 +489,23 @@ impl EcdhKeyPair {
                         std::ptr::null(),
                         ctx.0,
                     )
-                } != 1 {
-                    return Err(CryptoError::SharedSecretFailed("EC_POINT_mul failed".into()));
+                } != 1
+                {
+                    return Err(CryptoError::SharedSecretFailed(
+                        "EC_POINT_mul failed".into(),
+                    ));
                 }
                 if unsafe { EC_KEY_set_public_key(key.0, pub_point.0) } != 1 {
-                    return Err(CryptoError::SharedSecretFailed("EC_KEY_set_public_key failed".into()));
+                    return Err(CryptoError::SharedSecretFailed(
+                        "EC_KEY_set_public_key failed".into(),
+                    ));
                 }
 
                 let peer_point = EcPointGuard(unsafe { EC_POINT_new(group) });
                 if peer_point.0.is_null() {
-                    return Err(CryptoError::SharedSecretFailed("EC_POINT_new for peer failed".into()));
+                    return Err(CryptoError::SharedSecretFailed(
+                        "EC_POINT_new for peer failed".into(),
+                    ));
                 }
                 if unsafe {
                     EC_POINT_oct2point(
@@ -459,8 +515,11 @@ impl EcdhKeyPair {
                         other_pub.len(),
                         ctx.0,
                     )
-                } != 1 {
-                    return Err(CryptoError::InvalidKey("Failed to parse peer public key".into()));
+                } != 1
+                {
+                    return Err(CryptoError::InvalidKey(
+                        "Failed to parse peer public key".into(),
+                    ));
                 }
 
                 let secret_len = curve_priv_len(self.curve);
@@ -475,7 +534,9 @@ impl EcdhKeyPair {
                     )
                 };
                 if ret <= 0 {
-                    return Err(CryptoError::SharedSecretFailed("ECDH_compute_key failed".into()));
+                    return Err(CryptoError::SharedSecretFailed(
+                        "ECDH_compute_key failed".into(),
+                    ));
                 }
                 shared.truncate(ret as usize);
                 Ok(shared)
@@ -583,7 +644,10 @@ mod tests {
     #[test]
     fn ecdh_curve_rejects_unknown_name() {
         assert!(parse_curve("not-a-curve").is_err());
-        assert!(parse_curve("P-256").is_err(), "Node-style P-256 not supported");
+        assert!(
+            parse_curve("P-256").is_err(),
+            "Node-style P-256 not supported"
+        );
         assert!(parse_curve("prime256v1").is_ok());
         assert!(parse_curve("secp256r1").is_ok());
         assert!(parse_curve("p256").is_ok());

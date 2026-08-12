@@ -25,7 +25,9 @@ impl FetchHeaders {
     }
 
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.headers.get(&name.to_ascii_lowercase()).map(|s| s.as_str())
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(|s| s.as_str())
     }
 
     pub fn set(&mut self, name: &str, value: String) {
@@ -75,9 +77,7 @@ mod tests {
 
     #[test]
     fn fetch_headers_from_iter() {
-        let h = FetchHeaders::from_iter(
-            vec![("Name".into(), "val".into())].into_iter()
-        );
+        let h = FetchHeaders::from_iter(vec![("Name".into(), "val".into())].into_iter());
         assert_eq!(h.get("name"), Some("val"));
     }
 }

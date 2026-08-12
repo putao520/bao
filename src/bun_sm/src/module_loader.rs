@@ -13,8 +13,7 @@ use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{CompileModule1, JS_GetRuntime, ModuleEvaluate, ModuleLink};
 use mozjs::rust::{
-    transform_str_to_source_text, CompileOptionsWrapper, RealmOptions, Runtime,
-    SIMPLE_GLOBAL_CLASS,
+    CompileOptionsWrapper, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS, transform_str_to_source_text,
 };
 
 use crate::error::JsError;
@@ -25,7 +24,8 @@ use crate::value::{JsValue, jsval_to_jsvalue};
 ///
 /// Called after creating a new global object and installing console,
 /// before module compilation begins.
-pub type GlobalSetupFn = unsafe fn(&mut mozjs::context::JSContext, mozjs::rust::Handle<*mut JSObject>);
+pub type GlobalSetupFn =
+    unsafe fn(&mut mozjs::context::JSContext, mozjs::rust::Handle<*mut JSObject>);
 
 /// Function pointer type for post-evaluation hooks.
 ///
@@ -87,9 +87,13 @@ fn mod_prop_name(key: &str) -> CString {
 
 /// Store a module object in the GC-safe MODULE_CACHE.
 fn module_cache_insert(cx: *mut JSContext, key: &str, obj: *mut JSObject) {
-    if obj.is_null() { return; }
+    if obj.is_null() {
+        return;
+    }
     let global = unsafe { CurrentGlobalOrNull(cx) };
-    if global.is_null() { return; }
+    if global.is_null() {
+        return;
+    }
     rooted!(in(cx) let global_root = global);
     let prop_name = mod_prop_name(key);
     rooted!(in(cx) let obj_val = mozjs::jsval::ObjectValue(obj));
@@ -107,9 +111,13 @@ fn module_cache_insert(cx: *mut JSContext, key: &str, obj: *mut JSObject) {
 
 /// Retrieve a module object from the GC-safe MODULE_CACHE.
 fn module_cache_get(cx: *mut JSContext, key: &str) -> Option<*mut JSObject> {
-    if !MODULE_CACHE.with(|c| c.borrow().contains(key)) { return None; }
+    if !MODULE_CACHE.with(|c| c.borrow().contains(key)) {
+        return None;
+    }
     let global = unsafe { CurrentGlobalOrNull(cx) };
-    if global.is_null() { return None; }
+    if global.is_null() {
+        return None;
+    }
     rooted!(in(cx) let global_root = global);
     let prop_name = mod_prop_name(key);
     let mut val = UndefinedValue();
@@ -118,10 +126,17 @@ fn module_cache_get(cx: *mut JSContext, key: &str) -> Option<*mut JSObject> {
             cx,
             global_root.handle().into(),
             prop_name.as_ptr(),
-            MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val },
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut val,
+            },
         );
     }
-    if val.is_object() { Some(val.to_object()) } else { None }
+    if val.is_object() {
+        Some(val.to_object())
+    } else {
+        None
+    }
 }
 
 // ============================================================================
@@ -157,8 +172,7 @@ fn percent_encode_path(path: &str) -> String {
     for b in path.bytes() {
         // Unreserved per RFC 3986: A-Z a-z 0-9 - _ . ~
         // Plus path-allowed: / (separator)
-        let safe = b.is_ascii_alphanumeric()
-            || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/');
+        let safe = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/');
         if safe {
             out.push(b as char);
         } else {
@@ -311,7 +325,8 @@ pub fn set_resolver(resolver: ResolverFn) {
 /// Returns `None` if no external resolver is set or it returns `None`.
 pub fn try_external_resolve(specifier: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
     EXTERNAL_RESOLVER.with(|r| {
-        r.borrow().and_then(|resolver| resolver(specifier, base_dir))
+        r.borrow()
+            .and_then(|resolver| resolver(specifier, base_dir))
     })
 }
 
@@ -351,7 +366,9 @@ impl ModuleLoader {
         } else {
             ::std::env::current_dir().unwrap_or_default().join(filename)
         };
-        let base_dir = abs_filename.parent().map(|p| p.to_path_buf())
+        let base_dir = abs_filename
+            .parent()
+            .map(|p| p.to_path_buf())
             .or_else(|| ::std::env::current_dir().ok());
 
         CURRENT_DIR.with(|d| *d.borrow_mut() = base_dir.clone());
@@ -379,8 +396,8 @@ impl ModuleLoader {
             unsafe { setup(realm_cx, global.handle()) };
         }
 
-        let c_filename = CString::new(filename)
-            .unwrap_or_else(|_| CString::new("<module>").unwrap());
+        let c_filename =
+            CString::new(filename).unwrap_or_else(|_| CString::new("<module>").unwrap());
         let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
 
         // REQ-ENG-005 criterion 3: TypeScript/JSX transpilation before SM compilation.
@@ -403,7 +420,10 @@ impl ModuleLoader {
             if detail.line == 0 && detail.column == 0 {
                 detail.message = format!("Failed to compile module: {}", detail.message);
             } else {
-                detail.message = format!("Failed to compile module: {} ({}:{}:{})", detail.message, detail.filename, detail.line, detail.column);
+                detail.message = format!(
+                    "Failed to compile module: {} ({}:{}:{})",
+                    detail.message, detail.filename, detail.line, detail.column
+                );
             }
             return ::std::result::Result::Err(detail);
         }
@@ -413,7 +433,13 @@ impl ModuleLoader {
         // referencingPrivate and host_populate_import_meta can populate
         // import.meta.url correctly.
         let entry_url = path_to_file_url(&abs_filename);
-        unsafe { set_module_private(realm_cx.raw_cx_no_gc(), module_obj.handle().get(), &entry_url) };
+        unsafe {
+            set_module_private(
+                realm_cx.raw_cx_no_gc(),
+                module_obj.handle().get(),
+                &entry_url,
+            )
+        };
 
         rooted!(&in(realm_cx) let mut rval = UndefinedValue());
 
@@ -438,9 +464,7 @@ impl ModuleLoader {
             }
         }
 
-        ::std::result::Result::Ok(unsafe {
-            jsval_to_jsvalue(realm_cx.raw_cx_no_gc(), rval.get())
-        })
+        ::std::result::Result::Ok(unsafe { jsval_to_jsvalue(realm_cx.raw_cx_no_gc(), rval.get()) })
     }
 
     /// Evaluate `source` as an ES module under a fresh realm, then invoke
@@ -463,7 +487,9 @@ impl ModuleLoader {
         } else {
             ::std::env::current_dir().unwrap_or_default().join(filename)
         };
-        let base_dir = abs_filename.parent().map(|p| p.to_path_buf())
+        let base_dir = abs_filename
+            .parent()
+            .map(|p| p.to_path_buf())
             .or_else(|| ::std::env::current_dir().ok());
 
         CURRENT_DIR.with(|d| *d.borrow_mut() = base_dir.clone());
@@ -491,8 +517,8 @@ impl ModuleLoader {
             unsafe { setup(realm_cx, global.handle()) };
         }
 
-        let c_filename = CString::new(filename)
-            .unwrap_or_else(|_| CString::new("<module>").unwrap());
+        let c_filename =
+            CString::new(filename).unwrap_or_else(|_| CString::new("<module>").unwrap());
         let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
 
         let transpiled = if needs_transpile(&abs_filename) {
@@ -512,13 +538,22 @@ impl ModuleLoader {
             if detail.line == 0 && detail.column == 0 {
                 detail.message = format!("Failed to compile module: {}", detail.message);
             } else {
-                detail.message = format!("Failed to compile module: {} ({}:{}:{})", detail.message, detail.filename, detail.line, detail.column);
+                detail.message = format!(
+                    "Failed to compile module: {} ({}:{}:{})",
+                    detail.message, detail.filename, detail.line, detail.column
+                );
             }
             return ::std::result::Result::Err(detail);
         }
 
         let entry_url = path_to_file_url(&abs_filename);
-        unsafe { set_module_private(realm_cx.raw_cx_no_gc(), module_obj.handle().get(), &entry_url) };
+        unsafe {
+            set_module_private(
+                realm_cx.raw_cx_no_gc(),
+                module_obj.handle().get(),
+                &entry_url,
+            )
+        };
 
         rooted!(&in(realm_cx) let mut rval = UndefinedValue());
 
@@ -564,25 +599,82 @@ unsafe extern "C" fn host_resolve_imported_module(
     );
 
     // Built-in module shortcut for static imports (e.g. import from "bun:test")
-    let stripped = specifier_str.strip_prefix("node:").unwrap_or(&specifier_str);
+    let stripped = specifier_str
+        .strip_prefix("node:")
+        .unwrap_or(&specifier_str);
 
     let builtin_modules = [
-        "fs", "path", "crypto", "os", "url", "events", "net", "http", "https",
-        "child_process", "util", "assert", "stream", "zlib", "dns", "querystring",
-        "buffer", "string_decoder", "timers", "readline", "perf_hooks",
-        "tls", "bun:test", "harness", "test",
+        "fs",
+        "path",
+        "crypto",
+        "os",
+        "url",
+        "events",
+        "net",
+        "http",
+        "https",
+        "child_process",
+        "util",
+        "assert",
+        "stream",
+        "zlib",
+        "dns",
+        "querystring",
+        "buffer",
+        "string_decoder",
+        "timers",
+        "readline",
+        "perf_hooks",
+        "tls",
+        "bun:test",
+        "harness",
+        "test",
         // Stubbed builtins (registered by bao_runtime::node_stubs).
-        "async_hooks", "cluster", "console", "constants", "dgram",
-        "diagnostics_channel", "domain", "http2", "inspector", "punycode",
-        "repl", "trace_events", "v8", "worker_threads", "sys", "vm", "tty",
-        "module", "process",
-        "_http_agent", "_http_client", "_http_common", "_http_incoming",
-        "_http_outgoing", "_http_server", "_stream_duplex", "_stream_passthrough",
-        "_stream_readable", "_stream_transform", "_stream_wrap", "_stream_writable",
-        "_tls_common", "_tls_wrap",
-        "assert/strict", "dns/promises", "fs/promises", "path/posix", "path/win32",
-        "readline/promises", "stream/consumers", "stream/promises", "stream/web",
-        "util/types", "inspector/promises", "timers/promises",
+        "async_hooks",
+        "cluster",
+        "console",
+        "constants",
+        "dgram",
+        "diagnostics_channel",
+        "domain",
+        "http2",
+        "inspector",
+        "punycode",
+        "repl",
+        "trace_events",
+        "v8",
+        "worker_threads",
+        "sys",
+        "vm",
+        "tty",
+        "module",
+        "process",
+        "_http_agent",
+        "_http_client",
+        "_http_common",
+        "_http_incoming",
+        "_http_outgoing",
+        "_http_server",
+        "_stream_duplex",
+        "_stream_passthrough",
+        "_stream_readable",
+        "_stream_transform",
+        "_stream_wrap",
+        "_stream_writable",
+        "_tls_common",
+        "_tls_wrap",
+        "assert/strict",
+        "dns/promises",
+        "fs/promises",
+        "path/posix",
+        "path/win32",
+        "readline/promises",
+        "stream/consumers",
+        "stream/promises",
+        "stream/web",
+        "util/types",
+        "inspector/promises",
+        "timers/promises",
     ];
 
     // Synthetic ESM modules with explicit named exports for known builtins
@@ -593,7 +685,8 @@ unsafe extern "C" fn host_resolve_imported_module(
         // and still be picked up by `bao test`. Node's surface is broader
         // (run(), test.run(), MockTracker) but the upstream tests in this repo
         // only use describe/test/it + before/after hooks.
-        "test" => Some(r#"var _m = require("bun:test");
+        "test" => Some(
+            r#"var _m = require("bun:test");
 export var describe = _m.describe;
 export var test = _m.test;
 export var it = _m.it;
@@ -603,8 +696,10 @@ export var beforeEach = _m.beforeEach;
 export var afterEach = _m.afterEach;
 export var mock = _m.jest;
 export default _m;
-"#),
-        "bun:test" => Some(r#"var _m = require("bun:test");
+"#,
+        ),
+        "bun:test" => Some(
+            r#"var _m = require("bun:test");
 export var describe = _m.describe;
 export var test = _m.test;
 export var it = _m.it;
@@ -621,8 +716,10 @@ export var gc = _m.gc;
 export var printConsole = _m.printConsole;
 export var setDefaultTimeout = _m.setDefaultTimeout;
 export default _m;
-"#),
-        "harness" => Some(r#"var _m = require("harness");
+"#,
+        ),
+        "harness" => Some(
+            r#"var _m = require("harness");
 export var gc = _m.gc;
 export var bunExe = _m.bunExe;
 export var bunEnv = _m.bunEnv;
@@ -642,7 +739,8 @@ export var gcTick = _m.gcTick;
 export var invert = _m.invert;
 export var stackTrace = _m.stackTrace;
 export default _m;
-"#),
+"#,
+        ),
         // Generic builtin modules: each builtin's `require("<name>")` returns a
         // cached module object exposing named properties (Buffer, createHash,
         // readFile, EventEmitter, ...). We emit explicit static `export var`
@@ -658,24 +756,26 @@ export default _m;
     if let Some(esm_src) = synthetic_esm {
         // Check cache first — synthetic modules must be returned as the same object
         let cache_key = format!("builtin:{}", stripped);
-                let cached = module_cache_get(raw_cx, &cache_key);
-            if let Some(existing) = cached && !existing.is_null() {
-                return existing;
-            }
+        let cached = module_cache_get(raw_cx, &cache_key);
+        if let Some(existing) = cached
+            && !existing.is_null()
+        {
+            return existing;
+        }
 
-            let c_filename = CString::new(format!("<builtin:{}>", stripped))
-                .unwrap_or_else(|_| CString::new("<builtin>").unwrap());
-            let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
-            if !opts.is_null() {
-                let mut src = transform_str_to_source_text(esm_src);
-                let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-                libc::free(opts as *mut _);
-                if !module.is_null() {
-                    // BUG-ENG-365: attach private value to synthetic builtin modules
-                    let priv_url = format!("builtin:{}", stripped);
-                    set_module_private(raw_cx, module, &priv_url);
-                    module_cache_insert(raw_cx, &cache_key, module);
-                }
+        let c_filename = CString::new(format!("<builtin:{}>", stripped))
+            .unwrap_or_else(|_| CString::new("<builtin>").unwrap());
+        let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
+        if !opts.is_null() {
+            let mut src = transform_str_to_source_text(esm_src);
+            let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
+            libc::free(opts as *mut _);
+            if !module.is_null() {
+                // BUG-ENG-365: attach private value to synthetic builtin modules
+                let priv_url = format!("builtin:{}", stripped);
+                set_module_private(raw_cx, module, &priv_url);
+                module_cache_insert(raw_cx, &cache_key, module);
+            }
             return module;
         }
     }
@@ -684,8 +784,7 @@ export default _m;
     // when available — this makes relative imports resolve against the
     // importing module's directory, per ECMAScript module semantics.
     let base_from_private = unsafe { base_dir_from_private_cx(raw_cx, referencing_private) };
-    let base_dir = base_from_private
-        .or_else(|| CURRENT_DIR.with(|d| d.borrow().clone()));
+    let base_dir = base_from_private.or_else(|| CURRENT_DIR.with(|d| d.borrow().clone()));
 
     // @trace REQ-ENG-005 — data: URL ESM modules (static import path).
     // Same loader as dynamic imports: parse + decode + compile. Static
@@ -696,7 +795,9 @@ export default _m;
         if let ::std::result::Result::Ok(payload) = parse_data_url(&specifier_str) {
             let cache_key = format!("data-url:{}", specifier_str);
             let cached = module_cache_get(raw_cx, &cache_key);
-            if let Some(existing) = cached && !existing.is_null() {
+            if let Some(existing) = cached
+                && !existing.is_null()
+            {
                 return existing;
             }
             let c_filename = CString::new(specifier_str.to_string())
@@ -728,7 +829,9 @@ export default _m;
     let cache_key = canonical.to_string_lossy().into_owned();
 
     let cached = module_cache_get(raw_cx, &cache_key);
-    if let Some(existing) = cached && !existing.is_null() {
+    if let Some(existing) = cached
+        && !existing.is_null()
+    {
         return existing;
     }
 
@@ -849,7 +952,11 @@ fn js_string_literal(s: &str) -> String {
 fn builtin_named_exports(name: &str) -> &'static [&'static str] {
     match name {
         "buffer" => &[
-            "Buffer", "SlowBuffer", "kMaxLength", "constants", "INSPECT_MAX_BYTES",
+            "Buffer",
+            "SlowBuffer",
+            "kMaxLength",
+            "constants",
+            "INSPECT_MAX_BYTES",
             // @trace REQ-ENG-005 — extras imported by upstream tests.
             // buffer.test.js imports isAscii, isUtf8; buffer-resolveObjectURL
             // imports resolveObjectURL. Blob/File live on globalThis per Web
@@ -860,138 +967,437 @@ fn builtin_named_exports(name: &str) -> &'static [&'static str] {
             // masqueradesAsUndefined sentinel (typeof === "undefined" but
             // callable and throws "Not implemented" — see buffer module
             // installer in node_buffer.rs).
-            "isAscii", "isUtf8", "resolveObjectURL", "Blob", "File", "transcode",
+            "isAscii",
+            "isUtf8",
+            "resolveObjectURL",
+            "Blob",
+            "File",
+            "transcode",
         ],
         "crypto" => &[
-            "createHash", "createHmac", "createCipher", "createCipheriv",
-            "createDecipher", "createDecipheriv", "randomBytes", "pseudoRandomBytes",
-            "randomInt", "randomUUID", "pbkdf2", "pbkdf2Sync", "scrypt", "scryptSync",
-            "hkdf", "hkdfSync", "digest", "hash", "createSign", "createVerify",
-            "getHashes", "getCiphers", "timingSafeEqual", "timingSafeCompare",
-            "DiffieHellmanGroup", "createDiffieHellman", "DiffieHellman",
-            "createECDH", "generateKeyPair", "generateKeyPairSync",
-            "createSecretKey", "createPublicKey", "createPrivateKey", "KeyObject",
-            "webcrypto", "constants", "randomFill", "randomFillSync",
+            "createHash",
+            "createHmac",
+            "createCipher",
+            "createCipheriv",
+            "createDecipher",
+            "createDecipheriv",
+            "randomBytes",
+            "pseudoRandomBytes",
+            "randomInt",
+            "randomUUID",
+            "pbkdf2",
+            "pbkdf2Sync",
+            "scrypt",
+            "scryptSync",
+            "hkdf",
+            "hkdfSync",
+            "digest",
+            "hash",
+            "createSign",
+            "createVerify",
+            "getHashes",
+            "getCiphers",
+            "timingSafeEqual",
+            "timingSafeCompare",
+            "DiffieHellmanGroup",
+            "createDiffieHellman",
+            "DiffieHellman",
+            "createECDH",
+            "generateKeyPair",
+            "generateKeyPairSync",
+            "createSecretKey",
+            "createPublicKey",
+            "createPrivateKey",
+            "KeyObject",
+            "webcrypto",
+            "constants",
+            "randomFill",
+            "randomFillSync",
         ],
         "fs" => &[
-            "readFile", "readFileSync", "writeFile", "writeFileSync",
-            "appendFile", "appendFileSync", "readdir", "readdirSync",
-            "stat", "statSync", "lstat", "lstatSync",
-            "fstat", "fstatSync", "exists", "existsSync", "mkdir", "mkdirSync",
-            "rmdir", "rmdirSync", "rm", "rmSync", "unlink", "unlinkSync",
-            "rename", "renameSync", "copyFile", "copyFileSync", "open", "openSync",
-            "close", "closeSync", "read", "readSync", "write", "writeSync",
-            "realpath", "realpathSync", "createReadStream", "createWriteStream",
-            "watch", "watchFile", "unwatchFile", "access", "accessSync",
-            "chmod", "chmodSync", "chown", "chownSync", "utimes", "utimesSync",
-            "lutimes", "lutimesSync", "link", "linkSync", "symlink", "symlinkSync",
-            "readlink", "readlinkSync", "truncate", "truncateSync", "ftruncate",
-            "ftruncateSync", "fchmod", "fchmodSync", "fchown", "fchownSync",
-            "mkdirp", "mkdirpSync", "cp", "cpSync", "opendir", "opendirSync",
-            "Dir", "promises", "constants", "F_OK", "R_OK", "W_OK", "X_OK",
-            "Stats", "ReadStream", "WriteStream", "Dirent",
+            "readFile",
+            "readFileSync",
+            "writeFile",
+            "writeFileSync",
+            "appendFile",
+            "appendFileSync",
+            "readdir",
+            "readdirSync",
+            "stat",
+            "statSync",
+            "lstat",
+            "lstatSync",
+            "fstat",
+            "fstatSync",
+            "exists",
+            "existsSync",
+            "mkdir",
+            "mkdirSync",
+            "rmdir",
+            "rmdirSync",
+            "rm",
+            "rmSync",
+            "unlink",
+            "unlinkSync",
+            "rename",
+            "renameSync",
+            "copyFile",
+            "copyFileSync",
+            "open",
+            "openSync",
+            "close",
+            "closeSync",
+            "read",
+            "readSync",
+            "write",
+            "writeSync",
+            "realpath",
+            "realpathSync",
+            "createReadStream",
+            "createWriteStream",
+            "watch",
+            "watchFile",
+            "unwatchFile",
+            "access",
+            "accessSync",
+            "chmod",
+            "chmodSync",
+            "chown",
+            "chownSync",
+            "utimes",
+            "utimesSync",
+            "lutimes",
+            "lutimesSync",
+            "link",
+            "linkSync",
+            "symlink",
+            "symlinkSync",
+            "readlink",
+            "readlinkSync",
+            "truncate",
+            "truncateSync",
+            "ftruncate",
+            "ftruncateSync",
+            "fchmod",
+            "fchmodSync",
+            "fchown",
+            "fchownSync",
+            "mkdirp",
+            "mkdirpSync",
+            "cp",
+            "cpSync",
+            "opendir",
+            "opendirSync",
+            "Dir",
+            "promises",
+            "constants",
+            "F_OK",
+            "R_OK",
+            "W_OK",
+            "X_OK",
+            "Stats",
+            "ReadStream",
+            "WriteStream",
+            "Dirent",
         ],
         "events" => &[
-            "EventEmitter", "once", "on", "getEventListeners", "setMaxListeners",
-            "getMaxListeners", "EventEmitterAsyncResource", "captureRejections",
-            "captureRejectionSymbol", "defaultMaxListeners", "errorMonitor",
+            "EventEmitter",
+            "once",
+            "on",
+            "getEventListeners",
+            "setMaxListeners",
+            "getMaxListeners",
+            "EventEmitterAsyncResource",
+            "captureRejections",
+            "captureRejectionSymbol",
+            "defaultMaxListeners",
+            "errorMonitor",
             "listenerCount",
         ],
         "os" => &[
-            "platform", "arch", "type", "release", "hostname", "cpus", "totalmem",
-            "freemem", "uptime", "loadavg", "networkInterfaces", "userInfo",
-            "homedir", "tmpdir", "endianness", "EOL", "constants", "availableParallelism",
-            "getPriority", "setPriority", "machine", "version", "devDir",
+            "platform",
+            "arch",
+            "type",
+            "release",
+            "hostname",
+            "cpus",
+            "totalmem",
+            "freemem",
+            "uptime",
+            "loadavg",
+            "networkInterfaces",
+            "userInfo",
+            "homedir",
+            "tmpdir",
+            "endianness",
+            "EOL",
+            "constants",
+            "availableParallelism",
+            "getPriority",
+            "setPriority",
+            "machine",
+            "version",
+            "devDir",
         ],
         "path" => &[
-            "resolve", "normalize", "isAbsolute", "join", "relative", "dirname",
-            "basename", "extname", "parse", "format", "sep", "delimiter",
-            "win32", "posix", "toNamespacedPath", "matchesGlob",
+            "resolve",
+            "normalize",
+            "isAbsolute",
+            "join",
+            "relative",
+            "dirname",
+            "basename",
+            "extname",
+            "parse",
+            "format",
+            "sep",
+            "delimiter",
+            "win32",
+            "posix",
+            "toNamespacedPath",
+            "matchesGlob",
         ],
         "url" => &[
-            "parse", "resolve", "resolveObject", "format", "Url", "URL",
-            "URLSearchParams", "domainToASCII", "domainToUnicode", "fileURLToPath",
-            "pathToFileURL", "urlToHttpOptions",
+            "parse",
+            "resolve",
+            "resolveObject",
+            "format",
+            "Url",
+            "URL",
+            "URLSearchParams",
+            "domainToASCII",
+            "domainToUnicode",
+            "fileURLToPath",
+            "pathToFileURL",
+            "urlToHttpOptions",
         ],
         "util" => &[
-            "format", "debug", "log", "inspect", "isArray", "isBoolean", "isNull",
-            "isNullOrUndefined", "isNumber", "isString", "isSymbol", "isUndefined",
-            "isRegExp", "isObject", "isDate", "isError", "isFunction", "isPrimitive",
-            "isBuffer", "promisify", "callbackify", "inherits", "types", "TextEncoder",
-            "TextDecoder", "_extend", "deprecate", "formatWithOptions",
-            "styleText", "stripVTControlCharacters", "parseArgs", "MIMEType",
-            "parseMIMEType", "aborted", "transferable", "deepEqual", "deepStrictEqual",
+            "format",
+            "debug",
+            "log",
+            "inspect",
+            "isArray",
+            "isBoolean",
+            "isNull",
+            "isNullOrUndefined",
+            "isNumber",
+            "isString",
+            "isSymbol",
+            "isUndefined",
+            "isRegExp",
+            "isObject",
+            "isDate",
+            "isError",
+            "isFunction",
+            "isPrimitive",
+            "isBuffer",
+            "promisify",
+            "callbackify",
+            "inherits",
+            "types",
+            "TextEncoder",
+            "TextDecoder",
+            "_extend",
+            "deprecate",
+            "formatWithOptions",
+            "styleText",
+            "stripVTControlCharacters",
+            "parseArgs",
+            "MIMEType",
+            "parseMIMEType",
+            "aborted",
+            "transferable",
+            "deepEqual",
+            "deepStrictEqual",
         ],
         "string_decoder" => &["StringDecoder"],
         // @trace REQ-ENG-005 — node:tty named exports. ReadStream, WriteStream,
         // and isatty are imported by tty.test.ts and nodettywrap.test.ts.
         "tty" => &["ReadStream", "WriteStream", "isatty"],
         "timers" => &[
-            "setTimeout", "clearTimeout", "setInterval", "clearInterval",
-            "setImmediate", "clearImmediate", "promises",
+            "setTimeout",
+            "clearTimeout",
+            "setInterval",
+            "clearInterval",
+            "setImmediate",
+            "clearImmediate",
+            "promises",
         ],
         "stream" => &[
-            "Stream", "Readable", "Writable", "Duplex", "Transform", "PassThrough",
-            "pipeline", "finished", "addAbortSignal", "promises", "ReadableStream",
-            "WritableStream", "TransformStream", "getDefaultHighWaterMark",
-            "setDefaultHighWaterMark", "isDisturbed",
+            "Stream",
+            "Readable",
+            "Writable",
+            "Duplex",
+            "Transform",
+            "PassThrough",
+            "pipeline",
+            "finished",
+            "addAbortSignal",
+            "promises",
+            "ReadableStream",
+            "WritableStream",
+            "TransformStream",
+            "getDefaultHighWaterMark",
+            "setDefaultHighWaterMark",
+            "isDisturbed",
         ],
         "assert" => &[
-            "ok", "equal", "notEqual", "deepEqual", "notDeepEqual", "deepStrictEqual",
-            "notDeepStrictEqual", "strict", "fail", "throws", "doesNotThrow", "ifError",
-            "rejects", "doesNotReject", "match", "doesNotMatch", "CallTracker",
+            "ok",
+            "equal",
+            "notEqual",
+            "deepEqual",
+            "notDeepEqual",
+            "deepStrictEqual",
+            "notDeepStrictEqual",
+            "strict",
+            "fail",
+            "throws",
+            "doesNotThrow",
+            "ifError",
+            "rejects",
+            "doesNotReject",
+            "match",
+            "doesNotMatch",
+            "CallTracker",
             "partialDeepStrictEqual",
         ],
         "querystring" => &[
-            "escape", "unescape", "encode", "decode", "stringify", "parse",
+            "escape",
+            "unescape",
+            "encode",
+            "decode",
+            "stringify",
+            "parse",
         ],
         "net" => &[
-            "createServer", "createConnection", "connect", "Server", "Socket",
-            "isIP", "isIPv4", "isIPv6", "BlockList", "SocketAddress",
+            "createServer",
+            "createConnection",
+            "connect",
+            "Server",
+            "Socket",
+            "isIP",
+            "isIPv4",
+            "isIPv6",
+            "BlockList",
+            "SocketAddress",
         ],
         "tls" => &[
-            "createServer", "createSecureContext", "createSecureServer", "connect",
-            "TLSSocket", "Server", "SecureContext", "checkServerIdentity", "getCiphers",
-            "rootCertificates", "DEFAULT_ECDH_CURVE", "DEFAULT_MIN_VERSION",
+            "createServer",
+            "createSecureContext",
+            "createSecureServer",
+            "connect",
+            "TLSSocket",
+            "Server",
+            "SecureContext",
+            "checkServerIdentity",
+            "getCiphers",
+            "rootCertificates",
+            "DEFAULT_ECDH_CURVE",
+            "DEFAULT_MIN_VERSION",
             "DEFAULT_MAX_VERSION",
         ],
         "dns" => &[
-            "lookup", "resolve", "resolve4", "resolve6", "resolveAny", "reverse",
-            "Resolver", "getServers", "setServers", "lookupService", "promises",
-            "defaultResolver", "setDefaultResultOrder", "getDefaultResultOrder",
+            "lookup",
+            "resolve",
+            "resolve4",
+            "resolve6",
+            "resolveAny",
+            "reverse",
+            "Resolver",
+            "getServers",
+            "setServers",
+            "lookupService",
+            "promises",
+            "defaultResolver",
+            "setDefaultResultOrder",
+            "getDefaultResultOrder",
             "lookupSync",
         ],
         "zlib" => &[
-            "deflate", "deflateSync", "inflate", "inflateSync", "gzip", "gzipSync",
-            "gunzip", "gunzipSync", "deflateRaw", "deflateRawSync", "inflateRaw",
-            "inflateRawSync", "brotliCompress", "brotliCompressSync", "brotliDecompress",
-            "brotliDecompressSync", "createDeflate", "createInflate", "createGzip",
-            "createGunzip", "createDeflateRaw", "createInflateRaw", "createBrotliCompress",
-            "createBrotliDecompress", "Deflate", "Inflate", "Gzip", "Gunzip",
-            "DeflateRaw", "InflateRaw", "BrotliCompress", "BrotliDecompress",
-            "constants", "crc32", "crc32Sync",
+            "deflate",
+            "deflateSync",
+            "inflate",
+            "inflateSync",
+            "gzip",
+            "gzipSync",
+            "gunzip",
+            "gunzipSync",
+            "deflateRaw",
+            "deflateRawSync",
+            "inflateRaw",
+            "inflateRawSync",
+            "brotliCompress",
+            "brotliCompressSync",
+            "brotliDecompress",
+            "brotliDecompressSync",
+            "createDeflate",
+            "createInflate",
+            "createGzip",
+            "createGunzip",
+            "createDeflateRaw",
+            "createInflateRaw",
+            "createBrotliCompress",
+            "createBrotliDecompress",
+            "Deflate",
+            "Inflate",
+            "Gzip",
+            "Gunzip",
+            "DeflateRaw",
+            "InflateRaw",
+            "BrotliCompress",
+            "BrotliDecompress",
+            "constants",
+            "crc32",
+            "crc32Sync",
         ],
         "child_process" => &[
-            "spawn", "exec", "execFile", "execFileSync", "spawnSync", "execSync",
-            "fork", "ChildProcess",
+            "spawn",
+            "exec",
+            "execFile",
+            "execFileSync",
+            "spawnSync",
+            "execSync",
+            "fork",
+            "ChildProcess",
         ],
         "readline" => &[
-            "createInterface", "clearLine", "clearScreenDown", "cursorTo", "emitKeypressEvents",
-            "moveCursor", "promises", "Interface", "question",
+            "createInterface",
+            "clearLine",
+            "clearScreenDown",
+            "cursorTo",
+            "emitKeypressEvents",
+            "moveCursor",
+            "promises",
+            "Interface",
+            "question",
         ],
         "perf_hooks" => &[
-            "PerformanceObserver", "PerformanceEntry", "PerformanceObserverEntryList",
-            "Performance", "monitorEventLoopDelay", "constants",
+            "PerformanceObserver",
+            "PerformanceEntry",
+            "PerformanceObserverEntryList",
+            "Performance",
+            "monitorEventLoopDelay",
+            "constants",
         ],
         "http" => &[
-            "request", "get", "ClientRequest", "IncomingMessage", "Server", "ServerResponse",
-            "METHODS", "STATUS_CODES", "globalAgent", "Agent", "MaxRequestsPerServer",
-            "createServer", "validateHeaderName", "validateHeaderValue",
-            "setGlobalDispatcher", "getGlobalDispatcher",
+            "request",
+            "get",
+            "ClientRequest",
+            "IncomingMessage",
+            "Server",
+            "ServerResponse",
+            "METHODS",
+            "STATUS_CODES",
+            "globalAgent",
+            "Agent",
+            "MaxRequestsPerServer",
+            "createServer",
+            "validateHeaderName",
+            "validateHeaderValue",
+            "setGlobalDispatcher",
+            "getGlobalDispatcher",
         ],
-        "https" => &[
-            "request", "get", "Server", "Agent", "globalAgent",
-        ],
+        "https" => &["request", "get", "Server", "Agent", "globalAgent"],
         _ => &[],
     }
 }
@@ -1036,9 +1442,17 @@ fn builtin_esm_source(name: &str) -> &'static str {
 ///   3. Exports `default = module.exports`.
 ///   4. Re-exports all enumerable keys as named exports (live bindings).
 fn cjs_compat_wrapper_source(canonical: &Path, cjs_source: &str) -> String {
-    let escaped = cjs_source.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
+    let escaped = cjs_source
+        .replace('\\', "\\\\")
+        .replace('`', "\\`")
+        .replace("${", "\\${");
     let filename_str = js_string_literal(&canonical.to_string_lossy());
-    let dirname_str = js_string_literal(&canonical.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
+    let dirname_str = js_string_literal(
+        &canonical
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    );
     format!(
         r#"
 var __cjs_module = {{ exports: {{}} }};
@@ -1092,9 +1506,13 @@ unsafe extern "C" fn host_populate_import_meta(
         } else {
             String::new()
         };
-        let (resolved_url, fs_path): (String, Option<PathBuf>) = if specifier.starts_with("file://") {
+        let (resolved_url, fs_path): (String, Option<PathBuf>) = if specifier.starts_with("file://")
+        {
             // Already a file URL — derive fs path by stripping the scheme.
-            let stripped = specifier.strip_prefix("file://").unwrap_or(&specifier).to_string();
+            let stripped = specifier
+                .strip_prefix("file://")
+                .unwrap_or(&specifier)
+                .to_string();
             let p = PathBuf::from(&stripped);
             (specifier.clone(), Some(p))
         } else if !specifier.is_empty() {
@@ -1111,16 +1529,25 @@ unsafe extern "C" fn host_populate_import_meta(
         };
 
         // url — always defined.
-        let Ok(c_url) = CString::new(resolved_url.as_str()) else { return false; };
+        let Ok(c_url) = CString::new(resolved_url.as_str()) else {
+            return false;
+        };
         let url_js = JS_NewStringCopyZ(raw_cx, c_url.as_ptr());
         if url_js.is_null() {
             return false;
         }
         let url_val = mozjs::jsval::StringValue(&*url_js);
         // BCE-20260619-012: StringValue contains GC-managed JSString pointer; must be rooted.
-        let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx));
+        let wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx));
         rooted!(&in(wrapped_cx) let url_val_root = url_val);
-        if !JS_DefineProperty(raw_cx, meta_object, c"url".as_ptr(), url_val_root.handle().into(), JSPROP_ENUMERATE as u32) {
+        if !JS_DefineProperty(
+            raw_cx,
+            meta_object,
+            c"url".as_ptr(),
+            url_val_root.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        ) {
             return false;
         }
 
@@ -1130,10 +1557,12 @@ unsafe extern "C" fn host_populate_import_meta(
         let (path_str, dir_str, file_str) = match &fs_path {
             Some(p) => {
                 let path_s = p.to_string_lossy().into_owned();
-                let dir_s = p.parent()
+                let dir_s = p
+                    .parent()
                     .map(|d| d.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let file_s = p.file_name()
+                let file_s = p
+                    .file_name()
                     .map(|f| f.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 (path_s, dir_s, file_s)
@@ -1142,7 +1571,8 @@ unsafe extern "C" fn host_populate_import_meta(
         };
 
         let define_str_prop = |name: &::std::ffi::CStr, value: &str| -> bool {
-            let cstr = ::std::ffi::CString::new(value).unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
+            let cstr = ::std::ffi::CString::new(value)
+                .unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
             let js = JS_NewStringCopyZ(raw_cx, cstr.as_ptr());
             if js.is_null() {
                 return false;
@@ -1150,23 +1580,49 @@ unsafe extern "C" fn host_populate_import_meta(
             let v = mozjs::jsval::StringValue(&*js);
             // BCE-20260619-012: StringValue contains GC-managed JSString pointer; must be rooted.
             rooted!(&in(wrapped_cx) let v_root = v);
-            JS_DefineProperty(raw_cx, meta_object, name.as_ptr(), v_root.handle().into(), JSPROP_ENUMERATE as u32)
+            JS_DefineProperty(
+                raw_cx,
+                meta_object,
+                name.as_ptr(),
+                v_root.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            )
         };
 
-        if !define_str_prop(c"path".as_ref(), &path_str) { return false; }
-        if !define_str_prop(c"dir".as_ref(), &dir_str) { return false; }
-        if !define_str_prop(c"file".as_ref(), &file_str) { return false; }
+        if !define_str_prop(c"path".as_ref(), &path_str) {
+            return false;
+        }
+        if !define_str_prop(c"dir".as_ref(), &dir_str) {
+            return false;
+        }
+        if !define_str_prop(c"file".as_ref(), &file_str) {
+            return false;
+        }
 
         // main — true if this module's absolute path matches the entry path.
         // The entry is tracked in CURRENT_DIR-adjacent ENTRY_MODULE thread-local.
         let is_main = ENTRY_MODULE.with(|e| {
-            e.borrow().as_ref()
-                .and_then(|entry| fs_path.as_ref().map(|p| fs::canonicalize(p).ok() == fs::canonicalize(entry).ok()))
+            e.borrow()
+                .as_ref()
+                .and_then(|entry| {
+                    fs_path
+                        .as_ref()
+                        .map(|p| fs::canonicalize(p).ok() == fs::canonicalize(entry).ok())
+                })
                 .unwrap_or(false)
         });
         let main_val = mozjs::jsval::BooleanValue(is_main);
-        let main_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &main_val };
-        if !JS_DefineProperty(raw_cx, meta_object, c"main".as_ptr(), main_h, JSPROP_ENUMERATE as u32) {
+        let main_h = Handle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &main_val,
+        };
+        if !JS_DefineProperty(
+            raw_cx,
+            meta_object,
+            c"main".as_ptr(),
+            main_h,
+            JSPROP_ENUMERATE as u32,
+        ) {
             return false;
         }
 
@@ -1180,15 +1636,33 @@ unsafe extern "C" fn host_populate_import_meta(
         if !global_obj.is_null() {
             rooted!(in(raw_cx) let global_root = global_obj);
             let mut require_val = mozjs::jsval::UndefinedValue();
-            let require_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut require_val };
-            let got = unsafe { mozjs_sys::jsapi::JS_GetProperty(raw_cx, global_root.handle().into(), c"require".as_ptr(), require_h) };
+            let require_h = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut require_val,
+            };
+            let got = unsafe {
+                mozjs_sys::jsapi::JS_GetProperty(
+                    raw_cx,
+                    global_root.handle().into(),
+                    c"require".as_ptr(),
+                    require_h,
+                )
+            };
             if got && require_val.is_object() {
                 let require_obj_val = require_val;
                 // BCE-20260619-012: require_obj_val may contain GC-managed object; must be rooted.
                 rooted!(&in(wrapped_cx) let require_obj_root = require_obj_val);
                 // Non-enumerable — `import.meta.require` is a function reference,
                 // not a data property that should serialize.
-                let _ = unsafe { JS_DefineProperty(raw_cx, meta_object, c"require".as_ptr(), require_obj_root.handle().into(), 0) };
+                let _ = unsafe {
+                    JS_DefineProperty(
+                        raw_cx,
+                        meta_object,
+                        c"require".as_ptr(),
+                        require_obj_root.handle().into(),
+                        0,
+                    )
+                };
             }
         }
         true
@@ -1226,26 +1700,91 @@ unsafe extern "C" fn host_dynamic_import(
     //   3. FinishDynamicModuleImport — SM resolves the user-facing promise with
     //      the *module namespace* (which carries the `default` property).
     let builtin_modules = [
-        "fs", "path", "crypto", "os", "url", "events", "net", "http", "https",
-        "child_process", "util", "assert", "stream", "zlib", "dns", "querystring",
-        "buffer", "string_decoder", "timers", "readline", "perf_hooks",
-        "tls", "bun:test", "harness", "test",
+        "fs",
+        "path",
+        "crypto",
+        "os",
+        "url",
+        "events",
+        "net",
+        "http",
+        "https",
+        "child_process",
+        "util",
+        "assert",
+        "stream",
+        "zlib",
+        "dns",
+        "querystring",
+        "buffer",
+        "string_decoder",
+        "timers",
+        "readline",
+        "perf_hooks",
+        "tls",
+        "bun:test",
+        "harness",
+        "test",
         // Stubbed builtins (registered by bao_runtime::node_stubs).
-        "async_hooks", "cluster", "console", "constants", "dgram",
-        "diagnostics_channel", "domain", "http2", "inspector", "punycode",
-        "repl", "trace_events", "v8", "worker_threads", "sys", "vm", "tty",
-        "module", "process",
-        "_http_agent", "_http_client", "_http_common", "_http_incoming",
-        "_http_outgoing", "_http_server", "_stream_duplex", "_stream_passthrough",
-        "_stream_readable", "_stream_transform", "_stream_wrap", "_stream_writable",
-        "_tls_common", "_tls_wrap",
-        "assert/strict", "dns/promises", "fs/promises", "path/posix", "path/win32",
-        "readline/promises", "stream/consumers", "stream/promises", "stream/web",
-        "util/types", "inspector/promises", "timers/promises",
+        "async_hooks",
+        "cluster",
+        "console",
+        "constants",
+        "dgram",
+        "diagnostics_channel",
+        "domain",
+        "http2",
+        "inspector",
+        "punycode",
+        "repl",
+        "trace_events",
+        "v8",
+        "worker_threads",
+        "sys",
+        "vm",
+        "tty",
+        "module",
+        "process",
+        "_http_agent",
+        "_http_client",
+        "_http_common",
+        "_http_incoming",
+        "_http_outgoing",
+        "_http_server",
+        "_stream_duplex",
+        "_stream_passthrough",
+        "_stream_readable",
+        "_stream_transform",
+        "_stream_wrap",
+        "_stream_writable",
+        "_tls_common",
+        "_tls_wrap",
+        "assert/strict",
+        "dns/promises",
+        "fs/promises",
+        "path/posix",
+        "path/win32",
+        "readline/promises",
+        "stream/consumers",
+        "stream/promises",
+        "stream/web",
+        "util/types",
+        "inspector/promises",
+        "timers/promises",
     ];
-    let stripped = specifier_str.strip_prefix("node:").unwrap_or(&specifier_str);
+    let stripped = specifier_str
+        .strip_prefix("node:")
+        .unwrap_or(&specifier_str);
     if builtin_modules.contains(&stripped) {
-        return unsafe { dynamic_import_builtin(raw_cx, stripped, referencing_private, module_request, promise) };
+        return unsafe {
+            dynamic_import_builtin(
+                raw_cx,
+                stripped,
+                referencing_private,
+                module_request,
+                promise,
+            )
+        };
     }
 
     // @trace REQ-ENG-005 — data: URL ESM modules.
@@ -1262,12 +1801,22 @@ unsafe extern "C" fn host_dynamic_import(
     if specifier_str.starts_with("data:") {
         match parse_data_url(&specifier_str) {
             ::std::result::Result::Ok(payload) => {
-                return unsafe { dynamic_import_data_url(raw_cx, &specifier_str, &payload, referencing_private, module_request, promise) };
+                return unsafe {
+                    dynamic_import_data_url(
+                        raw_cx,
+                        &specifier_str,
+                        &payload,
+                        referencing_private,
+                        module_request,
+                        promise,
+                    )
+                };
             }
             ::std::result::Result::Err(err) => {
                 // Malformed data URL: throw + reject so both sync-throw and
                 // await-based consumers observe the error.
-                let c_msg = CString::new(err.as_str()).unwrap_or_else(|_| CString::new("Module load error").unwrap());
+                let c_msg = CString::new(err.as_str())
+                    .unwrap_or_else(|_| CString::new("Module load error").unwrap());
                 unsafe { mozjs::error::throw_type_error(raw_cx, c_msg.as_ref()) };
                 let _ = unsafe { reject_dynamic_promise(raw_cx, promise, &err) };
                 return false;
@@ -1281,7 +1830,13 @@ unsafe extern "C" fn host_dynamic_import(
     let resolved = resolve_specifier(&specifier_str, base_dir.as_deref());
 
     let ::std::option::Option::Some(path) = resolved else {
-        return unsafe { reject_dynamic_promise(raw_cx, promise, &format!("Cannot find module '{}'", specifier_str)) };
+        return unsafe {
+            reject_dynamic_promise(
+                raw_cx,
+                promise,
+                &format!("Cannot find module '{}'", specifier_str),
+            )
+        };
     };
 
     let canonical = path.canonicalize().unwrap_or(path.clone());
@@ -1293,7 +1848,13 @@ unsafe extern "C" fn host_dynamic_import(
     let content = match fs::read_to_string(&path) {
         ::std::result::Result::Ok(c) => c,
         ::std::result::Result::Err(e) => {
-            return unsafe { reject_dynamic_promise(raw_cx, promise, &format!("Cannot read module '{}': {}", specifier_str, e)) };
+            return unsafe {
+                reject_dynamic_promise(
+                    raw_cx,
+                    promise,
+                    &format!("Cannot read module '{}': {}", specifier_str, e),
+                )
+            };
         }
     };
 
@@ -1311,13 +1872,17 @@ unsafe extern "C" fn host_dynamic_import(
             .unwrap_or_else(|_| CString::new("<module>").unwrap());
         let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
         if opts.is_null() {
-            return unsafe { reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed") };
+            return unsafe {
+                reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed")
+            };
         }
         let mut src = transform_str_to_source_text(&effective_source);
         let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
         libc::free(opts as *mut _);
         if module.is_null() {
-            return unsafe { reject_dynamic_promise(raw_cx, promise, "Internal: module compilation failed") };
+            return unsafe {
+                reject_dynamic_promise(raw_cx, promise, "Internal: module compilation failed")
+            };
         }
 
         // BUG-ENG-365: SetModulePrivate before linking.
@@ -1342,8 +1907,12 @@ unsafe extern "C" fn host_dynamic_import(
         }
 
         let mut eval_rval = UndefinedValue();
-        let eval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
-        let eval_ok = mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h);
+        let eval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut eval_rval,
+        };
+        let eval_ok =
+            mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h);
 
         // Drain microtasks so synchronous module bodies complete.
         mozjs_sys::jsapi::js::RunJobs(raw_cx);
@@ -1380,7 +1949,8 @@ unsafe fn resolve_dynamic_promise_with_value(
     val: Value,
 ) -> bool {
     // BCE-20260619-012: val may contain GC-managed pointer; must be rooted.
-    let wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx)) };
+    let wrapped_cx =
+        unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx)) };
     rooted!(&in(wrapped_cx) let val_root = val);
     unsafe { mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise, val_root.handle().into()) }
 }
@@ -1395,7 +1965,9 @@ unsafe fn reject_dynamic_promise(
     promise: Handle<*mut JSObject>,
     msg: &str,
 ) -> bool {
-    let Ok(c_msg) = CString::new(msg) else { return false };
+    let Ok(c_msg) = CString::new(msg) else {
+        return false;
+    };
     let err_obj = unsafe { mozjs_sys::jsapi::JS_NewPlainObject(raw_cx) };
     if !err_obj.is_null() {
         rooted!(in(raw_cx) let err_root = err_obj);
@@ -1403,12 +1975,21 @@ unsafe fn reject_dynamic_promise(
         if !err_msg.is_null() {
             let msg_val = unsafe { mozjs::jsval::StringValue(&*err_msg) };
             rooted!(in(raw_cx) let msg_h = msg_val);
-            unsafe { JS_SetProperty(raw_cx, err_root.handle().into(), c"message".as_ptr(), msg_h.handle().into()) };
+            unsafe {
+                JS_SetProperty(
+                    raw_cx,
+                    err_root.handle().into(),
+                    c"message".as_ptr(),
+                    msg_h.handle().into(),
+                )
+            };
         }
         let err_val = mozjs::jsval::ObjectValue(err_obj);
         // BCE-20260619-012: ObjectValue contains GC-managed object; must be rooted.
         rooted!(in(raw_cx) let err_root_val = err_val);
-        unsafe { mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise, err_root_val.handle().into()) };
+        unsafe {
+            mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise, err_root_val.handle().into())
+        };
     }
     true
 }
@@ -1438,7 +2019,12 @@ fn parse_data_url(url: &str) -> ::std::result::Result<String, String> {
     let is_base64 = meta.split(';').any(|s| s.eq_ignore_ascii_case("base64"));
     // Media type sanity: reject anything that is not javascript-ish.
     let mediatype_ok = {
-        let mt = meta.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+        let mt = meta
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         mt.is_empty()
             || mt == "text/javascript"
             || mt == "application/javascript"
@@ -1460,7 +2046,9 @@ fn parse_data_url(url: &str) -> ::std::result::Result<String, String> {
         match base64_decode(payload) {
             ::std::result::Result::Ok(bytes) => match ::std::str::from_utf8(&bytes) {
                 ::std::result::Result::Ok(s) => ::std::result::Result::Ok(s.to_owned()),
-                ::std::result::Result::Err(_) => Err("Data URL payload is not valid UTF-8".to_string()),
+                ::std::result::Result::Err(_) => {
+                    Err("Data URL payload is not valid UTF-8".to_string())
+                }
             },
             ::std::result::Result::Err(_) => Err("Base64DecodeError".to_string()),
         }
@@ -1520,7 +2108,10 @@ fn base64_decode(s: &str) -> ::std::result::Result<Vec<u8>, ()> {
         }
     }
     // Strip ASCII whitespace + padding so the length checks are simple.
-    let filtered: Vec<u8> = s.bytes().filter(|&b| !b.is_ascii_whitespace() && b != b'=').collect();
+    let filtered: Vec<u8> = s
+        .bytes()
+        .filter(|&b| !b.is_ascii_whitespace() && b != b'=')
+        .collect();
     if filtered.is_empty() {
         return ::std::result::Result::Ok(Vec::new());
     }
@@ -1585,13 +2176,17 @@ unsafe fn dynamic_import_data_url(
     };
     let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
     if opts.is_null() {
-        return unsafe { reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed") };
+        return unsafe {
+            reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed")
+        };
     }
     let mut src = transform_str_to_source_text(payload);
     let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
     libc::free(opts as *mut _);
     if module.is_null() {
-        return unsafe { reject_dynamic_promise(raw_cx, promise, "Failed to compile data URL module") };
+        return unsafe {
+            reject_dynamic_promise(raw_cx, promise, "Failed to compile data URL module")
+        };
     }
 
     set_module_private(raw_cx, module, specifier_str);
@@ -1612,7 +2207,10 @@ unsafe fn dynamic_import_data_url(
     }
 
     let mut eval_rval = UndefinedValue();
-    let eval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
+    let eval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut eval_rval,
+    };
     let eval_ok = mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h);
     mozjs_sys::jsapi::js::RunJobs(raw_cx);
 
@@ -1677,7 +2275,8 @@ unsafe fn dynamic_import_builtin(
         // hand-written sources in the resolve hook; everything else uses
         // `builtin_esm_source` (which always emits `export default _m`).
         let esm_src: ::std::borrow::Cow<'static, str> = match stripped {
-            "bun:test" => ::std::borrow::Cow::Borrowed(r#"var _m = require("bun:test");
+            "bun:test" => ::std::borrow::Cow::Borrowed(
+                r#"var _m = require("bun:test");
 export var describe = _m.describe;
 export var test = _m.test;
 export var it = _m.it;
@@ -1694,8 +2293,10 @@ export var gc = _m.gc;
 export var printConsole = _m.printConsole;
 export var setDefaultTimeout = _m.setDefaultTimeout;
 export default _m;
-"#),
-            "harness" => ::std::borrow::Cow::Borrowed(r#"var _m = require("harness");
+"#,
+            ),
+            "harness" => ::std::borrow::Cow::Borrowed(
+                r#"var _m = require("harness");
 export var gc = _m.gc;
 export var bunExe = _m.bunExe;
 export var bunEnv = _m.bunEnv;
@@ -1709,7 +2310,8 @@ export var withoutAggressiveGC = _m.withoutAggressiveGC;
 export var expectOOM = _m.expectOOM;
 export var BunEnvironment = _m.BunEnvironment;
 export default _m;
-"#),
+"#,
+            ),
             _ => ::std::borrow::Cow::Borrowed(builtin_esm_source(stripped)),
         };
 
@@ -1717,13 +2319,21 @@ export default _m;
             .unwrap_or_else(|_| CString::new("<builtin>").unwrap());
         let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
         if opts.is_null() {
-            return unsafe { reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed") };
+            return unsafe {
+                reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed")
+            };
         }
         let mut src = transform_str_to_source_text(&esm_src);
         let compiled = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
         libc::free(opts as *mut _);
         if compiled.is_null() {
-            return unsafe { reject_dynamic_promise(raw_cx, promise, "Internal: builtin module compilation failed") };
+            return unsafe {
+                reject_dynamic_promise(
+                    raw_cx,
+                    promise,
+                    "Internal: builtin module compilation failed",
+                )
+            };
         }
         let priv_url = format!("builtin:{}", stripped);
         unsafe { set_module_private(raw_cx, compiled, &priv_url) };
@@ -1755,7 +2365,9 @@ export default _m;
             _phantom_0: ::std::marker::PhantomData,
             ptr: &mut eval_rval,
         };
-        let eval_ok = unsafe { mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h) };
+        let eval_ok = unsafe {
+            mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h)
+        };
         unsafe { mozjs_sys::jsapi::js::RunJobs(raw_cx) };
 
         // Capture the evaluation promise for FinishDynamicModuleImport. When
@@ -1783,9 +2395,12 @@ export default _m;
     // fetch the module namespace directly and resolve the user-facing
     // promise with it. The namespace object exposes the same shape (named
     // exports + `default`) that FinishDynamicModuleImport would resolve to.
-    let ns = unsafe { mozjs_sys::jsapi::JS::GetModuleNamespace(raw_cx, module_root.handle().into()) };
+    let ns =
+        unsafe { mozjs_sys::jsapi::JS::GetModuleNamespace(raw_cx, module_root.handle().into()) };
     if ns.is_null() {
-        return unsafe { reject_dynamic_promise(raw_cx, promise, "Internal: failed to get module namespace") };
+        return unsafe {
+            reject_dynamic_promise(raw_cx, promise, "Internal: failed to get module namespace")
+        };
     }
     let ns_val = mozjs::jsval::ObjectValue(ns);
     unsafe { resolve_dynamic_promise_with_value(raw_cx, promise, ns_val) }
@@ -1794,7 +2409,8 @@ export default _m;
 fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
     // External resolver (bun_resolver) takes priority
     if let Some(result) = EXTERNAL_RESOLVER.with(|r| {
-        r.borrow().and_then(|resolver| resolver(specifier, base_dir))
+        r.borrow()
+            .and_then(|resolver| resolver(specifier, base_dir))
     }) {
         return Some(result);
     }
@@ -1858,7 +2474,10 @@ fn try_index(dir: &Path) -> ::std::option::Option<PathBuf> {
     None
 }
 
-fn resolve_node_modules(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
+fn resolve_node_modules(
+    specifier: &str,
+    base_dir: Option<&Path>,
+) -> ::std::option::Option<PathBuf> {
     let start = match base_dir {
         Some(d) => d.to_path_buf(),
         None => ::std::env::current_dir().ok()?,
@@ -2133,14 +2752,16 @@ fn strip_call_site_generics(s: &str) -> String {
         }
         // Skip block comments (/* ... */).
         if c == '/' && i + 1 < len && chars[i + 1] == '*' {
-            result.push(chars[i]); result.push(chars[i + 1]);
+            result.push(chars[i]);
+            result.push(chars[i + 1]);
             i += 2;
             while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '/') {
                 result.push(chars[i]);
                 i += 1;
             }
             if i + 1 < len {
-                result.push(chars[i]); result.push(chars[i + 1]);
+                result.push(chars[i]);
+                result.push(chars[i + 1]);
                 i += 2;
             }
             continue;
@@ -2150,13 +2771,20 @@ fn strip_call_site_generics(s: &str) -> String {
         // `<>`, and `(` immediately after closing `>`.
         if c == '<' && !result.is_empty() {
             let last = result.chars().last().unwrap();
-            if last.is_ascii_alphanumeric() || last == '_' || last == '.' || last == ')' || last == ']' {
+            if last.is_ascii_alphanumeric()
+                || last == '_'
+                || last == '.'
+                || last == ')'
+                || last == ']'
+            {
                 // Try to match a balanced <...> followed by `(`.
                 if let Some(close_rel) = find_matching_gt(&chars, i) {
                     let after_close = close_rel + 1;
                     // Skip whitespace between `>` and `(`.
                     let mut j = after_close;
-                    while j < len && (chars[j] == ' ' || chars[j] == '\t') { j += 1; }
+                    while j < len && (chars[j] == ' ' || chars[j] == '\t') {
+                        j += 1;
+                    }
                     if j < len && chars[j] == '(' {
                         // Confirmed call-site generic. Drop the `<...>` segment
                         // (don't push it), advance past `>`.
@@ -2196,7 +2824,9 @@ fn find_matching_gt(chars: &[char], start: usize) -> Option<usize> {
             continue;
         }
         match c {
-            '\'' | '"' | '`' => { in_str = Some(c); }
+            '\'' | '"' | '`' => {
+                in_str = Some(c);
+            }
             '<' => depth += 1,
             '>' => {
                 depth -= 1;
@@ -2224,18 +2854,44 @@ fn strip_as_assertions(s: &str) -> String {
     let mut i = 0;
 
     while i < len {
-        if i + 4 < len && chars[i] == ' ' && chars[i + 1] == 'a' && chars[i + 2] == 's' && chars[i + 3] == ' ' {
+        if i + 4 < len
+            && chars[i] == ' '
+            && chars[i + 1] == 'a'
+            && chars[i + 2] == 's'
+            && chars[i + 3] == ' '
+        {
             let type_start = i + 4;
             let mut type_end = type_start;
             while type_end < len {
                 let c = chars[type_end];
-                if c.is_alphanumeric() || c == '_' || c == '.' || c == '<' || c == '>' || c == '[' || c == ']' || c == '|' || c == '&' || c == ' ' || c == '-' || c == '\'' {
+                if c.is_alphanumeric()
+                    || c == '_'
+                    || c == '.'
+                    || c == '<'
+                    || c == '>'
+                    || c == '['
+                    || c == ']'
+                    || c == '|'
+                    || c == '&'
+                    || c == ' '
+                    || c == '-'
+                    || c == '\''
+                {
                     type_end += 1;
                 } else {
                     break;
                 }
             }
-            if type_end >= len || chars[type_end] == ';' || chars[type_end] == ')' || chars[type_end] == ',' || chars[type_end] == '}' || chars[type_end] == '\n' || chars[type_end] == ' ' || chars[type_end] == '=' || chars[type_end] == ')' {
+            if type_end >= len
+                || chars[type_end] == ';'
+                || chars[type_end] == ')'
+                || chars[type_end] == ','
+                || chars[type_end] == '}'
+                || chars[type_end] == '\n'
+                || chars[type_end] == ' '
+                || chars[type_end] == '='
+                || chars[type_end] == ')'
+            {
                 i = type_end;
                 continue;
             }
@@ -2269,7 +2925,10 @@ fn strip_return_types(s: &str) -> String {
             if end > after_paren && end < bytes.len() {
                 let type_str = &result[after_paren..end];
                 let trimmed_type = type_str.trim();
-                if !trimmed_type.is_empty() && !trimmed_type.starts_with("//") && !trimmed_type.starts_with("/*") {
+                if !trimmed_type.is_empty()
+                    && !trimmed_type.starts_with("//")
+                    && !trimmed_type.starts_with("/*")
+                {
                     // Keep everything up to and including `)` (pos+1), drop the
                     // `: ReturnType` segment, resume at `end` (`{`/`;`/`=>`).
                     // Previously this used `pos+2` which leaked a stray `:`
@@ -2359,13 +3018,25 @@ fn strip_paren_type_annotations(s: &str) -> String {
         // Inside parentheses, strip `: Type` and `?: Type`
         if paren_depth > 0 && c == ':' {
             let mut j = i + 1;
-            while j < len && chars[j] == ' ' { j += 1; }
+            while j < len && chars[j] == ' ' {
+                j += 1;
+            }
             let mut bracket_depth: usize = 0;
             while j < len {
                 let tc = chars[j];
-                if tc == '<' { bracket_depth += 1; j += 1; continue; }
-                if tc == '>' { bracket_depth = bracket_depth.saturating_sub(1); j += 1; continue; }
-                if bracket_depth == 0 && (tc == ',' || tc == ')' || tc == '=' || tc == '{' || tc == '\n') {
+                if tc == '<' {
+                    bracket_depth += 1;
+                    j += 1;
+                    continue;
+                }
+                if tc == '>' {
+                    bracket_depth = bracket_depth.saturating_sub(1);
+                    j += 1;
+                    continue;
+                }
+                if bracket_depth == 0
+                    && (tc == ',' || tc == ')' || tc == '=' || tc == '{' || tc == '\n')
+                {
                     break;
                 }
                 j += 1;
@@ -2389,7 +3060,10 @@ fn strip_generics(s: &str) -> String {
             let after_kw = pos + kw.len();
             let rest = &result[after_kw..];
             let mut name_end = 0;
-            while name_end < rest.len() && (rest.as_bytes()[name_end].is_ascii_alphanumeric() || rest.as_bytes()[name_end] == b'_') {
+            while name_end < rest.len()
+                && (rest.as_bytes()[name_end].is_ascii_alphanumeric()
+                    || rest.as_bytes()[name_end] == b'_')
+            {
                 name_end += 1;
             }
             if name_end < rest.len() && rest.as_bytes()[name_end] == b'<' {
@@ -2505,7 +3179,10 @@ mod tests {
     #[test]
     fn extract_field_basic() {
         let json = r#"{"main": "index.js"}"#;
-        assert_eq!(extract_json_string_field(json, "main"), Some("index.js".into()));
+        assert_eq!(
+            extract_json_string_field(json, "main"),
+            Some("index.js".into())
+        );
     }
 
     #[test]
@@ -2528,19 +3205,28 @@ mod tests {
     #[test]
     fn extract_field_with_spaces() {
         let json = r#"{"main" : "app.js" }"#;
-        assert_eq!(extract_json_string_field(json, "main"), Some("app.js".into()));
+        assert_eq!(
+            extract_json_string_field(json, "main"),
+            Some("app.js".into())
+        );
     }
 
     #[test]
     fn extract_field_module_fallback() {
         let json = r#"{"module": "esm/index.mjs"}"#;
-        assert_eq!(extract_json_string_field(json, "module"), Some("esm/index.mjs".into()));
+        assert_eq!(
+            extract_json_string_field(json, "module"),
+            Some("esm/index.mjs".into())
+        );
     }
 
     #[test]
     fn extract_field_multiple_fields() {
         let json = r#"{"name": "pkg", "main": "src/index.ts", "version": "1.0"}"#;
-        assert_eq!(extract_json_string_field(json, "main"), Some("src/index.ts".into()));
+        assert_eq!(
+            extract_json_string_field(json, "main"),
+            Some("src/index.ts".into())
+        );
         assert_eq!(extract_json_string_field(json, "name"), Some("pkg".into()));
     }
 
@@ -2554,7 +3240,10 @@ mod tests {
     fn extract_field_nested_json() {
         let json = r#"{"name": "pkg", "exports": {"main": "dist/index.js"}}"#;
         let result = extract_json_string_field(json, "main");
-        assert!(result.is_some(), "parser finds first occurrence of 'main' key");
+        assert!(
+            result.is_some(),
+            "parser finds first occurrence of 'main' key"
+        );
     }
 
     #[test]
@@ -2591,13 +3280,19 @@ mod tests {
     #[test]
     fn extract_field_with_newlines() {
         let json = "{\n  \"main\": \"lib/index.js\"\n}";
-        assert_eq!(extract_json_string_field(json, "main"), Some("lib/index.js".into()));
+        assert_eq!(
+            extract_json_string_field(json, "main"),
+            Some("lib/index.js".into())
+        );
     }
 
     #[test]
     fn extract_field_duplicate_keys() {
         let json = r#"{"main": "first.js", "main": "second.js"}"#;
-        assert_eq!(extract_json_string_field(json, "main"), Some("first.js".into()));
+        assert_eq!(
+            extract_json_string_field(json, "main"),
+            Some("first.js".into())
+        );
     }
 
     #[test]
@@ -2918,8 +3613,16 @@ mod tests {
     fn strip_generic_function() {
         let input = "function identity<T>(arg: T): T { return arg; }";
         let output = strip_ts_impl(input);
-        assert!(output.contains("function identity"), "output was: {}", output);
-        assert!(!output.contains("<T>"), "generic decl not stripped, output was: {}", output);
+        assert!(
+            output.contains("function identity"),
+            "output was: {}",
+            output
+        );
+        assert!(
+            !output.contains("<T>"),
+            "generic decl not stripped, output was: {}",
+            output
+        );
     }
 
     #[test]
@@ -2928,15 +3631,27 @@ mod tests {
         // not parse `<number>` as a JSX/cast.
         let input = "function id<T>(x: T): T { return x; }\nconst result = id<number>(42);";
         let output = strip_ts_impl(input);
-        assert!(!output.contains("id<number>"), "call-site generic not stripped, output was: {}", output);
-        assert!(output.contains("id(42)"), "call site mangled, output was: {}", output);
+        assert!(
+            !output.contains("id<number>"),
+            "call-site generic not stripped, output was: {}",
+            output
+        );
+        assert!(
+            output.contains("id(42)"),
+            "call site mangled, output was: {}",
+            output
+        );
     }
 
     #[test]
     fn strip_generic_call_site_multi() {
         let input = "const m = map<string, number>(arr);";
         let output = strip_ts_impl(input);
-        assert!(!output.contains("<string, number>"), "multi-arg generic not stripped, output was: {}", output);
+        assert!(
+            !output.contains("<string, number>"),
+            "multi-arg generic not stripped, output was: {}",
+            output
+        );
     }
 
     #[test]
@@ -2944,22 +3659,38 @@ mod tests {
         // `a < b` must NOT be stripped even though it matches `<...>` shape-ish.
         let input = "const ok = a < b && b > c;";
         let output = strip_ts_impl(input);
-        assert!(output.contains("a < b"), "comparison stripped, output was: {}", output);
-        assert!(output.contains("b > c"), "comparison stripped, output was: {}", output);
+        assert!(
+            output.contains("a < b"),
+            "comparison stripped, output was: {}",
+            output
+        );
+        assert!(
+            output.contains("b > c"),
+            "comparison stripped, output was: {}",
+            output
+        );
     }
 
     #[test]
     fn strip_generic_call_site_preserves_if_less_than() {
         let input = "if (x < 10) { return; }";
         let output = strip_ts_impl(input);
-        assert!(output.contains("x < 10"), "if comparison stripped, output was: {}", output);
+        assert!(
+            output.contains("x < 10"),
+            "if comparison stripped, output was: {}",
+            output
+        );
     }
 
     #[test]
     fn strip_generic_call_site_chained() {
         let input = "const r = obj.method<number>(42);";
         let output = strip_ts_impl(input);
-        assert!(!output.contains("<number>"), "method generic not stripped, output was: {}", output);
+        assert!(
+            !output.contains("<number>"),
+            "method generic not stripped, output was: {}",
+            output
+        );
         assert!(output.contains("obj.method(42)"), "output was: {}", output);
     }
 
@@ -2967,7 +3698,11 @@ mod tests {
     fn strip_generic_call_site_nested() {
         let input = "const r = foo<Array<number>>(x);";
         let output = strip_ts_impl(input);
-        assert!(!output.contains("<Array<number>>"), "nested generic not stripped, output was: {}", output);
+        assert!(
+            !output.contains("<Array<number>>"),
+            "nested generic not stripped, output was: {}",
+            output
+        );
         assert!(output.contains("foo(x)"), "output was: {}", output);
     }
 
@@ -2989,7 +3724,8 @@ mod tests {
 
     #[test]
     fn strip_declare_module() {
-        let input = "declare module 'fs' {\n  export function readFileSync(path: string): Buffer;\n}";
+        let input =
+            "declare module 'fs' {\n  export function readFileSync(path: string): Buffer;\n}";
         let output = strip_ts_impl(input);
         assert!(!output.contains("declare module"), "output was: {}", output);
     }
@@ -2999,7 +3735,11 @@ mod tests {
         let input = "const x = 42;\nfunction hello(name) { return 'Hello ' + name; }";
         let output = strip_ts_impl(input);
         assert!(output.contains("const x = 42"), "output was: {}", output);
-        assert!(output.contains("function hello(name)"), "output was: {}", output);
+        assert!(
+            output.contains("function hello(name)"),
+            "output was: {}",
+            output
+        );
     }
 
     #[test]
@@ -3008,7 +3748,11 @@ mod tests {
         let output = strip_ts_impl(input);
         assert!(output.contains("const x"), "output was: {}", output);
         assert!(output.contains("42"), "output was: {}", output);
-        assert!(output.contains("export default x"), "output was: {}", output);
+        assert!(
+            output.contains("export default x"),
+            "output was: {}",
+            output
+        );
     }
 
     // @trace REQ-ENG-005 — ESM builtin named exports.
@@ -3018,9 +3762,21 @@ mod tests {
     #[test]
     fn builtin_esm_source_emits_named_exports_for_buffer() {
         let src = builtin_esm_source("buffer");
-        assert!(src.contains("require(\"buffer\")"), "must require builtin: {}", src);
-        assert!(src.contains("export var Buffer = _m.Buffer;"), "must export Buffer: {}", src);
-        assert!(src.contains("export default _m;"), "must have default export: {}", src);
+        assert!(
+            src.contains("require(\"buffer\")"),
+            "must require builtin: {}",
+            src
+        );
+        assert!(
+            src.contains("export var Buffer = _m.Buffer;"),
+            "must export Buffer: {}",
+            src
+        );
+        assert!(
+            src.contains("export default _m;"),
+            "must have default export: {}",
+            src
+        );
     }
 
     #[test]
@@ -3034,7 +3790,9 @@ mod tests {
             assert!(
                 src.contains(&format!("export var {} = _m.{};", sentinel, sentinel)),
                 "builtin {} must export {}: {}",
-                name, sentinel, src
+                name,
+                sentinel,
+                src
             );
         }
     }
@@ -3047,6 +3805,9 @@ mod tests {
         assert!(src.contains("export default _m;"));
         // Unknown name returns empty named list — only default + require.
         let unknown = builtin_named_exports("does-not-exist-xyz");
-        assert!(unknown.is_empty(), "unknown builtin should have no named exports");
+        assert!(
+            unknown.is_empty(),
+            "unknown builtin should have no named exports"
+        );
     }
 }

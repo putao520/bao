@@ -40,7 +40,8 @@ static NATIVE_STUBS_LINKER_ANCHOR: fn() = _force_native_stubs_link;
 // bun_io::FilePoll::on_update references this symbol; without bun_runtime linked,
 // the test binary gets "undefined symbol: __bun_run_file_poll".
 fn _force_runtime_dispatch_link() {
-    let _ = bun_runtime::dispatch::__bun_run_file_poll as unsafe extern "Rust" fn(*mut bun_io::posix_event_loop::FilePoll, i64);
+    let _ = bun_runtime::dispatch::__bun_run_file_poll
+        as unsafe extern "Rust" fn(*mut bun_io::posix_event_loop::FilePoll, i64);
 }
 #[used]
 static RUNTIME_DISPATCH_LINKER_ANCHOR: fn() = _force_runtime_dispatch_link;
@@ -51,13 +52,16 @@ use bao_engine::dispatch_sm::BaoEventLoop;
 fn test_current_returns_static_ref() {
     let a = BaoEventLoop::current() as *const BaoEventLoop;
     let b = BaoEventLoop::current() as *const BaoEventLoop;
-    assert_eq!(a, b, "BaoEventLoop::current() must return the same per-thread instance");
+    assert_eq!(
+        a, b,
+        "BaoEventLoop::current() must return the same per-thread instance"
+    );
 }
 
 #[test]
 fn test_current_is_thread_local() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
 
     let main_ptr = BaoEventLoop::current() as *const BaoEventLoop as usize;
@@ -146,7 +150,10 @@ fn test_global_object_initially_null() {
     // Until bun_runtime JsContext wires up, it must be null.
     let el = bun_event_loop::JsEventLoop::current();
     let g = el.global_object();
-    assert!(g.is_null(), "global_object must be null until JsContext registration");
+    assert!(
+        g.is_null(),
+        "global_object must be null until JsContext registration"
+    );
 }
 
 #[test]
@@ -155,7 +162,10 @@ fn test_bun_vm_initially_null() {
     // bun_runtime wires up, it must be null.
     let el = bun_event_loop::JsEventLoop::current();
     let vm = el.bun_vm();
-    assert!(vm.is_null(), "bun_vm must be null until JsContext registration");
+    assert!(
+        vm.is_null(),
+        "bun_vm must be null until JsContext registration"
+    );
 }
 
 #[test]
@@ -182,7 +192,10 @@ fn test_js_event_loop_current_symbol_resolves() {
         fn __bun_js_event_loop_current() -> *mut ();
     }
     let p = unsafe { __bun_js_event_loop_current() };
-    assert!(!p.is_null(), "__bun_js_event_loop_current must return non-null");
+    assert!(
+        !p.is_null(),
+        "__bun_js_event_loop_current must return non-null"
+    );
     // The pointer must match BaoEventLoop::current() (same thread).
     let direct = BaoEventLoop::current() as *const BaoEventLoop as *mut ();
     assert_eq!(
@@ -212,8 +225,7 @@ fn test_after_event_loop_callback_roundtrip() {
 
     // Set a no-op callback + a sentinel context.
     unsafe extern "C" fn noop_cb(_ctx: *mut core::ffi::c_void) {}
-    let sentinel_ctx =
-        core::ptr::NonNull::new(0xdeadbeef_usize as *mut core::ffi::c_void);
+    let sentinel_ctx = core::ptr::NonNull::new(0xdeadbeef_usize as *mut core::ffi::c_void);
     ctx.set_after_event_loop_callback(Some(noop_cb), sentinel_ctx);
 
     // Read back: callback must be Some(noop_cb).
@@ -261,7 +273,9 @@ fn test_auto_tick_enables() {
 #[test]
 fn test_tick_with_null_context_no_panic() {
     if !cfg!(feature = "live_uws_loop") {
-        eprintln!("[skip] test_tick_with_null_context_no_panic: 需要 live_uws_loop feature (stub uSockets 阻塞 epoll_wait)");
+        eprintln!(
+            "[skip] test_tick_with_null_context_no_panic: 需要 live_uws_loop feature (stub uSockets 阻塞 epoll_wait)"
+        );
         return;
     }
     // Wave 73-G: tick() with a null JSContext (no JsContext registered on this
@@ -287,7 +301,10 @@ fn test_global_object_after_jscontext_registration() {
         return;
     }
     let vm = bun_event_loop::JsEventLoop::current().bun_vm();
-    assert!(!vm.is_null(), "bun_vm must be non-null when Runtime is available");
+    assert!(
+        !vm.is_null(),
+        "bun_vm must be non-null when Runtime is available"
+    );
 }
 
 #[test]
@@ -301,7 +318,10 @@ fn test_bun_vm_non_null_after_registration() {
 
     let el = bun_event_loop::JsEventLoop::current();
     let vm = el.bun_vm();
-    assert!(!vm.is_null(), "bun_vm must return non-null JSContext after registration");
+    assert!(
+        !vm.is_null(),
+        "bun_vm must return non-null JSContext after registration"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -463,7 +483,8 @@ fn test_iteration_number_is_stable_and_non_decreasing() {
     // dispatch returned -1 cast to u64, i.e. an error path masquerading as
     // a counter).
     assert_ne!(
-        a, u64::MAX,
+        a,
+        u64::MAX,
         "iteration_number must not read as u64::MAX (likely an uninitialized read \
          or error-path sentinel leaking through the dispatch arm)"
     );
@@ -622,8 +643,7 @@ fn test_file_polls_through_js_event_loop_matches_ctx() {
     let from_ctx = ctx.file_polls_ptr();
 
     assert_eq!(
-        from_jseventloop as *const (),
-        from_ctx as *const (),
+        from_jseventloop as *const (), from_ctx as *const (),
         "JsEventLoop.file_polls() and EventLoopCtx.file_polls_ptr() must resolve to the \
          same underlying store — divergence means the two dispatch arms disagree on owner"
     );
@@ -715,12 +735,14 @@ fn test_event_loop_ctx_js_arm_not_mini_arm() {
     let via_jseventloop = bun_event_loop::JsEventLoop::current().pipe_read_buffer();
 
     assert_eq!(
-        via_ctx as *const u8,
-        via_jseventloop as *const u8,
+        via_ctx as *const u8, via_jseventloop as *const u8,
         "EventLoopCtx[Js] and JsEventLoop[Jsc] must resolve to the same pipe_read_buffer — \
          divergence means the Js arm is falling through to a different owner"
     );
-    assert!(!via_ctx.is_null(), "pipe_read_buffer via ctx must be non-null");
+    assert!(
+        !via_ctx.is_null(),
+        "pipe_read_buffer via ctx must be non-null"
+    );
 }
 
 #[test]
@@ -745,8 +767,14 @@ fn test_dispatch_is_idempotent_under_lazy_init_storm() {
         let _ = el.file_polls();
         let _ = el.top_level_dir();
         // Pointers must remain stable across the interleaving.
-        assert_eq!(loop_now, last_loop, "uws_loop pointer must remain stable across interleaved dispatches");
-        assert_eq!(buf_now as *const u8, last_buf as *const u8, "pipe_read_buffer must remain stable across interleaved dispatches");
+        assert_eq!(
+            loop_now, last_loop,
+            "uws_loop pointer must remain stable across interleaved dispatches"
+        );
+        assert_eq!(
+            buf_now as *const u8, last_buf as *const u8,
+            "pipe_read_buffer must remain stable across interleaved dispatches"
+        );
         last_loop = loop_now;
         last_buf = buf_now;
     }
@@ -759,8 +787,8 @@ fn test_symbol_matches_thread_local_instance_across_threads() {
     // thread-local instance for EACH thread, not a cached process-global.
     // A regression that cached the pointer once would pass the single-thread
     // test but break every worker thread that dispatches through the symbol.
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
 
     unsafe extern "Rust" {
@@ -813,8 +841,7 @@ fn test_bun_vm_equals_js_context_after_registration() {
 
     // Attempt registration; if it fails because a context is already live,
     // we still validate the stability contract on the existing one.
-    let _ = JsContext::for_test()
-        .or_else(|_| unsafe { JsContext::from_servo_runtime() });
+    let _ = JsContext::for_test().or_else(|_| unsafe { JsContext::from_servo_runtime() });
 
     let vm_a = el.bun_vm();
     let vm_b = el.bun_vm();

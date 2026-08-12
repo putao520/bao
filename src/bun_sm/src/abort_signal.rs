@@ -13,7 +13,10 @@ pub struct AbortSignal {
 
 impl AbortSignal {
     pub fn new() -> Self {
-        Self { aborted: false, reason: None }
+        Self {
+            aborted: false,
+            reason: None,
+        }
     }
 
     #[inline]

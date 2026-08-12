@@ -349,5 +349,7 @@ fn is_gc_value_ctor(name: &Ident) -> bool {
 
 fn is_primitive_value_ctor(name: &Ident) -> bool {
     let s = name.to_string();
-    crate::pattern::PRIMITIVE_VALUE_CTORS.iter().any(|c| *c == s)
+    crate::pattern::PRIMITIVE_VALUE_CTORS
+        .iter()
+        .any(|c| *c == s)
 }

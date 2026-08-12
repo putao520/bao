@@ -45,7 +45,10 @@ fn test_validate_ok_defaults() {
 
 #[test]
 fn test_validate_max_pages_zero() {
-    let cfg = BaoConfig { max_pages: 0, ..Default::default() };
+    let cfg = BaoConfig {
+        max_pages: 0,
+        ..Default::default()
+    };
     let err = cfg.validate().unwrap_err();
     assert!(err.contains("max_pages"));
     assert!(err.contains("0"));
@@ -53,13 +56,19 @@ fn test_validate_max_pages_zero() {
 
 #[test]
 fn test_validate_max_pages_one() {
-    let cfg = BaoConfig { max_pages: 1, ..Default::default() };
+    let cfg = BaoConfig {
+        max_pages: 1,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
 #[test]
 fn test_validate_viewport_width_below_800() {
-    let cfg = BaoConfig { default_viewport_width: 799, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_width: 799,
+        ..Default::default()
+    };
     let err = cfg.validate().unwrap_err();
     assert!(err.contains("viewport_width"));
     assert!(err.contains("799"));
@@ -67,13 +76,19 @@ fn test_validate_viewport_width_below_800() {
 
 #[test]
 fn test_validate_viewport_width_800() {
-    let cfg = BaoConfig { default_viewport_width: 800, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_width: 800,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
 #[test]
 fn test_validate_viewport_height_below_600() {
-    let cfg = BaoConfig { default_viewport_height: 599, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_height: 599,
+        ..Default::default()
+    };
     let err = cfg.validate().unwrap_err();
     assert!(err.contains("viewport_height"));
     assert!(err.contains("599"));
@@ -81,14 +96,22 @@ fn test_validate_viewport_height_below_600() {
 
 #[test]
 fn test_validate_viewport_height_600() {
-    let cfg = BaoConfig { default_viewport_height: 600, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_height: 600,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
 #[test]
 fn test_validate_max_pages_first_check() {
     // max_pages=0 catches before viewport checks
-    let cfg = BaoConfig { max_pages: 0, default_viewport_width: 100, default_viewport_height: 100, ..Default::default() };
+    let cfg = BaoConfig {
+        max_pages: 0,
+        default_viewport_width: 100,
+        default_viewport_height: 100,
+        ..Default::default()
+    };
     let err = cfg.validate().unwrap_err();
     assert!(err.contains("max_pages"));
 }
@@ -114,7 +137,10 @@ fn test_bao_config_debug() {
 
 #[test]
 fn test_bao_config_clone() {
-    let cfg = BaoConfig { max_pages: 42, ..Default::default() };
+    let cfg = BaoConfig {
+        max_pages: 42,
+        ..Default::default()
+    };
     let cloned = cfg.clone();
     assert_eq!(cloned.max_pages, 42);
     assert_eq!(cloned.default_viewport_width, cfg.default_viewport_width);
@@ -159,7 +185,11 @@ fn test_browser_config_debug() {
 
 #[test]
 fn test_browser_config_clone() {
-    let cfg = BrowserConfig { url: Some("http://test".into()), cdp_port: 8080, ..Default::default() };
+    let cfg = BrowserConfig {
+        url: Some("http://test".into()),
+        cdp_port: 8080,
+        ..Default::default()
+    };
     let cloned = cfg.clone();
     assert_eq!(cloned.url, cfg.url);
     assert_eq!(cloned.cdp_port, 8080);
@@ -169,7 +199,10 @@ fn test_browser_config_clone() {
 
 #[test]
 fn test_from_browser_config_cdp_port() {
-    let bc = BrowserConfig { cdp_port: 9333, ..Default::default() };
+    let bc = BrowserConfig {
+        cdp_port: 9333,
+        ..Default::default()
+    };
     let bao: BaoConfig = bc.into();
     assert_eq!(bao.cdp_port, Some(9333));
 }
@@ -190,7 +223,11 @@ fn test_from_browser_config_idle_ttl() {
 
 #[test]
 fn test_from_browser_config_viewport() {
-    let bc = BrowserConfig { viewport_width: 1280, viewport_height: 720, ..Default::default() };
+    let bc = BrowserConfig {
+        viewport_width: 1280,
+        viewport_height: 720,
+        ..Default::default()
+    };
     let bao: BaoConfig = bc.into();
     assert_eq!(bao.default_viewport_width, 1280);
     assert_eq!(bao.default_viewport_height, 720);
@@ -211,7 +248,12 @@ fn test_from_browser_config_stealth_some() {
     };
     let bao: BaoConfig = bc.into();
     assert!(bao.stealth_profile.is_some());
-    assert!(bao.stealth_profile.unwrap().navigator.user_agent.contains("Firefox"));
+    assert!(bao
+        .stealth_profile
+        .unwrap()
+        .navigator
+        .user_agent
+        .contains("Firefox"));
 }
 
 #[test]
@@ -244,13 +286,20 @@ fn test_page_config_default_all_none() {
 
 #[test]
 fn test_page_config_with_url() {
-    let cfg = PageConfig { url: Some("http://test".into()), ..Default::default() };
+    let cfg = PageConfig {
+        url: Some("http://test".into()),
+        ..Default::default()
+    };
     assert_eq!(cfg.url.as_deref(), Some("http://test"));
 }
 
 #[test]
 fn test_page_config_with_viewport() {
-    let cfg = PageConfig { viewport_width: Some(1280), viewport_height: Some(720), ..Default::default() };
+    let cfg = PageConfig {
+        viewport_width: Some(1280),
+        viewport_height: Some(720),
+        ..Default::default()
+    };
     assert_eq!(cfg.viewport_width, Some(1280));
     assert_eq!(cfg.viewport_height, Some(720));
 }
@@ -261,7 +310,10 @@ fn test_page_config_with_permission() {
         read: Some(vec!["/home".into()]),
         ..Default::default()
     };
-    let cfg = PageConfig { permission: Some(perm), ..Default::default() };
+    let cfg = PageConfig {
+        permission: Some(perm),
+        ..Default::default()
+    };
     assert!(cfg.permission.is_some());
     let p = cfg.permission.unwrap();
     assert!(p.read.is_some());
@@ -269,14 +321,20 @@ fn test_page_config_with_permission() {
 
 #[test]
 fn test_page_config_debug() {
-    let cfg = PageConfig { url: Some("http://debug".into()), ..Default::default() };
+    let cfg = PageConfig {
+        url: Some("http://debug".into()),
+        ..Default::default()
+    };
     let debug = format!("{:?}", cfg);
     assert!(debug.contains("http://debug"));
 }
 
 #[test]
 fn test_page_config_clone() {
-    let cfg = PageConfig { url: Some("http://clone".into()), ..Default::default() };
+    let cfg = PageConfig {
+        url: Some("http://clone".into()),
+        ..Default::default()
+    };
     let cloned = cfg.clone();
     assert_eq!(cloned.url, cfg.url);
 }

@@ -4,8 +4,8 @@
 
 use std::error::Error;
 
-use bao_browser::{BrowserError, PageState, ScreenshotFormat};
 use bao_browser::encode_image;
+use bao_browser::{BrowserError, PageState, ScreenshotFormat};
 use image::{Rgba, RgbaImage};
 
 // ============================================================
@@ -160,7 +160,11 @@ fn gradient_image(w: u32, h: u32) -> RgbaImage {
 fn png_magic_bytes() {
     let img = red_image(1, 1);
     let data = encode_image(&img, ScreenshotFormat::Png).unwrap();
-    assert_eq!(&data[0..4], &[0x89, 0x50, 0x4E, 0x47], "PNG magic: 89 50 4E 47");
+    assert_eq!(
+        &data[0..4],
+        &[0x89, 0x50, 0x4E, 0x47],
+        "PNG magic: 89 50 4E 47"
+    );
 }
 
 #[test]
@@ -195,14 +199,22 @@ fn png_1x1_blue_nonempty() {
 fn encode_png_large_image() {
     let img = red_image(800, 600);
     let data = encode_image(&img, ScreenshotFormat::Png).unwrap();
-    assert!(data.len() > 1000, "800x600 PNG should be substantial: {} bytes", data.len());
+    assert!(
+        data.len() > 1000,
+        "800x600 PNG should be substantial: {} bytes",
+        data.len()
+    );
 }
 
 #[test]
 fn encode_jpeg_large_image() {
     let img = green_image(800, 600);
     let data = encode_image(&img, ScreenshotFormat::Jpeg).unwrap();
-    assert!(data.len() > 1000, "800x600 JPEG should be substantial: {} bytes", data.len());
+    assert!(
+        data.len() > 1000,
+        "800x600 JPEG should be substantial: {} bytes",
+        data.len()
+    );
 }
 
 #[test]
@@ -241,7 +253,10 @@ fn png_vs_jpeg_different_output() {
     let img = red_image(100, 100);
     let png = encode_image(&img, ScreenshotFormat::Png).unwrap();
     let jpeg = encode_image(&img, ScreenshotFormat::Jpeg).unwrap();
-    assert_ne!(png, jpeg, "PNG and JPEG encoding should produce different bytes");
+    assert_ne!(
+        png, jpeg,
+        "PNG and JPEG encoding should produce different bytes"
+    );
 }
 
 #[test]
@@ -392,11 +407,18 @@ fn error_all_variants_have_distinct_prefixes() {
         BrowserError::JavaScript("x".into()).to_string(),
         BrowserError::CDP("x".into()).to_string(),
     ];
-    let prefixes: Vec<&str> = msgs.iter().map(|m| m.split(':').next().unwrap().trim()).collect();
+    let prefixes: Vec<&str> = msgs
+        .iter()
+        .map(|m| m.split(':').next().unwrap().trim())
+        .collect();
     // Each prefix should be unique
     for i in 0..prefixes.len() {
         for j in (i + 1)..prefixes.len() {
-            assert_ne!(prefixes[i], prefixes[j], "Duplicate prefix: {}", prefixes[i]);
+            assert_ne!(
+                prefixes[i], prefixes[j],
+                "Duplicate prefix: {}",
+                prefixes[i]
+            );
         }
     }
 }
@@ -519,7 +541,10 @@ fn error_match_all_variants() {
     for err in errors {
         let msg = err.to_string();
         assert!(!msg.is_empty(), "Display should produce non-empty string");
-        assert!(msg.contains("error"), "Display should contain 'error': {msg}");
+        assert!(
+            msg.contains("error"),
+            "Display should contain 'error': {msg}"
+        );
     }
 }
 
@@ -621,7 +646,11 @@ fn png_output_size_reasonable_for_dimensions() {
     let img = red_image(100, 100);
     let data = encode_image(&img, ScreenshotFormat::Png).unwrap();
     // 100x100 RGBA raw = 40000 bytes, PNG compressed should be smaller
-    assert!(data.len() < 40000, "PNG should be compressed: {} bytes", data.len());
+    assert!(
+        data.len() < 40000,
+        "PNG should be compressed: {} bytes",
+        data.len()
+    );
 }
 
 #[test]
@@ -629,7 +658,11 @@ fn jpeg_output_size_reasonable_for_dimensions() {
     let img = red_image(100, 100);
     let data = encode_image(&img, ScreenshotFormat::Jpeg).unwrap();
     // 100x100 RGBA raw = 40000 bytes, JPEG compressed should be smaller
-    assert!(data.len() < 40000, "JPEG should be compressed: {} bytes", data.len());
+    assert!(
+        data.len() < 40000,
+        "JPEG should be compressed: {} bytes",
+        data.len()
+    );
 }
 
 #[test]

@@ -3,14 +3,12 @@
 // TargetInfo serialization edge cases, ServerConfig builder patterns.
 
 use cdp_server::{
-    CdpServer, ServerConfig, TargetInfo, DomainRegistry,
-    DomainHandler, EventSender,
-    CdpError, CdpMessage,
+    CdpError, CdpMessage, CdpServer, DomainHandler, DomainRegistry, EventSender, ServerConfig,
+    TargetInfo,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 // ---- CdpServer construction ----
-
 
 // TestDispatch — enum dispatch for multi-handler tests
 enum TestDispatch {
@@ -21,10 +19,23 @@ enum TestDispatch {
 
 impl DomainHandler for TestDispatch {
     fn domain_name(&self) -> &'static str {
-        match self { Self::Page(h) => h.domain_name(), Self::Runtime(h) => h.domain_name(), Self::Dom(h) => h.domain_name() }
+        match self {
+            Self::Page(h) => h.domain_name(),
+            Self::Runtime(h) => h.domain_name(),
+            Self::Dom(h) => h.domain_name(),
+        }
     }
-    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
-        match self { Self::Page(h) => h.handle_command(cmd, params, sender), Self::Runtime(h) => h.handle_command(cmd, params, sender), Self::Dom(h) => h.handle_command(cmd, params, sender) }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: serde_json::Value,
+        sender: &dyn EventSender,
+    ) -> Result<serde_json::Value, CdpError> {
+        match self {
+            Self::Page(h) => h.handle_command(cmd, params, sender),
+            Self::Runtime(h) => h.handle_command(cmd, params, sender),
+            Self::Dom(h) => h.handle_command(cmd, params, sender),
+        }
     }
 }
 
@@ -53,7 +64,10 @@ fn test_cdp_server_default_config() {
 
 #[test]
 fn test_cdp_server_ws_url_for_target() {
-    let config = ServerConfig::builder().host("192.168.1.100").port(9333).build();
+    let config = ServerConfig::builder()
+        .host("192.168.1.100")
+        .port(9333)
+        .build();
     let server = CdpServer::new(config);
     let url = server.ws_url_for_target("abc123");
     assert_eq!(url, "ws://192.168.1.100:9333/devtools/page/abc123");
@@ -176,41 +190,77 @@ fn test_target_info_special_chars_in_url() {
 
 struct PageDomain;
 impl cdp_server::DomainHandler for PageDomain {
-    fn domain_name(&self) -> &'static str { "Page" }
-    fn handle_command(&self, cmd: &str, params: Value, _: &dyn cdp_server::EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        "Page"
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: Value,
+        _: &dyn cdp_server::EventSender,
+    ) -> Result<Value, CdpError> {
         match cmd {
             "Page.navigate" => {
-                let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
+                let url = params
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("about:blank");
                 Ok(json!({"frameId": "main", "loaderId": "1", "url": url}))
-            },
+            }
             "Page.enable" | "Page.disable" => Ok(json!({})),
-            _ => Err(CdpError { code: -32601, message: format!("'{}' not found", cmd) }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' not found", cmd),
+            }),
         }
     }
 }
 
 struct RuntimeDomain;
 impl cdp_server::DomainHandler for RuntimeDomain {
-    fn domain_name(&self) -> &'static str { "Runtime" }
-    fn handle_command(&self, cmd: &str, params: Value, _: &dyn cdp_server::EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        "Runtime"
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: Value,
+        _: &dyn cdp_server::EventSender,
+    ) -> Result<Value, CdpError> {
         match cmd {
             "Runtime.evaluate" => {
-                let expr = params.get("expression").and_then(|v| v.as_str()).unwrap_or("");
+                let expr = params
+                    .get("expression")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 Ok(json!({"result": {"type": "string", "value": expr}}))
-            },
+            }
             "Runtime.enable" | "Runtime.disable" => Ok(json!({})),
-            _ => Err(CdpError { code: -32601, message: format!("'{}' not found", cmd) }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' not found", cmd),
+            }),
         }
     }
 }
 
 struct DomDomain;
 impl cdp_server::DomainHandler for DomDomain {
-    fn domain_name(&self) -> &'static str { "DOM" }
-    fn handle_command(&self, cmd: &str, params: Value, _: &dyn cdp_server::EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        "DOM"
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: Value,
+        _: &dyn cdp_server::EventSender,
+    ) -> Result<Value, CdpError> {
         match cmd {
             "DOM.getDocument" => Ok(json!({"root": {"nodeId": 1, "nodeName": "#document"}})),
-            _ => Err(CdpError { code: -32601, message: format!("'{}' not found", cmd) }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' not found", cmd),
+            }),
         }
     }
 }
@@ -229,7 +279,11 @@ fn test_multi_domain_registry_dispatch() {
     let sender = NopSender;
 
     // Page domain
-    let r1 = reg.dispatch_command("Page.navigate", json!({"url": "https://example.com"}), &sender);
+    let r1 = reg.dispatch_command(
+        "Page.navigate",
+        json!({"url": "https://example.com"}),
+        &sender,
+    );
     assert!(r1.unwrap().unwrap()["url"] == "https://example.com");
 
     // Runtime domain
@@ -283,7 +337,10 @@ fn test_cdp_message_with_very_long_method() {
 #[test]
 fn test_cdp_error_with_very_long_message() {
     let msg = "X".repeat(10000);
-    let err = CdpError { code: -32000, message: msg.clone() };
+    let err = CdpError {
+        code: -32000,
+        message: msg.clone(),
+    };
     let serialized = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&serialized).unwrap();
     assert_eq!(parsed["message"].as_str().unwrap().len(), 10000);
@@ -308,7 +365,8 @@ fn test_cdp_message_with_null_params_is_none() {
 
 #[test]
 fn test_cdp_message_with_nested_array_params() {
-    let raw = r#"{"id":1,"method":"Test.cmd","params":{"items":[1,2,3],"nested":{"deep":{"value":42}}}}"#;
+    let raw =
+        r#"{"id":1,"method":"Test.cmd","params":{"items":[1,2,3],"nested":{"deep":{"value":42}}}}"#;
     let msg: CdpMessage = serde_json::from_str(raw).unwrap();
     let params = msg.params.unwrap();
     assert_eq!(params["items"].as_array().unwrap().len(), 3);

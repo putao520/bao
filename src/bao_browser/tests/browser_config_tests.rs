@@ -1,7 +1,7 @@
 // @trace TEST-BRW-001-CONFIG [req:REQ-BRW-001] [level:unit]
 // Unit tests for bao_browser config, permission, and error types
 
-use bao_browser::{BaoConfig, BrowserConfig, PageConfig, BrowserError};
+use bao_browser::{BaoConfig, BrowserConfig, BrowserError, PageConfig};
 use bao_browser::{Permission, PermissionDenied, PermissionGuard};
 
 #[test]

@@ -21,7 +21,9 @@ fn test_node_crypto_all() {
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var crypto = require('crypto');
         var results = [];
         function check(label, fn) {
@@ -91,7 +93,8 @@ fn test_node_crypto_all() {
         });
 
         results.join("|")
-    "#);
+    "#,
+    );
 
     let mut all_passed = true;
     for item in results.split('|') {
@@ -100,6 +103,10 @@ fn test_node_crypto_all() {
             all_passed = false;
         }
     }
-    assert!(all_passed, "All crypto tests should pass. Results: {}", results);
+    assert!(
+        all_passed,
+        "All crypto tests should pass. Results: {}",
+        results
+    );
     bun_runtime::shutdown_thread_sm();
 }

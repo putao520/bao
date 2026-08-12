@@ -40,11 +40,7 @@ pub struct PagePool {
 }
 
 impl PagePool {
-    pub fn new(
-        servo: Rc<Servo>,
-        servo_delegate: Rc<BaoServoDelegate>,
-        config: &BaoConfig,
-    ) -> Self {
+    pub fn new(servo: Rc<Servo>, servo_delegate: Rc<BaoServoDelegate>, config: &BaoConfig) -> Self {
         PagePool {
             servo,
             servo_delegate,
@@ -102,7 +98,9 @@ impl PagePool {
             return Some(page.clone());
         }
         if let Some(entry) = self.idle_pages.borrow_mut().remove(&id) {
-            self.active_pages.borrow_mut().insert(id, entry.page.clone());
+            self.active_pages
+                .borrow_mut()
+                .insert(id, entry.page.clone());
             return Some(entry.page);
         }
         None
@@ -215,7 +213,10 @@ mod tests {
             total_destroyed: 12,
         };
         assert!(stats.total_created >= stats.total_destroyed);
-        assert_eq!(stats.active + stats.idle, stats.total_created - stats.total_destroyed);
+        assert_eq!(
+            stats.active + stats.idle,
+            stats.total_created - stats.total_destroyed
+        );
     }
 
     #[test]

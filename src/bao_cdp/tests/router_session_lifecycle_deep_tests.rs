@@ -2,7 +2,7 @@
 // CdpRouter session lifecycle: create/send/detach, CdpSession accessors,
 // BackendKind, ExternalBrowser, multi-session, domain tracking.
 
-use bao_cdp::{CdpRouter, BackendKind};
+use bao_cdp::{BackendKind, CdpRouter};
 
 const TID: &str = "test-target";
 
@@ -74,7 +74,11 @@ fn test_session_send_page_enable() {
 fn test_session_send_page_navigate() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t");
-    let result = session.send(&router, "Page.navigate", Some(serde_json::json!({"url":"http://test"})));
+    let result = session.send(
+        &router,
+        "Page.navigate",
+        Some(serde_json::json!({"url":"http://test"})),
+    );
     assert!(result.is_ok());
     assert_eq!(result.unwrap()["frameId"], "0");
 }
@@ -116,8 +120,11 @@ fn test_session_send_unknown_domain() {
 fn test_session_send_emulation_set_metrics() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t");
-    let result = session.send(&router, "Emulation.setDeviceMetricsOverride",
-        Some(serde_json::json!({"width":1280,"height":720})));
+    let result = session.send(
+        &router,
+        "Emulation.setDeviceMetricsOverride",
+        Some(serde_json::json!({"width":1280,"height":720})),
+    );
     assert!(result.is_ok());
 }
 
@@ -125,8 +132,11 @@ fn test_session_send_emulation_set_metrics() {
 fn test_session_send_input_dispatch_mouse() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t");
-    let result = session.send(&router, "Input.dispatchMouseEvent",
-        Some(serde_json::json!({"type":"mousePressed","x":100,"y":200})));
+    let result = session.send(
+        &router,
+        "Input.dispatchMouseEvent",
+        Some(serde_json::json!({"type":"mousePressed","x":100,"y":200})),
+    );
     assert!(result.is_ok());
 }
 
@@ -216,7 +226,13 @@ fn test_send_tracks_domain() {
     let _ = session.send(&router, "Page.enable", None);
     let _ = session.send(&router, "Runtime.enable", None);
     // These should succeed because they're internal dispatches
-    assert!(session.send(&router, "Page.navigate", Some(serde_json::json!({"url":"http://test"}))).is_ok());
+    assert!(session
+        .send(
+            &router,
+            "Page.navigate",
+            Some(serde_json::json!({"url":"http://test"}))
+        )
+        .is_ok());
 }
 
 // ---- Multiple sessions concurrent ----
@@ -324,6 +340,10 @@ fn test_router_send_command_with_params() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t");
     let sid = session.session_id();
-    let result = router.send_command(sid, "Page.navigate", Some(serde_json::json!({"url":"http://a.com"})));
+    let result = router.send_command(
+        sid,
+        "Page.navigate",
+        Some(serde_json::json!({"url":"http://a.com"})),
+    );
     assert!(result.is_ok());
 }

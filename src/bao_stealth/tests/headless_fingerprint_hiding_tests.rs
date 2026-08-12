@@ -21,8 +21,8 @@
 // as a failed assertion.
 
 use bao_stealth::{
-    StealthEngine, StealthProfile, StealthHooks,
-    CanvasNoise, ScreenProfile, NavigatorProfile, WebGLProfile, AudioProfile,
+    AudioProfile, CanvasNoise, NavigatorProfile, ScreenProfile, StealthEngine, StealthHooks,
+    StealthProfile, WebGLProfile,
 };
 
 // ===========================================================================
@@ -40,11 +40,13 @@ fn headless_firefox_webgl_renderer_not_swiftshader() {
     // Assert — Firefox renderer must NOT contain SwiftShader
     assert!(
         !webgl.renderer.to_lowercase().contains("swiftshader"),
-        "Firefox WebGL renderer must not leak SwiftShader — got: {}", webgl.renderer
+        "Firefox WebGL renderer must not leak SwiftShader — got: {}",
+        webgl.renderer
     );
     assert!(
         !webgl.renderer.to_lowercase().contains("software"),
-        "Firefox WebGL renderer must not indicate software rendering — got: {}", webgl.renderer
+        "Firefox WebGL renderer must not indicate software rendering — got: {}",
+        webgl.renderer
     );
 }
 
@@ -59,13 +61,17 @@ fn headless_chrome_webgl_renderer_not_swiftshader() {
     // Assert — Chrome renderer must be a real GPU (e.g., ANGLE/NVIDIA)
     assert!(
         !webgl.renderer.to_lowercase().contains("swiftshader"),
-        "Chrome WebGL renderer must not leak SwiftShader — got: {}", webgl.renderer
+        "Chrome WebGL renderer must not leak SwiftShader — got: {}",
+        webgl.renderer
     );
     // Chrome renderer should reference a real GPU vendor (ANGLE pattern)
     assert!(
-        webgl.renderer.contains("ANGLE") || webgl.renderer.contains("NVIDIA")
-            || webgl.renderer.contains("GeForce") || webgl.renderer.contains("OpenGL"),
-        "Chrome WebGL renderer must reference real GPU, got: {}", webgl.renderer
+        webgl.renderer.contains("ANGLE")
+            || webgl.renderer.contains("NVIDIA")
+            || webgl.renderer.contains("GeForce")
+            || webgl.renderer.contains("OpenGL"),
+        "Chrome WebGL renderer must reference real GPU, got: {}",
+        webgl.renderer
     );
 }
 
@@ -82,7 +88,8 @@ fn headless_webgl_vendor_not_bare_google_inc() {
     // Firefox vendor = "Mozilla" (not SwiftShader)
     assert_ne!(
         ff.vendor, "Google Inc.",
-        "Firefox WebGL vendor must not be bare 'Google Inc.' — got: {}", ff.vendor
+        "Firefox WebGL vendor must not be bare 'Google Inc.' — got: {}",
+        ff.vendor
     );
     // Chrome vendor must include GPU suffix, not bare "Google Inc."
     assert_ne!(
@@ -93,7 +100,8 @@ fn headless_webgl_vendor_not_bare_google_inc() {
     // Chrome vendor must start with "Google Inc. (" (with GPU suffix)
     assert!(
         ch.vendor.starts_with("Google Inc. ("),
-        "Chrome WebGL vendor must include GPU suffix — got: {}", ch.vendor
+        "Chrome WebGL vendor must include GPU suffix — got: {}",
+        ch.vendor
     );
 }
 
@@ -108,19 +116,25 @@ fn headless_webgl_extensions_nonempty() {
     // Assert
     assert!(
         ff.extensions.len() >= 10,
-        "Firefox WebGL must have ≥10 extensions (headless has few) — got: {}", ff.extensions.len()
+        "Firefox WebGL must have ≥10 extensions (headless has few) — got: {}",
+        ff.extensions.len()
     );
     assert!(
         ch.extensions.len() >= 10,
-        "Chrome WebGL must have ≥10 extensions (headless has few) — got: {}", ch.extensions.len()
+        "Chrome WebGL must have ≥10 extensions (headless has few) — got: {}",
+        ch.extensions.len()
     );
     // Must include WEBGL_debug_renderer_info (used by detectors to confirm GPU)
     assert!(
-        ff.extensions.iter().any(|e| e == "WEBGL_debug_renderer_info"),
+        ff.extensions
+            .iter()
+            .any(|e| e == "WEBGL_debug_renderer_info"),
         "Firefox WebGL must include WEBGL_debug_renderer_info extension"
     );
     assert!(
-        ch.extensions.iter().any(|e| e == "WEBGL_debug_renderer_info"),
+        ch.extensions
+            .iter()
+            .any(|e| e == "WEBGL_debug_renderer_info"),
         "Chrome WebGL must include WEBGL_debug_renderer_info extension"
     );
 }
@@ -136,11 +150,13 @@ fn headless_webgl_max_texture_size_plausible() {
     // Assert — real GPU max texture size ≥ 4096 (typically 16384)
     assert!(
         ff.max_texture_size >= 4096,
-        "Firefox WebGL max_texture_size {} must be ≥ 4096 (headless leak)", ff.max_texture_size
+        "Firefox WebGL max_texture_size {} must be ≥ 4096 (headless leak)",
+        ff.max_texture_size
     );
     assert!(
         ch.max_texture_size >= 4096,
-        "Chrome WebGL max_texture_size {} must be ≥ 4096 (headless leak)", ch.max_texture_size
+        "Chrome WebGL max_texture_size {} must be ≥ 4096 (headless leak)",
+        ch.max_texture_size
     );
     // Common GPU value: 16384
     assert_eq!(ff.max_texture_size, 16384);
@@ -202,9 +218,16 @@ fn headless_canvas_todataurl_hook_present() {
     // Arrange — headless canvas returns static data; hook must inject noise
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.canvas_js();
@@ -235,11 +258,13 @@ fn headless_no_useragent_contains_headless_chrome() {
     // Assert
     assert!(
         !ff.user_agent.contains("HeadlessChrome"),
-        "Firefox UA must not contain HeadlessChrome — got: {}", ff.user_agent
+        "Firefox UA must not contain HeadlessChrome — got: {}",
+        ff.user_agent
     );
     assert!(
         !ch.user_agent.contains("HeadlessChrome"),
-        "Chrome UA must not contain HeadlessChrome — got: {}", ch.user_agent
+        "Chrome UA must not contain HeadlessChrome — got: {}",
+        ch.user_agent
     );
     // Also check lowercase (some detectors lowercase UA before matching)
     assert!(
@@ -344,9 +369,16 @@ fn headless_webdriver_forced_false_in_hooks() {
     // Arrange — headless Chrome sets navigator.webdriver = true by default
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
@@ -397,9 +429,16 @@ fn headless_audio_hook_present() {
     // Arrange
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.audio_js();
@@ -539,6 +578,7 @@ fn headless_chrome_profile_zero_leaks() {
     // Chrome renderer references real GPU
     assert!(
         webgl.renderer.contains("ANGLE") || webgl.renderer.contains("NVIDIA"),
-        "Chrome WebGL renderer must reference real GPU: {}", webgl.renderer
+        "Chrome WebGL renderer must reference real GPU: {}",
+        webgl.renderer
     );
 }

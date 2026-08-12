@@ -4,9 +4,7 @@
 // BridgeChannel, BridgeReceiver — construction, send, timeout, fire-and-forget,
 // lifecycle, and concurrent submission.
 
-use bao_browser::{
-    BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, RuntimeBridge,
-};
+use bao_browser::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, RuntimeBridge};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -88,10 +86,7 @@ fn cmd_evaluate() {
 
 #[test]
 fn cmd_screenshot() {
-    assert_eq!(
-        BridgeCommand::Screenshot,
-        BridgeCommand::Screenshot,
-    );
+    assert_eq!(BridgeCommand::Screenshot, BridgeCommand::Screenshot,);
 }
 
 #[test]
@@ -130,7 +125,10 @@ fn cmd_variants_are_distinct() {
     ];
     for i in 0..cmds.len() {
         for j in (i + 1)..cmds.len() {
-            assert_ne!(cmds[i], cmds[j], "variants[{i}] should differ from variants[{j}]");
+            assert_ne!(
+                cmds[i], cmds[j],
+                "variants[{i}] should differ from variants[{j}]"
+            );
         }
     }
 }
@@ -217,8 +215,14 @@ fn resp_variants_are_distinct() {
     assert_ne!(BridgeResponse::Ok, BridgeResponse::Null);
     assert_ne!(BridgeResponse::Ok, BridgeResponse::Err("".into()));
     assert_ne!(BridgeResponse::Null, BridgeResponse::Err("".into()));
-    assert_ne!(BridgeResponse::Value("a".into()), BridgeResponse::Value("b".into()));
-    assert_ne!(BridgeResponse::Binary(vec![0]), BridgeResponse::Binary(vec![1]));
+    assert_ne!(
+        BridgeResponse::Value("a".into()),
+        BridgeResponse::Value("b".into())
+    );
+    assert_ne!(
+        BridgeResponse::Binary(vec![0]),
+        BridgeResponse::Binary(vec![1])
+    );
 }
 
 #[test]
@@ -264,7 +268,8 @@ fn channel_send_navigate_ok() {
     let (ch, rx) = BridgeChannel::new();
     let _w = spawn_echo(rx);
     assert_eq!(
-        ch.send(BridgeCommand::Navigate("https://ex.co".into())).unwrap(),
+        ch.send(BridgeCommand::Navigate("https://ex.co".into()))
+            .unwrap(),
         BridgeResponse::Ok,
     );
 }
@@ -358,7 +363,10 @@ fn channel_send_without_worker_panics_after_drop() {
 fn channel_send_all_seven_variants_roundtrip() {
     let (ch, rx) = BridgeChannel::new();
     let _w = spawn_echo(rx);
-    assert_eq!(ch.send(BridgeCommand::Navigate("u".into())).unwrap(), BridgeResponse::Ok);
+    assert_eq!(
+        ch.send(BridgeCommand::Navigate("u".into())).unwrap(),
+        BridgeResponse::Ok
+    );
     assert_eq!(
         ch.send(BridgeCommand::Evaluate("e".into())).unwrap(),
         BridgeResponse::Value("eval:e".into()),
@@ -400,7 +408,10 @@ fn channel_send_timeout_with_worker_succeeds() {
 fn channel_send_timeout_expires_when_no_worker() {
     let (ch, _rx) = BridgeChannel::new();
     let r = ch.send_timeout(BridgeCommand::GetTitle, Duration::from_millis(10));
-    assert!(r.is_err(), "send_timeout should fail when no worker responds");
+    assert!(
+        r.is_err(),
+        "send_timeout should fail when no worker responds"
+    );
 }
 
 #[test]
@@ -414,8 +425,7 @@ fn channel_send_timeout_zero_fails_immediately() {
 fn channel_send_timeout_after_receiver_dropped_fails() {
     let (ch, rx) = BridgeChannel::new();
     drop(rx);
-    let r = ch
-        .send_timeout(BridgeCommand::GetTitle, Duration::from_secs(1));
+    let r = ch.send_timeout(BridgeCommand::GetTitle, Duration::from_secs(1));
     assert!(r.is_err(), "send_timeout after drop should fail");
 }
 
@@ -436,8 +446,10 @@ fn channel_fire_and_forget_delivers_command() {
 fn channel_fire_and_forget_multiple_in_order() {
     let (ch, rx) = BridgeChannel::new();
     let recorded = spawn_recorder(rx);
-    ch.fire_and_forget(BridgeCommand::Navigate("a".into())).unwrap();
-    ch.fire_and_forget(BridgeCommand::Evaluate("b".into())).unwrap();
+    ch.fire_and_forget(BridgeCommand::Navigate("a".into()))
+        .unwrap();
+    ch.fire_and_forget(BridgeCommand::Evaluate("b".into()))
+        .unwrap();
     ch.fire_and_forget(BridgeCommand::Close).unwrap();
     assert_eq!(
         recorded.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -598,7 +610,10 @@ fn receiver_recv_timeout_after_channel_drop_returns_err() {
 fn receiver_debug_format_excludes_internal_rx() {
     let (_ch, rx) = BridgeChannel::new();
     let d = format!("{rx:?}");
-    assert!(d.contains("BridgeReceiver"), "Debug should start with BridgeReceiver: {d}");
+    assert!(
+        d.contains("BridgeReceiver"),
+        "Debug should start with BridgeReceiver: {d}"
+    );
     assert!(d.contains("alive"), "Debug should contain alive field: {d}");
 }
 
@@ -627,7 +642,10 @@ fn bridge_send_with_worker() {
 fn bridge_send_all_variants() {
     let (br, rx) = RuntimeBridge::new();
     let _w = spawn_echo(rx);
-    assert_eq!(br.send(BridgeCommand::Navigate("u".into())).unwrap(), BridgeResponse::Ok);
+    assert_eq!(
+        br.send(BridgeCommand::Navigate("u".into())).unwrap(),
+        BridgeResponse::Ok
+    );
     assert_eq!(
         br.send(BridgeCommand::Evaluate("x".into())).unwrap(),
         BridgeResponse::Value("eval:x".into()),
@@ -782,9 +800,17 @@ fn concurrent_sends_from_multiple_threads_all_get_responses() {
     for (i, h) in handles.into_iter().enumerate() {
         let resp = h.join().expect("thread panicked").unwrap();
         if i % 2 == 0 {
-            assert_eq!(resp, BridgeResponse::Value("the-title".into()), "thread {i}");
+            assert_eq!(
+                resp,
+                BridgeResponse::Value("the-title".into()),
+                "thread {i}"
+            );
         } else {
-            assert_eq!(resp, BridgeResponse::Value("https://ex.co".into()), "thread {i}");
+            assert_eq!(
+                resp,
+                BridgeResponse::Value("https://ex.co".into()),
+                "thread {i}"
+            );
         }
         oks += 1;
     }
@@ -807,7 +833,10 @@ fn concurrent_fire_and_forget_all_deliver() {
     }
 
     for h in handles {
-        assert!(h.join().unwrap().is_some(), "fire_and_forget should succeed");
+        assert!(
+            h.join().unwrap().is_some(),
+            "fire_and_forget should succeed"
+        );
     }
 
     // Verify all n commands arrived at the recorder

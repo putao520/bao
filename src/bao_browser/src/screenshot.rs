@@ -12,7 +12,9 @@ pub enum ScreenshotFormat {
 }
 
 pub fn encode_image(image: &RgbaImage, format: ScreenshotFormat) -> Result<Vec<u8>, BrowserError> {
-    let mut buf = Cursor::new(Vec::with_capacity(image.width() as usize * image.height() as usize));
+    let mut buf = Cursor::new(Vec::with_capacity(
+        image.width() as usize * image.height() as usize,
+    ));
     match format {
         ScreenshotFormat::Png => image
             .write_to(&mut buf, ImageFormat::Png)
@@ -102,8 +104,20 @@ mod tests {
         let png = encode_image(&img, ScreenshotFormat::Png).unwrap();
         let jpeg = encode_image(&img, ScreenshotFormat::Jpeg).unwrap();
         let webp = encode_image(&img, ScreenshotFormat::WebP).unwrap();
-        assert!(png.len() > 100, "PNG should be nontrivial: {} bytes", png.len());
-        assert!(jpeg.len() > 100, "JPEG should be nontrivial: {} bytes", jpeg.len());
-        assert!(webp.len() > 100, "WebP should be nontrivial: {} bytes", webp.len());
+        assert!(
+            png.len() > 100,
+            "PNG should be nontrivial: {} bytes",
+            png.len()
+        );
+        assert!(
+            jpeg.len() > 100,
+            "JPEG should be nontrivial: {} bytes",
+            jpeg.len()
+        );
+        assert!(
+            webp.len() > 100,
+            "WebP should be nontrivial: {} bytes",
+            webp.len()
+        );
     }
 }

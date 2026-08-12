@@ -30,7 +30,8 @@ fn css_get_computed_style_for_node_result_schema_conformance() {
     let b = backend();
 
     // Act
-    let result = dispatch_command(&*b, "CSS.getComputedStyleForNode", json!({"nodeId":1}), "1").unwrap();
+    let result =
+        dispatch_command(&*b, "CSS.getComputedStyleForNode", json!({"nodeId":1}), "1").unwrap();
 
     // Assert
     assert!(
@@ -40,7 +41,10 @@ fn css_get_computed_style_for_node_result_schema_conformance() {
     );
     for prop in result["computedStyle"].as_array().unwrap() {
         assert!(prop["name"].is_string(), "CSSProperty.name must be string");
-        assert!(prop["value"].is_string(), "CSSProperty.value must be string");
+        assert!(
+            prop["value"].is_string(),
+            "CSSProperty.value must be string"
+        );
     }
 }
 
@@ -68,7 +72,8 @@ fn css_get_matched_styles_for_node_returns_object() {
     let b = backend();
 
     // Act
-    let result = dispatch_command(&*b, "CSS.getMatchedStylesForNode", json!({"nodeId":1}), "1").unwrap();
+    let result =
+        dispatch_command(&*b, "CSS.getMatchedStylesForNode", json!({"nodeId":1}), "1").unwrap();
 
     // Assert — CDP spec: matchedCSSRules 必须为数组
     assert!(
@@ -84,7 +89,8 @@ fn css_get_matched_styles_for_node_field_name_schema_conformance() {
     // https://chromedevtools.github.io/devtools-protocol/tot/CSS/#method-getMatchedStylesForNode
     // @trace REQ-CDP-001 [domain:CSS] [level:integration]
     let b = backend();
-    let result = dispatch_command(&*b, "CSS.getMatchedStylesForNode", json!({"nodeId":1}), "1").unwrap();
+    let result =
+        dispatch_command(&*b, "CSS.getMatchedStylesForNode", json!({"nodeId":1}), "1").unwrap();
 
     // Assert — CDP spec: 必须使用完整字段名 matchedCSSRules(非缩写 matchedRules)
     assert!(
@@ -113,7 +119,8 @@ fn css_get_matched_styles_for_node_inline_style_optional_schema() {
     // 当存在时,inlineStyle 是 CSSStyle:{styleSheetId, cssProperties: [{name, value, important}]}
     // @trace REQ-CDP-001 [domain:CSS] [level:integration]
     let b = backend();
-    let result = dispatch_command(&*b, "CSS.getMatchedStylesForNode", json!({"nodeId":1}), "1").unwrap();
+    let result =
+        dispatch_command(&*b, "CSS.getMatchedStylesForNode", json!({"nodeId":1}), "1").unwrap();
 
     // 当 Mock 返回 None 时,字段缺失 — 不做严格断言
     if let Some(inline) = result.get("inlineStyle") {

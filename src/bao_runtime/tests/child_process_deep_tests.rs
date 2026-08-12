@@ -26,7 +26,9 @@ fn test_child_process_deep() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         function check(label, fn) {
             try { var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }
@@ -267,7 +269,8 @@ fn test_child_process_deep() {
         });
 
         results.join("|")
-    "#);
+    "#,
+    );
 
     let mut pass = 0;
     let mut fail = 0;
@@ -287,7 +290,9 @@ fn test_child_process_deep() {
     // =============================================
 
     // Verify execSync actually works and returns output
-    let exec_sync_output = eval_string(&mut ctx, r#"
+    let exec_sync_output = eval_string(
+        &mut ctx,
+        r#"
         try {
             var cp = require('child_process');
             var out = cp.execSync('echo hello_sync_test');
@@ -297,12 +302,18 @@ fn test_child_process_deep() {
         } catch(e) {
             'execSync_ERROR:' + (e.message || e);
         }
-    "#);
-    assert!(exec_sync_output.contains("hello_sync_test") || exec_sync_output.contains("ERROR"),
-        "execSync should return output or throw, got: {}", exec_sync_output);
+    "#,
+    );
+    assert!(
+        exec_sync_output.contains("hello_sync_test") || exec_sync_output.contains("ERROR"),
+        "execSync should return output or throw, got: {}",
+        exec_sync_output
+    );
 
     // Verify execFileSync works
-    let exec_file_sync_output = eval_string(&mut ctx, r#"
+    let exec_file_sync_output = eval_string(
+        &mut ctx,
+        r#"
         try {
             var cp = require('child_process');
             var out = cp.execFileSync('echo', ['file_sync_test']);
@@ -312,12 +323,18 @@ fn test_child_process_deep() {
         } catch(e) {
             'execFileSync_ERROR:' + (e.message || e);
         }
-    "#);
-    assert!(exec_file_sync_output.contains("file_sync_test") || exec_file_sync_output.contains("ERROR"),
-        "execFileSync should return output or throw, got: {}", exec_file_sync_output);
+    "#,
+    );
+    assert!(
+        exec_file_sync_output.contains("file_sync_test") || exec_file_sync_output.contains("ERROR"),
+        "execFileSync should return output or throw, got: {}",
+        exec_file_sync_output
+    );
 
     // Verify spawnSync returns result object
-    let spawn_sync_result = eval_string(&mut ctx, r#"
+    let spawn_sync_result = eval_string(
+        &mut ctx,
+        r#"
         try {
             var cp = require('child_process');
             var result = cp.spawnSync('echo', ['sync_test']);
@@ -326,37 +343,79 @@ fn test_child_process_deep() {
         } catch(e) {
             'spawnSync_ERROR:' + (e.message || e);
         }
-    "#);
-    assert!(spawn_sync_result.contains("pid") || spawn_sync_result.contains("output") ||
-            spawn_sync_result.contains("status") || spawn_sync_result.contains("ERROR"),
-        "spawnSync should return result with standard properties, got: {}", spawn_sync_result);
+    "#,
+    );
+    assert!(
+        spawn_sync_result.contains("pid")
+            || spawn_sync_result.contains("output")
+            || spawn_sync_result.contains("status")
+            || spawn_sync_result.contains("ERROR"),
+        "spawnSync should return result with standard properties, got: {}",
+        spawn_sync_result
+    );
 
     // Verify spawn returns child with pid
-    let spawn_pid = eval_string(&mut ctx, r#"
+    let spawn_pid = eval_string(
+        &mut ctx,
+        r#"
         var cp = require('child_process');
         var child = cp.spawn('echo', ['pid_test']);
         'pid=' + child.pid + '|type=' + typeof child.pid;
-    "#);
-    assert!(spawn_pid.contains("pid=") && (spawn_pid.contains("type=number") || spawn_pid.contains("type=undefined")),
-        "spawn child should have pid property, got: {}", spawn_pid);
+    "#,
+    );
+    assert!(
+        spawn_pid.contains("pid=")
+            && (spawn_pid.contains("type=number") || spawn_pid.contains("type=undefined")),
+        "spawn child should have pid property, got: {}",
+        spawn_pid
+    );
 
     // Verify kill method exists and is callable
-    assert!(eval_bool(&mut ctx, r#"
+    assert!(
+        eval_bool(
+            &mut ctx,
+            r#"
         var cp = require('child_process');
         var child = cp.spawn('sleep', ['999']);
         typeof child.kill === 'function';
-    "#), "spawn child should have kill method");
+    "#
+        ),
+        "spawn child should have kill method"
+    );
 
     // Verify module has expected key exports
-    let module_keys = eval_string(&mut ctx, r#"
+    let module_keys = eval_string(
+        &mut ctx,
+        r#"
         var cp = require('child_process');
         Object.keys(cp).sort().join(',')
-    "#);
-    assert!(module_keys.contains("spawn"), "child_process should have spawn, got: {}", module_keys);
-    assert!(module_keys.contains("exec"), "child_process should have exec, got: {}", module_keys);
-    assert!(module_keys.contains("execFile"), "child_process should have execFile, got: {}", module_keys);
-    assert!(module_keys.contains("execSync"), "child_process should have execSync, got: {}", module_keys);
-    assert!(module_keys.contains("spawnSync"), "child_process should have spawnSync, got: {}", module_keys);
+    "#,
+    );
+    assert!(
+        module_keys.contains("spawn"),
+        "child_process should have spawn, got: {}",
+        module_keys
+    );
+    assert!(
+        module_keys.contains("exec"),
+        "child_process should have exec, got: {}",
+        module_keys
+    );
+    assert!(
+        module_keys.contains("execFile"),
+        "child_process should have execFile, got: {}",
+        module_keys
+    );
+    assert!(
+        module_keys.contains("execSync"),
+        "child_process should have execSync, got: {}",
+        module_keys
+    );
+    assert!(
+        module_keys.contains("spawnSync"),
+        "child_process should have spawnSync, got: {}",
+        module_keys
+    );
 
     bun_runtime::shutdown_thread_sm();
 }

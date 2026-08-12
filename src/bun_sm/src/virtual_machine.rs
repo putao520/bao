@@ -33,7 +33,8 @@ impl VirtualMachineRef {
 unsafe impl Send for VirtualMachineRef {}
 
 /// Whether the current thread's VM is the main thread VM.
-pub static IS_MAIN_THREAD_VM: ::std::sync::atomic::AtomicBool = ::std::sync::atomic::AtomicBool::new(false);
+pub static IS_MAIN_THREAD_VM: ::std::sync::atomic::AtomicBool =
+    ::std::sync::atomic::AtomicBool::new(false);
 
 /// GC and runtime options.
 pub struct Options {
@@ -107,7 +108,10 @@ impl VirtualMachine {
     /// Get the approximate heap size in bytes.
     #[allow(unsafe_op_in_unsafe_fn)]
     pub unsafe fn heap_size(&self) -> usize {
-        unsafe { mozjs::jsapi::JS_GetGCParameter(self.cx, mozjs::jsapi::JSGCParamKey::JSGC_BYTES) as usize }
+        unsafe {
+            mozjs::jsapi::JS_GetGCParameter(self.cx, mozjs::jsapi::JSGCParamKey::JSGC_BYTES)
+                as usize
+        }
     }
 
     /// Run a full garbage collection cycle.

@@ -3,11 +3,12 @@
 // field validation, serialization, clone/debug, boundary values, parse errors,
 // large inputs, unicode, determinism.
 
-use bao_cdp::{CdpMessage, CdpResponse, CdpError, CdpEvent, parse_message, serialize_response, serialize_event};
+use bao_cdp::{
+    parse_message, serialize_event, serialize_response, CdpError, CdpEvent, CdpMessage, CdpResponse,
+};
 
 const TID: &str = "test-target";
 use serde_json::json;
-
 
 // ---- CdpMessage field validation ----
 
@@ -34,7 +35,13 @@ fn test_cdp_message_large_id() {
 
 #[test]
 fn test_cdp_message_method_variants() {
-    for method in ["Page.enable", "Runtime.evaluate", "DOM.getDocument", "a.b", "."] {
+    for method in [
+        "Page.enable",
+        "Runtime.evaluate",
+        "DOM.getDocument",
+        "a.b",
+        ".",
+    ] {
         let raw = format!(r#"{{"id":1,"method":"{}"}}"#, method);
         let msg = parse_message(&raw).unwrap();
         assert_eq!(msg.method, method);
@@ -160,20 +167,29 @@ fn test_cdp_message_clone_with_all_fields() {
 
 #[test]
 fn test_cdp_error_code_message() {
-    let err = CdpError { code: -32600, message: "invalid".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "invalid".into(),
+    };
     assert_eq!(err.code, -32600);
     assert_eq!(err.message, "invalid");
 }
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32700, message: "parse".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "parse".into(),
+    };
     assert!(format!("{:?}", err).contains("-32700"));
 }
 
 #[test]
 fn test_cdp_error_serialize() {
-    let err = CdpError { code: -32000, message: "internal".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "internal".into(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(parsed["code"], -32000);
@@ -182,20 +198,29 @@ fn test_cdp_error_serialize() {
 
 #[test]
 fn test_cdp_error_empty_message() {
-    let err = CdpError { code: -1, message: String::new() };
+    let err = CdpError {
+        code: -1,
+        message: String::new(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     assert!(json_str.contains(r#""message":"""#));
 }
 
 #[test]
 fn test_cdp_error_large_code() {
-    let err = CdpError { code: i64::MIN, message: "min".into() };
+    let err = CdpError {
+        code: i64::MIN,
+        message: "min".into(),
+    };
     assert_eq!(err.code, i64::MIN);
 }
 
 #[test]
 fn test_cdp_error_positive_code() {
-    let err = CdpError { code: 999, message: "custom".into() };
+    let err = CdpError {
+        code: 999,
+        message: "custom".into(),
+    };
     assert_eq!(err.code, 999);
 }
 
@@ -220,7 +245,10 @@ fn test_cdp_response_error() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -425,7 +453,10 @@ fn test_parse_message_string_id() {
 #[test]
 fn test_parse_message_large_params() {
     let arr: Vec<i32> = (0..1000).collect();
-    let raw = format!(r#"{{"id":1,"method":"Test.run","params":{}}}"#, serde_json::to_string(&arr).unwrap());
+    let raw = format!(
+        r#"{{"id":1,"method":"Test.run","params":{}}}"#,
+        serde_json::to_string(&arr).unwrap()
+    );
     let msg = parse_message(&raw).unwrap();
     assert_eq!(msg.params.unwrap().as_array().unwrap().len(), 1000);
 }
@@ -435,7 +466,10 @@ fn test_serialize_response_unicode_in_error() {
     let resp = CdpResponse {
         id: Some(1),
         result: None,
-        error: Some(CdpError { code: -32000, message: "エラー発生".into() }),
+        error: Some(CdpError {
+            code: -32000,
+            message: "エラー発生".into(),
+        }),
     };
     let raw = serialize_response(&resp);
     assert!(raw.contains("エラー"));
@@ -469,11 +503,17 @@ fn test_roundtrip_error_response() {
     let resp = CdpResponse {
         id: Some(99),
         result: None,
-        error: Some(CdpError { code: -32601, message: "'Foo.bar' wasn't found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "'Foo.bar' wasn't found".into(),
+        }),
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert!(parsed["error"]["message"].as_str().unwrap().contains("Foo.bar"));
+    assert!(parsed["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Foo.bar"));
 }
 
 #[test]

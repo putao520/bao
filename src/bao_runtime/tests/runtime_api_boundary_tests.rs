@@ -218,26 +218,44 @@ fn test_permission_switching_multiple_times() {
 
 // ---- stealth_http deep validation ----
 
-use bun_runtime::stealth_http;
 use bao_stealth::StealthProfile;
+use bun_runtime::stealth_http;
 
 #[test]
 fn test_stealth_request_chrome_creates_without_panic() {
     let profile = StealthProfile::chrome_default();
-    let config = stealth_http::create_stealth_request(&Some(profile), bun_http::Method::GET, "https://example.com", &[], None);
+    let config = stealth_http::create_stealth_request(
+        &Some(profile),
+        bun_http::Method::GET,
+        "https://example.com",
+        &[],
+        None,
+    );
     assert!(config.user_agent.is_some());
 }
 
 #[test]
 fn test_stealth_request_firefox_creates_without_panic() {
     let profile = StealthProfile::firefox_default();
-    let config = stealth_http::create_stealth_request(&Some(profile), bun_http::Method::GET, "https://example.com", &[], None);
+    let config = stealth_http::create_stealth_request(
+        &Some(profile),
+        bun_http::Method::GET,
+        "https://example.com",
+        &[],
+        None,
+    );
     assert!(config.user_agent.is_some());
 }
 
 #[test]
 fn test_stealth_request_no_profile_creates_without_panic() {
-    let config = stealth_http::create_stealth_request(&None, bun_http::Method::GET, "https://example.com", &[], None);
+    let config = stealth_http::create_stealth_request(
+        &None,
+        bun_http::Method::GET,
+        "https://example.com",
+        &[],
+        None,
+    );
     assert!(config.user_agent.is_none());
 }
 
@@ -285,7 +303,10 @@ fn test_ordered_headers_mixed_pseudo_and_regular() {
     // Firefox order: :method, :path, :authority, :scheme
     assert_eq!(ordered.len(), 7);
     // Pseudo headers first
-    let pseudo_count = ordered.iter().take_while(|(k, _)| k.starts_with(':')).count();
+    let pseudo_count = ordered
+        .iter()
+        .take_while(|(k, _)| k.starts_with(':'))
+        .count();
     assert_eq!(pseudo_count, 4, "All 4 pseudo-headers should come first");
 }
 
@@ -322,7 +343,11 @@ fn test_akamai_fingerprint_format() {
     assert_eq!(parts.len(), 6);
     // All parts should be numeric
     for part in &parts {
-        assert!(part.parse::<u64>().is_ok(), "Part '{}' should be numeric", part);
+        assert!(
+            part.parse::<u64>().is_ok(),
+            "Part '{}' should be numeric",
+            part
+        );
     }
 }
 
@@ -392,19 +417,14 @@ fn test_resolve_node_modules_nonexistent_specifier() {
 
 #[test]
 fn test_resolve_node_modules_empty_specifier() {
-    let result = bun_runtime::require::resolve_node_modules(
-        "",
-        Some(std::path::Path::new("/tmp")),
-    );
+    let result = bun_runtime::require::resolve_node_modules("", Some(std::path::Path::new("/tmp")));
     assert!(result.is_none());
 }
 
 #[test]
 fn test_resolve_node_modules_with_dot_specifier() {
-    let result = bun_runtime::require::resolve_node_modules(
-        ".",
-        Some(std::path::Path::new("/tmp")),
-    );
+    let result =
+        bun_runtime::require::resolve_node_modules(".", Some(std::path::Path::new("/tmp")));
     // "." is not a valid node_modules package name
     assert!(result.is_none());
 }

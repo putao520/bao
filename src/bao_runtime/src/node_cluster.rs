@@ -26,7 +26,9 @@ fn is_cluster_worker() -> bool {
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
     rooted!(&in(cx) let obj = unsafe { w2::JS_NewPlainObject(cx) });
-    if obj.get().is_null() { return; }
+    if obj.get().is_null() {
+        return;
+    }
 
     let is_worker = is_cluster_worker();
     let is_primary = !is_worker;
@@ -36,28 +38,58 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
         // isPrimary
         rooted!(&in(cx) let is_primary_val = BooleanValue(is_primary));
-        let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"isPrimary".as_ptr(), is_primary_val.handle().into(), JSPROP_ENUMERATE as u32);
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj.handle().into(),
+            c"isPrimary".as_ptr(),
+            is_primary_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
 
         // isMaster (deprecated alias)
         rooted!(&in(cx) let is_master_val = BooleanValue(is_primary));
-        let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"isMaster".as_ptr(), is_master_val.handle().into(), JSPROP_ENUMERATE as u32);
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj.handle().into(),
+            c"isMaster".as_ptr(),
+            is_master_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
 
         // isWorker
         rooted!(&in(cx) let is_worker_val = BooleanValue(is_worker));
-        let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"isWorker".as_ptr(), is_worker_val.handle().into(), JSPROP_ENUMERATE as u32);
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj.handle().into(),
+            c"isWorker".as_ptr(),
+            is_worker_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
 
         // workers = empty object
         rooted!(&in(cx) let workers_obj = w2::JS_NewPlainObject(cx));
         if !workers_obj.get().is_null() {
             rooted!(&in(cx) let workers_val = ObjectValue(workers_obj.get()));
-            let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"workers".as_ptr(), workers_val.handle().into(), JSPROP_ENUMERATE as u32);
+            let _ = JS_DefineProperty(
+                raw_cx,
+                obj.handle().into(),
+                c"workers".as_ptr(),
+                workers_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // settings = empty object
         rooted!(&in(cx) let settings_obj = w2::JS_NewPlainObject(cx));
         if !settings_obj.get().is_null() {
             rooted!(&in(cx) let settings_val = ObjectValue(settings_obj.get()));
-            let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"settings".as_ptr(), settings_val.handle().into(), JSPROP_ENUMERATE as u32);
+            let _ = JS_DefineProperty(
+                raw_cx,
+                obj.handle().into(),
+                c"settings".as_ptr(),
+                settings_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // worker — current worker object (if worker), or undefined (if primary)
@@ -65,11 +97,23 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             rooted!(&in(cx) let worker_obj = make_worker_object(cx, raw_cx));
             if !worker_obj.get().is_null() {
                 rooted!(&in(cx) let worker_val = ObjectValue(worker_obj.get()));
-                let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"worker".as_ptr(), worker_val.handle().into(), JSPROP_ENUMERATE as u32);
+                let _ = JS_DefineProperty(
+                    raw_cx,
+                    obj.handle().into(),
+                    c"worker".as_ptr(),
+                    worker_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         } else {
             rooted!(&in(cx) let worker_val = UndefinedValue());
-            let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"worker".as_ptr(), worker_val.handle().into(), JSPROP_ENUMERATE as u32);
+            let _ = JS_DefineProperty(
+                raw_cx,
+                obj.handle().into(),
+                c"worker".as_ptr(),
+                worker_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // fork() — spawns a worker process
@@ -78,47 +122,107 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             let fn_obj = JS_GetFunctionObject(fork_fn);
             if !fn_obj.is_null() {
                 rooted!(&in(cx) let val = ObjectValue(fn_obj));
-                let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"fork".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
+                let _ = JS_DefineProperty(
+                    raw_cx,
+                    obj.handle().into(),
+                    c"fork".as_ptr(),
+                    val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 
         // disconnect()
-        let disconnect_fn = JS_NewFunction(raw_cx, Some(cluster_disconnect), 0, 0, c"disconnect".as_ptr());
+        let disconnect_fn = JS_NewFunction(
+            raw_cx,
+            Some(cluster_disconnect),
+            0,
+            0,
+            c"disconnect".as_ptr(),
+        );
         if !disconnect_fn.is_null() {
             let fn_obj = JS_GetFunctionObject(disconnect_fn);
             if !fn_obj.is_null() {
                 rooted!(&in(cx) let val = ObjectValue(fn_obj));
-                let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"disconnect".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
+                let _ = JS_DefineProperty(
+                    raw_cx,
+                    obj.handle().into(),
+                    c"disconnect".as_ptr(),
+                    val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 
         // setupPrimary() / setupMaster()
-        let setup_fn = JS_NewFunction(raw_cx, Some(cluster_setup_primary), 1, 0, c"setupPrimary".as_ptr());
+        let setup_fn = JS_NewFunction(
+            raw_cx,
+            Some(cluster_setup_primary),
+            1,
+            0,
+            c"setupPrimary".as_ptr(),
+        );
         if !setup_fn.is_null() {
             let fn_obj = JS_GetFunctionObject(setup_fn);
             if !fn_obj.is_null() {
                 rooted!(&in(cx) let val = ObjectValue(fn_obj));
-                let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"setupPrimary".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
+                let _ = JS_DefineProperty(
+                    raw_cx,
+                    obj.handle().into(),
+                    c"setupPrimary".as_ptr(),
+                    val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
-        let setup_master_fn = JS_NewFunction(raw_cx, Some(cluster_setup_primary), 1, 0, c"setupMaster".as_ptr());
+        let setup_master_fn = JS_NewFunction(
+            raw_cx,
+            Some(cluster_setup_primary),
+            1,
+            0,
+            c"setupMaster".as_ptr(),
+        );
         if !setup_master_fn.is_null() {
             let fn_obj = JS_GetFunctionObject(setup_master_fn);
             if !fn_obj.is_null() {
                 rooted!(&in(cx) let val = ObjectValue(fn_obj));
-                let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"setupMaster".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
+                let _ = JS_DefineProperty(
+                    raw_cx,
+                    obj.handle().into(),
+                    c"setupMaster".as_ptr(),
+                    val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 
         // schedulingPolicy = SCHED_RR (2) for round-robin connection distribution
         rooted!(&in(cx) let sched = Int32Value(2));
-        let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"schedulingPolicy".as_ptr(), sched.handle().into(), JSPROP_ENUMERATE as u32);
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj.handle().into(),
+            c"schedulingPolicy".as_ptr(),
+            sched.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
 
         // SCHED_NONE = 1, SCHED_RR = 2
         rooted!(&in(cx) let sched_none = Int32Value(1));
-        let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"SCHED_NONE".as_ptr(), sched_none.handle().into(), JSPROP_ENUMERATE as u32);
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj.handle().into(),
+            c"SCHED_NONE".as_ptr(),
+            sched_none.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
         rooted!(&in(cx) let sched_rr = Int32Value(2));
-        let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"SCHED_RR".as_ptr(), sched_rr.handle().into(), JSPROP_ENUMERATE as u32);
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj.handle().into(),
+            c"SCHED_RR".as_ptr(),
+            sched_rr.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     cache_builtin(cx, "cluster", obj.get());
@@ -144,47 +248,85 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 unsafe fn make_worker_object(
     cx: &mut mozjs::context::JSContext,
     _raw_cx: *mut JSContext,
-) -> *mut JSObject { unsafe {
-    let worker_obj = w2::JS_NewPlainObject(cx);
-    if worker_obj.is_null() {
-        return ::std::ptr::null_mut();
+) -> *mut JSObject {
+    unsafe {
+        let worker_obj = w2::JS_NewPlainObject(cx);
+        if worker_obj.is_null() {
+            return ::std::ptr::null_mut();
+        }
+        rooted!(&in(cx) let worker_r = worker_obj);
+        let worker_h = worker_r.handle().into();
+
+        // id — from env var
+        let worker_id: i32 = ::std::env::var("BAO_CLUSTER_WORKER_ID")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        rooted!(&in(cx) let id_val = Int32Value(worker_id));
+        JS_DefineProperty(
+            cx.raw_cx(),
+            worker_h,
+            c"id".as_ptr(),
+            id_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+
+        // process — null (would need to reference the actual ChildProcess, set from JS shim)
+        rooted!(&in(cx) let null_v = NullValue());
+        JS_DefineProperty(
+            cx.raw_cx(),
+            worker_h,
+            c"process".as_ptr(),
+            null_v.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+
+        // isConnected = true
+        rooted!(&in(cx) let connected_v = BooleanValue(true));
+        JS_DefineProperty(
+            cx.raw_cx(),
+            worker_h,
+            c"isConnected".as_ptr(),
+            connected_v.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+
+        // isDead = false
+        rooted!(&in(cx) let dead_v = BooleanValue(false));
+        JS_DefineProperty(
+            cx.raw_cx(),
+            worker_h,
+            c"isDead".as_ptr(),
+            dead_v.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+
+        // exitedAfterDisconnect = false
+        rooted!(&in(cx) let ead_v = BooleanValue(false));
+        JS_DefineProperty(
+            cx.raw_cx(),
+            worker_h,
+            c"exitedAfterDisconnect".as_ptr(),
+            ead_v.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+
+        // _events placeholder (for JS shim to enhance with EventEmitter)
+        rooted!(&in(cx) let events_obj = w2::JS_NewPlainObject(cx));
+        if !events_obj.get().is_null() {
+            rooted!(&in(cx) let events_val = ObjectValue(events_obj.get()));
+            JS_DefineProperty(
+                cx.raw_cx(),
+                worker_h,
+                c"_events".as_ptr(),
+                events_val.handle().into(),
+                0,
+            );
+        }
+
+        worker_r.get()
     }
-    rooted!(&in(cx) let worker_r = worker_obj);
-    let worker_h = worker_r.handle().into();
-
-    // id — from env var
-    let worker_id: i32 = ::std::env::var("BAO_CLUSTER_WORKER_ID")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    rooted!(&in(cx) let id_val = Int32Value(worker_id));
-    JS_DefineProperty(cx.raw_cx(), worker_h, c"id".as_ptr(), id_val.handle().into(), JSPROP_ENUMERATE as u32);
-
-    // process — null (would need to reference the actual ChildProcess, set from JS shim)
-    rooted!(&in(cx) let null_v = NullValue());
-    JS_DefineProperty(cx.raw_cx(), worker_h, c"process".as_ptr(), null_v.handle().into(), JSPROP_ENUMERATE as u32);
-
-    // isConnected = true
-    rooted!(&in(cx) let connected_v = BooleanValue(true));
-    JS_DefineProperty(cx.raw_cx(), worker_h, c"isConnected".as_ptr(), connected_v.handle().into(), JSPROP_ENUMERATE as u32);
-
-    // isDead = false
-    rooted!(&in(cx) let dead_v = BooleanValue(false));
-    JS_DefineProperty(cx.raw_cx(), worker_h, c"isDead".as_ptr(), dead_v.handle().into(), JSPROP_ENUMERATE as u32);
-
-    // exitedAfterDisconnect = false
-    rooted!(&in(cx) let ead_v = BooleanValue(false));
-    JS_DefineProperty(cx.raw_cx(), worker_h, c"exitedAfterDisconnect".as_ptr(), ead_v.handle().into(), JSPROP_ENUMERATE as u32);
-
-    // _events placeholder (for JS shim to enhance with EventEmitter)
-    rooted!(&in(cx) let events_obj = w2::JS_NewPlainObject(cx));
-    if !events_obj.get().is_null() {
-        rooted!(&in(cx) let events_val = ObjectValue(events_obj.get()));
-        JS_DefineProperty(cx.raw_cx(), worker_h, c"_events".as_ptr(), events_val.handle().into(), 0);
-    }
-
-    worker_r.get()
-}}
+}
 
 /// cluster.fork(env?) — spawn a worker process via child_process.spawn.
 ///
@@ -207,28 +349,48 @@ unsafe extern "C" fn cluster_fork(
 
     // Get the script path — use process.argv[1] (the script being run).
     // We need to get it from the global process object.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(
-        ::std::ptr::NonNull::new_unchecked(cx)
-    );
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
     let script_path = {
         rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
         let mut process_val = UndefinedValue();
-        JS_GetProperty(cx, global.handle().into(), c"process".as_ptr(),
-            MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut process_val });
+        JS_GetProperty(
+            cx,
+            global.handle().into(),
+            c"process".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut process_val,
+            },
+        );
         if process_val.is_object() {
             let process_obj = process_val.to_object();
             rooted!(&in(cx_ref) let process_r = process_obj);
             let mut argv_val = UndefinedValue();
-            JS_GetProperty(cx, process_r.handle().into(), c"argv".as_ptr(),
-                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut argv_val });
+            JS_GetProperty(
+                cx,
+                process_r.handle().into(),
+                c"argv".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut argv_val,
+                },
+            );
             if argv_val.is_object() {
                 let argv_obj = argv_val.to_object();
                 rooted!(&in(cx_ref) let argv_r = argv_obj);
                 let mut elem = UndefinedValue();
-                JS_GetElement(cx, argv_r.handle().into(), 1,
-                    MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                JS_GetElement(
+                    cx,
+                    argv_r.handle().into(),
+                    1,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut elem,
+                    },
+                );
                 if elem.is_string() {
                     crate::js_to_rust_string(cx, elem)
                 } else {
@@ -243,7 +405,10 @@ unsafe extern "C" fn cluster_fork(
     };
 
     if script_path.is_empty() {
-        JS_ReportErrorUTF8(cx, c"cluster.fork(): cannot determine script path (process.argv[1] is empty)".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"cluster.fork(): cannot determine script path (process.argv[1] is empty)".as_ptr(),
+        );
         args.rval().set(UndefinedValue());
         return false;
     }
@@ -256,24 +421,48 @@ unsafe extern "C" fn cluster_fork(
             if !cluster_mod.is_null() {
                 rooted!(&in(cx_ref) let cm_r = cluster_mod);
                 let mut settings_val = UndefinedValue();
-                JS_GetProperty(cx, cm_r.handle().into(), c"settings".as_ptr(),
-                    MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut settings_val });
+                JS_GetProperty(
+                    cx,
+                    cm_r.handle().into(),
+                    c"settings".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut settings_val,
+                    },
+                );
                 if settings_val.is_object() {
                     let settings_obj = settings_val.to_object();
                     rooted!(&in(cx_ref) let settings_r = settings_obj);
                     let mut next_id_val = UndefinedValue();
-                    JS_GetProperty(cx, settings_r.handle().into(), c"_nextId".as_ptr(),
-                        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut next_id_val });
+                    JS_GetProperty(
+                        cx,
+                        settings_r.handle().into(),
+                        c"_nextId".as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut next_id_val,
+                        },
+                    );
                     if next_id_val.is_int32() {
                         let id = next_id_val.to_int32();
                         let new_id = id + 1;
                         rooted!(&in(cx_ref) let new_id_v = Int32Value(new_id));
-                        JS_SetProperty(cx, settings_r.handle().into(), c"_nextId".as_ptr(), new_id_v.handle().into());
+                        JS_SetProperty(
+                            cx,
+                            settings_r.handle().into(),
+                            c"_nextId".as_ptr(),
+                            new_id_v.handle().into(),
+                        );
                         id
                     } else {
                         // Initialize counter.
                         rooted!(&in(cx_ref) let init_v = Int32Value(2));
-                        JS_SetProperty(cx, settings_r.handle().into(), c"_nextId".as_ptr(), init_v.handle().into());
+                        JS_SetProperty(
+                            cx,
+                            settings_r.handle().into(),
+                            c"_nextId".as_ptr(),
+                            init_v.handle().into(),
+                        );
                         1
                     }
                 } else {
@@ -288,7 +477,8 @@ unsafe extern "C" fn cluster_fork(
     };
 
     // Get the bao binary path.
-    let executable = ::std::env::current_exe().unwrap_or_else(|_| ::std::path::PathBuf::from("bao"));
+    let executable =
+        ::std::env::current_exe().unwrap_or_else(|_| ::std::path::PathBuf::from("bao"));
     let exec_str = executable.to_string_lossy().into_owned();
 
     // Build environment for the child worker.
@@ -391,7 +581,13 @@ unsafe extern "C" fn cluster_fork(
 
     // id
     rooted!(&in(cx_ref) let id_v = Int32Value(worker_id));
-    JS_DefineProperty(cx, worker_h, c"id".as_ptr(), id_v.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        worker_h,
+        c"id".as_ptr(),
+        id_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // process — build a minimal process-like object
     let proc_obj = w2::JS_NewPlainObject(cx_ref);
@@ -401,29 +597,65 @@ unsafe extern "C" fn cluster_fork(
 
         // pid
         rooted!(&in(cx_ref) let pid_v = Int32Value(pid as i32));
-        JS_DefineProperty(cx, proc_h, c"pid".as_ptr(), pid_v.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            proc_h,
+            c"pid".as_ptr(),
+            pid_v.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
 
         // exitCode
         rooted!(&in(cx_ref) let ec_v = Int32Value(exit_code));
-        JS_DefineProperty(cx, proc_h, c"exitCode".as_ptr(), ec_v.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            proc_h,
+            c"exitCode".as_ptr(),
+            ec_v.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
 
         let proc_val = ObjectValue(proc_r.get());
         rooted!(&in(cx_ref) let pv = proc_val);
-        JS_DefineProperty(cx, worker_h, c"process".as_ptr(), pv.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            worker_h,
+            c"process".as_ptr(),
+            pv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     // isConnected
     rooted!(&in(cx_ref) let conn_v = BooleanValue(true));
-    JS_DefineProperty(cx, worker_h, c"isConnected".as_ptr(), conn_v.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        worker_h,
+        c"isConnected".as_ptr(),
+        conn_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // isDead
     let is_dead = exit_code != 0;
     rooted!(&in(cx_ref) let dead_v = BooleanValue(is_dead));
-    JS_DefineProperty(cx, worker_h, c"isDead".as_ptr(), dead_v.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        worker_h,
+        c"isDead".as_ptr(),
+        dead_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // exitedAfterDisconnect
     rooted!(&in(cx_ref) let ead_v = BooleanValue(false));
-    JS_DefineProperty(cx, worker_h, c"exitedAfterDisconnect".as_ptr(), ead_v.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        worker_h,
+        c"exitedAfterDisconnect".as_ptr(),
+        ead_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // _pid (for native kill)
     rooted!(&in(cx_ref) let npid_v = Int32Value(pid as i32));
@@ -435,8 +667,15 @@ unsafe extern "C" fn cluster_fork(
             if !cluster_mod.is_null() {
                 rooted!(&in(cx_ref) let cm_r = cluster_mod);
                 let mut workers_val = UndefinedValue();
-                JS_GetProperty(cx, cm_r.handle().into(), c"workers".as_ptr(),
-                    MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut workers_val });
+                JS_GetProperty(
+                    cx,
+                    cm_r.handle().into(),
+                    c"workers".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut workers_val,
+                    },
+                );
                 if workers_val.is_object() {
                     let workers_obj = workers_val.to_object();
                     rooted!(&in(cx_ref) let workers_r = workers_obj);
@@ -452,7 +691,12 @@ unsafe extern "C" fn cluster_fork(
                         }
                     }
                     rooted!(&in(cx_ref) let id_sv = id_str_val);
-                    JS_SetProperty(cx, workers_r.handle().into(), id_c_str.as_ptr(), wv.handle().into());
+                    JS_SetProperty(
+                        cx,
+                        workers_r.handle().into(),
+                        id_c_str.as_ptr(),
+                        wv.handle().into(),
+                    );
                 }
             }
         }
@@ -472,17 +716,23 @@ unsafe extern "C" fn cluster_disconnect(
     let args = CallArgs::from_vp(vp, _argc);
 
     // Send SIGTERM to all worker processes tracked in cluster.workers.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(
-        ::std::ptr::NonNull::new_unchecked(cx)
-    );
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
     if let Some(cluster_mod) = crate::require::get_builtin(cx_ref.raw_cx(), "cluster") {
         if !cluster_mod.is_null() {
             rooted!(&in(cx_ref) let cm_r = cluster_mod);
             let mut workers_val = UndefinedValue();
-            JS_GetProperty(cx, cm_r.handle().into(), c"workers".as_ptr(),
-                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut workers_val });
+            JS_GetProperty(
+                cx,
+                cm_r.handle().into(),
+                c"workers".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut workers_val,
+                },
+            );
             if workers_val.is_object() {
                 let workers_obj = workers_val.to_object();
                 rooted!(&in(cx_ref) let workers_r = workers_obj);
@@ -492,7 +742,12 @@ unsafe extern "C" fn cluster_disconnect(
                 // For now, just set a flag that the JS shim will pick up.
                 let disconnected_v = BooleanValue(true);
                 rooted!(&in(cx_ref) let dv = disconnected_v);
-                JS_SetProperty(cx, cm_r.handle().into(), c"_disconnecting".as_ptr(), dv.handle().into());
+                JS_SetProperty(
+                    cx,
+                    cm_r.handle().into(),
+                    c"_disconnecting".as_ptr(),
+                    dv.handle().into(),
+                );
             }
         }
     }
@@ -510,9 +765,8 @@ unsafe extern "C" fn cluster_setup_primary(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(
-        ::std::ptr::NonNull::new_unchecked(cx)
-    );
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
     // Store settings on cluster.settings.
@@ -523,7 +777,12 @@ unsafe extern "C" fn cluster_setup_primary(
                 if !cluster_mod.is_null() {
                     rooted!(&in(cx_ref) let cm_r = cluster_mod);
                     rooted!(&in(cx_ref) let sv = settings_val);
-                    JS_SetProperty(cx, cm_r.handle().into(), c"settings".as_ptr(), sv.handle().into());
+                    JS_SetProperty(
+                        cx,
+                        cm_r.handle().into(),
+                        c"settings".as_ptr(),
+                        sv.handle().into(),
+                    );
                 }
             }
         }

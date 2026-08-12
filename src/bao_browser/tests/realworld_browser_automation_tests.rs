@@ -78,10 +78,7 @@ impl Report {
 // title + anchor count via DOM queries. Mirrors how a library consumer would
 // use Bao to scrape a result page from a search engine or aggregator.
 
-fn scenario_single_page_navigation(
-    pool: &bao_browser::PagePool,
-    report: &mut Report,
-) {
+fn scenario_single_page_navigation(pool: &bao_browser::PagePool, report: &mut Report) {
     let name = "scenario_1_single_page_navigation";
     let html = "<html><head><title>Search Results</title></head>\
                 <body>\
@@ -109,7 +106,10 @@ fn scenario_single_page_navigation(
     match page.current_url() {
         Some(url) if url.starts_with("data:text/html") => report.pass(name),
         Some(other) => report.fail(name, &format!("unexpected url: {other}")),
-        None => report.skip(name, "current_url is None (servo did not report url for data:)"),
+        None => report.skip(
+            name,
+            "current_url is None (servo did not report url for data:)",
+        ),
     }
 
     // Sub-assertion: title is the html <title>.
@@ -118,7 +118,10 @@ fn scenario_single_page_navigation(
             report.pass(&format!("{}::title", name));
         }
         Some(other) => report.fail(&format!("{}::title", name), &format!("got '{other}'")),
-        None => report.skip(&format!("{}::title", name), "title not yet propagated by servo"),
+        None => report.skip(
+            &format!("{}::title", name),
+            "title not yet propagated by servo",
+        ),
     }
 
     // Sub-assertion: anchor count via JS.
@@ -130,7 +133,10 @@ fn scenario_single_page_navigation(
             &format!("{}::anchor_count", name),
             &format!("expected '5', got '{other}'"),
         ),
-        Err(e) => report.skip(&format!("{}::anchor_count", name), &format!("evaluate_js failed: {e}")),
+        Err(e) => report.skip(
+            &format!("{}::anchor_count", name),
+            &format!("evaluate_js failed: {e}"),
+        ),
     }
 
     // Sub-assertion: document.title via JS.
@@ -142,7 +148,10 @@ fn scenario_single_page_navigation(
             &format!("{}::document_title", name),
             &format!("expected 'Search Results', got '{other}'"),
         ),
-        Err(e) => report.skip(&format!("{}::document_title", name), &format!("evaluate_js failed: {e}")),
+        Err(e) => report.skip(
+            &format!("{}::document_title", name),
+            &format!("evaluate_js failed: {e}"),
+        ),
     }
 
     let _ = page.close();
@@ -157,10 +166,7 @@ fn scenario_single_page_navigation(
 // content; the test verifies the pool tracks them correctly and each page
 // evaluates against its own DOM.
 
-fn scenario_multi_tab_browsing(
-    pool: &bao_browser::PagePool,
-    report: &mut Report,
-) {
+fn scenario_multi_tab_browsing(pool: &bao_browser::PagePool, report: &mut Report) {
     let name = "scenario_2_multi_tab_browsing";
 
     let tabs = [
@@ -247,7 +253,9 @@ fn scenario_multi_tab_browsing(
             &format!("{}::stats_decreased", name),
             &format!(
                 "closed {} pages, active {} -> {}",
-                page_ids.len(), active_before_close, active_after_close
+                page_ids.len(),
+                active_before_close,
+                active_after_close
             ),
         );
     }
@@ -261,10 +269,7 @@ fn scenario_multi_tab_browsing(
 // verify dynamic content updates. Uses JS to set/read the input value (the
 // same pattern Playwright uses internally for `page.fill()` / `page.$eval()`).
 
-fn scenario_form_interaction(
-    pool: &bao_browser::PagePool,
-    report: &mut Report,
-) {
+fn scenario_form_interaction(pool: &bao_browser::PagePool, report: &mut Report) {
     let name = "scenario_3_form_interaction";
     let html = "<html><head><title>Form Test</title></head><body>\
                 <input id=\"input\" type=\"text\" value=\"\" />\
@@ -290,20 +295,28 @@ fn scenario_form_interaction(
     wait_for_load(&page, 1200);
 
     // Set value via JS (real client would dispatch input event too).
-    let set_script =
-        "(function(){ var el = document.getElementById('input'); el.value = 'Bao'; \
+    let set_script = "(function(){ var el = document.getElementById('input'); el.value = 'Bao'; \
          el.dispatchEvent(new Event('input', { bubbles: true })); return 'set-ok'; })()";
     match page.evaluate_js(set_script) {
         Ok(s) if s == "set-ok" => report.pass(&format!("{}::set_value", name)),
         Ok(other) => report.fail(&format!("{}::set_value", name), &format!("got '{other}'")),
-        Err(e) => report.skip(&format!("{}::set_value", name), &format!("evaluate_js failed: {e}")),
+        Err(e) => report.skip(
+            &format!("{}::set_value", name),
+            &format!("evaluate_js failed: {e}"),
+        ),
     }
 
     // Read back the input value.
     match page.evaluate_js("document.getElementById('input').value") {
         Ok(s) if s == "Bao" => report.pass(&format!("{}::read_value", name)),
-        Ok(other) => report.fail(&format!("{}::read_value", name), &format!("expected 'Bao', got '{other}'")),
-        Err(e) => report.skip(&format!("{}::read_value", name), &format!("evaluate_js failed: {e}")),
+        Ok(other) => report.fail(
+            &format!("{}::read_value", name),
+            &format!("expected 'Bao', got '{other}'"),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::read_value", name),
+            &format!("evaluate_js failed: {e}"),
+        ),
     }
 
     // Verify dynamic content updated via the event listener.
@@ -313,7 +326,10 @@ fn scenario_form_interaction(
             &format!("{}::dynamic_out", name),
             &format!("expected 'Hello, Bao', got '{other}'"),
         ),
-        Err(e) => report.skip(&format!("{}::dynamic_out", name), &format!("evaluate_js failed: {e}")),
+        Err(e) => report.skip(
+            &format!("{}::dynamic_out", name),
+            &format!("evaluate_js failed: {e}"),
+        ),
     }
 
     let _ = page.close();
@@ -327,10 +343,7 @@ fn scenario_form_interaction(
 // for a "preview thumbnail" feature. Verifies PNG magic bytes and non-empty
 // payload — the same check a CDN would do before accepting an upload.
 
-fn scenario_screenshot_capture(
-    pool: &bao_browser::PagePool,
-    report: &mut Report,
-) {
+fn scenario_screenshot_capture(pool: &bao_browser::PagePool, report: &mut Report) {
     let name = "scenario_4_screenshot";
     let html = "<html><head><title>Shot</title></head>\
                 <body style=\"background:#abcdef\"><h1>Visual Test</h1></body></html>";
@@ -364,7 +377,10 @@ fn scenario_screenshot_capture(
             report.pass(&format!("{}::png_nonempty", name));
         }
         Ok(bytes) => {
-            report.fail(&format!("{}::png_nonempty", name), &format!("only {} bytes", bytes.len()));
+            report.fail(
+                &format!("{}::png_nonempty", name),
+                &format!("only {} bytes", bytes.len()),
+            );
         }
         Err(e) => report.skip(
             name,
@@ -391,10 +407,7 @@ fn scenario_screenshot_capture(
 // in this test harness, the scenario is "skipped" not "failed" — the contract
 // is documented and tested in stealth_fingerprint_e2e_tests.rs via JsContext.
 
-fn scenario_stealth_defaults(
-    runtime: &BaoRuntime,
-    report: &mut Report,
-) {
+fn scenario_stealth_defaults(runtime: &BaoRuntime, report: &mut Report) {
     let name = "scenario_5_stealth_defaults";
 
     let page = match runtime.create_page(&PageConfig {
@@ -403,7 +416,10 @@ fn scenario_stealth_defaults(
     }) {
         Ok(p) => p,
         Err(e) => {
-            report.skip(name, &format!("create_page failed (stealth injection path): {e}"));
+            report.skip(
+                name,
+                &format!("create_page failed (stealth injection path): {e}"),
+            );
             return;
         }
     };
@@ -412,8 +428,14 @@ fn scenario_stealth_defaults(
     // navigator.webdriver must be false.
     match page.evaluate_js("navigator.webdriver") {
         Ok(s) if s == "false" => report.pass(&format!("{}::webdriver_false", name)),
-        Ok(other) => report.fail(&format!("{}::webdriver_false", name), &format!("got '{other}'")),
-        Err(e) => report.skip(&format!("{}::webdriver_false", name), &format!("evaluate_js failed: {e}")),
+        Ok(other) => report.fail(
+            &format!("{}::webdriver_false", name),
+            &format!("got '{other}'"),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::webdriver_false", name),
+            &format!("evaluate_js failed: {e}"),
+        ),
     }
 
     // userAgent must contain Firefox (default stealth profile is firefox_default).
@@ -423,14 +445,23 @@ fn scenario_stealth_defaults(
             &format!("{}::ua_firefox", name),
             &format!("UA missing 'Firefox': {other}"),
         ),
-        Err(e) => report.skip(&format!("{}::ua_firefox", name), &format!("evaluate_js failed: {e}")),
+        Err(e) => report.skip(
+            &format!("{}::ua_firefox", name),
+            &format!("evaluate_js failed: {e}"),
+        ),
     }
 
     // navigator.vendor must be empty (Firefox profile contract).
     match page.evaluate_js("navigator.vendor") {
         Ok(s) if s.is_empty() => report.pass(&format!("{}::vendor_empty", name)),
-        Ok(other) => report.fail(&format!("{}::vendor_empty", name), &format!("got '{other}'")),
-        Err(e) => report.skip(&format!("{}::vendor_empty", name), &format!("evaluate_js failed: {e}")),
+        Ok(other) => report.fail(
+            &format!("{}::vendor_empty", name),
+            &format!("got '{other}'"),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::vendor_empty", name),
+            &format!("evaluate_js failed: {e}"),
+        ),
     }
 
     let _ = page.close();
@@ -444,10 +475,7 @@ fn scenario_stealth_defaults(
 // pages, hands them out, and recycles them. Verifies the lifecycle state
 // machine and stats counters behave correctly.
 
-fn scenario_page_lifecycle(
-    pool: &bao_browser::PagePool,
-    report: &mut Report,
-) {
+fn scenario_page_lifecycle(pool: &bao_browser::PagePool, report: &mut Report) {
     let name = "scenario_6_lifecycle";
 
     let stats_before = pool.stats();
@@ -478,8 +506,10 @@ fn scenario_page_lifecycle(
             &format!("{}::stats_after_create", name),
             &format!(
                 "before active={}/created={}, after active={}/created={}",
-                stats_before.active, stats_before.total_created,
-                stats_mid.active, stats_mid.total_created
+                stats_before.active,
+                stats_before.total_created,
+                stats_mid.active,
+                stats_mid.total_created
             ),
         );
     }
@@ -521,14 +551,20 @@ fn scenario_page_lifecycle(
     if nav_err.is_err() {
         report.pass(&format!("{}::nav_err_after_close", name));
     } else {
-        report.fail(&format!("{}::nav_err_after_close", name), "navigate unexpectedly succeeded");
+        report.fail(
+            &format!("{}::nav_err_after_close", name),
+            "navigate unexpectedly succeeded",
+        );
     }
 
     let eval_err = page.evaluate_js("1+1");
     if eval_err.is_err() {
         report.pass(&format!("{}::eval_err_after_close", name));
     } else {
-        report.fail(&format!("{}::eval_err_after_close", name), "evaluate unexpectedly succeeded");
+        report.fail(
+            &format!("{}::eval_err_after_close", name),
+            "evaluate unexpectedly succeeded",
+        );
     }
 
     // Stats reflect the destruction.

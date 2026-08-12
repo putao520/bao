@@ -24,7 +24,7 @@ use std::mem::ManuallyDrop;
 use std::ptr::{self, NonNull};
 use std::sync::{Mutex, OnceLock};
 
-use mozjs::jsapi::{JSContext as RawJSContext, JS_ShutDown, OnNewGlobalHookOption};
+use mozjs::jsapi::{JS_ShutDown, JSContext as RawJSContext, OnNewGlobalHookOption};
 use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
@@ -79,7 +79,9 @@ impl<T> NeverDrop<T> {
     fn set(&self, val: Option<T>) {
         let mut borrow = self.0.borrow_mut();
         if borrow.is_some() {
-            unsafe { ManuallyDrop::drop(&mut *borrow); }
+            unsafe {
+                ManuallyDrop::drop(&mut *borrow);
+            }
         }
         *borrow = ManuallyDrop::new(val);
     }
@@ -175,9 +177,7 @@ pub fn ensure_engine_handle() -> Result<mozjs::rust::JSEngineHandle, JsError> {
         return Ok(handle.clone());
     }
     // Slow path: serialize init so only one thread calls JSEngine::init().
-    let _guard = ENGINE_INIT_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _guard = ENGINE_INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     ensure_engine_handle_locked()
 }
 
@@ -278,12 +278,20 @@ impl JsContext {
         let cx = mozjs::rust::Runtime::get().ok_or_else(|| JsError {
             message: "Runtime::new failed to set CONTEXT TLS".into(),
             filename: "<engine>".into(),
-            line: 0, column: 0, stack: None,
+            line: 0,
+            column: 0,
+            stack: None,
         })?;
 
         let mut cx_wrap = unsafe { mozjs::context::JSContext::from_ptr(cx) };
         if !JobQueue::init(&mut cx_wrap) {
-            return Err(JsError { message: "Failed to init job queue".into(), filename: "<engine>".into(), line: 0, column: 0, stack: None });
+            return Err(JsError {
+                message: "Failed to init job queue".into(),
+                filename: "<engine>".into(),
+                line: 0,
+                column: 0,
+                stack: None,
+            });
         }
         ModuleLoader::init_thread_local(&cx_wrap);
 
@@ -295,7 +303,14 @@ impl JsContext {
 
         crate::dispatch_sm::BaoEventLoop::register_js_context(cx.as_ptr().cast());
 
-        Ok((JsContext { cx, global_setup: None, post_eval_hook: None }, Some(guard)))
+        Ok((
+            JsContext {
+                cx,
+                global_setup: None,
+                post_eval_hook: None,
+            },
+            Some(guard),
+        ))
     }
 
     /// Parasitize servo's Runtime on this thread.
@@ -307,19 +322,31 @@ impl JsContext {
         let cx = mozjs::rust::Runtime::get().ok_or_else(|| JsError {
             message: "servo Runtime not initialized — call JsContext::init_runtime() first".into(),
             filename: "<engine>".into(),
-            line: 0, column: 0, stack: None,
+            line: 0,
+            column: 0,
+            stack: None,
         })?;
 
         let mut cx_wrap = unsafe { mozjs::context::JSContext::from_ptr(cx) };
         if !JobQueue::init(&mut cx_wrap) {
-            return Err(JsError { message: "Failed to init job queue".into(), filename: "<engine>".into(), line: 0, column: 0, stack: None });
+            return Err(JsError {
+                message: "Failed to init job queue".into(),
+                filename: "<engine>".into(),
+                line: 0,
+                column: 0,
+                stack: None,
+            });
         }
         ModuleLoader::init_thread_local(&cx_wrap);
         crate::module_loader::set_job_queue_drain(JobQueue::drain);
 
         crate::dispatch_sm::BaoEventLoop::register_js_context(cx.as_ptr().cast());
 
-        Ok(JsContext { cx, global_setup: None, post_eval_hook: None })
+        Ok(JsContext {
+            cx,
+            global_setup: None,
+            post_eval_hook: None,
+        })
     }
 
     /// Test-only: create a JsContext backed by the TLS-managed Runtime.
@@ -336,16 +363,16 @@ impl JsContext {
         // ensure_engine_handle / init_runtime share one serialized init path.
         // Uses ensure_engine_handle_locked (not ensure_engine_handle) to avoid
         // re-locking the non-reentrant Mutex.
-        let _init_guard = ENGINE_INIT_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _init_guard = ENGINE_INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Refuse to create a new Runtime after the engine has been shut down.
         // JS_ShutDown is irreversible — calling Runtime::new after it will crash.
         if ENGINE_SHUTDOWN.load(Ordering::SeqCst) {
             return Err(JsError {
                 message: "JSEngine has been shut down — cannot create Runtime".into(),
                 filename: "<engine>".into(),
-                line: 0, column: 0, stack: None,
+                line: 0,
+                column: 0,
+                stack: None,
             });
         }
 
@@ -362,12 +389,20 @@ impl JsContext {
         let cx = mozjs::rust::Runtime::get().ok_or_else(|| JsError {
             message: "Runtime::new failed to set CONTEXT TLS".into(),
             filename: "<engine>".into(),
-            line: 0, column: 0, stack: None,
+            line: 0,
+            column: 0,
+            stack: None,
         })?;
 
         let mut cx_wrap = unsafe { mozjs::context::JSContext::from_ptr(cx) };
         if !JobQueue::init(&mut cx_wrap) {
-            return Err(JsError { message: "Failed to init job queue".into(), filename: "<engine>".into(), line: 0, column: 0, stack: None });
+            return Err(JsError {
+                message: "Failed to init job queue".into(),
+                filename: "<engine>".into(),
+                line: 0,
+                column: 0,
+                stack: None,
+            });
         }
         ModuleLoader::init_thread_local(&cx_wrap);
         crate::module_loader::set_job_queue_drain(JobQueue::drain);
@@ -377,7 +412,11 @@ impl JsContext {
 
         crate::dispatch_sm::BaoEventLoop::register_js_context(cx.as_ptr().cast());
 
-        Ok(JsContext { cx, global_setup: None, post_eval_hook: None })
+        Ok(JsContext {
+            cx,
+            global_setup: None,
+            post_eval_hook: None,
+        })
     }
 
     /// Explicitly shut down the test Runtime stored in thread_local.
@@ -474,12 +513,22 @@ impl JsContext {
         unsafe { mozjs::context::JSContext::from_ptr(self.cx) }
     }
 
-    pub fn raw_cx(&self) -> *mut RawJSContext { self.cx.as_ptr() }
+    pub fn raw_cx(&self) -> *mut RawJSContext {
+        self.cx.as_ptr()
+    }
 
-    pub fn set_global_setup(&mut self, setup: GlobalSetupFn) { self.global_setup = Some(setup); }
-    pub fn set_post_eval_hook(&mut self, hook: PostEvalHook) { self.post_eval_hook = Some(hook); }
-    pub fn global_setup(&self) -> Option<GlobalSetupFn> { self.global_setup }
-    pub fn post_eval_hook(&self) -> Option<PostEvalHook> { self.post_eval_hook }
+    pub fn set_global_setup(&mut self, setup: GlobalSetupFn) {
+        self.global_setup = Some(setup);
+    }
+    pub fn set_post_eval_hook(&mut self, hook: PostEvalHook) {
+        self.post_eval_hook = Some(hook);
+    }
+    pub fn global_setup(&self) -> Option<GlobalSetupFn> {
+        self.global_setup
+    }
+    pub fn post_eval_hook(&self) -> Option<PostEvalHook> {
+        self.post_eval_hook
+    }
 
     pub fn eval(&mut self, source: &str, filename: &str) -> Result<JsValue, JsError> {
         let global_setup = self.global_setup;
@@ -527,7 +576,9 @@ impl JsContext {
                 if let Some(hook) = post_eval_hook {
                     loop {
                         mozjs::jsapi::js::RunJobs(raw_cx);
-                        if !hook(realm_cx) { break; }
+                        if !hook(realm_cx) {
+                            break;
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(1));
                     }
                 }
@@ -546,9 +597,21 @@ fn extract_exception(cx: &mut mozjs::context::JSContext) -> JsError {
     if let Some(info) = unsafe {
         mozjs::rust::error_info_from_exception_stack(cx.raw_cx_no_gc(), exn.handle_mut().into())
     } {
-        JsError { message: info.message, filename: info.filename, line: info.line, column: info.col, stack: None }
+        JsError {
+            message: info.message,
+            filename: info.filename,
+            line: info.line,
+            column: info.col,
+            stack: None,
+        }
     } else {
-        JsError { message: "Unknown JS error".into(), filename: "<unknown>".into(), line: 0, column: 0, stack: None }
+        JsError {
+            message: "Unknown JS error".into(),
+            filename: "<unknown>".into(),
+            line: 0,
+            column: 0,
+            stack: None,
+        }
     }
 }
 

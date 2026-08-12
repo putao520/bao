@@ -4,8 +4,8 @@
 // multi-class source, configurable/hasPendingActivity flags.
 
 use bao_engine::codegen::{
-    ClassDef, PropertyDef, PropertyKind, ParseResult,
-    parse_classes, generate_bindings, generate_all,
+    ClassDef, ParseResult, PropertyDef, PropertyKind, generate_all, generate_bindings,
+    parse_classes,
 };
 
 // ---- JsError ----
@@ -367,15 +367,23 @@ fn test_bindings_with_mixed_property_kinds() {
         proto: vec![
             PropertyDef {
                 name: "width".into(),
-                kind: PropertyKind::Getter { fn_name: "get_w".into(), cache: true },
+                kind: PropertyKind::Getter {
+                    fn_name: "get_w".into(),
+                    cache: true,
+                },
             },
             PropertyDef {
                 name: "resize".into(),
-                kind: PropertyKind::Method { fn_name: "do_resize".into(), length: 2 },
+                kind: PropertyKind::Method {
+                    fn_name: "do_resize".into(),
+                    length: 2,
+                },
             },
             PropertyDef {
                 name: "value".into(),
-                kind: PropertyKind::Setter { fn_name: "set_v".into() },
+                kind: PropertyKind::Setter {
+                    fn_name: "set_v".into(),
+                },
             },
             PropertyDef {
                 name: "data".into(),
@@ -401,15 +409,23 @@ fn test_generate_all_key_matches_name() {
     let cds = vec![
         ClassDef {
             name: "X".into(),
-            construct: false, no_constructor: true, finalize: false,
-            configurable: false, has_pending_activity: false,
-            proto: vec![], static_props: vec![],
+            construct: false,
+            no_constructor: true,
+            finalize: false,
+            configurable: false,
+            has_pending_activity: false,
+            proto: vec![],
+            static_props: vec![],
         },
         ClassDef {
             name: "Y".into(),
-            construct: false, no_constructor: true, finalize: false,
-            configurable: false, has_pending_activity: false,
-            proto: vec![], static_props: vec![],
+            construct: false,
+            no_constructor: true,
+            finalize: false,
+            configurable: false,
+            has_pending_activity: false,
+            proto: vec![],
+            static_props: vec![],
         },
     ];
     let all = generate_all(&cds);

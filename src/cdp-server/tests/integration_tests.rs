@@ -2,7 +2,7 @@
 // @trace TEST-CDS-007 [req:REQ-CDS-002] [level:integration]
 // @trace TEST-CDS-008 [req:REQ-CDS-003] [level:integration]
 
-use cdp_server::{CdpServer, DomainHandler, DomainRegistry, EventSender, ServerConfig, CdpError};
+use cdp_server::{CdpError, CdpServer, DomainHandler, DomainRegistry, EventSender, ServerConfig};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -17,12 +17,22 @@ use std::time::Duration;
 struct TestHandler;
 
 impl DomainHandler for TestHandler {
-    fn domain_name(&self) -> &'static str { "Test" }
-    fn handle_command(&self, command: &str, params: Value, _es: &dyn EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        "Test"
+    }
+    fn handle_command(
+        &self,
+        command: &str,
+        params: Value,
+        _es: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         match command {
             "Test.hello" => Ok(json!({ "message": "world" })),
             "Test.echo" => Ok(json!({ "params": params })),
-            _ => Err(CdpError { code: -32601, message: format!("'{}' wasn't found", command) }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' wasn't found", command),
+            }),
         }
     }
 }
@@ -43,10 +53,7 @@ fn find_free_port() -> u16 {
 
 fn start_server(port: u16) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let config = ServerConfig::builder()
-            .host("127.0.0.1")
-            .port(port)
-            .build();
+        let config = ServerConfig::builder().host("127.0.0.1").port(port).build();
         let reg = Arc::new(DomainRegistry::<TestHandler>::new());
         reg.register(TestHandler).unwrap();
         let mut server = CdpServer::with_registry(config, reg);
@@ -60,9 +67,13 @@ fn http_get(url: &str) -> String {
     let path_start = stripped.find('/').unwrap_or(stripped.len());
     let host = &stripped[..path_start];
     let path = &stripped[path_start..];
-    if path.is_empty() { return String::new(); }
+    if path.is_empty() {
+        return String::new();
+    }
     let mut stream = TcpStream::connect(host).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     write!(stream, "GET {} HTTP/1.1\r\nHost: {}\r\n\r\n", path, host).unwrap();
     stream.flush().unwrap();
     let mut buf = vec![0u8; 8192];
@@ -85,7 +96,9 @@ fn ws_request(port: u16, target_id: &str, messages: &[&str]) -> Vec<String> {
         thread::sleep(Duration::from_millis(50));
         match ws.read() {
             Ok(Message::Text(text)) => responses.push(text.to_string()),
-            Ok(Message::Binary(data)) => responses.push(String::from_utf8_lossy(&data).into_owned()),
+            Ok(Message::Binary(data)) => {
+                responses.push(String::from_utf8_lossy(&data).into_owned())
+            }
             _ => {}
         }
     }
@@ -137,9 +150,11 @@ fn test_websocket_command_dispatch() {
     let _handle = start_server(port);
     thread::sleep(Duration::from_millis(200));
 
-    let responses = ws_request(port, "test-target", &[
-        r#"{"id":1,"method":"Test.hello","params":{}}"#,
-    ]);
+    let responses = ws_request(
+        port,
+        "test-target",
+        &[r#"{"id":1,"method":"Test.hello","params":{}}"#],
+    );
     assert_eq!(responses.len(), 1);
     let resp: Value = serde_json::from_str(&responses[0]).unwrap();
     assert_eq!(resp["id"], 1);
@@ -152,9 +167,11 @@ fn test_websocket_echo_params() {
     let _handle = start_server(port);
     thread::sleep(Duration::from_millis(200));
 
-    let responses = ws_request(port, "test-target", &[
-        r#"{"id":2,"method":"Test.echo","params":{"key":"value","num":42}}"#,
-    ]);
+    let responses = ws_request(
+        port,
+        "test-target",
+        &[r#"{"id":2,"method":"Test.echo","params":{"key":"value","num":42}}"#],
+    );
     assert_eq!(responses.len(), 1);
     let resp: Value = serde_json::from_str(&responses[0]).unwrap();
     assert_eq!(resp["id"], 2);
@@ -168,9 +185,11 @@ fn test_websocket_unknown_method() {
     let _handle = start_server(port);
     thread::sleep(Duration::from_millis(200));
 
-    let responses = ws_request(port, "test-target", &[
-        r#"{"id":3,"method":"Test.nonexistent","params":{}}"#,
-    ]);
+    let responses = ws_request(
+        port,
+        "test-target",
+        &[r#"{"id":3,"method":"Test.nonexistent","params":{}}"#],
+    );
     assert_eq!(responses.len(), 1);
     let resp: Value = serde_json::from_str(&responses[0]).unwrap();
     assert_eq!(resp["id"], 3);
@@ -183,9 +202,11 @@ fn test_websocket_unknown_domain() {
     let _handle = start_server(port);
     thread::sleep(Duration::from_millis(200));
 
-    let responses = ws_request(port, "test-target", &[
-        r#"{"id":4,"method":"Unknown.method","params":{}}"#,
-    ]);
+    let responses = ws_request(
+        port,
+        "test-target",
+        &[r#"{"id":4,"method":"Unknown.method","params":{}}"#],
+    );
     assert_eq!(responses.len(), 1);
     let resp: Value = serde_json::from_str(&responses[0]).unwrap();
     assert_eq!(resp["id"], 4);
@@ -198,9 +219,7 @@ fn test_websocket_invalid_json() {
     let _handle = start_server(port);
     thread::sleep(Duration::from_millis(200));
 
-    let responses = ws_request(port, "test-target", &[
-        r#"not valid json"#,
-    ]);
+    let responses = ws_request(port, "test-target", &[r#"not valid json"#]);
     assert_eq!(responses.len(), 1);
     let resp: Value = serde_json::from_str(&responses[0]).unwrap();
     assert_eq!(resp["error"]["code"], -32600);
@@ -212,11 +231,15 @@ fn test_websocket_multiple_commands() {
     let _handle = start_server(port);
     thread::sleep(Duration::from_millis(200));
 
-    let responses = ws_request(port, "test-target", &[
-        r#"{"id":10,"method":"Test.hello","params":{}}"#,
-        r#"{"id":11,"method":"Test.echo","params":{"x":1}}"#,
-        r#"{"id":12,"method":"Test.hello","params":{}}"#,
-    ]);
+    let responses = ws_request(
+        port,
+        "test-target",
+        &[
+            r#"{"id":10,"method":"Test.hello","params":{}}"#,
+            r#"{"id":11,"method":"Test.echo","params":{"x":1}}"#,
+            r#"{"id":12,"method":"Test.hello","params":{}}"#,
+        ],
+    );
     assert_eq!(responses.len(), 3);
 
     let r0: Value = serde_json::from_str(&responses[0]).unwrap();

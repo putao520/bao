@@ -21,8 +21,15 @@ struct CountingHandler {
 }
 
 impl DomainHandler for CountingHandler {
-    fn domain_name(&self) -> &'static str { self.name }
-    fn handle_command(&self, cmd: &str, _params: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        _params: Value,
+        _: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(json!({"cmd": cmd, "domain": self.name}))
     }
@@ -229,16 +236,30 @@ fn test_registry_dispatch_routes_correctly() {
     let c1 = Arc::new(AtomicUsize::new(0));
     let c2 = Arc::new(AtomicUsize::new(0));
 
-    reg.register(CountingHandler { name: "Page", count: c1.clone() }).unwrap();
-    reg.register(CountingHandler { name: "Runtime", count: c2.clone() }).unwrap();
+    reg.register(CountingHandler {
+        name: "Page",
+        count: c1.clone(),
+    })
+    .unwrap();
+    reg.register(CountingHandler {
+        name: "Runtime",
+        count: c2.clone(),
+    })
+    .unwrap();
 
-    let r1 = reg.dispatch_command("Page.navigate", json!({}), &NopSender).unwrap().unwrap();
+    let r1 = reg
+        .dispatch_command("Page.navigate", json!({}), &NopSender)
+        .unwrap()
+        .unwrap();
     assert_eq!(r1["domain"], "Page");
     assert_eq!(r1["cmd"], "Page.navigate");
     assert_eq!(c1.load(Ordering::SeqCst), 1);
     assert_eq!(c2.load(Ordering::SeqCst), 0);
 
-    let r2 = reg.dispatch_command("Runtime.evaluate", json!({}), &NopSender).unwrap().unwrap();
+    let r2 = reg
+        .dispatch_command("Runtime.evaluate", json!({}), &NopSender)
+        .unwrap()
+        .unwrap();
     assert_eq!(r2["domain"], "Runtime");
     assert_eq!(c1.load(Ordering::SeqCst), 1);
     assert_eq!(c2.load(Ordering::SeqCst), 1);
@@ -247,7 +268,9 @@ fn test_registry_dispatch_routes_correctly() {
 #[test]
 fn test_registry_dispatch_unknown_returns_none() {
     let reg = DomainRegistry::<CountingHandler>::new();
-    assert!(reg.dispatch_command("Unknown.method", json!({}), &NopSender).is_none());
+    assert!(reg
+        .dispatch_command("Unknown.method", json!({}), &NopSender)
+        .is_none());
 }
 
 #[test]
@@ -259,14 +282,20 @@ fn test_registry_dispatch_empty_method_returns_none() {
 #[test]
 fn test_registry_dispatch_no_dot_returns_none() {
     let reg = DomainRegistry::<CountingHandler>::new();
-    assert!(reg.dispatch_command("NoDot", json!({}), &NopSender).is_none());
+    assert!(reg
+        .dispatch_command("NoDot", json!({}), &NopSender)
+        .is_none());
 }
 
 #[test]
 fn test_registry_has_domain() {
     let reg = DomainRegistry::<CountingHandler>::new();
     assert!(!reg.has_domain("Page"));
-    reg.register(CountingHandler { name: "Page", count: Arc::new(AtomicUsize::new(0)) }).unwrap();
+    reg.register(CountingHandler {
+        name: "Page",
+        count: Arc::new(AtomicUsize::new(0)),
+    })
+    .unwrap();
     assert!(reg.has_domain("Page"));
     assert!(!reg.has_domain("Runtime"));
 }
@@ -299,7 +328,10 @@ fn test_cdp_response_error_serializes() {
     let resp = CdpResponse {
         id: Some(42),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -312,20 +344,29 @@ fn test_cdp_response_error_serializes() {
 
 #[test]
 fn test_cdp_error_fields() {
-    let err = CdpError { code: -32600, message: "invalid request".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "invalid request".into(),
+    };
     assert_eq!(err.code, -32600);
     assert_eq!(err.message, "invalid request");
 }
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32700, message: "parse error".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "parse error".into(),
+    };
     assert!(format!("{:?}", err).contains("-32700"));
 }
 
 #[test]
 fn test_cdp_error_serialize_roundtrip() {
-    let err = CdpError { code: -32000, message: "internal".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "internal".into(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["code"], -32000);
@@ -438,7 +479,8 @@ fn test_cdp_server_register_and_check() {
     reg.register(CountingHandler {
         name: "Page",
         count: Arc::new(AtomicUsize::new(0)),
-    }).unwrap();
+    })
+    .unwrap();
     let server = CdpServer::with_registry(ServerConfig::default(), reg);
     assert!(server.registry().has_domain("Page"));
 }
@@ -521,7 +563,10 @@ fn test_cdp_message_params_null_vs_absent() {
     // this so consumers cannot rely on distinguishing null from absent.
     let with_null: CdpMessage =
         serde_json::from_str(r#"{"id":1,"method":"T.x","params":null}"#).unwrap();
-    assert_eq!(with_null.params, None, "JSON null must deserialize to None, not Some(Null)");
+    assert_eq!(
+        with_null.params, None,
+        "JSON null must deserialize to None, not Some(Null)"
+    );
 
     let absent: CdpMessage = serde_json::from_str(r#"{"id":1,"method":"T.x"}"#).unwrap();
     assert_eq!(absent.params, None);
@@ -567,10 +612,21 @@ fn test_cdp_message_id_string_rejected() {
 fn test_cdp_response_result_and_error_mutually_exclusive_at_construction() {
     // Although struct allows both, the construction helpers enforce mutual
     // exclusivity. Verify the canonical shapes never carry both fields set.
-    let ok = CdpResponse { id: Some(1), result: Some(json!({"v": 1})), error: None };
+    let ok = CdpResponse {
+        id: Some(1),
+        result: Some(json!({"v": 1})),
+        error: None,
+    };
     assert!(ok.result.is_some() && ok.error.is_none());
 
-    let err = CdpResponse { id: Some(1), result: None, error: Some(CdpError { code: -32601, message: "x".into() }) };
+    let err = CdpResponse {
+        id: Some(1),
+        result: None,
+        error: Some(CdpError {
+            code: -32601,
+            message: "x".into(),
+        }),
+    };
     assert!(err.result.is_none() && err.error.is_some());
 }
 
@@ -580,11 +636,17 @@ fn test_cdp_response_error_serializes_skip_result_when_none() {
     let resp = CdpResponse {
         id: Some(99),
         result: None,
-        error: Some(CdpError { code: -32601, message: "Method not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "Method not found".into(),
+        }),
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
-    assert!(v.get("result").is_none(), "result must be absent on error path");
+    assert!(
+        v.get("result").is_none(),
+        "result must be absent on error path"
+    );
     assert_eq!(v["error"]["code"], -32601);
     assert_eq!(v["error"]["message"], "Method not found");
 }
@@ -599,7 +661,10 @@ fn test_cdp_response_result_serializes_skip_error_when_none() {
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
-    assert!(v.get("error").is_none(), "error must be absent on success path");
+    assert!(
+        v.get("error").is_none(),
+        "error must be absent on success path"
+    );
     assert_eq!(v["result"]["frameId"], "f1");
 }
 
@@ -607,7 +672,10 @@ fn test_cdp_response_result_serializes_skip_error_when_none() {
 fn test_jsonrpc_error_code_invalid_request_value() {
     // C7: invalid JSON request → -32600. Construct the canonical error shape
     // and assert the wire code matches JSON-RPC 2.0 Invalid Request.
-    let err = CdpError { code: -32600, message: "Invalid Request".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "Invalid Request".into(),
+    };
     let raw = serde_json::to_string(&err).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(v["code"].as_i64(), Some(-32600));
@@ -616,7 +684,10 @@ fn test_jsonrpc_error_code_invalid_request_value() {
 #[test]
 fn test_jsonrpc_error_code_method_not_found_value() {
     // C8: unknown Domain.Method → -32601.
-    let err = CdpError { code: -32601, message: "Method not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "Method not found".into(),
+    };
     let raw = serde_json::to_string(&err).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(v["code"].as_i64(), Some(-32601));
@@ -625,7 +696,10 @@ fn test_jsonrpc_error_code_method_not_found_value() {
 #[test]
 fn test_jsonrpc_error_code_parse_error_value() {
     // Parse error canonical code -32700.
-    let err = CdpError { code: -32700, message: "Parse error".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "Parse error".into(),
+    };
     let v: Value = serde_json::from_str(&serde_json::to_string(&err).unwrap()).unwrap();
     assert_eq!(v["code"].as_i64(), Some(-32700));
 }
@@ -633,7 +707,10 @@ fn test_jsonrpc_error_code_parse_error_value() {
 #[test]
 fn test_jsonrpc_error_code_internal_error_value() {
     // Internal error canonical code -32603.
-    let err = CdpError { code: -32603, message: "Internal error".into() };
+    let err = CdpError {
+        code: -32603,
+        message: "Internal error".into(),
+    };
     let v: Value = serde_json::from_str(&serde_json::to_string(&err).unwrap()).unwrap();
     assert_eq!(v["code"].as_i64(), Some(-32603));
 }
@@ -661,7 +738,11 @@ fn test_cdp_event_strictly_no_id_key() {
         params: Some(json!({"frameId": "f1"})),
     };
     let raw = serde_json::to_string(&ev).unwrap();
-    assert!(!raw.contains("\"id\""), "event payload leaked an id field: {}", raw);
+    assert!(
+        !raw.contains("\"id\""),
+        "event payload leaked an id field: {}",
+        raw
+    );
     let v: Value = serde_json::from_str(&raw).unwrap();
     assert!(v.get("id").is_none());
     assert_eq!(v["method"], "Page.frameNavigated");
@@ -670,7 +751,10 @@ fn test_cdp_event_strictly_no_id_key() {
 #[test]
 fn test_cdp_event_without_params_has_only_method_key() {
     // C4 + minimal-shape: no params → only "method" key present.
-    let ev = CdpEvent { method: "DOM.updated".into(), params: None };
+    let ev = CdpEvent {
+        method: "DOM.updated".into(),
+        params: None,
+    };
     let raw = serde_json::to_string(&ev).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
     let keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
@@ -681,8 +765,15 @@ fn test_cdp_event_without_params_has_only_method_key() {
 fn test_cdp_event_method_must_be_dotted_domain_event() {
     // C4: method format "Domain.eventName". Adversarial: confirm the wire
     // preserves the dotted form verbatim (no normalization).
-    for method in ["Page.loadEventFired", "Runtime.consoleAPICalled", "Target.targetDestroyed"] {
-        let ev = CdpEvent { method: method.into(), params: None };
+    for method in [
+        "Page.loadEventFired",
+        "Runtime.consoleAPICalled",
+        "Target.targetDestroyed",
+    ] {
+        let ev = CdpEvent {
+            method: method.into(),
+            params: None,
+        };
         let raw = serde_json::to_string(&ev).unwrap();
         let v: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["method"], method);
@@ -703,7 +794,10 @@ fn test_handler_can_broadcast_via_event_sender() {
     }
     impl EventSender for CapturingSender {
         fn send_event(&self, method: &str, params: Value) {
-            self.captured.lock().unwrap().push((method.to_string(), params));
+            self.captured
+                .lock()
+                .unwrap()
+                .push((method.to_string(), params));
         }
     }
 
@@ -711,8 +805,15 @@ fn test_handler_can_broadcast_via_event_sender() {
         captured: Arc<Mutex<Vec<(String, Value)>>>,
     }
     impl DomainHandler for BroadcastingHandler {
-        fn domain_name(&self) -> &'static str { "Page" }
-        fn handle_command(&self, cmd: &str, _params: Value, sender: &dyn EventSender) -> Result<Value, CdpError> {
+        fn domain_name(&self) -> &'static str {
+            "Page"
+        }
+        fn handle_command(
+            &self,
+            cmd: &str,
+            _params: Value,
+            sender: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
             // C1: handler exercises the EventSender.
             sender.send_event("Page.frameNavigated", json!({"cmd": cmd}));
             Ok(json!({"ok": true}))
@@ -723,9 +824,17 @@ fn test_handler_can_broadcast_via_event_sender() {
 
     let captured = Arc::new(Mutex::new(Vec::new()));
     let reg = DomainRegistry::new();
-    reg.register(BroadcastingHandler { captured: captured.clone() }).unwrap();
-    let sender = CapturingSender { captured: captured.clone() };
-    let res = reg.dispatch_command("Page.navigate", json!({}), &sender).unwrap().unwrap();
+    reg.register(BroadcastingHandler {
+        captured: captured.clone(),
+    })
+    .unwrap();
+    let sender = CapturingSender {
+        captured: captured.clone(),
+    };
+    let res = reg
+        .dispatch_command("Page.navigate", json!({}), &sender)
+        .unwrap()
+        .unwrap();
     assert_eq!(res["ok"], true);
     let events = captured.lock().unwrap();
     assert_eq!(events.len(), 1);
@@ -739,12 +848,27 @@ fn test_handler_can_broadcast_via_event_sender() {
 fn test_registry_register_duplicate_returns_err_with_domain_name() {
     // C5: re-registering the same domain_name must Err (no silent overwrite).
     let reg = DomainRegistry::<CountingHandler>::new();
-    reg.register(CountingHandler { name: "Page", count: Arc::new(AtomicUsize::new(0)) }).unwrap();
+    reg.register(CountingHandler {
+        name: "Page",
+        count: Arc::new(AtomicUsize::new(0)),
+    })
+    .unwrap();
     let err = reg
-        .register(CountingHandler { name: "Page", count: Arc::new(AtomicUsize::new(0)) })
+        .register(CountingHandler {
+            name: "Page",
+            count: Arc::new(AtomicUsize::new(0)),
+        })
         .unwrap_err();
-    assert!(err.contains("Page"), "error must name the conflicting domain: {}", err);
-    assert!(err.contains("already"), "error must indicate conflict: {}", err);
+    assert!(
+        err.contains("Page"),
+        "error must name the conflicting domain: {}",
+        err
+    );
+    assert!(
+        err.contains("already"),
+        "error must indicate conflict: {}",
+        err
+    );
 }
 
 #[test]
@@ -753,20 +877,41 @@ fn test_registry_register_duplicate_does_not_overwrite_handler() {
     // handler must still be the one dispatched to.
     let reg = DomainRegistry::<CountingHandler>::new();
     let original_count = Arc::new(AtomicUsize::new(0));
-    reg.register(CountingHandler { name: "Page", count: original_count.clone() }).unwrap();
+    reg.register(CountingHandler {
+        name: "Page",
+        count: original_count.clone(),
+    })
+    .unwrap();
     let _ = reg
-        .register(CountingHandler { name: "Page", count: Arc::new(AtomicUsize::new(0)) })
+        .register(CountingHandler {
+            name: "Page",
+            count: Arc::new(AtomicUsize::new(0)),
+        })
         .unwrap_err();
-    reg.dispatch_command("Page.navigate", json!({}), &NopSender).unwrap().unwrap();
-    assert_eq!(original_count.load(Ordering::SeqCst), 1, "original handler must remain registered");
+    reg.dispatch_command("Page.navigate", json!({}), &NopSender)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        original_count.load(Ordering::SeqCst),
+        1,
+        "original handler must remain registered"
+    );
 }
 
 #[test]
 fn test_registry_register_distinct_domains_both_dispatchable() {
     // C5 (no-conflict): different domain_names register independently.
     let reg = DomainRegistry::<CountingHandler>::new();
-    reg.register(CountingHandler { name: "Page", count: Arc::new(AtomicUsize::new(0)) }).unwrap();
-    reg.register(CountingHandler { name: "Network", count: Arc::new(AtomicUsize::new(0)) }).unwrap();
+    reg.register(CountingHandler {
+        name: "Page",
+        count: Arc::new(AtomicUsize::new(0)),
+    })
+    .unwrap();
+    reg.register(CountingHandler {
+        name: "Network",
+        count: Arc::new(AtomicUsize::new(0)),
+    })
+    .unwrap();
     assert!(reg.has_domain("Page"));
     assert!(reg.has_domain("Network"));
 }
@@ -781,7 +926,9 @@ struct LifecycleHandler {
 }
 
 impl DomainHandler for LifecycleHandler {
-    fn domain_name(&self) -> &'static str { self.name }
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
     fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
         Ok(json!({}))
     }
@@ -807,7 +954,8 @@ fn test_registry_notify_session_created_invokes_callback_with_session_id() {
         created: created.clone(),
         destroyed: destroyed.clone(),
         last_session: last.clone(),
-    }).unwrap();
+    })
+    .unwrap();
 
     reg.notify_session_created("Page", "sess-xyz");
     assert_eq!(created.load(Ordering::SeqCst), 1);
@@ -827,7 +975,8 @@ fn test_registry_notify_session_destroyed_invokes_callback_with_session_id() {
         created: created.clone(),
         destroyed: destroyed.clone(),
         last_session: last.clone(),
-    }).unwrap();
+    })
+    .unwrap();
 
     reg.notify_session_destroyed(&["Runtime".to_string()], "sess-end");
     assert_eq!(destroyed.load(Ordering::SeqCst), 1);
@@ -848,7 +997,8 @@ fn test_registry_notify_session_destroyed_skips_unregistered_domains() {
         created: created.clone(),
         destroyed: destroyed.clone(),
         last_session: last.clone(),
-    }).unwrap();
+    })
+    .unwrap();
 
     reg.notify_session_destroyed(
         &["Page".to_string(), "NoSuchDomain".to_string()],
@@ -877,9 +1027,14 @@ fn test_registry_notify_session_destroyed_empty_slice_noop() {
 
 struct FailingHandler;
 impl DomainHandler for FailingHandler {
-    fn domain_name(&self) -> &'static str { "Boom" }
+    fn domain_name(&self) -> &'static str {
+        "Boom"
+    }
     fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
-        Err(CdpError { code: -32000, message: "boom".into() })
+        Err(CdpError {
+            code: -32000,
+            message: "boom".into(),
+        })
     }
 }
 
@@ -906,8 +1061,12 @@ fn test_registry_dispatch_unknown_domain_returns_none_distinct_from_err() {
     // (Method not found vs handler error) and must stay distinguishable.
     let reg = DomainRegistry::new();
     reg.register(FailingHandler).unwrap();
-    assert!(reg.dispatch_command("Other.method", json!({}), &NopSender).is_none());
-    assert!(reg.dispatch_command("Boom.crash", json!({}), &NopSender).is_some());
+    assert!(reg
+        .dispatch_command("Other.method", json!({}), &NopSender)
+        .is_none());
+    assert!(reg
+        .dispatch_command("Boom.crash", json!({}), &NopSender)
+        .is_some());
 }
 
 // ---- EmptyHandler contract (default registry type) ----
@@ -924,7 +1083,9 @@ fn test_empty_handler_returns_method_not_found_error() {
     use cdp_server::EmptyHandler;
     // EmptyHandler must refuse all commands with the canonical -32601 code.
     let h = EmptyHandler;
-    let err = h.handle_command("Anything.go", json!({}), &NopSender).unwrap_err();
+    let err = h
+        .handle_command("Anything.go", json!({}), &NopSender)
+        .unwrap_err();
     assert_eq!(err.code, -32601);
     assert!(err.message.contains("empty"));
 }
@@ -1031,7 +1192,10 @@ fn test_server_config_builder_protocol_version_not_settable() {
         .browser_name("X")
         .user_agent("Y")
         .build();
-    assert_eq!(cfg.protocol_version, "1.3", "protocol_version must remain pinned to 1.3");
+    assert_eq!(
+        cfg.protocol_version, "1.3",
+        "protocol_version must remain pinned to 1.3"
+    );
 }
 
 #[test]
@@ -1071,7 +1235,10 @@ fn test_target_info_rust_field_target_type_maps_to_json_type() {
     let v: Value = serde_json::from_str(&serde_json::to_string(&info).unwrap()).unwrap();
     // Must use the CDP-canonical "type" key, NOT "target_type".
     assert!(v.get("type").is_some(), "must serialize as \"type\"");
-    assert!(v.get("target_type").is_none(), "must NOT leak the rust field name");
+    assert!(
+        v.get("target_type").is_none(),
+        "must NOT leak the rust field name"
+    );
     assert_eq!(v["type"], "page");
 }
 
@@ -1080,7 +1247,8 @@ fn test_target_info_deserialize_requires_type_alias() {
     // Adversarial: JSON using the rust field name "target_type" must FAIL
     // because #[serde(rename = "type")] has NO alias — the original name is
     // rejected as a missing `type` field. Document this strict one-way rename.
-    let bad = r#"{"id":"t","target_type":"page","title":"T","url":"u","web_socket_debugger_url":"ws"}"#;
+    let bad =
+        r#"{"id":"t","target_type":"page","title":"T","url":"u","web_socket_debugger_url":"ws"}"#;
     let result: Result<TargetInfo, _> = serde_json::from_str(bad);
     let err = result.unwrap_err();
     assert!(
@@ -1163,7 +1331,8 @@ fn test_cdp_server_with_registry_uses_provided_registry() {
     reg.register(CountingHandler {
         name: "Network",
         count: Arc::new(AtomicUsize::new(0)),
-    }).unwrap();
+    })
+    .unwrap();
     let server = CdpServer::with_registry(ServerConfig::default(), reg);
     assert!(server.registry().has_domain("Network"));
     assert!(!server.registry().has_domain("Page"));
@@ -1196,7 +1365,11 @@ fn test_cdp_server_ws_url_for_target_strict_format() {
 fn test_cdp_server_ws_url_for_target_preserves_special_target_ids() {
     // Adversarial: target ids with hyphens, underscores, digits, mixed case.
     let server = CdpServer::new(ServerConfig::builder().host("127.0.0.1").port(9222).build());
-    for tid in ["ABC-123_def", "00000000000000000000000000000000", "a-b-C-D_E-F"] {
+    for tid in [
+        "ABC-123_def",
+        "00000000000000000000000000000000",
+        "a-b-C-D_E-F",
+    ] {
         let url = server.ws_url_for_target(tid);
         assert!(url.ends_with(&format!("/devtools/page/{}", tid)));
     }
@@ -1241,7 +1414,11 @@ fn test_event_broadcaster_clone_shares_session_arc() {
     // Adversarial: clone() must share the SAME sessions Arc (not deep-copy).
     // Build the canonical SessionMap shape so the type matches EventBroadcaster's
     // internal map (HashMap<String, Arc<Mutex<CdpSession>>>).
-    type SessionMap = Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>>;
+    type SessionMap = Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>,
+        >,
+    >;
     // We cannot easily construct a CdpSession (needs a WebSocket), so verify
     // Arc sharing structurally: clone yields a broadcaster whose internal
     // sessions Arc is pointer-equal to the one we passed in.
@@ -1298,7 +1475,12 @@ fn test_session_state_all_variants_pairwise_distinct() {
 fn test_session_state_discriminants_are_unique_u8() {
     // Adversarial: the four states must occupy four distinct discriminant values.
     let mut seen = std::collections::HashSet::new();
-    for s in [SessionState::Created, SessionState::Active, SessionState::Closing, SessionState::Closed] {
+    for s in [
+        SessionState::Created,
+        SessionState::Active,
+        SessionState::Closing,
+        SessionState::Closed,
+    ] {
         seen.insert(s as u8);
     }
     assert_eq!(seen.len(), 4);
@@ -1344,7 +1526,10 @@ fn test_session_error_closed_and_io_distinct() {
 
 #[test]
 fn test_cdp_error_clone_is_independent() {
-    let err = CdpError { code: -1, message: "orig".into() };
+    let err = CdpError {
+        code: -1,
+        message: "orig".into(),
+    };
     let mut cloned = err.clone();
     cloned.message = "changed".into();
     assert_eq!(err.message, "orig");
@@ -1354,7 +1539,10 @@ fn test_cdp_error_clone_is_independent() {
 #[test]
 fn test_cdp_error_message_is_owned_string() {
     // Adversarial: message is an owned String, not a borrow.
-    let err = CdpError { code: -1, message: "owned".into() };
+    let err = CdpError {
+        code: -1,
+        message: "owned".into(),
+    };
     let msg: String = err.message;
     assert_eq!(msg, "owned");
 }
@@ -1375,7 +1563,11 @@ fn test_domain_registry_new_equals_default() {
 fn test_domain_registry_default_can_register() {
     // Adversarial: Default-constructed registry must be usable for registration.
     let reg = DomainRegistry::<CountingHandler>::default();
-    reg.register(CountingHandler { name: "Page", count: Arc::new(AtomicUsize::new(0)) }).unwrap();
+    reg.register(CountingHandler {
+        name: "Page",
+        count: Arc::new(AtomicUsize::new(0)),
+    })
+    .unwrap();
     assert!(reg.has_domain("Page"));
 }
 
@@ -1385,7 +1577,9 @@ fn test_domain_registry_default_can_register() {
 fn test_registry_dispatch_leading_dot_yields_empty_domain() {
     // Adversarial: ".method" → domain="" → unregistered → None (no panic).
     let reg = DomainRegistry::<CountingHandler>::new();
-    assert!(reg.dispatch_command(".method", json!({}), &NopSender).is_none());
+    assert!(reg
+        .dispatch_command(".method", json!({}), &NopSender)
+        .is_none());
 }
 
 #[test]
@@ -1394,8 +1588,15 @@ fn test_registry_dispatch_trailing_dot_yields_empty_command() {
     // The handler still receives the full method string; routing is by domain only.
     let reg = DomainRegistry::<CountingHandler>::new();
     let count = Arc::new(AtomicUsize::new(0));
-    reg.register(CountingHandler { name: "Page", count: count.clone() }).unwrap();
-    let res = reg.dispatch_command("Page.", json!({}), &NopSender).unwrap().unwrap();
+    reg.register(CountingHandler {
+        name: "Page",
+        count: count.clone(),
+    })
+    .unwrap();
+    let res = reg
+        .dispatch_command("Page.", json!({}), &NopSender)
+        .unwrap()
+        .unwrap();
     assert_eq!(res["cmd"], "Page.");
     assert_eq!(res["domain"], "Page");
     assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -1406,8 +1607,15 @@ fn test_registry_dispatch_multiple_dots_uses_first_segment_as_domain() {
     // Adversarial: "Page.sub.deep" → domain="Page" (split on first dot).
     let reg = DomainRegistry::<CountingHandler>::new();
     let count = Arc::new(AtomicUsize::new(0));
-    reg.register(CountingHandler { name: "Page", count: count.clone() }).unwrap();
-    let res = reg.dispatch_command("Page.sub.deep", json!({}), &NopSender).unwrap().unwrap();
+    reg.register(CountingHandler {
+        name: "Page",
+        count: count.clone(),
+    })
+    .unwrap();
+    let res = reg
+        .dispatch_command("Page.sub.deep", json!({}), &NopSender)
+        .unwrap()
+        .unwrap();
     assert_eq!(res["domain"], "Page");
     assert_eq!(res["cmd"], "Page.sub.deep");
     assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -1417,19 +1625,35 @@ fn test_registry_dispatch_multiple_dots_uses_first_segment_as_domain() {
 fn test_registry_dispatch_passes_params_through_to_handler() {
     // Adversarial: params must reach the handler unmodified.
     use std::sync::Mutex;
-    struct CaptureParams { seen: Arc<Mutex<Vec<Value>>>, name: &'static str }
+    struct CaptureParams {
+        seen: Arc<Mutex<Vec<Value>>>,
+        name: &'static str,
+    }
     impl DomainHandler for CaptureParams {
-        fn domain_name(&self) -> &'static str { self.name }
-        fn handle_command(&self, _: &str, params: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+        fn domain_name(&self) -> &'static str {
+            self.name
+        }
+        fn handle_command(
+            &self,
+            _: &str,
+            params: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
             self.seen.lock().unwrap().push(params);
             Ok(json!({}))
         }
     }
     let reg = DomainRegistry::new();
     let seen = Arc::new(Mutex::new(Vec::new()));
-    reg.register(CaptureParams { seen: seen.clone(), name: "Page" }).unwrap();
+    reg.register(CaptureParams {
+        seen: seen.clone(),
+        name: "Page",
+    })
+    .unwrap();
     let params = json!({"url": "https://x", "transitionType": "link", "frameId": "f1"});
-    reg.dispatch_command("Page.navigate", params.clone(), &NopSender).unwrap().unwrap();
+    reg.dispatch_command("Page.navigate", params.clone(), &NopSender)
+        .unwrap()
+        .unwrap();
     let captured = seen.lock().unwrap();
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0], params);

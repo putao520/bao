@@ -150,8 +150,11 @@ pub trait ServoBackend: Send + Sync {
     /// (`Page.title` / `Page.url` 等)在 TASK-3b 通过 eval_synthesizer 实现。
     ///
     /// @trace REQ-BAO-API-004 [domain:Runtime]
-    fn runtime_evaluate(&self, target_id: &str, expression: &str)
-        -> Result<EvaluateResult, BridgeError>;
+    fn runtime_evaluate(
+        &self,
+        target_id: &str,
+        expression: &str,
+    ) -> Result<EvaluateResult, BridgeError>;
 
     /// Runtime.callFunctionOn — 在指定对象上调用函数。
     ///
@@ -309,8 +312,11 @@ pub trait ServoBackend: Send + Sync {
     /// Network.setCacheDisabled — 禁用/启用缓存。
     ///
     /// @trace REQ-BAO-API-004 [domain:Network]
-    fn network_set_cache_disabled(&self, target_id: &str, disabled: bool)
-        -> Result<(), BridgeError>;
+    fn network_set_cache_disabled(
+        &self,
+        target_id: &str,
+        disabled: bool,
+    ) -> Result<(), BridgeError>;
 
     // ──────────────────────────────────────────────────────────────
     // Input domain — 4 method
@@ -328,11 +334,8 @@ pub trait ServoBackend: Send + Sync {
     /// Input.dispatchKeyEvent — 派发键盘事件。
     ///
     /// @trace REQ-BAO-API-004 [domain:Input]
-    fn input_dispatch_key_event(
-        &self,
-        target_id: &str,
-        event: KeyEvent,
-    ) -> Result<(), BridgeError>;
+    fn input_dispatch_key_event(&self, target_id: &str, event: KeyEvent)
+        -> Result<(), BridgeError>;
 
     /// Input.dispatchTouchEvent — 派发触摸事件。
     ///
@@ -347,7 +350,11 @@ pub trait ServoBackend: Send + Sync {
     /// Input.setIgnoreInputEvents — 启用/禁用输入忽略。
     ///
     /// @trace REQ-BAO-API-004 [domain:Input]
-    fn input_set_ignore_input_events(&self, target_id: &str, ignore: bool) -> Result<(), BridgeError>;
+    fn input_set_ignore_input_events(
+        &self,
+        target_id: &str,
+        ignore: bool,
+    ) -> Result<(), BridgeError>;
 
     // ──────────────────────────────────────────────────────────────
     // Emulation domain — 4 method
@@ -668,7 +675,7 @@ pub struct PropertyDescriptor {
 /// @trace REQ-BAO-API-004 [domain:DOM]
 #[derive(Debug, Clone, Default)]
 pub struct BoxModel {
-    pub content: Vec<f64>,   // 8 values (4 points × 2 coords)
+    pub content: Vec<f64>, // 8 values (4 points × 2 coords)
     pub padding: Vec<f64>,
     pub border: Vec<f64>,
     pub margin: Vec<f64>,
@@ -1033,7 +1040,11 @@ impl ServoBackend for MockServoBackend {
         target_id: &str,
         entry_id: i64,
     ) -> Result<(), BridgeError> {
-        self.log(target_id, "page_navigate_to_history_entry", &entry_id.to_string());
+        self.log(
+            target_id,
+            "page_navigate_to_history_entry",
+            &entry_id.to_string(),
+        );
         self.ensure_target(target_id)?;
         Ok(())
     }
@@ -1163,7 +1174,11 @@ impl ServoBackend for MockServoBackend {
         node_id: i64,
         selector: &str,
     ) -> Result<Option<i64>, BridgeError> {
-        self.log(target_id, "dom_query_selector", &format!("{node_id}|{selector}"));
+        self.log(
+            target_id,
+            "dom_query_selector",
+            &format!("{node_id}|{selector}"),
+        );
         self.ensure_target(target_id)?;
         Ok(Some(2))
     }
@@ -1216,7 +1231,11 @@ impl ServoBackend for MockServoBackend {
         node_id: i64,
         depth: i64,
     ) -> Result<NodeDescriptor, BridgeError> {
-        self.log(target_id, "dom_describe_node", &format!("{node_id}|{depth}"));
+        self.log(
+            target_id,
+            "dom_describe_node",
+            &format!("{node_id}|{depth}"),
+        );
         self.ensure_target(target_id)?;
         Ok(NodeDescriptor {
             node_id,
@@ -1248,7 +1267,11 @@ impl ServoBackend for MockServoBackend {
         node_id: i64,
         name: &str,
     ) -> Result<(), BridgeError> {
-        self.log(target_id, "dom_remove_attribute", &format!("{node_id}|{name}"));
+        self.log(
+            target_id,
+            "dom_remove_attribute",
+            &format!("{node_id}|{name}"),
+        );
         self.ensure_target(target_id)?;
         Ok(())
     }
@@ -1265,7 +1288,11 @@ impl ServoBackend for MockServoBackend {
         node_id: i64,
         html: &str,
     ) -> Result<(), BridgeError> {
-        self.log(target_id, "dom_set_outer_html", &format!("{node_id}|{html}"));
+        self.log(
+            target_id,
+            "dom_set_outer_html",
+            &format!("{node_id}|{html}"),
+        );
         self.ensure_target(target_id)?;
         Ok(())
     }
@@ -1304,7 +1331,11 @@ impl ServoBackend for MockServoBackend {
         target_id: &str,
         disabled: bool,
     ) -> Result<(), BridgeError> {
-        self.log(target_id, "network_set_cache_disabled", &disabled.to_string());
+        self.log(
+            target_id,
+            "network_set_cache_disabled",
+            &disabled.to_string(),
+        );
         Ok(())
     }
 
@@ -1327,7 +1358,11 @@ impl ServoBackend for MockServoBackend {
         target_id: &str,
         event: KeyEvent,
     ) -> Result<(), BridgeError> {
-        self.log(target_id, "input_dispatch_key_event", &format!("{:?}", event));
+        self.log(
+            target_id,
+            "input_dispatch_key_event",
+            &format!("{:?}", event),
+        );
         self.ensure_target(target_id)?;
         Ok(())
     }
@@ -1352,7 +1387,11 @@ impl ServoBackend for MockServoBackend {
         target_id: &str,
         ignore: bool,
     ) -> Result<(), BridgeError> {
-        self.log(target_id, "input_set_ignore_input_events", &ignore.to_string());
+        self.log(
+            target_id,
+            "input_set_ignore_input_events",
+            &ignore.to_string(),
+        );
         Ok(())
     }
 
@@ -1361,7 +1400,11 @@ impl ServoBackend for MockServoBackend {
         target_id: &str,
         metrics: DeviceMetrics,
     ) -> Result<(), BridgeError> {
-        self.log(target_id, "emulation_set_device_metrics", &format!("{:?}", metrics));
+        self.log(
+            target_id,
+            "emulation_set_device_metrics",
+            &format!("{:?}", metrics),
+        );
         self.ensure_target(target_id)?;
         Ok(())
     }
@@ -1740,7 +1783,10 @@ mod tests {
         let b = MockServoBackend::new();
         let r = b.runtime_evaluate("1", "1+1").unwrap();
         assert_eq!(r.result.type_, "string");
-        assert_eq!(r.result.value.as_ref().unwrap(), &Value::String("1+1".into()));
+        assert_eq!(
+            r.result.value.as_ref().unwrap(),
+            &Value::String("1+1".into())
+        );
     }
 }
 
@@ -1806,12 +1852,7 @@ impl ServoBackend for Arc<dyn ServoBackend> {
         function_declaration: &str,
         args: &[Value],
     ) -> Result<EvaluateResult, BridgeError> {
-        (**self).runtime_call_function_on(
-            target_id,
-            object_id,
-            function_declaration,
-            args,
-        )
+        (**self).runtime_call_function_on(target_id, object_id, function_declaration, args)
     }
     fn runtime_get_properties(
         &self,
@@ -1940,7 +1981,11 @@ impl ServoBackend for Arc<dyn ServoBackend> {
     ) -> Result<(), BridgeError> {
         (**self).input_dispatch_touch_event(target_id, event_type, touch_points)
     }
-    fn input_set_ignore_input_events(&self, target_id: &str, ignore: bool) -> Result<(), BridgeError> {
+    fn input_set_ignore_input_events(
+        &self,
+        target_id: &str,
+        ignore: bool,
+    ) -> Result<(), BridgeError> {
         (**self).input_set_ignore_input_events(target_id, ignore)
     }
     fn emulation_set_device_metrics(

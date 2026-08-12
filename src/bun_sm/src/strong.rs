@@ -49,7 +49,8 @@ impl<T> Strong<T> {
                 let global = CurrentGlobalOrNull(cx);
                 if !global.is_null() {
                     let c_key = CString::new(&*key).unwrap_or_default();
-                    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                    let mut wrapped_cx =
+                        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
                     rooted!(&in(wrapped_cx) let rooted_global = global);
                     rooted!(&in(wrapped_cx) let rooted_obj = obj);
                     w2::JS_DefineProperty3(
@@ -89,9 +90,7 @@ impl<T> Strong<T> {
         }
         let c_key = CString::new(&*self.key).unwrap_or_default();
         // BCE-20260619-012: root global before passing as Handle to JS API.
-        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
-            NonNull::new_unchecked(self.cx),
-        );
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(self.cx));
         rooted!(&in(cx_ref) let global_root = global);
         let mut val = UndefinedValue();
         JS_GetProperty(
@@ -125,9 +124,7 @@ impl<T> Strong<T> {
         }
         let c_key = CString::new(&*self.key).unwrap_or_default();
         // BCE-20260619-012: root global before passing as Handle to JS API.
-        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
-            NonNull::new_unchecked(self.cx),
-        );
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(self.cx));
         rooted!(&in(cx_ref) let global_root = global);
         JS_DeleteProperty1(self.cx, global_root.handle().into(), c_key.as_ptr());
         self.key.clear();

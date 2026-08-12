@@ -33,17 +33,22 @@ fn test_host_fn_all() {
     ctx.set_global_setup(install_test_globals);
 
     // === console.time / console.timeEnd ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         console.time('test-timer');
         console.timeEnd('test-timer');
         results.push("timer_ok");
         results.join("|")
-    "#);
+    "#,
+    );
     assert!(result.contains("timer_ok"), "console timer should work");
 
     // === console.count / console.countReset ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         console.count('mycount');
         console.count('mycount');
@@ -52,47 +57,65 @@ fn test_host_fn_all() {
         console.count('mycount');
         results.push("count_ok");
         results.join("|")
-    "#);
+    "#,
+    );
     assert!(result.contains("count_ok"), "console count should work");
 
     // === console.assert (should not throw) ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         console.assert(true, 'should not appear');
         console.assert(false, 'should appear');
         "assert_ok"
-    "#);
+    "#,
+    );
     assert_eq!(result, "assert_ok");
 
     // === console.trace ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         console.trace('trace-test');
         "trace_ok"
-    "#);
+    "#,
+    );
     assert_eq!(result, "trace_ok");
 
     // === console.dir ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         console.dir({a: 1});
         "dir_ok"
-    "#);
+    "#,
+    );
     assert_eq!(result, "dir_ok");
 
     // === console.clear ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         console.clear();
         "clear_ok"
-    "#);
+    "#,
+    );
     assert_eq!(result, "clear_ok");
 
     // === console.table ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         console.table([{name: 'a', val: 1}]);
         "table_ok"
-    "#);
+    "#,
+    );
     assert_eq!(result, "table_ok");
 
     // === typeof checks on console methods ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         results.push(typeof console.log);
         results.push(typeof console.error);
@@ -109,61 +132,83 @@ fn test_host_fn_all() {
         results.push(typeof console.countReset);
         results.push(typeof console.table);
         results.join(",")
-    "#);
+    "#,
+    );
     let parts: Vec<&str> = result.split(',').collect();
     assert_eq!(parts.len(), 14, "should have 14 console methods");
     for part in &parts {
-        assert_eq!(*part, "function", "console method should be function, got: {}", part);
+        assert_eq!(
+            *part, "function",
+            "console method should be function, got: {}",
+            part
+        );
     }
 
     // === Error construction and message extraction ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         try {
             throw new Error('test error message');
         } catch(e) {
             e.message
         }
-    "#);
+    "#,
+    );
     assert_eq!(result, "test error message");
 
     // === TypeError ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         try {
             null.foo;
         } catch(e) {
             e instanceof TypeError ? "TypeError" : e.message
         }
-    "#);
+    "#,
+    );
     assert_eq!(result, "TypeError");
 
     // === SyntaxError from eval ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         try {
             eval("function(");
         } catch(e) {
             e instanceof SyntaxError ? "SyntaxError" : e.message
         }
-    "#);
+    "#,
+    );
     assert_eq!(result, "SyntaxError");
 
     // === RangeError ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         try {
             new Array(-1);
         } catch(e) {
             e instanceof RangeError ? "RangeError" : e.message
         }
-    "#);
+    "#,
+    );
     assert_eq!(result, "RangeError");
 
     // === Promise rejection handling ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         typeof Promise.reject("err").catch(function(e){ return e; })
-    "#);
+    "#,
+    );
     assert_eq!(result, "object");
 
     // === try-catch-finally ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var result = "";
         try {
             result += "try ";
@@ -174,57 +219,82 @@ fn test_host_fn_all() {
             result += "finally";
         }
         result
-    "#);
+    "#,
+    );
     assert_eq!(result, "try catch finally");
 
     // === Error stack trace ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         try {
             throw new Error("stack test");
         } catch(e) {
             typeof e.stack
         }
-    "#);
+    "#,
+    );
     assert_eq!(result, "string", "Error.stack should be a string");
 
     // === Custom error class ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         class MyError extends Error {
             constructor(msg) { super(msg); this.name = "MyError"; }
         }
         try { throw new MyError("custom"); }
         catch(e) { e.name + ":" + e.message; }
-    "#);
+    "#,
+    );
     assert_eq!(result, "MyError:custom");
 
     // === Arrow functions ===
     assert_eq!(eval_number(&mut ctx, "((x) => x * 2)(21)"), 42.0);
 
     // === Destructuring ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var {a, b} = {a: "hello", b: "world"};
         a + " " + b
-    "#);
+    "#,
+    );
     assert_eq!(result, "hello world");
 
     // === Spread operator ===
-    assert_eq!(eval_number(&mut ctx, "var arr = [1,2,3]; var [a,...rest] = arr; rest.length"), 2.0);
+    assert_eq!(
+        eval_number(
+            &mut ctx,
+            "var arr = [1,2,3]; var [a,...rest] = arr; rest.length"
+        ),
+        2.0
+    );
 
     // === Template literals ===
     let result = eval_string(&mut ctx, "var x = 42; `value is ${x}`");
     assert_eq!(result, "value is 42");
 
     // === for...of ===
-    assert_eq!(eval_number(&mut ctx, "var sum = 0; for (var x of [1,2,3,4,5]) sum += x; sum"), 15.0);
+    assert_eq!(
+        eval_number(
+            &mut ctx,
+            "var sum = 0; for (var x of [1,2,3,4,5]) sum += x; sum"
+        ),
+        15.0
+    );
 
     // === Symbol ===
     let result = eval_string(&mut ctx, "typeof Symbol('test')");
     assert_eq!(result, "symbol");
 
     // === WeakMap/WeakSet ===
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         typeof new WeakMap() === 'object' && typeof new WeakSet() === 'object' ? "yes" : "no"
-    "#);
+    "#,
+    );
     assert_eq!(result, "yes");
 
     // === Proxy ===

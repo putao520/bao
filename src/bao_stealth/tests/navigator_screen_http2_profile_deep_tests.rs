@@ -3,7 +3,9 @@
 // Http2Fingerprint akamai_fingerprint, settings_frame_payload, ordered_headers,
 // StealthProfile firefox_default/chrome_default field completeness.
 
-use bao_stealth::{NavigatorProfile, ScreenProfile, Http2Fingerprint, StealthProfile, PriorityFrameMode};
+use bao_stealth::{
+    Http2Fingerprint, NavigatorProfile, PriorityFrameMode, ScreenProfile, StealthProfile,
+};
 
 // ---- NavigatorProfile firefox ----
 
@@ -101,27 +103,42 @@ fn test_nav_chrome_max_touch_points() {
 
 #[test]
 fn test_nav_firefox_chrome_ua_differ() {
-    assert_ne!(NavigatorProfile::firefox().user_agent, NavigatorProfile::chrome().user_agent);
+    assert_ne!(
+        NavigatorProfile::firefox().user_agent,
+        NavigatorProfile::chrome().user_agent
+    );
 }
 
 #[test]
 fn test_nav_firefox_chrome_vendor_differ() {
-    assert_ne!(NavigatorProfile::firefox().vendor, NavigatorProfile::chrome().vendor);
+    assert_ne!(
+        NavigatorProfile::firefox().vendor,
+        NavigatorProfile::chrome().vendor
+    );
 }
 
 #[test]
 fn test_nav_firefox_chrome_oscpu_differ() {
-    assert_ne!(NavigatorProfile::firefox().oscpu.is_some(), NavigatorProfile::chrome().oscpu.is_some());
+    assert_ne!(
+        NavigatorProfile::firefox().oscpu.is_some(),
+        NavigatorProfile::chrome().oscpu.is_some()
+    );
 }
 
 #[test]
 fn test_nav_firefox_chrome_product_sub_differ() {
-    assert_ne!(NavigatorProfile::firefox().product_sub, NavigatorProfile::chrome().product_sub);
+    assert_ne!(
+        NavigatorProfile::firefox().product_sub,
+        NavigatorProfile::chrome().product_sub
+    );
 }
 
 #[test]
 fn test_nav_firefox_chrome_same_language() {
-    assert_eq!(NavigatorProfile::firefox().language, NavigatorProfile::chrome().language);
+    assert_eq!(
+        NavigatorProfile::firefox().language,
+        NavigatorProfile::chrome().language
+    );
 }
 
 // ---- NavigatorProfile Debug/Clone ----
@@ -248,7 +265,10 @@ fn test_http2_firefox_settings_payload() {
 #[test]
 fn test_http2_firefox_pseudo_order() {
     let h2 = Http2Fingerprint::firefox();
-    assert_eq!(h2.pseudo_header_order, vec![":method", ":path", ":authority", ":scheme"]);
+    assert_eq!(
+        h2.pseudo_header_order,
+        vec![":method", ":path", ":authority", ":scheme"]
+    );
 }
 
 // ---- Http2Fingerprint chrome ----
@@ -269,7 +289,10 @@ fn test_http2_chrome_window_update() {
 #[test]
 fn test_http2_chrome_pseudo_order() {
     let h2 = Http2Fingerprint::chrome();
-    assert_eq!(h2.pseudo_header_order, vec![":method", ":authority", ":scheme", ":path"]);
+    assert_eq!(
+        h2.pseudo_header_order,
+        vec![":method", ":authority", ":scheme", ":path"]
+    );
 }
 
 // ---- Http2Fingerprint cross-profile ----
@@ -339,10 +362,7 @@ fn test_ordered_headers_chrome_order() {
 #[test]
 fn test_ordered_headers_no_pseudo() {
     let h2 = Http2Fingerprint::firefox();
-    let headers = vec![
-        ("host", "example.com"),
-        ("accept", "*/*"),
-    ];
+    let headers = vec![("host", "example.com"), ("accept", "*/*")];
     let ordered = h2.ordered_headers(&headers);
     assert_eq!(ordered.len(), 2);
     // Non-pseudo headers remain in original order
@@ -360,10 +380,7 @@ fn test_ordered_headers_empty() {
 #[test]
 fn test_ordered_headers_only_pseudo() {
     let h2 = Http2Fingerprint::firefox();
-    let headers = vec![
-        (":method", "POST"),
-        (":path", "/api"),
-    ];
+    let headers = vec![(":method", "POST"), (":path", "/api")];
     let ordered = h2.ordered_headers(&headers);
     assert_eq!(ordered.len(), 2);
     assert_eq!(ordered[0].0, ":method");
@@ -400,7 +417,10 @@ fn test_http2_clone() {
     let cloned = h2.clone();
     assert_eq!(cloned.header_table_size, h2.header_table_size);
     assert_eq!(cloned.window_update_size, h2.window_update_size);
-    assert_eq!(cloned.pseudo_header_order.len(), h2.pseudo_header_order.len());
+    assert_eq!(
+        cloned.pseudo_header_order.len(),
+        h2.pseudo_header_order.len()
+    );
 }
 
 // ---- Http2Fingerprint custom construction ----

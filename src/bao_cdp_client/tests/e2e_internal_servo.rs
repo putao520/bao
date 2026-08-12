@@ -28,9 +28,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bao_cdp_client::bridge::{CDPRdpBridge, EventSubscriber, MockServoBackend, ServoBackend};
-use bao_cdp_client::transport::{
-    InMemoryBridge, InMemoryTransport, Transport, TransportKind,
-};
+use bao_cdp_client::transport::{InMemoryBridge, InMemoryTransport, Transport, TransportKind};
 use bao_cdp_client::{Browser, CdpError};
 use serde_json::{json, Value};
 
@@ -52,11 +50,8 @@ fn build_e2e_in_memory() -> (InMemoryTransport, Arc<MockServoBackend>) {
 }
 
 /// 同 build_e2e_in_memory 但同时接入 EventSubscriber(用于 §3 事件链路测试)。
-fn build_e2e_in_memory_with_events() -> (
-    InMemoryTransport,
-    Arc<MockServoBackend>,
-    EventSubscriber,
-) {
+fn build_e2e_in_memory_with_events() -> (InMemoryTransport, Arc<MockServoBackend>, EventSubscriber)
+{
     let backend = Arc::new(MockServoBackend::new());
     let backend_dyn: Arc<dyn ServoBackend> = backend.clone();
     let bridge = CDPRdpBridge::new(backend_dyn);
@@ -89,9 +84,7 @@ fn e2e_internal_basic_navigation_full_chain() {
     let create = transport
         .send_command("Target.createTarget", json!({"url":"about:blank"}), None)
         .expect("createTarget");
-    let target_id = create["targetId"]
-        .as_str()
-        .expect("targetId in response");
+    let target_id = create["targetId"].as_str().expect("targetId in response");
     assert!(!target_id.is_empty(), "targetId must be non-empty");
 
     // Step 4: 模拟 goto — Page.navigate
@@ -107,7 +100,11 @@ fn e2e_internal_basic_navigation_full_chain() {
 
     // Step 5: 模拟 wait — Page.waitForLoadState(B 类,本地等待状态,返回空对象)
     let wait = transport
-        .send_command("Page.waitForLoadState", json!({"state":"load"}), Some(target_id))
+        .send_command(
+            "Page.waitForLoadState",
+            json!({"state":"load"}),
+            Some(target_id),
+        )
         .expect("wait_for_load_state");
     // B 类某些 method(wait*)是本地状态机,返回空对象(无 backend 调用)
     assert!(wait.is_object());
@@ -132,15 +129,13 @@ fn e2e_internal_navigation_to_unknown_target_errors() {
     let (mut transport, _backend) = build_e2e_in_memory();
     // 999 不在 MockServoBackend known_targets
     let err = transport
-        .send_command(
-            "Page.navigate",
-            json!({"url":"https://x"}),
-            Some("999"),
-        )
+        .send_command("Page.navigate", json!({"url":"https://x"}), Some("999"))
         .unwrap_err();
     // Assert
     assert!(matches!(err, CdpError::ProtocolError(_)));
-    assert!(err.to_string().contains("999") || err.to_string().to_lowercase().contains("not found"));
+    assert!(
+        err.to_string().contains("999") || err.to_string().to_lowercase().contains("not found")
+    );
 }
 
 #[test]
@@ -227,22 +222,24 @@ fn e2e_internal_cookie_injection_vectors_neutralized() {
         // 通过 Page.addScriptTag 注入 payload content
         // addScriptTag 是 B 类 method,走 IIFE 路径,payload 必须在 __args 字面量
         let r = transport
-            .send_command(
-                "Page.addScriptTag",
-                json!({"content": p}),
-                Some("1"),
-            )
+            .send_command("Page.addScriptTag", json!({"content": p}), Some("1"))
             .expect("addScriptTag");
         let expr = r["result"]["value"].as_str().expect("eval expression");
         // IIFE 必须包含 __args 声明
         // Assert
-        assert!(expr.contains("var __args="), "must use IIFE args pattern: {expr}");
+        assert!(
+            expr.contains("var __args="),
+            "must use IIFE args pattern: {expr}"
+        );
         // body 不能直接出现 payload 拼接
         let body_start = expr.find("return (function(){").unwrap();
         let body_end = expr.find("}).apply(null, __args);").unwrap();
         let body = &expr[body_start..body_end];
         let dangerous = format!("return {p};");
-        assert!(!body.contains(&dangerous), "body must not contain dangerous payload: {body}");
+        assert!(
+            !body.contains(&dangerous),
+            "body must not contain dangerous payload: {body}"
+        );
     }
 }
 
@@ -269,7 +266,10 @@ fn e2e_internal_event_listener_console_full_chain() {
     );
 
     transport.set_event_timeout(Duration::from_secs(2));
-    let ev = transport.recv_event().unwrap().expect("expected console event");
+    let ev = transport
+        .recv_event()
+        .unwrap()
+        .expect("expected console event");
     // Assert
     assert_eq!(ev.method, "Log.entryAdded");
     assert_eq!(ev.session_id.as_deref(), Some("TARGET-CON"));
@@ -295,11 +295,17 @@ fn e2e_internal_event_listener_page_error_full_chain() {
     );
 
     transport.set_event_timeout(Duration::from_secs(2));
-    let ev = transport.recv_event().unwrap().expect("expected exception event");
+    let ev = transport
+        .recv_event()
+        .unwrap()
+        .expect("expected exception event");
     // Assert
     assert_eq!(ev.method, "Runtime.exceptionThrown");
     assert_eq!(ev.session_id.as_deref(), Some("TARGET-PE"));
-    assert_eq!(ev.params["exceptionDetails"]["text"], "Uncaught Error: boom");
+    assert_eq!(
+        ev.params["exceptionDetails"]["text"],
+        "Uncaught Error: boom"
+    );
 }
 
 #[test]
@@ -315,12 +321,24 @@ fn e2e_internal_event_listener_network_events_full_chain() {
 
     // 4 个网络事件依次 push
     subscriber.on_network_request(
-        "TARGET-NET", "REQ-1", "https://api.example.com", "GET",
-        headers.clone(), None, "Document", "FRAME-1",
+        "TARGET-NET",
+        "REQ-1",
+        "https://api.example.com",
+        "GET",
+        headers.clone(),
+        None,
+        "Document",
+        "FRAME-1",
     );
     subscriber.on_network_response(
-        "TARGET-NET", "REQ-1", "https://api.example.com", 200,
-        "OK", headers, "text/html", Some("1.2.3.4".to_string()),
+        "TARGET-NET",
+        "REQ-1",
+        "https://api.example.com",
+        200,
+        "OK",
+        headers,
+        "text/html",
+        Some("1.2.3.4".to_string()),
     );
     subscriber.on_network_loading_finish("TARGET-NET", "REQ-1", 1024);
     subscriber.on_network_loading_fail("TARGET-NET", "REQ-2", "ConnectionRefused", false);
@@ -358,14 +376,22 @@ fn e2e_internal_multi_target_isolation() {
 
     // 在 page-A navigate
     let nav_a = transport
-        .send_command("Page.navigate", json!({"url":"https://a.example"}), Some("page-A"))
+        .send_command(
+            "Page.navigate",
+            json!({"url":"https://a.example"}),
+            Some("page-A"),
+        )
         .expect("navigate page-A");
     // Assert
     assert_eq!(nav_a["frameId"], "FRAME_0");
 
     // 在 page-B navigate 不同 URL
     let nav_b = transport
-        .send_command("Page.navigate", json!({"url":"https://b.example"}), Some("page-B"))
+        .send_command(
+            "Page.navigate",
+            json!({"url":"https://b.example"}),
+            Some("page-B"),
+        )
         .expect("navigate page-B");
     assert_eq!(nav_b["frameId"], "FRAME_0");
 
@@ -419,11 +445,7 @@ fn e2e_internal_input_tap_uses_iife_safe_selector() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
-        .send_command(
-            "Page.tap",
-            json!({"selector": "#submit-btn"}),
-            Some("1"),
-        )
+        .send_command("Page.tap", json!({"selector": "#submit-btn"}), Some("1"))
         .expect("tap");
     let expr = r["result"]["value"].as_str().expect("eval expression");
     // B 类必须走 IIFE 路径
@@ -440,11 +462,7 @@ fn e2e_internal_input_hover_uses_iife_safe_selector() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
-        .send_command(
-            "Page.hover",
-            json!({"selector": ".menu-item"}),
-            Some("1"),
-        )
+        .send_command("Page.hover", json!({"selector": ".menu-item"}), Some("1"))
         .expect("hover");
     let expr = r["result"]["value"].as_str().expect("eval expression");
     // Assert
@@ -616,8 +634,12 @@ fn assert_iife_safe(expr: &str, payload: &str) {
         "payload must appear JSON-encoded in __args\nexpr: {expr}\nargs: {args_literal}\nexpected JSON: {json_payload}"
     );
 
-    let body_start = expr.find("return (function(){").unwrap_or_else(|| panic!("missing body start: {expr}"));
-    let body_end = expr.find("}).apply(null, __args);").unwrap_or_else(|| panic!("missing body end: {expr}"));
+    let body_start = expr
+        .find("return (function(){")
+        .unwrap_or_else(|| panic!("missing body start: {expr}"));
+    let body_end = expr
+        .find("}).apply(null, __args);")
+        .unwrap_or_else(|| panic!("missing body end: {expr}"));
     let body = &expr[body_start..body_end];
     // body 不应直接拼接 payload
     assert!(
@@ -633,7 +655,11 @@ fn e2e_internal_injection_defense_dom_xss_img_onerror() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = r#"<img src=x onerror=alert(1)>"#;
-    let expr = b_class_eval(&mut transport, "Page.type", json!({"selector":"#x","text":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.type",
+        json!({"selector":"#x","text":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -645,7 +671,11 @@ fn e2e_internal_injection_defense_javascript_uri_scheme() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "javascript:alert(1)";
-    let expr = b_class_eval(&mut transport, "Page.fill", json!({"selector":"#x","value":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.fill",
+        json!({"selector":"#x","value":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -657,7 +687,11 @@ fn e2e_internal_injection_defense_script_tag_injection() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "<script>alert('XSS')</script>";
-    let expr = b_class_eval(&mut transport, "Page.addScriptTag", json!({"content":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.addScriptTag",
+        json!({"content":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -669,7 +703,11 @@ fn e2e_internal_injection_defense_template_literal() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "${alert(1)}";
-    let expr = b_class_eval(&mut transport, "Page.exposeFunction", json!({"name":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.exposeFunction",
+        json!({"name":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -681,7 +719,11 @@ fn e2e_internal_injection_defense_prototype_pollution() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "__proto__";
-    let expr = b_class_eval(&mut transport, "Page.exposeFunction", json!({"name":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.exposeFunction",
+        json!({"name":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -693,7 +735,11 @@ fn e2e_internal_injection_defense_constructor_pollution() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "constructor";
-    let expr = b_class_eval(&mut transport, "Page.exposeFunction", json!({"name":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.exposeFunction",
+        json!({"name":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -705,7 +751,11 @@ fn e2e_internal_injection_defense_sql_style_quote() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "'; DROP TABLE users; --";
-    let expr = b_class_eval(&mut transport, "Page.exposeFunction", json!({"name":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.exposeFunction",
+        json!({"name":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -717,7 +767,11 @@ fn e2e_internal_injection_defense_svg_onload() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "<svg/onload=alert(1)>";
-    let expr = b_class_eval(&mut transport, "Page.emulateMedia", json!({"media":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.emulateMedia",
+        json!({"media":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -742,7 +796,11 @@ fn e2e_internal_injection_defense_backslash_escape() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "\\';alert(1);//";
-    let expr = b_class_eval(&mut transport, "Page.fill", json!({"selector":"#x","value":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.fill",
+        json!({"selector":"#x","value":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -754,7 +812,11 @@ fn e2e_internal_injection_defense_unicode_control_chars() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "\u{0000}\u{001B}\u{2028}"; // NUL + ESC + LS
-    let expr = b_class_eval(&mut transport, "Page.fill", json!({"selector":"#x","value":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.fill",
+        json!({"selector":"#x","value":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -766,7 +828,11 @@ fn e2e_internal_injection_defense_newline_in_payload() {
     // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "line1\nline2\rline3";
-    let expr = b_class_eval(&mut transport, "Page.type", json!({"selector":"#x","text":payload}));
+    let expr = b_class_eval(
+        &mut transport,
+        "Page.type",
+        json!({"selector":"#x","text":payload}),
+    );
     // Assert
     assert_iife_safe(&expr, payload);
 }
@@ -784,7 +850,9 @@ fn e2e_real_servo_full_navigation() {
     // Arrange — @trace REQ-BAO-API-001 [level:system] 占位测试
     // Act
     if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
-        eprintln!("[skip] 环境不可用: BAO_TEST_REAL_SERVO=1 not set + PagePool backend (real servo E2E)");
+        eprintln!(
+            "[skip] 环境不可用: BAO_TEST_REAL_SERVO=1 not set + PagePool backend (real servo E2E)"
+        );
         return;
     }
     // Assert — 占位:真 servo 集成需 bao_browser::PagePoolBackend。
@@ -797,7 +865,9 @@ fn e2e_real_servo_dom_queryselector() {
     // Arrange — @trace REQ-BAO-API-001 [level:system] 占位测试
     // Act
     if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
-        eprintln!("[skip] 环境不可用: BAO_TEST_REAL_SERVO=1 not set (real servo DOM querySelector E2E)");
+        eprintln!(
+            "[skip] 环境不可用: BAO_TEST_REAL_SERVO=1 not set (real servo DOM querySelector E2E)"
+        );
         return;
     }
     // Assert — 占位:真 servo 上 querySelector DOM 操作

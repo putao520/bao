@@ -40,17 +40,27 @@ impl BaoRuntime {
             if let Some(suffix) = key.strip_prefix("BAO_") {
                 let bun_key = format!("BUN_{}", suffix);
                 if ::std::env::var(&bun_key).is_err() {
-                    unsafe { ::std::env::set_var(&bun_key, &value); }
+                    unsafe {
+                        ::std::env::set_var(&bun_key, &value);
+                    }
                 }
             }
         }
     }
 
-    pub fn eval(&mut self, source: &str, filename: &str) -> ::std::result::Result<JsValue, JsError> {
+    pub fn eval(
+        &mut self,
+        source: &str,
+        filename: &str,
+    ) -> ::std::result::Result<JsValue, JsError> {
         self.ctx.eval(source, filename)
     }
 
-    pub fn eval_module(&mut self, source: &str, filename: &str) -> ::std::result::Result<JsValue, JsError> {
+    pub fn eval_module(
+        &mut self,
+        source: &str,
+        filename: &str,
+    ) -> ::std::result::Result<JsValue, JsError> {
         let setup = self.ctx.global_setup();
         let hook = self.ctx.post_eval_hook();
         let mut cx = self.ctx.cx();
@@ -76,7 +86,8 @@ impl BaoRuntime {
         }
 
         let filename_str = abs_path.to_string_lossy().into_owned();
-        let dirname_str = abs_path.parent()
+        let dirname_str = abs_path
+            .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         globals::install_file_globals(&mut self.ctx, &filename_str, &dirname_str);
@@ -90,7 +101,12 @@ impl BaoRuntime {
             } else {
                 self.eval(&source, path)
             }
-        } else if source.contains("import ") && (source.contains(" from ") || source.contains(" from\"") || source.contains("from '")) && !source.contains("require(") {
+        } else if source.contains("import ")
+            && (source.contains(" from ")
+                || source.contains(" from\"")
+                || source.contains("from '"))
+            && !source.contains("require(")
+        {
             // JS files with ESM imports (and no require): treat as ESM
             self.eval_module(&source, path)
         } else if source.trim_start().starts_with("import ") {
@@ -109,7 +125,10 @@ impl BaoRuntime {
     /// report will be empty — test files should use ESM/TS syntax.
     //
     // @trace REQ-ENG-006 [entity:BaoRuntime] — bao test runner execution
-    pub fn run_test_file(&mut self, path: &str) -> ::std::result::Result<crate::bun_test::TestReport, JsError> {
+    pub fn run_test_file(
+        &mut self,
+        path: &str,
+    ) -> ::std::result::Result<crate::bun_test::TestReport, JsError> {
         let source = bun_sys::fs::read_to_string(path).map_err(|e| JsError {
             message: format!("Error reading {}: {}", path, e),
             filename: path.into(),
@@ -128,7 +147,8 @@ impl BaoRuntime {
         }
 
         let filename_str = abs_path.to_string_lossy().into_owned();
-        let dirname_str = abs_path.parent()
+        let dirname_str = abs_path
+            .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         globals::install_file_globals(&mut self.ctx, &filename_str, &dirname_str);
@@ -138,15 +158,19 @@ impl BaoRuntime {
             || path.ends_with(".ts")
             || path.ends_with(".tsx")
             || path.ends_with(".jsx")
-            || (source.contains("import ") && (source.contains(" from ") || source.contains(" from\"") || source.contains("from '")) && !source.contains("require("))
+            || (source.contains("import ")
+                && (source.contains(" from ")
+                    || source.contains(" from\"")
+                    || source.contains("from '"))
+                && !source.contains("require("))
             || source.trim_start().starts_with("import ");
 
         if is_module {
             let setup = self.ctx.global_setup();
             let hook = self.ctx.post_eval_hook();
             let mut cx = self.ctx.cx();
-            ModuleLoader::eval_module_then(&mut cx, &source, path, setup, hook, |realm_cx| {
-                unsafe { crate::bun_test::run_bun_tests_report(realm_cx.raw_cx()) }
+            ModuleLoader::eval_module_then(&mut cx, &source, path, setup, hook, |realm_cx| unsafe {
+                crate::bun_test::run_bun_tests_report(realm_cx.raw_cx())
             })
         } else {
             // Non-module file: bun:test registration won't survive eval's separate realm.

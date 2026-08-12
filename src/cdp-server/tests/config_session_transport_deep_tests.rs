@@ -2,7 +2,7 @@
 // ServerConfig builder chain, SessionState transitions,
 // TargetInfo serde edge cases, transport parse boundary values.
 
-use cdp_server::{ServerConfig, TargetInfo, SessionState};
+use cdp_server::{ServerConfig, SessionState, TargetInfo};
 
 // ---- ServerConfig defaults ----
 
@@ -106,7 +106,9 @@ fn test_builder_max_sessions_one() {
 
 #[test]
 fn test_builder_custom_browser_name() {
-    let cfg = ServerConfig::builder().browser_name("TestBrowser/1.0").build();
+    let cfg = ServerConfig::builder()
+        .browser_name("TestBrowser/1.0")
+        .build();
     assert_eq!(cfg.browser_name, "TestBrowser/1.0");
 }
 
@@ -158,10 +160,7 @@ fn test_builder_all_fields() {
 
 #[test]
 fn test_builder_overwrite() {
-    let cfg = ServerConfig::builder()
-        .host("first")
-        .host("second")
-        .build();
+    let cfg = ServerConfig::builder().host("first").host("second").build();
     assert_eq!(cfg.host, "second");
 }
 
@@ -323,9 +322,14 @@ fn test_session_state_copy() {
 
 #[test]
 fn test_session_state_all_distinct() {
-    let states = [SessionState::Created, SessionState::Active, SessionState::Closing, SessionState::Closed];
+    let states = [
+        SessionState::Created,
+        SessionState::Active,
+        SessionState::Closing,
+        SessionState::Closed,
+    ];
     for i in 0..states.len() {
-        for j in (i+1)..states.len() {
+        for j in (i + 1)..states.len() {
             assert_ne!(states[i], states[j], "{:?} == {:?}", states[i], states[j]);
         }
     }
@@ -335,7 +339,10 @@ fn test_session_state_all_distinct() {
 
 #[test]
 fn test_config_field_access() {
-    let cfg = ServerConfig::builder().host("field-host").port(9999).build();
+    let cfg = ServerConfig::builder()
+        .host("field-host")
+        .port(9999)
+        .build();
     assert_eq!(cfg.host, "field-host");
     assert_eq!(cfg.port, 9999);
     // Verify all fields are pub-accessible

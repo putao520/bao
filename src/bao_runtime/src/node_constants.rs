@@ -3,11 +3,11 @@
 // Node.js `constants` module — system constants (O_* flags, S_* permissions,
 // signals, errno, priority). Values are sourced from libc on Linux.
 
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, ObjectValue};
+use mozjs::jsval::{Int32Value, JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -60,7 +60,13 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             define_int_prop(cx, fs_obj.get(), "COPYFILE_FICLONE_FORCE", 4);
 
             rooted!(&in(cx) let fs_val = ObjectValue(fs_obj.get()));
-            JS_DefineProperty(cx.raw_cx(), constants_obj.handle().into(), c"fs".as_ptr(), fs_val.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                constants_obj.handle().into(),
+                c"fs".as_ptr(),
+                fs_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // os sub-object: signals, errno, priority
@@ -70,7 +76,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             define_int_prop(cx, os_obj.get(), "E2BIG", libc::E2BIG as i32);
             define_int_prop(cx, os_obj.get(), "EACCES", libc::EACCES as i32);
             define_int_prop(cx, os_obj.get(), "EADDRINUSE", libc::EADDRINUSE as i32);
-            define_int_prop(cx, os_obj.get(), "EADDRNOTAVAIL", libc::EADDRNOTAVAIL as i32);
+            define_int_prop(
+                cx,
+                os_obj.get(),
+                "EADDRNOTAVAIL",
+                libc::EADDRNOTAVAIL as i32,
+            );
             define_int_prop(cx, os_obj.get(), "EAFNOSUPPORT", libc::EAFNOSUPPORT as i32);
             define_int_prop(cx, os_obj.get(), "EAGAIN", libc::EAGAIN as i32);
             define_int_prop(cx, os_obj.get(), "EALREADY", libc::EALREADY as i32);
@@ -132,7 +143,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             define_int_prop(cx, os_obj.get(), "EPERM", libc::EPERM as i32);
             define_int_prop(cx, os_obj.get(), "EPIPE", libc::EPIPE as i32);
             define_int_prop(cx, os_obj.get(), "EPROTO", libc::EPROTO as i32);
-            define_int_prop(cx, os_obj.get(), "EPROTONOSUPPORT", libc::EPROTONOSUPPORT as i32);
+            define_int_prop(
+                cx,
+                os_obj.get(),
+                "EPROTONOSUPPORT",
+                libc::EPROTONOSUPPORT as i32,
+            );
             define_int_prop(cx, os_obj.get(), "EPROTOTYPE", libc::EPROTOTYPE as i32);
             define_int_prop(cx, os_obj.get(), "ERANGE", libc::ERANGE as i32);
             define_int_prop(cx, os_obj.get(), "EROFS", libc::EROFS as i32);
@@ -188,11 +204,23 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 define_int_prop(cx, signals_obj.get(), "SIGSYS", libc::SIGSYS as i32);
 
                 rooted!(&in(cx) let sig_val = ObjectValue(signals_obj.get()));
-                JS_DefineProperty(cx.raw_cx(), os_obj.handle().into(), c"signals".as_ptr(), sig_val.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    os_obj.handle().into(),
+                    c"signals".as_ptr(),
+                    sig_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
 
             rooted!(&in(cx) let os_val = ObjectValue(os_obj.get()));
-            JS_DefineProperty(cx.raw_cx(), constants_obj.handle().into(), c"os".as_ptr(), os_val.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                constants_obj.handle().into(),
+                c"os".as_ptr(),
+                os_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // crypto sub-object (common constants)
@@ -202,7 +230,13 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             define_int_prop(cx, crypto_obj.get(), "SSL_OP_ALL", 0);
 
             rooted!(&in(cx) let crypto_val = ObjectValue(crypto_obj.get()));
-            JS_DefineProperty(cx.raw_cx(), constants_obj.handle().into(), c"crypto".as_ptr(), crypto_val.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                constants_obj.handle().into(),
+                c"crypto".as_ptr(),
+                crypto_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // zlib sub-object
@@ -234,7 +268,13 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             define_int_prop(cx, zlib_obj.get(), "Z_FIXED", 4);
 
             rooted!(&in(cx) let zlib_val = ObjectValue(zlib_obj.get()));
-            JS_DefineProperty(cx.raw_cx(), constants_obj.handle().into(), c"zlib".as_ptr(), zlib_val.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                constants_obj.handle().into(),
+                c"zlib".as_ptr(),
+                zlib_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 
@@ -243,10 +283,21 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
 /// Define an integer property on a JS object (enumerable).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn define_int_prop(cx: &mut mozjs::context::JSContext, obj_ptr: *mut JSObject, name: &str, val: i32) {
+unsafe fn define_int_prop(
+    cx: &mut mozjs::context::JSContext,
+    obj_ptr: *mut JSObject,
+    name: &str,
+    val: i32,
+) {
     let c_name = ZBox::from_bytes(name.as_bytes());
     let raw_cx = cx.raw_cx();
     rooted!(&in(cx) let obj = obj_ptr);
     rooted!(&in(cx) let v = Int32Value(val));
-    JS_DefineProperty(raw_cx, obj.handle().into(), c_name.as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        raw_cx,
+        obj.handle().into(),
+        c_name.as_ptr(),
+        v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 }

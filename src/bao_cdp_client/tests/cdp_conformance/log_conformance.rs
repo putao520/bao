@@ -53,7 +53,10 @@ fn log_entry_added_event_schema_conformance() {
         "CDP spec: entry must be object, got: {:?}",
         entry
     );
-    assert!(entry["source"].is_string(), "LogEntry.source must be string");
+    assert!(
+        entry["source"].is_string(),
+        "LogEntry.source must be string"
+    );
     assert!(entry["level"].is_string(), "LogEntry.level must be string");
     assert!(entry["text"].is_string(), "LogEntry.text must be string");
     assert!(
@@ -81,9 +84,19 @@ fn log_entry_added_source_matches_cdp_enum() {
 
     // Assert
     let valid_sources = [
-        "xml", "javascript", "network", "storage", "appcache", "rendering",
-        "security", "deprecation", "worker", "violation", "intervention",
-        "recommendation", "other",
+        "xml",
+        "javascript",
+        "network",
+        "storage",
+        "appcache",
+        "rendering",
+        "security",
+        "deprecation",
+        "worker",
+        "violation",
+        "intervention",
+        "recommendation",
+        "other",
     ];
     assert!(
         valid_sources.contains(&source),

@@ -5,14 +5,14 @@
 // via PrivateValue. Uses JS_InitClass for proper constructor/prototype chain.
 
 use ::std::cell::RefCell;
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
 use ::std::result::Result;
+use bun_core::ZBox;
 
 use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
-    JSVal, ObjectValue, UndefinedValue, PrivateValue, NullValue, BooleanValue, DoubleValue,
+    BooleanValue, DoubleValue, JSVal, NullValue, ObjectValue, PrivateValue, UndefinedValue,
 };
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
@@ -245,11 +245,7 @@ unsafe fn get_db_ptr(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut Sq
         return None;
     }
     let ptr = slot.to_private() as *mut SqliteDatabase;
-    if ptr.is_null() {
-        None
-    } else {
-        Some(ptr)
-    }
+    if ptr.is_null() { None } else { Some(ptr) }
 }
 
 unsafe fn get_stmt_ptr(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut SqliteStatement> {
@@ -265,11 +261,7 @@ unsafe fn get_stmt_ptr(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut 
         return None;
     }
     let ptr = slot.to_private() as *mut SqliteStatement;
-    if ptr.is_null() {
-        None
-    } else {
-        Some(ptr)
-    }
+    if ptr.is_null() { None } else { Some(ptr) }
 }
 
 // ── Helper: convert rusqlite Value to JSVal ──
@@ -326,11 +318,7 @@ unsafe fn row_to_js_object(
 // ── Database constructor ──
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn database_constructor(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn database_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let this = JS_NewObjectForConstructor(cx, &DATABASE_CLASS, &args);
@@ -377,11 +365,7 @@ unsafe extern "C" fn database_constructor(
 // ── Database.exec(sql) ──
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn database_exec(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn database_exec(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
@@ -417,11 +401,7 @@ unsafe extern "C" fn database_exec(
 // ── Database.run(sql) → { changes, lastInsertRowid } ──
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn database_run(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn database_run(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
@@ -480,11 +460,7 @@ unsafe extern "C" fn database_run(
 // ── Database.close() ──
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn database_close(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn database_close(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
@@ -514,11 +490,7 @@ unsafe extern "C" fn database_close(
 // ── Database.query(sql, params?) → row[] ──
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn database_query(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn database_query(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
@@ -565,33 +537,30 @@ unsafe extern "C" fn database_query(
 
             let mut row_idx: u32 = 0;
             match stmt.query([]) {
-                Ok(mut rows_iter) => {
-                    loop {
-                        match rows_iter.next() {
-                            Ok(Some(row)) => {
-                                let row_obj =
-                                    row_to_js_object(cx, &row, &col_names, cx_ref);
-                                if row_obj.is_null() {
-                                    break;
-                                }
-                                rooted!(&in(cx_ref) let row_val = ObjectValue(row_obj));
-                                w2::JS_SetElement(
-                                    cx_ref,
-                                    result_arr.handle().into(),
-                                    row_idx,
-                                    row_val.handle().into(),
-                                );
-                                row_idx += 1;
+                Ok(mut rows_iter) => loop {
+                    match rows_iter.next() {
+                        Ok(Some(row)) => {
+                            let row_obj = row_to_js_object(cx, &row, &col_names, cx_ref);
+                            if row_obj.is_null() {
+                                break;
                             }
-                            Ok(None) => break,
-                            Err(e) => {
-                                let msg = ZBox::from_vec(e.to_string().into_bytes());
-                                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-                                return false;
-                            }
+                            rooted!(&in(cx_ref) let row_val = ObjectValue(row_obj));
+                            w2::JS_SetElement(
+                                cx_ref,
+                                result_arr.handle().into(),
+                                row_idx,
+                                row_val.handle().into(),
+                            );
+                            row_idx += 1;
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            let msg = ZBox::from_vec(e.to_string().into_bytes());
+                            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                            return false;
                         }
                     }
-                }
+                },
                 Err(e) => {
                     let msg = ZBox::from_vec(e.to_string().into_bytes());
                     JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
@@ -613,11 +582,7 @@ unsafe extern "C" fn database_query(
 // ── Database.prepare(sql) → Statement ──
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn database_prepare(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn database_prepare(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
@@ -712,11 +677,7 @@ unsafe extern "C" fn database_prepare(
 // ── Statement.run() → { changes, lastInsertRowid } ──
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn statement_run(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn statement_run(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
@@ -794,11 +755,7 @@ unsafe extern "C" fn statement_run(
 // ── Statement.get() → row | null ──
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn statement_get(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn statement_get(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
@@ -863,11 +820,7 @@ unsafe extern "C" fn statement_get(
 // ── Statement.all() → row[] ──
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn statement_all(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn statement_all(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
@@ -922,7 +875,12 @@ unsafe extern "C" fn statement_all(
                     break;
                 }
                 rooted!(&in(cx_ref) let row_val = ObjectValue(row_obj));
-                w2::JS_SetElement(cx_ref, result_arr.handle().into(), row_idx, row_val.handle().into());
+                w2::JS_SetElement(
+                    cx_ref,
+                    result_arr.handle().into(),
+                    row_idx,
+                    row_val.handle().into(),
+                );
                 row_idx += 1;
             }
             Ok(None) => break,
@@ -1088,7 +1046,8 @@ mod tests {
     #[test]
     fn test_sqlite_database_run() {
         let db = SqliteDatabase::new(":memory:").unwrap();
-        db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
         let result = db.run("INSERT INTO t VALUES (1, 'hello')").unwrap();
         assert_eq!(result.changes, 1);
         assert!(result.last_insert_rowid > 0);
@@ -1104,7 +1063,8 @@ mod tests {
         let borrow = db.conn.borrow();
         let conn = borrow.as_ref().unwrap();
         let mut stmt = conn.prepare("SELECT id, val FROM t ORDER BY id").unwrap();
-        let rows: Vec<(i64, String)> = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();

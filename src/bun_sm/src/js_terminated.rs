@@ -1,7 +1,7 @@
 //! JsTerminated — sentinel for terminated execution.
 
-use crate::js_error::JsError;
 use crate::error_code::ErrorCode;
+use crate::js_error::JsError;
 
 /// Represents a terminated JavaScript execution.
 pub struct JsTerminated;

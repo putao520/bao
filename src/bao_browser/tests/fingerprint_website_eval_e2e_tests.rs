@@ -136,10 +136,14 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
             "(function() {{ try {{ Object.defineProperty(navigator, '{}', {{get: function(){{return '{}';}}, configurable: false}}); }} catch(e){{}} }})()",
             prop, escaped
         );
-        page.evaluate_js_web(&js).map_err(|e| format!("inject nav.{}: {}", prop, e))?;
+        page.evaluate_js_web(&js)
+            .map_err(|e| format!("inject nav.{}: {}", prop, e))?;
     }
     let nav_num_overrides = [
-        ("hardwareConcurrency", profile.navigator.hardware_concurrency),
+        (
+            "hardwareConcurrency",
+            profile.navigator.hardware_concurrency,
+        ),
         ("maxTouchPoints", profile.navigator.max_touch_points),
     ];
     for (prop, value) in &nav_num_overrides {
@@ -147,10 +151,12 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
             "(function() {{ try {{ Object.defineProperty(navigator, '{}', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
             prop, value
         );
-        page.evaluate_js_web(&js).map_err(|e| format!("inject nav.{}: {}", prop, e))?;
+        page.evaluate_js_web(&js)
+            .map_err(|e| format!("inject nav.{}: {}", prop, e))?;
     }
     let js = "(function() { try { Object.defineProperty(navigator, 'webdriver', {get: function(){return false;}, configurable: false}); } catch(e){} })()";
-    page.evaluate_js_web(&js).map_err(|e| format!("inject webdriver: {}", e))?;
+    page.evaluate_js_web(&js)
+        .map_err(|e| format!("inject webdriver: {}", e))?;
     let screen_overrides = [
         ("width", profile.screen.width),
         ("height", profile.screen.height),
@@ -164,13 +170,15 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
             "(function() {{ try {{ Object.defineProperty(screen, '{}', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
             prop, value
         );
-        page.evaluate_js_web(&js).map_err(|e| format!("inject screen.{}: {}", prop, e))?;
+        page.evaluate_js_web(&js)
+            .map_err(|e| format!("inject screen.{}: {}", prop, e))?;
     }
     let js = format!(
         "(function() {{ try {{ Object.defineProperty(window, 'devicePixelRatio', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
         profile.screen.device_pixel_ratio
     );
-    page.evaluate_js_web(&js).map_err(|e| format!("inject dpr: {}", e))?;
+    page.evaluate_js_web(&js)
+        .map_err(|e| format!("inject dpr: {}", e))?;
     Ok(())
 }
 
@@ -210,7 +218,10 @@ fn fingerprint_website_eval_e2e() {
     let runtime = match BaoRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] BaoRuntime::new failed (likely missing servo runtime): {}", e);
+            eprintln!(
+                "[skip] BaoRuntime::new failed (likely missing servo runtime): {}",
+                e
+            );
             return;
         }
     };
@@ -280,7 +291,10 @@ fn scenario_stealth_property_efficacy_chrome(pool: &PagePool, report: &mut Repor
             &format!("{}::webdriver_hidden", name),
             &format!("navigator.webdriver leaked: {}", other),
         ),
-        Err(e) => report.skip(&format!("{}::webdriver_hidden", name), &format!("eval: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::webdriver_hidden", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     // navigator.userAgent contains Chrome
@@ -334,7 +348,10 @@ fn scenario_stealth_property_efficacy_firefox(pool: &PagePool, report: &mut Repo
             &format!("{}::webdriver_hidden", name),
             &format!("navigator.webdriver leaked: {}", other),
         ),
-        Err(e) => report.skip(&format!("{}::webdriver_hidden", name), &format!("eval: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::webdriver_hidden", name),
+            &format!("eval: {}", e),
+        ),
     }
 
     match page.evaluate_js_web("navigator.userAgent") {
@@ -487,13 +504,21 @@ fn sannysoft_counts(page: &PageHandle) -> Result<(u32, u32), String> {
         var f2 = document.querySelectorAll('.failed').length; \
         return String(p2) + ',' + String(f2); \
      })()";
-    let raw = page.evaluate_js_web(js).map_err(|e| format!("eval: {}", e))?;
+    let raw = page
+        .evaluate_js_web(js)
+        .map_err(|e| format!("eval: {}", e))?;
     let parts: Vec<&str> = raw.split(',').collect();
     if parts.len() != 2 {
         return Err(format!("malformed counts '{}'", raw));
     }
-    let passed: u32 = parts[0].trim().parse().map_err(|_| format!("bad passed '{}'", parts[0]))?;
-    let failed: u32 = parts[1].trim().parse().map_err(|_| format!("bad failed '{}'", parts[1]))?;
+    let passed: u32 = parts[0]
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad passed '{}'", parts[0]))?;
+    let failed: u32 = parts[1]
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad failed '{}'", parts[1]))?;
     Ok((passed, failed))
 }
 
@@ -528,7 +553,10 @@ fn evaluate_sannysoft(page: &PageHandle) -> (&'static str, String) {
     let (passed, failed) = counts;
     let total = passed + failed;
     if total == 0 {
-        return ("SKIP", "no detection rows parsed (page did not fully load)".to_string());
+        return (
+            "SKIP",
+            "no detection rows parsed (page did not fully load)".to_string(),
+        );
     }
     let pass_rate = passed as f64 / total as f64;
 
@@ -586,14 +614,20 @@ fn evaluate_creepjs(page: &PageHandle) -> (&'static str, String) {
 
     if !trust.is_empty() {
         let short: String = trust.chars().take(40).collect();
-        return ("PASS", format!("trust_score={} body_len={}", short, body_len));
+        return (
+            "PASS",
+            format!("trust_score={} body_len={}", short, body_len),
+        );
     }
     // Trust score element not found — fall back to body length as evidence
     // that creepjs at least loaded and started computing.
     if body_len > 500 {
         (
             "PASS",
-            format!("trust_score_not_rendered_yet body_len={} (creepjs async)", body_len),
+            format!(
+                "trust_score_not_rendered_yet body_len={} (creepjs async)",
+                body_len
+            ),
         )
     } else {
         (
@@ -644,9 +678,9 @@ fn evaluate_pixelscan(page: &PageHandle) -> (&'static str, String) {
 
 /// Evaluate browserleaks/javascript: confirm page loaded with substantial body.
 fn evaluate_browserleaks(page: &PageHandle) -> (&'static str, String) {
-    match page.evaluate_js_web(
-        "(function() { return String((document.body.innerText||'').length); })()",
-    ) {
+    match page
+        .evaluate_js_web("(function() { return String((document.body.innerText||'').length); })()")
+    {
         Ok(s) => match s.trim().parse::<u32>() {
             Ok(len) if len > 100 => ("PASS", format!("page_loaded body_len={}", len)),
             Ok(len) => ("SKIP", format!("short page len={}", len)),

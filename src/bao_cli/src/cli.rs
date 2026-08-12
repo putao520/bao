@@ -5,9 +5,9 @@
 // @trace REQ-IMPL-05: Phase 5 Integration testing and release (completed)
 // @trace REQ-ENG-006: Bun API adaptation — bao test runner execution/report/exit-code (run_test_file)
 
-use clap::Parser;
 use bao_browser::BrowserConfig;
 use bao_stealth::StealthProfile;
+use clap::Parser;
 
 #[derive(Parser)]
 #[command(name = "bao", about = "Bao Runtime — SpiderMonkey + Servo")]
@@ -86,7 +86,11 @@ pub fn run() -> ::std::result::Result<(), i32> {
         return run_eval(&code);
     }
     match cli.command {
-        Some(Commands::Run { eval, r#module, file }) => {
+        Some(Commands::Run {
+            eval,
+            r#module,
+            file,
+        }) => {
             if let Some(code) = eval {
                 if r#module {
                     run_module_eval(&code)
@@ -100,18 +104,29 @@ pub fn run() -> ::std::result::Result<(), i32> {
                 Err(1)
             }
         }
-        Some(Commands::Build { outdir, target, format, minify, sourcemap, entrypoint }) => {
-            run_build(&entrypoint, outdir.as_deref(), &target, &format, minify, sourcemap)
-        }
-        Some(Commands::Test { eval, files }) => {
-            run_test(eval.as_deref(), &files)
-        }
-        Some(Commands::Install { .. }) => {
-            crate::install::run_install()
-        }
-        Some(Commands::Browser { url, cdp_port, headless, stealth }) => {
-            run_browser(url, cdp_port, headless, stealth)
-        }
+        Some(Commands::Build {
+            outdir,
+            target,
+            format,
+            minify,
+            sourcemap,
+            entrypoint,
+        }) => run_build(
+            &entrypoint,
+            outdir.as_deref(),
+            &target,
+            &format,
+            minify,
+            sourcemap,
+        ),
+        Some(Commands::Test { eval, files }) => run_test(eval.as_deref(), &files),
+        Some(Commands::Install { .. }) => crate::install::run_install(),
+        Some(Commands::Browser {
+            url,
+            cdp_port,
+            headless,
+            stealth,
+        }) => run_browser(url, cdp_port, headless, stealth),
         Some(Commands::Doctor) => crate::doctor::run(),
         Some(Commands::External(args)) => {
             eprintln!("bao: unknown command '{}'", args[0]);
@@ -125,8 +140,10 @@ pub fn run() -> ::std::result::Result<(), i32> {
 }
 
 fn run_eval(code: &str) -> ::std::result::Result<(), i32> {
-    let mut rt = bun_runtime::BaoRuntime::new()
-        .map_err(|_| { eprintln!("Error: Failed to initialize SpiderMonkey"); 1 })?;
+    let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
+        eprintln!("Error: Failed to initialize SpiderMonkey");
+        1
+    })?;
     let eval_result = match rt.eval(code, "<eval>") {
         Ok(val) => {
             if !val.is_undefined() {
@@ -146,13 +163,17 @@ fn run_eval(code: &str) -> ::std::result::Result<(), i32> {
 }
 
 fn run_file(path: &str, force_module: bool) -> ::std::result::Result<(), i32> {
-    let mut rt = bun_runtime::BaoRuntime::new()
-        .map_err(|_| { eprintln!("Error: Failed to initialize SpiderMonkey"); 1 })?;
+    let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
+        eprintln!("Error: Failed to initialize SpiderMonkey");
+        1
+    })?;
 
     let is_module = force_module || path.ends_with(".mjs");
     let result = if is_module {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| { eprintln!("Error reading {}: {}", path, e); 1 })?;
+        let source = std::fs::read_to_string(path).map_err(|e| {
+            eprintln!("Error reading {}: {}", path, e);
+            1
+        })?;
         rt.eval_module(&source, path)
     } else {
         rt.run_file(path)
@@ -172,8 +193,10 @@ fn run_file(path: &str, force_module: bool) -> ::std::result::Result<(), i32> {
 }
 
 fn run_module_eval(code: &str) -> ::std::result::Result<(), i32> {
-    let mut rt = bun_runtime::BaoRuntime::new()
-        .map_err(|_| { eprintln!("Error: Failed to initialize SpiderMonkey"); 1 })?;
+    let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
+        eprintln!("Error: Failed to initialize SpiderMonkey");
+        1
+    })?;
     let eval_result = match rt.eval_module(code, "<module>") {
         Ok(_) => Ok(()),
         Err(e) => {
@@ -210,21 +233,32 @@ fn run_build(
         .unwrap_or_else(|| "bundle.js".into());
     let out_path = format!("{}/{}", out_dir, basename);
 
-    let bundle = bao_bundler::build(entrypoint, minify, target)
-        .map_err(|e| { eprintln!("Error: {}", e); 1 })?;
+    let bundle = bao_bundler::build(entrypoint, minify, target).map_err(|e| {
+        eprintln!("Error: {}", e);
+        1
+    })?;
 
-    ::std::fs::write(&out_path, bundle.code.as_bytes())
-        .map_err(|e| { eprintln!("Error writing {}: {}", out_path, e); 1 })?;
+    ::std::fs::write(&out_path, bundle.code.as_bytes()).map_err(|e| {
+        eprintln!("Error writing {}: {}", out_path, e);
+        1
+    })?;
 
     if let Some(sm) = &bundle.source_map {
         let sm_path = format!("{}.map", out_path);
-        ::std::fs::write(&sm_path, sm.as_bytes())
-            .map_err(|e| { eprintln!("Error writing sourcemap {}: {}", sm_path, e); 1 })?;
+        ::std::fs::write(&sm_path, sm.as_bytes()).map_err(|e| {
+            eprintln!("Error writing sourcemap {}: {}", sm_path, e);
+            1
+        })?;
     }
 
-    eprintln!("{} bundled → {} (target: {}, format: {}{})",
-        entrypoint, out_path, target, format,
-        if sourcemap { ", sourcemap" } else { "" });
+    eprintln!(
+        "{} bundled → {} (target: {}, format: {}{})",
+        entrypoint,
+        out_path,
+        target,
+        format,
+        if sourcemap { ", sourcemap" } else { "" }
+    );
 
     if bundle.source_map.is_none() && sourcemap {
         eprintln!("warning: --sourcemap requested but no sourcemap generated (Phase 1 limitation)");
@@ -262,17 +296,19 @@ fn parse_format(format: &str) -> bun_options_types::Format {
     }
 }
 
-fn run_test(
-    eval: Option<&str>,
-    files: &[String],
-) -> ::std::result::Result<(), i32> {
-    let mut rt = bun_runtime::BaoRuntime::new()
-        .map_err(|_| { eprintln!("Error: Failed to initialize runtime"); 1 })?;
+fn run_test(eval: Option<&str>, files: &[String]) -> ::std::result::Result<(), i32> {
+    let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
+        eprintln!("Error: Failed to initialize runtime");
+        1
+    })?;
 
     let test_result = if let Some(code) = eval {
         match rt.eval(code, "<test-eval>") {
             Ok(_) => Ok(()),
-            Err(e) => { eprintln!("FAIL: {}", e); Err(1) }
+            Err(e) => {
+                eprintln!("FAIL: {}", e);
+                Err(1)
+            }
         }
     } else if files.is_empty() {
         let test_patterns = ["test", "tests", "__tests__"];
@@ -285,7 +321,11 @@ fn run_test(
                 if let Ok(entries) = ::std::fs::read_dir(dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
-                        if path.extension().map(|e| e == "js" || e == "ts").unwrap_or(false) {
+                        if path
+                            .extension()
+                            .map(|e| e == "js" || e == "ts")
+                            .unwrap_or(false)
+                        {
                             let path_str = path.to_string_lossy().into_owned();
                             eprintln!("\n# {}", path_str);
                             match rt.run_test_file(&path_str) {
@@ -309,7 +349,10 @@ fn run_test(
             eprintln!("bao test: no test files found (looked in test/, tests/, __tests__/)");
             return Err(1);
         }
-        eprintln!("\n# Summary: {} passed, {} failed", total_passed, total_failed);
+        eprintln!(
+            "\n# Summary: {} passed, {} failed",
+            total_passed, total_failed
+        );
         if total_failed > 0 { Err(1) } else { Ok(()) }
     } else {
         let mut total_passed: u32 = 0;
@@ -329,7 +372,10 @@ fn run_test(
             }
             bun_runtime::clear_exit();
         }
-        eprintln!("\n# Summary: {} passed, {} failed", total_passed, total_failed);
+        eprintln!(
+            "\n# Summary: {} passed, {} failed",
+            total_passed, total_failed
+        );
         if total_failed > 0 { Err(1) } else { Ok(()) }
     };
     test_result

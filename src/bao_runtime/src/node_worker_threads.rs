@@ -12,14 +12,16 @@
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
-use ::std::sync::mpsc::{self, Receiver, Sender};
-use ::std::sync::atomic::{AtomicU32, Ordering};
 use ::std::sync::OnceLock;
+use ::std::sync::atomic::{AtomicU32, Ordering};
+use ::std::sync::mpsc::{self, Receiver, Sender};
 
 use dashmap::DashMap;
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue, Int32Value, DoubleValue, BooleanValue, StringValue};
+use mozjs::jsval::{
+    BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue,
+};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -197,7 +199,10 @@ fn worker_entry(
     );
 
     if let Err(e) = eval_result {
-        let msg = format!("Worker script error: {} ({}:{})", e.message, e.filename, e.line);
+        let msg = format!(
+            "Worker script error: {} ({}:{})",
+            e.message, e.filename, e.line
+        );
         let _ = main_sender.send(WorkerToMainMessage::Error(msg));
         return;
     }
@@ -260,7 +265,10 @@ unsafe extern "C" fn worker_post_to_main(cx: *mut JSContext, argc: u32, vp: *mut
     }
 
     let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
-    let rust_str = jsstr_to_string(wrapped_cx.raw_cx(), NonNull::new_unchecked(json_val.to_string()));
+    let rust_str = jsstr_to_string(
+        wrapped_cx.raw_cx(),
+        NonNull::new_unchecked(json_val.to_string()),
+    );
 
     // Find this worker's main-sender from a thread-local.
     WORKER_MAIN_SENDER.with(|sender| {
@@ -287,9 +295,7 @@ fn deliver_message_to_worker(raw_cx: *mut JSContext, json_str: &str) {
             return;
         }
 
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(
-            NonNull::new_unchecked(raw_cx),
-        );
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
         let cx = &mut wrapped_cx;
 
         rooted!(&in(cx) let global_root = global);
@@ -349,12 +355,18 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
 
     let filename_val = *args.get(0).ptr;
     if !filename_val.is_string() {
-        JS_ReportErrorUTF8(cx, c"Worker first argument must be a string filename".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"Worker first argument must be a string filename".as_ptr(),
+        );
         return false;
     }
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let filename = jsstr_to_string(wrapped_cx.raw_cx(), NonNull::new_unchecked(filename_val.to_string()));
+    let filename = jsstr_to_string(
+        wrapped_cx.raw_cx(),
+        NonNull::new_unchecked(filename_val.to_string()),
+    );
 
     // Resolve filename to absolute path.
     let abs_filename = if ::std::path::Path::new(&filename).is_absolute() {
@@ -389,9 +401,10 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
                 rooted!(&in(cx_ref) let mut json_val = UndefinedValue());
                 let json_ok = json_stringify(cx, wd_val, json_val.handle_mut());
                 if json_ok && json_val.is_string() {
-                    worker_data_json = Some(
-                        jsstr_to_string(cx_ref.raw_cx(), NonNull::new_unchecked(json_val.get().to_string()))
-                    );
+                    worker_data_json = Some(jsstr_to_string(
+                        cx_ref.raw_cx(),
+                        NonNull::new_unchecked(json_val.get().to_string()),
+                    ));
                 }
             }
         }
@@ -403,8 +416,10 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     // Create channels.
     let (main_to_worker_tx, main_to_worker_rx): (Sender<WorkerMessage>, Receiver<WorkerMessage>) =
         mpsc::channel();
-    let (worker_to_main_tx, worker_to_main_rx): (Sender<WorkerToMainMessage>, Receiver<WorkerToMainMessage>) =
-        mpsc::channel();
+    let (worker_to_main_tx, worker_to_main_rx): (
+        Sender<WorkerToMainMessage>,
+        Receiver<WorkerToMainMessage>,
+    ) = mpsc::channel();
 
     // Spawn the worker OS thread.
     let worker_filename = abs_filename.clone();
@@ -412,7 +427,13 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     let join_handle = ::std::thread::Builder::new()
         .name(format!("bao-worker-{}", thread_id))
         .spawn(move || {
-            worker_entry(worker_filename, thread_id, main_to_worker_rx, worker_to_main_tx, worker_wd_json);
+            worker_entry(
+                worker_filename,
+                thread_id,
+                main_to_worker_rx,
+                worker_to_main_tx,
+                worker_wd_json,
+            );
         });
 
     let join_handle = match join_handle {
@@ -426,10 +447,13 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     };
 
     // Register the worker handle.
-    worker_registry().insert(thread_id, WorkerHandle {
-        sender: main_to_worker_tx,
-        thread: Some(join_handle),
-    });
+    worker_registry().insert(
+        thread_id,
+        WorkerHandle {
+            sender: main_to_worker_tx,
+            thread: Some(join_handle),
+        },
+    );
 
     // Create the Worker JS object with postMessage, terminate, threadId.
     let cx_ref = &mut wrapped_cx;
@@ -519,7 +543,10 @@ unsafe extern "C" fn worker_post_message(cx: *mut JSContext, argc: u32, vp: *mut
     // Get threadId from the Worker object.
     let this_val = args.thisv();
     if !this_val.is_object() {
-        JS_ReportErrorUTF8(cx, c"Worker.prototype.postMessage called on non-object".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"Worker.prototype.postMessage called on non-object".as_ptr(),
+        );
         return false;
     }
 
@@ -551,7 +578,10 @@ unsafe extern "C" fn worker_post_message(cx: *mut JSContext, argc: u32, vp: *mut
         rooted!(&in(cx_ref) let mut json_val = UndefinedValue());
         let ok = json_stringify(cx, data_val, json_val.handle_mut());
         if ok && json_val.is_string() {
-            jsstr_to_string(cx_ref.raw_cx(), NonNull::new_unchecked(json_val.get().to_string()))
+            jsstr_to_string(
+                cx_ref.raw_cx(),
+                NonNull::new_unchecked(json_val.get().to_string()),
+            )
         } else {
             "null".to_string()
         }
@@ -744,7 +774,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let worker_fn = JS_NewFunction(
             raw_cx,
             Some(worker_constructor),
-            1, // min args
+            1,     // min args
             0x400, // JSFUN_CONSTRUCTOR
             c"Worker".as_ptr(),
         );
@@ -756,20 +786,36 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             rooted!(&in(cx) let proto = w2::JS_NewPlainObject(cx));
             if !proto.get().is_null() {
                 w2::JS_DefineFunction(
-                    cx, proto.handle(), c"postMessage".as_ptr(),
-                    Some(worker_post_message), 1, JSPROP_ENUMERATE as u32,
+                    cx,
+                    proto.handle(),
+                    c"postMessage".as_ptr(),
+                    Some(worker_post_message),
+                    1,
+                    JSPROP_ENUMERATE as u32,
                 );
                 w2::JS_DefineFunction(
-                    cx, proto.handle(), c"terminate".as_ptr(),
-                    Some(worker_terminate), 0, JSPROP_ENUMERATE as u32,
+                    cx,
+                    proto.handle(),
+                    c"terminate".as_ptr(),
+                    Some(worker_terminate),
+                    0,
+                    JSPROP_ENUMERATE as u32,
                 );
                 w2::JS_DefineFunction(
-                    cx, proto.handle(), c"ref".as_ptr(),
-                    Some(worker_noop), 0, JSPROP_ENUMERATE as u32,
+                    cx,
+                    proto.handle(),
+                    c"ref".as_ptr(),
+                    Some(worker_noop),
+                    0,
+                    JSPROP_ENUMERATE as u32,
                 );
                 w2::JS_DefineFunction(
-                    cx, proto.handle(), c"unref".as_ptr(),
-                    Some(worker_noop), 0, JSPROP_ENUMERATE as u32,
+                    cx,
+                    proto.handle(),
+                    c"unref".as_ptr(),
+                    Some(worker_noop),
+                    0,
+                    JSPROP_ENUMERATE as u32,
                 );
 
                 // Wire prototype onto the constructor.
@@ -854,7 +900,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             _phantom_0: ::std::marker::PhantomData,
             ptr: &mut rval,
         };
-        let opts = mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:MessageChannel>".as_ptr(), 1);
+        let opts =
+            mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:MessageChannel>".as_ptr(), 1);
         if !opts.is_null() {
             let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
             libc::free(opts as *mut _);
@@ -891,12 +938,18 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
   : function MessagePort() {})"#;
         let mut mp_text = mozjs::rust::transform_str_to_source_text(mp_source);
         let mut mp_val = UndefinedValue();
-        let mp_opts = mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:MessagePort>".as_ptr(), 1);
+        let mp_opts =
+            mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:MessagePort>".as_ptr(), 1);
         if !mp_opts.is_null() {
-            let mp_ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, mp_opts, &mut mp_text, MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut mp_val,
-            });
+            let mp_ok = mozjs_sys::jsapi::JS::Evaluate2(
+                raw_cx,
+                mp_opts,
+                &mut mp_text,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut mp_val,
+                },
+            );
             libc::free(mp_opts as *mut _);
             if mp_ok && mp_val.is_object() {
                 rooted!(&in(cx) let mp_obj = ObjectValue(mp_val.to_object()));
@@ -916,12 +969,21 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
   : function BroadcastChannel(name) { this.name = name; this.postMessage = function() {}; this.close = function() {}; })"#;
         let mut bc_text = mozjs::rust::transform_str_to_source_text(bc_source);
         let mut bc_val = UndefinedValue();
-        let bc_opts = mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:BroadcastChannel>".as_ptr(), 1);
+        let bc_opts = mozjs::glue::NewCompileOptions(
+            raw_cx,
+            c"<worker_threads:BroadcastChannel>".as_ptr(),
+            1,
+        );
         if !bc_opts.is_null() {
-            let bc_ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, bc_opts, &mut bc_text, MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut bc_val,
-            });
+            let bc_ok = mozjs_sys::jsapi::JS::Evaluate2(
+                raw_cx,
+                bc_opts,
+                &mut bc_text,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut bc_val,
+                },
+            );
             libc::free(bc_opts as *mut _);
             if bc_ok && bc_val.is_object() {
                 rooted!(&in(cx) let bc_obj = ObjectValue(bc_val.to_object()));
@@ -985,9 +1047,15 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let share_env_source = r#"Symbol('nodejs.worker_threads.SHARE_ENV')"#;
         let mut se_text = mozjs::rust::transform_str_to_source_text(share_env_source);
         rooted!(&in(cx) let mut se_val = UndefinedValue());
-        let se_opts = mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:SHARE_ENV>".as_ptr(), 1);
+        let se_opts =
+            mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:SHARE_ENV>".as_ptr(), 1);
         if !se_opts.is_null() {
-            let se_ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, se_opts, &mut se_text, se_val.handle_mut().into());
+            let se_ok = mozjs_sys::jsapi::JS::Evaluate2(
+                raw_cx,
+                se_opts,
+                &mut se_text,
+                se_val.handle_mut().into(),
+            );
             libc::free(se_opts as *mut _);
             if se_ok {
                 JS_DefineProperty(
@@ -1013,18 +1081,27 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let mut ut_val = UndefinedValue();
         let ut_opts = mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:utils>".as_ptr(), 1);
         if !ut_opts.is_null() {
-            let ut_ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, ut_opts, &mut ut_text, MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ut_val,
-            });
+            let ut_ok = mozjs_sys::jsapi::JS::Evaluate2(
+                raw_cx,
+                ut_opts,
+                &mut ut_text,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut ut_val,
+                },
+            );
             libc::free(ut_opts as *mut _);
             if ut_ok && ut_val.is_object() {
                 let utils_obj = ut_val.to_object();
                 rooted!(&in(cx) let utils_root = utils_obj);
                 // Copy each property to exports.
                 for name in &[
-                    "getEnvironmentData", "setEnvironmentData", "getHeapSnapshot",
-                    "markAsUntransferable", "moveMessagePortToContext", "receiveMessageOnPort",
+                    "getEnvironmentData",
+                    "setEnvironmentData",
+                    "getHeapSnapshot",
+                    "markAsUntransferable",
+                    "moveMessagePortToContext",
+                    "receiveMessageOnPort",
                 ] {
                     let c_name = CString::new(*name).unwrap_or_default();
                     rooted!(&in(cx) let mut prop_val = UndefinedValue());

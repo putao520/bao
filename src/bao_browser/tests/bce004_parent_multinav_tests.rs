@@ -45,10 +45,14 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
             "(function() {{ try {{ Object.defineProperty(navigator, '{}', {{get: function(){{return '{}';}}, configurable: false}}); }} catch(e){{}} }})()",
             prop, escaped
         );
-        page.evaluate_js_web(&js).map_err(|e| format!("inject nav.{}: {}", prop, e))?;
+        page.evaluate_js_web(&js)
+            .map_err(|e| format!("inject nav.{}: {}", prop, e))?;
     }
     let nav_num_overrides = [
-        ("hardwareConcurrency", profile.navigator.hardware_concurrency),
+        (
+            "hardwareConcurrency",
+            profile.navigator.hardware_concurrency,
+        ),
         ("maxTouchPoints", profile.navigator.max_touch_points),
     ];
     for (prop, value) in &nav_num_overrides {
@@ -56,10 +60,12 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
             "(function() {{ try {{ Object.defineProperty(navigator, '{}', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
             prop, value
         );
-        page.evaluate_js_web(&js).map_err(|e| format!("inject nav.{}: {}", prop, e))?;
+        page.evaluate_js_web(&js)
+            .map_err(|e| format!("inject nav.{}: {}", prop, e))?;
     }
     let js = "(function() { try { Object.defineProperty(navigator, 'webdriver', {get: function(){return false;}, configurable: false}); } catch(e){} })()";
-    page.evaluate_js_web(&js).map_err(|e| format!("inject webdriver: {}", e))?;
+    page.evaluate_js_web(&js)
+        .map_err(|e| format!("inject webdriver: {}", e))?;
     let screen_overrides = [
         ("width", profile.screen.width),
         ("height", profile.screen.height),
@@ -73,13 +79,15 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
             "(function() {{ try {{ Object.defineProperty(screen, '{}', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
             prop, value
         );
-        page.evaluate_js_web(&js).map_err(|e| format!("inject screen.{}: {}", prop, e))?;
+        page.evaluate_js_web(&js)
+            .map_err(|e| format!("inject screen.{}: {}", prop, e))?;
     }
     let js = format!(
         "(function() {{ try {{ Object.defineProperty(window, 'devicePixelRatio', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
         profile.screen.device_pixel_ratio
     );
-    page.evaluate_js_web(&js).map_err(|e| format!("inject dpr: {}", e))?;
+    page.evaluate_js_web(&js)
+        .map_err(|e| format!("inject dpr: {}", e))?;
     Ok(())
 }
 
@@ -99,10 +107,15 @@ fn env_ok() -> bool {
 /// (the precise "second navigation SIGSEGV" scenario from the original comment).
 #[test]
 fn bce004_parent_multisite_inplace() {
-    if !env_ok() { return; }
+    if !env_ok() {
+        return;
+    }
     let runtime = match BaoRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
-        Err(e) => { eprintln!("[skip] runtime init: {e}"); return; }
+        Err(e) => {
+            eprintln!("[skip] runtime init: {e}");
+            return;
+        }
     };
     let pool: &PagePool = runtime.page_pool();
     let profile = StealthProfile::chrome_default();
@@ -112,7 +125,10 @@ fn bce004_parent_multisite_inplace() {
         ..Default::default()
     }) {
         Ok(p) => p,
-        Err(e) => { eprintln!("[fail] create_page: {e}"); return; }
+        Err(e) => {
+            eprintln!("[fail] create_page: {e}");
+            return;
+        }
     };
 
     // Inject BEFORE any navigation — claimed to cause SIGSEGV per BCE-002-residual.
@@ -139,8 +155,12 @@ fn bce004_parent_multisite_inplace() {
         wait_for_load(&page, 12000);
         // Post-nav inject + eval (as subprocess path does).
         let _ = inject_stealth_js(&page, &profile);
-        let rs = page.evaluate_js_web("document.readyState").unwrap_or_default();
-        let title = page.evaluate_js_web("document.title || ''").unwrap_or_default();
+        let rs = page
+            .evaluate_js_web("document.readyState")
+            .unwrap_or_default();
+        let title = page
+            .evaluate_js_web("document.title || ''")
+            .unwrap_or_default();
         eprintln!(
             "[parent-multisite] nav #{} done readyState={:?} title={:?}",
             i + 1,
@@ -148,26 +168,31 @@ fn bce004_parent_multisite_inplace() {
             title.chars().take(40).collect::<String>()
         );
     }
-    eprintln!("[parent-multisite] PASS — no SIGSEGV across {} navigations in single parent process", sites.len());
+    eprintln!(
+        "[parent-multisite] PASS — no SIGSEGV across {} navigations in single parent process",
+        sites.len()
+    );
 }
 
 /// Multi-page: parent creates MULTIPLE pages, each navigating externally.
 /// Tests the PagePool + multi-ScriptThread scenario for SIGSEGV.
 #[test]
 fn bce004_parent_multi_page() {
-    if !env_ok() { return; }
+    if !env_ok() {
+        return;
+    }
     let runtime = match BaoRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
-        Err(e) => { eprintln!("[skip] runtime init: {e}"); return; }
+        Err(e) => {
+            eprintln!("[skip] runtime init: {e}");
+            return;
+        }
     };
     let pool: &PagePool = runtime.page_pool();
     let profile = StealthProfile::chrome_default();
 
     let mut pages = Vec::new();
-    let targets = [
-        "https://example.com/",
-        "https://example.org/",
-    ];
+    let targets = ["https://example.com/", "https://example.org/"];
     for (i, url) in targets.iter().enumerate() {
         eprintln!("[parent-multipage] create page #{} → {}", i + 1, url);
         let page = match pool.create_page(&PageConfig {
@@ -176,7 +201,10 @@ fn bce004_parent_multi_page() {
             ..Default::default()
         }) {
             Ok(p) => p,
-            Err(e) => { eprintln!("[fail] create_page #{}: {e}", i + 1); return; }
+            Err(e) => {
+                eprintln!("[fail] create_page #{}: {e}", i + 1);
+                return;
+            }
         };
         wait_for_load(&page, 8000);
         pages.push(page);
@@ -191,8 +219,14 @@ fn bce004_parent_multi_page() {
         }
         wait_for_load(page, 8000);
         let _ = inject_stealth_js(page, &profile);
-        let rs = page.evaluate_js_web("document.readyState").unwrap_or_default();
-        eprintln!("[parent-multipage] nav page #{} done readyState={:?}", i + 1, rs);
+        let rs = page
+            .evaluate_js_web("document.readyState")
+            .unwrap_or_default();
+        eprintln!(
+            "[parent-multipage] nav page #{} done readyState={:?}",
+            i + 1,
+            rs
+        );
     }
     eprintln!("[parent-multipage] PASS — no SIGSEGV across multi-page multi-nav");
 }

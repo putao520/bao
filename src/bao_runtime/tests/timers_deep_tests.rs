@@ -25,7 +25,9 @@ fn test_timers_deep() {
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         function check(label, fn) {
             try { var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }
@@ -98,7 +100,8 @@ fn test_timers_deep() {
         });
 
         results.join("|")
-    "#);
+    "#,
+    );
 
     let mut all_passed = true;
     for item in results.split('|') {

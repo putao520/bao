@@ -1,13 +1,15 @@
 // @trace REQ-ENG-006 [api:node:console]
-use bun_core::ZBox;
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
 use ::std::ptr::NonNull;
 use ::std::sync::{Mutex, OnceLock};
 use ::std::time::Instant;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, StringValue, ObjectValue, BooleanValue, Int32Value, DoubleValue};
+use mozjs::jsval::{
+    BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue,
+};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -41,37 +43,170 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
     unsafe {
         // Logging methods
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"log".as_ptr(), Some(console_log), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"warn".as_ptr(), Some(console_warn), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"error".as_ptr(), Some(console_error), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"info".as_ptr(), Some(console_info), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"debug".as_ptr(), Some(console_debug), 0, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"log".as_ptr(),
+            Some(console_log),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"warn".as_ptr(),
+            Some(console_warn),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"error".as_ptr(),
+            Some(console_error),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"info".as_ptr(),
+            Some(console_info),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"debug".as_ptr(),
+            Some(console_debug),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // Formatting methods
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"dir".as_ptr(), Some(console_dir), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"dirxml".as_ptr(), Some(console_dir), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"table".as_ptr(), Some(console_table), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"dir".as_ptr(),
+            Some(console_dir),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"dirxml".as_ptr(),
+            Some(console_dir),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"table".as_ptr(),
+            Some(console_table),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // Timer methods
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"time".as_ptr(), Some(console_time), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"timeEnd".as_ptr(), Some(console_time_end), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"timeLog".as_ptr(), Some(console_time_log), 0, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"time".as_ptr(),
+            Some(console_time),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"timeEnd".as_ptr(),
+            Some(console_time_end),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"timeLog".as_ptr(),
+            Some(console_time_log),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // Trace / assert
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"trace".as_ptr(), Some(console_trace), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"assert".as_ptr(), Some(console_assert), 0, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"trace".as_ptr(),
+            Some(console_trace),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"assert".as_ptr(),
+            Some(console_assert),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // Counter methods
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"count".as_ptr(), Some(console_count), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"countReset".as_ptr(), Some(console_count_reset), 0, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"count".as_ptr(),
+            Some(console_count),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"countReset".as_ptr(),
+            Some(console_count_reset),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // Grouping methods
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"group".as_ptr(), Some(console_group), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"groupCollapsed".as_ptr(), Some(console_group), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"groupEnd".as_ptr(), Some(console_group_end), 0, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"group".as_ptr(),
+            Some(console_group),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"groupCollapsed".as_ptr(),
+            Some(console_group),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"groupEnd".as_ptr(),
+            Some(console_group_end),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // Clear
-        w2::JS_DefineFunction(cx, console_obj.handle(), c"clear".as_ptr(), Some(console_clear), 0, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            console_obj.handle(),
+            c"clear".as_ptr(),
+            Some(console_clear),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     cache_builtin(cx, "console", console_obj.get());
@@ -99,7 +234,11 @@ unsafe fn js_val_to_display_string(cx: *mut JSContext, val: JSVal) -> String {
         return "null".to_string();
     }
     if val.is_boolean() {
-        return if val.to_boolean() { "true".to_string() } else { "false".to_string() };
+        return if val.to_boolean() {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        };
     }
     if val.is_int32() {
         return val.to_int32().to_string();
@@ -125,20 +264,45 @@ unsafe fn js_val_to_display_string(cx: *mut JSContext, val: JSVal) -> String {
         if !global.is_null() {
             rooted!(&in(cx_ref) let global_rooted = global);
             let mut json_val = UndefinedValue();
-            JS_GetProperty(cx, global_rooted.handle().into(), c"JSON".as_ptr(),
-                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut json_val });
+            JS_GetProperty(
+                cx,
+                global_rooted.handle().into(),
+                c"JSON".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut json_val,
+                },
+            );
             if json_val.is_object() {
                 rooted!(&in(cx_ref) let json_obj = json_val.to_object());
                 let mut stringify_val = UndefinedValue();
-                JS_GetProperty(cx, json_obj.handle().into(), c"stringify".as_ptr(),
-                    MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut stringify_val });
+                JS_GetProperty(
+                    cx,
+                    json_obj.handle().into(),
+                    c"stringify".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut stringify_val,
+                    },
+                );
                 if stringify_val.is_object() {
                     let elems = [ObjectValue(obj.get())];
-                    let call_args = HandleValueArray { length_: elems.len(), elements_: elems.as_ptr() };
+                    let call_args = HandleValueArray {
+                        length_: elems.len(),
+                        elements_: elems.as_ptr(),
+                    };
                     rooted!(&in(cx_ref) let stringify_fn = ObjectValue(stringify_val.to_object()));
                     let mut rval = UndefinedValue();
-                    JS_CallFunctionValue(cx, json_obj.handle().into(), stringify_fn.handle().into(),
-                        &call_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+                    JS_CallFunctionValue(
+                        cx,
+                        json_obj.handle().into(),
+                        stringify_fn.handle().into(),
+                        &call_args,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut rval,
+                        },
+                    );
                     if rval.is_string() {
                         let s = rval.to_string();
                         if !s.is_null() {
@@ -150,14 +314,29 @@ unsafe fn js_val_to_display_string(cx: *mut JSContext, val: JSVal) -> String {
         }
         // Fallback: try toString()
         let mut to_string_rval = UndefinedValue();
-        JS_GetProperty(cx, obj.handle().into(), c"toString".as_ptr(),
-            MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut to_string_rval });
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"toString".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut to_string_rval,
+            },
+        );
         if to_string_rval.is_object() {
             rooted!(&in(cx_ref) let to_string_fn = ObjectValue(to_string_rval.to_object()));
             let null_args = HandleValueArray::empty();
             let mut rval2 = UndefinedValue();
-            JS_CallFunctionValue(cx, obj.handle().into(), to_string_fn.handle().into(),
-                &null_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval2 });
+            JS_CallFunctionValue(
+                cx,
+                obj.handle().into(),
+                to_string_fn.handle().into(),
+                &null_args,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval2,
+                },
+            );
             if rval2.is_string() {
                 let s = rval2.to_string();
                 if !s.is_null() {
@@ -275,7 +454,11 @@ unsafe extern "C" fn console_time(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         let val = *args.get(0).ptr;
         if val.is_string() {
             let s = val.to_string();
-            if !s.is_null() { crate::jsstr_to_rust_string(cx, s) } else { "default".to_string() }
+            if !s.is_null() {
+                crate::jsstr_to_rust_string(cx, s)
+            } else {
+                "default".to_string()
+            }
         } else {
             "default".to_string()
         }
@@ -296,7 +479,11 @@ unsafe extern "C" fn console_time_end(cx: *mut JSContext, argc: u32, vp: *mut JS
         let val = *args.get(0).ptr;
         if val.is_string() {
             let s = val.to_string();
-            if !s.is_null() { crate::jsstr_to_rust_string(cx, s) } else { "default".to_string() }
+            if !s.is_null() {
+                crate::jsstr_to_rust_string(cx, s)
+            } else {
+                "default".to_string()
+            }
         } else {
             "default".to_string()
         }
@@ -325,7 +512,11 @@ unsafe extern "C" fn console_time_log(cx: *mut JSContext, argc: u32, vp: *mut JS
         let val = *args.get(0).ptr;
         if val.is_string() {
             let s = val.to_string();
-            if !s.is_null() { crate::jsstr_to_rust_string(cx, s) } else { "default".to_string() }
+            if !s.is_null() {
+                crate::jsstr_to_rust_string(cx, s)
+            } else {
+                "default".to_string()
+            }
         } else {
             "default".to_string()
         }
@@ -384,7 +575,9 @@ unsafe extern "C" fn console_trace(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         // Find the null terminator
         let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
         if len > 0 {
-            filename = ::std::str::from_utf8(&buf[..len]).unwrap_or("<unknown>").to_string();
+            filename = ::std::str::from_utf8(&buf[..len])
+                .unwrap_or("<unknown>")
+                .to_string();
         }
     }
 
@@ -411,11 +604,17 @@ unsafe extern "C" fn console_assert(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     }
     // Also treat truthy non-boolean values as passing
     if !condition.is_boolean() {
-        let is_truthy = if condition.is_int32() { condition.to_int32() != 0 }
-            else if condition.is_double() { condition.to_double() != 0.0 }
-            else if condition.is_string() { true }
-            else if condition.is_object() { true }
-            else { false };
+        let is_truthy = if condition.is_int32() {
+            condition.to_int32() != 0
+        } else if condition.is_double() {
+            condition.to_double() != 0.0
+        } else if condition.is_string() {
+            true
+        } else if condition.is_object() {
+            true
+        } else {
+            false
+        };
         if is_truthy {
             args.rval().set(UndefinedValue());
             return true;
@@ -449,7 +648,11 @@ unsafe extern "C" fn console_count(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         let val = *args.get(0).ptr;
         if val.is_string() {
             let s = val.to_string();
-            if !s.is_null() { crate::jsstr_to_rust_string(cx, s) } else { "default".to_string() }
+            if !s.is_null() {
+                crate::jsstr_to_rust_string(cx, s)
+            } else {
+                "default".to_string()
+            }
         } else {
             "default".to_string()
         }
@@ -475,7 +678,11 @@ unsafe extern "C" fn console_count_reset(cx: *mut JSContext, argc: u32, vp: *mut
         let val = *args.get(0).ptr;
         if val.is_string() {
             let s = val.to_string();
-            if !s.is_null() { crate::jsstr_to_rust_string(cx, s) } else { "default".to_string() }
+            if !s.is_null() {
+                crate::jsstr_to_rust_string(cx, s)
+            } else {
+                "default".to_string()
+            }
         } else {
             "default".to_string()
         }
@@ -517,7 +724,9 @@ unsafe extern "C" fn console_group_end(_cx: *mut JSContext, _argc: u32, vp: *mut
     let args = CallArgs::from_vp(vp, _argc);
     CONSOLE_INDENT.with(|indent| {
         let mut level = indent.borrow_mut();
-        if *level > 0 { *level -= 1; }
+        if *level > 0 {
+            *level -= 1;
+        }
     });
     args.rval().set(UndefinedValue());
     true

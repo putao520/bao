@@ -196,7 +196,10 @@ mod tests {
     #[test]
     fn new_request_extracts_query_string() {
         let req = "GET /json/new?url=https://example.com HTTP/1.1";
-        assert_eq!(parse_new_request(req), Some("url=https://example.com".to_string()));
+        assert_eq!(
+            parse_new_request(req),
+            Some("url=https://example.com".to_string())
+        );
     }
 
     #[test]

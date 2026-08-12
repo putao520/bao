@@ -4,7 +4,7 @@
 //! Actual JS method registration is done in bao_runtime.
 //! This module provides the helper function for defining methods on JS objects.
 
-use mozjs::jsapi::{JSContext, JSObject, JSNative, JS_DefineFunction, JSPROP_ENUMERATE};
+use mozjs::jsapi::{JS_DefineFunction, JSContext, JSNative, JSObject, JSPROP_ENUMERATE};
 use mozjs::rooted;
 
 pub struct MethodJsc;
@@ -25,11 +25,19 @@ pub unsafe fn define_method(
 ) {
     let c_name = ::std::ffi::CString::new(name).unwrap_or_default();
     // BCE-20260619-012: root obj before passing as Handle to JS API.
-    let cx_ref = &mut unsafe { mozjs::context::JSContext::from_ptr(
-        ::std::ptr::NonNull::new_unchecked(cx),
-    ) };
+    let cx_ref =
+        &mut unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
     rooted!(&in(cx_ref) let obj_root = obj);
-    unsafe { JS_DefineFunction(cx, obj_root.handle().into(), c_name.as_ptr(), native, nargs, JSPROP_ENUMERATE as u32); }
+    unsafe {
+        JS_DefineFunction(
+            cx,
+            obj_root.handle().into(),
+            c_name.as_ptr(),
+            native,
+            nargs,
+            JSPROP_ENUMERATE as u32,
+        );
+    }
 }
 
 /// Register multiple methods on a JS object.
@@ -39,6 +47,8 @@ pub unsafe fn define_methods(
     methods: &[(&str, JSNative, u32)],
 ) {
     for (name, native, nargs) in methods {
-        unsafe { define_method(cx, obj, name, *native, *nargs); }
+        unsafe {
+            define_method(cx, obj, name, *native, *nargs);
+        }
     }
 }

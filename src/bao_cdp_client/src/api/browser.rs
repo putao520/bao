@@ -288,15 +288,19 @@ pub fn new_page_on_rc(this: &Rc<Browser>) -> Rc<Page> {
 pub fn new_page_on_context(ctx: &Rc<BrowserContext>) -> Rc<Page> {
     let target_id = format!("TARGET-{}", ctx.pages_count() + 1);
     let conn = ctx.browser().connection();
-    let p = Rc::new(Page::new_with_connection(target_id, Rc::downgrade(ctx), conn));
+    let p = Rc::new(Page::new_with_connection(
+        target_id,
+        Rc::downgrade(ctx),
+        conn,
+    ));
     ctx.add_page(p.clone());
     p
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::event_emitter::EventHandler;
+    use super::*;
 
     #[test]
     fn new_initial_state() {
@@ -364,7 +368,13 @@ mod tests {
     #[test]
     fn new_context_on_rc_incognito() {
         let b = Rc::new(Browser::new_for_test("ws://x"));
-        let ctx = new_context_on_rc(&b, ContextOptions { incognito: true, ..Default::default() });
+        let ctx = new_context_on_rc(
+            &b,
+            ContextOptions {
+                incognito: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(b.context_count(), 1);
         assert!(ctx.is_incognito());
     }
@@ -418,7 +428,13 @@ mod tests {
     fn contexts_returns_cloned_list() {
         let b = Rc::new(Browser::new_for_test("ws://x"));
         new_context_on_rc(&b, ContextOptions::default());
-        new_context_on_rc(&b, ContextOptions { incognito: true, ..Default::default() });
+        new_context_on_rc(
+            &b,
+            ContextOptions {
+                incognito: true,
+                ..Default::default()
+            },
+        );
         let list = b.contexts();
         assert_eq!(list.len(), 2);
         assert!(!list[0].is_incognito());
@@ -428,12 +444,17 @@ mod tests {
     #[test]
     fn new_page_on_context_propagates_connection() {
         use crate::connection::Connection;
-        use crate::transport::{InMemoryTransport, InMemoryBridge, InMemoryBridgeResponse};
+        use crate::transport::{InMemoryBridge, InMemoryBridgeResponse, InMemoryTransport};
         use std::sync::Arc;
 
         struct MockBridge;
         impl InMemoryBridge for MockBridge {
-            fn dispatch_command(&self, _m: &str, _p: serde_json::Value, _s: Option<&str>) -> InMemoryBridgeResponse {
+            fn dispatch_command(
+                &self,
+                _m: &str,
+                _p: serde_json::Value,
+                _s: Option<&str>,
+            ) -> InMemoryBridgeResponse {
                 InMemoryBridgeResponse::Ok(serde_json::Value::Null)
             }
         }
@@ -444,7 +465,9 @@ mod tests {
         // Attach connection to Browser.
         let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
         let transport = InMemoryTransport::new(bridge);
-        let conn = Rc::new(RefCell::new(Connection::from_transport(Box::new(transport))));
+        let conn = Rc::new(RefCell::new(Connection::from_transport(Box::new(
+            transport,
+        ))));
         b.set_connection(conn);
         assert!(b.has_connection());
 

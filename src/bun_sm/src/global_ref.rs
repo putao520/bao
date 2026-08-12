@@ -13,7 +13,9 @@ impl GlobalRef {
             return None;
         }
         let key = format!("__global_ref_{:p}", obj);
-        unsafe { crate::gc::gc_store::insert(cx, &key, obj); }
+        unsafe {
+            crate::gc::gc_store::insert(cx, &key, obj);
+        }
         Some(GlobalRef { key, obj })
     }
 
@@ -23,7 +25,9 @@ impl GlobalRef {
 
     pub unsafe fn clear(&mut self, cx: *mut JSContext) {
         if !self.obj.is_null() {
-            unsafe { crate::gc::gc_store::remove(cx, &self.key); }
+            unsafe {
+                crate::gc::gc_store::remove(cx, &self.key);
+            }
             self.obj = std::ptr::null_mut();
         }
     }

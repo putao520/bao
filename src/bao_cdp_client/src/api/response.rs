@@ -321,7 +321,10 @@ mod tests {
         assert_eq!(r.headers().len(), 0);
         r.add_header("content-type", "text/html");
         assert_eq!(r.headers().len(), 1);
-        assert_eq!(r.headers().get("content-type"), Some(&"text/html".to_string()));
+        assert_eq!(
+            r.headers().get("content-type"),
+            Some(&"text/html".to_string())
+        );
     }
 
     #[test]
@@ -360,7 +363,10 @@ mod tests {
     fn remote_address_round_trip() {
         let r = Response::new();
         assert!(r.remote_address().is_none());
-        r.set_remote_address(RemoteAddress { ip: "127.0.0.1".into(), port: 8080 });
+        r.set_remote_address(RemoteAddress {
+            ip: "127.0.0.1".into(),
+            port: 8080,
+        });
         let a = r.remote_address().unwrap();
         assert_eq!(a.ip, "127.0.0.1");
         assert_eq!(a.port, 8080);

@@ -64,9 +64,7 @@ impl std::fmt::Debug for WebSocketTransport {
 /// Map [`WsClientError`] to [`CdpError`].
 fn map_ws_err(e: WsClientError) -> CdpError {
     match e {
-        WsClientError::InvalidUrl => {
-            CdpError::HandshakeError("invalid ws URL".to_string())
-        }
+        WsClientError::InvalidUrl => CdpError::HandshakeError("invalid ws URL".to_string()),
         WsClientError::Connect(io) => CdpError::IoError(io),
         WsClientError::Handshake(h) => {
             CdpError::HandshakeError(format!("handshake failed: {:?}", h))
@@ -90,10 +88,7 @@ impl WebSocketTransport {
         // Validate URL shape up-front so callers see a clean HandshakeError
         // rather than a connect-time IoError on a malformed authority.
         if parse_ws_url(url).is_none() {
-            return Err(CdpError::HandshakeError(format!(
-                "invalid ws URL: {}",
-                url
-            )));
+            return Err(CdpError::HandshakeError(format!("invalid ws URL: {}", url)));
         }
         let client = WebSocketClient::connect(url).map_err(map_ws_err)?;
         Ok(Self {
@@ -109,13 +104,8 @@ impl WebSocketTransport {
     /// 主要用于测试(mock server 跑在本地端口)。
     ///
     /// @trace REQ-BAO-API-002 [interface:Transport]
-    pub fn connect_on_stream(
-        stream: std::net::TcpStream,
-        host: &str,
-        path: &str,
-    ) -> Result<Self> {
-        let client =
-            WebSocketClient::connect_on_stream(stream, host, path).map_err(map_ws_err)?;
+    pub fn connect_on_stream(stream: std::net::TcpStream, host: &str, path: &str) -> Result<Self> {
+        let client = WebSocketClient::connect_on_stream(stream, host, path).map_err(map_ws_err)?;
         Ok(Self {
             client,
             next_id: 1,
@@ -296,7 +286,9 @@ mod tests {
         let mut t = WebSocketTransport::connect(&server.url()).unwrap();
         t.close().unwrap();
         assert!(t.is_closed());
-        let err = t.send_command("X.y", serde_json::json!({}), None).unwrap_err();
+        let err = t
+            .send_command("X.y", serde_json::json!({}), None)
+            .unwrap_err();
         assert!(matches!(err, CdpError::ConnectionClosed));
     }
 
@@ -429,7 +421,10 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(50));
                 }
             });
-            Self { addr, _handle: handle }
+            Self {
+                addr,
+                _handle: handle,
+            }
         }
 
         fn url(&self) -> String {

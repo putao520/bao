@@ -54,7 +54,10 @@ impl JSHandle {
     /// 构造 JSHandle(初始化为空缓存)。
     ///
     /// @trace REQ-BAO-API-006 [class:JSHandle]
-    pub fn new(execution_context: Rc<ExecutionContext>, remote_object_id: impl Into<String>) -> Self {
+    pub fn new(
+        execution_context: Rc<ExecutionContext>,
+        remote_object_id: impl Into<String>,
+    ) -> Self {
         Self {
             execution_context,
             remote_object_id: remote_object_id.into(),

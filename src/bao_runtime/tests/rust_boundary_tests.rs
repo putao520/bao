@@ -263,8 +263,8 @@ fn test_stealth_akamai_fingerprint_none() {
 
 #[test]
 fn test_stealth_ja3_firefox_starts_with_771() {
-    use bun_runtime::stealth_http;
     use bao_stealth::StealthProfile;
+    use bun_runtime::stealth_http;
     let profile = StealthProfile::firefox_default();
     let hash = stealth_http::ja3_hash(&Some(profile)).unwrap();
     assert!(hash.starts_with("771,"));
@@ -272,8 +272,8 @@ fn test_stealth_ja3_firefox_starts_with_771() {
 
 #[test]
 fn test_stealth_ja3_chrome_starts_with_771() {
-    use bun_runtime::stealth_http;
     use bao_stealth::StealthProfile;
+    use bun_runtime::stealth_http;
     let profile = StealthProfile::chrome_default();
     let hash = stealth_http::ja3_hash(&Some(profile)).unwrap();
     assert!(hash.starts_with("771,"));
@@ -281,8 +281,8 @@ fn test_stealth_ja3_chrome_starts_with_771() {
 
 #[test]
 fn test_stealth_profiles_different_ja3() {
-    use bun_runtime::stealth_http;
     use bao_stealth::StealthProfile;
+    use bun_runtime::stealth_http;
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
     let ff_hash = stealth_http::ja3_hash(&Some(ff)).unwrap();
@@ -292,8 +292,8 @@ fn test_stealth_profiles_different_ja3() {
 
 #[test]
 fn test_stealth_profiles_different_akamai() {
-    use bun_runtime::stealth_http;
     use bao_stealth::StealthProfile;
+    use bun_runtime::stealth_http;
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
     let ff_fp = stealth_http::akamai_fingerprint(&Some(ff)).unwrap();

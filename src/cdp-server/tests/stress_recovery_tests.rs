@@ -1,8 +1,10 @@
 // @trace TEST-CDS-010-STRESS [req:REQ-CDS-001,REQ-CDS-004,REQ-CDS-006,REQ-CDS-007] [level:stress]
 // Stress tests + error recovery: high-frequency dispatch, concurrent registry, session state recovery
 
-use cdp_server::{CdpMessage, CdpError, CdpResponse, DomainRegistry, DomainHandler, EventSender, ServerConfig};
-use serde_json::{Value, json};
+use cdp_server::{
+    CdpError, CdpMessage, CdpResponse, DomainHandler, DomainRegistry, EventSender, ServerConfig,
+};
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -15,7 +17,9 @@ struct CountingSender {
 
 impl CountingSender {
     fn new() -> Self {
-        CountingSender { count: Arc::new(AtomicUsize::new(0)) }
+        CountingSender {
+            count: Arc::new(AtomicUsize::new(0)),
+        }
     }
     fn event_count(&self) -> usize {
         self.count.load(Ordering::Relaxed)
@@ -34,8 +38,15 @@ struct StressHandler {
 }
 
 impl cdp_server::DomainHandler for StressHandler {
-    fn domain_name(&self) -> &'static str { self.name }
-    fn handle_command(&self, cmd: &str, params: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: Value,
+        _: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         self.call_count.fetch_add(1, Ordering::Relaxed);
         // Extract command after domain prefix (e.g. "Domain0.echo" → "echo")
         let command = cmd.split('.').nth(1).unwrap_or("");
@@ -45,12 +56,18 @@ impl cdp_server::DomainHandler for StressHandler {
                 let input = params.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
                 Ok(json!({"result": input * 2}))
             }
-            "error" => Err(CdpError { code: -32000, message: "intentional stress error".into() }),
+            "error" => Err(CdpError {
+                code: -32000,
+                message: "intentional stress error".into(),
+            }),
             "slow" => {
                 std::thread::sleep(std::time::Duration::from_micros(100));
                 Ok(json!({"done": true}))
             }
-            _ => Err(CdpError { code: -32601, message: format!("'{}' wasn't found", cmd) }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' wasn't found", cmd),
+            }),
         }
     }
 }
@@ -61,27 +78,34 @@ struct StatefulHandler {
 }
 
 impl cdp_server::DomainHandler for StatefulHandler {
-    fn domain_name(&self) -> &'static str { self.name }
-    fn handle_command(&self, cmd: &str, _params: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        _params: Value,
+        _: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         match cmd {
             "Stateful.increment" => {
                 let v = self.state.fetch_add(1, Ordering::SeqCst);
                 Ok(json!({"value": v + 1}))
             }
-            "Stateful.get" => {
-                Ok(json!({"value": self.state.load(Ordering::SeqCst)}))
-            }
+            "Stateful.get" => Ok(json!({"value": self.state.load(Ordering::SeqCst)})),
             "Stateful.reset" => {
                 self.state.store(0, Ordering::SeqCst);
                 Ok(json!({}))
             }
-            _ => Err(CdpError { code: -32601, message: format!("'{}' wasn't found", cmd) }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' wasn't found", cmd),
+            }),
         }
     }
 }
 
 // ---- High-frequency dispatch ----
-
 
 // TestDispatch — enum dispatch for multi-handler tests
 enum TestDispatch {
@@ -91,10 +115,21 @@ enum TestDispatch {
 
 impl DomainHandler for TestDispatch {
     fn domain_name(&self) -> &'static str {
-        match self { Self::Stress(h) => h.domain_name(), Self::Stateful(h) => h.domain_name() }
+        match self {
+            Self::Stress(h) => h.domain_name(),
+            Self::Stateful(h) => h.domain_name(),
+        }
     }
-    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
-        match self { Self::Stress(h) => h.handle_command(cmd, params, sender), Self::Stateful(h) => h.handle_command(cmd, params, sender) }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: serde_json::Value,
+        sender: &dyn EventSender,
+    ) -> Result<serde_json::Value, CdpError> {
+        match self {
+            Self::Stress(h) => h.handle_command(cmd, params, sender),
+            Self::Stateful(h) => h.handle_command(cmd, params, sender),
+        }
     }
 }
 
@@ -105,16 +140,13 @@ fn test_stress_1000_echo_dispatches() {
     reg.register(StressHandler {
         name: "Stress",
         call_count: call_count.clone(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let sender = CountingSender::new();
 
     for i in 0..1000u32 {
-        let result = reg.dispatch_command(
-            "Stress.echo",
-            json!({"iteration": i}),
-            &sender,
-        );
+        let result = reg.dispatch_command("Stress.echo", json!({"iteration": i}), &sender);
         assert!(result.is_some(), "Dispatch {} should succeed", i);
         let inner = result.unwrap();
         assert!(inner.is_ok(), "Echo {} should succeed", i);
@@ -131,7 +163,8 @@ fn test_stress_mixed_commands() {
     reg.register(StressHandler {
         name: "Stress",
         call_count: call_count.clone(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let sender = CountingSender::new();
     let mut ok_count = 0usize;
@@ -169,12 +202,15 @@ fn test_stress_unknown_domain_returns_none() {
     reg.register(StressHandler {
         name: "Stress",
         call_count: Arc::new(AtomicUsize::new(0)),
-    }).unwrap();
+    })
+    .unwrap();
 
     let sender = CountingSender::new();
 
     for _ in 0..100 {
-        assert!(reg.dispatch_command("Unknown.method", json!({}), &sender).is_none());
+        assert!(reg
+            .dispatch_command("Unknown.method", json!({}), &sender)
+            .is_none());
     }
 }
 
@@ -185,7 +221,8 @@ fn test_stress_stateful_handler_consistency() {
     reg.register(StatefulHandler {
         name: "Stateful",
         state: state.clone(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let sender = CountingSender::new();
 
@@ -216,7 +253,8 @@ fn test_error_recovery_continues_after_error() {
     reg.register(StressHandler {
         name: "Stress",
         call_count: Arc::new(AtomicUsize::new(0)),
-    }).unwrap();
+    })
+    .unwrap();
 
     let sender = CountingSender::new();
 
@@ -235,7 +273,8 @@ fn test_error_recovery_unknown_command_then_known() {
     reg.register(StressHandler {
         name: "Stress",
         call_count: Arc::new(AtomicUsize::new(0)),
-    }).unwrap();
+    })
+    .unwrap();
 
     let sender = CountingSender::new();
 
@@ -255,7 +294,8 @@ fn test_error_recovery_sequential_errors() {
     reg.register(StressHandler {
         name: "Stress",
         call_count: Arc::new(AtomicUsize::new(0)),
-    }).unwrap();
+    })
+    .unwrap();
 
     let sender = CountingSender::new();
 
@@ -300,12 +340,15 @@ fn test_event_sender_cloned_shared_count() {
 
 #[test]
 fn test_parse_message_very_large_payload() {
-    let large_data: Vec<Value> = (0..10000).map(|i| json!({"id": i, "data": "x".repeat(100)})).collect();
+    let large_data: Vec<Value> = (0..10000)
+        .map(|i| json!({"id": i, "data": "x".repeat(100)}))
+        .collect();
     let raw = json!({
         "id": 1,
         "method": "Stress.bulk",
         "params": {"items": large_data}
-    }).to_string();
+    })
+    .to_string();
 
     let msg: CdpMessage = serde_json::from_str(&raw).unwrap();
     assert_eq!(msg.method, "Stress.bulk");
@@ -323,7 +366,8 @@ fn test_parse_message_unicode_method() {
 
 #[test]
 fn test_parse_message_emoji_params() {
-    let raw = r#"{"id": 1, "method": "Page.navigate", "params": {"url": "https://example.com/🎉"}}"#;
+    let raw =
+        r#"{"id": 1, "method": "Page.navigate", "params": {"url": "https://example.com/🎉"}}"#;
     let msg: CdpMessage = serde_json::from_str(raw).unwrap();
     assert_eq!(msg.params.unwrap()["url"], "https://example.com/🎉");
 }
@@ -348,20 +392,14 @@ fn test_response_large_result() {
 #[test]
 fn test_server_config_builder_many_instances() {
     for port in 9200..9300u16 {
-        let config = ServerConfig::builder()
-            .host("127.0.0.1")
-            .port(port)
-            .build();
+        let config = ServerConfig::builder().host("127.0.0.1").port(port).build();
         assert_eq!(config.port, port);
     }
 }
 
 #[test]
 fn test_server_config_builder_zero_port() {
-    let config = ServerConfig::builder()
-        .host("0.0.0.0")
-        .port(0)
-        .build();
+    let config = ServerConfig::builder().host("0.0.0.0").port(0).build();
     assert_eq!(config.port, 0);
     assert_eq!(config.host, "0.0.0.0");
 }
@@ -371,15 +409,14 @@ fn test_server_config_builder_zero_port() {
 #[test]
 fn test_registry_10_domains_dispatch() {
     let reg = DomainRegistry::<StressHandler>::new();
-    let counters: Vec<Arc<AtomicUsize>> = (0..10)
-        .map(|_| Arc::new(AtomicUsize::new(0)))
-        .collect();
+    let counters: Vec<Arc<AtomicUsize>> = (0..10).map(|_| Arc::new(AtomicUsize::new(0))).collect();
 
     for i in 0..10 {
         reg.register(StressHandler {
             name: Box::leak(format!("Domain{}", i).into_boxed_str()),
             call_count: counters[i].clone(),
-        }).unwrap();
+        })
+        .unwrap();
     }
 
     let sender = CountingSender::new();
@@ -387,11 +424,8 @@ fn test_registry_10_domains_dispatch() {
     // Dispatch to each domain 100 times
     for i in 0..10 {
         for _ in 0..100 {
-            let result = reg.dispatch_command(
-                &format!("Domain{}.echo", i),
-                json!({"domain": i}),
-                &sender,
-            );
+            let result =
+                reg.dispatch_command(&format!("Domain{}.echo", i), json!({"domain": i}), &sender);
             assert!(result.is_some());
             assert!(result.unwrap().is_ok());
         }
@@ -411,7 +445,8 @@ fn test_registry_has_domain_after_register() {
     reg.register(StressHandler {
         name: "Test",
         call_count: Arc::new(AtomicUsize::new(0)),
-    }).unwrap();
+    })
+    .unwrap();
 
     assert!(reg.has_domain("Test"));
     assert!(!reg.has_domain("test")); // case-sensitive
@@ -460,7 +495,10 @@ fn test_session_state_copy() {
 fn test_cdp_error_various_codes() {
     let codes = [-32700, -32600, -32601, -32602, -32603, -32000, -32001];
     for code in codes {
-        let err = CdpError { code, message: format!("error {}", code) };
+        let err = CdpError {
+            code,
+            message: format!("error {}", code),
+        };
         assert_eq!(err.code, code);
     }
 }
@@ -468,7 +506,10 @@ fn test_cdp_error_various_codes() {
 #[test]
 fn test_cdp_error_message_preservation() {
     let long_msg = "x".repeat(10000);
-    let err = CdpError { code: -1, message: long_msg.clone() };
+    let err = CdpError {
+        code: -1,
+        message: long_msg.clone(),
+    };
     assert_eq!(err.message.len(), 10000);
 
     let serialized = serde_json::to_string(&err).unwrap();

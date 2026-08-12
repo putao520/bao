@@ -58,7 +58,12 @@ fn test_browser_config_to_bao_config_preserves_stealth() {
     bc.stealth_profile = Some(StealthProfile::chrome_default());
     let bao_config: BaoConfig = bc.into();
     assert!(bao_config.stealth_profile.is_some());
-    assert!(bao_config.stealth_profile.unwrap().navigator.user_agent.contains("Chrome"));
+    assert!(bao_config
+        .stealth_profile
+        .unwrap()
+        .navigator
+        .user_agent
+        .contains("Chrome"));
 }
 
 #[test]
@@ -130,8 +135,18 @@ fn test_page_config_stealth_overrides_global() {
     page_config.stealth_profile = Some(StealthProfile::firefox_default());
 
     // Page-level Firefox overrides global Chrome
-    assert!(page_config.stealth_profile.unwrap().navigator.user_agent.contains("Firefox"));
-    assert!(global_config.stealth_profile.unwrap().navigator.user_agent.contains("Chrome"));
+    assert!(page_config
+        .stealth_profile
+        .unwrap()
+        .navigator
+        .user_agent
+        .contains("Firefox"));
+    assert!(global_config
+        .stealth_profile
+        .unwrap()
+        .navigator
+        .user_agent
+        .contains("Chrome"));
 }
 
 // ---- BrowserConfig default values ----

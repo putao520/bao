@@ -327,11 +327,7 @@ impl DeviceDescriptor {
     /// ```
     ///
     /// @trace REQ-BAO-API-008 [level:library]
-    pub fn new(
-        name: impl Into<String>,
-        user_agent: impl Into<String>,
-        viewport: Viewport,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, user_agent: impl Into<String>, viewport: Viewport) -> Self {
         Self {
             name: name.into(),
             user_agent: user_agent.into(),
@@ -363,7 +359,10 @@ mod tests {
 
     #[test]
     fn screenshot_format_unknown_falls_back_to_png() {
-        assert_eq!(ScreenshotFormat::from_cdp(Some("gif")), ScreenshotFormat::Png);
+        assert_eq!(
+            ScreenshotFormat::from_cdp(Some("gif")),
+            ScreenshotFormat::Png
+        );
         assert_eq!(ScreenshotFormat::from_cdp(None), ScreenshotFormat::Png);
     }
 
@@ -380,7 +379,10 @@ mod tests {
     #[test]
     fn wait_until_as_str_all_variants() {
         assert_eq!(WaitUntilState::Load.as_str(), "load");
-        assert_eq!(WaitUntilState::DomContentLoaded.as_str(), "domcontentloaded");
+        assert_eq!(
+            WaitUntilState::DomContentLoaded.as_str(),
+            "domcontentloaded"
+        );
         assert_eq!(WaitUntilState::NetworkIdle0.as_str(), "networkidle0");
         assert_eq!(WaitUntilState::NetworkIdle2.as_str(), "networkidle2");
     }

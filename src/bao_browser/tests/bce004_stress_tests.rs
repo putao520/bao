@@ -12,8 +12,8 @@
 
 use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, WorkerHandle};
 use bao_stealth::StealthProfile;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,9 @@ fn wait_for_load(page: &PageHandle, max_ms: u64) {
         let _ = page.evaluate_js_web("");
         std::thread::sleep(Duration::from_millis(40));
         if let Ok(s) = page.evaluate_js_web("document.readyState") {
-            if s.contains("complete") || s.contains("interactive") { return; }
+            if s.contains("complete") || s.contains("interactive") {
+                return;
+            }
         }
     }
 }
@@ -41,24 +43,31 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
             "(function() {{ try {{ Object.defineProperty(navigator, '{}', {{get: function(){{return '{}';}}, configurable: false}}); }} catch(e){{}} }})()",
             prop, escaped
         );
-        page.evaluate_js_web(&js).map_err(|e| format!("inject nav.{}: {}", prop, e))?;
+        page.evaluate_js_web(&js)
+            .map_err(|e| format!("inject nav.{}: {}", prop, e))?;
     }
     let js = "(function() { try { Object.defineProperty(navigator, 'webdriver', {get: function(){return false;}, configurable: false}); } catch(e){} })()";
-    page.evaluate_js_web(&js).map_err(|e| format!("inject webdriver: {}", e))?;
+    page.evaluate_js_web(&js)
+        .map_err(|e| format!("inject webdriver: {}", e))?;
     Ok(())
 }
 
 #[test]
 fn bce004_stress_ten_navigations() {
     if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1"); return;
+        eprintln!("[skip] BAO_TEST_NETWORK != 1");
+        return;
     }
     if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY"); return;
+        eprintln!("[skip] no DISPLAY");
+        return;
     }
     let runtime = match BaoRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
-        Err(e) => { eprintln!("[skip] runtime init: {e}"); return; }
+        Err(e) => {
+            eprintln!("[skip] runtime init: {e}");
+            return;
+        }
     };
     let profile = StealthProfile::chrome_default();
     let page = match runtime.create_page(&PageConfig {
@@ -67,12 +76,16 @@ fn bce004_stress_ten_navigations() {
         ..Default::default()
     }) {
         Ok(p) => p,
-        Err(e) => { eprintln!("[fail] create_page: {e}"); return; }
+        Err(e) => {
+            eprintln!("[fail] create_page: {e}");
+            return;
+        }
     };
 
     eprintln!("[stress] pre-nav inject");
     if let Err(e) = inject_stealth_js(&page, &profile) {
-        eprintln!("[fail] pre-nav inject: {e}"); return;
+        eprintln!("[fail] pre-nav inject: {e}");
+        return;
     }
 
     let sites = [
@@ -90,14 +103,20 @@ fn bce004_stress_ten_navigations() {
     for (i, url) in sites.iter().enumerate() {
         eprintln!("[stress] nav #{:02}/{} → {}", i + 1, sites.len(), url);
         if let Err(e) = page.navigate(url) {
-            eprintln!("[fail] navigate #{}: {e}", i + 1); return;
+            eprintln!("[fail] navigate #{}: {e}", i + 1);
+            return;
         }
         wait_for_load(&page, 8000);
         let _ = inject_stealth_js(&page, &profile);
-        let rs = page.evaluate_js_web("document.readyState").unwrap_or_default();
+        let rs = page
+            .evaluate_js_web("document.readyState")
+            .unwrap_or_default();
         eprintln!("[stress] nav #{:02} done readyState={:?}", i + 1, rs);
     }
-    eprintln!("[stress] PASS — no SIGSEGV across {} sequential navigations", sites.len());
+    eprintln!(
+        "[stress] PASS — no SIGSEGV across {} sequential navigations",
+        sites.len()
+    );
 }
 
 #[test]
@@ -109,14 +128,35 @@ fn bce20260627_004_c18_three_path_teardown_enum_distinct() {
     let page_unload = WorkerTeardownPath::PageUnload;
 
     // Each variant equals itself.
-    assert_eq!(terminate, WorkerTeardownPath::Terminate, "Terminate self-eq");
-    assert_eq!(self_close, WorkerTeardownPath::SelfClose, "SelfClose self-eq");
-    assert_eq!(page_unload, WorkerTeardownPath::PageUnload, "PageUnload self-eq");
+    assert_eq!(
+        terminate,
+        WorkerTeardownPath::Terminate,
+        "Terminate self-eq"
+    );
+    assert_eq!(
+        self_close,
+        WorkerTeardownPath::SelfClose,
+        "SelfClose self-eq"
+    );
+    assert_eq!(
+        page_unload,
+        WorkerTeardownPath::PageUnload,
+        "PageUnload self-eq"
+    );
 
     // Pairwise distinct — the three paths must be mutually exclusive.
-    assert_ne!(terminate, self_close, "Terminate must differ from SelfClose");
-    assert_ne!(terminate, page_unload, "Terminate must differ from PageUnload");
-    assert_ne!(self_close, page_unload, "SelfClose must differ from PageUnload");
+    assert_ne!(
+        terminate, self_close,
+        "Terminate must differ from SelfClose"
+    );
+    assert_ne!(
+        terminate, page_unload,
+        "Terminate must differ from PageUnload"
+    );
+    assert_ne!(
+        self_close, page_unload,
+        "SelfClose must differ from PageUnload"
+    );
 
     // Debug formatting must be human-readable for CDP logs / diagnostics.
     let debugs = [
@@ -124,9 +164,16 @@ fn bce20260627_004_c18_three_path_teardown_enum_distinct() {
         format!("{:?}", self_close),
         format!("{:?}", page_unload),
     ];
-    assert_eq!(debugs.iter().filter(|d| d.is_empty()).count(), 0, "no empty Debug");
     assert_eq!(
-        debugs.iter().collect::<std::collections::HashSet<_>>().len(),
+        debugs.iter().filter(|d| d.is_empty()).count(),
+        0,
+        "no empty Debug"
+    );
+    assert_eq!(
+        debugs
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
         3,
         "Debug representations must be pairwise distinct, got {:?}",
         debugs
@@ -196,7 +243,8 @@ fn bce20260627_004_c18_concurrent_terminate_closing_flag_consistent() {
         }));
     }
     for j in joins {
-        j.join().expect("worker thread panicked during concurrent terminate race");
+        j.join()
+            .expect("worker thread panicked during concurrent terminate race");
     }
 
     let total_reads = observed_reads.load(Ordering::Relaxed);
@@ -339,11 +387,15 @@ fn bce20260627_004_nfr_memsaf_001_ebusy_mutex_destroy_regression() {
                 // it under the mutex (destroy). Models concurrent lifecycle churn.
                 let h = WorkerHandle::new(format!("ebusy-t{}-{}.js", tid, i));
                 {
-                    let mut guard = shared.lock().expect("poisoned shared mutex (panic in peer)");
+                    let mut guard = shared
+                        .lock()
+                        .expect("poisoned shared mutex (panic in peer)");
                     guard.push(h);
                 }
                 {
-                    let guard = shared.lock().expect("poisoned shared mutex (panic in peer)");
+                    let guard = shared
+                        .lock()
+                        .expect("poisoned shared mutex (panic in peer)");
                     // Terminate the most-recently-pushed handle under the lock.
                     if let Some(last) = guard.last() {
                         last.terminate();
@@ -352,7 +404,9 @@ fn bce20260627_004_nfr_memsaf_001_ebusy_mutex_destroy_regression() {
                 }
                 // Periodically drain to force many push/drop (mutex acquire/release) cycles.
                 if i % 64 == 63 {
-                    let mut guard = shared.lock().expect("poisoned shared mutex (panic in peer)");
+                    let mut guard = shared
+                        .lock()
+                        .expect("poisoned shared mutex (panic in peer)");
                     // Drop everything — exercises mutex-protected Vec teardown repeatedly.
                     for h in guard.iter() {
                         h.unregister_stealth_profile();
@@ -365,7 +419,8 @@ fn bce20260627_004_nfr_memsaf_001_ebusy_mutex_destroy_regression() {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut guard = shared.lock().expect("poisoned shared mutex on final drain");
                 guard.clear();
-            })).map_err(|_| {
+            }))
+            .map_err(|_| {
                 panics.fetch_add(1, Ordering::Relaxed);
             });
         }));
@@ -374,7 +429,7 @@ fn bce20260627_004_nfr_memsaf_001_ebusy_mutex_destroy_regression() {
     for j in joins {
         j.join().expect(
             "EBUSY regression: worker thread failed to join — \
-             mozjs Mutex_posix.cpp EBUSY patch regression suspected (SIGSEGV during mutex destroy)"
+             mozjs Mutex_posix.cpp EBUSY patch regression suspected (SIGSEGV during mutex destroy)",
         );
     }
 

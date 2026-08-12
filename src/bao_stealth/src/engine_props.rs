@@ -19,11 +19,13 @@ use ::std::sync::OnceLock;
 
 use dashmap::DashMap;
 use mozjs::jsapi::*;
-use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::jsval::{
+    BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue,
+};
 use mozjs::rooted;
 
-use crate::StealthProfile;
 use crate::hooks::StealthHooks;
+use crate::StealthProfile;
 
 // ---------------------------------------------------------------------------
 // Per-Realm (per-page) stealth profile storage — keyed by global object address.
@@ -176,7 +178,9 @@ impl RealmProfile {
             webgl_context_premultiplied_alpha: p.webgl_context.premultiplied_alpha,
             webgl_context_preserve_drawing_buffer: p.webgl_context.preserve_drawing_buffer,
             webgl_context_power_preference: p.webgl_context.power_preference.clone(),
-            webgl_context_fail_if_major_performance_caveat: p.webgl_context.fail_if_major_performance_caveat,
+            webgl_context_fail_if_major_performance_caveat: p
+                .webgl_context
+                .fail_if_major_performance_caveat,
             connection_enabled: p.connection.enabled,
             connection_effective_type: p.connection.effective_type.clone(),
             connection_downlink: p.connection.downlink,
@@ -191,12 +195,12 @@ impl RealmProfile {
     fn build_hooks_js(&self) -> String {
         use crate::canvas::CanvasNoise;
         use crate::navigator::{NavigatorProfile, ScreenProfile};
-        use crate::webgl_audio::{AudioProfile, WebGLProfile};
         use crate::profile::{
-            FontConfig, BatteryConfig, WebRtcMode, TimingConfig, ClientRectsConfig,
-            ScreenDisplayConfig, PluginConfig, SpeechConfig, MediaDevicesConfig,
-            PermissionsConfig, WebGLContextConfig, ConnectionConfig, IframeConfig,
+            BatteryConfig, ClientRectsConfig, ConnectionConfig, FontConfig, IframeConfig,
+            MediaDevicesConfig, PermissionsConfig, PluginConfig, ScreenDisplayConfig, SpeechConfig,
+            TimingConfig, WebGLContextConfig, WebRtcMode,
         };
+        use crate::webgl_audio::{AudioProfile, WebGLProfile};
 
         let canvas = CanvasNoise::new(self.canvas_seed);
         let audio = AudioProfile::new(self.audio_seed);
@@ -247,7 +251,9 @@ impl RealmProfile {
             1 => WebRtcMode::Strict,
             _ => WebRtcMode::None,
         };
-        let timing = TimingConfig { precision_us: self.timing_precision_us };
+        let timing = TimingConfig {
+            precision_us: self.timing_precision_us,
+        };
         let clientrects = ClientRectsConfig {
             noise_delta: self.clientrects_delta,
             seed: self.clientrects_seed,
@@ -295,13 +301,29 @@ impl RealmProfile {
             rtt: self.connection_rtt,
             save_data: self.connection_save_data,
         };
-        let iframe = IframeConfig { enabled: self.iframe_enabled };
+        let iframe = IframeConfig {
+            enabled: self.iframe_enabled,
+        };
 
         let hooks = StealthHooks::from_profile(
-            &canvas, &audio, &navigator, &screen, &webgl, &font, &battery,
-            webrtc_mode, &timing, &clientrects, &screen_display,
-            &plugin, &speech, &media_devices, &permissions, &webgl_context,
-            &connection, &iframe,
+            &canvas,
+            &audio,
+            &navigator,
+            &screen,
+            &webgl,
+            &font,
+            &battery,
+            webrtc_mode,
+            &timing,
+            &clientrects,
+            &screen_display,
+            &plugin,
+            &speech,
+            &media_devices,
+            &permissions,
+            &webgl_context,
+            &connection,
+            &iframe,
         );
         hooks.combined_js()
     }
@@ -514,10 +536,12 @@ pub fn set_profile(profile: &StealthProfile) {
     TL_BATTERY_LEVEL.with(|v| *v.borrow_mut() = profile.battery.level);
     TL_BATTERY_CHARGING_TIME.with(|v| *v.borrow_mut() = profile.battery.charging_time);
     TL_BATTERY_DISCHARGING_TIME.with(|v| *v.borrow_mut() = profile.battery.discharging_time);
-    TL_WEBRTC_MODE.with(|v| *v.borrow_mut() = match profile.webrtc_mode {
-        crate::WebRtcMode::Default => 0,
-        crate::WebRtcMode::Strict => 1,
-        crate::WebRtcMode::None => 2,
+    TL_WEBRTC_MODE.with(|v| {
+        *v.borrow_mut() = match profile.webrtc_mode {
+            crate::WebRtcMode::Default => 0,
+            crate::WebRtcMode::Strict => 1,
+            crate::WebRtcMode::None => 2,
+        }
     });
     TL_TIMING_PRECISION_US.with(|v| *v.borrow_mut() = profile.timing.precision_us);
     TL_CLIENTRECTS_DELTA.with(|v| *v.borrow_mut() = profile.clientrects.noise_delta);
@@ -543,12 +567,17 @@ pub fn set_profile(profile: &StealthProfile) {
     TL_WEBGL_CONTEXT_DEPTH.with(|v| *v.borrow_mut() = profile.webgl_context.depth);
     TL_WEBGL_CONTEXT_STENCIL.with(|v| *v.borrow_mut() = profile.webgl_context.stencil);
     TL_WEBGL_CONTEXT_ALPHA.with(|v| *v.borrow_mut() = profile.webgl_context.alpha);
-    TL_WEBGL_CONTEXT_PREMULTIPLIED_ALPHA.with(|v| *v.borrow_mut() = profile.webgl_context.premultiplied_alpha);
-    TL_WEBGL_CONTEXT_PRESERVE_DRAWING_BUFFER.with(|v| *v.borrow_mut() = profile.webgl_context.preserve_drawing_buffer);
-    TL_WEBGL_CONTEXT_POWER_PREFERENCE.with(|v| *v.borrow_mut() = profile.webgl_context.power_preference.clone());
-    TL_WEBGL_CONTEXT_FAIL_IF_MAJOR_PERFORMANCE_CAVEAT.with(|v| *v.borrow_mut() = profile.webgl_context.fail_if_major_performance_caveat);
+    TL_WEBGL_CONTEXT_PREMULTIPLIED_ALPHA
+        .with(|v| *v.borrow_mut() = profile.webgl_context.premultiplied_alpha);
+    TL_WEBGL_CONTEXT_PRESERVE_DRAWING_BUFFER
+        .with(|v| *v.borrow_mut() = profile.webgl_context.preserve_drawing_buffer);
+    TL_WEBGL_CONTEXT_POWER_PREFERENCE
+        .with(|v| *v.borrow_mut() = profile.webgl_context.power_preference.clone());
+    TL_WEBGL_CONTEXT_FAIL_IF_MAJOR_PERFORMANCE_CAVEAT
+        .with(|v| *v.borrow_mut() = profile.webgl_context.fail_if_major_performance_caveat);
     TL_CONNECTION_ENABLED.with(|v| *v.borrow_mut() = profile.connection.enabled);
-    TL_CONNECTION_EFFECTIVE_TYPE.with(|v| *v.borrow_mut() = profile.connection.effective_type.clone());
+    TL_CONNECTION_EFFECTIVE_TYPE
+        .with(|v| *v.borrow_mut() = profile.connection.effective_type.clone());
     TL_CONNECTION_DOWNLINK.with(|v| *v.borrow_mut() = profile.connection.downlink);
     TL_CONNECTION_RTT.with(|v| *v.borrow_mut() = profile.connection.rtt);
     TL_CONNECTION_SAVE_DATA.with(|v| *v.borrow_mut() = profile.connection.save_data);
@@ -564,7 +593,10 @@ pub fn set_profile(profile: &StealthProfile) {
 /// Helper: read a field from the current Realm profile if registered.
 /// Closure `f` extracts the field; closure returns the fallback value if no
 /// per-Realm profile is set.
-unsafe fn read_realm_field<T, F: FnOnce(&RealmProfile) -> T>(raw_cx: *mut JSContext, f: F) -> Option<T> {
+unsafe fn read_realm_field<T, F: FnOnce(&RealmProfile) -> T>(
+    raw_cx: *mut JSContext,
+    f: F,
+) -> Option<T> {
     current_realm_profile(raw_cx).map(|rp| f(&rp))
 }
 
@@ -573,12 +605,12 @@ unsafe fn read_realm_field<T, F: FnOnce(&RealmProfile) -> T>(raw_cx: *mut JSCont
 fn build_hooks_js_from_thread_local() -> String {
     use crate::canvas::CanvasNoise;
     use crate::navigator::{NavigatorProfile, ScreenProfile};
-    use crate::webgl_audio::{AudioProfile, WebGLProfile};
     use crate::profile::{
-        FontConfig, BatteryConfig, WebRtcMode, TimingConfig, ClientRectsConfig,
-        ScreenDisplayConfig, PluginConfig, SpeechConfig, MediaDevicesConfig,
-        PermissionsConfig, WebGLContextConfig, ConnectionConfig, IframeConfig,
+        BatteryConfig, ClientRectsConfig, ConnectionConfig, FontConfig, IframeConfig,
+        MediaDevicesConfig, PermissionsConfig, PluginConfig, ScreenDisplayConfig, SpeechConfig,
+        TimingConfig, WebGLContextConfig, WebRtcMode,
     };
+    use crate::webgl_audio::{AudioProfile, WebGLProfile};
 
     let canvas = CanvasNoise::new(TL_CANVAS_SEED.with(|v| *v.borrow()));
     let audio = AudioProfile::new(TL_AUDIO_SEED.with(|v| *v.borrow()));
@@ -629,7 +661,9 @@ fn build_hooks_js_from_thread_local() -> String {
         1 => WebRtcMode::Strict,
         _ => WebRtcMode::None,
     };
-    let timing = TimingConfig { precision_us: TL_TIMING_PRECISION_US.with(|v| *v.borrow()) };
+    let timing = TimingConfig {
+        precision_us: TL_TIMING_PRECISION_US.with(|v| *v.borrow()),
+    };
     let clientrects = ClientRectsConfig {
         noise_delta: TL_CLIENTRECTS_DELTA.with(|v| *v.borrow()),
         seed: TL_CLIENTRECTS_SEED.with(|v| *v.borrow()),
@@ -668,7 +702,8 @@ fn build_hooks_js_from_thread_local() -> String {
         premultiplied_alpha: TL_WEBGL_CONTEXT_PREMULTIPLIED_ALPHA.with(|v| *v.borrow()),
         preserve_drawing_buffer: TL_WEBGL_CONTEXT_PRESERVE_DRAWING_BUFFER.with(|v| *v.borrow()),
         power_preference: TL_WEBGL_CONTEXT_POWER_PREFERENCE.with(|v| v.borrow().clone()),
-        fail_if_major_performance_caveat: TL_WEBGL_CONTEXT_FAIL_IF_MAJOR_PERFORMANCE_CAVEAT.with(|v| *v.borrow()),
+        fail_if_major_performance_caveat: TL_WEBGL_CONTEXT_FAIL_IF_MAJOR_PERFORMANCE_CAVEAT
+            .with(|v| *v.borrow()),
     };
     let connection = ConnectionConfig {
         enabled: TL_CONNECTION_ENABLED.with(|v| *v.borrow()),
@@ -677,13 +712,29 @@ fn build_hooks_js_from_thread_local() -> String {
         rtt: TL_CONNECTION_RTT.with(|v| *v.borrow()),
         save_data: TL_CONNECTION_SAVE_DATA.with(|v| *v.borrow()),
     };
-    let iframe = IframeConfig { enabled: TL_IFRAME_ENABLED.with(|v| *v.borrow()) };
+    let iframe = IframeConfig {
+        enabled: TL_IFRAME_ENABLED.with(|v| *v.borrow()),
+    };
 
     let hooks = StealthHooks::from_profile(
-        &canvas, &audio, &navigator, &screen, &webgl, &font, &battery,
-        webrtc_mode, &timing, &clientrects, &screen_display,
-        &plugin, &speech, &media_devices, &permissions, &webgl_context,
-        &connection, &iframe,
+        &canvas,
+        &audio,
+        &navigator,
+        &screen,
+        &webgl,
+        &font,
+        &battery,
+        webrtc_mode,
+        &timing,
+        &clientrects,
+        &screen_display,
+        &plugin,
+        &speech,
+        &media_devices,
+        &permissions,
+        &webgl_context,
+        &connection,
+        &iframe,
     );
     hooks.combined_js()
 }
@@ -725,8 +776,8 @@ macro_rules! make_bool_getter {
         #[allow(unsafe_op_in_unsafe_fn)]
         unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
             let args = CallArgs::from_vp(vp, _argc);
-            let val = read_realm_field(cx, |rp| rp.$field)
-                .unwrap_or_else(|| $tl.with(|v| *v.borrow()));
+            let val =
+                read_realm_field(cx, |rp| rp.$field).unwrap_or_else(|| $tl.with(|v| *v.borrow()));
             args.rval().set(BooleanValue(val));
             true
         }
@@ -738,8 +789,8 @@ macro_rules! make_u32_getter {
         #[allow(unsafe_op_in_unsafe_fn)]
         unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
             let args = CallArgs::from_vp(vp, _argc);
-            let val = read_realm_field(cx, |rp| rp.$field)
-                .unwrap_or_else(|| $tl.with(|v| *v.borrow()));
+            let val =
+                read_realm_field(cx, |rp| rp.$field).unwrap_or_else(|| $tl.with(|v| *v.borrow()));
             args.rval().set(Int32Value(val as i32));
             true
         }
@@ -751,8 +802,8 @@ macro_rules! make_f64_getter {
         #[allow(unsafe_op_in_unsafe_fn)]
         unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
             let args = CallArgs::from_vp(vp, _argc);
-            let val = read_realm_field(cx, |rp| rp.$field)
-                .unwrap_or_else(|| $tl.with(|v| *v.borrow()));
+            let val =
+                read_realm_field(cx, |rp| rp.$field).unwrap_or_else(|| $tl.with(|v| *v.borrow()));
             args.rval().set(DoubleValue(val));
             true
         }
@@ -807,7 +858,8 @@ unsafe extern "C" fn getter_languages(cx: *mut JSContext, _argc: u32, vp: *mut J
         args.rval().set(UndefinedValue());
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = obj);
     for (i, lang) in langs.iter().enumerate() {
         let idx_cstr = format!("{}", i);
@@ -816,10 +868,23 @@ unsafe extern "C" fn getter_languages(cx: *mut JSContext, _argc: u32, vp: *mut J
         let js_str = JS_NewStringCopyZ(cx, c_lang.as_ptr());
         if !js_str.is_null() {
             rooted!(&in(wrapped_cx) let str_root = js_str as *mut JSObject);
-            JS_DefineProperty3(cx, obj_root.handle().into(), c_idx.as_ptr(), str_root.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty3(
+                cx,
+                obj_root.handle().into(),
+                c_idx.as_ptr(),
+                str_root.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
-    JS_DefineProperty1(cx, obj_root.handle().into(), c"length".as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
+    JS_DefineProperty1(
+        cx,
+        obj_root.handle().into(),
+        c"length".as_ptr(),
+        None,
+        None,
+        (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32,
+    );
     args.rval().set(ObjectValue(obj_root.get()));
     true
 }
@@ -832,7 +897,11 @@ unsafe extern "C" fn getter_languages(cx: *mut JSContext, _argc: u32, vp: *mut J
 /// Intercepts 0x1F00 (UNMASKED_VENDOR_WEBGL) and 0x1F01 (UNMASKED_RENDERER_WEBGL)
 /// to return stealth profile values. All other params fall through to original.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn webgl_get_parameter_override(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn webgl_get_parameter_override(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         args.rval().set(UndefinedValue());
@@ -859,16 +928,30 @@ unsafe extern "C" fn webgl_get_parameter_override(cx: *mut JSContext, argc: u32,
         args.rval().set(UndefinedValue());
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_root = this_val.to_object());
     let mut has: bool = false;
-    if !JS_HasProperty(cx, this_root.handle().into(), c"__originalGetParameter__".as_ptr(), &mut has) || !has {
+    if !JS_HasProperty(
+        cx,
+        this_root.handle().into(),
+        c"__originalGetParameter__".as_ptr(),
+        &mut has,
+    ) || !has
+    {
         args.rval().set(UndefinedValue());
         return true;
     }
     let mut fn_val = UndefinedValue();
-    JS_GetProperty(cx, this_root.handle().into(), c"__originalGetParameter__".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: PhantomData, ptr: &mut fn_val });
+    JS_GetProperty(
+        cx,
+        this_root.handle().into(),
+        c"__originalGetParameter__".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: PhantomData,
+            ptr: &mut fn_val,
+        },
+    );
     if !fn_val.is_object() {
         args.rval().set(UndefinedValue());
         return true;
@@ -891,11 +974,7 @@ unsafe extern "C" fn webgl_get_parameter_override(cx: *mut JSContext, argc: u32,
 /// BUG-ENG-366: replaces the thread_local-specific version since values are
 /// resolved per-Realm at the call site.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn emit_string_rval(
-    cx: *mut JSContext,
-    rval: MutableHandleValue,
-    s: &str,
-) -> bool {
+unsafe fn emit_string_rval(cx: *mut JSContext, rval: MutableHandleValue, s: &str) -> bool {
     let c_str = bun_core::ZBox::from_bytes(s.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
     if !js_str.is_null() {
@@ -909,7 +988,11 @@ unsafe fn emit_string_rval(
 /// Override for WebGLRenderingContext.prototype.getSupportedExtensions().
 /// Returns a JS array of extension name strings from the stealth profile.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn webgl_get_supported_extensions_override(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn webgl_get_supported_extensions_override(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let exts: Vec<String> = read_realm_field(cx, |rp| rp.webgl_extensions.clone())
         .unwrap_or_else(|| TL_WEBGL_EXTENSIONS.with(|v| v.borrow().clone()));
@@ -918,7 +1001,8 @@ unsafe extern "C" fn webgl_get_supported_extensions_override(cx: *mut JSContext,
         args.rval().set(UndefinedValue());
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let arr_root = arr);
     for (i, ext) in exts.iter().enumerate() {
         let idx_cstr = format!("{}", i);
@@ -927,10 +1011,23 @@ unsafe extern "C" fn webgl_get_supported_extensions_override(cx: *mut JSContext,
         let js_str = JS_NewStringCopyZ(cx, c_ext.as_ptr());
         if !js_str.is_null() {
             rooted!(&in(wrapped_cx) let str_root = js_str as *mut JSObject);
-            JS_DefineProperty3(cx, arr_root.handle().into(), c_idx.as_ptr(), str_root.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty3(
+                cx,
+                arr_root.handle().into(),
+                c_idx.as_ptr(),
+                str_root.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
-    JS_DefineProperty1(cx, arr_root.handle().into(), c"length".as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
+    JS_DefineProperty1(
+        cx,
+        arr_root.handle().into(),
+        c"length".as_ptr(),
+        None,
+        None,
+        (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32,
+    );
     args.rval().set(ObjectValue(arr_root.get()));
     true
 }
@@ -965,19 +1062,22 @@ unsafe fn define_permanent_getter(
 }
 
 /// Get a sub-object property (e.g., global.navigator) as a raw *mut JSObject.
-unsafe fn get_subobject(
-    cx: *mut JSContext,
-    obj: HandleObject,
-    prop: &str,
-) -> *mut JSObject {
+unsafe fn get_subobject(cx: *mut JSContext, obj: HandleObject, prop: &str) -> *mut JSObject {
     let c_prop = bun_core::ZBox::from_bytes(prop.as_bytes());
     let mut has: bool = false;
     if !JS_HasProperty(cx, obj, c_prop.as_ptr(), &mut has) || !has {
         return ptr::null_mut();
     }
     let mut val = UndefinedValue();
-    JS_GetProperty(cx, obj, c_prop.as_ptr(),
-        MutableHandle::<Value> { _phantom_0: PhantomData, ptr: &mut val });
+    JS_GetProperty(
+        cx,
+        obj,
+        c_prop.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: PhantomData,
+            ptr: &mut val,
+        },
+    );
     if val.is_object() {
         val.to_object()
     } else {
@@ -989,11 +1089,7 @@ unsafe fn get_subobject(
 /// exist on the global even when running in minimal `JsContext::for_test()` mode
 /// (no servo DOM). In servo, the real DOM `navigator`/`screen` already exist and
 /// `get_subobject` returns them directly.
-unsafe fn ensure_subobject(
-    cx: *mut JSContext,
-    obj: HandleObject,
-    prop: &str,
-) -> *mut JSObject {
+unsafe fn ensure_subobject(cx: *mut JSContext, obj: HandleObject, prop: &str) -> *mut JSObject {
     let existing = get_subobject(cx, obj, prop);
     if !existing.is_null() {
         return existing;
@@ -1004,9 +1100,16 @@ unsafe fn ensure_subobject(
         return ptr::null_mut();
     }
     let attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let new_obj_root = new_obj);
-    if !JS_DefineProperty3(cx, obj, c_prop.as_ptr(), new_obj_root.handle().into(), attrs) {
+    if !JS_DefineProperty3(
+        cx,
+        obj,
+        c_prop.as_ptr(),
+        new_obj_root.handle().into(),
+        attrs,
+    ) {
         return ptr::null_mut();
     }
     new_obj
@@ -1024,17 +1127,32 @@ unsafe fn install_webgl_override(cx: *mut JSContext, global: HandleObject) -> bo
         return true;
     }
     let mut ctor_val = UndefinedValue();
-    JS_GetProperty(cx, global, c"WebGLRenderingContext".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: PhantomData, ptr: &mut ctor_val });
+    JS_GetProperty(
+        cx,
+        global,
+        c"WebGLRenderingContext".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: PhantomData,
+            ptr: &mut ctor_val,
+        },
+    );
     if !ctor_val.is_object() {
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let ctor_root = ctor_val.to_object());
 
     let mut proto_val = UndefinedValue();
-    JS_GetProperty(cx, ctor_root.handle().into(), c"prototype".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: PhantomData, ptr: &mut proto_val });
+    JS_GetProperty(
+        cx,
+        ctor_root.handle().into(),
+        c"prototype".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: PhantomData,
+            ptr: &mut proto_val,
+        },
+    );
     if !proto_val.is_object() {
         return true;
     }
@@ -1042,31 +1160,68 @@ unsafe fn install_webgl_override(cx: *mut JSContext, global: HandleObject) -> bo
 
     // Save original getParameter as __originalGetParameter__
     let mut orig_gp = UndefinedValue();
-    JS_GetProperty(cx, proto_root.handle().into(), c"getParameter".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: PhantomData, ptr: &mut orig_gp });
+    JS_GetProperty(
+        cx,
+        proto_root.handle().into(),
+        c"getParameter".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: PhantomData,
+            ptr: &mut orig_gp,
+        },
+    );
 
     if orig_gp.is_object() {
         rooted!(&in(wrapped_cx) let orig_fn_root = orig_gp.to_object());
         let save_attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
-        JS_DefineProperty3(cx, proto_root.handle().into(), c"__originalGetParameter__".as_ptr(), orig_fn_root.handle().into(), save_attrs);
+        JS_DefineProperty3(
+            cx,
+            proto_root.handle().into(),
+            c"__originalGetParameter__".as_ptr(),
+            orig_fn_root.handle().into(),
+            save_attrs,
+        );
     }
 
     // Define override getParameter as PERMANENT native function
-    let fn_obj = JS_NewFunction(cx, Some(webgl_get_parameter_override), 1, 0, c"getParameter".as_ptr());
+    let fn_obj = JS_NewFunction(
+        cx,
+        Some(webgl_get_parameter_override),
+        1,
+        0,
+        c"getParameter".as_ptr(),
+    );
     if fn_obj.is_null() {
         return false;
     }
     rooted!(&in(wrapped_cx) let fn_root = fn_obj as *mut JSObject);
     let override_attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
-    let gp_ok = JS_DefineProperty3(cx, proto_root.handle().into(), c"getParameter".as_ptr(), fn_root.handle().into(), override_attrs);
+    let gp_ok = JS_DefineProperty3(
+        cx,
+        proto_root.handle().into(),
+        c"getParameter".as_ptr(),
+        fn_root.handle().into(),
+        override_attrs,
+    );
 
     // Define override getSupportedExtensions as PERMANENT native function
-    let gse_fn = JS_NewFunction(cx, Some(webgl_get_supported_extensions_override), 0, 0, c"getSupportedExtensions".as_ptr());
+    let gse_fn = JS_NewFunction(
+        cx,
+        Some(webgl_get_supported_extensions_override),
+        0,
+        0,
+        c"getSupportedExtensions".as_ptr(),
+    );
     if gse_fn.is_null() {
         return false;
     }
     rooted!(&in(wrapped_cx) let gse_fn_root = gse_fn as *mut JSObject);
-    let gse_ok = JS_DefineProperty3(cx, proto_root.handle().into(), c"getSupportedExtensions".as_ptr(), gse_fn_root.handle().into(), override_attrs);
+    let gse_ok = JS_DefineProperty3(
+        cx,
+        proto_root.handle().into(),
+        c"getSupportedExtensions".as_ptr(),
+        gse_fn_root.handle().into(),
+        override_attrs,
+    );
 
     gp_ok && gse_ok
 }
@@ -1094,11 +1249,23 @@ unsafe fn delete_cdp_leaked_properties(cx: *mut JSContext, global: HandleObject)
         if JS_HasProperty(cx, global, c"chrome".as_ptr(), &mut has_chrome) && has_chrome {
             let chrome_obj = get_subobject(cx, global, "chrome");
             if !chrome_obj.is_null() {
-                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+                let mut wrapped_cx =
+                    mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
                 rooted!(&in(wrapped_cx) let chrome_root = chrome_obj);
                 let mut has_runtime: bool = false;
-                if JS_HasProperty(cx, chrome_root.handle().into(), c"runtime".as_ptr(), &mut has_runtime) && has_runtime {
-                    JS_DeleteProperty(cx, chrome_root.handle().into(), c"runtime".as_ptr(), &mut op_result);
+                if JS_HasProperty(
+                    cx,
+                    chrome_root.handle().into(),
+                    c"runtime".as_ptr(),
+                    &mut has_runtime,
+                ) && has_runtime
+                {
+                    JS_DeleteProperty(
+                        cx,
+                        chrome_root.handle().into(),
+                        c"runtime".as_ptr(),
+                        &mut op_result,
+                    );
                 }
             }
         }
@@ -1137,10 +1304,10 @@ unsafe fn delete_cdp_leaked_properties(cx: *mut JSContext, global: HandleObject)
 /// 2. Thread-local profile (set via `set_profile`)
 /// 3. Static `firefox_default()` as last resort
 unsafe fn inject_js_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool {
+    use ::std::ptr::NonNull;
     use mozjs::context::JSContext;
     use mozjs::rooted;
-    use mozjs::rust::{CompileOptionsWrapper, evaluate_script, Handle as RustHandle};
-    use ::std::ptr::NonNull;
+    use mozjs::rust::{evaluate_script, CompileOptionsWrapper, Handle as RustHandle};
 
     let js_code = if let Some(rp) = current_realm_profile(raw_cx) {
         rp.build_hooks_js()
@@ -1205,7 +1372,8 @@ unsafe fn inject_js_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool 
 /// - `global` must be the Window global JSObject for that context.
 /// - `set_profile()` must have been called on this thread before this call.
 pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -> bool {
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let global_root = global);
     let mut all_ok = true;
 
@@ -1213,31 +1381,99 @@ pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -
     let nav = ensure_subobject(cx, global_root.handle().into(), "navigator");
     if !nav.is_null() {
         rooted!(&in(wrapped_cx) let nav_root = nav);
-        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "webdriver", Some(getter_webdriver));
-        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "userAgent", Some(getter_ua));
-        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "platform", Some(getter_platform));
-        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "language", Some(getter_language));
-        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "hardwareConcurrency", Some(getter_hwc));
-        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "maxTouchPoints", Some(getter_touch));
-        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "vendor", Some(getter_vendor));
-        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "languages", Some(getter_languages));
-        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "deviceMemory", Some(getter_device_memory));
+        all_ok &= define_permanent_getter(
+            cx,
+            nav_root.handle().into(),
+            "webdriver",
+            Some(getter_webdriver),
+        );
+        all_ok &=
+            define_permanent_getter(cx, nav_root.handle().into(), "userAgent", Some(getter_ua));
+        all_ok &= define_permanent_getter(
+            cx,
+            nav_root.handle().into(),
+            "platform",
+            Some(getter_platform),
+        );
+        all_ok &= define_permanent_getter(
+            cx,
+            nav_root.handle().into(),
+            "language",
+            Some(getter_language),
+        );
+        all_ok &= define_permanent_getter(
+            cx,
+            nav_root.handle().into(),
+            "hardwareConcurrency",
+            Some(getter_hwc),
+        );
+        all_ok &= define_permanent_getter(
+            cx,
+            nav_root.handle().into(),
+            "maxTouchPoints",
+            Some(getter_touch),
+        );
+        all_ok &=
+            define_permanent_getter(cx, nav_root.handle().into(), "vendor", Some(getter_vendor));
+        all_ok &= define_permanent_getter(
+            cx,
+            nav_root.handle().into(),
+            "languages",
+            Some(getter_languages),
+        );
+        all_ok &= define_permanent_getter(
+            cx,
+            nav_root.handle().into(),
+            "deviceMemory",
+            Some(getter_device_memory),
+        );
     }
 
     // --- Screen properties ---
     let screen = ensure_subobject(cx, global_root.handle().into(), "screen");
     if !screen.is_null() {
         rooted!(&in(wrapped_cx) let scr_root = screen);
-        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "width", Some(getter_screen_w));
-        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "height", Some(getter_screen_h));
-        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "availWidth", Some(getter_avail_w));
-        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "availHeight", Some(getter_avail_h));
-        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "colorDepth", Some(getter_color_depth));
-        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "pixelDepth", Some(getter_color_depth));
+        all_ok &=
+            define_permanent_getter(cx, scr_root.handle().into(), "width", Some(getter_screen_w));
+        all_ok &= define_permanent_getter(
+            cx,
+            scr_root.handle().into(),
+            "height",
+            Some(getter_screen_h),
+        );
+        all_ok &= define_permanent_getter(
+            cx,
+            scr_root.handle().into(),
+            "availWidth",
+            Some(getter_avail_w),
+        );
+        all_ok &= define_permanent_getter(
+            cx,
+            scr_root.handle().into(),
+            "availHeight",
+            Some(getter_avail_h),
+        );
+        all_ok &= define_permanent_getter(
+            cx,
+            scr_root.handle().into(),
+            "colorDepth",
+            Some(getter_color_depth),
+        );
+        all_ok &= define_permanent_getter(
+            cx,
+            scr_root.handle().into(),
+            "pixelDepth",
+            Some(getter_color_depth),
+        );
     }
 
     // --- Window.devicePixelRatio ---
-    all_ok &= define_permanent_getter(cx, global_root.handle().into(), "devicePixelRatio", Some(getter_dpr));
+    all_ok &= define_permanent_getter(
+        cx,
+        global_root.handle().into(),
+        "devicePixelRatio",
+        Some(getter_dpr),
+    );
 
     // --- WebGL prototype override ---
     all_ok &= install_webgl_override(cx, global_root.handle().into());
@@ -1269,13 +1505,17 @@ mod tests {
         TL_TOUCH.with(|v| assert_eq!(*v.borrow(), profile.navigator.max_touch_points));
         TL_VENDOR.with(|v| assert_eq!(*v.borrow(), profile.navigator.vendor));
         TL_LANGUAGES.with(|v| assert_eq!(*v.borrow(), profile.navigator.languages));
-        TL_DEVICE_MEMORY.with(|v| assert!((*v.borrow() - profile.navigator.device_memory).abs() < f64::EPSILON));
+        TL_DEVICE_MEMORY.with(|v| {
+            assert!((*v.borrow() - profile.navigator.device_memory).abs() < f64::EPSILON)
+        });
         TL_SCREEN_W.with(|v| assert_eq!(*v.borrow(), profile.screen.width));
         TL_SCREEN_H.with(|v| assert_eq!(*v.borrow(), profile.screen.height));
         TL_AVAIL_W.with(|v| assert_eq!(*v.borrow(), profile.screen.avail_width));
         TL_AVAIL_H.with(|v| assert_eq!(*v.borrow(), profile.screen.avail_height));
         TL_COLOR_DEPTH.with(|v| assert_eq!(*v.borrow(), profile.screen.color_depth));
-        TL_DPR.with(|v| assert!((*v.borrow() - profile.screen.device_pixel_ratio).abs() < f64::EPSILON));
+        TL_DPR.with(|v| {
+            assert!((*v.borrow() - profile.screen.device_pixel_ratio).abs() < f64::EPSILON)
+        });
     }
 
     #[test]
@@ -1344,8 +1584,10 @@ mod tests {
         TL_WEBGL_EXTENSIONS.with(|v| {
             let exts = v.borrow();
             assert!(!exts.is_empty(), "WebGL extensions must not be empty");
-            assert!(exts.contains(&"WEBGL_debug_renderer_info".to_string()),
-                "Extensions must contain WEBGL_debug_renderer_info");
+            assert!(
+                exts.contains(&"WEBGL_debug_renderer_info".to_string()),
+                "Extensions must contain WEBGL_debug_renderer_info"
+            );
             assert_eq!(*exts, profile.webgl.extensions);
         });
     }
@@ -1358,7 +1600,10 @@ mod tests {
         TL_WEBGL_EXTENSIONS.with(|v| {
             let exts = v.borrow();
             assert!(!exts.is_empty(), "WebGL extensions must not be empty");
-            assert!(exts.len() > profile.webgl.extensions.len() || exts.len() == profile.webgl.extensions.len());
+            assert!(
+                exts.len() > profile.webgl.extensions.len()
+                    || exts.len() == profile.webgl.extensions.len()
+            );
             assert_eq!(*exts, profile.webgl.extensions);
         });
     }
@@ -1374,10 +1619,15 @@ mod tests {
         set_profile(&firefox);
         let ff_exts: Vec<String> = TL_WEBGL_EXTENSIONS.with(|v| v.borrow().clone());
 
-        assert_ne!(ch_exts.len(), ff_exts.len(),
-            "Chrome and Firefox must have different extension counts");
-        assert!(ff_exts.len() > ch_exts.len(),
-            "Firefox should have more WebGL extensions than Chrome");
+        assert_ne!(
+            ch_exts.len(),
+            ff_exts.len(),
+            "Chrome and Firefox must have different extension counts"
+        );
+        assert!(
+            ff_exts.len() > ch_exts.len(),
+            "Firefox should have more WebGL extensions than Chrome"
+        );
     }
 
     // ─── Canvas/Audio seed thread-local storage ─────────────────────
@@ -1427,8 +1677,14 @@ mod tests {
         let ff_canvas = TL_CANVAS_SEED.with(|v| *v.borrow());
         let ff_audio = TL_AUDIO_SEED.with(|v| *v.borrow());
 
-        assert_ne!(ch_canvas, ff_canvas, "Canvas seeds must differ between profiles");
-        assert_ne!(ch_audio, ff_audio, "Audio seeds must differ between profiles");
+        assert_ne!(
+            ch_canvas, ff_canvas,
+            "Canvas seeds must differ between profiles"
+        );
+        assert_ne!(
+            ch_audio, ff_audio,
+            "Audio seeds must differ between profiles"
+        );
     }
 
     #[test]
@@ -1493,7 +1749,8 @@ mod tests {
 
     // cargo test runs tests in parallel by default; these tests mutate the
     // shared per-Realm store, so they must be serialized via this lock.
-    static PER_REALM_TEST_LOCK: ::std::sync::OnceLock<::std::sync::Mutex<()>> = ::std::sync::OnceLock::new();
+    static PER_REALM_TEST_LOCK: ::std::sync::OnceLock<::std::sync::Mutex<()>> =
+        ::std::sync::OnceLock::new();
     fn per_realm_lock() -> &'static ::std::sync::Mutex<()> {
         PER_REALM_TEST_LOCK.get_or_init(|| ::std::sync::Mutex::new(()))
     }
@@ -1583,7 +1840,10 @@ mod tests {
         set_profile_for_global(g, &profile);
         assert!(realm_profiles().get(&g).is_some());
         remove_profile_for_global(g);
-        assert!(realm_profiles().get(&g).is_none(), "remove must drop the profile");
+        assert!(
+            realm_profiles().get(&g).is_none(),
+            "remove must drop the profile"
+        );
         clear_all_realm_profiles();
     }
 
@@ -1708,7 +1968,10 @@ mod tests {
         assert!(canvas_seed > 0, "Canvas seed must be > 0");
         assert!(audio_seed > 0, "Audio seed must be > 0");
         assert!(!webgl_vendor.is_empty(), "WebGL vendor must be non-empty");
-        assert!(!webgl_renderer.is_empty(), "WebGL renderer must be non-empty");
+        assert!(
+            !webgl_renderer.is_empty(),
+            "WebGL renderer must be non-empty"
+        );
     }
 
     #[test]
@@ -1746,13 +2009,27 @@ mod tests {
         let seed1 = profile.canvas.seed();
         let seed2 = profile.canvas.seed(); // same profile, same seed
 
-        assert_eq!(seed1, seed2, "Canvas seed must be deterministic within profile");
-        assert_eq!(profile.audio.seed(), profile.audio.seed(), "Audio seed must be deterministic within profile");
+        assert_eq!(
+            seed1, seed2,
+            "Canvas seed must be deterministic within profile"
+        );
+        assert_eq!(
+            profile.audio.seed(),
+            profile.audio.seed(),
+            "Audio seed must be deterministic within profile"
+        );
 
         // Different profiles have different seeds (Chrome vs Firefox defaults)
         let other = StealthProfile::firefox_default();
-        assert_ne!(seed1, other.canvas.seed(), "Different profiles must have different Canvas seeds");
-        assert_ne!(profile.audio.seed(), other.audio.seed(), "Different profiles must have different Audio seeds");
+        assert_ne!(
+            seed1,
+            other.canvas.seed(),
+            "Different profiles must have different Canvas seeds"
+        );
+        assert_ne!(
+            profile.audio.seed(),
+            other.audio.seed(),
+            "Different profiles must have different Audio seeds"
+        );
     }
 }
-

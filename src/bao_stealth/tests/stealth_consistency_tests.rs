@@ -1,22 +1,26 @@
 // @trace TEST-STL-008-CONSISTENCY [req:REQ-STL-007] [level:unit]
 // Stealth profile cross-consistency: chrome vs firefox profiles, engine delegation, determinism
 
-use bao_stealth::{StealthEngine, StealthProfile, CanvasNoise, BehaviorSimulator};
+use bao_stealth::{BehaviorSimulator, CanvasNoise, StealthEngine, StealthProfile};
 
 // ---- Chrome vs Firefox profile consistency ----
 
 #[test]
 fn test_chrome_profile_tls_is_chrome() {
     let profile = StealthProfile::chrome_default();
-    assert!(profile.tls.ja3_hash.contains("chrome") || profile.tls.ja3_hash.len() > 10,
-        "Chrome TLS should have chrome identifier or valid hash");
+    assert!(
+        profile.tls.ja3_hash.contains("chrome") || profile.tls.ja3_hash.len() > 10,
+        "Chrome TLS should have chrome identifier or valid hash"
+    );
 }
 
 #[test]
 fn test_firefox_profile_tls_is_firefox() {
     let profile = StealthProfile::firefox_default();
-    assert!(profile.tls.ja3_hash.contains("firefox") || profile.tls.ja3_hash.len() > 10,
-        "Firefox TLS should have firefox identifier or valid hash");
+    assert!(
+        profile.tls.ja3_hash.contains("firefox") || profile.tls.ja3_hash.len() > 10,
+        "Firefox TLS should have firefox identifier or valid hash"
+    );
 }
 
 #[test]
@@ -25,45 +29,66 @@ fn test_chrome_and_firefox_profiles_differ() {
     let firefox = StealthProfile::firefox_default();
     let tls_differ = chrome.tls.ja3_hash != firefox.tls.ja3_hash;
     let nav_differ = chrome.navigator.user_agent != firefox.navigator.user_agent;
-    assert!(tls_differ || nav_differ, "Chrome and Firefox profiles should differ in at least TLS or Navigator");
+    assert!(
+        tls_differ || nav_differ,
+        "Chrome and Firefox profiles should differ in at least TLS or Navigator"
+    );
 }
 
 #[test]
 fn test_chrome_navigator_has_chrome_ua() {
     let profile = StealthProfile::chrome_default();
-    assert!(profile.navigator.user_agent.contains("Chrome") || profile.navigator.user_agent.contains("chrome"),
-        "Chrome navigator UA should contain Chrome");
+    assert!(
+        profile.navigator.user_agent.contains("Chrome")
+            || profile.navigator.user_agent.contains("chrome"),
+        "Chrome navigator UA should contain Chrome"
+    );
 }
 
 #[test]
 fn test_firefox_navigator_has_firefox_ua() {
     let profile = StealthProfile::firefox_default();
-    assert!(profile.navigator.user_agent.contains("Firefox") || profile.navigator.user_agent.contains("firefox"),
-        "Firefox navigator UA should contain Firefox");
+    assert!(
+        profile.navigator.user_agent.contains("Firefox")
+            || profile.navigator.user_agent.contains("firefox"),
+        "Firefox navigator UA should contain Firefox"
+    );
 }
 
 #[test]
 fn test_chrome_webgl_has_renderer() {
     let profile = StealthProfile::chrome_default();
-    assert!(!profile.webgl.renderer.is_empty(), "Chrome WebGL should have renderer");
+    assert!(
+        !profile.webgl.renderer.is_empty(),
+        "Chrome WebGL should have renderer"
+    );
 }
 
 #[test]
 fn test_firefox_webgl_has_renderer() {
     let profile = StealthProfile::firefox_default();
-    assert!(!profile.webgl.renderer.is_empty(), "Firefox WebGL should have renderer");
+    assert!(
+        !profile.webgl.renderer.is_empty(),
+        "Firefox WebGL should have renderer"
+    );
 }
 
 #[test]
 fn test_chrome_http2_has_fingerprint() {
     let profile = StealthProfile::chrome_default();
-    assert!(!profile.http2.akamai_fingerprint().is_empty(), "Chrome HTTP2 should have akamai fingerprint");
+    assert!(
+        !profile.http2.akamai_fingerprint().is_empty(),
+        "Chrome HTTP2 should have akamai fingerprint"
+    );
 }
 
 #[test]
 fn test_firefox_http2_has_fingerprint() {
     let profile = StealthProfile::firefox_default();
-    assert!(!profile.http2.akamai_fingerprint().is_empty(), "Firefox HTTP2 should have akamai fingerprint");
+    assert!(
+        !profile.http2.akamai_fingerprint().is_empty(),
+        "Firefox HTTP2 should have akamai fingerprint"
+    );
 }
 
 // ---- StealthEngine delegation ----
@@ -73,7 +98,10 @@ fn test_engine_delegates_to_profile() {
     let profile = StealthProfile::chrome_default();
     let engine = StealthEngine::new(profile);
     assert_eq!(engine.tls_config().ja3_hash, engine.profile().tls.ja3_hash);
-    assert_eq!(engine.navigator().user_agent, engine.profile().navigator.user_agent);
+    assert_eq!(
+        engine.navigator().user_agent,
+        engine.profile().navigator.user_agent
+    );
 }
 
 #[test]
@@ -88,7 +116,10 @@ fn test_default_engine_has_valid_profile() {
 fn test_engine_canvas_noise_has_seed() {
     let engine = StealthEngine::default_engine();
     let seed = engine.canvas_noise().seed();
-    assert!(seed == 0 || seed > 0, "canvas noise seed should be accessible");
+    assert!(
+        seed == 0 || seed > 0,
+        "canvas noise seed should be accessible"
+    );
 }
 
 #[test]

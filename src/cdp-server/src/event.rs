@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::protocol::{CdpEvent, serialize_event};
+use crate::protocol::{serialize_event, CdpEvent};
 use crate::session::CdpSession;
 use crate::EventSender;
 
@@ -109,8 +109,14 @@ mod tests {
     #[test]
     fn send_event_method_domain_extraction_unit_test() {
         assert_eq!("Page".split('.').next().unwrap_or(""), "Page");
-        assert_eq!("Runtime.consoleAPICalled".split('.').next().unwrap_or(""), "Runtime");
-        assert_eq!("no_dot_method".split('.').next().unwrap_or(""), "no_dot_method");
+        assert_eq!(
+            "Runtime.consoleAPICalled".split('.').next().unwrap_or(""),
+            "Runtime"
+        );
+        assert_eq!(
+            "no_dot_method".split('.').next().unwrap_or(""),
+            "no_dot_method"
+        );
         assert_eq!("".split('.').next().unwrap_or(""), "");
     }
 }

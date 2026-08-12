@@ -7,7 +7,7 @@
 #[path = "../conformance_common.rs"]
 mod common;
 
-use common::{make_ctx, run_checks, CHECK_SCAFFOLD};
+use common::{CHECK_SCAFFOLD, make_ctx, run_checks};
 
 #[test]
 fn test_path_conformance_suite() {
@@ -209,7 +209,10 @@ fn test_path_conformance_win32_deviation() {
     // Node.js: path.win32.sep === "\\" on all platforms
     // bao_runtime: path.win32 === path (self-ref), so win32.sep is host-platform
     let mut ctx = make_ctx();
-    let r = eval_string_helper(&mut ctx, r#"require('path').win32.sep === "\\" ? "PASS" : "FAIL""#);
+    let r = eval_string_helper(
+        &mut ctx,
+        r#"require('path').win32.sep === "\\" ? "PASS" : "FAIL""#,
+    );
     assert_eq!(r, "PASS");
     bun_runtime::shutdown_thread_sm();
 }

@@ -4,11 +4,11 @@
 // Bridges bun_s3_signing (pure Rust protocol layer) to SpiderMonkey
 // runtime, exposing S3 credential management and request signing.
 
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue, StringValue};
+use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -42,11 +42,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     cache_builtin(cx, "bun:s3", s3_obj.get());
 }
 
-unsafe extern "C" fn s3_sign_request(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn s3_sign_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let msg = ZBox::from_bytes(b"S3 signRequest: SpiderMonkey bridge not yet fully implemented (bun:s3 module is out of REQ-ENG-006/007 scope)");
@@ -55,11 +51,7 @@ unsafe extern "C" fn s3_sign_request(
     false
 }
 
-unsafe extern "C" fn s3_get_credentials(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn s3_get_credentials(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let access_key = bun_core::getenv_z(bun_core::zstr!("AWS_ACCESS_KEY_ID"))
@@ -68,8 +60,10 @@ unsafe extern "C" fn s3_get_credentials(
         .map(|s| String::from_utf8_lossy(s).into_owned());
     let region = bun_core::getenv_z(bun_core::zstr!("AWS_DEFAULT_REGION"))
         .map(|s| String::from_utf8_lossy(s).into_owned())
-        .or_else(|| bun_core::getenv_z(bun_core::zstr!("AWS_REGION"))
-            .map(|s| String::from_utf8_lossy(s).into_owned()));
+        .or_else(|| {
+            bun_core::getenv_z(bun_core::zstr!("AWS_REGION"))
+                .map(|s| String::from_utf8_lossy(s).into_owned())
+        });
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;

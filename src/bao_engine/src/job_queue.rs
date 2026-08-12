@@ -90,7 +90,8 @@ unsafe extern "C" fn enqueue_job(
 
     // Store job as a property on the global object — GC-safe
     let prop = job_prop_name(id);
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let job_root = mozjs::jsval::ObjectValue(job_obj));
     rooted!(&in(wrapped_cx) let global_root = global);
     unsafe {
@@ -110,10 +111,7 @@ unsafe extern "C" fn enqueue_job(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn run_jobs(
-    _queue: *const c_void,
-    cx: *mut JSContext,
-) {
+unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
     loop {
         let job_id = JOB_IDS.with(|q| q.borrow_mut().pop_front());
         let Some(id) = job_id else {
@@ -127,7 +125,8 @@ unsafe extern "C" fn run_jobs(
 
         // Retrieve the job object from the global property
         let prop = job_prop_name(id);
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let global_root = global);
         let mut job_val = UndefinedValue();
         unsafe {
@@ -135,7 +134,10 @@ unsafe extern "C" fn run_jobs(
                 cx,
                 global_root.handle().into(),
                 prop.as_ptr(),
-                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut job_val },
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut job_val,
+                },
             );
         }
 
@@ -153,7 +155,13 @@ unsafe extern "C" fn run_jobs(
         };
 
         unsafe {
-            let ok = JS_CallFunctionValue(cx, obj_root.handle().into(), fval_root.handle().into(), &empty_args, rval_handle);
+            let ok = JS_CallFunctionValue(
+                cx,
+                obj_root.handle().into(),
+                fval_root.handle().into(),
+                &empty_args,
+                rval_handle,
+            );
             if !ok {
                 JS_ClearPendingException(cx);
             }
@@ -161,11 +169,7 @@ unsafe extern "C" fn run_jobs(
 
         // Clean up the property after execution
         unsafe {
-            JS_DeleteProperty1(
-                cx,
-                global_root.handle().into(),
-                prop.as_ptr(),
-            );
+            JS_DeleteProperty1(cx, global_root.handle().into(), prop.as_ptr());
         }
     }
 }

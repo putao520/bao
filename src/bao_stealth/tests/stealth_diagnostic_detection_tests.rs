@@ -47,7 +47,10 @@ impl Report {
         for m in &self.messages {
             eprintln!("{}", m);
         }
-        eprintln!("--- {} passed, {} skipped, {} failed ---", self.passed, self.skipped, self.failed);
+        eprintln!(
+            "--- {} passed, {} skipped, {} failed ---",
+            self.passed, self.skipped, self.failed
+        );
     }
 }
 
@@ -83,8 +86,11 @@ fn cdp_stealth_diagnostic_all() {
             Ok(JsValue::Bool(b)) => b,
             _ => false,
         };
-        report.check("cdp_stealth::firefox_chrome_runtime_undefined", !chrome_runtime,
-            "chrome.runtime is defined in Firefox profile -- ChromeDriver indicator detected!");
+        report.check(
+            "cdp_stealth::firefox_chrome_runtime_undefined",
+            !chrome_runtime,
+            "chrome.runtime is defined in Firefox profile -- ChromeDriver indicator detected!",
+        );
 
         // No cdc_ prefixed globals
         let no_cdc = match ctx.eval(
@@ -94,13 +100,19 @@ fn cdp_stealth_diagnostic_all() {
             Ok(JsValue::Bool(b)) => b,
             _ => true,
         };
-        report.check("cdp_stealth::firefox_no_cdc_globals", no_cdc,
-            "cdc_ prefixed globals found in Firefox profile -- ChromeDriver indicator detected!");
+        report.check(
+            "cdp_stealth::firefox_no_cdc_globals",
+            no_cdc,
+            "cdc_ prefixed globals found in Firefox profile -- ChromeDriver indicator detected!",
+        );
 
         // Verify stealth profile is active (sanity check)
         let ua = str_eval(&mut ctx, "navigator.userAgent");
-        report.check("cdp_stealth::firefox_profile_active", ua.contains("Firefox"),
-            &format!("Expected Firefox UA, got: {}", ua));
+        report.check(
+            "cdp_stealth::firefox_profile_active",
+            ua.contains("Firefox"),
+            &format!("Expected Firefox UA, got: {}", ua),
+        );
     }
 
     // ---- Phase 2: Chrome profile CDP stealth ----
@@ -118,8 +130,11 @@ fn cdp_stealth_diagnostic_all() {
             Ok(JsValue::Bool(b)) => b,
             _ => false,
         };
-        report.check("cdp_stealth::chrome_chrome_runtime_undefined", !chrome_runtime,
-            "chrome.runtime is defined in Chrome profile -- ChromeDriver indicator detected!");
+        report.check(
+            "cdp_stealth::chrome_chrome_runtime_undefined",
+            !chrome_runtime,
+            "chrome.runtime is defined in Chrome profile -- ChromeDriver indicator detected!",
+        );
 
         let no_cdc = match ctx.eval(
             "!Object.keys(window).some(function(k) { return k.startsWith('cdc_'); })",
@@ -128,18 +143,28 @@ fn cdp_stealth_diagnostic_all() {
             Ok(JsValue::Bool(b)) => b,
             _ => true,
         };
-        report.check("cdp_stealth::chrome_no_cdc_globals", no_cdc,
-            "cdc_ prefixed globals found in Chrome profile -- ChromeDriver indicator detected!");
+        report.check(
+            "cdp_stealth::chrome_no_cdc_globals",
+            no_cdc,
+            "cdc_ prefixed globals found in Chrome profile -- ChromeDriver indicator detected!",
+        );
 
         let ua = str_eval(&mut ctx, "navigator.userAgent");
-        report.check("cdp_stealth::chrome_profile_active", ua.contains("Chrome"),
-            &format!("Expected Chrome UA, got: {}", ua));
+        report.check(
+            "cdp_stealth::chrome_profile_active",
+            ua.contains("Chrome"),
+            &format!("Expected Chrome UA, got: {}", ua),
+        );
     }
 
     report.finish();
 
     // ---- Strict verification gate ----
-    let fails = report.messages.iter().filter(|m| m.starts_with("FAIL")).count();
+    let fails = report
+        .messages
+        .iter()
+        .filter(|m| m.starts_with("FAIL"))
+        .count();
     assert_eq!(fails, 0, "{} CDP stealth assertions FAILED!", fails);
 
     // Mandatory assertions
@@ -150,15 +175,22 @@ fn cdp_stealth_diagnostic_all() {
         "cdp_stealth::chrome_no_cdc_globals",
     ];
     for prefix in &mandatory_prefixes {
-        let is_pass = report.messages.iter()
+        let is_pass = report
+            .messages
+            .iter()
             .any(|m| m.starts_with("PASS") && m.contains(prefix));
-        assert!(is_pass,
-            "MANDATORY assertion '{}' was not PASS -- CDP stealth verification failed!", prefix);
+        assert!(
+            is_pass,
+            "MANDATORY assertion '{}' was not PASS -- CDP stealth verification failed!",
+            prefix
+        );
     }
 
-    assert!(report.passed >= 6,
+    assert!(
+        report.passed >= 6,
         "only {} sub-assertions passed -- need at least 6 for CDP stealth coverage",
-        report.passed);
+        report.passed
+    );
 
     JsContext::shutdown_thread_sm();
 }
@@ -177,8 +209,14 @@ fn cdp_stealth_profile_no_cdc_artifacts() {
     let ua_ch = &chrome.navigator.user_agent;
     assert!(!ua_ff.contains("cdc_"), "Firefox UA contains cdc_ prefix");
     assert!(!ua_ch.contains("cdc_"), "Chrome UA contains cdc_ prefix");
-    assert!(!ua_ff.contains("chromedriver"), "Firefox UA contains chromedriver");
-    assert!(!ua_ch.contains("chromedriver"), "Chrome UA contains chromedriver");
+    assert!(
+        !ua_ff.contains("chromedriver"),
+        "Firefox UA contains chromedriver"
+    );
+    assert!(
+        !ua_ch.contains("chromedriver"),
+        "Chrome UA contains chromedriver"
+    );
 }
 
 #[test]
@@ -187,11 +225,17 @@ fn cdp_stealth_webgl_extensions_no_cdc_indicators() {
     let chrome = StealthProfile::chrome_default();
 
     for ext in &firefox.webgl.extensions {
-        assert!(!ext.contains("cdc_"),
-            "Firefox WebGL extension contains cdc_ prefix: {}", ext);
+        assert!(
+            !ext.contains("cdc_"),
+            "Firefox WebGL extension contains cdc_ prefix: {}",
+            ext
+        );
     }
     for ext in &chrome.webgl.extensions {
-        assert!(!ext.contains("cdc_"),
-            "Chrome WebGL extension contains cdc_ prefix: {}", ext);
+        assert!(
+            !ext.contains("cdc_"),
+            "Chrome WebGL extension contains cdc_ prefix: {}",
+            ext
+        );
     }
 }

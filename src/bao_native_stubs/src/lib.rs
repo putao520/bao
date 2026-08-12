@@ -65,35 +65,35 @@ pub fn force_link() {
     // Wave 75c: zstd — now pure Rust (zstd-pure-rs), no C library to link.
     bun_zstd::force_link();
 
-        let _ = Bun__currentSyncPID.load(std::sync::atomic::Ordering::Relaxed);
+    let _ = Bun__currentSyncPID.load(std::sync::atomic::Ordering::Relaxed);
 
-        let _ = bun_cpu_features();
-        let _ = is_executable_file(core::ptr::null());
+    let _ = bun_cpu_features();
+    let _ = is_executable_file(core::ptr::null());
 
-        let _ = BunString__fromBytes(core::ptr::null(), 0);
-        Bun__WTFStringImpl__destroy(core::ptr::null());
+    let _ = BunString__fromBytes(core::ptr::null(), 0);
+    Bun__WTFStringImpl__destroy(core::ptr::null());
 
-        // URL__* / WTF__parse* / __bun_regex_* — real owners in
-        // bun_runtime::product_native_symbols + bun_url pure path / bun_core.
-        // Do NOT reintroduce noops (STUB-INVENTORY dual-def iron rule).
+    // URL__* / WTF__parse* / __bun_regex_* — real owners in
+    // bun_runtime::product_native_symbols + bun_url pure path / bun_core.
+    // Do NOT reintroduce noops (STUB-INVENTORY dual-def iron rule).
 
-        // bun_core references
-        bun_restore_stdio();
-        let _ = ares_inet_pton(0, core::ptr::null(), core::ptr::null_mut());
+    // bun_core references
+    bun_restore_stdio();
+    let _ = ares_inet_pton(0, core::ptr::null(), core::ptr::null_mut());
 
-        // bun_core::StackCheck / bun_crash_handler / bun_spawn
-        // ABI aligned with product_native_symbols (product owner); stubs = dev/test only.
-        Bun__StackCheck__initialize();
-        WTF__DumpStackTrace(core::ptr::null(), 0);
-        Bun__registerSignalsForForwarding();
-        Bun__sendPendingSignalIfNecessary();
-        Bun__unregisterSignalsForForwarding();
+    // bun_core::StackCheck / bun_crash_handler / bun_spawn
+    // ABI aligned with product_native_symbols (product owner); stubs = dev/test only.
+    Bun__StackCheck__initialize();
+    WTF__DumpStackTrace(core::ptr::null(), 0);
+    Bun__registerSignalsForForwarding();
+    Bun__sendPendingSignalIfNecessary();
+    Bun__unregisterSignalsForForwarding();
 
-        // Bun__linux_trace_* — real owner: bun_runtime::linux_trace
-        // Do NOT reintroduce noops (STUB-INVENTORY dual-def iron rule).
-        let _ = Bun__StackCheck__getMaxStack();
-        // Force-link all c_lib_stubs symbols
-        c_lib_stubs::force_c_lib_stubs();
+    // Bun__linux_trace_* — real owner: bun_runtime::linux_trace
+    // Do NOT reintroduce noops (STUB-INVENTORY dual-def iron rule).
+    let _ = Bun__StackCheck__getMaxStack();
+    // Force-link all c_lib_stubs symbols
+    c_lib_stubs::force_c_lib_stubs();
 }
 
 // Entry point for downstream crates to force-link bao_native_stubs.
@@ -252,12 +252,7 @@ pub extern "C" fn Bun__registerSignalsForForwarding() {
             sa.sa_sigaction = bun_forward_signal_handler as *const () as usize;
             libc::sigemptyset(&mut sa.sa_mask);
             sa.sa_flags = libc::SA_RESTART;
-            for sig in [
-                libc::SIGINT,
-                libc::SIGTERM,
-                libc::SIGHUP,
-                libc::SIGQUIT,
-            ] {
+            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
                 libc::sigaction(sig, &sa, core::ptr::null_mut());
             }
         }
@@ -273,12 +268,7 @@ pub extern "C" fn Bun__unregisterSignalsForForwarding() {
             sa.sa_sigaction = libc::SIG_DFL;
             libc::sigemptyset(&mut sa.sa_mask);
             sa.sa_flags = 0;
-            for sig in [
-                libc::SIGINT,
-                libc::SIGTERM,
-                libc::SIGHUP,
-                libc::SIGQUIT,
-            ] {
+            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
                 libc::sigaction(sig, &sa, core::ptr::null_mut());
             }
         }
@@ -306,7 +296,9 @@ pub extern "C" fn Bun__sendPendingSignalIfNecessary() {
 #[unsafe(no_mangle)]
 pub extern "C" fn on_before_reload_process_linux() {
     // Sync filesystem buffers before exec() — matches Bun's behavior
-    unsafe { libc::sync(); }
+    unsafe {
+        libc::sync();
+    }
 }
 
 // bun_io::FilePoll::on_update — provided by bao_runtime::dispatch
@@ -423,7 +415,8 @@ pub extern "C" fn posix_spawn_bun(
             return rc;
         }
 
-        let mut flags: c_short = (libc::POSIX_SPAWN_SETSIGDEF | libc::POSIX_SPAWN_SETSIGMASK) as c_short;
+        let mut flags: c_short =
+            (libc::POSIX_SPAWN_SETSIGDEF | libc::POSIX_SPAWN_SETSIGMASK) as c_short;
         if req.new_process_group {
             flags |= 0x80; // POSIX_SPAWN_SETSID on Linux
         }
@@ -447,14 +440,7 @@ pub extern "C" fn posix_spawn_bun(
             envp as *mut *mut c_char
         };
 
-        let rc = libc::posix_spawnp(
-            pid,
-            path,
-            &fa,
-            &attr,
-            argv as *mut *mut c_char,
-            env,
-        );
+        let rc = libc::posix_spawnp(pid, path, &fa, &attr, argv as *mut *mut c_char, env);
 
         libc::posix_spawnattr_destroy(&mut attr);
         libc::posix_spawn_file_actions_destroy(&mut fa);
@@ -534,11 +520,13 @@ pub extern "C" fn Bun__WTFStringImpl__destroy(this: *const c_void) {
 /// Bao: provides an AtomicI64 static that bun_spawn_sys::ffi expects.
 #[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
-pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(-1);
 
 #[cfg(not(target_os = "linux"))]
 #[unsafe(no_mangle)]
-pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(-1);
 
 // ──────────────────────────────────────────────────────────────
 // WTF base64 — now replaced by simdutf pure Rust implementation

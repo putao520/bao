@@ -1,8 +1,8 @@
 // @trace REQ-ENG-007
-use bun_core::ZBox;
 use ::std::io::Read;
 use ::std::io::Write;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
@@ -31,18 +31,38 @@ unsafe fn extract_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
         rooted!(&in(wrapped_cx) let obj_root = obj);
 
         let mut len_val = UndefinedValue();
-        JS_GetProperty(cx, obj_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
-        });
-        let len = if len_val.is_int32() { len_val.to_int32() as u32 } else { return Vec::new() };
+        JS_GetProperty(
+            cx,
+            obj_root.handle().into(),
+            c"length".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            },
+        );
+        let len = if len_val.is_int32() {
+            len_val.to_int32() as u32
+        } else {
+            return Vec::new();
+        };
 
         let mut bytes = Vec::with_capacity(len as usize);
         for i in 0..len {
             let mut byte_val = UndefinedValue();
-            JS_GetElement(cx, obj_root.handle().into(), i, MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
+            JS_GetElement(
+                cx,
+                obj_root.handle().into(),
+                i,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut byte_val,
+                },
+            );
+            bytes.push(if byte_val.is_int32() {
+                byte_val.to_int32() as u8
+            } else {
+                0
             });
-            bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
         }
         return bytes;
     }
@@ -60,25 +80,47 @@ unsafe fn return_bytes(cx: *mut JSContext, args: &CallArgs, data: Vec<u8>) -> bo
             rooted!(&in(wrapped_cx) let global_root = global);
 
             let mut buffer_ctor = UndefinedValue();
-            JS_GetProperty(cx, global_root.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_ctor,
-            });
+            JS_GetProperty(
+                cx,
+                global_root.handle().into(),
+                c"Buffer".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut buffer_ctor,
+                },
+            );
             if buffer_ctor.is_object() {
                 let buffer_ctor_obj = buffer_ctor.to_object();
                 rooted!(&in(wrapped_cx) let buffer_ctor_root = buffer_ctor_obj);
                 let mut from_fn = UndefinedValue();
-                JS_GetProperty(cx, buffer_ctor_root.handle().into(), c"from".as_ptr(), MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData, ptr: &mut from_fn,
-                });
+                JS_GetProperty(
+                    cx,
+                    buffer_ctor_root.handle().into(),
+                    c"from".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut from_fn,
+                    },
+                );
                 if from_fn.is_object() {
                     rooted!(&in(wrapped_cx) let u8_val_root = u8_val);
                     let u8_val_copy = *u8_val_root;
-                    let call_args = HandleValueArray { length_: 1, elements_: &u8_val_copy as *const JSVal };
+                    let call_args = HandleValueArray {
+                        length_: 1,
+                        elements_: &u8_val_copy as *const JSVal,
+                    };
                     rooted!(&in(wrapped_cx) let ctor_root = from_fn);
                     let mut rval = UndefinedValue();
-                    JS_CallFunctionValue(cx, global_root.handle().into(), ctor_root.handle().into(), &call_args, MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
-                    });
+                    JS_CallFunctionValue(
+                        cx,
+                        global_root.handle().into(),
+                        ctor_root.handle().into(),
+                        &call_args,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut rval,
+                        },
+                    );
                     args.rval().set(rval);
                     return true;
                 }
@@ -105,9 +147,15 @@ unsafe fn extract_compression_level(cx: *mut JSContext, opts_val: JSVal) -> flat
     rooted!(&in(wrapped_cx) let obj_root = obj);
 
     let mut val = UndefinedValue();
-    JS_GetProperty(cx, obj_root.handle().into(), c"level".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut val,
-    });
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"level".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        },
+    );
     if val.is_int32() {
         let l = val.to_int32();
         if l >= 0 && l <= 9 {
@@ -124,82 +172,140 @@ unsafe fn extract_compression_level(cx: *mut JSContext, opts_val: JSVal) -> flat
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_deflate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let level = if argc > 1 { extract_compression_level(cx, *args.get(1).ptr) } else { flate2::Compression::default() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let level = if argc > 1 {
+        extract_compression_level(cx, *args.get(1).ptr)
+    } else {
+        flate2::Compression::default()
+    };
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), level);
     let _ = encoder.write_all(&data);
     match encoder.finish() {
         Ok(compressed) => return_bytes(cx, &args, compressed),
-        Err(_) => { args.rval().set(UndefinedValue()); true }
+        Err(_) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
     }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_inflate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
     let mut decoder = flate2::read::ZlibDecoder::new(&data[..]);
     let mut decompressed = Vec::new();
     match decoder.read_to_end(&mut decompressed) {
         Ok(_) => return_bytes(cx, &args, decompressed),
-        Err(_) => { args.rval().set(UndefinedValue()); true }
+        Err(_) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
     }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_deflate_raw_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let level = if argc > 1 { extract_compression_level(cx, *args.get(1).ptr) } else { flate2::Compression::default() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let level = if argc > 1 {
+        extract_compression_level(cx, *args.get(1).ptr)
+    } else {
+        flate2::Compression::default()
+    };
     let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), level);
     let _ = encoder.write_all(&data);
     match encoder.finish() {
         Ok(compressed) => return_bytes(cx, &args, compressed),
-        Err(_) => { args.rval().set(UndefinedValue()); true }
+        Err(_) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
     }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_inflate_raw_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
     let mut decoder = flate2::read::DeflateDecoder::new(&data[..]);
     let mut decompressed = Vec::new();
     match decoder.read_to_end(&mut decompressed) {
         Ok(_) => return_bytes(cx, &args, decompressed),
-        Err(_) => { args.rval().set(UndefinedValue()); true }
+        Err(_) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
     }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_gzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let level = if argc > 1 { extract_compression_level(cx, *args.get(1).ptr) } else { flate2::Compression::default() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let level = if argc > 1 {
+        extract_compression_level(cx, *args.get(1).ptr)
+    } else {
+        flate2::Compression::default()
+    };
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), level);
     let _ = encoder.write_all(&data);
     match encoder.finish() {
         Ok(compressed) => return_bytes(cx, &args, compressed),
-        Err(_) => { args.rval().set(UndefinedValue()); true }
+        Err(_) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
     }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_gunzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
     let mut decoder = flate2::read::GzDecoder::new(&data[..]);
     let mut decompressed = Vec::new();
     match decoder.read_to_end(&mut decompressed) {
         Ok(_) => return_bytes(cx, &args, decompressed),
-        Err(_) => { args.rval().set(UndefinedValue()); true }
+        Err(_) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
     }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_unzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
     // unzip auto-detects gzip/zlib/deflate header
     // Try gzip first, then zlib, then raw deflate
     let mut decompressed = Vec::new();
@@ -235,7 +341,7 @@ unsafe extern "C" fn zlib_unzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSV
 unsafe fn extract_brotli_options(cx: *mut JSContext, opts_val: JSVal) -> (u32, u32) {
     // Returns (quality, lgwin)
     let mut quality = 11u32; // brotli default
-    let mut lgwin = 22u32;   // brotli default
+    let mut lgwin = 22u32; // brotli default
     if !opts_val.is_object() {
         return (quality, lgwin);
     }
@@ -244,9 +350,15 @@ unsafe fn extract_brotli_options(cx: *mut JSContext, opts_val: JSVal) -> (u32, u
     rooted!(&in(wrapped_cx) let obj_root = obj);
 
     let mut val = UndefinedValue();
-    JS_GetProperty(cx, obj_root.handle().into(), c"quality".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut val,
-    });
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"quality".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        },
+    );
     if val.is_int32() {
         let q = val.to_int32();
         if q >= 0 && q <= 11 {
@@ -255,9 +367,15 @@ unsafe fn extract_brotli_options(cx: *mut JSContext, opts_val: JSVal) -> (u32, u
     }
 
     let mut val2 = UndefinedValue();
-    JS_GetProperty(cx, obj_root.handle().into(), c"lgwin".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut val2,
-    });
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"lgwin".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val2,
+        },
+    );
     if val2.is_int32() {
         let w = val2.to_int32();
         if w >= 10 && w <= 24 {
@@ -269,21 +387,44 @@ unsafe fn extract_brotli_options(cx: *mut JSContext, opts_val: JSVal) -> (u32, u
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn zlib_brotli_compress_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn zlib_brotli_compress_sync(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let (quality, lgwin) = if argc > 1 { extract_brotli_options(cx, *args.get(1).ptr) } else { (11, 22) };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let (quality, lgwin) = if argc > 1 {
+        extract_brotli_options(cx, *args.get(1).ptr)
+    } else {
+        (11, 22)
+    };
     let compressed = bun_brotli::compress(&data, quality, lgwin);
     return_bytes(cx, &args, compressed)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn zlib_brotli_decompress_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn zlib_brotli_decompress_sync(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
     match bun_brotli::decompress(&data) {
         Ok(decompressed) => return_bytes(cx, &args, decompressed),
-        Err(_) => { args.rval().set(UndefinedValue()); true }
+        Err(_) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
     }
 }
 
@@ -312,9 +453,16 @@ unsafe fn call_callback(cx: *mut JSContext, callback: JSVal, err: JSVal, result:
         elements_: vals.as_ptr(),
     };
     let mut rval = UndefinedValue();
-    JS_CallFunctionValue(cx, global_root.handle().into(), cb_root.handle().into(), &call_args, MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
-    });
+    JS_CallFunctionValue(
+        cx,
+        global_root.handle().into(),
+        cb_root.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
 }
 
 /// Create a JS Buffer from a byte slice using the fast Uint8Array path.
@@ -333,38 +481,74 @@ unsafe fn make_buffer_val(cx: *mut JSContext, data: &[u8]) -> JSVal {
     rooted!(&in(wrapped_cx) let global_root = global);
 
     let mut buffer_ctor = UndefinedValue();
-    JS_GetProperty(cx, global_root.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_ctor,
-    });
+    JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        c"Buffer".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut buffer_ctor,
+        },
+    );
     if !buffer_ctor.is_object() {
         return u8_val;
     }
     let buffer_ctor_obj = buffer_ctor.to_object();
     rooted!(&in(wrapped_cx) let buffer_ctor_root = buffer_ctor_obj);
     let mut from_fn = UndefinedValue();
-    JS_GetProperty(cx, buffer_ctor_root.handle().into(), c"from".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut from_fn,
-    });
+    JS_GetProperty(
+        cx,
+        buffer_ctor_root.handle().into(),
+        c"from".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut from_fn,
+        },
+    );
     if !from_fn.is_object() {
         return u8_val;
     }
     rooted!(&in(wrapped_cx) let u8_val_root = u8_val);
     let u8_val_copy = *u8_val_root;
-    let call_args = HandleValueArray { length_: 1, elements_: &u8_val_copy as *const JSVal };
+    let call_args = HandleValueArray {
+        length_: 1,
+        elements_: &u8_val_copy as *const JSVal,
+    };
     rooted!(&in(wrapped_cx) let ctor_root = from_fn);
     let mut buf_rval = UndefinedValue();
-    JS_CallFunctionValue(cx, global_root.handle().into(), ctor_root.handle().into(), &call_args, MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut buf_rval,
-    });
+    JS_CallFunctionValue(
+        cx,
+        global_root.handle().into(),
+        ctor_root.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut buf_rval,
+        },
+    );
     buf_rval
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_deflate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let level = if argc > 1 { extract_compression_level(cx, *args.get(1).ptr) } else { flate2::Compression::default() };
-    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let level = if argc > 1 {
+        extract_compression_level(cx, *args.get(1).ptr)
+    } else {
+        flate2::Compression::default()
+    };
+    let callback = if argc > 2 {
+        *args.get(2).ptr
+    } else if argc > 1 && (*args.get(1).ptr).is_object() {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
 
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), level);
     let _ = encoder.write_all(&data);
@@ -377,7 +561,9 @@ unsafe extern "C" fn zlib_deflate(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         }
         Err(_) => {
             if callback.is_object() {
-                let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"deflate error".as_ptr()) });
+                let err_msg = mozjs::jsval::StringValue(unsafe {
+                    &*JS_NewStringCopyZ(cx, c"deflate error".as_ptr())
+                });
                 call_callback(cx, callback, err_msg, UndefinedValue());
             }
         }
@@ -389,8 +575,18 @@ unsafe extern "C" fn zlib_deflate(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_inflate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let callback = if argc > 2 {
+        *args.get(2).ptr
+    } else if argc > 1 && (*args.get(1).ptr).is_object() {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
 
     let mut decoder = flate2::read::ZlibDecoder::new(&data[..]);
     let mut decompressed = Vec::new();
@@ -403,7 +599,9 @@ unsafe extern "C" fn zlib_inflate(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         }
         Err(_) => {
             if callback.is_object() {
-                let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"inflate error".as_ptr()) });
+                let err_msg = mozjs::jsval::StringValue(unsafe {
+                    &*JS_NewStringCopyZ(cx, c"inflate error".as_ptr())
+                });
                 call_callback(cx, callback, err_msg, UndefinedValue());
             }
         }
@@ -415,9 +613,23 @@ unsafe extern "C" fn zlib_inflate(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_gzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let level = if argc > 1 && !(*args.get(1).ptr).is_object() { extract_compression_level(cx, *args.get(1).ptr) } else { flate2::Compression::default() };
-    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let level = if argc > 1 && !(*args.get(1).ptr).is_object() {
+        extract_compression_level(cx, *args.get(1).ptr)
+    } else {
+        flate2::Compression::default()
+    };
+    let callback = if argc > 2 {
+        *args.get(2).ptr
+    } else if argc > 1 && (*args.get(1).ptr).is_object() {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
 
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), level);
     let _ = encoder.write_all(&data);
@@ -430,7 +642,9 @@ unsafe extern "C" fn zlib_gzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         }
         Err(_) => {
             if callback.is_object() {
-                let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"gzip error".as_ptr()) });
+                let err_msg = mozjs::jsval::StringValue(unsafe {
+                    &*JS_NewStringCopyZ(cx, c"gzip error".as_ptr())
+                });
                 call_callback(cx, callback, err_msg, UndefinedValue());
             }
         }
@@ -442,8 +656,18 @@ unsafe extern "C" fn zlib_gzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_gunzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let callback = if argc > 2 {
+        *args.get(2).ptr
+    } else if argc > 1 && (*args.get(1).ptr).is_object() {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
 
     let mut decoder = flate2::read::GzDecoder::new(&data[..]);
     let mut decompressed = Vec::new();
@@ -456,7 +680,9 @@ unsafe extern "C" fn zlib_gunzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
         Err(_) => {
             if callback.is_object() {
-                let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"gunzip error".as_ptr()) });
+                let err_msg = mozjs::jsval::StringValue(unsafe {
+                    &*JS_NewStringCopyZ(cx, c"gunzip error".as_ptr())
+                });
                 call_callback(cx, callback, err_msg, UndefinedValue());
             }
         }
@@ -468,8 +694,18 @@ unsafe extern "C" fn zlib_gunzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_unzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let callback = if argc > 2 {
+        *args.get(2).ptr
+    } else if argc > 1 && (*args.get(1).ptr).is_object() {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
 
     let mut decompressed = Vec::new();
     let mut success = false;
@@ -498,7 +734,8 @@ unsafe extern "C" fn zlib_unzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         let buf_val = make_buffer_val(cx, &decompressed);
         call_callback(cx, callback, UndefinedValue(), buf_val);
     } else if !success && callback.is_object() {
-        let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"unzip error".as_ptr()) });
+        let err_msg =
+            mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"unzip error".as_ptr()) });
         call_callback(cx, callback, err_msg, UndefinedValue());
     }
     args.rval().set(UndefinedValue());
@@ -508,9 +745,23 @@ unsafe extern "C" fn zlib_unzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_brotli_compress(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let (quality, lgwin) = if argc > 1 && !(*args.get(1).ptr).is_object() { extract_brotli_options(cx, *args.get(1).ptr) } else { (11, 22) };
-    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let (quality, lgwin) = if argc > 1 && !(*args.get(1).ptr).is_object() {
+        extract_brotli_options(cx, *args.get(1).ptr)
+    } else {
+        (11, 22)
+    };
+    let callback = if argc > 2 {
+        *args.get(2).ptr
+    } else if argc > 1 && (*args.get(1).ptr).is_object() {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
 
     let compressed = bun_brotli::compress(&data, quality, lgwin);
     if callback.is_object() {
@@ -524,8 +775,18 @@ unsafe extern "C" fn zlib_brotli_compress(cx: *mut JSContext, argc: u32, vp: *mu
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_brotli_decompress(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+    let data = if argc > 0 {
+        extract_bytes(cx, *args.get(0).ptr)
+    } else {
+        Vec::new()
+    };
+    let callback = if argc > 2 {
+        *args.get(2).ptr
+    } else if argc > 1 && (*args.get(1).ptr).is_object() {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
 
     match bun_brotli::decompress(&data) {
         Ok(decompressed) => {
@@ -536,7 +797,9 @@ unsafe extern "C" fn zlib_brotli_decompress(cx: *mut JSContext, argc: u32, vp: *
         }
         Err(_) => {
             if callback.is_object() {
-                let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"brotli decompress error".as_ptr()) });
+                let err_msg = mozjs::jsval::StringValue(unsafe {
+                    &*JS_NewStringCopyZ(cx, c"brotli decompress error".as_ptr())
+                });
                 call_callback(cx, callback, err_msg, UndefinedValue());
             }
         }
@@ -785,36 +1048,204 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let cx_raw = cx.raw_cx();
 
         // Sync functions
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"deflateSync".as_ptr(), Some(zlib_deflate_sync), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"inflateSync".as_ptr(), Some(zlib_inflate_sync), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"deflateRawSync".as_ptr(), Some(zlib_deflate_raw_sync), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"inflateRawSync".as_ptr(), Some(zlib_inflate_raw_sync), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"gzipSync".as_ptr(), Some(zlib_gzip_sync), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"gunzipSync".as_ptr(), Some(zlib_gunzip_sync), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"unzipSync".as_ptr(), Some(zlib_unzip_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"deflateSync".as_ptr(),
+            Some(zlib_deflate_sync),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"inflateSync".as_ptr(),
+            Some(zlib_inflate_sync),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"deflateRawSync".as_ptr(),
+            Some(zlib_deflate_raw_sync),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"inflateRawSync".as_ptr(),
+            Some(zlib_inflate_raw_sync),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"gzipSync".as_ptr(),
+            Some(zlib_gzip_sync),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"gunzipSync".as_ptr(),
+            Some(zlib_gunzip_sync),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"unzipSync".as_ptr(),
+            Some(zlib_unzip_sync),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // Brotli sync functions
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"brotliCompressSync".as_ptr(), Some(zlib_brotli_compress_sync), 2, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"brotliDecompressSync".as_ptr(), Some(zlib_brotli_decompress_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"brotliCompressSync".as_ptr(),
+            Some(zlib_brotli_compress_sync),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"brotliDecompressSync".as_ptr(),
+            Some(zlib_brotli_decompress_sync),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // Async callback-style functions
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"deflate".as_ptr(), Some(zlib_deflate), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"inflate".as_ptr(), Some(zlib_inflate), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"gzip".as_ptr(), Some(zlib_gzip), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"gunzip".as_ptr(), Some(zlib_gunzip), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"unzip".as_ptr(), Some(zlib_unzip), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"brotliCompress".as_ptr(), Some(zlib_brotli_compress), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"brotliDecompress".as_ptr(), Some(zlib_brotli_decompress), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"deflate".as_ptr(),
+            Some(zlib_deflate),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"inflate".as_ptr(),
+            Some(zlib_inflate),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"gzip".as_ptr(),
+            Some(zlib_gzip),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"gunzip".as_ptr(),
+            Some(zlib_gunzip),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"unzip".as_ptr(),
+            Some(zlib_unzip),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"brotliCompress".as_ptr(),
+            Some(zlib_brotli_compress),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"brotliDecompress".as_ptr(),
+            Some(zlib_brotli_decompress),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // Internal helpers used by JS Transform classes (prefixed with __)
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_deflateSync".as_ptr(), Some(zlib_deflate_sync), 2, 0);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_inflateSync".as_ptr(), Some(zlib_inflate_sync), 1, 0);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_gzipSync".as_ptr(), Some(zlib_gzip_sync), 2, 0);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_gunzipSync".as_ptr(), Some(zlib_gunzip_sync), 1, 0);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_deflateRawSync".as_ptr(), Some(zlib_deflate_raw_sync), 2, 0);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_inflateRawSync".as_ptr(), Some(zlib_inflate_raw_sync), 1, 0);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_brotliCompressSync".as_ptr(), Some(zlib_brotli_compress_sync), 2, 0);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_brotliDecompressSync".as_ptr(), Some(zlib_brotli_decompress_sync), 1, 0);
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__zlib_deflateSync".as_ptr(),
+            Some(zlib_deflate_sync),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__zlib_inflateSync".as_ptr(),
+            Some(zlib_inflate_sync),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__zlib_gzipSync".as_ptr(),
+            Some(zlib_gzip_sync),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__zlib_gunzipSync".as_ptr(),
+            Some(zlib_gunzip_sync),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__zlib_deflateRawSync".as_ptr(),
+            Some(zlib_deflate_raw_sync),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__zlib_inflateRawSync".as_ptr(),
+            Some(zlib_inflate_raw_sync),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__zlib_brotliCompressSync".as_ptr(),
+            Some(zlib_brotli_compress_sync),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__zlib_brotliDecompressSync".as_ptr(),
+            Some(zlib_brotli_decompress_sync),
+            1,
+            0,
+        );
 
         let c_filename = ZBox::from_bytes("node:zlib".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
@@ -839,20 +1270,45 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let exports_obj = rval.to_object();
         rooted!(&in(cx) let exports_rooted = exports_obj);
 
-        for name in &["Deflate", "Inflate", "Gzip", "Gunzip", "DeflateRaw", "InflateRaw",
-                       "BrotliCompress", "BrotliDecompress",
-                       "createDeflate", "createInflate", "createGzip", "createGunzip",
-                       "createDeflateRaw", "createInflateRaw",
-                       "createBrotliCompress", "createBrotliDecompress",
-                       "constants"] {
+        for name in &[
+            "Deflate",
+            "Inflate",
+            "Gzip",
+            "Gunzip",
+            "DeflateRaw",
+            "InflateRaw",
+            "BrotliCompress",
+            "BrotliDecompress",
+            "createDeflate",
+            "createInflate",
+            "createGzip",
+            "createGunzip",
+            "createDeflateRaw",
+            "createInflateRaw",
+            "createBrotliCompress",
+            "createBrotliDecompress",
+            "constants",
+        ] {
             let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
-            JS_GetProperty(cx_raw, exports_rooted.handle().into(), cname.as_ptr(), MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData, ptr: &mut val,
-            });
+            JS_GetProperty(
+                cx_raw,
+                exports_rooted.handle().into(),
+                cname.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut val,
+                },
+            );
             if !val.is_undefined() {
                 rooted!(&in(cx) let val_root = val);
-                JS_DefineProperty(cx_raw, mod_obj.handle().into(), cname.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    cx_raw,
+                    mod_obj.handle().into(),
+                    cname.as_ptr(),
+                    val_root.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 

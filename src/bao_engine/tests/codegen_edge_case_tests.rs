@@ -159,7 +159,11 @@ proto: {
 }"#;
     let result = parse_classes(src, "f.ts").unwrap();
     match &result.classes[0].proto[0].kind {
-        PropertyKind::Accessor { getter, setter, cache } => {
+        PropertyKind::Accessor {
+            getter,
+            setter,
+            cache,
+        } => {
             assert_eq!(getter, "getBar");
             assert_eq!(setter, "setBar");
             assert!(!*cache);
@@ -282,12 +286,13 @@ fn test_generate_bindings_with_proto_methods() {
         finalize: false,
         configurable: true,
         has_pending_activity: false,
-        proto: vec![
-            PropertyDef {
-                name: "calc".into(),
-                kind: PropertyKind::Method { fn_name: "calc_impl".into(), length: 1 },
+        proto: vec![PropertyDef {
+            name: "calc".into(),
+            kind: PropertyKind::Method {
+                fn_name: "calc_impl".into(),
+                length: 1,
             },
-        ],
+        }],
         static_props: vec![],
     };
     let bindings = generate_bindings(&class_def);
@@ -304,12 +309,12 @@ fn test_generate_bindings_with_static_props() {
         configurable: true,
         has_pending_activity: false,
         proto: vec![],
-        static_props: vec![
-            PropertyDef {
-                name: "VERSION".into(),
-                kind: PropertyKind::Value { value: "2.0".into() },
+        static_props: vec![PropertyDef {
+            name: "VERSION".into(),
+            kind: PropertyKind::Value {
+                value: "2.0".into(),
             },
-        ],
+        }],
     };
     let bindings = generate_bindings(&class_def);
     // Value-type static properties emit a SM JSPropertySpec string-value
@@ -318,9 +323,7 @@ fn test_generate_bindings_with_static_props() {
     assert_eq!(bindings.static_property_specs.len(), 1);
     assert!(bindings.static_property_specs[0].contains("c\"VERSION\""));
     assert!(bindings.static_property_specs[0].contains("c\"2.0\""));
-    assert!(
-        bindings.static_property_specs[0].contains("JSPropertySpec_ValueWrapper::StringValue")
-    );
+    assert!(bindings.static_property_specs[0].contains("JSPropertySpec_ValueWrapper::StringValue"));
 }
 
 #[test]
@@ -478,7 +481,10 @@ fn test_generate_module_multiple_bindings() {
 
 #[test]
 fn test_property_kind_getter_clone() {
-    let pk = PropertyKind::Getter { fn_name: "get_x".into(), cache: true };
+    let pk = PropertyKind::Getter {
+        fn_name: "get_x".into(),
+        cache: true,
+    };
     let cloned = pk.clone();
     match cloned {
         PropertyKind::Getter { fn_name, cache } => {
@@ -491,7 +497,10 @@ fn test_property_kind_getter_clone() {
 
 #[test]
 fn test_property_kind_method_clone() {
-    let pk = PropertyKind::Method { fn_name: "do_it".into(), length: 3 };
+    let pk = PropertyKind::Method {
+        fn_name: "do_it".into(),
+        length: 3,
+    };
     let cloned = pk.clone();
     match cloned {
         PropertyKind::Method { fn_name, length } => {
@@ -504,7 +513,11 @@ fn test_property_kind_method_clone() {
 
 #[test]
 fn test_property_kind_accessor_debug() {
-    let pk = PropertyKind::Accessor { getter: "g".into(), setter: "s".into(), cache: false };
+    let pk = PropertyKind::Accessor {
+        getter: "g".into(),
+        setter: "s".into(),
+        cache: false,
+    };
     let debug = format!("{:?}", pk);
     assert!(debug.contains("Accessor"));
 }
@@ -520,7 +533,10 @@ fn test_class_def_clone() {
         has_pending_activity: true,
         proto: vec![PropertyDef {
             name: "x".into(),
-            kind: PropertyKind::Getter { fn_name: "get_x".into(), cache: false },
+            kind: PropertyKind::Getter {
+                fn_name: "get_x".into(),
+                cache: false,
+            },
         }],
         static_props: vec![],
     };
@@ -595,7 +611,11 @@ proto: {
     let class = &parsed.classes[0];
     assert_eq!(class.proto.len(), 1);
     match &class.proto[0].kind {
-        PropertyKind::Accessor { getter, setter, cache } => {
+        PropertyKind::Accessor {
+            getter,
+            setter,
+            cache,
+        } => {
             assert_eq!(getter, "get_data");
             assert_eq!(setter, "set_data");
             assert!(!*cache);

@@ -19,7 +19,9 @@ fn test_assert_deep() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         function check(label, fn) {
             try { var ok = fn(); results.push(label + ":" + (ok ? "PASS" : "FAIL")); }
@@ -393,7 +395,8 @@ fn test_assert_deep() {
         check("method_rejects", function() { return typeof assert.rejects === 'function' || typeof assert.rejects === 'undefined'; });
 
         results.join("|")
-    "#);
+    "#,
+    );
 
     let mut all_passed = true;
     for item in results.split('|') {
@@ -402,6 +405,10 @@ fn test_assert_deep() {
             all_passed = false;
         }
     }
-    assert!(all_passed, "All assert deep tests should pass. Results: {}", results);
+    assert!(
+        all_passed,
+        "All assert deep tests should pass. Results: {}",
+        results
+    );
     bun_runtime::shutdown_thread_sm();
 }

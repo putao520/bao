@@ -69,7 +69,10 @@ fn get_str(params: &Value, key: &str) -> Result<String, BridgeError> {
 }
 
 fn get_opt_str(params: &Value, key: &str) -> Option<String> {
-    params.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    params
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn get_opt_u32(params: &Value, key: &str, default: u32) -> u32 {
@@ -146,10 +149,13 @@ pub fn debugger_set_breakpoint_by_url(
 ) -> Result<Value, BridgeError> {
     let line_number = get_opt_u32(params, "lineNumber", 0);
     let column_number = get_opt_u32(params, "columnNumber", 0);
-    let url = get_opt_str(params, "url").or_else(|| get_opt_str(params, "urlRegex"))
-        .ok_or_else(|| BridgeError::InvalidParams(
-            "Debugger.setBreakpointByUrl requires `url` or `urlRegex`".into()
-        ))?;
+    let url = get_opt_str(params, "url")
+        .or_else(|| get_opt_str(params, "urlRegex"))
+        .ok_or_else(|| {
+            BridgeError::InvalidParams(
+                "Debugger.setBreakpointByUrl requires `url` or `urlRegex`".into(),
+            )
+        })?;
 
     let bp = backend.debugger_set_breakpoint_by_url(target_id, &url, line_number, column_number)?;
 
@@ -179,9 +185,9 @@ pub fn debugger_set_breakpoint(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let location = params
-        .get("location")
-        .ok_or_else(|| BridgeError::InvalidParams("Debugger.setBreakpoint requires `location`".into()))?;
+    let location = params.get("location").ok_or_else(|| {
+        BridgeError::InvalidParams("Debugger.setBreakpoint requires `location`".into())
+    })?;
     let script_id_str = location
         .get("scriptId")
         .and_then(|v| v.as_str())
@@ -191,17 +197,15 @@ pub fn debugger_set_breakpoint(
 
     // scriptId 在 CDP 中是字符串(因 Chrome 用 hash),servo 内部是 u32。
     // 直接用字面解析;失败时回退到 hash 截断(取后 8 字符 hex → u32)。
-    let script_id: u32 = script_id_str
-        .parse()
-        .unwrap_or_else(|_| {
-            // 兜底:hash 字符串取稳定 u32
-            let mut h: u32 = 2166136261;
-            for b in script_id_str.bytes() {
-                h ^= b as u32;
-                h = h.wrapping_mul(16777619);
-            }
-            h
-        });
+    let script_id: u32 = script_id_str.parse().unwrap_or_else(|_| {
+        // 兜底:hash 字符串取稳定 u32
+        let mut h: u32 = 2166136261;
+        for b in script_id_str.bytes() {
+            h ^= b as u32;
+            h = h.wrapping_mul(16777619);
+        }
+        h
+    });
 
     let bp = backend.debugger_set_breakpoint_by_url(
         target_id,
@@ -514,8 +518,8 @@ pub fn debugger_set_breakpoints_active(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::servo_backend::MockServoBackend;
+    use super::*;
     use serde_json::json;
 
     fn backend() -> MockServoBackend {
@@ -590,9 +594,13 @@ mod tests {
     fn remove_breakpoint_routes_to_clear() {
         // @trace BUG-CDP-006 [domain:Debugger]
         let b = backend();
-        let r = debugger_remove_breakpoint(&b, "1", &json!({
-            "breakpointId": "bp:1:10:5"
-        }))
+        let r = debugger_remove_breakpoint(
+            &b,
+            "1",
+            &json!({
+                "breakpointId": "bp:1:10:5"
+            }),
+        )
         .unwrap();
         assert!(r.as_object().unwrap().is_empty());
         let log = b.call_log.lock().unwrap();
@@ -604,8 +612,8 @@ mod tests {
     #[test]
     fn remove_breakpoint_malformed_id_returns_invalid_params() {
         let b = backend();
-        let err = debugger_remove_breakpoint(&b, "1", &json!({"breakpointId": "garbage"}))
-            .unwrap_err();
+        let err =
+            debugger_remove_breakpoint(&b, "1", &json!({"breakpointId": "garbage"})).unwrap_err();
         assert!(matches!(err, BridgeError::InvalidParams(_)));
     }
 
@@ -692,8 +700,8 @@ mod tests {
     #[test]
     fn evaluate_on_call_frame_missing_callframe_returns_invalid_params() {
         let b = backend();
-        let err = debugger_evaluate_on_call_frame(&b, "1", &json!({"expression": "x"}))
-            .unwrap_err();
+        let err =
+            debugger_evaluate_on_call_frame(&b, "1", &json!({"expression": "x"})).unwrap_err();
         assert!(matches!(err, BridgeError::InvalidParams(_)));
     }
 
@@ -761,8 +769,14 @@ mod tests {
     #[test]
     fn debug_step_action_from_cdp_parses_known_values() {
         use super::super::servo_backend::DebugStepAction;
-        assert_eq!(DebugStepAction::from_cdp("over"), Some(DebugStepAction::Next));
-        assert_eq!(DebugStepAction::from_cdp("into"), Some(DebugStepAction::Into));
+        assert_eq!(
+            DebugStepAction::from_cdp("over"),
+            Some(DebugStepAction::Next)
+        );
+        assert_eq!(
+            DebugStepAction::from_cdp("into"),
+            Some(DebugStepAction::Into)
+        );
         assert_eq!(DebugStepAction::from_cdp("out"), Some(DebugStepAction::Out));
         assert_eq!(DebugStepAction::from_cdp("unknown"), None);
         assert_eq!(DebugStepAction::Next.servo_resume_limit(), "next");

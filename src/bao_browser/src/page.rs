@@ -8,13 +8,9 @@ use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
 use servo::{
-    Servo, SoftwareRenderingContext, WebView,
-    WebViewBuilder, RenderingContext,
-    InputEvent, KeyboardEvent, MouseButtonEvent, MouseButtonAction, MouseButton,
-    MouseMoveEvent, WebViewPoint,
-    Key, KeyState, Code, Location, Modifiers, NamedKey,
-    CookieSource, StorageType,
-    CSSPixel,
+    CSSPixel, Code, CookieSource, InputEvent, Key, KeyState, KeyboardEvent, Location, Modifiers,
+    MouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent, NamedKey, RenderingContext,
+    Servo, SoftwareRenderingContext, StorageType, WebView, WebViewBuilder, WebViewPoint,
 };
 
 use crate::config::PageConfig;
@@ -111,7 +107,9 @@ impl PageInner {
             }
         }
 
-        Err(BrowserError::Init("callback drain failed: pipeline not ready after timeout".into()))
+        Err(BrowserError::Init(
+            "callback drain failed: pipeline not ready after timeout".into(),
+        ))
     }
 
     /// Evaluate JavaScript in privileged mode (REQ-SEC-002).
@@ -190,13 +188,16 @@ impl PageInner {
     pub fn evaluate_js_web(&self, script: &str) -> Result<String, BrowserError> {
         let saved = Rc::new(RefCell::new(None));
         let cb_saved = saved.clone();
-        self.webview.evaluate_javascript(script.to_string(), move |result| {
-            *cb_saved.borrow_mut() = Some(result);
-        });
+        self.webview
+            .evaluate_javascript(script.to_string(), move |result| {
+                *cb_saved.borrow_mut() = Some(result);
+            });
 
         self.spin_servo(Duration::from_secs(15), || saved.borrow().is_none())?;
 
-        let result = saved.borrow().clone()
+        let result = saved
+            .borrow()
+            .clone()
             .ok_or_else(|| BrowserError::JavaScript("no evaluation result".into()))?
             .map_err(|e| BrowserError::JavaScript(format!("{e:?}")))?;
 
@@ -215,7 +216,9 @@ impl PageInner {
 
         self.spin_servo(Duration::from_secs(15), || saved.borrow().is_none())?;
 
-        let image = saved.borrow().clone()
+        let image = saved
+            .borrow()
+            .clone()
             .ok_or_else(|| BrowserError::Rendering("no screenshot result".into()))?
             .map_err(|e| BrowserError::Rendering(format!("{e:?}")))?;
 
@@ -292,12 +295,7 @@ impl PageInner {
     }
 
     /// Dispatch a keyboard event.
-    pub fn dispatch_key_event(
-        &self,
-        state: KeyState,
-        key: Key,
-        code: Code,
-    ) {
+    pub fn dispatch_key_event(&self, state: KeyState, key: Key, code: Code) {
         let keyboard_event = KeyboardEvent::new_without_event(
             state,
             key,
@@ -322,15 +320,8 @@ impl PageInner {
         modifiers: Modifiers,
         repeat: bool,
     ) {
-        let keyboard_event = KeyboardEvent::new_without_event(
-            state,
-            key,
-            code,
-            location,
-            modifiers,
-            repeat,
-            false,
-        );
+        let keyboard_event =
+            KeyboardEvent::new_without_event(state, key, code, location, modifiers, repeat, false);
         let event = InputEvent::Keyboard(keyboard_event);
         self.webview.notify_input_event(event);
         self.touch();
@@ -354,7 +345,11 @@ impl PageInner {
             for url_str in urls {
                 if let Ok(parsed) = url::Url::parse(url_str) {
                     for c in sdm.cookies_for_url(parsed, CookieSource::HTTP) {
-                        let key = (c.name().to_string(), c.domain().unwrap_or("").to_string(), c.path().unwrap_or("").to_string());
+                        let key = (
+                            c.name().to_string(),
+                            c.domain().unwrap_or("").to_string(),
+                            c.path().unwrap_or("").to_string(),
+                        );
                         if seen.insert(key) {
                             result.push(c);
                         }
@@ -366,7 +361,11 @@ impl PageInner {
     }
 
     /// Set a cookie for the given URL.
-    pub fn set_cookie(&self, url: &str, cookie: cookie::Cookie<'static>) -> Result<(), BrowserError> {
+    pub fn set_cookie(
+        &self,
+        url: &str,
+        cookie: cookie::Cookie<'static>,
+    ) -> Result<(), BrowserError> {
         let sdm = self.servo.site_data_manager();
         let parsed = url::Url::parse(url)
             .map_err(|e| BrowserError::Navigation(format!("invalid URL for setCookie: {e}")))?;
@@ -380,8 +379,9 @@ impl PageInner {
     pub fn delete_cookie(&self, name: &str, url: Option<&str>) -> Result<(), BrowserError> {
         let sdm = self.servo.site_data_manager();
         if let Some(url_str) = url {
-            let parsed = url::Url::parse(url_str)
-                .map_err(|e| BrowserError::Navigation(format!("invalid URL for deleteCookie: {e}")))?;
+            let parsed = url::Url::parse(url_str).map_err(|e| {
+                BrowserError::Navigation(format!("invalid URL for deleteCookie: {e}"))
+            })?;
             let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
             let site = parsed.host_str().unwrap_or("");
             sdm.clear_site_data(&[site], StorageType::Cookies);
@@ -394,11 +394,12 @@ impl PageInner {
             let site_data = sdm.site_data(StorageType::Cookies);
             for sd in site_data {
                 let site_name = sd.name();
-                let url_str = if site_name.starts_with("http://") || site_name.starts_with("https://") {
-                    site_name.clone()
-                } else {
-                    format!("https://{site_name}")
-                };
+                let url_str =
+                    if site_name.starts_with("http://") || site_name.starts_with("https://") {
+                        site_name.clone()
+                    } else {
+                        format!("https://{site_name}")
+                    };
                 if let Ok(parsed) = url::Url::parse(&url_str) {
                     let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
                     let has_match = current.iter().any(|c| c.name() == name);
@@ -419,11 +420,7 @@ impl PageInner {
 
     /// Wait for an element matching the selector to appear in the DOM.
     /// Polls via JS evaluate until the element is found or timeout expires.
-    pub fn wait_for_selector(
-        &self,
-        selector: &str,
-        timeout: Duration,
-    ) -> Result<(), BrowserError> {
+    pub fn wait_for_selector(&self, selector: &str, timeout: Duration) -> Result<(), BrowserError> {
         let js = format!(
             "(function() {{ return document.querySelector({}) !== null; }})()",
             serde_json::to_string(selector).unwrap_or_default()
@@ -492,10 +489,7 @@ impl PageInner {
     /// Tracks navigation via `LoadStatus` transitions rather than URL changes,
     /// which correctly handles same-URL navigation (reload, pushState to current URL).
     /// Detects when `load_status` transitions from Started/HeadParsed to Complete.
-    pub fn wait_for_navigation(
-        &self,
-        timeout: Duration,
-    ) -> Result<(), BrowserError> {
+    pub fn wait_for_navigation(&self, timeout: Duration) -> Result<(), BrowserError> {
         let start = Instant::now();
         // Record the initial load_status. Navigation begins with Started,
         // so if we're already at Complete, we wait for a new Started first.
@@ -567,14 +561,22 @@ impl PageInner {
             };
             let code = key_code_for_char(ch);
             self.dispatch_key_event_full(
-                KeyState::Down, key.clone(), code.clone(),
-                Location::Standard, Modifiers::empty(), false,
+                KeyState::Down,
+                key.clone(),
+                code.clone(),
+                Location::Standard,
+                Modifiers::empty(),
+                false,
             );
             self.servo.spin_event_loop();
             self.webview.paint();
             self.dispatch_key_event_full(
-                KeyState::Up, key, code,
-                Location::Standard, Modifiers::empty(), false,
+                KeyState::Up,
+                key,
+                code,
+                Location::Standard,
+                Modifiers::empty(),
+                false,
             );
         }
         Ok(())
@@ -633,14 +635,22 @@ impl PageInner {
     pub fn press(&self, key: &str) -> Result<(), BrowserError> {
         let (key_val, code_val) = parse_key_name(key);
         self.dispatch_key_event_full(
-            KeyState::Down, key_val.clone(), code_val.clone(),
-            Location::Standard, Modifiers::empty(), false,
+            KeyState::Down,
+            key_val.clone(),
+            code_val.clone(),
+            Location::Standard,
+            Modifiers::empty(),
+            false,
         );
         self.servo.spin_event_loop();
         self.webview.paint();
         self.dispatch_key_event_full(
-            KeyState::Up, key_val, code_val,
-            Location::Standard, Modifiers::empty(), false,
+            KeyState::Up,
+            key_val,
+            code_val,
+            Location::Standard,
+            Modifiers::empty(),
+            false,
         );
         Ok(())
     }
@@ -694,7 +704,10 @@ impl PageInner {
             // Resize viewport to full page height to capture everything.
             let height_js = "document.documentElement.scrollHeight";
             let height_str = self.evaluate_js_web(height_js).unwrap_or_default();
-            let full_height: u32 = height_str.trim().parse().unwrap_or(original_viewport.height);
+            let full_height: u32 = height_str
+                .trim()
+                .parse()
+                .unwrap_or(original_viewport.height);
             let capped_height = full_height.max(original_viewport.height);
             if capped_height != original_viewport.height {
                 self.set_viewport(original_viewport.width, capped_height);
@@ -715,14 +728,17 @@ impl PageInner {
 
         // Apply clip region by decoding, cropping, and re-encoding.
         if let Some((x, y, w, h)) = clip {
-            let mut img = image::load_from_memory(&image_bytes)
-                .map_err(|e| BrowserError::Rendering(format!("failed to decode screenshot for clip: {e}")))?;
+            let mut img = image::load_from_memory(&image_bytes).map_err(|e| {
+                BrowserError::Rendering(format!("failed to decode screenshot for clip: {e}"))
+            })?;
             let crop_x = x.max(0.0) as u32;
             let crop_y = y.max(0.0) as u32;
             let crop_w = (w as u32).min(img.width().saturating_sub(crop_x));
             let crop_h = (h as u32).min(img.height().saturating_sub(crop_y));
             if crop_w == 0 || crop_h == 0 {
-                return Err(BrowserError::Rendering("clip region has zero dimensions".into()));
+                return Err(BrowserError::Rendering(
+                    "clip region has zero dimensions".into(),
+                ));
             }
             let cropped = img.crop(crop_x, crop_y, crop_w, crop_h);
             let rgba = cropped.to_rgba8();
@@ -743,7 +759,11 @@ impl PageInner {
     }
 
     pub fn current_url(&self) -> Option<String> {
-        self.webview_state.borrow().url.as_ref().map(|u| u.to_string())
+        self.webview_state
+            .borrow()
+            .url
+            .as_ref()
+            .map(|u| u.to_string())
     }
 
     pub fn get_state(&self) -> PageState {
@@ -811,10 +831,11 @@ impl PageHandle {
         // and Workers would see servo's native fingerprint values instead.
         if let Some(ref profile) = config.stealth_profile {
             webview_state.borrow_mut().set_worker_scope_config(
-                crate::delegate::WorkerScopeConfig::from(profile as &bao_stealth::StealthProfile)
+                crate::delegate::WorkerScopeConfig::from(profile as &bao_stealth::StealthProfile),
             );
         }
-        let webview_delegate = Rc::new(BaoWebViewDelegate::new(Rc::clone(&webview_state), viewport));
+        let webview_delegate =
+            Rc::new(BaoWebViewDelegate::new(Rc::clone(&webview_state), viewport));
         let state = Rc::new(RefCell::new(PageState::Created));
 
         let mut builder = WebViewBuilder::new(
@@ -884,7 +905,9 @@ impl PageHandle {
         // The callback sets frame_ready = true via notify_new_frame_ready.
         while start.elapsed() < timeout {
             // Check frame_ready flag first (fast path, no sleep needed)
-            let ready = self.with_inner_opt(|inner| Some(inner.webview_state.borrow().frame_ready)).unwrap_or(false);
+            let ready = self
+                .with_inner_opt(|inner| Some(inner.webview_state.borrow().frame_ready))
+                .unwrap_or(false);
             if ready {
                 // Frame ready — verify pipeline by draining callbacks.
                 return self.drain_callbacks().map(|_| ());
@@ -900,7 +923,9 @@ impl PageHandle {
             std::thread::yield_now();
         }
 
-        Err(BrowserError::Init("pipeline not ready after timeout".into()))
+        Err(BrowserError::Init(
+            "pipeline not ready after timeout".into(),
+        ))
     }
 
     pub fn drain_callbacks(&self) -> Result<String, BrowserError> {
@@ -963,7 +988,10 @@ impl PageHandle {
     }
 
     pub fn stealth_profile(&self) -> Option<bao_stealth::StealthProfile> {
-        self.inner.borrow().as_ref().and_then(|inner| inner.stealth_profile.clone())
+        self.inner
+            .borrow()
+            .as_ref()
+            .and_then(|inner| inner.stealth_profile.clone())
     }
 
     /// Access the page's BaoWebViewState for Worker lifecycle management.
@@ -973,7 +1001,9 @@ impl PageHandle {
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
     pub fn webview_state(&self) -> Rc<RefCell<BaoWebViewState>> {
-        self.inner.borrow().as_ref()
+        self.inner
+            .borrow()
+            .as_ref()
             .map(|inner| inner.webview_state.clone())
             .unwrap_or_else(|| Rc::new(RefCell::new(BaoWebViewState::default())))
     }
@@ -986,7 +1016,11 @@ impl PageHandle {
     }
 
     /// Wait for a JS function/condition to return a truthy value.
-    pub fn wait_for_function(&self, fn_expression: &str, timeout: Duration) -> Result<(), BrowserError> {
+    pub fn wait_for_function(
+        &self,
+        fn_expression: &str,
+        timeout: Duration,
+    ) -> Result<(), BrowserError> {
         self.with_inner(|inner| inner.wait_for_function(fn_expression, timeout))
     }
 
@@ -1034,7 +1068,11 @@ impl PageHandle {
     }
 
     /// Set a cookie for the given URL.
-    pub fn set_cookie(&self, url: &str, cookie: cookie::Cookie<'static>) -> Result<(), BrowserError> {
+    pub fn set_cookie(
+        &self,
+        url: &str,
+        cookie: cookie::Cookie<'static>,
+    ) -> Result<(), BrowserError> {
         self.with_inner(|inner| inner.set_cookie(url, cookie))
     }
 
@@ -1080,12 +1118,14 @@ impl PageHandle {
 
     /// Check if back navigation is possible.
     pub fn can_go_back(&self) -> bool {
-        self.with_inner_opt(|inner| Some(inner.can_go_back())).unwrap_or(false)
+        self.with_inner_opt(|inner| Some(inner.can_go_back()))
+            .unwrap_or(false)
     }
 
     /// Check if forward navigation is possible.
     pub fn can_go_forward(&self) -> bool {
-        self.with_inner_opt(|inner| Some(inner.can_go_forward())).unwrap_or(false)
+        self.with_inner_opt(|inner| Some(inner.can_go_forward()))
+            .unwrap_or(false)
     }
 
     /// Take screenshot with optional clip region and fullPage mode.
@@ -1199,7 +1239,11 @@ impl PageHandle {
 
     /// Store page_global and node_realm_global pointers in PageInner (REQ-SEC-002).
     /// Called by runtime_bridge after drain_callbacks populates the per-page HashMap.
-    pub fn set_page_global(&self, page_global: *mut mozjs::jsapi::JSObject, node_global: *mut mozjs::jsapi::JSObject) {
+    pub fn set_page_global(
+        &self,
+        page_global: *mut mozjs::jsapi::JSObject,
+        node_global: *mut mozjs::jsapi::JSObject,
+    ) {
         let borrow = self.inner.borrow();
         if let Some(inner) = borrow.as_ref() {
             *inner.page_global.borrow_mut() = page_global;
@@ -1257,23 +1301,67 @@ fn format_js_value(v: &servo::JSValue) -> String {
 /// Map a character to its keyboard Code value for type_text dispatch.
 fn key_code_for_char(ch: char) -> Code {
     match ch {
-        'a' => Code::KeyA, 'b' => Code::KeyB, 'c' => Code::KeyC, 'd' => Code::KeyD,
-        'e' => Code::KeyE, 'f' => Code::KeyF, 'g' => Code::KeyG, 'h' => Code::KeyH,
-        'i' => Code::KeyI, 'j' => Code::KeyJ, 'k' => Code::KeyK, 'l' => Code::KeyL,
-        'm' => Code::KeyM, 'n' => Code::KeyN, 'o' => Code::KeyO, 'p' => Code::KeyP,
-        'q' => Code::KeyQ, 'r' => Code::KeyR, 's' => Code::KeyS, 't' => Code::KeyT,
-        'u' => Code::KeyU, 'v' => Code::KeyV, 'w' => Code::KeyW, 'x' => Code::KeyX,
-        'y' => Code::KeyY, 'z' => Code::KeyZ,
-        'A' => Code::KeyA, 'B' => Code::KeyB, 'C' => Code::KeyC, 'D' => Code::KeyD,
-        'E' => Code::KeyE, 'F' => Code::KeyF, 'G' => Code::KeyG, 'H' => Code::KeyH,
-        'I' => Code::KeyI, 'J' => Code::KeyJ, 'K' => Code::KeyK, 'L' => Code::KeyL,
-        'M' => Code::KeyM, 'N' => Code::KeyN, 'O' => Code::KeyO, 'P' => Code::KeyP,
-        'Q' => Code::KeyQ, 'R' => Code::KeyR, 'S' => Code::KeyS, 'T' => Code::KeyT,
-        'U' => Code::KeyU, 'V' => Code::KeyV, 'W' => Code::KeyW, 'X' => Code::KeyX,
-        'Y' => Code::KeyY, 'Z' => Code::KeyZ,
-        '0' => Code::Digit0, '1' => Code::Digit1, '2' => Code::Digit2,
-        '3' => Code::Digit3, '4' => Code::Digit4, '5' => Code::Digit5,
-        '6' => Code::Digit6, '7' => Code::Digit7, '8' => Code::Digit8,
+        'a' => Code::KeyA,
+        'b' => Code::KeyB,
+        'c' => Code::KeyC,
+        'd' => Code::KeyD,
+        'e' => Code::KeyE,
+        'f' => Code::KeyF,
+        'g' => Code::KeyG,
+        'h' => Code::KeyH,
+        'i' => Code::KeyI,
+        'j' => Code::KeyJ,
+        'k' => Code::KeyK,
+        'l' => Code::KeyL,
+        'm' => Code::KeyM,
+        'n' => Code::KeyN,
+        'o' => Code::KeyO,
+        'p' => Code::KeyP,
+        'q' => Code::KeyQ,
+        'r' => Code::KeyR,
+        's' => Code::KeyS,
+        't' => Code::KeyT,
+        'u' => Code::KeyU,
+        'v' => Code::KeyV,
+        'w' => Code::KeyW,
+        'x' => Code::KeyX,
+        'y' => Code::KeyY,
+        'z' => Code::KeyZ,
+        'A' => Code::KeyA,
+        'B' => Code::KeyB,
+        'C' => Code::KeyC,
+        'D' => Code::KeyD,
+        'E' => Code::KeyE,
+        'F' => Code::KeyF,
+        'G' => Code::KeyG,
+        'H' => Code::KeyH,
+        'I' => Code::KeyI,
+        'J' => Code::KeyJ,
+        'K' => Code::KeyK,
+        'L' => Code::KeyL,
+        'M' => Code::KeyM,
+        'N' => Code::KeyN,
+        'O' => Code::KeyO,
+        'P' => Code::KeyP,
+        'Q' => Code::KeyQ,
+        'R' => Code::KeyR,
+        'S' => Code::KeyS,
+        'T' => Code::KeyT,
+        'U' => Code::KeyU,
+        'V' => Code::KeyV,
+        'W' => Code::KeyW,
+        'X' => Code::KeyX,
+        'Y' => Code::KeyY,
+        'Z' => Code::KeyZ,
+        '0' => Code::Digit0,
+        '1' => Code::Digit1,
+        '2' => Code::Digit2,
+        '3' => Code::Digit3,
+        '4' => Code::Digit4,
+        '5' => Code::Digit5,
+        '6' => Code::Digit6,
+        '7' => Code::Digit7,
+        '8' => Code::Digit8,
         '9' => Code::Digit9,
         '\n' => Code::Enter,
         '\t' => Code::Tab,
@@ -1488,7 +1576,8 @@ mod tests {
     #[test]
     fn evaluate_js_uses_node_realm_or_iife_fallback() {
         let source = include_str!("page.rs");
-        let func_start = source.find("pub fn evaluate_js(&self, script: &str)")
+        let func_start = source
+            .find("pub fn evaluate_js(&self, script: &str)")
             .expect("evaluate_js function not found");
         let func_body = &source[func_start..func_start + 2800.min(source.len() - func_start)];
         // Must check Node Realm availability
@@ -1513,7 +1602,8 @@ mod tests {
     #[test]
     fn evaluate_js_drains_callbacks_for_result() {
         let source = include_str!("page.rs");
-        let func_start = source.find("pub fn evaluate_js(&self, script: &str)")
+        let func_start = source
+            .find("pub fn evaluate_js(&self, script: &str)")
             .expect("evaluate_js function not found");
         let func_body = &source[func_start..func_start + 2800.min(source.len() - func_start)];
         assert!(
@@ -1527,7 +1617,8 @@ mod tests {
     #[test]
     fn evaluate_js_reads_evaluate_result() {
         let source = include_str!("page.rs");
-        let func_start = source.find("pub fn evaluate_js(&self, script: &str)")
+        let func_start = source
+            .find("pub fn evaluate_js(&self, script: &str)")
             .expect("evaluate_js function not found");
         let func_body = &source[func_start..func_start + 2800.min(source.len() - func_start)];
         assert!(
@@ -1541,7 +1632,8 @@ mod tests {
     #[test]
     fn page_global_has_no_node_apis() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn install_all_native")
+        let func_start = source
+            .find("unsafe fn install_all_native")
             .expect("install_all_native function not found");
         let func_body = &source[func_start..func_start + 5000.min(source.len() - func_start)];
 
@@ -1568,9 +1660,11 @@ mod tests {
     #[test]
     fn node_realm_has_node_apis() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn create_node_realm_native")
+        let func_start = source
+            .find("unsafe fn create_node_realm_native")
             .expect("create_node_realm_native function not found");
-        let func_end = source[func_start..].find("pub fn inject_node_apis")
+        let func_end = source[func_start..]
+            .find("pub fn inject_node_apis")
             .or_else(|| source[func_start..].find("/// Inject Node.js APIs as native"))
             .expect("end boundary not found");
         let func_body = &source[func_start..func_start + func_end];
@@ -1590,7 +1684,8 @@ mod tests {
     #[test]
     fn node_realm_uses_new_compartment() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn create_node_realm_native")
+        let func_start = source
+            .find("unsafe fn create_node_realm_native")
             .expect("create_node_realm_native function not found");
         let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
         assert!(
@@ -1609,15 +1704,18 @@ mod tests {
         let source = include_str!("runtime_bridge.rs");
 
         // Locate the evaluate_in_node_realm function body specifically.
-        let func_start = source.find("pub unsafe fn evaluate_in_node_realm")
+        let func_start = source
+            .find("pub unsafe fn evaluate_in_node_realm")
             .expect("evaluate_in_node_realm function not found");
-        let func_body_start = source[func_start..].find("{")
+        let func_body_start = source[func_start..]
+            .find("{")
             .expect("function body start not found");
         let search_limit = source[func_start + func_body_start..]
             .find("unsafe fn create_node_realm_native")
             .unwrap_or(3000)
             .min(3000);
-        let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+        let func_body =
+            &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
             func_body.contains("AutoRealm::new"),
@@ -1852,21 +1950,69 @@ mod tests {
     fn page_handle_has_high_level_api() {
         let source = include_str!("page.rs");
         // PageHandle delegates
-        assert!(source.contains("pub fn click(&self"), "PageHandle must have click");
-        assert!(source.contains("pub fn type_text(&self"), "PageHandle must have type_text");
-        assert!(source.contains("pub fn fill(&self"), "PageHandle must have fill");
-        assert!(source.contains("pub fn set_content(&self"), "PageHandle must have set_content");
-        assert!(source.contains("pub fn content(&self"), "PageHandle must have content");
-        assert!(source.contains("pub fn press(&self"), "PageHandle must have press");
-        assert!(source.contains("pub fn hover(&self"), "PageHandle must have hover");
-        assert!(source.contains("pub fn focus_element(&self"), "PageHandle must have focus_element");
-        assert!(source.contains("pub fn reload(&self"), "PageHandle must have reload");
-        assert!(source.contains("pub fn go_back(&self"), "PageHandle must have go_back");
-        assert!(source.contains("pub fn go_forward(&self"), "PageHandle must have go_forward");
-        assert!(source.contains("pub fn select(&self"), "PageHandle must have select");
-        assert!(source.contains("pub fn set_viewport(&self"), "PageHandle must have set_viewport");
-        assert!(source.contains("pub fn cookies(&self"), "PageHandle must have cookies");
-        assert!(source.contains("pub fn set_cookie(&self"), "PageHandle must have set_cookie");
-        assert!(source.contains("pub fn delete_cookie(&self"), "PageHandle must have delete_cookie");
+        assert!(
+            source.contains("pub fn click(&self"),
+            "PageHandle must have click"
+        );
+        assert!(
+            source.contains("pub fn type_text(&self"),
+            "PageHandle must have type_text"
+        );
+        assert!(
+            source.contains("pub fn fill(&self"),
+            "PageHandle must have fill"
+        );
+        assert!(
+            source.contains("pub fn set_content(&self"),
+            "PageHandle must have set_content"
+        );
+        assert!(
+            source.contains("pub fn content(&self"),
+            "PageHandle must have content"
+        );
+        assert!(
+            source.contains("pub fn press(&self"),
+            "PageHandle must have press"
+        );
+        assert!(
+            source.contains("pub fn hover(&self"),
+            "PageHandle must have hover"
+        );
+        assert!(
+            source.contains("pub fn focus_element(&self"),
+            "PageHandle must have focus_element"
+        );
+        assert!(
+            source.contains("pub fn reload(&self"),
+            "PageHandle must have reload"
+        );
+        assert!(
+            source.contains("pub fn go_back(&self"),
+            "PageHandle must have go_back"
+        );
+        assert!(
+            source.contains("pub fn go_forward(&self"),
+            "PageHandle must have go_forward"
+        );
+        assert!(
+            source.contains("pub fn select(&self"),
+            "PageHandle must have select"
+        );
+        assert!(
+            source.contains("pub fn set_viewport(&self"),
+            "PageHandle must have set_viewport"
+        );
+        assert!(
+            source.contains("pub fn cookies(&self"),
+            "PageHandle must have cookies"
+        );
+        assert!(
+            source.contains("pub fn set_cookie(&self"),
+            "PageHandle must have set_cookie"
+        );
+        assert!(
+            source.contains("pub fn delete_cookie(&self"),
+            "PageHandle must have delete_cookie"
+        );
     }
 }

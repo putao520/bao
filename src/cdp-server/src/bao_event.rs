@@ -143,81 +143,102 @@ impl BaoEvent {
                 method: v["method"].as_str().unwrap_or_default().to_string(),
                 headers: v.get("headers").cloned().unwrap_or(json!({})),
                 post_data: v.get("postData").and_then(|p| p.as_str()).map(String::from),
-                resource_type: v.get("resourceType")
+                resource_type: v
+                    .get("resourceType")
                     .and_then(|r| r.as_str())
                     .unwrap_or("Other")
                     .to_string(),
             })),
-            "Network.requestWillBeSent" => Some(ConsoleMessage::Event(BaoEvent::NetworkRequestWillBeSent {
-                request_id: v["id"].as_str().unwrap_or_default().to_string(),
-                url: v["url"].as_str().unwrap_or_default().to_string(),
-                method: v["method"].as_str().unwrap_or_default().to_string(),
-                headers: v.get("headers").cloned().unwrap_or(json!({})),
-                request: v.get("request").cloned().unwrap_or_else(|| json!({
-                    "url": v["url"],
-                    "method": v["method"],
-                })),
-                timestamp: v.get("timestamp").and_then(|t| t.as_f64()).unwrap_or(0.0),
-                resource_type: v.get("type")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("Other")
-                    .to_string(),
-            })),
-            "Network.responseReceived" => Some(ConsoleMessage::Event(BaoEvent::NetworkResponseReceived {
-                request_id: v["id"].as_str().unwrap_or_default().to_string(),
-                url: v["url"].as_str().unwrap_or_default().to_string(),
-                status: v["status"].as_i64().unwrap_or(0) as i32,
-                status_text: v.get("statusText")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                headers: v.get("headers").cloned().unwrap_or(json!({})),
-                timestamp: v.get("timestamp").and_then(|t| t.as_f64()).unwrap_or(0.0),
-                resource_type: v.get("type")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("Other")
-                    .to_string(),
-            })),
-            "Network.loadingFailed" => Some(ConsoleMessage::Event(BaoEvent::NetworkLoadingFailed {
-                request_id: v["id"].as_str().unwrap_or_default().to_string(),
-                resource_type: v.get("type")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("Other")
-                    .to_string(),
-                error_text: v.get("errorText")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("Network error")
-                    .to_string(),
-                timestamp: v.get("timestamp").and_then(|t| t.as_f64()).unwrap_or(0.0),
-            })),
-            "Debugger.scriptParsed" => Some(ConsoleMessage::Event(BaoEvent::DebuggerScriptParsed {
-                script_id: v["id"].as_str().unwrap_or_default().to_string(),
-                url: v["url"].as_str().unwrap_or_default().to_string(),
-                start_line: v.get("startLine").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
-                end_line: v.get("endLine").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
-            })),
+            "Network.requestWillBeSent" => {
+                Some(ConsoleMessage::Event(BaoEvent::NetworkRequestWillBeSent {
+                    request_id: v["id"].as_str().unwrap_or_default().to_string(),
+                    url: v["url"].as_str().unwrap_or_default().to_string(),
+                    method: v["method"].as_str().unwrap_or_default().to_string(),
+                    headers: v.get("headers").cloned().unwrap_or(json!({})),
+                    request: v.get("request").cloned().unwrap_or_else(|| {
+                        json!({
+                            "url": v["url"],
+                            "method": v["method"],
+                        })
+                    }),
+                    timestamp: v.get("timestamp").and_then(|t| t.as_f64()).unwrap_or(0.0),
+                    resource_type: v
+                        .get("type")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("Other")
+                        .to_string(),
+                }))
+            }
+            "Network.responseReceived" => {
+                Some(ConsoleMessage::Event(BaoEvent::NetworkResponseReceived {
+                    request_id: v["id"].as_str().unwrap_or_default().to_string(),
+                    url: v["url"].as_str().unwrap_or_default().to_string(),
+                    status: v["status"].as_i64().unwrap_or(0) as i32,
+                    status_text: v
+                        .get("statusText")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    headers: v.get("headers").cloned().unwrap_or(json!({})),
+                    timestamp: v.get("timestamp").and_then(|t| t.as_f64()).unwrap_or(0.0),
+                    resource_type: v
+                        .get("type")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("Other")
+                        .to_string(),
+                }))
+            }
+            "Network.loadingFailed" => {
+                Some(ConsoleMessage::Event(BaoEvent::NetworkLoadingFailed {
+                    request_id: v["id"].as_str().unwrap_or_default().to_string(),
+                    resource_type: v
+                        .get("type")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("Other")
+                        .to_string(),
+                    error_text: v
+                        .get("errorText")
+                        .and_then(|e| e.as_str())
+                        .unwrap_or("Network error")
+                        .to_string(),
+                    timestamp: v.get("timestamp").and_then(|t| t.as_f64()).unwrap_or(0.0),
+                }))
+            }
+            "Debugger.scriptParsed" => {
+                Some(ConsoleMessage::Event(BaoEvent::DebuggerScriptParsed {
+                    script_id: v["id"].as_str().unwrap_or_default().to_string(),
+                    url: v["url"].as_str().unwrap_or_default().to_string(),
+                    start_line: v.get("startLine").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
+                    end_line: v.get("endLine").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
+                }))
+            }
             "Debugger.paused" => Some(ConsoleMessage::Event(BaoEvent::DebuggerPaused {
                 call_frames: v.get("callFrames").cloned().unwrap_or(json!([])),
-                reason: v.get("reason")
+                reason: v
+                    .get("reason")
                     .and_then(|r| r.as_str())
                     .unwrap_or("other")
                     .to_string(),
                 hit_breakpoints: v.get("hitBreakpoints").cloned().unwrap_or(json!([])),
             })),
-            "Runtime.exceptionThrown" => Some(ConsoleMessage::Event(BaoEvent::RuntimeExceptionThrown {
-                timestamp: v.get("timestamp").and_then(|t| t.as_f64()).unwrap_or(0.0),
-                text: v.get("text")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                url: v.get("url")
-                    .and_then(|u| u.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                line: v.get("line").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
-                column: v.get("column").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
-                stack_trace: v.get("stackTrace").cloned().unwrap_or(Value::Null),
-            })),
+            "Runtime.exceptionThrown" => {
+                Some(ConsoleMessage::Event(BaoEvent::RuntimeExceptionThrown {
+                    timestamp: v.get("timestamp").and_then(|t| t.as_f64()).unwrap_or(0.0),
+                    text: v
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    url: v
+                        .get("url")
+                        .and_then(|u| u.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    line: v.get("line").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
+                    column: v.get("column").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
+                    stack_trace: v.get("stackTrace").cloned().unwrap_or(Value::Null),
+                }))
+            }
             "Page.loadEventFired" => Some(ConsoleMessage::Event(BaoEvent::PageLoadEventFired {
                 timestamp: v.get("timestamp").and_then(|t| t.as_f64()).unwrap_or(0.0),
             })),
@@ -226,11 +247,13 @@ impl BaoEvent {
                 url: v["url"].as_str().unwrap_or_default().to_string(),
                 loader_id: v["loaderId"].as_str().unwrap_or_default().to_string(),
             })),
-            "Security.certificateError" => Some(ConsoleMessage::Event(BaoEvent::SecurityCertificateError {
-                event_id: v["eventId"].as_i64().unwrap_or(0) as i32,
-                error_type: v["errorType"].as_str().unwrap_or_default().to_string(),
-                url: v["url"].as_str().unwrap_or_default().to_string(),
-            })),
+            "Security.certificateError" => {
+                Some(ConsoleMessage::Event(BaoEvent::SecurityCertificateError {
+                    event_id: v["eventId"].as_i64().unwrap_or(0) as i32,
+                    error_type: v["errorType"].as_str().unwrap_or_default().to_string(),
+                    url: v["url"].as_str().unwrap_or_default().to_string(),
+                }))
+            }
             _ => None,
         }
     }
@@ -392,7 +415,11 @@ impl BaoEvent {
                     }),
                 );
             }
-            BaoEvent::PageFrameNavigated { frame_id, url, loader_id } => {
+            BaoEvent::PageFrameNavigated {
+                frame_id,
+                url,
+                loader_id,
+            } => {
                 sender.send_event(
                     "Page.frameNavigated",
                     serde_json::json!({
@@ -407,7 +434,11 @@ impl BaoEvent {
                     }),
                 );
             }
-            BaoEvent::SecurityCertificateError { event_id, error_type, url } => {
+            BaoEvent::SecurityCertificateError {
+                event_id,
+                error_type,
+                url,
+            } => {
                 sender.send_event(
                     "Security.certificateError",
                     serde_json::json!({
@@ -936,7 +967,11 @@ mod tests {
         let input = "__BAO_EVT__Page.frameNavigated\n{\"frameId\":\"0\",\"url\":\"https://example.com\",\"loaderId\":\"abc\"}";
         let msg = BaoEvent::from_console_text(input).expect("should parse");
         match msg {
-            ConsoleMessage::Event(BaoEvent::PageFrameNavigated { frame_id, url, loader_id }) => {
+            ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
+                frame_id,
+                url,
+                loader_id,
+            }) => {
                 assert_eq!(frame_id, "0");
                 assert_eq!(url, "https://example.com");
                 assert_eq!(loader_id, "abc");
@@ -950,7 +985,11 @@ mod tests {
         let input = "__BAO_EVT__Page.frameNavigated\n{}";
         let msg = BaoEvent::from_console_text(input).expect("should parse with defaults");
         match msg {
-            ConsoleMessage::Event(BaoEvent::PageFrameNavigated { frame_id, url, loader_id }) => {
+            ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
+                frame_id,
+                url,
+                loader_id,
+            }) => {
                 assert_eq!(frame_id, "0");
                 assert_eq!(url, "");
                 assert_eq!(loader_id, "");
@@ -987,7 +1026,11 @@ mod tests {
         let input = "__BAO_EVT__Security.certificateError\n{\"eventId\":1,\"errorType\":\"net::ERR_CERT_AUTHORITY_INVALID\",\"url\":\"https://bad.example.com\"}";
         let msg = BaoEvent::from_console_text(input).expect("should parse");
         match msg {
-            ConsoleMessage::Event(BaoEvent::SecurityCertificateError { event_id, error_type, url }) => {
+            ConsoleMessage::Event(BaoEvent::SecurityCertificateError {
+                event_id,
+                error_type,
+                url,
+            }) => {
                 assert_eq!(event_id, 1);
                 assert_eq!(error_type, "net::ERR_CERT_AUTHORITY_INVALID");
                 assert_eq!(url, "https://bad.example.com");
@@ -1001,7 +1044,11 @@ mod tests {
         let input = "__BAO_EVT__Security.certificateError\n{}";
         let msg = BaoEvent::from_console_text(input).expect("should parse with defaults");
         match msg {
-            ConsoleMessage::Event(BaoEvent::SecurityCertificateError { event_id, error_type, url }) => {
+            ConsoleMessage::Event(BaoEvent::SecurityCertificateError {
+                event_id,
+                error_type,
+                url,
+            }) => {
                 assert_eq!(event_id, 0);
                 assert_eq!(error_type, "");
                 assert_eq!(url, "");

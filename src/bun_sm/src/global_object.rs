@@ -87,9 +87,8 @@ impl JSGlobalObject {
     #[allow(unsafe_op_in_unsafe_fn)]
     pub unsafe fn create(cx: *mut RawJSContext) -> ::std::result::Result<Self, JsError> {
         let options = mozjs::rust::RealmOptions::default();
-        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
-            ::std::ptr::NonNull::new_unchecked(cx)
-        );
+        let cx_ref =
+            &mut mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let global = unsafe {
             mozjs::rust::wrappers2::JS_NewGlobalObject(
                 cx_ref,
@@ -120,7 +119,12 @@ impl JSGlobalObject {
     /// Define an indexed property on the global.
     /// BCE-20260619-012: global must be rooted before passing to JS API.
     #[allow(unsafe_op_in_unsafe_fn)]
-    pub unsafe fn put_indexed_property(&self, cx: *mut RawJSContext, index: u32, value: JSValue) -> bool {
+    pub unsafe fn put_indexed_property(
+        &self,
+        cx: *mut RawJSContext,
+        index: u32,
+        value: JSValue,
+    ) -> bool {
         let global = self.global_object();
         if global.is_null() {
             return false;
@@ -154,7 +158,10 @@ impl JSGlobalObject {
             cx,
             global_root.handle().into(),
             index,
-            MutableHandle::<Value> { _phantom_0: PhantomData, ptr: &mut val },
+            MutableHandle::<Value> {
+                _phantom_0: PhantomData,
+                ptr: &mut val,
+            },
         );
         JSValue::from_raw(cx, val)
     }
@@ -197,7 +204,10 @@ impl JSGlobalObject {
             cx,
             global_root.handle().into(),
             c_name.as_ptr(),
-            MutableHandle::<Value> { _phantom_0: PhantomData, ptr: &mut val },
+            MutableHandle::<Value> {
+                _phantom_0: PhantomData,
+                ptr: &mut val,
+            },
         );
         JSValue::from_raw(cx, val)
     }
@@ -214,12 +224,7 @@ impl JSGlobalObject {
         rooted!(&in(cx_ref) let global_root = global);
         let c_name = CString::new(name).unwrap_or_default();
         let mut found = false;
-        JS_HasProperty(
-            cx,
-            global_root.handle().into(),
-            c_name.as_ptr(),
-            &mut found,
-        );
+        JS_HasProperty(cx, global_root.handle().into(), c_name.as_ptr(), &mut found);
         found
     }
 
@@ -234,11 +239,7 @@ impl JSGlobalObject {
         let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         rooted!(&in(cx_ref) let global_root = global);
         let c_name = CString::new(name).unwrap_or_default();
-        JS_DeleteProperty1(
-            cx,
-            global_root.handle().into(),
-            c_name.as_ptr(),
-        )
+        JS_DeleteProperty1(cx, global_root.handle().into(), c_name.as_ptr())
     }
 
     /// Get the string representation of the global object.

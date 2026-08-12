@@ -18,92 +18,305 @@ use serde_json::Value;
 /// Each command carries a `target_id` identifying which page/target to route to.
 #[derive(Debug, Clone)]
 pub enum BridgeCommand {
-    Navigate { target_id: String, url: String },
-    EvaluateJs { target_id: String, expression: String, return_by_value: bool },
-    TakeScreenshot { target_id: String, format: String, quality: Option<u8> },
-    GetTitle { target_id: String },
-    GetUrl { target_id: String },
-    GetDocument { target_id: String },
-    QuerySelector { target_id: String, selector: String },
-    QuerySelectorAll { target_id: String, selector: String },
-    GetOuterHtml { target_id: String, node_id: Option<i64> },
-    SetAttributeValue { target_id: String, node_id: i64, name: String, value: String },
-    DispatchMouseEvent { target_id: String, event_type: String, x: f64, y: f64, button: Option<i64>, click_count: Option<i64> },
-    DispatchKeyEvent { target_id: String, event_type: String, key: String, code: String, text: Option<String> },
-    InsertText { target_id: String, text: String },
-    SetViewport { target_id: String, width: u32, height: u32, device_scale_factor: Option<f64> },
-    SetUserAgent { target_id: String, user_agent: String },
-    GetCookies { target_id: String, urls: Vec<String> },
-    GetAllCookies { target_id: String },
-    DeleteCookie { target_id: String, name: String, url: Option<String> },
-    SetCookie { target_id: String, name: String, value: String, url: Option<String>, domain: Option<String> },
-    GetResponseBody { target_id: String, request_id: String },
-    AddScriptToEvaluateOnNewDocument { target_id: String, source: String },
-    Reload { target_id: String, ignore_cache: bool },
-    GoBack { target_id: String },
-    GoForward { target_id: String },
-    StopLoading { target_id: String },
-    ClosePage { target_id: String },
+    Navigate {
+        target_id: String,
+        url: String,
+    },
+    EvaluateJs {
+        target_id: String,
+        expression: String,
+        return_by_value: bool,
+    },
+    TakeScreenshot {
+        target_id: String,
+        format: String,
+        quality: Option<u8>,
+    },
+    GetTitle {
+        target_id: String,
+    },
+    GetUrl {
+        target_id: String,
+    },
+    GetDocument {
+        target_id: String,
+    },
+    QuerySelector {
+        target_id: String,
+        selector: String,
+    },
+    QuerySelectorAll {
+        target_id: String,
+        selector: String,
+    },
+    GetOuterHtml {
+        target_id: String,
+        node_id: Option<i64>,
+    },
+    SetAttributeValue {
+        target_id: String,
+        node_id: i64,
+        name: String,
+        value: String,
+    },
+    DispatchMouseEvent {
+        target_id: String,
+        event_type: String,
+        x: f64,
+        y: f64,
+        button: Option<i64>,
+        click_count: Option<i64>,
+    },
+    DispatchKeyEvent {
+        target_id: String,
+        event_type: String,
+        key: String,
+        code: String,
+        text: Option<String>,
+    },
+    InsertText {
+        target_id: String,
+        text: String,
+    },
+    SetViewport {
+        target_id: String,
+        width: u32,
+        height: u32,
+        device_scale_factor: Option<f64>,
+    },
+    SetUserAgent {
+        target_id: String,
+        user_agent: String,
+    },
+    GetCookies {
+        target_id: String,
+        urls: Vec<String>,
+    },
+    GetAllCookies {
+        target_id: String,
+    },
+    DeleteCookie {
+        target_id: String,
+        name: String,
+        url: Option<String>,
+    },
+    SetCookie {
+        target_id: String,
+        name: String,
+        value: String,
+        url: Option<String>,
+        domain: Option<String>,
+    },
+    GetResponseBody {
+        target_id: String,
+        request_id: String,
+    },
+    AddScriptToEvaluateOnNewDocument {
+        target_id: String,
+        source: String,
+    },
+    Reload {
+        target_id: String,
+        ignore_cache: bool,
+    },
+    GoBack {
+        target_id: String,
+    },
+    GoForward {
+        target_id: String,
+    },
+    StopLoading {
+        target_id: String,
+    },
+    ClosePage {
+        target_id: String,
+    },
     // Multi-target management commands
-    CreateTarget { url: String },
+    CreateTarget {
+        url: String,
+    },
     ListTargets,
     // Debugger domain — mapped to servo DevtoolScriptControlMsg (BUG-CDP-006)
-    DebuggerEnable { target_id: String },
-    DebuggerDisable { target_id: String },
-    DebuggerSetBreakpoint { target_id: String, url: Option<String>, url_regex: Option<String>, line: u32, column: Option<u32> },
-    DebuggerRemoveBreakpoint { target_id: String, breakpoint_id: String },
-    DebuggerInterrupt { target_id: String },
-    DebuggerResume { target_id: String, step_type: Option<String> },
-    DebuggerListFrames { target_id: String },
-    DebuggerGetEnvironment { target_id: String, frame_actor_id: String },
-    DebuggerEval { target_id: String, expression: String, frame_actor_id: Option<String> },
-    DebuggerGetPossibleBreakpoints { target_id: String, start_script_id: String },
-    DebuggerGetScriptSource { target_id: String, script_id: u32 },
-    DebuggerBlackbox { target_id: String, script_id: u32 },
-    DebuggerUnblackbox { target_id: String, script_id: u32 },
+    DebuggerEnable {
+        target_id: String,
+    },
+    DebuggerDisable {
+        target_id: String,
+    },
+    DebuggerSetBreakpoint {
+        target_id: String,
+        url: Option<String>,
+        url_regex: Option<String>,
+        line: u32,
+        column: Option<u32>,
+    },
+    DebuggerRemoveBreakpoint {
+        target_id: String,
+        breakpoint_id: String,
+    },
+    DebuggerInterrupt {
+        target_id: String,
+    },
+    DebuggerResume {
+        target_id: String,
+        step_type: Option<String>,
+    },
+    DebuggerListFrames {
+        target_id: String,
+    },
+    DebuggerGetEnvironment {
+        target_id: String,
+        frame_actor_id: String,
+    },
+    DebuggerEval {
+        target_id: String,
+        expression: String,
+        frame_actor_id: Option<String>,
+    },
+    DebuggerGetPossibleBreakpoints {
+        target_id: String,
+        start_script_id: String,
+    },
+    DebuggerGetScriptSource {
+        target_id: String,
+        script_id: u32,
+    },
+    DebuggerBlackbox {
+        target_id: String,
+        script_id: u32,
+    },
+    DebuggerUnblackbox {
+        target_id: String,
+        script_id: u32,
+    },
     // Network domain — cache control + browser cache/cookies clearing
-    NetworkEnable { target_id: String },
-    NetworkDisable { target_id: String },
-    NetworkSetCacheDisabled { target_id: String, cache_disabled: bool },
-    NetworkSetExtraHTTPHeaders { target_id: String, headers: Value },
-    NetworkClearBrowserCache { target_id: String },
-    NetworkClearBrowserCookies { target_id: String },
+    NetworkEnable {
+        target_id: String,
+    },
+    NetworkDisable {
+        target_id: String,
+    },
+    NetworkSetCacheDisabled {
+        target_id: String,
+        cache_disabled: bool,
+    },
+    NetworkSetExtraHTTPHeaders {
+        target_id: String,
+        headers: Value,
+    },
+    NetworkClearBrowserCache {
+        target_id: String,
+    },
+    NetworkClearBrowserCookies {
+        target_id: String,
+    },
     // Storage domain — origin-scoped storage queries and clearing
-    StorageGetStorageItemsForOrigin { target_id: String, origin: String, storage_type: String },
-    StorageClearDataForOrigin { target_id: String, origin: String, storage_type: String },
+    StorageGetStorageItemsForOrigin {
+        target_id: String,
+        origin: String,
+        storage_type: String,
+    },
+    StorageClearDataForOrigin {
+        target_id: String,
+        origin: String,
+        storage_type: String,
+    },
     // Security domain — certificate error handling
-    SecurityEnable { target_id: String },
-    SecurityDisable { target_id: String },
-    SecuritySetOverrideCertificateErrors { target_id: String, override_errors: bool },
+    SecurityEnable {
+        target_id: String,
+    },
+    SecurityDisable {
+        target_id: String,
+    },
+    SecuritySetOverrideCertificateErrors {
+        target_id: String,
+        override_errors: bool,
+    },
     // Profiler domain — JS CPU profiling (stub, awaits SM profiler API bridge)
-    ProfilerStart { target_id: String },
-    ProfilerStop { target_id: String },
-    ProfilerSetSamplingInterval { target_id: String, interval: u32 },
+    ProfilerStart {
+        target_id: String,
+    },
+    ProfilerStop {
+        target_id: String,
+    },
+    ProfilerSetSamplingInterval {
+        target_id: String,
+        interval: u32,
+    },
     // HeapProfiler domain — heap snapshots (stub, awaits SM heap profiler bridge)
-    HeapProfilerTakeSnapshot { target_id: String },
-    HeapProfilerStartTracking { target_id: String },
-    HeapProfilerStopTracking { target_id: String },
-    HeapProfilerCollectGarbage { target_id: String },
+    HeapProfilerTakeSnapshot {
+        target_id: String,
+    },
+    HeapProfilerStartTracking {
+        target_id: String,
+    },
+    HeapProfilerStopTracking {
+        target_id: String,
+    },
+    HeapProfilerCollectGarbage {
+        target_id: String,
+    },
     // Memory domain — memory metrics
-    MemoryGetDOMCounters { target_id: String },
-    MemoryPurgeJS { target_id: String },
+    MemoryGetDOMCounters {
+        target_id: String,
+    },
+    MemoryPurgeJS {
+        target_id: String,
+    },
     // Performance domain — performance metrics
-    PerformanceGetMetrics { target_id: String },
+    PerformanceGetMetrics {
+        target_id: String,
+    },
     // CSS domain — computed/matched/inline style retrieval via JS evaluate
-    CssGetComputedStyleForNode { target_id: String, node_id: i64 },
-    CssGetMatchedStylesForNode { target_id: String, node_id: i64 },
-    CssGetInlineStylesForNode { target_id: String, node_id: i64 },
+    CssGetComputedStyleForNode {
+        target_id: String,
+        node_id: i64,
+    },
+    CssGetMatchedStylesForNode {
+        target_id: String,
+        node_id: i64,
+    },
+    CssGetInlineStylesForNode {
+        target_id: String,
+        node_id: i64,
+    },
     // Runtime domain — object property inspection and function invocation via JS evaluate
-    RuntimeGetProperties { target_id: String, object_id: String, own_properties: Option<bool> },
-    RuntimeCallFunctionOn { target_id: String, object_id: Option<String>, function_declaration: String, arguments: Option<Value>, return_by_value: Option<bool> },
+    RuntimeGetProperties {
+        target_id: String,
+        object_id: String,
+        own_properties: Option<bool>,
+    },
+    RuntimeCallFunctionOn {
+        target_id: String,
+        object_id: Option<String>,
+        function_declaration: String,
+        arguments: Option<Value>,
+        return_by_value: Option<bool>,
+    },
     // Worker target observability — CDP Target domain exposes Worker as sub-targets  @trace REQ-BRW-004 [criterion:19]
-    ListWorkerTargets { target_id: String },
-    GetWorkerTargetInfo { target_id: String, worker_id: String },
+    ListWorkerTargets {
+        target_id: String,
+    },
+    GetWorkerTargetInfo {
+        target_id: String,
+        worker_id: String,
+    },
     // ServiceWorker CDP observability — Network domain can observe SW-initiated requests  @trace REQ-BRW-004 [criterion:19]
-    ListServiceWorkerRegistrations { target_id: String },
-    GetServiceWorkerRegistrationInfo { target_id: String, registration_id: String },
-    TerminateServiceWorker { target_id: String, registration_id: String },
-    StopServiceWorker { target_id: String, registration_id: String },
+    ListServiceWorkerRegistrations {
+        target_id: String,
+    },
+    GetServiceWorkerRegistrationInfo {
+        target_id: String,
+        registration_id: String,
+    },
+    TerminateServiceWorker {
+        target_id: String,
+        registration_id: String,
+    },
+    StopServiceWorker {
+        target_id: String,
+        registration_id: String,
+    },
 }
 
 /// Response from the main thread back to the CDP server.
@@ -132,20 +345,21 @@ pub struct BridgeReceiver {
 /// Create a new bridge channel pair.
 pub fn bridge_channel(timeout: Duration) -> (BridgeSender, BridgeReceiver) {
     let (tx, rx) = mpsc::channel();
-    (
-        BridgeSender { tx, timeout },
-        BridgeReceiver { rx },
-    )
+    (BridgeSender { tx, timeout }, BridgeReceiver { rx })
 }
 
 impl BridgeSender {
     /// Send a command to the main thread and wait for the response.
     pub fn send(&self, command: BridgeCommand) -> BridgeResponse {
         let (resp_tx, resp_rx) = mpsc::channel();
-        if self.tx.send(BridgeRequest {
-            command,
-            responder: resp_tx,
-        }).is_err() {
+        if self
+            .tx
+            .send(BridgeRequest {
+                command,
+                responder: resp_tx,
+            })
+            .is_err()
+        {
             return BridgeResponse {
                 result: Err("bridge channel closed".into()),
             };
@@ -169,10 +383,13 @@ impl BridgeSender {
 
     /// Check if the channel is still open.
     pub fn is_alive(&self) -> bool {
-        !self.tx.send(BridgeRequest {
-            command: BridgeCommand::ListTargets,
-            responder: mpsc::channel().0,
-        }).is_err()
+        !self
+            .tx
+            .send(BridgeRequest {
+                command: BridgeCommand::ListTargets,
+                responder: mpsc::channel().0,
+            })
+            .is_err()
     }
 }
 
@@ -244,7 +461,9 @@ mod tests {
     }
 
     fn err_response(msg: &str) -> BridgeResponse {
-        BridgeResponse { result: Err(msg.into()) }
+        BridgeResponse {
+            result: Err(msg.into()),
+        }
     }
 
     fn noop_handler(_: BridgeCommand) -> BridgeResponse {
@@ -257,21 +476,28 @@ mod tests {
     #[test]
     fn bridge_channel_creates_sender_and_receiver() {
         let (sender, _receiver) = bridge_channel(TIMEOUT);
-        assert!(sender.is_alive(), "sender should report alive when receiver exists");
+        assert!(
+            sender.is_alive(),
+            "sender should report alive when receiver exists"
+        );
     }
 
     // 2. BridgeSender::send with responding receiver → gets BridgeResponse with Ok
     #[test]
     fn send_with_responding_receiver_returns_ok() {
         let (sender, receiver) = bridge_channel(TIMEOUT);
-        sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+        sender.send_fire_and_forget(BridgeCommand::GetTitle {
+            target_id: TID.into(),
+        });
         let mut captured_response: Option<BridgeResponse> = None;
         let processed = receiver.try_process(|cmd| {
             let resp = match cmd {
                 BridgeCommand::GetTitle { .. } => ok_response(Value::String("Test Page".into())),
                 _ => err_response("unexpected"),
             };
-            captured_response = Some(BridgeResponse { result: resp.result.clone() });
+            captured_response = Some(BridgeResponse {
+                result: resp.result.clone(),
+            });
             resp
         });
         assert!(processed);
@@ -285,7 +511,9 @@ mod tests {
     fn send_when_receiver_dropped_returns_channel_closed() {
         let (sender, receiver) = bridge_channel(TIMEOUT);
         drop(receiver);
-        let resp = sender.send(BridgeCommand::GetTitle { target_id: TID.into() });
+        let resp = sender.send(BridgeCommand::GetTitle {
+            target_id: TID.into(),
+        });
         assert!(resp.result.is_err());
         assert_eq!(resp.result.unwrap_err(), "bridge channel closed");
     }
@@ -294,7 +522,9 @@ mod tests {
     #[test]
     fn send_fire_and_forget_does_not_panic() {
         let (sender, receiver) = bridge_channel(TIMEOUT);
-        sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+        sender.send_fire_and_forget(BridgeCommand::GetTitle {
+            target_id: TID.into(),
+        });
         let processed = receiver.try_process(noop_handler);
         assert!(processed, "fire-and-forget command should be receivable");
     }
@@ -311,16 +541,23 @@ mod tests {
     fn clone_preserves_connection() {
         let (sender, receiver) = bridge_channel(TIMEOUT);
         let cloned = sender.clone();
-        cloned.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+        cloned.send_fire_and_forget(BridgeCommand::GetTitle {
+            target_id: TID.into(),
+        });
         let processed = receiver.try_process(noop_handler);
-        assert!(processed, "cloned sender should deliver command to same receiver");
+        assert!(
+            processed,
+            "cloned sender should deliver command to same receiver"
+        );
     }
 
     // 7. BridgeReceiver::try_process processes one command
     #[test]
     fn try_process_processes_one_command() {
         let (sender, receiver) = bridge_channel(TIMEOUT);
-        sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+        sender.send_fire_and_forget(BridgeCommand::GetTitle {
+            target_id: TID.into(),
+        });
         let processed = receiver.try_process(|_| ok_response(Value::Bool(true)));
         assert!(processed);
         let again = receiver.try_process(noop_handler);
@@ -332,7 +569,9 @@ mod tests {
     fn drain_processes_multiple_commands() {
         let (sender, receiver) = bridge_channel(TIMEOUT);
         for _ in 0..5 {
-            sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+            sender.send_fire_and_forget(BridgeCommand::GetTitle {
+                target_id: TID.into(),
+            });
         }
         let count = receiver.drain(noop_handler);
         assert_eq!(count, 5);
@@ -352,7 +591,9 @@ mod tests {
         let (sender, receiver) = bridge_channel(TIMEOUT);
         let sender_thread = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(10));
-            sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+            sender.send_fire_and_forget(BridgeCommand::GetTitle {
+                target_id: TID.into(),
+            });
         });
         let processed = receiver.recv_and_process(TIMEOUT, |_| ok_response(Value::Bool(true)));
         assert!(processed, "recv_and_process should receive the command");
@@ -364,7 +605,10 @@ mod tests {
     fn recv_and_process_returns_false_on_timeout() {
         let (_sender, receiver) = bridge_channel(Duration::from_millis(50));
         let processed = receiver.recv_and_process(Duration::from_millis(50), noop_handler);
-        assert!(!processed, "recv_and_process should return false on timeout");
+        assert!(
+            !processed,
+            "recv_and_process should return false on timeout"
+        );
     }
 
     // 12. BridgeResponse result Ok with Value
@@ -386,25 +630,48 @@ mod tests {
     // 12. BridgeCommand::Navigate debug format contains 'Navigate'
     #[test]
     fn navigate_debug_format_contains_navigate() {
-        let cmd = BridgeCommand::Navigate { target_id: TID.into(), url: "https://example.com".into() };
+        let cmd = BridgeCommand::Navigate {
+            target_id: TID.into(),
+            url: "https://example.com".into(),
+        };
         let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("Navigate"), "debug output should contain 'Navigate': {}", debug_str);
+        assert!(
+            debug_str.contains("Navigate"),
+            "debug output should contain 'Navigate': {}",
+            debug_str
+        );
     }
 
     // 13. BridgeCommand::EvaluateJs debug format
     #[test]
     fn evaluate_js_debug_format() {
-        let cmd = BridgeCommand::EvaluateJs { target_id: TID.into(), expression: "1+1".into(), return_by_value: true };
+        let cmd = BridgeCommand::EvaluateJs {
+            target_id: TID.into(),
+            expression: "1+1".into(),
+            return_by_value: true,
+        };
         let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("EvaluateJs"), "debug output should contain 'EvaluateJs': {}", debug_str);
+        assert!(
+            debug_str.contains("EvaluateJs"),
+            "debug output should contain 'EvaluateJs': {}",
+            debug_str
+        );
     }
 
     // 14. BridgeCommand::TakeScreenshot debug format
     #[test]
     fn take_screenshot_debug_format() {
-        let cmd = BridgeCommand::TakeScreenshot { target_id: TID.into(), format: "png".into(), quality: Some(80) };
+        let cmd = BridgeCommand::TakeScreenshot {
+            target_id: TID.into(),
+            format: "png".into(),
+            quality: Some(80),
+        };
         let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("TakeScreenshot"), "debug output should contain 'TakeScreenshot': {}", debug_str);
+        assert!(
+            debug_str.contains("TakeScreenshot"),
+            "debug output should contain 'TakeScreenshot': {}",
+            debug_str
+        );
     }
 
     // 15. BridgeCommand variants construction
@@ -463,49 +730,66 @@ mod tests {
 
     #[test]
     fn get_response_body_construction() {
-        let cmd = BridgeCommand::GetResponseBody { target_id: TID.into(), request_id: "req-001".into() };
+        let cmd = BridgeCommand::GetResponseBody {
+            target_id: TID.into(),
+            request_id: "req-001".into(),
+        };
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("GetResponseBody"));
     }
 
     #[test]
     fn add_script_to_evaluate_on_new_document_construction() {
-        let cmd = BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id: TID.into(), source: "console.log('hi')".into() };
+        let cmd = BridgeCommand::AddScriptToEvaluateOnNewDocument {
+            target_id: TID.into(),
+            source: "console.log('hi')".into(),
+        };
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("AddScriptToEvaluateOnNewDocument"));
     }
 
     #[test]
     fn reload_construction() {
-        let cmd = BridgeCommand::Reload { target_id: TID.into(), ignore_cache: true };
+        let cmd = BridgeCommand::Reload {
+            target_id: TID.into(),
+            ignore_cache: true,
+        };
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("Reload"));
     }
 
     #[test]
     fn go_back_construction() {
-        let cmd = BridgeCommand::GoBack { target_id: TID.into() };
+        let cmd = BridgeCommand::GoBack {
+            target_id: TID.into(),
+        };
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("GoBack"));
     }
 
     #[test]
     fn go_forward_construction() {
-        let cmd = BridgeCommand::GoForward { target_id: TID.into() };
+        let cmd = BridgeCommand::GoForward {
+            target_id: TID.into(),
+        };
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("GoForward"));
     }
 
     #[test]
     fn stop_loading_construction() {
-        let cmd = BridgeCommand::StopLoading { target_id: TID.into() };
+        let cmd = BridgeCommand::StopLoading {
+            target_id: TID.into(),
+        };
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("StopLoading"));
     }
 
     #[test]
     fn close_page_construction() {
-        let cmd = BridgeCommand::ClosePage { target_id: TID.into() };
+        let cmd = BridgeCommand::ClosePage {
+            target_id: TID.into(),
+        };
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("ClosePage"));
     }
@@ -514,8 +798,12 @@ mod tests {
     #[test]
     fn send_timeout_returns_err() {
         let (sender, receiver) = bridge_channel(Duration::from_millis(10));
-        sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
-        let resp = sender.send(BridgeCommand::GetUrl { target_id: TID.into() });
+        sender.send_fire_and_forget(BridgeCommand::GetTitle {
+            target_id: TID.into(),
+        });
+        let resp = sender.send(BridgeCommand::GetUrl {
+            target_id: TID.into(),
+        });
         assert!(resp.result.is_err());
         assert_eq!(resp.result.unwrap_err(), "bridge response timeout");
         receiver.drain(noop_handler);
@@ -526,9 +814,18 @@ mod tests {
     fn multiple_sequential_send_process() {
         let (sender, receiver) = bridge_channel(TIMEOUT);
         let commands: Vec<BridgeCommand> = vec![
-            BridgeCommand::Navigate { target_id: TID.into(), url: "https://a.com".into() },
-            BridgeCommand::EvaluateJs { target_id: TID.into(), expression: "1+1".into(), return_by_value: true },
-            BridgeCommand::GetTitle { target_id: TID.into() },
+            BridgeCommand::Navigate {
+                target_id: TID.into(),
+                url: "https://a.com".into(),
+            },
+            BridgeCommand::EvaluateJs {
+                target_id: TID.into(),
+                expression: "1+1".into(),
+                return_by_value: true,
+            },
+            BridgeCommand::GetTitle {
+                target_id: TID.into(),
+            },
         ];
 
         for cmd in commands {
@@ -563,7 +860,9 @@ mod tests {
 
     #[test]
     fn list_worker_targets_construction() {
-        let cmd = BridgeCommand::ListWorkerTargets { target_id: TID.into() };
+        let cmd = BridgeCommand::ListWorkerTargets {
+            target_id: TID.into(),
+        };
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("ListWorkerTargets"));
     }
@@ -581,7 +880,9 @@ mod tests {
 
     #[test]
     fn list_service_worker_registrations_construction() {
-        let cmd = BridgeCommand::ListServiceWorkerRegistrations { target_id: TID.into() };
+        let cmd = BridgeCommand::ListServiceWorkerRegistrations {
+            target_id: TID.into(),
+        };
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("ListServiceWorkerRegistrations"));
     }
@@ -620,7 +921,9 @@ mod tests {
     #[test]
     fn list_worker_targets_bridge_send_receive() {
         let (sender, receiver) = bridge_channel(TIMEOUT);
-        sender.send_fire_and_forget(BridgeCommand::ListWorkerTargets { target_id: TID.into() });
+        sender.send_fire_and_forget(BridgeCommand::ListWorkerTargets {
+            target_id: TID.into(),
+        });
         let processed = receiver.try_process(|cmd| {
             match cmd {
                 BridgeCommand::ListWorkerTargets { .. } => ok_response(serde_json::json!({
@@ -653,14 +956,18 @@ mod tests {
                             }]
                         })),
                     },
-                    _ => BridgeResponse { result: Ok(serde_json::json!({})) },
+                    _ => BridgeResponse {
+                        result: Ok(serde_json::json!({})),
+                    },
                 });
                 if !handled {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             }
         });
-        let resp = sender.send(BridgeCommand::ListServiceWorkerRegistrations { target_id: TID.into() });
+        let resp = sender.send(BridgeCommand::ListServiceWorkerRegistrations {
+            target_id: TID.into(),
+        });
         assert!(resp.result.is_ok());
         let result = resp.result.unwrap();
         let regs = result["registrations"].as_array().unwrap();

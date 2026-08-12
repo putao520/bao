@@ -119,12 +119,7 @@ pub extern "C" fn Bun__registerSignalsForForwarding() {
             sa.sa_sigaction = bun_forward_signal_handler as *const () as usize;
             libc::sigemptyset(&mut sa.sa_mask);
             sa.sa_flags = libc::SA_RESTART;
-            for sig in [
-                libc::SIGINT,
-                libc::SIGTERM,
-                libc::SIGHUP,
-                libc::SIGQUIT,
-            ] {
+            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
                 libc::sigaction(sig, &sa, core::ptr::null_mut());
             }
         }
@@ -142,12 +137,7 @@ pub extern "C" fn Bun__unregisterSignalsForForwarding() {
             sa.sa_sigaction = libc::SIG_DFL;
             libc::sigemptyset(&mut sa.sa_mask);
             sa.sa_flags = 0;
-            for sig in [
-                libc::SIGINT,
-                libc::SIGTERM,
-                libc::SIGHUP,
-                libc::SIGQUIT,
-            ] {
+            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
                 libc::sigaction(sig, &sa, core::ptr::null_mut());
             }
         }
@@ -270,11 +260,7 @@ pub extern "C" fn WTF__parseES5Date(bytes: *const u8, length: usize) -> f64 {
 /// Real pure-Rust partial double parse (owner: `bun_core::fmt::parse_double_raw`).
 /// @trace STUB-INVENTORY: WTF__parseDouble RealImpl
 #[unsafe(no_mangle)]
-pub extern "C" fn WTF__parseDouble(
-    bytes: *const u8,
-    length: usize,
-    counted: *mut usize,
-) -> f64 {
+pub extern "C" fn WTF__parseDouble(bytes: *const u8, length: usize, counted: *mut usize) -> f64 {
     if bytes.is_null() || length == 0 {
         if !counted.is_null() {
             unsafe {

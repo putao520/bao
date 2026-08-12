@@ -32,8 +32,11 @@ fn detects_handle_jsobject_ptr_non_null_inline_ref() {
     "#;
     let findings = scan(src);
     assert!(
-        findings.iter().any(|m| m.contains("BCE-012") && m.contains("*mut JSObject")),
-        "expected BCE-012 finding for Handle<*mut JSObject>, got: {:?}", findings
+        findings
+            .iter()
+            .any(|m| m.contains("BCE-012") && m.contains("*mut JSObject")),
+        "expected BCE-012 finding for Handle<*mut JSObject>, got: {:?}",
+        findings
     );
 }
 
@@ -47,8 +50,11 @@ fn detects_handle_jsstring_ptr_non_null_ref() {
     "#;
     let findings = scan(src);
     assert!(
-        findings.iter().any(|m| m.contains("BCE-012") && m.contains("*mut JSString")),
-        "expected BCE-012 finding for Handle<*mut JSString>, got: {:?}", findings
+        findings
+            .iter()
+            .any(|m| m.contains("BCE-012") && m.contains("*mut JSString")),
+        "expected BCE-012 finding for Handle<*mut JSString>, got: {:?}",
+        findings
     );
 }
 
@@ -65,8 +71,11 @@ fn detects_handle_value_inline_object_value() {
     "#;
     let findings = scan(src);
     assert!(
-        findings.iter().any(|m| m.contains("BCE-012") && m.contains("ObjectValue")),
-        "expected BCE-012 finding for inline ObjectValue, got: {:?}", findings
+        findings
+            .iter()
+            .any(|m| m.contains("BCE-012") && m.contains("ObjectValue")),
+        "expected BCE-012 finding for inline ObjectValue, got: {:?}",
+        findings
     );
 }
 
@@ -81,8 +90,11 @@ fn detects_handle_value_backtrack_to_string_value() {
     "#;
     let findings = scan(src);
     assert!(
-        findings.iter().any(|m| m.contains("BCE-012") && m.contains("StringValue") && m.contains("val")),
-        "expected BCE-012 finding for backtrack to StringValue, got: {:?}", findings
+        findings
+            .iter()
+            .any(|m| m.contains("BCE-012") && m.contains("StringValue") && m.contains("val")),
+        "expected BCE-012 finding for backtrack to StringValue, got: {:?}",
+        findings
     );
 }
 
@@ -97,8 +109,11 @@ fn detects_handle_jsval_backtrack_to_object_value() {
     "#;
     let findings = scan(src);
     assert!(
-        findings.iter().any(|m| m.contains("BCE-012") && m.contains("ObjectValue")),
-        "expected BCE-012 finding for JSVal + ObjectValue backtrack, got: {:?}", findings
+        findings
+            .iter()
+            .any(|m| m.contains("BCE-012") && m.contains("ObjectValue")),
+        "expected BCE-012 finding for JSVal + ObjectValue backtrack, got: {:?}",
+        findings
     );
 }
 
@@ -118,7 +133,8 @@ fn ignores_null_mut_handle_jsobject() {
     let findings = scan(src);
     assert!(
         findings.iter().all(|m| !m.contains("BCE-012")),
-        "expected no BCE-012 finding for null_mut, got: {:?}", findings
+        "expected no BCE-012 finding for null_mut, got: {:?}",
+        findings
     );
 }
 
@@ -134,7 +150,8 @@ fn ignores_handle_value_boolean_primitive() {
     let findings = scan(src);
     assert!(
         findings.iter().all(|m| !m.contains("BCE-012")),
-        "expected no BCE-012 finding for BooleanValue, got: {:?}", findings
+        "expected no BCE-012 finding for BooleanValue, got: {:?}",
+        findings
     );
 }
 
@@ -149,7 +166,8 @@ fn ignores_handle_value_int32_primitive() {
     let findings = scan(src);
     assert!(
         findings.iter().all(|m| !m.contains("BCE-012")),
-        "expected no BCE-012 finding for Int32Value, got: {:?}", findings
+        "expected no BCE-012 finding for Int32Value, got: {:?}",
+        findings
     );
 }
 
@@ -164,7 +182,8 @@ fn ignores_handle_value_undefined_primitive() {
     let findings = scan(src);
     assert!(
         findings.iter().all(|m| !m.contains("BCE-012")),
-        "expected no BCE-012 finding for UndefinedValue, got: {:?}", findings
+        "expected no BCE-012 finding for UndefinedValue, got: {:?}",
+        findings
     );
 }
 
@@ -180,7 +199,8 @@ fn ignores_mutable_handle_value() {
     let findings = scan(src);
     assert!(
         findings.iter().all(|m| !m.contains("BCE-012")),
-        "expected no BCE-012 finding for MutableHandle, got: {:?}", findings
+        "expected no BCE-012 finding for MutableHandle, got: {:?}",
+        findings
     );
 }
 
@@ -196,7 +216,8 @@ fn ignores_unknown_payload_kind() {
     let findings = scan(src);
     assert!(
         findings.iter().all(|m| !m.contains("BCE-012")),
-        "expected no BCE-012 finding for unknown payload, got: {:?}", findings
+        "expected no BCE-012 finding for unknown payload, got: {:?}",
+        findings
     );
 }
 
@@ -216,8 +237,11 @@ fn format_immunity_multiline_field_order() {
     "#;
     let findings = scan(src);
     assert!(
-        findings.iter().any(|m| m.contains("BCE-012") && m.contains("*mut JSObject")),
-        "expected BCE-012 finding regardless of field order, got: {:?}", findings
+        findings
+            .iter()
+            .any(|m| m.contains("BCE-012") && m.contains("*mut JSObject")),
+        "expected BCE-012 finding regardless of field order, got: {:?}",
+        findings
     );
 }
 
@@ -235,8 +259,11 @@ fn format_immunity_path_prefix() {
     "#;
     let findings = scan(src);
     assert!(
-        findings.iter().any(|m| m.contains("BCE-012") && m.contains("*mut JSObject")),
-        "expected BCE-012 finding for fully-qualified Handle path, got: {:?}", findings
+        findings
+            .iter()
+            .any(|m| m.contains("BCE-012") && m.contains("*mut JSObject")),
+        "expected BCE-012 finding for fully-qualified Handle path, got: {:?}",
+        findings
     );
 }
 
@@ -253,7 +280,10 @@ fn detects_handle_value_backtrack_in_nested_block() {
     "#;
     let findings = scan(src);
     assert!(
-        findings.iter().any(|m| m.contains("BCE-012") && m.contains("ObjectValue")),
-        "expected BCE-012 finding across nested block, got: {:?}", findings
+        findings
+            .iter()
+            .any(|m| m.contains("BCE-012") && m.contains("ObjectValue")),
+        "expected BCE-012 finding across nested block, got: {:?}",
+        findings
     );
 }

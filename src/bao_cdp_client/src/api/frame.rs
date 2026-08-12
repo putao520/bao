@@ -54,7 +54,11 @@ impl ExecutionContext {
     /// 构造带 name/origin。
     ///
     /// @trace REQ-BAO-API-006 [class:ExecutionContext]
-    pub fn with_name_origin(id: String, name: impl Into<String>, origin: impl Into<String>) -> Self {
+    pub fn with_name_origin(
+        id: String,
+        name: impl Into<String>,
+        origin: impl Into<String>,
+    ) -> Self {
         Self {
             id,
             name: name.into(),
@@ -280,11 +284,11 @@ impl EventEmitter for Frame {
 
 #[cfg(test)]
 mod tests {
+    use super::super::event_emitter::EventHandler;
     use super::*;
-    use crate::api::page::Page;
     use crate::api::browser::Browser as HighLevelBrowser;
     use crate::api::browser_context::BrowserContext;
-    use super::super::event_emitter::EventHandler;
+    use crate::api::page::Page;
     use std::rc::Rc;
 
     fn make_frame(is_main: bool, page: Weak<Page>) -> Rc<Frame> {
@@ -350,7 +354,10 @@ mod tests {
         parent.add_child(child.clone(), Rc::downgrade(&parent));
         assert!(parent.parent_frame().is_none());
         assert_eq!(parent.child_frames().len(), 1);
-        assert_eq!(child.parent_frame().map(|f| f.id().to_string()), Some("P".into()));
+        assert_eq!(
+            child.parent_frame().map(|f| f.id().to_string()),
+            Some("P".into())
+        );
         parent.remove_child("C");
         assert_eq!(parent.child_frames().len(), 0);
         // child 的 parent weak 引用未清除,upgrade 仍可成功(parent 仍存活)

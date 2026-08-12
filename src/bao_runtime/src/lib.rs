@@ -8,22 +8,27 @@
 // @trace REQ-IMPL-04: Phase 4 Stealth anti-fingerprinting (completed)
 // @trace REQ-IMPL-05: Phase 5 Integration testing and release (completed)
 
+pub mod bao_browser_global;
 pub mod bun_api;
 pub mod bun_builtins;
-pub mod bun_sqlite;
 pub mod bun_ffi;
+pub mod bun_sqlite;
 pub mod bun_test;
-pub mod bao_browser_global;
-pub mod workflow_host_global;
 pub mod dispatch;
 pub mod fetch_api;
+pub mod workflow_host_global;
 // @trace REQ-ENG-010 [entity:FetchTasklet] — async HTTP integration helper
 // (BCE-20260618-007). Shared by node_http/node_https/node_tls JS-native entries.
+pub mod bun_listen;
+pub mod bun_password;
+pub mod bun_shell;
+pub mod bun_udp;
 pub mod fetch_async;
-pub mod h3_fetch;
 pub mod gc_store;
 pub mod globals;
-pub mod web_api;
+pub mod h3_fetch;
+pub mod http_client;
+pub mod install;
 pub mod node_async_hooks;
 pub mod node_buffer;
 pub mod node_child_process;
@@ -54,7 +59,6 @@ pub mod node_punycode;
 pub mod node_querystring;
 pub mod node_readline;
 pub mod node_repl;
-pub mod permission_bridge;
 pub mod node_stream;
 pub mod node_stream_consumers;
 pub mod node_stream_web;
@@ -76,18 +80,14 @@ pub mod node_vm;
 pub mod node_wasi;
 pub mod node_worker_threads;
 pub mod node_zlib;
+pub mod permission_bridge;
 pub mod require;
-pub mod runtime;
-pub mod timers;
-pub mod http_client;
 pub mod resolver_bridge;
+pub mod runtime;
 pub mod s3_api;
 pub mod stealth_http;
-pub mod bun_listen;
-pub mod bun_udp;
-pub mod bun_shell;
-pub mod bun_password;
-pub mod install;
+pub mod timers;
+pub mod web_api;
 // @trace STUB-INVENTORY: product real ProcessExit owners (no link_noop) — residual=0 for PE
 pub mod product_process_exit;
 // @trace STUB-INVENTORY: product real BufferedReaderParentLink owners (no link_noop) — residual=0 for BR
@@ -168,7 +168,10 @@ pub fn shutdown_engine() {
 ///
 /// # Safety
 /// Caller must ensure `cx` is a valid JSContext pointer and `val` is rooted or otherwise protected from GC.
-pub unsafe fn js_to_rust_string(cx: *mut mozjs::jsapi::JSContext, val: mozjs::jsval::JSVal) -> String {
+pub unsafe fn js_to_rust_string(
+    cx: *mut mozjs::jsapi::JSContext,
+    val: mozjs::jsval::JSVal,
+) -> String {
     let ptr = val.to_string();
     match ::std::ptr::NonNull::new(ptr) {
         Some(nn) => mozjs::conversions::jsstr_to_string(cx, nn),
@@ -180,7 +183,10 @@ pub unsafe fn js_to_rust_string(cx: *mut mozjs::jsapi::JSContext, val: mozjs::js
 ///
 /// # Safety
 /// Caller must ensure `cx` is a valid JSContext pointer and `s` is either null or a valid JSString pointer.
-pub unsafe fn jsstr_to_rust_string(cx: *mut mozjs::jsapi::JSContext, s: *mut mozjs::jsapi::JSString) -> String {
+pub unsafe fn jsstr_to_rust_string(
+    cx: *mut mozjs::jsapi::JSContext,
+    s: *mut mozjs::jsapi::JSString,
+) -> String {
     match ::std::ptr::NonNull::new(s) {
         Some(nn) => mozjs::conversions::jsstr_to_string(cx, nn),
         None => String::new(),

@@ -4,21 +4,23 @@
 // Uses non-blocking UdpSocket with JS setInterval polling for recv.
 // uws_sys::udp deferred (requires bao_uloop POLL_TYPE_UDP dispatch).
 
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue, Int32Value, StringValue};
+use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
 // UDP socket registry: fd -> UdpSocket
-static UDP_REGISTRY: ::std::sync::OnceLock<::std::sync::Mutex<::std::collections::HashMap<i32, ::std::net::UdpSocket>>> =
-    ::std::sync::OnceLock::new();
+static UDP_REGISTRY: ::std::sync::OnceLock<
+    ::std::sync::Mutex<::std::collections::HashMap<i32, ::std::net::UdpSocket>>,
+> = ::std::sync::OnceLock::new();
 
-fn registry() -> &'static ::std::sync::Mutex<::std::collections::HashMap<i32, ::std::net::UdpSocket>> {
+fn registry() -> &'static ::std::sync::Mutex<::std::collections::HashMap<i32, ::std::net::UdpSocket>>
+{
     UDP_REGISTRY.get_or_init(|| ::std::sync::Mutex::new(::std::collections::HashMap::new()))
 }
 
@@ -26,10 +28,18 @@ fn registry() -> &'static ::std::sync::Mutex<::std::collections::HashMap<i32, ::
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dgram_bind(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let port: u16 = if argc > 0 { (*args.get(0).ptr).to_int32() as u16 } else { 0 };
+    let port: u16 = if argc > 0 {
+        (*args.get(0).ptr).to_int32() as u16
+    } else {
+        0
+    };
     let addr_str = if argc > 1 {
         let v = *args.get(1).ptr;
-        if v.is_string() { crate::js_to_rust_string(cx, v) } else { "0.0.0.0".to_string() }
+        if v.is_string() {
+            crate::js_to_rust_string(cx, v)
+        } else {
+            "0.0.0.0".to_string()
+        }
     } else {
         "0.0.0.0".to_string()
     };
@@ -39,15 +49,31 @@ unsafe extern "C" fn dgram_bind(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         Ok(sock) => {
             let _ = sock.set_nonblocking(true);
             let fd = sock.as_raw_fd();
-            let local = sock.local_addr().unwrap_or_else(|_| "::std::net::SocketAddr::from(([0,0,0,0], 0))".parse().unwrap());
+            let local = sock.local_addr().unwrap_or_else(|_| {
+                "::std::net::SocketAddr::from(([0,0,0,0], 0))"
+                    .parse()
+                    .unwrap()
+            });
             registry().lock().unwrap().insert(fd, sock);
             let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(cx_ref) let ret = w2::JS_NewPlainObject(&mut cx_ref));
             unsafe {
                 rooted!(&in(cx_ref) let fd_val = Int32Value(fd));
-                w2::JS_DefineProperty(&mut cx_ref, ret.handle().into(), c"fd".as_ptr(), fd_val.handle().into(), JSPROP_ENUMERATE as u32);
+                w2::JS_DefineProperty(
+                    &mut cx_ref,
+                    ret.handle().into(),
+                    c"fd".as_ptr(),
+                    fd_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
                 rooted!(&in(cx_ref) let js_port = Int32Value(local.port() as i32));
-                w2::JS_DefineProperty(&mut cx_ref, ret.handle().into(), c"port".as_ptr(), js_port.handle().into(), JSPROP_ENUMERATE as u32);
+                w2::JS_DefineProperty(
+                    &mut cx_ref,
+                    ret.handle().into(),
+                    c"port".as_ptr(),
+                    js_port.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
             *vp = ObjectValue(ret.get());
             true
@@ -67,7 +93,10 @@ use ::std::os::unix::io::AsRawFd;
 unsafe extern "C" fn dgram_send_buf(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 4 {
-        JS_ReportErrorUTF8(cx, c"__dgram_send_buf requires (fd, dataArr, port, address)".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"__dgram_send_buf requires (fd, dataArr, port, address)".as_ptr(),
+        );
         return false;
     }
     let fd = (*args.get(0).ptr).to_int32();
@@ -92,10 +121,15 @@ unsafe extern "C" fn dgram_send_buf(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let mut buf = Vec::with_capacity(arr_len as usize);
     for i in 0..arr_len {
         let mut elem = UndefinedValue();
-        JS_GetElement(cx, data_obj.handle().into(), i, MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut elem,
-        });
+        JS_GetElement(
+            cx,
+            data_obj.handle().into(),
+            i,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            },
+        );
         buf.push(elem.to_int32() as u8);
     }
 
@@ -104,7 +138,10 @@ unsafe extern "C" fn dgram_send_buf(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         Some(sock) => {
             let target = format!("{}:{}", addr_str, port);
             match sock.send_to(&buf, &target) {
-                Ok(n) => { *vp = Int32Value(n as i32); true }
+                Ok(n) => {
+                    *vp = Int32Value(n as i32);
+                    true
+                }
                 Err(e) => {
                     let msg = format!("send_to failed: {}", e);
                     JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr() as *const i8);
@@ -128,7 +165,11 @@ unsafe extern "C" fn dgram_recv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         return true;
     }
     let fd = (*args.get(0).ptr).to_int32();
-    let buf_size: usize = if argc > 1 { (*args.get(1).ptr).to_int32() as usize } else { 65536 };
+    let buf_size: usize = if argc > 1 {
+        (*args.get(1).ptr).to_int32() as usize
+    } else {
+        65536
+    };
 
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
@@ -137,33 +178,64 @@ unsafe extern "C" fn dgram_recv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
             match sock.recv_from(&mut buf) {
                 Ok((len, addr)) => {
                     drop(reg);
-                    let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                    let mut cx_ref =
+                        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
                     rooted!(&in(cx_ref) let ret = w2::JS_NewPlainObject(&mut cx_ref));
                     // data as JS array
                     rooted!(&in(cx_ref) let data_arr = w2::NewArrayObject1(&mut cx_ref, len));
                     for i in 0..len {
                         rooted!(&in(cx_ref) let byte_val = Int32Value(buf[i] as i32));
-                        JS_DefineElement(cx, data_arr.handle().into(), i as u32, byte_val.handle().into(), JSPROP_ENUMERATE as u32);
+                        JS_DefineElement(
+                            cx,
+                            data_arr.handle().into(),
+                            i as u32,
+                            byte_val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
                     }
                     unsafe {
                         rooted!(&in(cx_ref) let data_val = ObjectValue(data_arr.get()));
-                        w2::JS_DefineProperty(&mut cx_ref, ret.handle().into(), c"data".as_ptr(), data_val.handle().into(), JSPROP_ENUMERATE as u32);
+                        w2::JS_DefineProperty(
+                            &mut cx_ref,
+                            ret.handle().into(),
+                            c"data".as_ptr(),
+                            data_val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
                         let ip = addr.ip().to_string();
                         let c_ip = ZBox::from_bytes(ip.as_bytes());
                         let js_ip = JS_NewStringCopyZ(cx, c_ip.as_ptr());
                         if !js_ip.is_null() {
                             rooted!(&in(cx_ref) let ip_val = StringValue(&*js_ip));
-                            w2::JS_DefineProperty(&mut cx_ref, ret.handle().into(), c"address".as_ptr(), ip_val.handle().into(), JSPROP_ENUMERATE as u32);
+                            w2::JS_DefineProperty(
+                                &mut cx_ref,
+                                ret.handle().into(),
+                                c"address".as_ptr(),
+                                ip_val.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
                         }
                         let family = if addr.is_ipv6() { "IPv6" } else { "IPv4" };
                         let c_fam = ZBox::from_bytes(family.as_bytes());
                         let js_fam = JS_NewStringCopyZ(cx, c_fam.as_ptr());
                         if !js_fam.is_null() {
                             rooted!(&in(cx_ref) let fam_val = StringValue(&*js_fam));
-                            w2::JS_DefineProperty(&mut cx_ref, ret.handle().into(), c"family".as_ptr(), fam_val.handle().into(), JSPROP_ENUMERATE as u32);
+                            w2::JS_DefineProperty(
+                                &mut cx_ref,
+                                ret.handle().into(),
+                                c"family".as_ptr(),
+                                fam_val.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
                         }
                         rooted!(&in(cx_ref) let port_val = Int32Value(addr.port() as i32));
-                        w2::JS_DefineProperty(&mut cx_ref, ret.handle().into(), c"port".as_ptr(), port_val.handle().into(), JSPROP_ENUMERATE as u32);
+                        w2::JS_DefineProperty(
+                            &mut cx_ref,
+                            ret.handle().into(),
+                            c"port".as_ptr(),
+                            port_val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
                     }
                     *vp = ObjectValue(ret.get());
                     true
@@ -190,7 +262,10 @@ unsafe extern "C" fn dgram_recv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dgram_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 3 { JS_ReportErrorUTF8(cx, c"__dgram_connect requires (fd, port, address)".as_ptr()); return false; }
+    if argc < 3 {
+        JS_ReportErrorUTF8(cx, c"__dgram_connect requires (fd, port, address)".as_ptr());
+        return false;
+    }
     let fd = (*args.get(0).ptr).to_int32();
     let port: u16 = (*args.get(1).ptr).to_int32() as u16;
     let addr_str = crate::js_to_rust_string(cx, *args.get(2).ptr);
@@ -198,10 +273,20 @@ unsafe extern "C" fn dgram_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
         Some(sock) => match sock.connect(&target) {
-            Ok(()) => { *vp = Int32Value(1); true }
-            Err(e) => { let msg = format!("connect failed: {}", e); JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr() as *const i8); false }
+            Ok(()) => {
+                *vp = Int32Value(1);
+                true
+            }
+            Err(e) => {
+                let msg = format!("connect failed: {}", e);
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr() as *const i8);
+                false
+            }
         },
-        None => { JS_ReportErrorUTF8(cx, c"socket fd not found".as_ptr()); false }
+        None => {
+            JS_ReportErrorUTF8(cx, c"socket fd not found".as_ptr());
+            false
+        }
     }
 }
 
@@ -209,7 +294,9 @@ unsafe extern "C" fn dgram_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dgram_disconnect(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return false; }
+    if argc < 1 {
+        return false;
+    }
     let fd = (*args.get(0).ptr).to_int32();
     let reg = registry().lock().unwrap();
     if let Some(sock) = reg.get(&fd) {
@@ -224,7 +311,9 @@ unsafe extern "C" fn dgram_disconnect(_cx: *mut JSContext, argc: u32, vp: *mut J
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dgram_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return false; }
+    if argc < 1 {
+        return false;
+    }
     let fd = (*args.get(0).ptr).to_int32();
     registry().lock().unwrap().remove(&fd);
     *vp = Int32Value(1);
@@ -235,11 +324,15 @@ unsafe extern "C" fn dgram_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dgram_set_broadcast(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 { return false; }
+    if argc < 2 {
+        return false;
+    }
     let fd = (*args.get(0).ptr).to_int32();
     let on = (*args.get(1).ptr).to_int32() != 0;
     let reg = registry().lock().unwrap();
-    if let Some(sock) = reg.get(&fd) { let _ = sock.set_broadcast(on); }
+    if let Some(sock) = reg.get(&fd) {
+        let _ = sock.set_broadcast(on);
+    }
     *vp = Int32Value(1);
     true
 }
@@ -248,37 +341,57 @@ unsafe extern "C" fn dgram_set_broadcast(_cx: *mut JSContext, argc: u32, vp: *mu
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dgram_set_ttl(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 { return false; }
+    if argc < 2 {
+        return false;
+    }
     let fd = (*args.get(0).ptr).to_int32();
     let ttl = (*args.get(1).ptr).to_int32();
     let reg = registry().lock().unwrap();
-    if let Some(sock) = reg.get(&fd) { let _ = sock.set_ttl(ttl as u32); }
+    if let Some(sock) = reg.get(&fd) {
+        let _ = sock.set_ttl(ttl as u32);
+    }
     *vp = Int32Value(1);
     true
 }
 
 // ── Native __dgram_set_multicast_ttl ──
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn dgram_set_multicast_ttl(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn dgram_set_multicast_ttl(
+    _cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 { return false; }
+    if argc < 2 {
+        return false;
+    }
     let fd = (*args.get(0).ptr).to_int32();
     let ttl = (*args.get(1).ptr).to_int32();
     let reg = registry().lock().unwrap();
-    if let Some(sock) = reg.get(&fd) { let _ = sock.set_multicast_ttl_v4(ttl as u32); }
+    if let Some(sock) = reg.get(&fd) {
+        let _ = sock.set_multicast_ttl_v4(ttl as u32);
+    }
     *vp = Int32Value(1);
     true
 }
 
 // ── Native __dgram_set_multicast_loopback ──
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn dgram_set_multicast_loopback(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn dgram_set_multicast_loopback(
+    _cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 { return false; }
+    if argc < 2 {
+        return false;
+    }
     let fd = (*args.get(0).ptr).to_int32();
     let on = (*args.get(1).ptr).to_int32() != 0;
     let reg = registry().lock().unwrap();
-    if let Some(sock) = reg.get(&fd) { let _ = sock.set_multicast_loop_v4(on); }
+    if let Some(sock) = reg.get(&fd) {
+        let _ = sock.set_multicast_loop_v4(on);
+    }
     *vp = Int32Value(1);
     true
 }
@@ -287,24 +400,39 @@ unsafe extern "C" fn dgram_set_multicast_loopback(_cx: *mut JSContext, argc: u32
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dgram_add_membership(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 { return false; }
+    if argc < 2 {
+        return false;
+    }
     let fd = (*args.get(0).ptr).to_int32();
     let maddr = crate::js_to_rust_string(cx, *args.get(1).ptr);
-    let iface = if argc > 2 { crate::js_to_rust_string(cx, *args.get(2).ptr) } else { "0.0.0.0".to_string() };
+    let iface = if argc > 2 {
+        crate::js_to_rust_string(cx, *args.get(2).ptr)
+    } else {
+        "0.0.0.0".to_string()
+    };
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
-        Some(sock) => {
-            match maddr.parse::<::std::net::Ipv4Addr>() {
-                Ok(ip) if ip.is_multicast() => {
-                    match iface.parse::<::std::net::Ipv4Addr>() {
-                        Ok(iface_ip) => { let _ = sock.join_multicast_v4(&ip, &iface_ip); *vp = Int32Value(1); true }
-                        Err(_) => { JS_ReportErrorUTF8(cx, c"invalid interface address".as_ptr()); false }
-                    }
+        Some(sock) => match maddr.parse::<::std::net::Ipv4Addr>() {
+            Ok(ip) if ip.is_multicast() => match iface.parse::<::std::net::Ipv4Addr>() {
+                Ok(iface_ip) => {
+                    let _ = sock.join_multicast_v4(&ip, &iface_ip);
+                    *vp = Int32Value(1);
+                    true
                 }
-                _ => { JS_ReportErrorUTF8(cx, c"invalid multicast address".as_ptr()); false }
+                Err(_) => {
+                    JS_ReportErrorUTF8(cx, c"invalid interface address".as_ptr());
+                    false
+                }
+            },
+            _ => {
+                JS_ReportErrorUTF8(cx, c"invalid multicast address".as_ptr());
+                false
             }
+        },
+        None => {
+            JS_ReportErrorUTF8(cx, c"socket fd not found".as_ptr());
+            false
         }
-        None => { JS_ReportErrorUTF8(cx, c"socket fd not found".as_ptr()); false }
     }
 }
 
@@ -312,24 +440,39 @@ unsafe extern "C" fn dgram_add_membership(cx: *mut JSContext, argc: u32, vp: *mu
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dgram_drop_membership(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 { return false; }
+    if argc < 2 {
+        return false;
+    }
     let fd = (*args.get(0).ptr).to_int32();
     let maddr = crate::js_to_rust_string(cx, *args.get(1).ptr);
-    let iface = if argc > 2 { crate::js_to_rust_string(cx, *args.get(2).ptr) } else { "0.0.0.0".to_string() };
+    let iface = if argc > 2 {
+        crate::js_to_rust_string(cx, *args.get(2).ptr)
+    } else {
+        "0.0.0.0".to_string()
+    };
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
-        Some(sock) => {
-            match maddr.parse::<::std::net::Ipv4Addr>() {
-                Ok(ip) if ip.is_multicast() => {
-                    match iface.parse::<::std::net::Ipv4Addr>() {
-                        Ok(iface_ip) => { let _ = sock.leave_multicast_v4(&ip, &iface_ip); *vp = Int32Value(1); true }
-                        Err(_) => { JS_ReportErrorUTF8(cx, c"invalid interface address".as_ptr()); false }
-                    }
+        Some(sock) => match maddr.parse::<::std::net::Ipv4Addr>() {
+            Ok(ip) if ip.is_multicast() => match iface.parse::<::std::net::Ipv4Addr>() {
+                Ok(iface_ip) => {
+                    let _ = sock.leave_multicast_v4(&ip, &iface_ip);
+                    *vp = Int32Value(1);
+                    true
                 }
-                _ => { JS_ReportErrorUTF8(cx, c"invalid multicast address".as_ptr()); false }
+                Err(_) => {
+                    JS_ReportErrorUTF8(cx, c"invalid interface address".as_ptr());
+                    false
+                }
+            },
+            _ => {
+                JS_ReportErrorUTF8(cx, c"invalid multicast address".as_ptr());
+                false
             }
+        },
+        None => {
+            JS_ReportErrorUTF8(cx, c"socket fd not found".as_ptr());
+            false
         }
-        None => { JS_ReportErrorUTF8(cx, c"socket fd not found".as_ptr()); false }
     }
 }
 
@@ -337,7 +480,9 @@ unsafe extern "C" fn dgram_drop_membership(cx: *mut JSContext, argc: u32, vp: *m
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dgram_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 1 { return false; }
+    if argc < 1 {
+        return false;
+    }
     let fd = (*args.get(0).ptr).to_int32();
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
@@ -351,23 +496,53 @@ unsafe extern "C" fn dgram_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal
                 let js_ip = JS_NewStringCopyZ(cx, c_ip.as_ptr());
                 if !js_ip.is_null() {
                     rooted!(&in(cx_ref) let ip_val = StringValue(&*js_ip));
-                    unsafe { w2::JS_DefineProperty(&mut cx_ref, ret.handle().into(), c"address".as_ptr(), ip_val.handle().into(), JSPROP_ENUMERATE as u32); }
+                    unsafe {
+                        w2::JS_DefineProperty(
+                            &mut cx_ref,
+                            ret.handle().into(),
+                            c"address".as_ptr(),
+                            ip_val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
                 }
                 let family = if addr.is_ipv6() { "IPv6" } else { "IPv4" };
                 let c_fam = ZBox::from_bytes(family.as_bytes());
                 let js_fam = JS_NewStringCopyZ(cx, c_fam.as_ptr());
                 if !js_fam.is_null() {
                     rooted!(&in(cx_ref) let fam_val = StringValue(&*js_fam));
-                    unsafe { w2::JS_DefineProperty(&mut cx_ref, ret.handle().into(), c"family".as_ptr(), fam_val.handle().into(), JSPROP_ENUMERATE as u32); }
+                    unsafe {
+                        w2::JS_DefineProperty(
+                            &mut cx_ref,
+                            ret.handle().into(),
+                            c"family".as_ptr(),
+                            fam_val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
                 }
                 rooted!(&in(cx_ref) let port_val = Int32Value(addr.port() as i32));
-                unsafe { w2::JS_DefineProperty(&mut cx_ref, ret.handle().into(), c"port".as_ptr(), port_val.handle().into(), JSPROP_ENUMERATE as u32); }
+                unsafe {
+                    w2::JS_DefineProperty(
+                        &mut cx_ref,
+                        ret.handle().into(),
+                        c"port".as_ptr(),
+                        port_val.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
                 *vp = ObjectValue(ret.get());
                 true
             }
-            Err(_) => { *vp = UndefinedValue(); true }
+            Err(_) => {
+                *vp = UndefinedValue();
+                true
+            }
         },
-        None => { *vp = UndefinedValue(); true }
+        None => {
+            *vp = UndefinedValue();
+            true
+        }
     }
 }
 
@@ -515,21 +690,38 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ("__dgram_close", 1, Some(dgram_close)),
                 ("__dgram_set_broadcast", 2, Some(dgram_set_broadcast)),
                 ("__dgram_set_ttl", 2, Some(dgram_set_ttl)),
-                ("__dgram_set_multicast_ttl", 2, Some(dgram_set_multicast_ttl)),
-                ("__dgram_set_multicast_loopback", 2, Some(dgram_set_multicast_loopback)),
+                (
+                    "__dgram_set_multicast_ttl",
+                    2,
+                    Some(dgram_set_multicast_ttl),
+                ),
+                (
+                    "__dgram_set_multicast_loopback",
+                    2,
+                    Some(dgram_set_multicast_loopback),
+                ),
                 ("__dgram_add_membership", 3, Some(dgram_add_membership)),
                 ("__dgram_drop_membership", 3, Some(dgram_drop_membership)),
                 ("__dgram_address", 1, Some(dgram_address)),
             ];
             for (name, nargs, fn_ptr) in native_fns {
                 let c_name = ZBox::from_bytes(name.as_bytes());
-                JS_DefineFunction(cx_raw, global_root.handle().into(), c_name.as_ptr(), *fn_ptr, *nargs, 0);
+                JS_DefineFunction(
+                    cx_raw,
+                    global_root.handle().into(),
+                    c_name.as_ptr(),
+                    *fn_ptr,
+                    *nargs,
+                    0,
+                );
             }
         }
 
         // Evaluate IIFE
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c"<node:dgram>".as_ptr(), 1);
-        if opts.is_null() { return; }
+        if opts.is_null() {
+            return;
+        }
         let mut src = mozjs::rust::transform_str_to_source_text(DGRAM_JS);
         let mut rval = UndefinedValue();
         let rval_handle = MutableHandle::<Value> {

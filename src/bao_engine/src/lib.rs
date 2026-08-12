@@ -47,27 +47,29 @@
 // @trace REQ-ENG-009 [api:POST /ffi/load] [entity:FfiLibrary] — bun:ffi SpiderMonkey bridge types surfaced through bao_engine
 // @trace REQ-ENG-010 [entity:FetchTasklet] [api:POST /fetch/async-tasklet] — async fetch/http/https/tls FetchTasklet integration re-export entry
 // @trace REQ-ENG-011 [api:/vm/sandbox] [entity:VmSandboxContext] — node:vm sandbox Realm isolation re-export entry
-pub use bun_sm::value;
-pub use bun_sm::error;
-pub use bun_sm::dispatch_sm;
-pub use bun_sm::host_fn;
-pub use bun_sm::codegen;
 pub use bun_sm::abort_signal;
 pub use bun_sm::builtin_name;
+pub use bun_sm::codegen;
 pub use bun_sm::common_strings;
 pub use bun_sm::debugger;
+pub use bun_sm::dispatch_sm;
+pub use bun_sm::error;
 pub use bun_sm::fetch_headers;
 pub use bun_sm::gc;
 pub use bun_sm::generated;
+pub use bun_sm::host_fn;
 pub use bun_sm::ipc;
 pub use bun_sm::rare_data;
+pub use bun_sm::value;
 pub use bun_sm::webcore_types;
 
 // ─── Re-exported from bun_sm (migrated from bao_engine) ──────────────────
 // @trace REQ-ENG-005 [entity:ModuleSource] [api:POST /module/resolve] — Module Loader bridge (SpiderMonkey ESM hooks → Bun resolver) re-exported from bun_sm
 // @trace REQ-ENG-006 [api:GET /api/bun-compat] [entity:BaoRuntime] — Bun.* / Bao.* API adaptation re-export entry (serve/file/fetch/write)
 pub use bun_sm::module_loader;
-pub use bun_sm::module_loader::{GlobalSetupFn, PostEvalHook, JobQueueDrainFn, set_job_queue_drain};
+pub use bun_sm::module_loader::{
+    GlobalSetupFn, JobQueueDrainFn, PostEvalHook, set_job_queue_drain,
+};
 
 // ─── Worker re-exports from bun_sm (REQ-BRW-004) ──────────────────────
 // @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]

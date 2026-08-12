@@ -30,7 +30,11 @@ pub fn posix_join(paths: &[&str]) -> String {
         result.push('/');
     }
     result.push_str(&segments.join("/"));
-    if result.is_empty() { ".".to_string() } else { result }
+    if result.is_empty() {
+        ".".to_string()
+    } else {
+        result
+    }
 }
 
 /// Normalize a POSIX path — resolve `.` and `..`, remove redundant separators.
@@ -63,7 +67,11 @@ pub fn normalize(path: &str) -> String {
     result.push_str(&segments.join("/"));
 
     if result.is_empty() {
-        if is_absolute { "/".to_string() } else { ".".to_string() }
+        if is_absolute {
+            "/".to_string()
+        } else {
+            ".".to_string()
+        }
     } else if trailing_slash && !result.ends_with('/') && result != "/" {
         result.push('/');
         result
@@ -79,7 +87,11 @@ pub fn dirname(path: &str) -> String {
     }
     let trimmed = path.trim_end_matches('/');
     if let Some(pos) = trimmed.rfind('/') {
-        if pos == 0 { "/".to_string() } else { trimmed[..pos].to_string() }
+        if pos == 0 {
+            "/".to_string()
+        } else {
+            trimmed[..pos].to_string()
+        }
     } else {
         ".".to_string()
     }

@@ -116,7 +116,11 @@ mod tests {
     #[test]
     fn add_remove_touch() {
         let ts = Touchscreen::new();
-        ts.add_touch(TouchPoint { x: 10.0, y: 20.0, ..Default::default() });
+        ts.add_touch(TouchPoint {
+            x: 10.0,
+            y: 20.0,
+            ..Default::default()
+        });
         assert_eq!(ts.touch_count(), 1);
         ts.remove_touch_at(0);
         assert_eq!(ts.touch_count(), 0);
@@ -125,9 +129,21 @@ mod tests {
     #[test]
     fn multi_touch() {
         let ts = Touchscreen::new();
-        ts.add_touch(TouchPoint { x: 1.0, y: 1.0, ..Default::default() });
-        ts.add_touch(TouchPoint { x: 2.0, y: 2.0, ..Default::default() });
-        ts.add_touch(TouchPoint { x: 3.0, y: 3.0, ..Default::default() });
+        ts.add_touch(TouchPoint {
+            x: 1.0,
+            y: 1.0,
+            ..Default::default()
+        });
+        ts.add_touch(TouchPoint {
+            x: 2.0,
+            y: 2.0,
+            ..Default::default()
+        });
+        ts.add_touch(TouchPoint {
+            x: 3.0,
+            y: 3.0,
+            ..Default::default()
+        });
         assert_eq!(ts.touch_count(), 3);
     }
 

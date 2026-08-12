@@ -72,7 +72,9 @@ pub fn run_checks(ctx: &mut JsContext, source: &str) {
 
 /// Escape a path for embedding inside a JS string literal.
 pub fn js_path(p: &::std::path::Path) -> String {
-    p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 /// Drop-in scaffold for AAA checks: `check(label, fn)` + `results.join("|")`.

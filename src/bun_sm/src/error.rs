@@ -12,7 +12,11 @@ pub struct JsError {
 
 impl fmt::Display for JsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}:{}: {}", self.filename, self.line, self.column, self.message)?;
+        write!(
+            f,
+            "{}:{}:{}: {}",
+            self.filename, self.line, self.column, self.message
+        )?;
         if let ::std::option::Option::Some(ref stack) = self.stack {
             write!(f, "\n{}", stack)?;
         }

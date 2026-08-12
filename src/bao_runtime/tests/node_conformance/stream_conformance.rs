@@ -5,7 +5,7 @@
 #[path = "../conformance_common.rs"]
 mod common;
 
-use common::{make_ctx, run_checks, CHECK_SCAFFOLD};
+use common::{CHECK_SCAFFOLD, make_ctx, run_checks};
 
 #[test]
 fn test_stream_conformance_suite() {
@@ -149,4 +149,3 @@ fn test_stream_conformance_web_api() {
     run_checks(&mut ctx, &src);
     bun_runtime::shutdown_thread_sm();
 }
-

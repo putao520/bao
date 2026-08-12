@@ -19,8 +19,8 @@
 // `tick_without_idle`(只 drain concurrent+task queue,不进 OS 事件循环)。
 // 这是单次 tick 的延迟基线测量,等同于生产环境 SM JobQueue drain 的延迟。
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext;
@@ -32,10 +32,8 @@ use bun_event_loop::MiniEventLoop::MiniEventLoop;
 fn force_uloop_link() {
     // Product path owns residual/RealImpl (no bao_native_stubs co-link).
     bao_uloop::force_link();
-    let _ = bun_runtime::dispatch::__bun_run_file_poll as unsafe extern "Rust" fn(
-        *mut bun_io::posix_event_loop::FilePoll,
-        i64,
-    );
+    let _ = bun_runtime::dispatch::__bun_run_file_poll
+        as unsafe extern "Rust" fn(*mut bun_io::posix_event_loop::FilePoll, i64);
 }
 
 #[derive(Debug)]
@@ -44,7 +42,9 @@ struct CounterCtx {
 }
 
 fn increment_task(ctx: *mut CounterCtx, _extra: *mut std::ffi::c_void) {
-    unsafe { (*ctx).fired.fetch_add(1, Ordering::SeqCst); }
+    unsafe {
+        (*ctx).fired.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -111,7 +111,9 @@ fn event_loop_single_task_tick_under_threshold() {
     force_uloop_link();
     let mut loop_ = MiniEventLoop::init();
 
-    let ctx = Box::new(CounterCtx { fired: AtomicUsize::new(0) });
+    let ctx = Box::new(CounterCtx {
+        fired: AtomicUsize::new(0),
+    });
     let ctx_ptr = Box::into_raw(ctx);
     let task_ptr = AnyTaskWithExtraContext::from_callback_auto_deinit(ctx_ptr, increment_task);
     let task_nn = unsafe { core::ptr::NonNull::new_unchecked(task_ptr) };
@@ -124,7 +126,9 @@ fn event_loop_single_task_tick_under_threshold() {
 
     // Assert — TMG-LOOP-001: 单 task tick < 20ms
     let fired = unsafe { (*ctx_ptr).fired.load(Ordering::SeqCst) };
-    unsafe { drop(Box::from_raw(ctx_ptr)); }
+    unsafe {
+        drop(Box::from_raw(ctx_ptr));
+    }
     assert_eq!(fired, 1, "task must fire exactly once");
     assert!(
         elapsed < Duration::from_millis(20),
@@ -155,7 +159,9 @@ fn event_loop_batch_task_tick_under_threshold() {
         loop_.tick_without_idle(core::ptr::null_mut());
         let fired = unsafe { (*ctx_ptr).fired.load(Ordering::SeqCst) };
         // reclaim Arc (wrapper was freed inside callback; reclaim Arc manually)
-        unsafe { drop(Arc::from_raw(ctx_ptr as *const CounterCtx)); }
+        unsafe {
+            drop(Arc::from_raw(ctx_ptr as *const CounterCtx));
+        }
         total_fired += fired;
         let _ = i; // silence unused
     }
@@ -187,7 +193,9 @@ fn event_loop_tick_done_callback_fast_exit_under_threshold() {
 
     // Act — is_done=true 的 tick 必须立即返回(minimal_event_loop_tests 模式)
     let start = Instant::now();
-    loop_.tick(core::ptr::null_mut(), |_ctx| done_clone.load(Ordering::SeqCst));
+    loop_.tick(core::ptr::null_mut(), |_ctx| {
+        done_clone.load(Ordering::SeqCst)
+    });
     let elapsed = start.elapsed();
 
     // Assert — TMG-LOOP-001: fast-exit < 20ms

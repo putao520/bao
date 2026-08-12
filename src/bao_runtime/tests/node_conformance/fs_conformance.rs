@@ -7,8 +7,8 @@
 #[path = "../conformance_common.rs"]
 mod common;
 
-use common::{js_path, make_ctx, run_checks, CHECK_SCAFFOLD};
 use ::std::path::PathBuf;
+use common::{CHECK_SCAFFOLD, js_path, make_ctx, run_checks};
 
 fn tmp_dir(label: &str) -> PathBuf {
     let d = ::std::env::temp_dir().join(format!("bao_fs_conf_{}", label));
@@ -46,7 +46,8 @@ fn test_fs_conformance_suite() {
             }});
             results.join("|")
             "##,
-            scaffold = CHECK_SCAFFOLD, p = p
+            scaffold = CHECK_SCAFFOLD,
+            p = p
         );
         run_checks(&mut ctx, &src);
         let _ = ::std::fs::remove_dir_all(&dir);
@@ -74,7 +75,8 @@ fn test_fs_conformance_suite() {
             }});
             results.join("|")
             "##,
-            scaffold = CHECK_SCAFFOLD, p = p
+            scaffold = CHECK_SCAFFOLD,
+            p = p
         );
         run_checks(&mut ctx, &src);
         let _ = ::std::fs::remove_dir_all(&dir);
@@ -107,7 +109,9 @@ fn test_fs_conformance_suite() {
             }});
             results.join("|")
             "##,
-            scaffold = CHECK_SCAFFOLD, fp = fp, sp = sp
+            scaffold = CHECK_SCAFFOLD,
+            fp = fp,
+            sp = sp
         );
         run_checks(&mut ctx, &src);
         let _ = ::std::fs::remove_dir_all(&dir);
@@ -131,7 +135,10 @@ fn test_fs_conformance_suite() {
             check("existsSync_dir", function() {{ return fs.existsSync("{dp}") === true; }});
             results.join("|")
             "##,
-            scaffold = CHECK_SCAFFOLD, fp = fp, mp = mp, dp = dp
+            scaffold = CHECK_SCAFFOLD,
+            fp = fp,
+            mp = mp,
+            dp = dp
         );
         run_checks(&mut ctx, &src);
         let _ = ::std::fs::remove_dir_all(&dir);
@@ -171,7 +178,8 @@ fn test_fs_conformance_suite() {
             }});
             results.join("|")
             "##,
-            scaffold = CHECK_SCAFFOLD, dp = dp
+            scaffold = CHECK_SCAFFOLD,
+            dp = dp
         );
         run_checks(&mut ctx, &src);
         let _ = ::std::fs::remove_dir_all(&dir);
@@ -208,7 +216,11 @@ fn test_fs_conformance_suite() {
             }});
             results.join("|")
             "##,
-            scaffold = CHECK_SCAFFOLD, sp = sp, dp = dp, cps = cps, cpd = cpd
+            scaffold = CHECK_SCAFFOLD,
+            sp = sp,
+            dp = dp,
+            cps = cps,
+            cpd = cpd
         );
         run_checks(&mut ctx, &src);
         let _ = ::std::fs::remove_dir_all(&dir);
@@ -229,16 +241,23 @@ fn test_fs_conformance_suite() {
             }});
             results.join("|")
             "##,
-            scaffold = CHECK_SCAFFOLD, fp = fp
+            scaffold = CHECK_SCAFFOLD,
+            fp = fp
         );
         run_checks(&mut ctx, &src);
         // Fire the promise write and verify from Rust side
         let _ = ctx.eval(
-            &format!(r#"require('fs').promises.writeFile("{fp}", "hello promise");"#, fp = fp),
+            &format!(
+                r#"require('fs').promises.writeFile("{fp}", "hello promise");"#,
+                fp = fp
+            ),
             "<conformance>",
         );
         let content = ::std::fs::read_to_string(&f).unwrap_or_default();
-        assert_eq!(content, "hello promise", "promises.writeFile should persist");
+        assert_eq!(
+            content, "hello promise",
+            "promises.writeFile should persist"
+        );
         let _ = ::std::fs::remove_dir_all(&dir);
     }
 
@@ -258,7 +277,8 @@ fn test_fs_conformance_suite() {
             }});
             results.join("|")
             "##,
-            scaffold = CHECK_SCAFFOLD, tp = tp
+            scaffold = CHECK_SCAFFOLD,
+            tp = tp
         );
         run_checks(&mut ctx, &src);
         let _ = ::std::fs::remove_dir_all(&dir);
@@ -333,7 +353,10 @@ fn test_fs_conformance_readfile_returns_buffer() {
     let p = js_path(&f);
     let r = eval_string(
         &mut ctx,
-        &format!(r#"Buffer.isBuffer(require('fs').readFileSync("{p}")) ? "PASS" : "FAIL""#, p = p),
+        &format!(
+            r#"Buffer.isBuffer(require('fs').readFileSync("{p}")) ? "PASS" : "FAIL""#,
+            p = p
+        ),
     );
     assert_eq!(r, "PASS");
     let _ = ::std::fs::remove_dir_all(&dir);

@@ -14,8 +14,8 @@
 use mozjs::jsapi::{CallArgs, JSContext as RawJSContext, JSObject};
 use mozjs::jsval::{JSVal, UndefinedValue};
 
-use crate::js_value::JSValue;
 use crate::global_object::JSGlobalObject;
+use crate::js_value::JSValue;
 
 /// Wrapper over SpiderMonkey's `CallArgs`, providing JSC-compatible API.
 ///
@@ -105,7 +105,10 @@ impl CallFrame {
     #[allow(unsafe_op_in_unsafe_fn)]
     pub fn unwrap_this(&self) -> *mut JSObject {
         let thisv = self.args.thisv();
-        assert!(thisv.is_object(), "CallFrame::unwrap_this: this is not an object");
+        assert!(
+            thisv.is_object(),
+            "CallFrame::unwrap_this: this is not an object"
+        );
         thisv.to_object()
     }
 

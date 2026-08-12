@@ -4,8 +4,8 @@
 // @trace TEST-CDS-004 [req:REQ-CDS-002] [level:unit]
 // @trace TEST-CDS-005 [req:REQ-CDS-005] [level:unit]
 
-use cdp_server::{CdpError, DomainHandler, EventSender, DomainRegistry, ServerConfig, TargetInfo};
-use cdp_server::{CdpMessage, CdpResponse, CdpEvent};
+use cdp_server::{CdpError, DomainHandler, DomainRegistry, EventSender, ServerConfig, TargetInfo};
+use cdp_server::{CdpEvent, CdpMessage, CdpResponse};
 use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------
@@ -26,12 +26,22 @@ impl EventSender for NoopEventSender {
 struct EchoHandler;
 
 impl DomainHandler for EchoHandler {
-    fn domain_name(&self) -> &'static str { "Echo" }
-    fn handle_command(&self, command: &str, params: Value, _es: &dyn EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        "Echo"
+    }
+    fn handle_command(
+        &self,
+        command: &str,
+        params: Value,
+        _es: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         match command {
             "Echo.ping" => Ok(json!({ "pong": true })),
             "Echo.reflect" => Ok(json!({ "echo": params })),
-            _ => Err(CdpError { code: -32601, message: format!("'{}' wasn't found", command) }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' wasn't found", command),
+            }),
         }
     }
 }
@@ -41,8 +51,15 @@ struct StatefulHandler {
 }
 
 impl DomainHandler for StatefulHandler {
-    fn domain_name(&self) -> &'static str { self.name }
-    fn handle_command(&self, command: &str, _params: Value, _es: &dyn EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
+    fn handle_command(
+        &self,
+        command: &str,
+        _params: Value,
+        _es: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         Ok(json!({ "domain": self.name, "command": command }))
     }
     fn on_session_created(&self, session_id: &str) {
@@ -69,7 +86,12 @@ impl DomainHandler for TestDispatch {
             Self::Stateful(h) => h.domain_name(),
         }
     }
-    fn handle_command(&self, cmd: &str, params: Value, sender: &dyn EventSender) -> Result<Value, CdpError> {
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: Value,
+        sender: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         match self {
             Self::Echo(h) => h.handle_command(cmd, params, sender),
             Self::Stateful(h) => h.handle_command(cmd, params, sender),
@@ -99,10 +121,15 @@ fn parse_msg(raw: &str) -> Option<CdpMessage> {
 
 #[test]
 fn test_parse_valid_message() {
-    let msg = parse_msg(r#"{"id":1,"method":"Page.navigate","params":{"url":"https://example.com"}}"#).unwrap();
+    let msg =
+        parse_msg(r#"{"id":1,"method":"Page.navigate","params":{"url":"https://example.com"}}"#)
+            .unwrap();
     assert_eq!(msg.id, Some(1));
     assert_eq!(msg.method, "Page.navigate");
-    assert_eq!(msg.params.as_ref().unwrap().get("url").unwrap().as_str(), Some("https://example.com"));
+    assert_eq!(
+        msg.params.as_ref().unwrap().get("url").unwrap().as_str(),
+        Some("https://example.com")
+    );
 }
 
 #[test]
@@ -162,7 +189,9 @@ fn test_registry_duplicate_registration_fails() {
 fn test_registry_unknown_domain_returns_none() {
     let registry = DomainRegistry::<TestDispatch>::new();
     let es = NoopEventSender;
-    assert!(registry.dispatch_command("Unknown.method", json!({}), &es).is_none());
+    assert!(registry
+        .dispatch_command("Unknown.method", json!({}), &es)
+        .is_none());
 }
 
 #[test]
@@ -176,19 +205,34 @@ fn test_registry_has_domain() {
 #[test]
 fn test_registry_multiple_domains() {
     let registry = DomainRegistry::<TestDispatch>::new();
-    registry.register(TestDispatch::Stateful(StatefulHandler { name: "Page" })).unwrap();
-    registry.register(TestDispatch::Stateful(StatefulHandler { name: "Runtime" })).unwrap();
-    registry.register(TestDispatch::Stateful(StatefulHandler { name: "DOM" })).unwrap();
+    registry
+        .register(TestDispatch::Stateful(StatefulHandler { name: "Page" }))
+        .unwrap();
+    registry
+        .register(TestDispatch::Stateful(StatefulHandler { name: "Runtime" }))
+        .unwrap();
+    registry
+        .register(TestDispatch::Stateful(StatefulHandler { name: "DOM" }))
+        .unwrap();
 
     let es = NoopEventSender;
 
-    let result = registry.dispatch_command("Page.navigate", json!({}), &es).unwrap().unwrap();
+    let result = registry
+        .dispatch_command("Page.navigate", json!({}), &es)
+        .unwrap()
+        .unwrap();
     assert_eq!(result["domain"], "Page");
 
-    let result = registry.dispatch_command("Runtime.evaluate", json!({}), &es).unwrap().unwrap();
+    let result = registry
+        .dispatch_command("Runtime.evaluate", json!({}), &es)
+        .unwrap()
+        .unwrap();
     assert_eq!(result["domain"], "Runtime");
 
-    let result = registry.dispatch_command("DOM.getDocument", json!({}), &es).unwrap().unwrap();
+    let result = registry
+        .dispatch_command("DOM.getDocument", json!({}), &es)
+        .unwrap()
+        .unwrap();
     assert_eq!(result["domain"], "DOM");
 }
 
@@ -240,7 +284,8 @@ mod transport_tests {
 
     #[test]
     fn target_info_deserialization() {
-        let json = r#"{"id":"xyz","type":"page","title":"T","url":"U","web_socket_debugger_url":"W"}"#;
+        let json =
+            r#"{"id":"xyz","type":"page","title":"T","url":"U","web_socket_debugger_url":"W"}"#;
         let info: cdp_server::TargetInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.id, "xyz");
         assert_eq!(info.target_type, "page");
@@ -283,9 +328,7 @@ fn test_server_config_builder() {
 
 #[test]
 fn test_server_config_builder_partial() {
-    let config = ServerConfig::builder()
-        .port(8080)
-        .build();
+    let config = ServerConfig::builder().port(8080).build();
     assert_eq!(config.port, 8080);
     assert_eq!(config.host, "127.0.0.1"); // default preserved
 }
@@ -329,7 +372,10 @@ fn test_response_serialization_error() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains(r#""error""#));
@@ -343,7 +389,10 @@ fn test_response_serialization_error() {
 
 #[test]
 fn test_cdp_error_codes() {
-    let err = CdpError { code: -32601, message: "test".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "test".into(),
+    };
     assert_eq!(err.code, -32601);
     assert_eq!(err.message, "test");
 

@@ -24,7 +24,7 @@
 
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
-use bao_stealth::{StealthProfile, StealthEngine, TlsFingerprintConfig};
+use bao_stealth::{StealthEngine, StealthProfile, TlsFingerprintConfig};
 
 // ---------------------------------------------------------------------------
 // Report — fault-tolerant sub-assertion accumulator
@@ -63,7 +63,10 @@ impl Report {
         for m in &self.messages {
             eprintln!("{}", m);
         }
-        eprintln!("--- {} passed, {} skipped, {} failed ---", self.passed, self.skipped, self.failed);
+        eprintln!(
+            "--- {} passed, {} skipped, {} failed ---",
+            self.passed, self.skipped, self.failed
+        );
     }
 }
 
@@ -93,7 +96,8 @@ fn simulate_canvas_hash(profile: &StealthProfile, size: u32) -> u64 {
     for y in 0..size {
         for x in 0..size {
             let (r, g, b, _a) = profile.canvas.apply_to_pixel(128, 128, 128, 255, x, y);
-            hash = hash.wrapping_mul(31)
+            hash = hash
+                .wrapping_mul(31)
                 .wrapping_add(r as u64)
                 .wrapping_add((g as u64) << 8)
                 .wrapping_add((b as u64) << 16);
@@ -117,34 +121,61 @@ fn stealth_diagnostic_detection_all() {
         ctx.set_global_setup(bun_runtime::globals::install_all);
 
         let ua = str_eval(&mut ctx, "navigator.userAgent");
-        report.check("browserleaks::firefox_ua_contains_firefox", ua.contains("Firefox"),
-            &format!("UA: {}", ua));
-        report.check("browserleaks::firefox_ua_contains_128", ua.contains("128.0"),
-            &format!("UA: {}", ua));
-        report.check("browserleaks::firefox_ua_contains_linux", ua.contains("Linux"),
-            &format!("UA: {}", ua));
-        report.check("browserleaks::firefox_ua_no_headless", !ua.contains("Headless"),
-            &format!("UA contains 'Headless': {}", ua));
+        report.check(
+            "browserleaks::firefox_ua_contains_firefox",
+            ua.contains("Firefox"),
+            &format!("UA: {}", ua),
+        );
+        report.check(
+            "browserleaks::firefox_ua_contains_128",
+            ua.contains("128.0"),
+            &format!("UA: {}", ua),
+        );
+        report.check(
+            "browserleaks::firefox_ua_contains_linux",
+            ua.contains("Linux"),
+            &format!("UA: {}", ua),
+        );
+        report.check(
+            "browserleaks::firefox_ua_no_headless",
+            !ua.contains("Headless"),
+            &format!("UA contains 'Headless': {}", ua),
+        );
 
         let vendor = str_eval(&mut ctx, "navigator.vendor");
-        report.check("browserleaks::firefox_vendor_empty", vendor == "",
-            &format!("vendor: {}", vendor));
+        report.check(
+            "browserleaks::firefox_vendor_empty",
+            vendor == "",
+            &format!("vendor: {}", vendor),
+        );
 
         let platform = str_eval(&mut ctx, "navigator.platform");
-        report.check("browserleaks::firefox_platform_linux", platform == "Linux x86_64",
-            &format!("platform: {}", platform));
+        report.check(
+            "browserleaks::firefox_platform_linux",
+            platform == "Linux x86_64",
+            &format!("platform: {}", platform),
+        );
 
         let lang = str_eval(&mut ctx, "navigator.language");
-        report.check("browserleaks::firefox_language_en_us", lang == "en-US",
-            &format!("language: {}", lang));
+        report.check(
+            "browserleaks::firefox_language_en_us",
+            lang == "en-US",
+            &format!("language: {}", lang),
+        );
 
         let hwc = num_eval(&mut ctx, "navigator.hardwareConcurrency") as u32;
-        report.check("browserleaks::firefox_hwc_8", hwc == 8,
-            &format!("hardwareConcurrency: {}", hwc));
+        report.check(
+            "browserleaks::firefox_hwc_8",
+            hwc == 8,
+            &format!("hardwareConcurrency: {}", hwc),
+        );
 
         let touch = num_eval(&mut ctx, "navigator.maxTouchPoints") as u32;
-        report.check("browserleaks::firefox_touch_0", touch == 0,
-            &format!("maxTouchPoints: {}", touch));
+        report.check(
+            "browserleaks::firefox_touch_0",
+            touch == 0,
+            &format!("maxTouchPoints: {}", touch),
+        );
 
         // ---- BrowserLeaks Screen (Firefox default) ----
         let profile = StealthProfile::firefox_default();
@@ -156,33 +187,83 @@ fn stealth_diagnostic_detection_all() {
         let pd = num_eval(&mut ctx, "screen.pixelDepth") as u32;
         let dpr = num_eval(&mut ctx, "devicePixelRatio");
 
-        report.check("browserleaks::screen_width", w == profile.screen.width,
-            &format!("width: {} vs profile {}", w, profile.screen.width));
-        report.check("browserleaks::screen_height", h == profile.screen.height,
-            &format!("height: {} vs profile {}", h, profile.screen.height));
-        report.check("browserleaks::screen_avail_width", aw == profile.screen.avail_width,
-            &format!("availWidth: {} vs profile {}", aw, profile.screen.avail_width));
-        report.check("browserleaks::screen_avail_height", ah == profile.screen.avail_height,
-            &format!("availHeight: {} vs profile {}", ah, profile.screen.avail_height));
-        report.check("browserleaks::screen_color_depth", cd == profile.screen.color_depth,
-            &format!("colorDepth: {} vs profile {}", cd, profile.screen.color_depth));
-        report.check("browserleaks::screen_pixel_depth", pd == profile.screen.pixel_depth,
-            &format!("pixelDepth: {} vs profile {}", pd, profile.screen.pixel_depth));
-        report.check("browserleaks::device_pixel_ratio",
+        report.check(
+            "browserleaks::screen_width",
+            w == profile.screen.width,
+            &format!("width: {} vs profile {}", w, profile.screen.width),
+        );
+        report.check(
+            "browserleaks::screen_height",
+            h == profile.screen.height,
+            &format!("height: {} vs profile {}", h, profile.screen.height),
+        );
+        report.check(
+            "browserleaks::screen_avail_width",
+            aw == profile.screen.avail_width,
+            &format!(
+                "availWidth: {} vs profile {}",
+                aw, profile.screen.avail_width
+            ),
+        );
+        report.check(
+            "browserleaks::screen_avail_height",
+            ah == profile.screen.avail_height,
+            &format!(
+                "availHeight: {} vs profile {}",
+                ah, profile.screen.avail_height
+            ),
+        );
+        report.check(
+            "browserleaks::screen_color_depth",
+            cd == profile.screen.color_depth,
+            &format!(
+                "colorDepth: {} vs profile {}",
+                cd, profile.screen.color_depth
+            ),
+        );
+        report.check(
+            "browserleaks::screen_pixel_depth",
+            pd == profile.screen.pixel_depth,
+            &format!(
+                "pixelDepth: {} vs profile {}",
+                pd, profile.screen.pixel_depth
+            ),
+        );
+        report.check(
+            "browserleaks::device_pixel_ratio",
             (dpr - profile.screen.device_pixel_ratio).abs() < f64::EPSILON,
-            &format!("dpr: {} vs profile {}", dpr, profile.screen.device_pixel_ratio));
+            &format!(
+                "dpr: {} vs profile {}",
+                dpr, profile.screen.device_pixel_ratio
+            ),
+        );
 
         // Logical consistency (diagnostic websites check these)
-        report.check("browserleaks::screen_w_ge_h", w >= h,
-            &format!("width {} < height {}", w, h));
-        report.check("browserleaks::screen_aw_le_w", aw <= w,
-            &format!("availWidth {} > width {}", aw, w));
-        report.check("browserleaks::screen_ah_le_h", ah <= h,
-            &format!("availHeight {} > height {}", ah, h));
-        report.check("browserleaks::color_depth_eq_pixel_depth", cd == pd,
-            &format!("colorDepth {} != pixelDepth {}", cd, pd));
-        report.check("browserleaks::color_depth_24_or_32", cd == 24 || cd == 32,
-            &format!("colorDepth: {}", cd));
+        report.check(
+            "browserleaks::screen_w_ge_h",
+            w >= h,
+            &format!("width {} < height {}", w, h),
+        );
+        report.check(
+            "browserleaks::screen_aw_le_w",
+            aw <= w,
+            &format!("availWidth {} > width {}", aw, w),
+        );
+        report.check(
+            "browserleaks::screen_ah_le_h",
+            ah <= h,
+            &format!("availHeight {} > height {}", ah, h),
+        );
+        report.check(
+            "browserleaks::color_depth_eq_pixel_depth",
+            cd == pd,
+            &format!("colorDepth {} != pixelDepth {}", cd, pd),
+        );
+        report.check(
+            "browserleaks::color_depth_24_or_32",
+            cd == 24 || cd == 32,
+            &format!("colorDepth: {}", cd),
+        );
 
         // ---- CreepJS: webdriver hidden ----
         let webdriver = match ctx.eval("navigator.webdriver", "<creepjs>") {
@@ -190,8 +271,11 @@ fn stealth_diagnostic_detection_all() {
             Ok(JsValue::String(s)) => s == "true",
             _ => true,
         };
-        report.check("creepjs::webdriver_false", !webdriver,
-            "navigator.webdriver is true — bot detected!");
+        report.check(
+            "creepjs::webdriver_false",
+            !webdriver,
+            "navigator.webdriver is true — bot detected!",
+        );
 
         // ---- CreepJS: no automation indicators ----
         let indicators = [
@@ -205,46 +289,78 @@ fn stealth_diagnostic_detection_all() {
                 Ok(JsValue::Bool(b)) => b,
                 _ => true,
             };
-            report.check(&format!("creepjs::no_{}", name), clean,
-                &format!("Automation indicator {} detected", name));
+            report.check(
+                &format!("creepjs::no_{}", name),
+                clean,
+                &format!("Automation indicator {} detected", name),
+            );
         }
 
         // ---- CreepJS: navigator consistency ----
         let app_version = str_eval(&mut ctx, "navigator.appVersion");
-        report.check("creepjs::ua_appversion_consistent",
+        report.check(
+            "creepjs::ua_appversion_consistent",
             ua.contains("X11") || app_version.contains("X11"),
-            "UA and appVersion must both indicate X11/Linux");
+            "UA and appVersion must both indicate X11/Linux",
+        );
 
         let product_sub = str_eval(&mut ctx, "navigator.productSub");
         if product_sub.contains("Undefined") {
-            report.skip("creepjs::firefox_product_sub", "productSub not available in minimal JsContext");
+            report.skip(
+                "creepjs::firefox_product_sub",
+                "productSub not available in minimal JsContext",
+            );
         } else if ua.contains("Firefox") {
-            report.check("creepjs::firefox_product_sub", product_sub == "20100101",
-                &format!("Firefox productSub should be 20100101, got {}", product_sub));
+            report.check(
+                "creepjs::firefox_product_sub",
+                product_sub == "20100101",
+                &format!("Firefox productSub should be 20100101, got {}", product_sub),
+            );
         }
 
         // ---- Whoer.net: system fingerprint consistency ----
-        report.check("whoer::ua_platform_linux_consistent",
+        report.check(
+            "whoer::ua_platform_linux_consistent",
             ua.contains("Linux") && platform.contains("Linux"),
-            &format!("UA says {} but platform says {} — inconsistent", ua, platform));
+            &format!(
+                "UA says {} but platform says {} — inconsistent",
+                ua, platform
+            ),
+        );
 
         if ua.contains("x86_64") {
-            report.check("whoer::x86_64_hwc_ge_4", hwc >= 4,
-                &format!("x86_64 desktop should have hwc >= 4, got {}", hwc));
+            report.check(
+                "whoer::x86_64_hwc_ge_4",
+                hwc >= 4,
+                &format!("x86_64 desktop should have hwc >= 4, got {}", hwc),
+            );
         }
 
         let common_resolutions = [(1920, 1080), (2560, 1440), (1366, 768), (1536, 864)];
-        let is_common = common_resolutions.iter().any(|(cw, ch)| w == *cw && h == *ch);
-        report.check("whoer::screen_common_resolution",
+        let is_common = common_resolutions
+            .iter()
+            .any(|(cw, ch)| w == *cw && h == *ch);
+        report.check(
+            "whoer::screen_common_resolution",
             is_common || (w >= 1024 && h >= 768),
-            &format!("Screen {}x{} is unusual", w, h));
+            &format!("Screen {}x{} is unusual", w, h),
+        );
 
-        report.check("whoer::color_depth_standard", cd == 24 || cd == 32,
-            &format!("colorDepth {} is unusual", cd));
-        report.check("whoer::dpr_reasonable", dpr >= 1.0 && dpr <= 3.0,
-            &format!("devicePixelRatio {} is unusual", dpr));
-        report.check("whoer::desktop_no_touch", touch == 0,
-            &format!("Desktop should have maxTouchPoints=0, got {}", touch));
+        report.check(
+            "whoer::color_depth_standard",
+            cd == 24 || cd == 32,
+            &format!("colorDepth {} is unusual", cd),
+        );
+        report.check(
+            "whoer::dpr_reasonable",
+            dpr >= 1.0 && dpr <= 3.0,
+            &format!("devicePixelRatio {} is unusual", dpr),
+        );
+        report.check(
+            "whoer::desktop_no_touch",
+            touch == 0,
+            &format!("Desktop should have maxTouchPoints=0, got {}", touch),
+        );
 
         // ---- IPLeak: WebRTC not leaking ----
         let rtc_available = match ctx.eval("typeof RTCPeerConnection !== 'undefined'", "<ipleak>") {
@@ -252,8 +368,10 @@ fn stealth_diagnostic_detection_all() {
             _ => false,
         };
         if rtc_available {
-            let can_create = str_eval(&mut ctx,
-                "try { new RTCPeerConnection({iceServers: []}); 'created' } catch(e) { 'blocked' }");
+            let can_create = str_eval(
+                &mut ctx,
+                "try { new RTCPeerConnection({iceServers: []}); 'created' } catch(e) { 'blocked' }",
+            );
             report.pass(&format!("ipleak::rtc_status_{}", can_create));
         } else {
             report.pass("ipleak::rtc_not_available_no_leak");
@@ -267,8 +385,11 @@ fn stealth_diagnostic_detection_all() {
             Ok(JsValue::Bool(b)) => b,
             _ => false,
         };
-        report.check("cdp_stealth::chrome_runtime_undefined", !chrome_runtime,
-            "chrome.runtime is defined — ChromeDriver automation indicator detected!");
+        report.check(
+            "cdp_stealth::chrome_runtime_undefined",
+            !chrome_runtime,
+            "chrome.runtime is defined — ChromeDriver automation indicator detected!",
+        );
 
         let cdc_globals = match ctx.eval(
             "!Object.keys(window).some(function(k) { return k.startsWith('cdc_'); })",
@@ -277,8 +398,11 @@ fn stealth_diagnostic_detection_all() {
             Ok(JsValue::Bool(b)) => b,
             _ => true,
         };
-        report.check("cdp_stealth::no_cdc_globals", cdc_globals,
-            "cdc_ prefixed globals found — ChromeDriver automation indicator detected!");
+        report.check(
+            "cdp_stealth::no_cdc_globals",
+            cdc_globals,
+            "cdc_ prefixed globals found — ChromeDriver automation indicator detected!",
+        );
     }
 
     // ---- Phase 2: Chrome profile tests ----
@@ -290,30 +414,53 @@ fn stealth_diagnostic_detection_all() {
         ctx.set_global_setup(bun_runtime::globals::install_all);
 
         let ua = str_eval(&mut ctx, "navigator.userAgent");
-        report.check("browserleaks::chrome_ua_contains_chrome", ua.contains("Chrome"),
-            &format!("UA: {}", ua));
-        report.check("browserleaks::chrome_ua_no_headless", !ua.contains("Headless"),
-            &format!("UA contains 'Headless': {}", ua));
+        report.check(
+            "browserleaks::chrome_ua_contains_chrome",
+            ua.contains("Chrome"),
+            &format!("UA: {}", ua),
+        );
+        report.check(
+            "browserleaks::chrome_ua_no_headless",
+            !ua.contains("Headless"),
+            &format!("UA contains 'Headless': {}", ua),
+        );
 
         let vendor = str_eval(&mut ctx, "navigator.vendor");
-        report.check("browserleaks::chrome_vendor_google", vendor == "Google Inc.",
-            &format!("vendor: {}", vendor));
+        report.check(
+            "browserleaks::chrome_vendor_google",
+            vendor == "Google Inc.",
+            &format!("vendor: {}", vendor),
+        );
 
         let platform = str_eval(&mut ctx, "navigator.platform");
-        report.check("browserleaks::chrome_platform_linux", platform == "Linux x86_64",
-            &format!("platform: {}", platform));
+        report.check(
+            "browserleaks::chrome_platform_linux",
+            platform == "Linux x86_64",
+            &format!("platform: {}", platform),
+        );
 
         let w = num_eval(&mut ctx, "screen.width") as u32;
         let h = num_eval(&mut ctx, "screen.height") as u32;
         let dpr = num_eval(&mut ctx, "devicePixelRatio");
 
-        report.check("browserleaks::chrome_screen_width", w == profile.screen.width,
-            &format!("width: {} vs profile {}", w, profile.screen.width));
-        report.check("browserleaks::chrome_screen_height", h == profile.screen.height,
-            &format!("height: {} vs profile {}", h, profile.screen.height));
-        report.check("browserleaks::chrome_dpr",
+        report.check(
+            "browserleaks::chrome_screen_width",
+            w == profile.screen.width,
+            &format!("width: {} vs profile {}", w, profile.screen.width),
+        );
+        report.check(
+            "browserleaks::chrome_screen_height",
+            h == profile.screen.height,
+            &format!("height: {} vs profile {}", h, profile.screen.height),
+        );
+        report.check(
+            "browserleaks::chrome_dpr",
             (dpr - profile.screen.device_pixel_ratio).abs() < f64::EPSILON,
-            &format!("dpr: {} vs profile {}", dpr, profile.screen.device_pixel_ratio));
+            &format!(
+                "dpr: {} vs profile {}",
+                dpr, profile.screen.device_pixel_ratio
+            ),
+        );
     }
 
     // ---- Phase 3: Cross-profile isolation ----
@@ -326,10 +473,16 @@ fn stealth_diagnostic_detection_all() {
 
         let ff_ua = str_eval(&mut ctx_ff, "navigator.userAgent");
         let ff_vendor = str_eval(&mut ctx_ff, "navigator.vendor");
-        report.check("cross_profile::firefox_ua", ff_ua.contains("Firefox"),
-            &format!("Expected Firefox UA, got: {}", ff_ua));
-        report.check("cross_profile::firefox_vendor_empty", ff_vendor == "",
-            &format!("Expected empty vendor, got: {}", ff_vendor));
+        report.check(
+            "cross_profile::firefox_ua",
+            ff_ua.contains("Firefox"),
+            &format!("Expected Firefox UA, got: {}", ff_ua),
+        );
+        report.check(
+            "cross_profile::firefox_vendor_empty",
+            ff_vendor == "",
+            &format!("Expected empty vendor, got: {}", ff_vendor),
+        );
 
         // Switch to Chrome
         let chrome = StealthProfile::chrome_default();
@@ -340,20 +493,37 @@ fn stealth_diagnostic_detection_all() {
 
         let ch_ua = str_eval(&mut ctx_ch, "navigator.userAgent");
         let ch_vendor = str_eval(&mut ctx_ch, "navigator.vendor");
-        report.check("cross_profile::chrome_ua", ch_ua.contains("Chrome"),
-            &format!("Expected Chrome UA, got: {}", ch_ua));
-        report.check("cross_profile::chrome_vendor_google", ch_vendor == "Google Inc.",
-            &format!("Expected 'Google Inc.', got: {}", ch_vendor));
-        report.check("cross_profile::uas_differ", ff_ua != ch_ua,
-            "Firefox and Chrome UAs must differ after profile switch");
+        report.check(
+            "cross_profile::chrome_ua",
+            ch_ua.contains("Chrome"),
+            &format!("Expected Chrome UA, got: {}", ch_ua),
+        );
+        report.check(
+            "cross_profile::chrome_vendor_google",
+            ch_vendor == "Google Inc.",
+            &format!("Expected 'Google Inc.', got: {}", ch_vendor),
+        );
+        report.check(
+            "cross_profile::uas_differ",
+            ff_ua != ch_ua,
+            "Firefox and Chrome UAs must differ after profile switch",
+        );
     }
 
     report.finish();
 
     // ---- Strict verification gate ----
     // 1. Zero FAIL — any failure is a hard error
-    let fails = report.messages.iter().filter(|m| m.starts_with("FAIL")).count();
-    assert_eq!(fails, 0, "{} diagnostic detection assertions FAILED — fingerprint compromised!", fails);
+    let fails = report
+        .messages
+        .iter()
+        .filter(|m| m.starts_with("FAIL"))
+        .count();
+    assert_eq!(
+        fails, 0,
+        "{} diagnostic detection assertions FAILED — fingerprint compromised!",
+        fails
+    );
 
     // 2. Mandatory assertions — these MUST be PASS (not skip, not fail)
     let mandatory_prefixes = [
@@ -384,11 +554,17 @@ fn stealth_diagnostic_detection_all() {
     ];
 
     for prefix in &mandatory_prefixes {
-        let is_pass = report.messages.iter()
+        let is_pass = report
+            .messages
+            .iter()
             .any(|m| m.starts_with("PASS") && m.contains(prefix));
-        let is_fail = report.messages.iter()
+        let is_fail = report
+            .messages
+            .iter()
             .any(|m| m.starts_with("FAIL") && m.contains(prefix));
-        let is_skip = report.messages.iter()
+        let is_skip = report
+            .messages
+            .iter()
             .any(|m| m.starts_with("SKIP") && m.contains(prefix));
         assert!(is_pass && !is_fail && !is_skip,
             "MANDATORY assertion '{}' was not PASS (pass={}, fail={}, skip={}) — fingerprint verification failed!",
@@ -399,14 +575,21 @@ fn stealth_diagnostic_detection_all() {
     let total = report.passed + report.failed;
     if total > 0 {
         let ratio = report.passed as f64 / total as f64;
-        assert!(ratio >= 1.0, "pass ratio {}/{} ({:.1}%) < 100% — fingerprint verification failed",
-            report.passed, total, ratio * 100.0);
+        assert!(
+            ratio >= 1.0,
+            "pass ratio {}/{} ({:.1}%) < 100% — fingerprint verification failed",
+            report.passed,
+            total,
+            ratio * 100.0
+        );
     }
 
     // 4. Minimum pass count — must have at least 30 sub-assertions passing
-    assert!(report.passed >= 30,
+    assert!(
+        report.passed >= 30,
         "only {} sub-assertions passed — need at least 30 for adequate fingerprint coverage",
-        report.passed);
+        report.passed
+    );
 
     JsContext::shutdown_thread_sm();
 }
@@ -430,7 +613,10 @@ fn amiunique_full_fingerprint_firefox() {
     assert_eq!(engine.navigator().max_touch_points, 0);
     assert_eq!(engine.navigator().product_sub, "20100101");
     assert_eq!(engine.navigator().oscpu, Some("Linux x86_64".to_string()));
-    assert_eq!(engine.navigator().build_id, Some("20240701150000".to_string()));
+    assert_eq!(
+        engine.navigator().build_id,
+        Some("20240701150000".to_string())
+    );
     assert_eq!(engine.screen().width, 1920);
     assert_eq!(engine.screen().height, 1080);
     assert_eq!(engine.screen().color_depth, 24);
@@ -476,10 +662,17 @@ fn browserleaks_canvas_deterministic_noise() {
     for x in 0..10u32 {
         for y in 0..10u32 {
             let pa = profile.canvas.apply_to_pixel(128, 128, 128, 255, x, y);
-            let pb = profile.canvas.apply_to_pixel(128, 128, 128, 255, x + 100, y + 100);
-            if pa != pb { any_different = true; break; }
+            let pb = profile
+                .canvas
+                .apply_to_pixel(128, 128, 128, 255, x + 100, y + 100);
+            if pa != pb {
+                any_different = true;
+                break;
+            }
         }
-        if any_different { break; }
+        if any_different {
+            break;
+        }
     }
     assert!(any_different, "Canvas noise should vary across positions");
 
@@ -503,15 +696,26 @@ fn browserleaks_canvas_different_profiles_different_fingerprint() {
         for y in 0..50u32 {
             let fp = firefox.canvas.apply_to_pixel(200, 100, 50, 255, x, y);
             let cp = chrome.canvas.apply_to_pixel(200, 100, 50, 255, x, y);
-            if fp != cp { any_different = true; break; }
+            if fp != cp {
+                any_different = true;
+                break;
+            }
         }
-        if any_different { break; }
+        if any_different {
+            break;
+        }
     }
-    assert!(any_different, "Firefox and Chrome canvas noise must differ across positions");
+    assert!(
+        any_different,
+        "Firefox and Chrome canvas noise must differ across positions"
+    );
 
     let ff_hash = simulate_canvas_hash(&firefox, 100);
     let ch_hash = simulate_canvas_hash(&chrome, 100);
-    assert_ne!(ff_hash, ch_hash, "Firefox and Chrome must produce different canvas hashes");
+    assert_ne!(
+        ff_hash, ch_hash,
+        "Firefox and Chrome must produce different canvas hashes"
+    );
 }
 
 // ---- BrowserLeaks: WebGL vendor/renderer consistency ----
@@ -524,7 +728,10 @@ fn browserleaks_webgl_vendor_renderer_consistency() {
     assert_eq!(engine.webgl().vendor, profile.webgl.vendor);
     assert_eq!(engine.webgl().renderer, profile.webgl.renderer);
     assert!(!profile.webgl.extensions.is_empty());
-    assert!(profile.webgl.extensions.contains(&"WEBGL_debug_renderer_info".to_string()));
+    assert!(profile
+        .webgl
+        .extensions
+        .contains(&"WEBGL_debug_renderer_info".to_string()));
     assert_eq!(profile.webgl.max_texture_size, 16384);
     assert_eq!(profile.webgl.max_renderbuffer_size, 16384);
     assert_eq!(profile.webgl.max_viewport_dims, [16384, 16384]);
@@ -552,9 +759,15 @@ fn ja3er_tls_fingerprint_firefox() {
     assert!(!config.tls13_cipher_suites.is_empty());
     assert!(!config.curves_list.is_empty());
     assert!(!config.sigalgs_list.is_empty());
-    assert!(config.tls13_cipher_suites.contains("TLS_AES_128_GCM_SHA256"));
-    assert!(config.tls13_cipher_suites.contains("TLS_AES_256_GCM_SHA384"));
-    assert!(config.tls13_cipher_suites.contains("TLS_CHACHA20_POLY1305_SHA256"));
+    assert!(config
+        .tls13_cipher_suites
+        .contains("TLS_AES_128_GCM_SHA256"));
+    assert!(config
+        .tls13_cipher_suites
+        .contains("TLS_AES_256_GCM_SHA384"));
+    assert!(config
+        .tls13_cipher_suites
+        .contains("TLS_CHACHA20_POLY1305_SHA256"));
 
     let ja3 = profile.tls.compute_ja3();
     assert!(ja3.starts_with("771,"), "JA3 must start with 771");
@@ -594,7 +807,11 @@ fn audio_fingerprint_deterministic() {
     assert!((profile.audio.noise_amplitude() - 1e-7).abs() < f64::EPSILON);
 
     let noisy = profile.audio.apply_noise(0.5, 100);
-    assert!((noisy - 0.5).abs() < 1e-5, "noise too large: {}", noisy - 0.5);
+    assert!(
+        (noisy - 0.5).abs() < 1e-5,
+        "noise too large: {}",
+        noisy - 0.5
+    );
 }
 
 #[test]
@@ -613,8 +830,12 @@ fn audio_fingerprint_different_profiles() {
 fn behavior_mouse_path_natural() {
     let profile = StealthProfile::firefox_default();
 
-    let path1 = profile.behavior.generate_mouse_path(0.0, 0.0, 500.0, 300.0, 20);
-    let path2 = profile.behavior.generate_mouse_path(0.0, 0.0, 500.0, 300.0, 20);
+    let path1 = profile
+        .behavior
+        .generate_mouse_path(0.0, 0.0, 500.0, 300.0, 20);
+    let path2 = profile
+        .behavior
+        .generate_mouse_path(0.0, 0.0, 500.0, 300.0, 20);
     assert_eq!(path1, path2, "Mouse path must be deterministic");
 
     let (sx, sy) = path1[0];
@@ -632,8 +853,12 @@ fn behavior_typing_delays_human_like() {
     let delays = profile.behavior.generate_typing_delays(50);
 
     assert!(delays.iter().all(|&d| d > 0));
-    assert!(delays.iter().all(|&d| d >= 30 && d <= 200),
-        "min={}, max={}", delays.iter().min().unwrap_or(&0), delays.iter().max().unwrap_or(&0));
+    assert!(
+        delays.iter().all(|&d| d >= 30 && d <= 200),
+        "min={}, max={}",
+        delays.iter().min().unwrap_or(&0),
+        delays.iter().max().unwrap_or(&0)
+    );
 
     let min_d = *delays.iter().min().unwrap_or(&0);
     let max_d = *delays.iter().max().unwrap_or(&0);
@@ -690,7 +915,10 @@ fn http2_pseudo_header_ordering() {
     assert_eq!(chrome.http2.pseudo_header_order[2], ":scheme");
     assert_eq!(chrome.http2.pseudo_header_order[3], ":path");
 
-    assert_ne!(firefox.http2.pseudo_header_order, chrome.http2.pseudo_header_order);
+    assert_ne!(
+        firefox.http2.pseudo_header_order,
+        chrome.http2.pseudo_header_order
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -718,39 +946,64 @@ fn fingerprint_strict_consistency_gate() {
         violations.push("Firefox platform missing 'Linux' — inconsistent with UA".into());
     }
     if !firefox.navigator.vendor.is_empty() {
-        violations.push(format!("Firefox vendor should be empty, got '{}'", firefox.navigator.vendor));
+        violations.push(format!(
+            "Firefox vendor should be empty, got '{}'",
+            firefox.navigator.vendor
+        ));
     }
     // Chrome: UA contains "Chrome", vendor is "Google Inc."
     if !chrome.navigator.user_agent.contains("Chrome") {
         violations.push("Chrome UA missing 'Chrome'".into());
     }
     if chrome.navigator.vendor != "Google Inc." {
-        violations.push(format!("Chrome vendor should be 'Google Inc.', got '{}'", chrome.navigator.vendor));
+        violations.push(format!(
+            "Chrome vendor should be 'Google Inc.', got '{}'",
+            chrome.navigator.vendor
+        ));
     }
     // Cross-profile: UAs must differ
     if firefox.navigator.user_agent == chrome.navigator.user_agent {
-        violations.push("Firefox and Chrome UAs are identical — fingerprint not differentiated".into());
+        violations
+            .push("Firefox and Chrome UAs are identical — fingerprint not differentiated".into());
     }
 
     // ---- Screen: logical consistency ----
     for (name, profile) in [("Firefox", &firefox), ("Chrome", &chrome)] {
         if profile.screen.width < profile.screen.height {
-            violations.push(format!("{} screen.width ({}) < screen.height ({}) — unusual for desktop", name, profile.screen.width, profile.screen.height));
+            violations.push(format!(
+                "{} screen.width ({}) < screen.height ({}) — unusual for desktop",
+                name, profile.screen.width, profile.screen.height
+            ));
         }
         if profile.screen.avail_width > profile.screen.width {
-            violations.push(format!("{} availWidth ({}) > width ({}) — impossible", name, profile.screen.avail_width, profile.screen.width));
+            violations.push(format!(
+                "{} availWidth ({}) > width ({}) — impossible",
+                name, profile.screen.avail_width, profile.screen.width
+            ));
         }
         if profile.screen.avail_height > profile.screen.height {
-            violations.push(format!("{} availHeight ({}) > height ({}) — impossible", name, profile.screen.avail_height, profile.screen.height));
+            violations.push(format!(
+                "{} availHeight ({}) > height ({}) — impossible",
+                name, profile.screen.avail_height, profile.screen.height
+            ));
         }
         if profile.screen.color_depth != profile.screen.pixel_depth {
-            violations.push(format!("{} colorDepth ({}) != pixelDepth ({}) — inconsistent", name, profile.screen.color_depth, profile.screen.pixel_depth));
+            violations.push(format!(
+                "{} colorDepth ({}) != pixelDepth ({}) — inconsistent",
+                name, profile.screen.color_depth, profile.screen.pixel_depth
+            ));
         }
         if profile.screen.color_depth != 24 && profile.screen.color_depth != 32 {
-            violations.push(format!("{} colorDepth {} is unusual for desktop", name, profile.screen.color_depth));
+            violations.push(format!(
+                "{} colorDepth {} is unusual for desktop",
+                name, profile.screen.color_depth
+            ));
         }
         if profile.screen.device_pixel_ratio < 1.0 || profile.screen.device_pixel_ratio > 3.0 {
-            violations.push(format!("{} devicePixelRatio {} is out of range [1.0, 3.0]", name, profile.screen.device_pixel_ratio));
+            violations.push(format!(
+                "{} devicePixelRatio {} is out of range [1.0, 3.0]",
+                name, profile.screen.device_pixel_ratio
+            ));
         }
     }
 
@@ -762,10 +1015,16 @@ fn fingerprint_strict_consistency_gate() {
         violations.push("Chrome WebGL vendor is empty".into());
     }
     if firefox.webgl.vendor == chrome.webgl.vendor {
-        violations.push("Firefox and Chrome WebGL vendors are identical — fingerprint not differentiated".into());
+        violations.push(
+            "Firefox and Chrome WebGL vendors are identical — fingerprint not differentiated"
+                .into(),
+        );
     }
     if firefox.webgl.renderer == chrome.webgl.renderer {
-        violations.push("Firefox and Chrome WebGL renderers are identical — fingerprint not differentiated".into());
+        violations.push(
+            "Firefox and Chrome WebGL renderers are identical — fingerprint not differentiated"
+                .into(),
+        );
     }
     if firefox.webgl.extensions.is_empty() {
         violations.push("Firefox WebGL extensions list is empty".into());
@@ -782,7 +1041,9 @@ fn fingerprint_strict_consistency_gate() {
         violations.push(format!("Chrome JA3 invalid: {}", chrome.tls.ja3_hash));
     }
     if firefox.tls.compute_ja3() == chrome.tls.compute_ja3() {
-        violations.push("Firefox and Chrome JA3 are identical — TLS fingerprint not differentiated".into());
+        violations.push(
+            "Firefox and Chrome JA3 are identical — TLS fingerprint not differentiated".into(),
+        );
     }
     let ff_tls_config = TlsFingerprintConfig::from_fingerprint(&firefox.tls);
     let ch_tls_config = TlsFingerprintConfig::from_fingerprint(&chrome.tls);
@@ -840,19 +1101,29 @@ fn fingerprint_strict_consistency_gate() {
     }
 
     // ---- Behavior: must be deterministic and differ between profiles ----
-    let m1 = firefox.behavior.generate_mouse_path(0.0, 0.0, 500.0, 300.0, 10);
-    let m2 = firefox.behavior.generate_mouse_path(0.0, 0.0, 500.0, 300.0, 10);
+    let m1 = firefox
+        .behavior
+        .generate_mouse_path(0.0, 0.0, 500.0, 300.0, 10);
+    let m2 = firefox
+        .behavior
+        .generate_mouse_path(0.0, 0.0, 500.0, 300.0, 10);
     if m1 != m2 {
-        violations.push("Firefox mouse path is not deterministic — behavior fingerprint will be inconsistent".into());
+        violations.push(
+            "Firefox mouse path is not deterministic — behavior fingerprint will be inconsistent"
+                .into(),
+        );
     }
-    let m3 = chrome.behavior.generate_mouse_path(0.0, 0.0, 500.0, 300.0, 10);
+    let m3 = chrome
+        .behavior
+        .generate_mouse_path(0.0, 0.0, 500.0, 300.0, 10);
     if m1 == m3 {
         violations.push("Firefox and Chrome mouse paths are identical — Behavior fingerprint not differentiated".into());
     }
 
     // ---- Final gate ----
     if !violations.is_empty() {
-        let report = violations.iter()
+        let report = violations
+            .iter()
             .map(|v| format!("  - {}", v))
             .collect::<Vec<_>>()
             .join("\n");

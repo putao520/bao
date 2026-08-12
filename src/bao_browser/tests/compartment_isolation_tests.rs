@@ -71,7 +71,10 @@ impl Report {
             "--- {} passed, {} skipped, {} failed ---",
             self.passed, self.skipped, self.failed
         );
-        assert_eq!(self.failed, 0, "BUG-ENG-366: compartment isolation tests failed");
+        assert_eq!(
+            self.failed, 0,
+            "BUG-ENG-366: compartment isolation tests failed"
+        );
     }
 }
 
@@ -120,8 +123,13 @@ fn scenario_two_pages_distinct_profiles(r: &mut Report) {
     } else {
         r.fail(
             "two_pages_distinct_profiles",
-            &format!("a={:?} b={:?} expected chrome={} firefox={}", a_ua, b_ua,
-                chrome.canvas.seed(), firefox.canvas.seed()),
+            &format!(
+                "a={:?} b={:?} expected chrome={} firefox={}",
+                a_ua,
+                b_ua,
+                chrome.canvas.seed(),
+                firefox.canvas.seed()
+            ),
         );
     }
 
@@ -151,7 +159,12 @@ fn scenario_node_realm_aliases_page(r: &mut Report) {
     } else {
         r.fail(
             "node_realm_aliases_page",
-            &format!("page={:?} node={:?} expected={}", page_seed, node_seed, profile.canvas.seed()),
+            &format!(
+                "page={:?} node={:?} expected={}",
+                page_seed,
+                node_seed,
+                profile.canvas.seed()
+            ),
         );
     }
 }
@@ -183,7 +196,12 @@ fn scenario_force_isolate_false_still_isolated(r: &mut Report) {
             all_ok = false;
             r.fail(
                 "force_isolate_false_still_isolated",
-                &format!("addr {:#x} expected {} got {:?}", addr, expected.canvas.seed(), actual),
+                &format!(
+                    "addr {:#x} expected {} got {:?}",
+                    addr,
+                    expected.canvas.seed(),
+                    actual
+                ),
             );
         }
     }
@@ -228,7 +246,12 @@ fn scenario_navigation_rekey(r: &mut Report) {
     } else {
         r.fail(
             "navigation_rekey",
-            &format!("old={:?} new={:?} expected={}", old_seed, new_seed, profile.canvas.seed()),
+            &format!(
+                "old={:?} new={:?} expected={}",
+                old_seed,
+                new_seed,
+                profile.canvas.seed()
+            ),
         );
     }
 }
@@ -270,7 +293,10 @@ fn scenario_baoconfig_force_isolate_only_event_loop(r: &mut Report) {
     if bao.validate().is_ok() {
         r.pass("baoconfig_force_isolate_only_event_loop: BaoConfig constructs cleanly");
     } else {
-        r.fail("baoconfig_force_isolate_only_event_loop", "BaoConfig::validate failed");
+        r.fail(
+            "baoconfig_force_isolate_only_event_loop",
+            "BaoConfig::validate failed",
+        );
     }
 
     // PageConfig must accept a stealth profile (the per-page fingerprint source).
@@ -279,7 +305,10 @@ fn scenario_baoconfig_force_isolate_only_event_loop(r: &mut Report) {
     if pc.stealth_profile.is_some() {
         r.pass("pageconfig_carries_stealth_profile");
     } else {
-        r.fail("pageconfig_carries_stealth_profile", "PageConfig dropped stealth_profile");
+        r.fail(
+            "pageconfig_carries_stealth_profile",
+            "PageConfig dropped stealth_profile",
+        );
     }
 }
 

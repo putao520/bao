@@ -3,7 +3,7 @@
 // default values, validation boundaries, From<BrowserConfig> conversion,
 // clone/debug, edge cases.
 
-use bao_browser::{BaoConfig, PageConfig, BrowserConfig};
+use bao_browser::{BaoConfig, BrowserConfig, PageConfig};
 use std::time::Duration;
 
 // ---- BaoConfig defaults ----
@@ -49,7 +49,10 @@ fn test_bao_config_validate_ok() {
 
 #[test]
 fn test_bao_config_validate_max_pages_zero() {
-    let cfg = BaoConfig { max_pages: 0, ..Default::default() };
+    let cfg = BaoConfig {
+        max_pages: 0,
+        ..Default::default()
+    };
     let err = cfg.validate().unwrap_err();
     assert!(err.contains("max_pages"));
     assert!(err.contains("0"));
@@ -57,7 +60,10 @@ fn test_bao_config_validate_max_pages_zero() {
 
 #[test]
 fn test_bao_config_validate_viewport_width_below_800() {
-    let cfg = BaoConfig { default_viewport_width: 799, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_width: 799,
+        ..Default::default()
+    };
     let err = cfg.validate().unwrap_err();
     assert!(err.contains("viewport_width"));
     assert!(err.contains("799"));
@@ -65,13 +71,19 @@ fn test_bao_config_validate_viewport_width_below_800() {
 
 #[test]
 fn test_bao_config_validate_viewport_width_800() {
-    let cfg = BaoConfig { default_viewport_width: 800, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_width: 800,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
 #[test]
 fn test_bao_config_validate_viewport_height_below_600() {
-    let cfg = BaoConfig { default_viewport_height: 599, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_height: 599,
+        ..Default::default()
+    };
     let err = cfg.validate().unwrap_err();
     assert!(err.contains("viewport_height"));
     assert!(err.contains("599"));
@@ -79,13 +91,19 @@ fn test_bao_config_validate_viewport_height_below_600() {
 
 #[test]
 fn test_bao_config_validate_viewport_height_600() {
-    let cfg = BaoConfig { default_viewport_height: 600, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_height: 600,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
 #[test]
 fn test_bao_config_validate_max_pages_1() {
-    let cfg = BaoConfig { max_pages: 1, ..Default::default() };
+    let cfg = BaoConfig {
+        max_pages: 1,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
@@ -101,7 +119,10 @@ fn test_bao_config_validate_large_viewport() {
 
 #[test]
 fn test_bao_config_validate_cdp_port_set() {
-    let cfg = BaoConfig { cdp_port: Some(9222), ..Default::default() };
+    let cfg = BaoConfig {
+        cdp_port: Some(9222),
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
@@ -109,7 +130,11 @@ fn test_bao_config_validate_cdp_port_set() {
 
 #[test]
 fn test_bao_config_clone() {
-    let cfg = BaoConfig { cdp_port: Some(8080), max_pages: 10, ..Default::default() };
+    let cfg = BaoConfig {
+        cdp_port: Some(8080),
+        max_pages: 10,
+        ..Default::default()
+    };
     let cloned = cfg.clone();
     assert_eq!(cloned.cdp_port, cfg.cdp_port);
     assert_eq!(cloned.max_pages, cfg.max_pages);
@@ -246,7 +271,10 @@ fn test_browser_config_debug() {
 
 #[test]
 fn test_from_browser_config_port() {
-    let bc = BrowserConfig { cdp_port: 9999, ..Default::default() };
+    let bc = BrowserConfig {
+        cdp_port: 9999,
+        ..Default::default()
+    };
     let ac: BaoConfig = bc.into();
     assert_eq!(ac.cdp_port, Some(9999));
 }
@@ -285,12 +313,18 @@ fn test_from_browser_config_stealth_propagates() {
 
 #[test]
 fn test_browser_config_port_zero() {
-    let cfg = BrowserConfig { cdp_port: 0, ..Default::default() };
+    let cfg = BrowserConfig {
+        cdp_port: 0,
+        ..Default::default()
+    };
     assert_eq!(cfg.cdp_port, 0);
 }
 
 #[test]
 fn test_browser_config_port_max() {
-    let cfg = BrowserConfig { cdp_port: 65535, ..Default::default() };
+    let cfg = BrowserConfig {
+        cdp_port: 65535,
+        ..Default::default()
+    };
     assert_eq!(cfg.cdp_port, 65535);
 }

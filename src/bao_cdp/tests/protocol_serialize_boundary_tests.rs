@@ -4,11 +4,12 @@
 // CdpEvent with/without params, serialize_response edge cases,
 // parse_message invalid inputs, roundtrip consistency.
 
-use bao_cdp::{CdpMessage, CdpResponse, CdpError, CdpEvent, parse_message, serialize_response, serialize_event};
+use bao_cdp::{
+    parse_message, serialize_event, serialize_response, CdpError, CdpEvent, CdpMessage, CdpResponse,
+};
 
 const TID: &str = "test-target";
 use serde_json::json;
-
 
 // ---- parse_message valid inputs ----
 
@@ -193,7 +194,10 @@ fn test_serialize_response_error() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -319,14 +323,20 @@ fn test_serialize_event_complex_params() {
 
 #[test]
 fn test_cdp_error_code_message() {
-    let err = CdpError { code: -32600, message: "invalid request".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "invalid request".into(),
+    };
     assert_eq!(err.code, -32600);
     assert_eq!(err.message, "invalid request");
 }
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32700, message: "parse error".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "parse error".into(),
+    };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32700"));
     assert!(debug.contains("parse error"));
@@ -334,7 +344,10 @@ fn test_cdp_error_debug() {
 
 #[test]
 fn test_cdp_error_serialize() {
-    let err = CdpError { code: -32000, message: "internal".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "internal".into(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["code"], -32000);
@@ -343,7 +356,10 @@ fn test_cdp_error_serialize() {
 
 #[test]
 fn test_cdp_error_empty_message() {
-    let err = CdpError { code: -1, message: String::new() };
+    let err = CdpError {
+        code: -1,
+        message: String::new(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["message"], "");
@@ -369,11 +385,17 @@ fn test_roundtrip_error_response() {
     let resp = CdpResponse {
         id: Some(99),
         result: None,
-        error: Some(CdpError { code: -32601, message: "'Foo.bar' wasn't found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "'Foo.bar' wasn't found".into(),
+        }),
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert!(parsed["error"]["message"].as_str().unwrap().contains("Foo.bar"));
+    assert!(parsed["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Foo.bar"));
 }
 
 // ---- CdpMessage clone ----
@@ -448,7 +470,10 @@ fn test_serialize_event_deterministic() {
 #[test]
 fn test_parse_message_large_array_params() {
     let arr: Vec<i32> = (0..1000).collect();
-    let raw = format!(r#"{{"id":1,"method":"Test.run","params":{}}}"#, serde_json::to_string(&arr).unwrap());
+    let raw = format!(
+        r#"{{"id":1,"method":"Test.run","params":{}}}"#,
+        serde_json::to_string(&arr).unwrap()
+    );
     let msg = parse_message(&raw).unwrap();
     assert_eq!(msg.params.unwrap().as_array().unwrap().len(), 1000);
 }
@@ -484,7 +509,10 @@ fn test_serialize_response_unicode_in_error() {
     let resp = CdpResponse {
         id: Some(1),
         result: None,
-        error: Some(CdpError { code: -32000, message: "エラーが発生しました".into() }),
+        error: Some(CdpError {
+            code: -32000,
+            message: "エラーが発生しました".into(),
+        }),
     };
     let raw = serialize_response(&resp);
     assert!(raw.contains("エラー"));

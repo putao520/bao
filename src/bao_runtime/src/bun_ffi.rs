@@ -5,16 +5,18 @@
 // via PrivateValue. Uses JS_InitClass for proper constructor/prototype chain.
 // FfiCallback wraps a libffi Closure that bridges C → JS via JS_CallFunctionValue.
 
-use bun_core::ZBox;
 use ::std::os::raw::c_void;
 use ::std::ptr::NonNull;
 use ::std::result::Result;
+use bun_core::ZBox;
 
 use libffi::middle::{Cif, Closure, Type};
 
 use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue, PrivateValue, NullValue, BooleanValue, DoubleValue};
+use mozjs::jsval::{
+    BooleanValue, DoubleValue, JSVal, NullValue, ObjectValue, PrivateValue, UndefinedValue,
+};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -76,9 +78,8 @@ impl FfiCallback {
         // Safety: we extend the data's borrow to `'static` for the closure.
         // This is sound because `_data` outlives `_closure` in this struct
         // (drop order is declaration order; `_closure` is declared first).
-        let data_ref: &'static FfiCallbackData = unsafe {
-            &*(data.as_ref() as *const FfiCallbackData)
-        };
+        let data_ref: &'static FfiCallbackData =
+            unsafe { &*(data.as_ref() as *const FfiCallbackData) };
         let closure = Closure::new(cif, ffi_callback_dispatch, data_ref);
         let code_ptr = unsafe {
             let fun: &extern "C" fn() = closure.instantiate_code_ptr();
@@ -151,7 +152,11 @@ impl FfiLibrary {
             let msg = if err.is_null() {
                 "dlopen failed: unknown error".to_string()
             } else {
-                unsafe { ::std::ffi::CStr::from_ptr(err).to_string_lossy().into_owned() }
+                unsafe {
+                    ::std::ffi::CStr::from_ptr(err)
+                        .to_string_lossy()
+                        .into_owned()
+                }
             };
             return Err(msg);
         }
@@ -181,7 +186,11 @@ impl FfiLibrary {
         let sym = unsafe { libc::dlsym(self.handle, c_name.as_ptr()) };
         let err = unsafe { libc::dlerror() };
         if !err.is_null() {
-            let msg = unsafe { ::std::ffi::CStr::from_ptr(err).to_string_lossy().into_owned() };
+            let msg = unsafe {
+                ::std::ffi::CStr::from_ptr(err)
+                    .to_string_lossy()
+                    .into_owned()
+            };
             return Err(msg);
         }
         Ok(sym)
@@ -191,7 +200,9 @@ impl FfiLibrary {
 impl Drop for FfiLibrary {
     fn drop(&mut self) {
         if !self.handle.is_null() {
-            unsafe { libc::dlclose(self.handle); }
+            unsafe {
+                libc::dlclose(self.handle);
+            }
         }
     }
 }
@@ -408,20 +419,12 @@ unsafe fn get_lib(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut FfiLi
         return None;
     }
     let ptr = slot.to_private() as *mut FfiLibrary;
-    if ptr.is_null() {
-        None
-    } else {
-        Some(ptr)
-    }
+    if ptr.is_null() { None } else { Some(ptr) }
 }
 
 /// Module-level dlopen function: `dlopen(path)` → FfiLibrary JS object.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn ffi_dlopen(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn ffi_dlopen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let path = if argc >= 1 {
@@ -484,19 +487,14 @@ unsafe extern "C" fn ffi_dlopen(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn ffi_library_close(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn ffi_library_close(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
     let lib_ptr = match get_lib(cx, thisv) {
         Some(p) => p,
         None => {
-            let msg =
-                ZBox::from_bytes("FfiLibrary.close: invalid FfiLibrary object".as_bytes());
+            let msg = ZBox::from_bytes("FfiLibrary.close: invalid FfiLibrary object".as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
             return false;
         }
@@ -517,19 +515,14 @@ unsafe extern "C" fn ffi_library_close(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn ffi_library_symbol(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn ffi_library_symbol(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
     let lib_ptr = match get_lib(cx, thisv) {
         Some(p) => p,
         None => {
-            let msg =
-                ZBox::from_bytes("FfiLibrary.symbol: invalid FfiLibrary object".as_bytes());
+            let msg = ZBox::from_bytes("FfiLibrary.symbol: invalid FfiLibrary object".as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
             return false;
         }
@@ -563,20 +556,14 @@ unsafe extern "C" fn ffi_library_symbol(
 /// function pointer as a Number) and `.close()` to release the closure.
 /// @trace REQ-ENG-009 [entity:FfiCallback] [api:POST /ffi/load]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn ffi_callback(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn ffi_callback(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     // Validate the JS callback argument is callable.
     let js_fn = if argc >= 1 {
         let fn_val = *args.get(0).ptr;
         if !(fn_val.is_object() && IsCallable(fn_val.to_object())) {
-            let msg = ZBox::from_bytes(
-                "bun:ffi callback: argument must be a function".as_bytes(),
-            );
+            let msg = ZBox::from_bytes("bun:ffi callback: argument must be a function".as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
             return false;
         }
@@ -648,29 +635,20 @@ unsafe fn get_callback(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut 
         return None;
     }
     let ptr = slot.to_private() as *mut FfiCallback;
-    if ptr.is_null() {
-        None
-    } else {
-        Some(ptr)
-    }
+    if ptr.is_null() { None } else { Some(ptr) }
 }
 
 /// FfiCallback.prototype.close() — releases the libffi closure.
 /// @trace REQ-ENG-009 [entity:FfiCallback]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn ffi_callback_close(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn ffi_callback_close(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
     let cb_ptr = match get_callback(cx, thisv) {
         Some(p) => p,
         None => {
-            let msg =
-                ZBox::from_bytes("FfiCallback.close: invalid FfiCallback object".as_bytes());
+            let msg = ZBox::from_bytes("FfiCallback.close: invalid FfiCallback object".as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
             return false;
         }
@@ -690,11 +668,7 @@ unsafe extern "C" fn ffi_callback_close(
 /// FfiCallback.prototype.ptr() — returns the raw C function pointer as Number.
 /// @trace REQ-ENG-009 [entity:FfiCallback]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn ffi_callback_ptr(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn ffi_callback_ptr(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
@@ -763,7 +737,10 @@ mod tests {
     #[test]
     fn test_ffi_callback_constructs_nonnull_code_ptr() {
         let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut());
-        assert!(!cb.code_ptr().is_null(), "FfiCallback must expose a non-null C code pointer");
+        assert!(
+            !cb.code_ptr().is_null(),
+            "FfiCallback must expose a non-null C code pointer"
+        );
     }
 
     /// REQ-ENG-009 acceptance #2: code_ptr() is stable across calls while the
@@ -795,7 +772,11 @@ mod tests {
     fn test_ffi_callback_multiple_distinct_pointers() {
         let cb1 = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut());
         let cb2 = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut());
-        assert_ne!(cb1.code_ptr(), cb2.code_ptr(), "distinct closures get distinct code pointers");
+        assert_ne!(
+            cb1.code_ptr(),
+            cb2.code_ptr(),
+            "distinct closures get distinct code pointers"
+        );
     }
 
     /// REQ-ENG-009 acceptance #2: invoking the trampoline with null userdata is

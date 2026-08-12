@@ -9,14 +9,14 @@
 
 use bao_cdp_client::api::{
     accessibility::AXNode,
-    browser::{Browser, BrowserOptions, new_context_on_rc, new_page_on_rc},
+    browser::{new_context_on_rc, new_page_on_rc, Browser, BrowserOptions},
     browser_context::{BrowserContext, ContextOptions, PermissionOverride},
     coverage::Coverage,
     dialog::{Dialog, DialogType},
     event_emitter::{EventEmitter, EventEmitterInner, EventHandler, SubscriptionResult},
     frame::{ExecutionContext, Frame},
     keyboard::Keyboard,
-    mouse::{MouseButton, Mouse},
+    mouse::{Mouse, MouseButton},
     page::{Page, TargetInfo, Viewport, Worker},
     request::Request,
     response::{RemoteAddress, Response, SecurityDetails},
@@ -256,7 +256,13 @@ fn browser_context_is_incognito_local() {
     // Arrange
     // Act
     let b = make_browser();
-    let ctx = new_context_on_rc(&b, ContextOptions { incognito: true, ..Default::default() });
+    let ctx = new_context_on_rc(
+        &b,
+        ContextOptions {
+            incognito: true,
+            ..Default::default()
+        },
+    );
     // Assert
     assert!(ctx.is_incognito());
 }
@@ -379,7 +385,11 @@ fn page_viewport_local() {
     // Assert
     assert!(p.viewport().is_none());
     // Act
-    p.set_viewport(Viewport { width: 1920, height: 1080, ..Default::default() });
+    p.set_viewport(Viewport {
+        width: 1920,
+        height: 1080,
+        ..Default::default()
+    });
     assert_eq!(p.viewport().unwrap().width, 1920);
 }
 
@@ -409,7 +419,11 @@ fn page_touchscreen_local() {
     // Arrange
     let (_b, _ctx, p) = make_page();
     // Act
-    p.touchscreen().add_touch(TouchPoint { x: 1.0, y: 2.0, ..Default::default() });
+    p.touchscreen().add_touch(TouchPoint {
+        x: 1.0,
+        y: 2.0,
+        ..Default::default()
+    });
     // Assert
     assert_eq!(p.touchscreen().touch_count(), 1);
 }
@@ -484,7 +498,10 @@ fn page_set_default_navigation_timeout_local() {
     // Act
     p.set_default_navigation_timeout(30000);
     // Assert
-    assert_eq!(p.default_navigation_timeout(), Some(Duration::from_millis(30000)));
+    assert_eq!(
+        p.default_navigation_timeout(),
+        Some(Duration::from_millis(30000))
+    );
 }
 
 #[test]
@@ -551,7 +568,11 @@ fn frame_execution_context_local() {
     // Arrange
     let (_b, _ctx, p) = make_page();
     let mf = p.main_frame();
-    let ctx = Rc::new(ExecutionContext::with_name_origin("CTX-1".into(), "main", "https://x"));
+    let ctx = Rc::new(ExecutionContext::with_name_origin(
+        "CTX-1".into(),
+        "main",
+        "https://x",
+    ));
     // Act
     mf.set_execution_context(ctx.clone());
     // Assert
@@ -867,7 +888,10 @@ fn response_remote_address_local() {
     // Arrange
     let r = Response::new();
     // Act
-    r.set_remote_address(RemoteAddress { ip: "127.0.0.1".into(), port: 8080 });
+    r.set_remote_address(RemoteAddress {
+        ip: "127.0.0.1".into(),
+        port: 8080,
+    });
     // Assert
     assert_eq!(r.remote_address().unwrap().port, 8080);
 }
@@ -955,7 +979,7 @@ fn keyboard_is_shift_pressed_local() {
     let k = Keyboard::new();
     // Act
     k.set_modifier(1, true); // MOD_SHIFT
-    // Assert
+                             // Assert
     assert!(k.is_shift_pressed());
 }
 
@@ -965,7 +989,7 @@ fn keyboard_is_control_pressed_local() {
     let k = Keyboard::new();
     // Act
     k.set_modifier(2, true); // MOD_CONTROL
-    // Assert
+                             // Assert
     assert!(k.is_control_pressed());
 }
 
@@ -975,7 +999,7 @@ fn keyboard_is_alt_pressed_local() {
     let k = Keyboard::new();
     // Act
     k.set_modifier(4, true); // MOD_ALT
-    // Assert
+                             // Assert
     assert!(k.is_alt_pressed());
 }
 
@@ -985,7 +1009,7 @@ fn keyboard_is_meta_pressed_local() {
     let k = Keyboard::new();
     // Act
     k.set_modifier(8, true); // MOD_META
-    // Assert
+                             // Assert
     assert!(k.is_meta_pressed());
 }
 
@@ -1118,8 +1142,8 @@ fn page_event_emitter_listener_count_via_trait() {
 
 mod mock_transport_zero_call {
     use super::*;
-    use bao_cdp_client::transport::{CdpEvent, Transport, TransportKind};
     use bao_cdp_client::error::Result;
+    use bao_cdp_client::transport::{CdpEvent, Transport, TransportKind};
     use serde_json::Value;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1132,10 +1156,13 @@ mod mock_transport_zero_call {
     impl CountingTransport {
         fn new() -> (Self, Arc<AtomicU64>) {
             let counter = Arc::new(AtomicU64::new(0));
-            (Self {
-                call_count: counter.clone(),
-                closed: false,
-            }, counter)
+            (
+                Self {
+                    call_count: counter.clone(),
+                    closed: false,
+                },
+                counter,
+            )
         }
     }
 
@@ -1220,13 +1247,15 @@ mod mock_transport_zero_call {
         // 计数器仍为 0(因为我们没把这些对象绑定到 transport)。
         let (transport, counter) = CountingTransport::new();
         let _ = transport; // 仅占位
-        // Assert
+                           // Assert
         assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 
     // ---- helpers 复用 ----
-    use bao_cdp_client::api::browser::{Browser, BrowserOptions, new_context_on_rc};
-    use bao_cdp_client::api::browser_context::{BrowserContext, ContextOptions, PermissionOverride};
+    use bao_cdp_client::api::browser::{new_context_on_rc, Browser, BrowserOptions};
+    use bao_cdp_client::api::browser_context::{
+        BrowserContext, ContextOptions, PermissionOverride,
+    };
     use bao_cdp_client::api::event_emitter::EventHandler;
     use bao_cdp_client::api::page::Worker;
 
@@ -1242,7 +1271,12 @@ mod mock_transport_zero_call {
     fn counter_handler() -> (EventHandler, Arc<AtomicU32>) {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
-        (Arc::new(move |_| { c.fetch_add(1, Ordering::SeqCst); }), counter)
+        (
+            Arc::new(move |_| {
+                c.fetch_add(1, Ordering::SeqCst);
+            }),
+            counter,
+        )
     }
 }
 
@@ -1257,7 +1291,10 @@ fn d_class_method_inventory_62() {
     // 若任一 method 缺失,编译期就会失败。
 
     // Browser (7)
-    let b = Browser::new(BrowserOptions { ws_endpoint: "ws://x".into(), ..Default::default() });
+    let b = Browser::new(BrowserOptions {
+        ws_endpoint: "ws://x".into(),
+        ..Default::default()
+    });
     let _: bool = b.is_connected();
     let _: Option<u32> = b.process();
     let _: &str = b.ws_endpoint();

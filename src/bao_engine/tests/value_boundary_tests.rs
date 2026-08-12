@@ -72,7 +72,10 @@ fn test_value_type_boundaries_all() {
     // --- Object ---
     let val = eval_val(&mut ctx, "({a: 1})");
     assert!(val.is_object(), "object literal should be object");
-    assert!(val.as_object().is_some(), "object literal should have object ref");
+    assert!(
+        val.as_object().is_some(),
+        "object literal should have object ref"
+    );
 
     // --- Array is object ---
     let val = eval_val(&mut ctx, "[1, 2, 3]");
@@ -81,21 +84,33 @@ fn test_value_type_boundaries_all() {
     // --- Cross-type: as_number on string returns None ---
     let val = eval_val(&mut ctx, "'not a number'");
     assert!(val.is_string(), "'not a number' should be string");
-    assert!(val.as_number().is_none(), "as_number on string should be None");
+    assert!(
+        val.as_number().is_none(),
+        "as_number on string should be None"
+    );
 
     // --- Cross-type: as_string on number returns None ---
     let val = eval_val(&mut ctx, "42");
     assert!(val.is_number(), "42 should be number");
-    assert!(val.as_string().is_none(), "as_string on number should be None");
+    assert!(
+        val.as_string().is_none(),
+        "as_string on number should be None"
+    );
 
     // --- to_display_string ---
     let val = eval_val(&mut ctx, "'test'");
     let display = val.to_display_string();
-    assert!(display.contains("test") || display.contains("String"), "display should contain test info");
+    assert!(
+        display.contains("test") || display.contains("String"),
+        "display should contain test info"
+    );
 
     // --- eval error returns undefined via eval_val ---
     let val = eval_val(&mut ctx, "throw new Error('test')");
-    assert!(val.is_undefined(), "throw should result in undefined via eval_val");
+    assert!(
+        val.is_undefined(),
+        "throw should result in undefined via eval_val"
+    );
 
     // --- eval error returns Err ---
     let result = ctx.eval("throw new Error('test')", "<test>");
@@ -108,7 +123,11 @@ fn test_value_type_boundaries_all() {
     // --- MAX_SAFE_INTEGER ---
     let val = eval_val(&mut ctx, "Number.MAX_SAFE_INTEGER");
     assert!(val.is_number(), "MAX_SAFE_INTEGER should be number");
-    assert_eq!(val.as_number(), Some(9007199254740991.0), "MAX_SAFE_INTEGER");
+    assert_eq!(
+        val.as_number(),
+        Some(9007199254740991.0),
+        "MAX_SAFE_INTEGER"
+    );
 
     // --- NaN ---
     let val = eval_val(&mut ctx, "NaN");
@@ -120,7 +139,10 @@ fn test_value_type_boundaries_all() {
     let val = eval_val(&mut ctx, "Infinity");
     assert!(val.is_number(), "Infinity should be number");
     let num = val.as_number().unwrap();
-    assert!(num.is_infinite() && num.is_sign_positive(), "Infinity should be +inf");
+    assert!(
+        num.is_infinite() && num.is_sign_positive(),
+        "Infinity should be +inf"
+    );
 
     // --- String concatenation ---
     let val = eval_val(&mut ctx, "'hello' + ' ' + 'world'");

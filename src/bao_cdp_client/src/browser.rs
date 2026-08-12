@@ -133,9 +133,8 @@ impl Browser {
     /// @trace REQ-BAO-API-001 [level:library]
     pub fn connect_with_discovered_ws(ws_url: &str) -> Result<Self, ConnectError> {
         let parsed = Self::route(ws_url)?;
-        let ws = WebSocketTransport::connect(&parsed.raw).map_err(|e| {
-            ConnectError::ConnectionFailed(format!("ws connect: {}", e))
-        })?;
+        let ws = WebSocketTransport::connect(&parsed.raw)
+            .map_err(|e| ConnectError::ConnectionFailed(format!("ws connect: {}", e)))?;
         let config = ConnectionConfig {
             default_timeout_ms: 30_000,
             transport_kind: TransportKind::WebSocket,
@@ -196,10 +195,7 @@ impl Browser {
     ///
     /// @trace REQ-BAO-API-001 [level:library]
     pub fn new_page(&mut self, url: &str) -> crate::error::Result<serde_json::Value> {
-        self.send_command(
-            "Target.createTarget",
-            serde_json::json!({"url": url}),
-        )
+        self.send_command("Target.createTarget", serde_json::json!({"url": url}))
     }
 
     /// 接收一个 CDP 事件。
@@ -314,9 +310,8 @@ impl Browser {
                     .into(),
             )),
             TransportKind::WebSocket => {
-                let ws = WebSocketTransport::connect(&self.parsed.raw).map_err(|e| {
-                    ConnectError::ConnectionFailed(format!("ws connect: {}", e))
-                })?;
+                let ws = WebSocketTransport::connect(&self.parsed.raw)
+                    .map_err(|e| ConnectError::ConnectionFailed(format!("ws connect: {}", e)))?;
                 Ok(Box::new(ws))
             }
         }
@@ -348,9 +343,8 @@ impl Browser {
                 self.parsed.scheme
             )));
         }
-        WebSocketTransport::connect(&self.parsed.raw).map_err(|e| {
-            ConnectError::ConnectionFailed(format!("ws connect: {}", e))
-        })
+        WebSocketTransport::connect(&self.parsed.raw)
+            .map_err(|e| ConnectError::ConnectionFailed(format!("ws connect: {}", e)))
     }
 }
 
@@ -587,9 +581,7 @@ mod tests {
     #[test]
     fn browser_send_command_without_connection_returns_error() {
         let mut b = Browser::connect("memory://bao").unwrap();
-        let err = b
-            .send_command("X.y", serde_json::json!({}))
-            .unwrap_err();
+        let err = b.send_command("X.y", serde_json::json!({})).unwrap_err();
         assert!(matches!(err, CdpError::ConnectionClosed));
     }
 

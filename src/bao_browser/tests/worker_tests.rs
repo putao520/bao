@@ -25,21 +25,15 @@
 #![allow(dead_code)]
 
 use bao_browser::{
-    WorkerHandle, WorkerId, WorkerMessageDirection, WorkerMessageEvent,
-    WorkerErrorEvent, WorkerLifecycleState, WorkerTeardownPath,
-    WorkerTeardownResult, crash_safe_teardown_worker,
-    WorkerScopeConfig, AutoCloseWorker,
-    SharedWorkerId, SharedWorkerHandle, SharedWorkerConnectEvent,
-    SharedWorkerScopeConfig, SharedWorkerPortRef,
-    SharedWorkerGlobalScopeState, SharedWorkerChannelBridge,
-    StructuredClonePayload, WorkerStructuredMessage,
-    WorkerChannelBridge, WorkerChannelEndpoints,
-    WorkerLocation, WorkerNavigator, WorkerNetworkInformation,
-    WorkerGlobalScopeState, DedicatedWorkerGlobalScopeState,
-    WorkerScriptSource, WorkerScriptLoadResult, WorkerScriptLoadError,
-    WorkerScriptType, WorkerScriptLoader, WorkerScriptLoadState,
-    is_javascript_mime_type,
-    BaoServoDelegate,
+    crash_safe_teardown_worker, is_javascript_mime_type, AutoCloseWorker, BaoServoDelegate,
+    DedicatedWorkerGlobalScopeState, SharedWorkerChannelBridge, SharedWorkerConnectEvent,
+    SharedWorkerGlobalScopeState, SharedWorkerHandle, SharedWorkerId, SharedWorkerPortRef,
+    SharedWorkerScopeConfig, StructuredClonePayload, WorkerChannelBridge, WorkerChannelEndpoints,
+    WorkerErrorEvent, WorkerGlobalScopeState, WorkerHandle, WorkerId, WorkerLifecycleState,
+    WorkerLocation, WorkerMessageDirection, WorkerMessageEvent, WorkerNavigator,
+    WorkerNetworkInformation, WorkerScopeConfig, WorkerScriptLoadError, WorkerScriptLoadResult,
+    WorkerScriptLoadState, WorkerScriptLoader, WorkerScriptSource, WorkerScriptType,
+    WorkerStructuredMessage, WorkerTeardownPath, WorkerTeardownResult,
 };
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -59,7 +53,10 @@ fn test_worker_handle_new_running_state() {
     let handle = WorkerHandle::new("https://example.com/worker.js".into());
     // @trace REQ-BRW-004 [criterion:1] Worker starts in running state
     assert!(!handle.is_closing(), "new Worker should not be closing");
-    assert!(!handle.is_terminated(), "new Worker should not be terminated");
+    assert!(
+        !handle.is_terminated(),
+        "new Worker should not be terminated"
+    );
     assert_eq!(handle.script_url, "https://example.com/worker.js");
 }
 
@@ -71,7 +68,10 @@ fn test_worker_handle_terminate_sets_closing() {
     // @trace REQ-BRW-004 [criterion:4] terminate sets closing flag
     handle.terminate();
     assert!(handle.is_closing(), "terminate() should set closing flag");
-    assert!(!handle.is_terminated(), "terminate() should not set terminated flag immediately");
+    assert!(
+        !handle.is_terminated(),
+        "terminate() should not set terminated flag immediately"
+    );
 }
 
 /// @trace REQ-BRW-004 [criterion:4] terminate() is idempotent
@@ -91,8 +91,14 @@ fn test_worker_handle_mark_terminated() {
     handle.terminate();
     assert!(handle.is_closing());
     handle.mark_terminated();
-    assert!(handle.is_terminated(), "mark_terminated should set terminated flag");
-    assert!(handle.is_closing(), "closing flag should remain set after mark_terminated");
+    assert!(
+        handle.is_terminated(),
+        "mark_terminated should set terminated flag"
+    );
+    assert!(
+        handle.is_closing(),
+        "closing flag should remain set after mark_terminated"
+    );
 }
 
 /// @trace REQ-BRW-004 [criterion:18] worker_global_addr for REALM_PROFILES unregistration
@@ -100,7 +106,11 @@ fn test_worker_handle_mark_terminated() {
 fn test_worker_handle_global_addr_default_zero() {
     let handle = WorkerHandle::new("w.js".into());
     // @trace REQ-BRW-004 [criterion:18] default global addr is 0 (not yet set)
-    assert_eq!(handle.worker_global_addr(), 0, "default global addr should be 0");
+    assert_eq!(
+        handle.worker_global_addr(),
+        0,
+        "default global addr should be 0"
+    );
 }
 
 /// @trace REQ-BRW-004 [criterion:18] set_worker_global_addr + worker_global_addr_arc
@@ -161,7 +171,11 @@ fn test_worker_channel_bridge_new() {
     // Bridge should have no messages initially
     let result = bridge.try_recv_from_worker();
     assert!(result.is_ok(), "try_recv should not error on empty channel");
-    assert_eq!(result.unwrap().is_none(), true, "empty channel should return None");
+    assert_eq!(
+        result.unwrap().is_none(),
+        true,
+        "empty channel should return None"
+    );
     // Endpoints should carry the worker_id
     assert_eq!(endpoints.worker_id, worker_id);
 }
@@ -183,7 +197,10 @@ fn test_worker_channel_bridge_page_to_worker() {
     assert!(send_result.is_ok(), "post_message_to_worker should succeed");
 
     // Worker receives the message
-    let rx = endpoints.page_to_worker_rx.take().expect("should have receiver");
+    let rx = endpoints
+        .page_to_worker_rx
+        .take()
+        .expect("should have receiver");
     let received = rx.try_recv().expect("should receive message");
     assert_eq!(received.data, payload.data);
     assert_eq!(received.transferable_count, 0);
@@ -196,7 +213,10 @@ fn test_worker_channel_bridge_worker_to_page() {
     let (bridge, mut endpoints) = WorkerChannelBridge::new(worker_id.clone());
 
     // Worker sends message to page
-    let tx = endpoints.worker_to_page_tx.take().expect("should have sender");
+    let tx = endpoints
+        .worker_to_page_tx
+        .take()
+        .expect("should have sender");
     let msg = WorkerStructuredMessage::metadata_only(
         worker_id.clone(),
         WorkerMessageDirection::WorkerToPage,
@@ -254,7 +274,10 @@ fn test_worker_structured_message_metadata_only() {
         worker_id.clone(),
         WorkerMessageDirection::WorkerToPage,
     );
-    assert!(msg.payload.is_none(), "metadata_only should have no payload");
+    assert!(
+        msg.payload.is_none(),
+        "metadata_only should have no payload"
+    );
     assert!(msg.message_id > 0);
 }
 
@@ -262,10 +285,22 @@ fn test_worker_structured_message_metadata_only() {
 #[test]
 fn test_worker_structured_message_unique_ids() {
     let worker_id = WorkerId("uniq-test".into());
-    let msg1 = WorkerStructuredMessage::metadata_only(worker_id.clone(), WorkerMessageDirection::PageToWorker);
-    let msg2 = WorkerStructuredMessage::metadata_only(worker_id.clone(), WorkerMessageDirection::WorkerToPage);
-    assert_ne!(msg1.message_id, msg2.message_id, "each message should have a unique ID");
-    assert!(msg2.message_id > msg1.message_id, "message IDs should be monotonically increasing");
+    let msg1 = WorkerStructuredMessage::metadata_only(
+        worker_id.clone(),
+        WorkerMessageDirection::PageToWorker,
+    );
+    let msg2 = WorkerStructuredMessage::metadata_only(
+        worker_id.clone(),
+        WorkerMessageDirection::WorkerToPage,
+    );
+    assert_ne!(
+        msg1.message_id, msg2.message_id,
+        "each message should have a unique ID"
+    );
+    assert!(
+        msg2.message_id > msg1.message_id,
+        "message IDs should be monotonically increasing"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -278,8 +313,14 @@ fn test_worker_drain_empty_channel() {
     let worker_id = WorkerId("drain-empty".into());
     let (bridge, _endpoints) = WorkerChannelBridge::new(worker_id);
     let result = bridge.drain_worker_messages();
-    assert!(result.messages.is_empty(), "empty channel should drain no messages");
-    assert!(!result.disconnected, "empty channel should not be disconnected");
+    assert!(
+        result.messages.is_empty(),
+        "empty channel should drain no messages"
+    );
+    assert!(
+        !result.disconnected,
+        "empty channel should not be disconnected"
+    );
 }
 
 /// @trace REQ-BRW-004 [criterion:18] drain_worker_messages with messages
@@ -288,7 +329,10 @@ fn test_worker_drain_with_messages() {
     let worker_id = WorkerId("drain-msg".into());
     let (bridge, mut endpoints) = WorkerChannelBridge::new(worker_id.clone());
 
-    let tx = endpoints.worker_to_page_tx.take().expect("should have sender");
+    let tx = endpoints
+        .worker_to_page_tx
+        .take()
+        .expect("should have sender");
     for i in 0..5 {
         let msg = WorkerStructuredMessage::metadata_only(
             worker_id.clone(),
@@ -300,7 +344,10 @@ fn test_worker_drain_with_messages() {
 
     let result = bridge.drain_worker_messages();
     assert_eq!(result.messages.len(), 5, "should drain all 5 messages");
-    assert!(result.disconnected, "closed sender should mark disconnected");
+    assert!(
+        result.disconnected,
+        "closed sender should mark disconnected"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -404,7 +451,10 @@ fn test_worker_teardown_result_crash_safe() {
         closing_flag_set: true,
         never_registered: false,
     };
-    assert!(safe.is_crash_safe(), "fully safe teardown should be crash-safe");
+    assert!(
+        safe.is_crash_safe(),
+        "fully safe teardown should be crash-safe"
+    );
 
     // Not crash-safe: thread not joined
     let not_joined = WorkerTeardownResult {
@@ -414,7 +464,10 @@ fn test_worker_teardown_result_crash_safe() {
         closing_flag_set: true,
         never_registered: false,
     };
-    assert!(!not_joined.is_crash_safe(), "thread not joined should not be crash-safe");
+    assert!(
+        !not_joined.is_crash_safe(),
+        "thread not joined should not be crash-safe"
+    );
 
     // Not crash-safe: closing flag not set
     let not_closing = WorkerTeardownResult {
@@ -424,7 +477,10 @@ fn test_worker_teardown_result_crash_safe() {
         closing_flag_set: false,
         never_registered: false,
     };
-    assert!(!not_closing.is_crash_safe(), "closing flag not set should not be crash-safe");
+    assert!(
+        !not_closing.is_crash_safe(),
+        "closing flag not set should not be crash-safe"
+    );
 }
 
 /// @trace REQ-BRW-004 [criterion:18] crash_safe_teardown_worker without WebWorker
@@ -434,8 +490,14 @@ fn test_crash_safe_teardown_worker_no_web_worker() {
     // @trace REQ-BRW-004 [criterion:18] crash-safe teardown without WebWorker (servo DOM Worker path)
     let result = crash_safe_teardown_worker(&handle, WorkerTeardownPath::Terminate);
     assert!(result.closing_flag_set, "closing flag should be set");
-    assert!(result.thread_joined, "servo DOM Worker path should report joined=true");
-    assert!(!result.realm_profile_unregistered, "no global addr set, so realm unreg should be false");
+    assert!(
+        result.thread_joined,
+        "servo DOM Worker path should report joined=true"
+    );
+    assert!(
+        !result.realm_profile_unregistered,
+        "no global addr set, so realm unreg should be false"
+    );
     assert!(handle.is_closing());
     assert!(handle.is_terminated());
 }
@@ -447,7 +509,10 @@ fn test_crash_safe_teardown_worker_with_global_addr() {
     handle.set_worker_global_addr(0x1000);
     let result = crash_safe_teardown_worker(&handle, WorkerTeardownPath::SelfClose);
     assert!(result.closing_flag_set);
-    assert!(result.realm_profile_unregistered, "with global addr, realm should be unregistered");
+    assert!(
+        result.realm_profile_unregistered,
+        "with global addr, realm should be unregistered"
+    );
     assert_eq!(result.path, WorkerTeardownPath::SelfClose);
 }
 
@@ -468,7 +533,10 @@ fn test_auto_close_worker_drop_terminates() {
     // Create a new handle and verify the RAII behavior
     let handle2 = WorkerHandle::new("auto-close-2.js".into());
     let guard = AutoCloseWorker::new(handle2);
-    assert!(!guard.handle().is_closing(), "guard should not close before drop");
+    assert!(
+        !guard.handle().is_closing(),
+        "guard should not close before drop"
+    );
     drop(guard);
 }
 
@@ -535,7 +603,10 @@ fn test_worker_location_from_https_url() {
 #[test]
 fn test_worker_location_default_port_omitted() {
     let loc = WorkerLocation::from_url("https://example.com/worker.js").unwrap();
-    assert_eq!(loc.host, "example.com", "default port should be omitted from host");
+    assert_eq!(
+        loc.host, "example.com",
+        "default port should be omitted from host"
+    );
     assert_eq!(loc.port, "", "default port should be empty string");
     assert_eq!(loc.origin, "https://example.com");
 }
@@ -626,7 +697,10 @@ fn test_stealth_profile_to_worker_scope_config() {
     assert!(config.stealth_profile.is_some());
     assert_eq!(config.user_agent, profile.navigator.user_agent);
     assert_eq!(config.platform, profile.navigator.platform);
-    assert_eq!(config.hardware_concurrency, profile.navigator.hardware_concurrency as usize);
+    assert_eq!(
+        config.hardware_concurrency,
+        profile.navigator.hardware_concurrency as usize
+    );
     assert_eq!(config.language, profile.navigator.language);
     assert_eq!(config.languages, profile.navigator.languages);
 }
@@ -697,7 +771,10 @@ fn test_worker_script_source_variants() {
     let inline = WorkerScriptSource::Inline("self.close()".into());
     let url = WorkerScriptSource::Url("https://example.com/worker.js".into());
     assert_eq!(inline, WorkerScriptSource::Inline("self.close()".into()));
-    assert_eq!(url, WorkerScriptSource::Url("https://example.com/worker.js".into()));
+    assert_eq!(
+        url,
+        WorkerScriptSource::Url("https://example.com/worker.js".into())
+    );
     assert_ne!(inline, url);
 }
 
@@ -748,7 +825,10 @@ fn test_worker_script_loader_construction() {
         source: WorkerScriptSource::Url("https://example.com/w.js".into()),
         script_type: WorkerScriptType::Classic,
     };
-    assert_eq!(loader.source, WorkerScriptSource::Url("https://example.com/w.js".into()));
+    assert_eq!(
+        loader.source,
+        WorkerScriptSource::Url("https://example.com/w.js".into())
+    );
     assert_eq!(loader.script_type, WorkerScriptType::Classic);
 }
 
@@ -778,7 +858,11 @@ fn test_is_javascript_mime_type_valid() {
         "text/x-javascript",
     ];
     for mime in &valid_types {
-        assert!(is_javascript_mime_type(mime), "{} should be a valid JS MIME type", mime);
+        assert!(
+            is_javascript_mime_type(mime),
+            "{} should be a valid JS MIME type",
+            mime
+        );
     }
 }
 
@@ -794,7 +878,11 @@ fn test_is_javascript_mime_type_invalid() {
         "text/css",
     ];
     for mime in &invalid_types {
-        assert!(!is_javascript_mime_type(mime), "{} should NOT be a valid JS MIME type", mime);
+        assert!(
+            !is_javascript_mime_type(mime),
+            "{} should NOT be a valid JS MIME type",
+            mime
+        );
     }
 }
 
@@ -803,7 +891,9 @@ fn test_is_javascript_mime_type_invalid() {
 fn test_is_javascript_mime_type_with_params() {
     // "text/javascript; charset=utf-8" → should strip params and match
     assert!(is_javascript_mime_type("text/javascript; charset=utf-8"));
-    assert!(is_javascript_mime_type("application/javascript ; charset=utf-8"));
+    assert!(is_javascript_mime_type(
+        "application/javascript ; charset=utf-8"
+    ));
 }
 
 /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2] MIME type case-insensitive
@@ -835,8 +925,14 @@ fn test_shared_worker_handle_lifecycle() {
     let handle = SharedWorkerHandle::new("https://example.com/shared.js".into(), "sw-name".into());
     assert_eq!(handle.id().script_url, "https://example.com/shared.js");
     assert_eq!(handle.id().name, "sw-name");
-    assert!(!handle.is_closing(), "new SharedWorker should not be closing");
-    assert!(!handle.is_terminated(), "new SharedWorker should not be terminated");
+    assert!(
+        !handle.is_closing(),
+        "new SharedWorker should not be closing"
+    );
+    assert!(
+        !handle.is_terminated(),
+        "new SharedWorker should not be terminated"
+    );
     assert_eq!(handle.connected_page_count(), 0);
 
     // Page connects
@@ -933,8 +1029,14 @@ fn test_worker_channel_endpoints_carry_worker_id() {
     let (_bridge, endpoints) = WorkerChannelBridge::new(worker_id.clone());
     assert_eq!(endpoints.worker_id, worker_id);
     // Endpoints should have receivers and senders
-    assert!(endpoints.page_to_worker_rx.is_some(), "should have page_to_worker_rx");
-    assert!(endpoints.worker_to_page_tx.is_some(), "should have worker_to_page_tx");
+    assert!(
+        endpoints.page_to_worker_rx.is_some(),
+        "should have page_to_worker_rx"
+    );
+    assert!(
+        endpoints.worker_to_page_tx.is_some(),
+        "should have worker_to_page_tx"
+    );
 }
 
 /// @trace REQ-BRW-004 [criterion:6] Full round-trip: page→worker→page
@@ -948,7 +1050,9 @@ fn test_worker_channel_full_round_trip() {
         data: vec![1, 2, 3],
         transferable_count: 0,
     };
-    bridge.post_message_to_worker(payload.clone()).expect("page→worker send should work");
+    bridge
+        .post_message_to_worker(payload.clone())
+        .expect("page→worker send should work");
 
     // Step 2: Worker receives and echoes back
     let rx = endpoints.page_to_worker_rx.take().expect("should have rx");
@@ -1010,7 +1114,10 @@ fn test_worker_channel_closed_detection() {
     drop(endpoints.worker_to_page_tx.take());
     // Drain should detect disconnection
     let result = bridge.drain_worker_messages();
-    assert!(result.disconnected, "dropped sender should be detected as disconnected");
+    assert!(
+        result.disconnected,
+        "dropped sender should be detected as disconnected"
+    );
     assert!(result.messages.is_empty());
 }
 
@@ -1038,7 +1145,10 @@ fn test_worker_handle_concurrent_terminate() {
         h.join().expect("thread should not panic");
     }
 
-    assert!(handle.is_closing(), "concurrent terminate should set closing flag");
+    assert!(
+        handle.is_closing(),
+        "concurrent terminate should set closing flag"
+    );
 }
 
 /// @trace REQ-BRW-004 [criterion:18] Concurrent set_worker_global_addr
@@ -1063,7 +1173,11 @@ fn test_worker_handle_concurrent_set_global_addr() {
 
     // One of the values should be set (last writer wins)
     let addr = handle.worker_global_addr();
-    assert!(addr >= 1000 && addr <= 1003, "addr should be one of the written values, got {}", addr);
+    assert!(
+        addr >= 1000 && addr <= 1003,
+        "addr should be one of the written values, got {}",
+        addr
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1079,7 +1193,8 @@ fn test_worker_script_load_state_variants() {
     let decoding = WorkerScriptLoadState::Decoding;
     let compiling = WorkerScriptLoadState::Compiling;
     let ready = WorkerScriptLoadState::Ready;
-    let failed = WorkerScriptLoadState::Failed(WorkerScriptLoadError::NetworkError("timeout".into()));
+    let failed =
+        WorkerScriptLoadState::Failed(WorkerScriptLoadError::NetworkError("timeout".into()));
 
     // is_ready() only true for Ready variant
     assert!(!pending.is_ready());
@@ -1108,7 +1223,11 @@ fn test_shared_worker_port_ref_construction() {
     let port_ref = SharedWorkerPortRef::new(handle);
     assert_eq!(port_ref.handle().id().script_url, "port-ref.js");
     assert_eq!(port_ref.handle().id().name, "port-test");
-    assert_eq!(port_ref.handle().connected_page_count(), 1, "new port should increment connected count");
+    assert_eq!(
+        port_ref.handle().connected_page_count(),
+        1,
+        "new port should increment connected count"
+    );
     // Drop the port_ref — should call page_disconnected()
     drop(port_ref);
 }
@@ -1127,20 +1246,32 @@ fn test_stealth_profile_inheritance_chain() {
 
     // @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK navigator 一致
     let nav = scope.navigator();
-    assert_eq!(nav.user_agent, profile.navigator.user_agent,
-        "worker navigator.userAgent must match parent page's stealth profile");
-    assert_eq!(nav.platform, profile.navigator.platform,
-        "worker navigator.platform must match parent page's stealth profile");
-    assert_eq!(nav.hardware_concurrency, profile.navigator.hardware_concurrency as usize,
-        "worker navigator.hardwareConcurrency must match parent page's stealth profile");
-    assert_eq!(nav.language, profile.navigator.language,
-        "worker navigator.language must match parent page's stealth profile");
-    assert_eq!(nav.languages, profile.navigator.languages,
-        "worker navigator.languages must match parent page's stealth profile");
+    assert_eq!(
+        nav.user_agent, profile.navigator.user_agent,
+        "worker navigator.userAgent must match parent page's stealth profile"
+    );
+    assert_eq!(
+        nav.platform, profile.navigator.platform,
+        "worker navigator.platform must match parent page's stealth profile"
+    );
+    assert_eq!(
+        nav.hardware_concurrency, profile.navigator.hardware_concurrency as usize,
+        "worker navigator.hardwareConcurrency must match parent page's stealth profile"
+    );
+    assert_eq!(
+        nav.language, profile.navigator.language,
+        "worker navigator.language must match parent page's stealth profile"
+    );
+    assert_eq!(
+        nav.languages, profile.navigator.languages,
+        "worker navigator.languages must match parent page's stealth profile"
+    );
 
     // Stealth profile should be carried through
-    assert!(config.stealth_profile.is_some(),
-        "WorkerScopeConfig should carry the StealthProfile for Canvas/WebGL/Audio consistency");
+    assert!(
+        config.stealth_profile.is_some(),
+        "WorkerScopeConfig should carry the StealthProfile for Canvas/WebGL/Audio consistency"
+    );
 }
 
 /// @trace REQ-BRW-004 [criterion:12..17] SharedWorker stealth inheritance
@@ -1189,14 +1320,29 @@ fn test_auto_close_worker_drop_triggers_crash_safe_teardown() {
 /// @trace REQ-BRW-004 [criterion:18] Three teardown paths all produce crash-safe results
 #[test]
 fn test_three_teardown_paths_crash_safe() {
-    for path in [WorkerTeardownPath::Terminate, WorkerTeardownPath::SelfClose, WorkerTeardownPath::PageUnload] {
+    for path in [
+        WorkerTeardownPath::Terminate,
+        WorkerTeardownPath::SelfClose,
+        WorkerTeardownPath::PageUnload,
+    ] {
         let handle = WorkerHandle::new("three-paths.js".into());
         handle.set_worker_global_addr(0x1000);
         let result = crash_safe_teardown_worker(&handle, path.clone());
-        assert!(result.closing_flag_set, "closing flag should be set for {:?}", path);
-        assert!(result.realm_profile_unregistered, "realm should be unregistered for {:?}", path);
-        assert!(result.thread_joined, "thread should be joined for {:?}", path);
+        assert!(
+            result.closing_flag_set,
+            "closing flag should be set for {:?}",
+            path
+        );
+        assert!(
+            result.realm_profile_unregistered,
+            "realm should be unregistered for {:?}",
+            path
+        );
+        assert!(
+            result.thread_joined,
+            "thread should be joined for {:?}",
+            path
+        );
         assert_eq!(result.path, path);
     }
 }
-

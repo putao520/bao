@@ -61,7 +61,9 @@ fn test_apply_to_pixel_different_coords_differ() {
         for y in 0..100u32 {
             let p = cn.apply_to_pixel(128, 128, 128, 255, x, y);
             results.insert(p);
-            if results.len() > 1 { return; }
+            if results.len() > 1 {
+                return;
+            }
         }
     }
     panic!("100x100 pixels all identical — noise not applied");
@@ -123,14 +125,21 @@ fn test_apply_to_pixel_different_seeds_differ() {
     let mut differ = false;
     for x in 0..200u32 {
         for y in 0..200u32 {
-            if cn1.apply_to_pixel(128, 128, 128, 255, x, y) != cn2.apply_to_pixel(128, 128, 128, 255, x, y) {
+            if cn1.apply_to_pixel(128, 128, 128, 255, x, y)
+                != cn2.apply_to_pixel(128, 128, 128, 255, x, y)
+            {
                 differ = true;
                 break;
             }
         }
-        if differ { break; }
+        if differ {
+            break;
+        }
     }
-    assert!(differ, "Different seeds should produce at least one different pixel");
+    assert!(
+        differ,
+        "Different seeds should produce at least one different pixel"
+    );
 }
 
 #[test]
@@ -160,7 +169,11 @@ fn test_noise_amplitude_small() {
         }
     }
     // Max noise contribution: 0.5 * 0.001 * 255 ≈ 0.13, so < 1 is typical
-    assert!(max_diff <= 1, "With amplitude 0.001, max diff should be tiny, got {}", max_diff);
+    assert!(
+        max_diff <= 1,
+        "With amplitude 0.001, max diff should be tiny, got {}",
+        max_diff
+    );
 }
 
 // ---- NavigatorProfile ----
@@ -339,7 +352,10 @@ fn test_engine_profile_access() {
     let profile = StealthProfile::firefox_default();
     let engine = StealthEngine::new(profile);
     assert!(engine.tls_config().compute_ja3().len() > 10);
-    assert!(engine.navigator().user_agent.contains("Firefox") || engine.navigator().user_agent.contains("Chrome"));
+    assert!(
+        engine.navigator().user_agent.contains("Firefox")
+            || engine.navigator().user_agent.contains("Chrome")
+    );
 }
 
 // ---- Cross-profile consistency ----

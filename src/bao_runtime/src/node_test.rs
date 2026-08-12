@@ -267,10 +267,18 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
         // Copy all named exports from the IIFE result onto the module object.
         for name in &[
-            "test", "describe", "it",
-            "before", "after", "beforeAll", "afterAll",
-            "beforeEach", "afterEach",
-            "mock", "assert", "run",
+            "test",
+            "describe",
+            "it",
+            "before",
+            "after",
+            "beforeAll",
+            "afterAll",
+            "beforeEach",
+            "afterEach",
+            "mock",
+            "assert",
+            "run",
         ] {
             let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();

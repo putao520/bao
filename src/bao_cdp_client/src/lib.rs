@@ -84,8 +84,8 @@ pub use browser::Browser;
 // 所有错误都实现 `std::error::Error + Display`,可用 `?` 在用户代码中传播。
 //
 // @trace REQ-BAO-API-001 [level:library]
-pub use error::{CdpError, ConnectError, Result};
 pub use bridge::BridgeError;
+pub use error::{CdpError, ConnectError, Result};
 
 // ─── Transport 抽象 ──────────────────────────────────────────────────────
 //
@@ -123,22 +123,22 @@ pub use transport::{
 // 我们将高层 Browser 重命名为 `HighLevelBrowser`,顶层入口保留 `Browser`。
 //
 // @trace REQ-BAO-API-006 [level:library]
+pub use api::accessibility::{AXNode, Accessibility};
 pub use api::browser::{Browser as HighLevelBrowser, BrowserOptions, Pid};
 pub use api::browser_context::{BrowserContext, ContextOptions, PermissionOverride};
-pub use api::page::{Page, TargetInfo as PageTargetInfo, Viewport as PageViewport, Worker};
-pub use api::frame::{ExecutionContext, Frame};
+pub use api::console_message::ConsoleMessage;
+pub use api::coverage::Coverage;
+pub use api::dialog::{Dialog, DialogType};
 pub use api::element_handle::{BoundingBox, ElementHandle};
+pub use api::frame::{ExecutionContext, Frame};
 pub use api::js_handle::JSHandle;
+pub use api::keyboard::Keyboard;
+pub use api::mouse::{Mouse, MouseButton};
+pub use api::page::{Page, TargetInfo as PageTargetInfo, Viewport as PageViewport, Worker};
 pub use api::request::Request;
 pub use api::response::Response;
-pub use api::dialog::{Dialog, DialogType};
-pub use api::console_message::ConsoleMessage;
-pub use api::keyboard::Keyboard;
-pub use api::mouse::{MouseButton, Mouse};
 pub use api::touchscreen::Touchscreen;
-pub use api::coverage::Coverage;
 pub use api::tracing::Tracing;
-pub use api::accessibility::{Accessibility, AXNode};
 
 // ─── EventEmitter 共享 trait ─────────────────────────────────────────────
 //
@@ -147,7 +147,7 @@ pub use api::accessibility::{Accessibility, AXNode};
 //
 // @trace REQ-BAO-API-003 [level:library]
 pub use api::event_emitter::{
-    EventHandler, EventEmitter, EventEmitterInner, HandlerId, SubscriptionResult,
+    EventEmitter, EventEmitterInner, EventHandler, HandlerId, SubscriptionResult,
 };
 // `delegate_event_emitter!` 是 #[macro_export],挂在 crate 根。
 
@@ -182,7 +182,9 @@ pub use bridge::{
 };
 // 截图格式:bridge 内部用 `BridgeScreenshotFormat`,公共 API 别名为 `ScreenshotFormat`。
 pub use bridge::ScreenshotFormat as BridgeScreenshotFormat;
-pub use connection::{Connection, ConnectionConfig, EventListener, EventListenerId, ParsedConnectUrl};
+pub use connection::{
+    Connection, ConnectionConfig, EventListener, EventListenerId, ParsedConnectUrl,
+};
 
 // ─── 公共类型(types 模块顶层 re-export) ────────────────────────────────
 //

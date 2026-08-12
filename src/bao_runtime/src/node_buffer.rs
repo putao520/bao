@@ -2,7 +2,7 @@
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
 use mozjs::jsapi::*;
-use mozjs::jsval::{UndefinedValue, Int32Value, ObjectValue, JSVal};
+use mozjs::jsval::{Int32Value, JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -19,18 +19,35 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         rooted!(&in(cx) let global = CurrentGlobalOrNull(cx_raw));
         if !global.get().is_null() {
             let mut buf_val = UndefinedValue();
-            JS_GetProperty(cx_raw, global.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut buf_val,
-            });
+            JS_GetProperty(
+                cx_raw,
+                global.handle().into(),
+                c"Buffer".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut buf_val,
+                },
+            );
             if !buf_val.is_undefined() {
                 rooted!(&in(cx) let buf_root = buf_val);
-                JS_DefineProperty(cx_raw, mod_obj.handle().into(), c"Buffer".as_ptr(), buf_root.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    cx_raw,
+                    mod_obj.handle().into(),
+                    c"Buffer".as_ptr(),
+                    buf_root.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 
         rooted!(&in(cx) let kmax = mozjs::jsval::DoubleValue(4294967296.0_f64));
-        JS_DefineProperty(cx_raw, mod_obj.handle().into(), c"kMaxLength".as_ptr(), kmax.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"kMaxLength".as_ptr(),
+            kmax.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
 
         // @trace REQ-ENG-007 [api:buffer.poolSize] — Node.js Buffer pool size
         // constant (default 8192). Exposed on BOTH the `buffer` module object
@@ -68,10 +85,15 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // keeps the canonical binding on Buffer.poolSize and re-exports it
         // on the buffer module object.
         let mut buf_val = UndefinedValue();
-        JS_GetProperty(cx_raw, global.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut buf_val,
-        });
+        JS_GetProperty(
+            cx_raw,
+            global.handle().into(),
+            c"Buffer".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut buf_val,
+            },
+        );
         if buf_val.is_object() {
             rooted!(&in(cx) let buf_obj = buf_val.to_object());
             JS_DefineProperty(
@@ -97,11 +119,29 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             // Exceeds i32 range, so emit as a JS double. buffer.test.js
             // "constants" asserts the exact value.
             rooted!(&in(cx) let cmax = mozjs::jsval::DoubleValue(4294967296.0_f64));
-            JS_DefineProperty(cx_raw, constants_obj.handle().into(), c"MAX_LENGTH".as_ptr(), cmax.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx_raw,
+                constants_obj.handle().into(),
+                c"MAX_LENGTH".as_ptr(),
+                cmax.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
             rooted!(&in(cx) let smax = Int32Value(2147483647));
-            JS_DefineProperty(cx_raw, constants_obj.handle().into(), c"MAX_STRING_LENGTH".as_ptr(), smax.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx_raw,
+                constants_obj.handle().into(),
+                c"MAX_STRING_LENGTH".as_ptr(),
+                smax.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
             rooted!(&in(cx) let constants_val = ObjectValue(constants_obj.get()));
-            JS_DefineProperty(cx_raw, mod_obj.handle().into(), c"constants".as_ptr(), constants_val.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx_raw,
+                mod_obj.handle().into(),
+                c"constants".as_ptr(),
+                constants_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // SlowBuffer = Buffer.alloc alias via JS
@@ -119,7 +159,13 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             libc::free(opts as *mut _);
             if !rval.is_undefined() {
                 rooted!(&in(cx) let sb_root = rval);
-                JS_DefineProperty(cx_raw, mod_obj.handle().into(), c"SlowBuffer".as_ptr(), sb_root.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    cx_raw,
+                    mod_obj.handle().into(),
+                    c"SlowBuffer".as_ptr(),
+                    sb_root.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 
@@ -170,13 +216,24 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 for prop in &["Blob", "File"] {
                     let cprop = ::std::ffi::CString::new(*prop).unwrap();
                     let mut val = UndefinedValue();
-                    JS_GetProperty(cx_raw, blob_obj.handle().into(), cprop.as_ptr(), MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut val,
-                    });
+                    JS_GetProperty(
+                        cx_raw,
+                        blob_obj.handle().into(),
+                        cprop.as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut val,
+                        },
+                    );
                     if !val.is_undefined() {
                         rooted!(&in(cx) let val_root = val);
-                        JS_DefineProperty(cx_raw, mod_obj.handle().into(), cprop.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
+                        JS_DefineProperty(
+                            cx_raw,
+                            mod_obj.handle().into(),
+                            cprop.as_ptr(),
+                            val_root.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
                     }
                 }
             }
@@ -263,7 +320,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 _phantom_0: ::std::marker::PhantomData,
                 ptr: &mut extras_rval,
             };
-            mozjs_sys::jsapi::JS::Evaluate2(cx_raw, extras_opts, &mut extras_src_text, extras_rval_h);
+            mozjs_sys::jsapi::JS::Evaluate2(
+                cx_raw,
+                extras_opts,
+                &mut extras_src_text,
+                extras_rval_h,
+            );
             libc::free(extras_opts as *mut _);
             if extras_rval.is_object() {
                 rooted!(&in(cx) let extras_obj = extras_rval.to_object());
@@ -272,12 +334,23 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 for prop in &["isAscii", "isUtf8", "resolveObjectURL"] {
                     let cprop = ::std::ffi::CString::new(*prop).unwrap();
                     let mut val = UndefinedValue();
-                    JS_GetProperty(cx_raw, extras_obj.handle().into(), cprop.as_ptr(), MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut val,
-                    });
+                    JS_GetProperty(
+                        cx_raw,
+                        extras_obj.handle().into(),
+                        cprop.as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut val,
+                        },
+                    );
                     rooted!(&in(cx) let val_root = val);
-                    JS_DefineProperty(cx_raw, mod_obj.handle().into(), cprop.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(
+                        cx_raw,
+                        mod_obj.handle().into(),
+                        cprop.as_ptr(),
+                        val_root.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
                 }
             }
         }
@@ -365,11 +438,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 // throws "Not implemented" (the surface Bun documents for this stub when
 // iconv support is absent).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn buffer_transcode(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn buffer_transcode(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let msg = ::std::ffi::CString::new("Not implemented").unwrap();
     mozjs::error::throw_type_error(cx, msg.as_ref());
@@ -386,11 +455,7 @@ unsafe extern "C" fn buffer_transcode(
 // preserves primitive returns from C++ natives invoked as constructors,
 // matching Bun's behaviour.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn buffer_is_ascii(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn buffer_is_ascii(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let input = *args.get(0).ptr;
     let bytes = match collect_byte_view(cx, input) {
@@ -411,11 +476,7 @@ unsafe extern "C" fn buffer_is_ascii(
 // overlong encodings, surrogates, and malformed continuation bytes with the
 // same semantics as the hand-written DFA it replaces).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn buffer_is_utf8(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn buffer_is_utf8(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let input = *args.get(0).ptr;
     let bytes = match collect_byte_view(cx, input) {
@@ -482,7 +543,8 @@ unsafe fn collect_byte_view(cx: *mut JSContext, v: JSVal) -> Option<Vec<u8>> {
     // Try plain ArrayBuffer via JS::GetObjectAsArrayBuffer.
     let mut ab_length: usize = 0;
     let mut ab_data: *mut u8 = ptr::null_mut();
-    let ab_unwrapped = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj_root.get(), &mut ab_length, &mut ab_data);
+    let ab_unwrapped =
+        mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj_root.get(), &mut ab_length, &mut ab_data);
     if !ab_unwrapped.is_null() && !ab_data.is_null() {
         let slice = ::std::slice::from_raw_parts(ab_data, ab_length);
         return Some(slice.to_vec());

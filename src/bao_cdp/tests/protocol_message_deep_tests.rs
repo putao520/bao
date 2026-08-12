@@ -5,13 +5,12 @@
 // without bridge), serialize_response, serialize_event, CdpMessage/CdpResponse/
 // CdpError/CdpEvent serialization edge cases, roundtrip consistency.
 
-use bao_cdp::{CdpMessage, CdpResponse, CdpError, CdpEvent};
+use bao_cdp::{CdpError, CdpEvent, CdpMessage, CdpResponse};
 
 const TID: &str = "test-target";
-use bao_cdp::{parse_message, handle_command, serialize_response, serialize_event};
+use bao_cdp::{handle_command, parse_message, serialize_event, serialize_response};
 
-use serde_json::{Value, json};
-
+use serde_json::{json, Value};
 
 // ---- parse_message: valid inputs ----
 
@@ -309,7 +308,10 @@ fn test_page_capture_screenshot_no_bridge() {
 
 #[test]
 fn test_page_capture_screenshot_jpeg_no_bridge() {
-    let r = ok_result("Page.captureScreenshot", Some(json!({"format": "jpeg", "quality": 80})));
+    let r = ok_result(
+        "Page.captureScreenshot",
+        Some(json!({"format": "jpeg", "quality": 80})),
+    );
     assert_eq!(r["data"], "");
 }
 
@@ -338,21 +340,28 @@ fn test_page_get_layout_metrics() {
 
 #[test]
 fn test_page_add_script_to_evaluate_no_bridge() {
-    let r = ok_result("Page.addScriptToEvaluateOnNewDocument",
-        Some(json!({"source": "console.log(1)"})));
+    let r = ok_result(
+        "Page.addScriptToEvaluateOnNewDocument",
+        Some(json!({"source": "console.log(1)"})),
+    );
     assert_eq!(r["identifier"], "1");
 }
 
 #[test]
 fn test_page_add_script_empty_source_no_bridge() {
-    let r = ok_result("Page.addScriptToEvaluateOnNewDocument",
-        Some(json!({"source": ""})));
+    let r = ok_result(
+        "Page.addScriptToEvaluateOnNewDocument",
+        Some(json!({"source": ""})),
+    );
     assert_eq!(r["identifier"], "1");
 }
 
 #[test]
 fn test_page_remove_script() {
-    assert_eq!(ok_result("Page.removeScriptToEvaluateOnNewDocument", None), json!({}));
+    assert_eq!(
+        ok_result("Page.removeScriptToEvaluateOnNewDocument", None),
+        json!({})
+    );
 }
 
 #[test]
@@ -495,8 +504,13 @@ fn test_dom_get_box_model() {
 
 #[test]
 fn test_dom_set_attribute_value_no_bridge() {
-    assert_eq!(ok_result("DOM.setAttributeValue",
-        Some(json!({"nodeId": 5, "name": "class", "value": "test"}))), json!({}));
+    assert_eq!(
+        ok_result(
+            "DOM.setAttributeValue",
+            Some(json!({"nodeId": 5, "name": "class", "value": "test"}))
+        ),
+        json!({})
+    );
 }
 
 #[test]
@@ -573,7 +587,10 @@ fn test_network_set_extra_http_headers() {
 
 #[test]
 fn test_network_emulate_network_conditions() {
-    assert_eq!(ok_result("Network.emulateNetworkConditions", None), json!({}));
+    assert_eq!(
+        ok_result("Network.emulateNetworkConditions", None),
+        json!({})
+    );
 }
 
 #[test]
@@ -583,7 +600,10 @@ fn test_network_set_request_interception() {
 
 #[test]
 fn test_network_continue_intercepted_request() {
-    assert_eq!(ok_result("Network.continueInterceptedRequest", None), json!({}));
+    assert_eq!(
+        ok_result("Network.continueInterceptedRequest", None),
+        json!({})
+    );
 }
 
 #[test]
@@ -660,39 +680,64 @@ fn test_css_unknown_command() {
 
 #[test]
 fn test_emulation_set_device_metrics_no_bridge() {
-    assert_eq!(ok_result("Emulation.setDeviceMetricsOverride",
-        Some(json!({"width": 800, "height": 600, "deviceScaleFactor": 1.5}))), json!({}));
+    assert_eq!(
+        ok_result(
+            "Emulation.setDeviceMetricsOverride",
+            Some(json!({"width": 800, "height": 600, "deviceScaleFactor": 1.5}))
+        ),
+        json!({})
+    );
 }
 
 #[test]
 fn test_emulation_set_device_metrics_defaults() {
-    assert_eq!(ok_result("Emulation.setDeviceMetricsOverride", Some(json!({}))), json!({}));
+    assert_eq!(
+        ok_result("Emulation.setDeviceMetricsOverride", Some(json!({}))),
+        json!({})
+    );
 }
 
 #[test]
 fn test_emulation_clear_device_metrics() {
-    assert_eq!(ok_result("Emulation.clearDeviceMetricsOverride", None), json!({}));
+    assert_eq!(
+        ok_result("Emulation.clearDeviceMetricsOverride", None),
+        json!({})
+    );
 }
 
 #[test]
 fn test_emulation_set_user_agent_no_bridge() {
-    assert_eq!(ok_result("Emulation.setUserAgentOverride",
-        Some(json!({"userAgent": ""}))), json!({}));
+    assert_eq!(
+        ok_result(
+            "Emulation.setUserAgentOverride",
+            Some(json!({"userAgent": ""}))
+        ),
+        json!({})
+    );
 }
 
 #[test]
 fn test_emulation_set_touch_emulation() {
-    assert_eq!(ok_result("Emulation.setTouchEmulationEnabled", None), json!({}));
+    assert_eq!(
+        ok_result("Emulation.setTouchEmulationEnabled", None),
+        json!({})
+    );
 }
 
 #[test]
 fn test_emulation_set_script_execution_disabled() {
-    assert_eq!(ok_result("Emulation.setScriptExecutionDisabled", None), json!({}));
+    assert_eq!(
+        ok_result("Emulation.setScriptExecutionDisabled", None),
+        json!({})
+    );
 }
 
 #[test]
 fn test_emulation_set_focus_emulation() {
-    assert_eq!(ok_result("Emulation.setFocusEmulationEnabled", None), json!({}));
+    assert_eq!(
+        ok_result("Emulation.setFocusEmulationEnabled", None),
+        json!({})
+    );
 }
 
 #[test]
@@ -702,7 +747,10 @@ fn test_emulation_set_cpu_throttling_rate() {
 
 #[test]
 fn test_emulation_set_default_background_color_override() {
-    assert_eq!(ok_result("Emulation.setDefaultBackgroundColorOverride", None), json!({}));
+    assert_eq!(
+        ok_result("Emulation.setDefaultBackgroundColorOverride", None),
+        json!({})
+    );
 }
 
 #[test]
@@ -714,25 +762,43 @@ fn test_emulation_unknown_command() {
 
 #[test]
 fn test_input_dispatch_mouse_event_no_bridge() {
-    assert_eq!(ok_result("Input.dispatchMouseEvent",
-        Some(json!({"type": "mousePressed", "x": 100.0, "y": 200.0}))), json!({}));
+    assert_eq!(
+        ok_result(
+            "Input.dispatchMouseEvent",
+            Some(json!({"type": "mousePressed", "x": 100.0, "y": 200.0}))
+        ),
+        json!({})
+    );
 }
 
 #[test]
 fn test_input_dispatch_mouse_event_no_coords() {
-    assert_eq!(ok_result("Input.dispatchMouseEvent",
-        Some(json!({"type": "mouseMoved"}))), json!({}));
+    assert_eq!(
+        ok_result(
+            "Input.dispatchMouseEvent",
+            Some(json!({"type": "mouseMoved"}))
+        ),
+        json!({})
+    );
 }
 
 #[test]
 fn test_input_dispatch_key_event_no_bridge() {
-    assert_eq!(ok_result("Input.dispatchKeyEvent",
-        Some(json!({"type": "keyDown", "key": "a", "code": "KeyA"}))), json!({}));
+    assert_eq!(
+        ok_result(
+            "Input.dispatchKeyEvent",
+            Some(json!({"type": "keyDown", "key": "a", "code": "KeyA"}))
+        ),
+        json!({})
+    );
 }
 
 #[test]
 fn test_input_dispatch_key_event_minimal() {
-    assert_eq!(ok_result("Input.dispatchKeyEvent", Some(json!({}))), json!({}));
+    assert_eq!(
+        ok_result("Input.dispatchKeyEvent", Some(json!({}))),
+        json!({})
+    );
 }
 
 #[test]
@@ -742,7 +808,10 @@ fn test_input_dispatch_touch_event() {
 
 #[test]
 fn test_input_insert_text_no_bridge() {
-    assert_eq!(ok_result("Input.insertText", Some(json!({"text": ""}))), json!({}));
+    assert_eq!(
+        ok_result("Input.insertText", Some(json!({"text": ""}))),
+        json!({})
+    );
 }
 
 #[test]
@@ -789,7 +858,10 @@ fn test_overlay_set_inspect_mode() {
 
 #[test]
 fn test_overlay_set_paused_in_debugger_message() {
-    assert_eq!(ok_result("Overlay.setPausedInDebuggerMessage", None), json!({}));
+    assert_eq!(
+        ok_result("Overlay.setPausedInDebuggerMessage", None),
+        json!({})
+    );
 }
 
 #[test]
@@ -927,9 +999,12 @@ fn test_fetch_enable_no_patterns() {
 
 #[test]
 fn test_fetch_enable_with_patterns() {
-    let r = ok_result("Fetch.enable", Some(json!({
-        "patterns": [{"urlPattern": "*"}, {"urlPattern": "https://*"}]
-    })));
+    let r = ok_result(
+        "Fetch.enable",
+        Some(json!({
+            "patterns": [{"urlPattern": "*"}, {"urlPattern": "https://*"}]
+        })),
+    );
     assert_eq!(r["enabled"], true);
     assert_eq!(r["patternCount"], 2);
 }
@@ -948,14 +1023,20 @@ fn test_fetch_continue_request() {
 
 #[test]
 fn test_fetch_continue_with_response() {
-    let r = ok_result("Fetch.continueWithResponse", Some(json!({"requestId": "req-2"})));
+    let r = ok_result(
+        "Fetch.continueWithResponse",
+        Some(json!({"requestId": "req-2"})),
+    );
     assert_eq!(r["requestId"], "req-2");
     assert_eq!(r["continued"], true);
 }
 
 #[test]
 fn test_fetch_fail_request() {
-    let r = ok_result("Fetch.failRequest", Some(json!({"requestId": "req-3", "reason": "Aborted"})));
+    let r = ok_result(
+        "Fetch.failRequest",
+        Some(json!({"requestId": "req-3", "reason": "Aborted"})),
+    );
     assert_eq!(r["requestId"], "req-3");
     assert_eq!(r["failed"], true);
     assert_eq!(r["reason"], "Aborted");
@@ -963,9 +1044,12 @@ fn test_fetch_fail_request() {
 
 #[test]
 fn test_fetch_fulfill_request() {
-    let r = ok_result("Fetch.fulfillRequest", Some(json!({
-        "requestId": "req-4", "responseCode": 404, "body": "not found"
-    })));
+    let r = ok_result(
+        "Fetch.fulfillRequest",
+        Some(json!({
+            "requestId": "req-4", "responseCode": 404, "body": "not found"
+        })),
+    );
     assert_eq!(r["requestId"], "req-4");
     assert_eq!(r["fulfilled"], true);
     assert_eq!(r["responseCode"], 404);
@@ -974,27 +1058,39 @@ fn test_fetch_fulfill_request() {
 
 #[test]
 fn test_fetch_fulfill_request_default_code() {
-    let r = ok_result("Fetch.fulfillRequest", Some(json!({"requestId": "r1", "body": ""})));
+    let r = ok_result(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "r1", "body": ""})),
+    );
     assert_eq!(r["responseCode"], 200);
     assert_eq!(r["bodyLength"], 0);
 }
 
 #[test]
 fn test_fetch_get_request_post_data() {
-    let r = ok_result("Fetch.getRequestPostData", Some(json!({"requestId": "req-5"})));
+    let r = ok_result(
+        "Fetch.getRequestPostData",
+        Some(json!({"requestId": "req-5"})),
+    );
     assert_eq!(r["requestId"], "req-5");
     assert_eq!(r["postData"], "");
 }
 
 #[test]
 fn test_fetch_continue_with_auth() {
-    let r = ok_result("Fetch.continueWithAuth", Some(json!({"requestId": "req-6"})));
+    let r = ok_result(
+        "Fetch.continueWithAuth",
+        Some(json!({"requestId": "req-6"})),
+    );
     assert_eq!(r["requestId"], "req-6");
 }
 
 #[test]
 fn test_fetch_take_response_body_as_stream() {
-    let r = ok_result("Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "req-7"})));
+    let r = ok_result(
+        "Fetch.takeResponseBodyAsStream",
+        Some(json!({"requestId": "req-7"})),
+    );
     assert_eq!(r["stream"], "stream-req-7");
 }
 
@@ -1029,7 +1125,11 @@ fn test_no_dot_in_method() {
 
 #[test]
 fn test_serialize_ok_response() {
-    let resp = CdpResponse { id: Some(1), result: Some(json!({"value": 42})), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(json!({"value": 42})),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["id"], 1);
@@ -1040,8 +1140,12 @@ fn test_serialize_ok_response() {
 #[test]
 fn test_serialize_error_response() {
     let resp = CdpResponse {
-        id: Some(2), result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        id: Some(2),
+        result: None,
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1053,7 +1157,11 @@ fn test_serialize_error_response() {
 
 #[test]
 fn test_serialize_empty_result() {
-    let resp = CdpResponse { id: Some(3), result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: Some(3),
+        result: Some(json!({})),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["result"], json!({}));
@@ -1061,7 +1169,11 @@ fn test_serialize_empty_result() {
 
 #[test]
 fn test_serialize_negative_id() {
-    let resp = CdpResponse { id: Some(-100), result: Some(json!(null)), error: None };
+    let resp = CdpResponse {
+        id: Some(-100),
+        result: Some(json!(null)),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["id"], -100);
@@ -1069,7 +1181,11 @@ fn test_serialize_negative_id() {
 
 #[test]
 fn test_serialize_zero_id() {
-    let resp = CdpResponse { id: Some(0), result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: Some(0),
+        result: Some(json!({})),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     assert!(serde_json::from_str::<Value>(&raw).is_ok());
 }
@@ -1078,7 +1194,10 @@ fn test_serialize_zero_id() {
 
 #[test]
 fn test_serialize_event_with_params() {
-    let ev = CdpEvent { method: "Page.loadEventFired".into(), params: Some(json!({"timestamp": 12345})) };
+    let ev = CdpEvent {
+        method: "Page.loadEventFired".into(),
+        params: Some(json!({"timestamp": 12345})),
+    };
     let raw = serialize_event(&ev);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["method"], "Page.loadEventFired");
@@ -1087,7 +1206,10 @@ fn test_serialize_event_with_params() {
 
 #[test]
 fn test_serialize_event_without_params() {
-    let ev = CdpEvent { method: "DOM.documentUpdated".into(), params: None };
+    let ev = CdpEvent {
+        method: "DOM.documentUpdated".into(),
+        params: None,
+    };
     let raw = serialize_event(&ev);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["method"], "DOM.documentUpdated");
@@ -1096,7 +1218,10 @@ fn test_serialize_event_without_params() {
 
 #[test]
 fn test_serialize_event_empty_params() {
-    let ev = CdpEvent { method: "Log.entryAdded".into(), params: Some(json!({})) };
+    let ev = CdpEvent {
+        method: "Log.entryAdded".into(),
+        params: Some(json!({})),
+    };
     let raw = serialize_event(&ev);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["params"], json!({}));
@@ -1106,7 +1231,9 @@ fn test_serialize_event_empty_params() {
 fn test_serialize_event_complex_params() {
     let ev = CdpEvent {
         method: "Runtime.consoleAPICalled".into(),
-        params: Some(json!({"type": "log", "timestamp": 999, "args": [{"type": "string", "value": "hello"}]})),
+        params: Some(
+            json!({"type": "log", "timestamp": 999, "args": [{"type": "string", "value": "hello"}]}),
+        ),
     };
     let raw = serialize_event(&ev);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1175,7 +1302,10 @@ fn test_roundtrip_dom_get_document() {
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32601, message: "test error".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "test error".into(),
+    };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32601"));
     assert!(debug.contains("test error"));
@@ -1183,7 +1313,10 @@ fn test_cdp_error_debug() {
 
 #[test]
 fn test_cdp_error_serialization() {
-    let err = CdpError { code: -32000, message: "internal".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "internal".into(),
+    };
     let json_str = serde_json::to_string(&err).unwrap();
     let p: Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(p["code"], -32000);
@@ -1195,7 +1328,8 @@ fn test_cdp_error_serialization() {
 #[test]
 fn test_cdp_message_clone() {
     let msg = CdpMessage {
-        id: Some(1), method: "Page.enable".into(),
+        id: Some(1),
+        method: "Page.enable".into(),
         params: Some(json!({"key": "val"})),
         session_id: Some("sess-1".into()),
     };
@@ -1208,7 +1342,12 @@ fn test_cdp_message_clone() {
 
 #[test]
 fn test_cdp_message_debug() {
-    let msg = CdpMessage { id: Some(1), method: "Test.cmd".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(1),
+        method: "Test.cmd".into(),
+        params: None,
+        session_id: None,
+    };
     let debug = format!("{:?}", msg);
     assert!(debug.contains("Test.cmd"));
 }
@@ -1217,7 +1356,10 @@ fn test_cdp_message_debug() {
 
 #[test]
 fn test_cdp_event_clone() {
-    let ev = CdpEvent { method: "Page.loadEventFired".into(), params: Some(json!({"ts": 1})) };
+    let ev = CdpEvent {
+        method: "Page.loadEventFired".into(),
+        params: Some(json!({"ts": 1})),
+    };
     let cloned = ev.clone();
     assert_eq!(cloned.method, "Page.loadEventFired");
     assert_eq!(cloned.params.unwrap()["ts"], 1);
@@ -1225,7 +1367,10 @@ fn test_cdp_event_clone() {
 
 #[test]
 fn test_cdp_event_debug() {
-    let ev = CdpEvent { method: "Test.evt".into(), params: None };
+    let ev = CdpEvent {
+        method: "Test.evt".into(),
+        params: None,
+    };
     let debug = format!("{:?}", ev);
     assert!(debug.contains("Test.evt"));
 }
@@ -1235,9 +1380,19 @@ fn test_cdp_event_debug() {
 #[test]
 fn test_response_preserves_request_id() {
     for id in [0i64, 1, -1, 999, i64::MAX, i64::MIN] {
-        let msg = CdpMessage { id: Some(id), method: "Page.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(id),
+            method: "Page.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let resp = handle_command(msg, "t-1", &None, None);
-        assert_eq!(resp.id, Some(id), "Response ID should match request ID {}", id);
+        assert_eq!(
+            resp.id,
+            Some(id),
+            "Response ID should match request ID {}",
+            id
+        );
     }
 }
 
@@ -1245,12 +1400,26 @@ fn test_response_preserves_request_id() {
 
 #[test]
 fn test_attach_to_target_session_id_deterministic() {
-    let msg1 = CdpMessage { id: Some(1), method: "Target.attachToTarget".into(), params: None, session_id: None };
-    let r1 = handle_command(msg1, "target-abc", &None, None).result.unwrap();
+    let msg1 = CdpMessage {
+        id: Some(1),
+        method: "Target.attachToTarget".into(),
+        params: None,
+        session_id: None,
+    };
+    let r1 = handle_command(msg1, "target-abc", &None, None)
+        .result
+        .unwrap();
     let sid1 = r1["sessionId"].as_str().unwrap().to_string();
 
-    let msg2 = CdpMessage { id: Some(2), method: "Target.attachToTarget".into(), params: None, session_id: None };
-    let r2 = handle_command(msg2, "target-abc", &None, None).result.unwrap();
+    let msg2 = CdpMessage {
+        id: Some(2),
+        method: "Target.attachToTarget".into(),
+        params: None,
+        session_id: None,
+    };
+    let r2 = handle_command(msg2, "target-abc", &None, None)
+        .result
+        .unwrap();
     let sid2 = r2["sessionId"].as_str().unwrap().to_string();
 
     assert_eq!(sid1, sid2);
@@ -1258,12 +1427,26 @@ fn test_attach_to_target_session_id_deterministic() {
 
 #[test]
 fn test_different_targets_different_session_ids() {
-    let msg1 = CdpMessage { id: Some(1), method: "Target.attachToTarget".into(), params: None, session_id: None };
-    let r1 = handle_command(msg1, "target-A", &None, None).result.unwrap();
+    let msg1 = CdpMessage {
+        id: Some(1),
+        method: "Target.attachToTarget".into(),
+        params: None,
+        session_id: None,
+    };
+    let r1 = handle_command(msg1, "target-A", &None, None)
+        .result
+        .unwrap();
     let sid1 = r1["sessionId"].as_str().unwrap().to_string();
 
-    let msg2 = CdpMessage { id: Some(2), method: "Target.attachToTarget".into(), params: None, session_id: None };
-    let r2 = handle_command(msg2, "target-B", &None, None).result.unwrap();
+    let msg2 = CdpMessage {
+        id: Some(2),
+        method: "Target.attachToTarget".into(),
+        params: None,
+        session_id: None,
+    };
+    let r2 = handle_command(msg2, "target-B", &None, None)
+        .result
+        .unwrap();
     let sid2 = r2["sessionId"].as_str().unwrap().to_string();
 
     assert_ne!(sid1, sid2);
@@ -1275,11 +1458,14 @@ fn test_different_targets_different_session_ids() {
 fn test_navigate_loader_id_from_url_length() {
     let url = "https://example.com/page";
     let msg = CdpMessage {
-        id: Some(1), method: "Page.navigate".into(),
+        id: Some(1),
+        method: "Page.navigate".into(),
         params: Some(json!({"url": url})),
         session_id: None,
     };
-    let r = handle_command(msg, "t-1", &Some(json!({"url": url})), None).result.unwrap();
+    let r = handle_command(msg, "t-1", &Some(json!({"url": url})), None)
+        .result
+        .unwrap();
     let loader_id = r["loaderId"].as_str().unwrap();
     assert_eq!(loader_id, format!("{:016x}", url.len() as u64));
 }
@@ -1289,22 +1475,45 @@ fn test_navigate_loader_id_from_url_length() {
 #[test]
 fn test_all_domains_unknown_command() {
     let domains = [
-        "Target", "Page", "Runtime", "DOM", "Network",
-        "CSS", "Emulation", "Input", "Overlay", "Debugger",
-        "Log", "Fetch",
+        "Target",
+        "Page",
+        "Runtime",
+        "DOM",
+        "Network",
+        "CSS",
+        "Emulation",
+        "Input",
+        "Overlay",
+        "Debugger",
+        "Log",
+        "Fetch",
     ];
     for domain in &domains {
         let method = format!("{}.completelyUnknownCommand12345", domain);
-        let msg = CdpMessage { id: Some(1), method: method.clone(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(1),
+            method: method.clone(),
+            params: None,
+            session_id: None,
+        };
         let resp = handle_command(msg, "t-1", &None, None);
-        let err = resp.error.expect(&format!("{} unknown should error", domain));
+        let err = resp
+            .error
+            .expect(&format!("{} unknown should error", domain));
         assert_eq!(err.code, -32601);
         assert!(err.message.contains("completelyUnknownCommand12345"));
         // JSON-RPC 2.0 §5.1: error responses MUST NOT carry a `result` member
-        assert!(resp.result.is_none(), "{} error response must not carry result", domain);
+        assert!(
+            resp.result.is_none(),
+            "{} error response must not carry result",
+            domain
+        );
         // Error message format: known-domain unknown-command embeds the domain
-        assert!(err.message.contains(domain),
-            "{} unknown-command message should name the domain", domain);
+        assert!(
+            err.message.contains(domain),
+            "{} unknown-command message should name the domain",
+            domain
+        );
     }
 }
 
@@ -1401,7 +1610,10 @@ fn test_parse_id_i64_min_max_boundary() {
 fn test_parse_id_overflow_i64_rejected() {
     // 2^63 must NOT deserialize as i64 — parse_message returns None.
     let raw = r#"{"id":9223372036854775808,"method":"X.y"}"#;
-    assert!(parse_message(raw).is_none(), "2^63 must not be accepted as i64 id");
+    assert!(
+        parse_message(raw).is_none(),
+        "2^63 must not be accepted as i64 id"
+    );
 }
 
 #[test]
@@ -1410,8 +1622,10 @@ fn test_parse_duplicate_keys_rejected() {
     // parse_message therefore returns None — this is strict, well-defined
     // behavior (NOT last-wins). Documents the codec's duplicate-key stance.
     let raw = r#"{"id":1,"id":2,"method":"X.y"}"#;
-    assert!(parse_message(raw).is_none(),
-        "duplicate keys must be rejected (serde_json strict mode), not last-wins");
+    assert!(
+        parse_message(raw).is_none(),
+        "duplicate keys must be rejected (serde_json strict mode), not last-wins"
+    );
 }
 
 #[test]
@@ -1435,10 +1649,17 @@ fn test_parse_deeply_nested_params() {
 #[test]
 fn test_serialize_response_id_none_notification_echo() {
     // JSON-RPC 2.0 notification (no id) → response.id must be null, not omitted.
-    let resp = CdpResponse { id: None, result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: None,
+        result: Some(json!({})),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
-    assert!(p["id"].is_null(), "notification response id must serialize as null");
+    assert!(
+        p["id"].is_null(),
+        "notification response id must serialize as null"
+    );
     assert!(p.get("result").is_some());
     assert!(p.get("error").is_none());
 }
@@ -1446,24 +1667,38 @@ fn test_serialize_response_id_none_notification_echo() {
 #[test]
 fn test_serialize_response_success_excludes_error_key() {
     // Success path: result present, error MUST be absent in serialized output.
-    let resp = CdpResponse { id: Some(1), result: Some(json!({"v": 1})), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(json!({"v": 1})),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert!(p.get("result").is_some());
-    assert!(p.get("error").is_none(), "success response must not carry error key");
+    assert!(
+        p.get("error").is_none(),
+        "success response must not carry error key"
+    );
 }
 
 #[test]
 fn test_serialize_response_error_excludes_result_key() {
     // Error path: error present, result MUST be absent in serialized output.
     let resp = CdpResponse {
-        id: Some(1), result: None,
-        error: Some(CdpError { code: -32601, message: "m".into() }),
+        id: Some(1),
+        result: None,
+        error: Some(CdpError {
+            code: -32601,
+            message: "m".into(),
+        }),
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert!(p.get("error").is_some());
-    assert!(p.get("result").is_none(), "error response must not carry result key");
+    assert!(
+        p.get("result").is_none(),
+        "error response must not carry result key"
+    );
 }
 
 #[test]
@@ -1472,12 +1707,22 @@ fn test_serialize_response_neither_result_nor_error() {
     // #[serde(skip_serializing_if = "Option::is_none")] on both result & error,
     // so NEITHER key appears in the wire form — only {id}. Codec must be total
     // (no panic) and emit valid JSON.
-    let resp = CdpResponse { id: Some(7), result: None, error: None };
+    let resp = CdpResponse {
+        id: Some(7),
+        result: None,
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["id"], 7);
-    assert!(p.get("result").is_none(), "skipped result must not appear in wire form");
-    assert!(p.get("error").is_none(), "skipped error must not appear in wire form");
+    assert!(
+        p.get("result").is_none(),
+        "skipped result must not appear in wire form"
+    );
+    assert!(
+        p.get("error").is_none(),
+        "skipped error must not appear in wire form"
+    );
     // Only the id key survives
     let keys: Vec<&str> = p.as_object().unwrap().keys().map(|s| s.as_str()).collect();
     assert_eq!(keys, vec!["id"]);
@@ -1486,15 +1731,26 @@ fn test_serialize_response_neither_result_nor_error() {
 #[test]
 fn test_serialize_response_output_is_compact_single_line() {
     // serialize_response uses serde_json::to_string (compact, no whitespace).
-    let resp = CdpResponse { id: Some(1), result: Some(json!({"a":1})), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(json!({"a":1})),
+        error: None,
+    };
     let raw = serialize_response(&resp);
-    assert!(!raw.contains('\n'), "serialized response must be single-line");
+    assert!(
+        !raw.contains('\n'),
+        "serialized response must be single-line"
+    );
 }
 
 #[test]
 fn test_serialize_response_stable_under_reparse() {
     // serialize → parse → serialize must be idempotent.
-    let resp = CdpResponse { id: Some(1), result: Some(json!({"k": "v"})), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(json!({"k": "v"})),
+        error: None,
+    };
     let s1 = serialize_response(&resp);
     let reparsed: Value = serde_json::from_str(&s1).unwrap();
     let s2 = serde_json::to_string(&reparsed).unwrap();
@@ -1506,7 +1762,10 @@ fn test_serialize_response_stable_under_reparse() {
 #[test]
 fn test_serialize_event_empty_method() {
     // Empty method string must still produce valid JSON (boundary).
-    let ev = CdpEvent { method: "".into(), params: None };
+    let ev = CdpEvent {
+        method: "".into(),
+        params: None,
+    };
     let raw = serialize_event(&ev);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["method"], "");
@@ -1516,11 +1775,17 @@ fn test_serialize_event_empty_method() {
 #[test]
 fn test_serialize_event_null_params_present() {
     // params: Some(Value::Null) — distinct from None — must serialize as null.
-    let ev = CdpEvent { method: "X.y".into(), params: Some(Value::Null) };
+    let ev = CdpEvent {
+        method: "X.y".into(),
+        params: Some(Value::Null),
+    };
     let raw = serialize_event(&ev);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["method"], "X.y");
-    assert!(p.get("params").is_some(), "explicit null params must be present as null");
+    assert!(
+        p.get("params").is_some(),
+        "explicit null params must be present as null"
+    );
     assert!(p["params"].is_null());
 }
 
@@ -1537,9 +1802,15 @@ fn test_serialize_event_array_params() {
 
 #[test]
 fn test_serialize_event_output_compact() {
-    let ev = CdpEvent { method: "X.y".into(), params: Some(json!({"a":1})) };
+    let ev = CdpEvent {
+        method: "X.y".into(),
+        params: Some(json!({"a":1})),
+    };
     let raw = serialize_event(&ev);
-    assert!(!raw.contains('\n'), "event JSON must be compact (single-line wire form)");
+    assert!(
+        !raw.contains('\n'),
+        "event JSON must be compact (single-line wire form)"
+    );
 }
 
 // ---- D. handle_command: boundary & SPEC-aligned cases ----
@@ -1550,14 +1821,18 @@ fn test_handle_multiple_dot_method_splitn_first_dot_only() {
     // command="navigate.foo". Page handler exact-matches commands, so
     // "navigate.foo" != "navigate" → -32601 Page-unknown, NOT a crash.
     let msg = CdpMessage {
-        id: Some(1), method: "Page.navigate.foo".into(),
-        params: None, session_id: None,
+        id: Some(1),
+        method: "Page.navigate.foo".into(),
+        params: None,
+        session_id: None,
     };
     let resp = handle_command(msg, "t-1", &None, None);
     let err = resp.error.unwrap();
     assert_eq!(err.code, -32601);
-    assert!(err.message.contains("navigate.foo"),
-        "error message must carry the full command suffix after first dot");
+    assert!(
+        err.message.contains("navigate.foo"),
+        "error message must carry the full command suffix after first dot"
+    );
 }
 
 #[test]
@@ -1565,14 +1840,19 @@ fn test_handle_empty_target_id_get_targets() {
     // Empty target_id boundary — getTargets still returns exactly one entry
     // with targetId == "".
     let msg = CdpMessage {
-        id: Some(1), method: "Target.getTargets".into(),
-        params: None, session_id: None,
+        id: Some(1),
+        method: "Target.getTargets".into(),
+        params: None,
+        session_id: None,
     };
     let resp = handle_command(msg, "", &None, None);
     let r = resp.result.unwrap();
     let infos = r["targetInfos"].as_array().unwrap();
     assert_eq!(infos.len(), 1);
-    assert_eq!(infos[0]["targetId"], "", "empty target_id must round-trip verbatim");
+    assert_eq!(
+        infos[0]["targetId"], "",
+        "empty target_id must round-trip verbatim"
+    );
     assert_eq!(infos[0]["type"], "page");
 }
 
@@ -1591,9 +1871,19 @@ fn test_attach_to_target_session_id_formula_self_consistent() {
     assert_eq!(r["sessionId"].as_str().unwrap(), expected_sid("target-001"));
 
     // distinct targets via direct handle_command
-    let m1 = CdpMessage { id: Some(1), method: "Target.attachToTarget".into(), params: None, session_id: None };
+    let m1 = CdpMessage {
+        id: Some(1),
+        method: "Target.attachToTarget".into(),
+        params: None,
+        session_id: None,
+    };
     let r1 = handle_command(m1, "AAAA", &None, None).result.unwrap();
-    let m2 = CdpMessage { id: Some(2), method: "Target.attachToTarget".into(), params: None, session_id: None };
+    let m2 = CdpMessage {
+        id: Some(2),
+        method: "Target.attachToTarget".into(),
+        params: None,
+        session_id: None,
+    };
     let r2 = handle_command(m2, "BBBB", &None, None).result.unwrap();
     assert_eq!(r1["sessionId"], expected_sid("AAAA"));
     assert_eq!(r2["sessionId"], expected_sid("BBBB"));
@@ -1605,7 +1895,12 @@ fn test_attach_to_target_session_id_formula_self_consistent() {
     assert!(sid.chars().all(|c| c.is_ascii_hexdigit()));
 
     // empty target → all-zero sessionId
-    let m3 = CdpMessage { id: Some(3), method: "Target.attachToTarget".into(), params: None, session_id: None };
+    let m3 = CdpMessage {
+        id: Some(3),
+        method: "Target.attachToTarget".into(),
+        params: None,
+        session_id: None,
+    };
     let r3 = handle_command(m3, "", &None, None).result.unwrap();
     assert_eq!(r3["sessionId"], "0000000000000000");
 }
@@ -1616,7 +1911,10 @@ fn test_page_navigate_empty_url_defaults_to_about_blank() {
     // (CDP/Chrome semantics). loaderId is url.len()-derived → "about:blank".len() = 11 = 0x0b.
     let r = ok_result("Page.navigate", Some(json!({"url": ""})));
     assert_eq!(r["frameId"], "0");
-    assert_eq!(r["loaderId"], format!("{:016x}", "about:blank".len() as u64));
+    assert_eq!(
+        r["loaderId"],
+        format!("{:016x}", "about:blank".len() as u64)
+    );
 }
 
 #[test]
@@ -1624,7 +1922,10 @@ fn test_page_navigate_missing_params_field() {
     // No params at all → default url "about:blank".
     let r = ok_result("Page.navigate", None);
     assert_eq!(r["frameId"], "0");
-    assert_eq!(r["loaderId"], format!("{:016x}", "about:blank".len() as u64));
+    assert_eq!(
+        r["loaderId"],
+        format!("{:016x}", "about:blank".len() as u64)
+    );
 }
 
 #[test]
@@ -1632,7 +1933,10 @@ fn test_page_navigate_url_non_string_ignored() {
     // url given as number (invalid type) → unwrap_or("about:blank")
     let r = ok_result("Page.navigate", Some(json!({"url": 123})));
     assert_eq!(r["frameId"], "0");
-    assert_eq!(r["loaderId"], format!("{:016x}", "about:blank".len() as u64));
+    assert_eq!(
+        r["loaderId"],
+        format!("{:016x}", "about:blank".len() as u64)
+    );
 }
 
 #[test]
@@ -1644,8 +1948,10 @@ fn test_page_capture_screenshot_default_format_png() {
 
 #[test]
 fn test_page_capture_screenshot_quality_zero() {
-    let r = ok_result("Page.captureScreenshot",
-        Some(json!({"format": "jpeg", "quality": 0})));
+    let r = ok_result(
+        "Page.captureScreenshot",
+        Some(json!({"format": "jpeg", "quality": 0})),
+    );
     assert_eq!(r["data"], "");
 }
 
@@ -1656,7 +1962,10 @@ fn test_fetch_enable_patterns_non_array_treated_as_zero() {
     assert_eq!(r1["patternCount"], 0);
     assert_eq!(r1["enabled"], true);
 
-    let r2 = ok_result("Fetch.enable", Some(json!({"patterns": {"urlPattern": "*"}})));
+    let r2 = ok_result(
+        "Fetch.enable",
+        Some(json!({"patterns": {"urlPattern": "*"}})),
+    );
     assert_eq!(r2["patternCount"], 0);
 }
 
@@ -1671,19 +1980,28 @@ fn test_fetch_enable_patterns_null() {
 fn test_fetch_fulfill_request_body_length_byte_semantics() {
     // bodyLength is byte length, not char count. Multi-byte UTF-8 counts bytes.
     // "héllo" → h(1) é(2) l(1) l(1) o(1) = 6 bytes
-    let r = ok_result("Fetch.fulfillRequest", Some(json!({
-        "requestId": "r1", "body": "héllo"
-    })));
+    let r = ok_result(
+        "Fetch.fulfillRequest",
+        Some(json!({
+            "requestId": "r1", "body": "héllo"
+        })),
+    );
     assert_eq!(r["bodyLength"], "héllo".len());
-    assert_eq!(r["bodyLength"], 6, "multi-byte UTF-8 body must count bytes not chars");
+    assert_eq!(
+        r["bodyLength"], 6,
+        "multi-byte UTF-8 body must count bytes not chars"
+    );
 }
 
 #[test]
 fn test_fetch_fulfill_request_unicode_body() {
     // Pure CJK body — 3 chars × 3 bytes = 9 bytes.
-    let r = ok_result("Fetch.fulfillRequest", Some(json!({
-        "requestId": "r1", "body": "你好吗"
-    })));
+    let r = ok_result(
+        "Fetch.fulfillRequest",
+        Some(json!({
+            "requestId": "r1", "body": "你好吗"
+        })),
+    );
     assert_eq!(r["bodyLength"], 9);
 }
 
@@ -1706,23 +2024,34 @@ fn test_fetch_fail_request_missing_reason() {
 #[test]
 fn test_emulation_set_user_agent_empty_no_bridge() {
     // Empty UA + no bridge → ok_empty (UA bridge_send only when non-empty).
-    let r = ok_result("Emulation.setUserAgentOverride", Some(json!({"userAgent": ""})));
+    let r = ok_result(
+        "Emulation.setUserAgentOverride",
+        Some(json!({"userAgent": ""})),
+    );
     assert_eq!(r, json!({}));
 }
 
 #[test]
 fn test_emulation_set_device_metrics_negative_width_no_panic() {
     // Negative width via as_u64() → None → default 1920. No panic.
-    let r = ok_result("Emulation.setDeviceMetricsOverride",
-        Some(json!({"width": -1, "height": -1})));
-    assert_eq!(r, json!({}), "negative width/height must not panic; defaults applied");
+    let r = ok_result(
+        "Emulation.setDeviceMetricsOverride",
+        Some(json!({"width": -1, "height": -1})),
+    );
+    assert_eq!(
+        r,
+        json!({}),
+        "negative width/height must not panic; defaults applied"
+    );
 }
 
 #[test]
 fn test_input_dispatch_mouse_negative_coords() {
     // Negative x/y are valid f64; no bridge → ok_empty, no panic.
-    let r = ok_result("Input.dispatchMouseEvent",
-        Some(json!({"type": "mouseMoved", "x": -100.5, "y": -200.5})));
+    let r = ok_result(
+        "Input.dispatchMouseEvent",
+        Some(json!({"type": "mouseMoved", "x": -100.5, "y": -200.5})),
+    );
     assert_eq!(r, json!({}));
 }
 
@@ -1752,15 +2081,18 @@ fn test_debugger_set_breakpoint_returns_empty_locations_array() {
     let r = ok_result("Debugger.setBreakpointByUrl", None);
     assert_eq!(r["breakpointId"], "1");
     let locs = r["locations"].as_array().unwrap();
-    assert_eq!(locs.len(), 0, "no-bridge breakpoint locations must be empty array");
+    assert_eq!(
+        locs.len(),
+        0,
+        "no-bridge breakpoint locations must be empty array"
+    );
 }
 
 #[test]
 fn test_runtime_evaluate_no_bridge_with_expression_still_undefined() {
     // No bridge: even WITH a non-empty expression, returns undefined (bridge
     // path gated by bridge.is_some()). Documented no-bridge stub.
-    let r = ok_result("Runtime.evaluate",
-        Some(json!({"expression": "1+1"})));
+    let r = ok_result("Runtime.evaluate", Some(json!({"expression": "1+1"})));
     assert_eq!(r["result"]["type"], "undefined");
     assert!(r["exceptionDetails"].is_null());
 }
@@ -1768,8 +2100,10 @@ fn test_runtime_evaluate_no_bridge_with_expression_still_undefined() {
 #[test]
 fn test_runtime_evaluate_return_by_value_param_accepted() {
     // returnByValue must not change no-bridge stub output but must be accepted.
-    let r = ok_result("Runtime.evaluate",
-        Some(json!({"expression": "x", "returnByValue": false})));
+    let r = ok_result(
+        "Runtime.evaluate",
+        Some(json!({"expression": "x", "returnByValue": false})),
+    );
     assert_eq!(r["result"]["type"], "undefined");
 }
 
@@ -1785,7 +2119,10 @@ fn test_roundtrip_success_response_has_no_error_key() {
     let p: Value = serde_json::from_str(&s).unwrap();
     assert_eq!(p["id"], 100);
     assert!(p.get("result").is_some(), "success must include result");
-    assert!(p.get("error").is_none(), "success must NOT include error key");
+    assert!(
+        p.get("error").is_none(),
+        "success must NOT include error key"
+    );
     // codec adds no jsonrpc field (no version negotiation in this impl)
     assert!(p.get("jsonrpc").is_none());
 }
@@ -1800,7 +2137,10 @@ fn test_roundtrip_error_response_has_no_result_key() {
     let p: Value = serde_json::from_str(&s).unwrap();
     assert_eq!(p["id"], 200);
     assert!(p.get("error").is_some(), "error must include error key");
-    assert!(p.get("result").is_none(), "error must NOT include result key");
+    assert!(
+        p.get("result").is_none(),
+        "error must NOT include result key"
+    );
     // error object shape = {code (int), message (str)}
     assert!(p["error"]["code"].is_i64());
     assert!(p["error"]["message"].is_string());
@@ -1816,7 +2156,10 @@ fn test_roundtrip_notification_no_id_preserved_as_null() {
     let resp = handle_command(msg, "t-1", &None, None);
     let s = serialize_response(&resp);
     let p: Value = serde_json::from_str(&s).unwrap();
-    assert!(p["id"].is_null(), "notification response id must serialize as JSON null");
+    assert!(
+        p["id"].is_null(),
+        "notification response id must serialize as JSON null"
+    );
 }
 
 #[test]
@@ -1827,7 +2170,10 @@ fn test_roundtrip_method_no_dot_returns_method_not_found() {
     let resp = handle_command(msg, "t-1", &None, None);
     let err = resp.error.unwrap();
     assert_eq!(err.code, -32601);
-    assert!(err.message.contains("NoDot"), "error message must echo the malformed method");
+    assert!(
+        err.message.contains("NoDot"),
+        "error message must echo the malformed method"
+    );
 }
 
 #[test]
@@ -1850,15 +2196,21 @@ fn test_roundtrip_all_12_domains_success_have_no_error_key() {
     ];
     for (method, params) in cases {
         let msg = CdpMessage {
-            id: Some(1), method: method.to_string(),
-            params: params.clone(), session_id: None,
+            id: Some(1),
+            method: method.to_string(),
+            params: params.clone(),
+            session_id: None,
         };
         let resp = handle_command(msg, "t-1", &params, None);
         assert!(resp.error.is_none(), "{} should succeed", method);
         assert!(resp.result.is_some(), "{} must carry result", method);
         let s = serialize_response(&resp);
         let p: Value = serde_json::from_str(&s).unwrap();
-        assert!(p.get("error").is_none(), "{} serialized success must not have error key", method);
+        assert!(
+            p.get("error").is_none(),
+            "{} serialized success must not have error key",
+            method
+        );
     }
 }
 
@@ -1874,7 +2226,10 @@ fn test_roundtrip_error_response_includes_code_and_message_fields() {
     assert!(err.is_object());
     assert!(err["code"].is_i64(), "error.code must be integer");
     assert!(err["message"].is_string(), "error.message must be string");
-    assert!(!err["message"].as_str().unwrap().is_empty(), "error.message must be non-empty");
+    assert!(
+        !err["message"].as_str().unwrap().is_empty(),
+        "error.message must be non-empty"
+    );
 }
 
 // ---- F. Determinism & idempotence ----
@@ -1883,7 +2238,9 @@ fn test_roundtrip_error_response_includes_code_and_message_fields() {
 fn test_serialize_response_idempotent_across_calls() {
     // Same input → byte-identical output across multiple calls (no hidden state).
     let resp = CdpResponse {
-        id: Some(42), result: Some(json!({"x": [1, 2, 3]})), error: None,
+        id: Some(42),
+        result: Some(json!({"x": [1, 2, 3]})),
+        error: None,
     };
     let s1 = serialize_response(&resp);
     let s2 = serialize_response(&resp);
@@ -1908,8 +2265,10 @@ fn test_handle_command_deterministic_same_input_same_output() {
     // Deterministic dispatch: same (method, target_id, params) → same response.
     // CdpError has no PartialEq, so compare via serialized form (it has Serialize).
     let mk = || CdpMessage {
-        id: Some(1), method: "Page.navigate".into(),
-        params: Some(json!({"url": "https://x.com"})), session_id: None,
+        id: Some(1),
+        method: "Page.navigate".into(),
+        params: Some(json!({"url": "https://x.com"})),
+        session_id: None,
     };
     let r1 = handle_command(mk(), "t-1", &Some(json!({"url": "https://x.com"})), None);
     let r2 = handle_command(mk(), "t-1", &Some(json!({"url": "https://x.com"})), None);
@@ -1927,15 +2286,37 @@ fn test_error_code_json_rpc_2_0_spec_value_minus_32601() {
     // JSON-RPC 2.0 §5.1: -32601 = "Method not found". All unknown-command
     // paths must emit exactly -32601, never -32700 (parse) or -32603 (internal).
     let cases = [
-        "Target.x", "Page.x", "Runtime.x", "DOM.x", "Network.x",
-        "CSS.x", "Emulation.x", "Input.x", "Overlay.x", "Debugger.x",
-        "Log.x", "Fetch.x", "CompletelyUnknown.x", "",
+        "Target.x",
+        "Page.x",
+        "Runtime.x",
+        "DOM.x",
+        "Network.x",
+        "CSS.x",
+        "Emulation.x",
+        "Input.x",
+        "Overlay.x",
+        "Debugger.x",
+        "Log.x",
+        "Fetch.x",
+        "CompletelyUnknown.x",
+        "",
     ];
     for method in &cases {
-        let msg = CdpMessage { id: Some(1), method: method.to_string(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(1),
+            method: method.to_string(),
+            params: None,
+            session_id: None,
+        };
         let resp = handle_command(msg, "t-1", &None, None);
-        let err = resp.error.unwrap_or_else(|| panic!("{} must error", method));
-        assert_eq!(err.code, -32601, "method {} must yield -32601 not {}", method, err.code);
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("{} must error", method));
+        assert_eq!(
+            err.code, -32601,
+            "method {} must yield -32601 not {}",
+            method, err.code
+        );
     }
 }
 
@@ -1952,7 +2333,10 @@ fn test_error_code_json_rpc_2_0_spec_value_minus_32601() {
 #[test]
 fn test_cdp_error_clone_roundtrip_fields() {
     // CdpError derives Clone (no PartialEq) — verify via field-by-field.
-    let a = CdpError { code: -32601, message: "m".into() };
+    let a = CdpError {
+        code: -32601,
+        message: "m".into(),
+    };
     let b = a.clone();
     assert_eq!(b.code, -32601);
     assert_eq!(b.message, "m");
@@ -1966,7 +2350,10 @@ fn test_cdp_error_clone_roundtrip_fields() {
 #[test]
 fn test_cdp_error_serialize_roundtrip_via_json() {
     // CdpError derives Serialize but NOT Deserialize — round-trip via Value.
-    let err = CdpError { code: -32603, message: "internal err".into() };
+    let err = CdpError {
+        code: -32603,
+        message: "internal err".into(),
+    };
     let s = serde_json::to_string(&err).unwrap();
     let back: Value = serde_json::from_str(&s).unwrap();
     assert_eq!(back["code"], -32603);
@@ -1991,7 +2378,12 @@ fn test_cdp_message_clone_preserves_all_fields() {
 
 #[test]
 fn test_cdp_message_clone_preserves_none_variants() {
-    let msg = CdpMessage { id: None, method: "X.y".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: None,
+        method: "X.y".into(),
+        params: None,
+        session_id: None,
+    };
     let c = msg.clone();
     assert_eq!(c.id, None);
     assert!(c.params.is_none());
@@ -2001,7 +2393,10 @@ fn test_cdp_message_clone_preserves_none_variants() {
 
 #[test]
 fn test_cdp_event_clone_with_some_params() {
-    let ev = CdpEvent { method: "X.y".into(), params: Some(json!({"a": 1})) };
+    let ev = CdpEvent {
+        method: "X.y".into(),
+        params: Some(json!({"a": 1})),
+    };
     let c = ev.clone();
     assert_eq!(c.method, "X.y");
     assert_eq!(c.params.as_ref().unwrap()["a"], 1);
@@ -2009,7 +2404,10 @@ fn test_cdp_event_clone_with_some_params() {
 
 #[test]
 fn test_cdp_event_clone_with_none_params() {
-    let ev = CdpEvent { method: "X.y".into(), params: None };
+    let ev = CdpEvent {
+        method: "X.y".into(),
+        params: None,
+    };
     let c = ev.clone();
     assert_eq!(c.method, "X.y");
     assert!(c.params.is_none());

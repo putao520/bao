@@ -23,10 +23,16 @@ fn test_stealth_http_rust_api() {
     assert!(!hash.unwrap().is_empty(), "ja3_hash should be non-empty");
 
     let fp = bun_runtime::stealth_http::akamai_fingerprint(&Some(profile.clone()));
-    assert!(fp.is_some(), "akamai_fingerprint should return Some with profile");
+    assert!(
+        fp.is_some(),
+        "akamai_fingerprint should return Some with profile"
+    );
 
     let none_hash = bun_runtime::stealth_http::ja3_hash(&None);
-    assert!(none_hash.is_none(), "ja3_hash should return None without profile");
+    assert!(
+        none_hash.is_none(),
+        "ja3_hash should return None without profile"
+    );
 
     let headers = vec![
         ("accept".to_string(), "*/*".to_string()),
@@ -40,12 +46,24 @@ fn test_stealth_http_rust_api() {
     let ordered_stealth = bun_runtime::stealth_http::ordered_headers(&Some(profile), &headers);
     assert_eq!(ordered_stealth.len(), 2);
 
-    let config_none = bun_runtime::stealth_http::create_stealth_request(&None, bun_http::Method::GET, "https://example.com", &headers, None);
+    let config_none = bun_runtime::stealth_http::create_stealth_request(
+        &None,
+        bun_http::Method::GET,
+        "https://example.com",
+        &headers,
+        None,
+    );
     assert_eq!(config_none.method.as_str(), "GET");
     assert!(config_none.user_agent.is_none());
 
     let profile2 = bao_stealth::StealthProfile::firefox_default();
-    let config_stealth = bun_runtime::stealth_http::create_stealth_request(&Some(profile2), bun_http::Method::POST, "https://example.com", &headers, Some(b"test"));
+    let config_stealth = bun_runtime::stealth_http::create_stealth_request(
+        &Some(profile2),
+        bun_http::Method::POST,
+        "https://example.com",
+        &headers,
+        Some(b"test"),
+    );
     assert_eq!(config_stealth.method.as_str(), "POST");
     assert!(config_stealth.user_agent.is_some());
 }
@@ -68,7 +86,9 @@ fn test_gc_store_via_require() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         function check(label, fn) {
             try { var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }
@@ -101,7 +121,8 @@ fn test_gc_store_via_require() {
         });
 
         results.join("|")
-    "#);
+    "#,
+    );
 
     let mut all_passed = true;
     for item in result.split('|') {
@@ -110,6 +131,10 @@ fn test_gc_store_via_require() {
             all_passed = false;
         }
     }
-    assert!(all_passed, "GC store / require caching tests should pass. Results: {}", result);
+    assert!(
+        all_passed,
+        "GC store / require caching tests should pass. Results: {}",
+        result
+    );
     bun_runtime::shutdown_thread_sm();
 }

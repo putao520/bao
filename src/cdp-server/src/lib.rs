@@ -7,29 +7,27 @@
 
 use serde_json::Value;
 
+pub mod bao_event;
+mod event;
 mod protocol;
 mod registry;
-mod event;
+mod server;
 mod session;
 mod transport;
-mod server;
-pub mod bao_event;
 
+pub use bao_event::{BaoEvent, ConsoleMessage};
+pub use event::EventBroadcaster;
 pub use protocol::{
-    CdpMessage, CdpResponse, CdpError, CdpEvent, SessionError,
-    parse_message, serialize_response, serialize_event,
-    ok_response, error_response, ok_empty,
-    ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND, ERR_INVALID_PARAMS,
-    ERR_INTERNAL, ERR_PARSE_ERROR,
+    error_response, ok_empty, ok_response, parse_message, serialize_event, serialize_response,
+    CdpError, CdpEvent, CdpMessage, CdpResponse, SessionError, ERR_INTERNAL, ERR_INVALID_PARAMS,
+    ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR,
 };
 pub use registry::{DomainRegistry, EmptyHandler, RegistryDispatch, SharedRegistry};
-pub use event::EventBroadcaster;
-pub use bao_event::{BaoEvent, ConsoleMessage};
-pub use session::{CdpSession, SessionState};
 pub use server::CdpServer;
+pub use session::{CdpSession, SessionState};
 pub use transport::{
-    TargetInfo, parse_close_request, parse_activate_request, parse_new_request,
-    is_websocket_upgrade,
+    is_websocket_upgrade, parse_activate_request, parse_close_request, parse_new_request,
+    TargetInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -141,7 +139,6 @@ pub struct ServerConfigBuilder {
     inner: ServerConfig,
 }
 
-
 impl ServerConfigBuilder {
     pub fn host(mut self, host: impl Into<String>) -> Self {
         self.inner.host = host.into();
@@ -243,7 +240,10 @@ mod tests {
 
     #[test]
     fn builder_sets_host() {
-        assert_eq!(ServerConfig::builder().host("0.0.0.0").build().host, "0.0.0.0");
+        assert_eq!(
+            ServerConfig::builder().host("0.0.0.0").build().host,
+            "0.0.0.0"
+        );
     }
 
     #[test]
@@ -253,34 +253,61 @@ mod tests {
 
     #[test]
     fn builder_sets_timeout() {
-        assert_eq!(ServerConfig::builder().http_timeout_seconds(60).build().http_timeout_seconds, 60);
+        assert_eq!(
+            ServerConfig::builder()
+                .http_timeout_seconds(60)
+                .build()
+                .http_timeout_seconds,
+            60
+        );
     }
 
     #[test]
     fn builder_sets_max_sessions() {
-        assert_eq!(ServerConfig::builder().max_sessions(50).build().max_sessions, 50);
+        assert_eq!(
+            ServerConfig::builder()
+                .max_sessions(50)
+                .build()
+                .max_sessions,
+            50
+        );
     }
 
     #[test]
     fn builder_sets_browser_name() {
-        assert_eq!(ServerConfig::builder().browser_name("Chrome/120").build().browser_name, "Chrome/120");
+        assert_eq!(
+            ServerConfig::builder()
+                .browser_name("Chrome/120")
+                .build()
+                .browser_name,
+            "Chrome/120"
+        );
     }
 
     #[test]
     fn builder_sets_user_agent() {
-        let ua = ServerConfig::builder().user_agent("Mozilla/5.0").build().user_agent;
+        let ua = ServerConfig::builder()
+            .user_agent("Mozilla/5.0")
+            .build()
+            .user_agent;
         assert_eq!(ua.as_deref(), Some("Mozilla/5.0"));
     }
 
     #[test]
     fn builder_sets_v8_version() {
-        let ver = ServerConfig::builder().v8_version("12.0").build().v8_version;
+        let ver = ServerConfig::builder()
+            .v8_version("12.0")
+            .build()
+            .v8_version;
         assert_eq!(ver.as_deref(), Some("12.0"));
     }
 
     #[test]
     fn builder_sets_webkit_version() {
-        let ver = ServerConfig::builder().webkit_version("537.36").build().webkit_version;
+        let ver = ServerConfig::builder()
+            .webkit_version("537.36")
+            .build()
+            .webkit_version;
         assert_eq!(ver.as_deref(), Some("537.36"));
     }
 

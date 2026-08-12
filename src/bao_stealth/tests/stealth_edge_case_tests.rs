@@ -2,7 +2,7 @@
 // @trace TEST-STL-009-EDGE [req:REQ-STL-001~007] [level:unit]
 // Stealth edge cases: extreme parameters, boundary values, cross-profile validation
 
-use bao_stealth::{StealthEngine, StealthProfile, CanvasNoise, BehaviorSimulator};
+use bao_stealth::{BehaviorSimulator, CanvasNoise, StealthEngine, StealthProfile};
 
 // ---- CanvasNoise boundary values ----
 
@@ -76,9 +76,14 @@ fn test_canvas_noise_different_seeds_different_noise() {
         for y in 0..100u32 {
             let r1 = n1.apply_to_pixel(50, 50, 50, 255, x, y);
             let r2 = n2.apply_to_pixel(50, 50, 50, 255, x, y);
-            if r1 != r2 { differ = true; break; }
+            if r1 != r2 {
+                differ = true;
+                break;
+            }
         }
-        if differ { break; }
+        if differ {
+            break;
+        }
     }
     assert!(differ, "Some pixels should differ between different seeds");
 }
@@ -153,7 +158,11 @@ fn test_typing_delays_range() {
     let b = BehaviorSimulator::new(42);
     let delays = b.generate_typing_delays(100);
     // May have extra backspace events from typo correction
-    assert!(delays.len() >= 100, "Expected >= 100 delays, got {}", delays.len());
+    assert!(
+        delays.len() >= 100,
+        "Expected >= 100 delays, got {}",
+        delays.len()
+    );
     for d in &delays {
         assert!(*d > 0, "delay should be positive: {}", d);
         assert!(*d < 5000, "delay too high: {}", d);
@@ -235,7 +244,10 @@ fn test_chrome_firefox_profiles_fully_differ() {
     // Behavior seeds differ
     assert_ne!(chrome.behavior.seed(), firefox.behavior.seed());
     // HTTP2 fingerprints differ
-    assert_ne!(chrome.http2.akamai_fingerprint(), firefox.http2.akamai_fingerprint());
+    assert_ne!(
+        chrome.http2.akamai_fingerprint(),
+        firefox.http2.akamai_fingerprint()
+    );
     // WebGL renderers should differ
     assert_ne!(chrome.webgl.renderer, firefox.webgl.renderer);
 }
@@ -243,8 +255,10 @@ fn test_chrome_firefox_profiles_fully_differ() {
 #[test]
 fn test_default_engine_is_firefox() {
     let engine = StealthEngine::default_engine();
-    assert!(engine.navigator().user_agent.contains("Firefox"),
-        "Default engine should use Firefox profile");
+    assert!(
+        engine.navigator().user_agent.contains("Firefox"),
+        "Default engine should use Firefox profile"
+    );
 }
 
 // ---- Debug trait coverage ----

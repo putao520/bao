@@ -161,12 +161,17 @@ mod tests {
         let from_explicit =
             StealthTlsWireConfig::from_profile(&crate::StealthProfile::firefox_default());
         assert_eq!(
-            from_convenience.tls12_cipher_suites, from_explicit.tls12_cipher_suites,
+            from_convenience.tls12_cipher_suites,
+            from_explicit.tls12_cipher_suites,
         );
         assert_eq!(
-            from_convenience.tls13_cipher_suites, from_explicit.tls13_cipher_suites,
+            from_convenience.tls13_cipher_suites,
+            from_explicit.tls13_cipher_suites,
         );
-        assert_eq!(from_convenience.alpn_protocols, from_explicit.alpn_protocols);
+        assert_eq!(
+            from_convenience.alpn_protocols,
+            from_explicit.alpn_protocols
+        );
         assert_eq!(
             from_convenience.h2_initial_stream_size,
             from_explicit.h2_initial_stream_size,
@@ -234,10 +239,7 @@ mod tests {
     fn alpn_protocols_contain_h2() {
         let config = StealthTlsWireConfig::firefox();
         assert!(config.alpn_protocols.iter().any(|p| p == b"h2"));
-        assert!(config
-            .alpn_protocols
-            .iter()
-            .any(|p| p == b"http/1.1"));
+        assert!(config.alpn_protocols.iter().any(|p| p == b"http/1.1"));
     }
 
     #[test]
@@ -245,10 +247,7 @@ mod tests {
         let ff = StealthTlsWireConfig::firefox();
         let ch = StealthTlsWireConfig::from_profile(&crate::StealthProfile::chrome_default());
         // Chrome has fewer cipher suites than Firefox
-        assert_ne!(
-            ff.tls12_cipher_suites.len(),
-            ch.tls12_cipher_suites.len()
-        );
+        assert_ne!(ff.tls12_cipher_suites.len(), ch.tls12_cipher_suites.len());
         // Different HTTP/2 window sizes
         assert_ne!(ff.h2_initial_stream_size, ch.h2_initial_stream_size);
     }

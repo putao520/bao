@@ -119,7 +119,10 @@ mod tests {
 
     #[test]
     fn undefined_type() {
-        assert_eq!(JSType::from_js_value(&JSValue::UNDEFINED), JSType::Undefined);
+        assert_eq!(
+            JSType::from_js_value(&JSValue::UNDEFINED),
+            JSType::Undefined
+        );
     }
 
     #[test]
@@ -139,7 +142,10 @@ mod tests {
 
     #[test]
     fn string_type() {
-        assert_eq!(JSType::from_js_value(&JSValue::from_string("hello".into())), JSType::String);
+        assert_eq!(
+            JSType::from_js_value(&JSValue::from_string("hello".into())),
+            JSType::String
+        );
     }
 
     #[test]

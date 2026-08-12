@@ -33,7 +33,11 @@ pub struct IpcChannel {
 
 impl IpcChannel {
     pub fn new(direction: IpcDirection) -> Self {
-        Self { state: IpcState::Disconnected, direction, buffer: Mutex::new(VecDeque::new()) }
+        Self {
+            state: IpcState::Disconnected,
+            direction,
+            buffer: Mutex::new(VecDeque::new()),
+        }
     }
 
     pub fn state(&self) -> IpcState {
@@ -52,13 +56,19 @@ impl IpcChannel {
 
     pub fn close(&mut self) {
         self.state = IpcState::Closed;
-        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     pub fn send(&self, msg: IpcMessage) -> Result<(), IpcError> {
         match self.state {
             IpcState::Connected => {
-                self.buffer.lock().unwrap_or_else(|e| e.into_inner()).push_back(msg);
+                self.buffer
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push_back(msg);
                 Ok(())
             }
             IpcState::Disconnected => Err(IpcError::Disconnected),
@@ -70,7 +80,10 @@ impl IpcChannel {
         if self.state != IpcState::Connected {
             return None;
         }
-        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
     }
 
     pub fn pending_count(&self) -> usize {
@@ -115,6 +128,9 @@ mod tests {
     #[test]
     fn ipc_send_disconnected() {
         let ch = IpcChannel::new(IpcDirection::ParentToChild);
-        assert_eq!(ch.send(IpcMessage::Binary(vec![])), Err(IpcError::Disconnected));
+        assert_eq!(
+            ch.send(IpcMessage::Binary(vec![])),
+            Err(IpcError::Disconnected)
+        );
     }
 }

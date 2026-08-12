@@ -26,11 +26,25 @@ pub struct PropertyDef {
 
 #[derive(Debug, Clone)]
 pub enum PropertyKind {
-    Getter { fn_name: String, cache: bool },
-    Setter { fn_name: String },
-    Accessor { getter: String, setter: String, cache: bool },
-    Method { fn_name: String, length: u32 },
-    Value { value: String },
+    Getter {
+        fn_name: String,
+        cache: bool,
+    },
+    Setter {
+        fn_name: String,
+    },
+    Accessor {
+        getter: String,
+        setter: String,
+        cache: bool,
+    },
+    Method {
+        fn_name: String,
+        length: u32,
+    },
+    Value {
+        value: String,
+    },
 }
 
 /// Parse result containing all class definitions from a .classes.ts file.
@@ -74,7 +88,13 @@ pub fn parse_classes(source: &str, file_name: &str) -> Result<ParseResult, Strin
     for line in source.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("name:") {
-            let name = rest.trim().trim_matches('"').trim_matches(',').trim_matches('"').trim().to_string();
+            let name = rest
+                .trim()
+                .trim_matches('"')
+                .trim_matches(',')
+                .trim_matches('"')
+                .trim()
+                .to_string();
             if !name.is_empty() {
                 classes.push(ClassDef {
                     name,
@@ -112,7 +132,11 @@ fn parse_block_properties(source: &str, block_name: &str) -> Vec<PropertyDef> {
             i += 1;
             continue;
         }
-        if in_block && (trimmed.starts_with("}") || trimmed.starts_with("klass:") || trimmed.starts_with("proto:")) {
+        if in_block
+            && (trimmed.starts_with("}")
+                || trimmed.starts_with("klass:")
+                || trimmed.starts_with("proto:"))
+        {
             in_block = false;
             i += 1;
             continue;
@@ -152,7 +176,11 @@ fn parse_block_properties(source: &str, block_name: &str) -> Vec<PropertyDef> {
                         let setter = extract_string_value(&block, "setter");
                         props.push(PropertyDef {
                             name,
-                            kind: PropertyKind::Accessor { getter: fn_name, setter, cache },
+                            kind: PropertyKind::Accessor {
+                                getter: fn_name,
+                                setter,
+                                cache,
+                            },
                         });
                     } else {
                         props.push(PropertyDef {
@@ -299,12 +327,7 @@ pub fn generate_bindings(class_def: &ClassDef) -> GeneratedBindings {
             format!("&{ops_name} as *const JSClassOps"),
         )
     } else {
-        (
-            None,
-            None,
-            "0u32",
-            "std::ptr::null()".to_owned(),
-        )
+        (None, None, "0u32", "std::ptr::null()".to_owned())
     };
 
     let js_class_def = format!(
@@ -560,9 +583,14 @@ pub fn generate_module(bindings: &[GeneratedBindings], module_name: &str) -> Str
 
     // Module init function
     out.push_str(&format!("/// Initialize all {module_name} classes.\n"));
-    out.push_str("pub unsafe fn init_all(cx: *mut JSContext, global: JS::HandleObject) -> bool {\n");
+    out.push_str(
+        "pub unsafe fn init_all(cx: *mut JSContext, global: JS::HandleObject) -> bool {\n",
+    );
     for b in bindings {
-        out.push_str(&format!("    if !init_{}(cx, global) {{ return false; }}\n", b.class_name));
+        out.push_str(&format!(
+            "    if !init_{}(cx, global) {{ return false; }}\n",
+            b.class_name
+        ));
     }
     out.push_str("    true\n}\n");
 
@@ -656,11 +684,17 @@ define({
             proto: vec![
                 PropertyDef {
                     name: "value".into(),
-                    kind: PropertyKind::Getter { fn_name: "getValue".into(), cache: false },
+                    kind: PropertyKind::Getter {
+                        fn_name: "getValue".into(),
+                        cache: false,
+                    },
                 },
                 PropertyDef {
                     name: "compute".into(),
-                    kind: PropertyKind::Method { fn_name: "computeValue".into(), length: 2 },
+                    kind: PropertyKind::Method {
+                        fn_name: "computeValue".into(),
+                        length: 2,
+                    },
                 },
             ],
             static_props: vec![],
@@ -721,7 +755,11 @@ define({
         let class = &result.classes[0];
         assert_eq!(class.proto.len(), 1);
         match &class.proto[0].kind {
-            PropertyKind::Accessor { getter, setter, cache } => {
+            PropertyKind::Accessor {
+                getter,
+                setter,
+                cache,
+            } => {
                 assert_eq!(getter, "getData");
                 assert_eq!(setter, "setData");
                 assert!(cache);
@@ -806,7 +844,9 @@ define({
             has_pending_activity: false,
             proto: vec![PropertyDef {
                 name: "data".into(),
-                kind: PropertyKind::Setter { fn_name: "setData".into() },
+                kind: PropertyKind::Setter {
+                    fn_name: "setData".into(),
+                },
             }],
             static_props: vec![],
         };
@@ -845,12 +885,18 @@ define({
             has_pending_activity: false,
             proto: vec![PropertyDef {
                 name: "size".into(),
-                kind: PropertyKind::Getter { fn_name: "getSize".into(), cache: true },
+                kind: PropertyKind::Getter {
+                    fn_name: "getSize".into(),
+                    cache: true,
+                },
             }],
             static_props: vec![
                 PropertyDef {
                     name: "open".into(),
-                    kind: PropertyKind::Method { fn_name: "fileOpen".into(), length: 2 },
+                    kind: PropertyKind::Method {
+                        fn_name: "fileOpen".into(),
+                        length: 2,
+                    },
                 },
                 PropertyDef {
                     name: "defaultEncoding".into(),
@@ -908,7 +954,10 @@ define({
             has_pending_activity: false,
             proto: vec![PropertyDef {
                 name: "length".into(),
-                kind: PropertyKind::Getter { fn_name: "getLength".into(), cache: true },
+                kind: PropertyKind::Getter {
+                    fn_name: "getLength".into(),
+                    cache: true,
+                },
             }],
             static_props: vec![],
         };
@@ -931,7 +980,11 @@ define({
         let ops = bindings.class_ops_def.unwrap();
         assert!(ops.contains("Buffer_ClassOps"));
         assert!(ops.contains("Some(Buffer_finalize)"));
-        assert!(bindings.js_class_def.contains("JSCLASS_FOREGROUND_FINALIZE"));
+        assert!(
+            bindings
+                .js_class_def
+                .contains("JSCLASS_FOREGROUND_FINALIZE")
+        );
 
         assert!(bindings.init_class_fn.contains("init_Buffer"));
         assert!(bindings.init_class_fn.contains("Some(Buffer_constructor)"));
@@ -948,7 +1001,10 @@ define({
             has_pending_activity: false,
             proto: vec![PropertyDef {
                 name: "PI".into(),
-                kind: PropertyKind::Getter { fn_name: "getPI".into(), cache: true },
+                kind: PropertyKind::Getter {
+                    fn_name: "getPI".into(),
+                    cache: true,
+                },
             }],
             static_props: vec![],
         };
@@ -971,7 +1027,10 @@ define({
             static_props: vec![],
         };
         let bindings = generate_bindings(&class);
-        assert!(bindings.constructor_fn.is_none(), "noConstructor should suppress constructor");
+        assert!(
+            bindings.constructor_fn.is_none(),
+            "noConstructor should suppress constructor"
+        );
     }
 
     #[test]
@@ -986,16 +1045,25 @@ define({
             proto: vec![
                 PropertyDef {
                     name: "id".into(),
-                    kind: PropertyKind::Getter { fn_name: "getId".into(), cache: false },
+                    kind: PropertyKind::Getter {
+                        fn_name: "getId".into(),
+                        cache: false,
+                    },
                 },
                 PropertyDef {
                     name: "close".into(),
-                    kind: PropertyKind::Method { fn_name: "closeResource".into(), length: 0 },
+                    kind: PropertyKind::Method {
+                        fn_name: "closeResource".into(),
+                        length: 0,
+                    },
                 },
             ],
             static_props: vec![PropertyDef {
                 name: "open".into(),
-                kind: PropertyKind::Method { fn_name: "openResource".into(), length: 1 },
+                kind: PropertyKind::Method {
+                    fn_name: "openResource".into(),
+                    length: 1,
+                },
             }],
         };
         let bindings = generate_bindings(&class);
@@ -1050,8 +1118,14 @@ define({
         assert!(module.contains("File_finalize"));
         assert!(module.contains("File_ClassOps"));
         assert!(module.contains("Dir_constructor"));
-        assert!(module.contains("Dir_finalize") == false, "Dir has no finalize");
-        assert!(module.contains("Dir_ClassOps") == false, "Dir has no ClassOps");
+        assert!(
+            module.contains("Dir_finalize") == false,
+            "Dir has no finalize"
+        );
+        assert!(
+            module.contains("Dir_ClassOps") == false,
+            "Dir has no ClassOps"
+        );
     }
 
     #[test]
@@ -1072,11 +1146,17 @@ define({
             has_pending_activity: false,
             proto: vec![PropertyDef {
                 name: "bytesRead".into(),
-                kind: PropertyKind::Getter { fn_name: "getBytesRead".into(), cache: false },
+                kind: PropertyKind::Getter {
+                    fn_name: "getBytesRead".into(),
+                    cache: false,
+                },
             }],
             static_props: vec![PropertyDef {
                 name: "create".into(),
-                kind: PropertyKind::Method { fn_name: "streamCreate".into(), length: 1 },
+                kind: PropertyKind::Method {
+                    fn_name: "streamCreate".into(),
+                    length: 1,
+                },
             }],
         };
         let bindings = generate_bindings(&class);
@@ -1144,10 +1224,12 @@ define({
             proto: vec![],
             static_props: vec![],
         };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            generate_bindings(&cd)
-        }));
-        assert!(result.is_err(), "invalid class name must panic, not emit broken code");
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generate_bindings(&cd)));
+        assert!(
+            result.is_err(),
+            "invalid class name must panic, not emit broken code"
+        );
     }
 
     // ---- Value-kind property emission (previously dropped) ----
@@ -1163,7 +1245,9 @@ define({
             has_pending_activity: false,
             proto: vec![PropertyDef {
                 name: "version".into(),
-                kind: PropertyKind::Value { value: "1.0.0".into() },
+                kind: PropertyKind::Value {
+                    value: "1.0.0".into(),
+                },
             }],
             static_props: vec![],
         };
@@ -1185,7 +1269,9 @@ define({
             has_pending_activity: false,
             proto: vec![PropertyDef {
                 name: "kind".into(),
-                kind: PropertyKind::Value { value: "tag".into() },
+                kind: PropertyKind::Value {
+                    value: "tag".into(),
+                },
             }],
             static_props: vec![],
         };

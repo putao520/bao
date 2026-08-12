@@ -100,10 +100,16 @@ fn full_e2e_page_error_with_stack_trace() {
     let ev = transport.recv_event().unwrap().expect("expected event");
     // Assert
     assert_eq!(ev.method, "Runtime.exceptionThrown");
-    assert_eq!(ev.params["exceptionDetails"]["text"], "TypeError: x is undefined");
+    assert_eq!(
+        ev.params["exceptionDetails"]["text"],
+        "TypeError: x is undefined"
+    );
     // stackTrace 直接是数组(CDP-style)— 1 个 callFrame
     assert!(ev.params["exceptionDetails"]["stackTrace"].is_array());
-    assert_eq!(ev.params["exceptionDetails"]["stackTrace"][0]["scriptName"], "at f (app.js:10:5)\nat g (app.js:20:10)");
+    assert_eq!(
+        ev.params["exceptionDetails"]["stackTrace"][0]["scriptName"],
+        "at f (app.js:10:5)\nat g (app.js:20:10)"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -191,7 +197,10 @@ fn full_e2e_multi_target_session_id_isolation() {
     while let Ok(Some(ev)) = transport.recv_event() {
         events.push((
             ev.session_id.clone().unwrap_or_default(),
-            ev.params["entry"]["text"].as_str().unwrap_or("").to_string(),
+            ev.params["entry"]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
         ));
     }
     // Assert
@@ -199,7 +208,10 @@ fn full_e2e_multi_target_session_id_isolation() {
     // 验证 session_id 与 text 严格对应
     for (sid, text) in &events {
         let target_letter = sid.trim_start_matches("TARGET-");
-        assert!(text.contains(target_letter), "session {sid} text {text} mismatch");
+        assert!(
+            text.contains(target_letter),
+            "session {sid} text {text} mismatch"
+        );
     }
 }
 
@@ -349,7 +361,10 @@ fn full_e2e_fallback_to_direct_cdp_event_push() {
         .unwrap();
 
     transport.set_event_timeout(Duration::from_secs(2));
-    let ev = transport.recv_event().unwrap().expect("expected direct CdpEvent");
+    let ev = transport
+        .recv_event()
+        .unwrap()
+        .expect("expected direct CdpEvent");
     // Assert
     assert_eq!(ev.method, "Custom.event");
     assert_eq!(ev.params["k"], "v");
@@ -378,7 +393,10 @@ fn full_e2e_servo_events_take_precedence_over_direct_push() {
     assert_eq!(ev.method, "Log.entryAdded");
 
     // 然后才是直接 CdpEvent
-    let ev2 = transport.recv_event().unwrap().expect("expected direct event");
+    let ev2 = transport
+        .recv_event()
+        .unwrap()
+        .expect("expected direct event");
     assert_eq!(ev2.method, "Direct.event");
 }
 
@@ -467,12 +485,8 @@ fn full_e2e_all_seven_classes_through_transport_chain() {
     // Act
     subscriber.on_console_message("T", ConsoleLevel::Debug, "c", None, None, None);
     subscriber.on_page_error("T", "p", None, None, None, None);
-    subscriber.on_network_request(
-        "T", "N1", "u", "GET", HashMap::new(), None, "Other", "F",
-    );
-    subscriber.on_network_response(
-        "T", "N2", "u", 200, "OK", HashMap::new(), "text/html", None,
-    );
+    subscriber.on_network_request("T", "N1", "u", "GET", HashMap::new(), None, "Other", "F");
+    subscriber.on_network_response("T", "N2", "u", 200, "OK", HashMap::new(), "text/html", None);
     subscriber.on_network_loading_finish("T", "N3", 10);
     subscriber.on_network_loading_fail("T", "N4", "err", false);
     subscriber.on_dom_attribute_modified("T", 1, "n", "v");
@@ -543,8 +557,12 @@ fn full_e2e_console_params_contain_required_fields() {
     let (mut transport, subscriber) = build_with_events();
     // Act
     subscriber.on_console_message(
-        "T", ConsoleLevel::Error, "msg",
-        Some("file.js".into()), Some(10), Some(5),
+        "T",
+        ConsoleLevel::Error,
+        "msg",
+        Some("file.js".into()),
+        Some(10),
+        Some(5),
     );
 
     transport.set_event_timeout(Duration::from_secs(2));
@@ -573,8 +591,14 @@ fn full_e2e_network_request_params_contain_required_fields() {
     headers.insert("X-Custom".into(), "value".into());
 
     subscriber.on_network_request(
-        "T", "REQ-1", "https://example.com", "POST",
-        headers.clone(), Some(b"body".to_vec()), "XHR", "FRAME-1",
+        "T",
+        "REQ-1",
+        "https://example.com",
+        "POST",
+        headers.clone(),
+        Some(b"body".to_vec()),
+        "XHR",
+        "FRAME-1",
     );
 
     transport.set_event_timeout(Duration::from_secs(2));
@@ -596,8 +620,13 @@ fn full_e2e_network_response_params_contain_required_fields() {
     let (mut transport, subscriber) = build_with_events();
     // Act
     subscriber.on_network_response(
-        "T", "R1", "https://x", 404,
-        "Not Found", HashMap::new(), "application/json",
+        "T",
+        "R1",
+        "https://x",
+        404,
+        "Not Found",
+        HashMap::new(),
+        "application/json",
         Some("10.0.0.1".into()),
     );
 
@@ -635,8 +664,14 @@ fn full_e2e_script_parsed_params_correct() {
     let (mut transport, subscriber) = build_with_events();
     // Act
     subscriber.on_script_parsed(
-        "T", "SCRIPT-1", "https://example.com/a.js",
-        0, 0, 100, 200, Some("https://example.com/a.js.map".into()),
+        "T",
+        "SCRIPT-1",
+        "https://example.com/a.js",
+        0,
+        0,
+        100,
+        200,
+        Some("https://example.com/a.js.map".into()),
     );
 
     transport.set_event_timeout(Duration::from_secs(2));

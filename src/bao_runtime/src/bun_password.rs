@@ -15,7 +15,7 @@ use ::std::borrow::Cow;
 use ::std::ptr::{self, NonNull};
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, StringValue, BooleanValue, ObjectValue};
+use mozjs::jsval::{BooleanValue, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject};
 
@@ -64,22 +64,61 @@ pub unsafe fn install(
     }
 
     // Bun.password.hash(password, options?) → Promise<string>
-    JS_DefineFunction(cx, pwd_obj.handle(), c"hash".as_ptr(), Some(pwd_hash), 2, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(
+        cx,
+        pwd_obj.handle(),
+        c"hash".as_ptr(),
+        Some(pwd_hash),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
     // Bun.password.hashSync(password, options?) → string
-    JS_DefineFunction(cx, pwd_obj.handle(), c"hashSync".as_ptr(), Some(pwd_hash_sync), 2, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(
+        cx,
+        pwd_obj.handle(),
+        c"hashSync".as_ptr(),
+        Some(pwd_hash_sync),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
     // Bun.password.verify(password, hash, options?) → Promise<bool>
-    JS_DefineFunction(cx, pwd_obj.handle(), c"verify".as_ptr(), Some(pwd_verify), 3, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(
+        cx,
+        pwd_obj.handle(),
+        c"verify".as_ptr(),
+        Some(pwd_verify),
+        3,
+        JSPROP_ENUMERATE as u32,
+    );
     // Bun.password.verifySync(password, hash, options?) → bool
-    JS_DefineFunction(cx, pwd_obj.handle(), c"verifySync".as_ptr(), Some(pwd_verify_sync), 3, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(
+        cx,
+        pwd_obj.handle(),
+        c"verifySync".as_ptr(),
+        Some(pwd_verify_sync),
+        3,
+        JSPROP_ENUMERATE as u32,
+    );
 
-    JS_DefineProperty3(cx, bun_obj, c"password".as_ptr(), pwd_obj.handle(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty3(
+        cx,
+        bun_obj,
+        c"password".as_ptr(),
+        pwd_obj.handle(),
+        JSPROP_ENUMERATE as u32,
+    );
 }
 
 // ── JS argument helpers ────────────────────────────────────────────────
 
 /// Extract a JS string argument as Rust String. Returns None if not a string
 /// or index out of bounds.
-unsafe fn get_string_arg(cx: *mut JSContext, args: &CallArgs, index: u32, argc: u32) -> Option<String> {
+unsafe fn get_string_arg(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    index: u32,
+    argc: u32,
+) -> Option<String> {
     if index >= argc {
         return None;
     }
@@ -279,7 +318,10 @@ fn compute_hash(password: &str, opts: &HashOptions) -> ::std::result::Result<Str
     }
 }
 
-fn compute_argon2_hash(password: &str, opts: &HashOptions) -> ::std::result::Result<String, String> {
+fn compute_argon2_hash(
+    password: &str,
+    opts: &HashOptions,
+) -> ::std::result::Result<String, String> {
     use argon2::{Config, ThreadMode, Variant, Version};
 
     let variant = match opts.algorithm.as_str() {
@@ -308,13 +350,19 @@ fn compute_argon2_hash(password: &str, opts: &HashOptions) -> ::std::result::Res
         .map_err(|e| format!("argon2 hash failed: {}", e))
 }
 
-fn compute_bcrypt_hash(password: &str, opts: &HashOptions) -> ::std::result::Result<String, String> {
-    bcrypt::hash(password, opts.cost)
-        .map_err(|e| format!("bcrypt hash failed: {}", e))
+fn compute_bcrypt_hash(
+    password: &str,
+    opts: &HashOptions,
+) -> ::std::result::Result<String, String> {
+    bcrypt::hash(password, opts.cost).map_err(|e| format!("bcrypt hash failed: {}", e))
 }
 
 /// Verify a password against a hash. Returns true on match.
-fn compute_verify(password: &str, hash: &str, algorithm: &str) -> ::std::result::Result<bool, String> {
+fn compute_verify(
+    password: &str,
+    hash: &str,
+    algorithm: &str,
+) -> ::std::result::Result<bool, String> {
     match algorithm {
         ALGO_ARGON2ID | ALGO_ARGON2I | ALGO_ARGON2D => compute_argon2_verify(password, hash),
         ALGO_BCRYPT => compute_bcrypt_verify(password, hash),
@@ -322,7 +370,10 @@ fn compute_verify(password: &str, hash: &str, algorithm: &str) -> ::std::result:
     }
 }
 
-fn compute_argon2_verify(password: &str, encoded_hash: &str) -> ::std::result::Result<bool, String> {
+fn compute_argon2_verify(
+    password: &str,
+    encoded_hash: &str,
+) -> ::std::result::Result<bool, String> {
     if !encoded_hash.is_ascii() {
         return Err("InvalidEncoding: hash must be ASCII".to_string());
     }
@@ -407,10 +458,7 @@ fn compute_bcrypt_verify(password: &str, hash: &str) -> ::std::result::Result<bo
 // Pattern follows node_fs.rs resolve_undefined / reject_with_error.
 
 /// Create a new Promise, resolve it with a string value, and return it.
-unsafe fn resolved_promise_string(
-    cx: *mut JSContext,
-    value: &str,
-) -> *mut JSObject {
+unsafe fn resolved_promise_string(cx: *mut JSContext, value: &str) -> *mut JSObject {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
@@ -431,10 +479,7 @@ unsafe fn resolved_promise_string(
 }
 
 /// Create a new Promise, resolve it with a boolean value, and return it.
-unsafe fn resolved_promise_bool(
-    cx: *mut JSContext,
-    value: bool,
-) -> *mut JSObject {
+unsafe fn resolved_promise_bool(cx: *mut JSContext, value: bool) -> *mut JSObject {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
@@ -450,10 +495,7 @@ unsafe fn resolved_promise_bool(
 }
 
 /// Create a new Promise, reject it with an Error object, and return it.
-unsafe fn rejected_promise(
-    cx: *mut JSContext,
-    msg: &str,
-) -> *mut JSObject {
+unsafe fn rejected_promise(cx: *mut JSContext, msg: &str) -> *mut JSObject {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
@@ -468,7 +510,13 @@ unsafe fn rejected_promise(
         let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
         if !js_str.is_null() {
             rooted!(&in(cx_ref) let msg_val = StringValue(&*js_str));
-            JS_DefineProperty(cx, err_obj.handle().into(), c"message".as_ptr(), msg_val.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx,
+                err_obj.handle().into(),
+                c"message".as_ptr(),
+                msg_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
     rooted!(&in(cx_ref) let err_val = ObjectValue(err_obj.get()));
@@ -481,11 +529,7 @@ unsafe fn rejected_promise(
 
 /// Bun.password.hash(password, options?) → Promise<string>
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn pwd_hash(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn pwd_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let password = match get_string_arg(cx, &args, 0, argc) {
@@ -521,11 +565,7 @@ unsafe extern "C" fn pwd_hash(
 
 /// Bun.password.hashSync(password, options?) → string
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn pwd_hash_sync(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn pwd_hash_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let password = match get_string_arg(cx, &args, 0, argc) {
@@ -558,11 +598,7 @@ unsafe extern "C" fn pwd_hash_sync(
 
 /// Bun.password.verify(password, hash, options?) → Promise<bool>
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn pwd_verify(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn pwd_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let password = match get_string_arg(cx, &args, 0, argc) {
@@ -607,11 +643,7 @@ unsafe extern "C" fn pwd_verify(
 
 /// Bun.password.verifySync(password, hash, options?) → bool
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn pwd_verify_sync(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn pwd_verify_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let password = match get_string_arg(cx, &args, 0, argc) {

@@ -28,14 +28,14 @@
 use ::std::cell::RefCell;
 use ::std::ptr::{self, NonNull};
 
+use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue, BooleanValue, Int32Value, NullValue};
+use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 use mozjs::rust::wrappers2::JS_NewGlobalObject;
-use mozjs::rust::{RealmOptions, SIMPLE_GLOBAL_CLASS, CompileOptionsWrapper, IdVector};
-use mozjs::realm::AutoRealm;
-use mozjs::conversions::jsstr_to_string;
+use mozjs::rust::{CompileOptionsWrapper, IdVector, RealmOptions, SIMPLE_GLOBAL_CLASS};
 
 use crate::require::cache_builtin;
 
@@ -60,15 +60,16 @@ fn register_context(sandbox: *mut JSObject, global: *mut JSObject, flags: CodeGe
 
 /// Check whether an object has been contextified.
 fn is_context_registered(obj: *mut JSObject) -> bool {
-    VM_CONTEXT_MAP.with(|m| {
-        m.borrow().iter().any(|&(s, _, _)| ptr::eq(s, obj))
-    })
+    VM_CONTEXT_MAP.with(|m| m.borrow().iter().any(|&(s, _, _)| ptr::eq(s, obj)))
 }
 
 /// Look up the sandbox global for a contextified object.
 fn get_context_global(obj: *mut JSObject) -> Option<*mut JSObject> {
     VM_CONTEXT_MAP.with(|m| {
-        m.borrow().iter().find(|&&(s, _, _)| ptr::eq(s, obj)).map(|&(_, g, _)| g)
+        m.borrow()
+            .iter()
+            .find(|&&(s, _, _)| ptr::eq(s, obj))
+            .map(|&(_, g, _)| g)
     })
 }
 
@@ -95,7 +96,10 @@ impl CodeGenerationFlags {
     /// Default-permissive flags (everything allowed).
     #[inline]
     fn permissive() -> Self {
-        CodeGenerationFlags { strings_allowed: true, wasm_allowed: true }
+        CodeGenerationFlags {
+            strings_allowed: true,
+            wasm_allowed: true,
+        }
     }
 
     /// Returns `true` when no restrictions need to be applied.
@@ -129,7 +133,10 @@ unsafe fn parse_code_generation_options(
         raw_cx,
         opts.handle().into(),
         c"codeGeneration".as_ptr(),
-        MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut cgen_val },
+        MutableHandle::<JSVal> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut cgen_val,
+        },
     );
     if !got || !cgen_val.is_object() {
         return CodeGenerationFlags::permissive();
@@ -143,7 +150,10 @@ unsafe fn parse_code_generation_options(
             raw_cx,
             cgen.handle().into(),
             key.as_ptr(),
-            MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut v },
+            MutableHandle::<JSVal> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut v,
+            },
         );
         if !ok || !v.is_boolean() {
             true // absent / non-bool → default allowed
@@ -163,11 +173,7 @@ unsafe fn parse_code_generation_options(
 /// Throws a `EvalError` mirroring Node's "Code generation from strings
 /// disallowed for this context" message so callers can detect the policy.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn vm_strings_disabled(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn vm_strings_disabled(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     JS_ReportErrorUTF8(
         cx,
@@ -200,13 +206,7 @@ fn apply_code_generation_restrictions(
     if !flags.strings_allowed {
         // Replace `eval` with a throwing function.
         unsafe {
-            let eval_fn = JS_NewFunction(
-                raw_cx,
-                Some(vm_strings_disabled),
-                1,
-                0,
-                c"eval".as_ptr(),
-            );
+            let eval_fn = JS_NewFunction(raw_cx, Some(vm_strings_disabled), 1, 0, c"eval".as_ptr());
             if !eval_fn.is_null() {
                 let eval_obj = JS_GetFunctionObject(eval_fn);
                 rooted!(&in(realm_cx) let ev = mozjs::jsval::ObjectValue(eval_obj));
@@ -244,11 +244,7 @@ fn apply_code_generation_restrictions(
     if !flags.wasm_allowed {
         // Delete `WebAssembly` global if present (lazily-resolved or defined).
         unsafe {
-            JS_DeleteProperty1(
-                raw_cx,
-                global_root.handle().into(),
-                c"WebAssembly".as_ptr(),
-            );
+            JS_DeleteProperty1(raw_cx, global_root.handle().into(), c"WebAssembly".as_ptr());
         }
     }
 }
@@ -264,11 +260,46 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        w2::JS_DefineFunction(cx, vm_obj.handle(), c"runInThisContext".as_ptr(), Some(vm_run_in_this_context), 2, 0);
-        w2::JS_DefineFunction(cx, vm_obj.handle(), c"runInNewContext".as_ptr(), Some(vm_run_in_new_context), 3, 0);
-        w2::JS_DefineFunction(cx, vm_obj.handle(), c"createContext".as_ptr(), Some(vm_create_context), 2, 0);
-        w2::JS_DefineFunction(cx, vm_obj.handle(), c"isContext".as_ptr(), Some(vm_is_context), 1, 0);
-        w2::JS_DefineFunction(cx, vm_obj.handle(), c"compileFunction".as_ptr(), Some(vm_compile_function), 2, 0);
+        w2::JS_DefineFunction(
+            cx,
+            vm_obj.handle(),
+            c"runInThisContext".as_ptr(),
+            Some(vm_run_in_this_context),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            vm_obj.handle(),
+            c"runInNewContext".as_ptr(),
+            Some(vm_run_in_new_context),
+            3,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            vm_obj.handle(),
+            c"createContext".as_ptr(),
+            Some(vm_create_context),
+            2,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            vm_obj.handle(),
+            c"isContext".as_ptr(),
+            Some(vm_is_context),
+            1,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            vm_obj.handle(),
+            c"compileFunction".as_ptr(),
+            Some(vm_compile_function),
+            2,
+            0,
+        );
 
         // Script constructor
         let script_fn = JS_NewFunction(
@@ -284,9 +315,30 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             // Create Script.prototype with runIn* methods
             rooted!(&in(cx) let proto = w2::JS_NewPlainObject(cx));
             if !proto.get().is_null() {
-                w2::JS_DefineFunction(cx, proto.handle(), c"runInThisContext".as_ptr(), Some(vm_script_run_in_this_context), 1, 0);
-                w2::JS_DefineFunction(cx, proto.handle(), c"runInContext".as_ptr(), Some(vm_script_run_in_context), 2, 0);
-                w2::JS_DefineFunction(cx, proto.handle(), c"runInNewContext".as_ptr(), Some(vm_script_run_in_new_context), 2, 0);
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"runInThisContext".as_ptr(),
+                    Some(vm_script_run_in_this_context),
+                    1,
+                    0,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"runInContext".as_ptr(),
+                    Some(vm_script_run_in_context),
+                    2,
+                    0,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"runInNewContext".as_ptr(),
+                    Some(vm_script_run_in_new_context),
+                    2,
+                    0,
+                );
 
                 // Set Script.prototype = proto on the constructor function
                 let proto_val = ObjectValue(proto.get());
@@ -327,11 +379,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 ///
 /// If the sandbox is already contextified, returns it as-is.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn vm_create_context(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     // Get or create the sandbox object.
@@ -376,7 +424,11 @@ unsafe extern "C" fn vm_create_context(
 
     // Parse the codeGeneration option (arg 1) BEFORE entering the AutoRealm.
     // REQ-ENG-011 criterion 8: codeGeneration can disable eval/function.
-    let cgen_opts_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let cgen_opts_val = if argc > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
     let cgen_flags = unsafe { parse_code_generation_options(cx, cgen_opts_val) };
 
     // Phase 1: Collect sandbox properties in the CALLER's Realm (before
@@ -407,7 +459,13 @@ unsafe extern "C" fn vm_create_context(
     // Mark with __isVMContext for isContext() backwards compat.
     rooted!(&in(cx_ref) let sandbox_root = sandbox);
     rooted!(&in(cx_ref) let marker = BooleanValue(true));
-    JS_DefineProperty(cx, sandbox_root.handle().into(), c"__isVMContext".as_ptr(), marker.handle().into(), 0);
+    JS_DefineProperty(
+        cx,
+        sandbox_root.handle().into(),
+        c"__isVMContext".as_ptr(),
+        marker.handle().into(),
+        0,
+    );
 
     args.rval().set(ObjectValue(sandbox_root.get()));
     true
@@ -435,7 +493,14 @@ fn collect_sandbox_properties(
     let raw_cx = unsafe { cx.raw_cx() };
     rooted!(&in(cx) let sandbox_root = sandbox);
     let mut ids = unsafe { IdVector::new(raw_cx) };
-    let ok = unsafe { GetPropertyKeys(raw_cx, sandbox_root.handle().into(), JSITER_OWNONLY, ids.handle_mut()) };
+    let ok = unsafe {
+        GetPropertyKeys(
+            raw_cx,
+            sandbox_root.handle().into(),
+            JSITER_OWNONLY,
+            ids.handle_mut(),
+        )
+    };
     if !ok {
         return props;
     }
@@ -453,9 +518,15 @@ fn collect_sandbox_properties(
 
         // Get the property value by id using the raw JS_GetPropertyById
         // (takes *mut JSContext + raw Handle types from mozjs_sys).
-        let id_h = Handle::<jsid> { _phantom_0: ::std::marker::PhantomData, ptr: jsid as *const jsid as *mut jsid };
+        let id_h = Handle::<jsid> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: jsid as *const jsid as *mut jsid,
+        };
         let mut val = UndefinedValue();
-        let val_h = MutableHandle::<JS::Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
+        let val_h = MutableHandle::<JS::Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        };
         let got = unsafe { JS_GetPropertyById(raw_cx, sandbox_root.handle().into(), id_h, val_h) };
         if !got {
             continue;
@@ -498,7 +569,13 @@ fn define_properties_on_global(
         // from mozjs_sys which is compatible with the raw JS_DefineProperty.
         let val_h = unsafe { heap_val.handle() };
         unsafe {
-            JS_DefineProperty(raw_cx, global_root.handle().into(), c_key.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                raw_cx,
+                global_root.handle().into(),
+                c_key.as_ptr(),
+                val_h,
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 }
@@ -510,11 +587,7 @@ fn define_properties_on_global(
 /// Creates a new context (if needed), enters the sandbox Realm, evaluates
 /// the code, and returns the last expression value.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn vm_run_in_new_context(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn vm_run_in_new_context(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_string() {
         JS_ReportErrorUTF8(cx, c"runInNewContext requires a code string".as_ptr());
@@ -524,7 +597,11 @@ unsafe extern "C" fn vm_run_in_new_context(
     let code = crate::js_to_rust_string(cx, *args.get(0).ptr);
 
     // Get sandbox (arg 1) — if not provided, create a default empty one.
-    let sandbox_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let sandbox_val = if argc > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     let sandbox = if sandbox_val.is_object() {
@@ -543,8 +620,17 @@ unsafe extern "C" fn vm_run_in_new_context(
         // Forward arg 0 (sandbox) AND arg 2 (options, carries codeGeneration)
         // so vm_create_context parses the codeGeneration policy (criterion 8).
         // vp layout for CallArgs::from_vp: [rval_slot, magic_marker, arg0, ...]
-        let opts_val = if argc > 2 { *args.get(2).ptr } else { UndefinedValue() };
-        let mut ctx_vp = [UndefinedValue(), UndefinedValue(), ObjectValue(sandbox), opts_val];
+        let opts_val = if argc > 2 {
+            *args.get(2).ptr
+        } else {
+            UndefinedValue()
+        };
+        let mut ctx_vp = [
+            UndefinedValue(),
+            UndefinedValue(),
+            ObjectValue(sandbox),
+            opts_val,
+        ];
         if !vm_create_context(cx, 2, ctx_vp.as_mut_ptr()) {
             args.rval().set(UndefinedValue());
             return false;
@@ -554,7 +640,10 @@ unsafe extern "C" fn vm_run_in_new_context(
     };
 
     if sandbox_global.is_null() {
-        JS_ReportErrorUTF8(cx, c"runInNewContext: failed to create sandbox context".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"runInNewContext: failed to create sandbox context".as_ptr(),
+        );
         return false;
     }
 
@@ -566,9 +655,16 @@ unsafe extern "C" fn vm_run_in_new_context(
             cx,
             opts.handle().into(),
             c"filename".as_ptr(),
-            MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
+            MutableHandle::<JSVal> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut fn_val,
+            },
         );
-        if fn_val.is_string() { crate::js_to_rust_string(cx, fn_val) } else { "vm.js".to_string() }
+        if fn_val.is_string() {
+            crate::js_to_rust_string(cx, fn_val)
+        } else {
+            "vm.js".to_string()
+        }
     } else if argc > 2 && (*args.get(2).ptr).is_string() {
         crate::js_to_rust_string(cx, *args.get(2).ptr)
     } else {
@@ -614,11 +710,7 @@ unsafe extern "C" fn vm_run_in_new_context(
 // ──────────────────────────────────────────────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn vm_run_in_this_context(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn vm_run_in_this_context(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_string() {
         JS_ReportErrorUTF8(cx, c"runInThisContext requires a code string".as_ptr());
@@ -635,9 +727,16 @@ unsafe extern "C" fn vm_run_in_this_context(
             cx,
             opts.handle().into(),
             c"filename".as_ptr(),
-            MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
+            MutableHandle::<JSVal> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut fn_val,
+            },
         );
-        if fn_val.is_string() { crate::js_to_rust_string(cx, fn_val) } else { "vm.js".to_string() }
+        if fn_val.is_string() {
+            crate::js_to_rust_string(cx, fn_val)
+        } else {
+            "vm.js".to_string()
+        }
     } else if argc > 1 && (*args.get(1).ptr).is_string() {
         crate::js_to_rust_string(cx, *args.get(1).ptr)
     } else {
@@ -676,11 +775,7 @@ unsafe extern "C" fn vm_run_in_this_context(
 // ──────────────────────────────────────────────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn vm_is_context(
-    _cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn vm_is_context(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc > 0 && (*args.get(0).ptr).is_object() {
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(_cx));
@@ -696,7 +791,10 @@ unsafe extern "C" fn vm_is_context(
                 _cx,
                 obj.handle().into(),
                 c"__isVMContext".as_ptr(),
-                MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val },
+                MutableHandle::<JSVal> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut val,
+                },
             );
             val.is_boolean() && val.to_boolean()
         } else {
@@ -714,11 +812,7 @@ unsafe extern "C" fn vm_is_context(
 // ──────────────────────────────────────────────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn vm_compile_function(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn vm_compile_function(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_string() {
         JS_ReportErrorUTF8(cx, c"compileFunction requires a code string".as_ptr());
@@ -763,11 +857,7 @@ unsafe extern "C" fn vm_compile_function(
 // ──────────────────────────────────────────────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn vm_script_ctor(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn vm_script_ctor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_string() {
         JS_ReportErrorUTF8(cx, c"Script requires a code string argument".as_ptr());
@@ -787,7 +877,10 @@ unsafe extern "C" fn vm_script_ctor(
             cx,
             opts.handle().into(),
             c"filename".as_ptr(),
-            MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
+            MutableHandle::<JSVal> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut fn_val,
+            },
         );
         if fn_val.is_string() {
             crate::js_to_rust_string(cx, fn_val)
@@ -815,11 +908,18 @@ unsafe extern "C" fn vm_script_ctor(
                 cx,
                 script_ctor_val.handle().into(),
                 c"prototype".as_ptr(),
-                MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut proto_val },
+                MutableHandle::<JSVal> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut proto_val,
+                },
             );
             if proto_val.is_object() {
                 rooted!(&in(cx_ref) let pv = proto_val.to_object());
-                JS_SetPrototype(cx_ref.raw_cx(), fallback.handle().into(), pv.handle().into());
+                JS_SetPrototype(
+                    cx_ref.raw_cx(),
+                    fallback.handle().into(),
+                    pv.handle().into(),
+                );
             }
             fallback.get()
         } else {
@@ -834,27 +934,54 @@ unsafe extern "C" fn vm_script_ctor(
             cx,
             script_ctor_val.handle().into(),
             c"prototype".as_ptr(),
-            MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut proto_val },
+            MutableHandle::<JSVal> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut proto_val,
+            },
         );
         if proto_val.is_object() {
             rooted!(&in(cx_ref) let pv = proto_val.to_object());
-            JS_SetPrototype(cx_ref.raw_cx(), fallback.handle().into(), pv.handle().into());
+            JS_SetPrototype(
+                cx_ref.raw_cx(),
+                fallback.handle().into(),
+                pv.handle().into(),
+            );
         }
         fallback.get()
     };
 
     // Store code and filename as hidden properties
-    let code_str = JS_NewStringCopyN(cx, code.as_ptr() as *const ::std::os::raw::c_char, code.len());
+    let code_str = JS_NewStringCopyN(
+        cx,
+        code.as_ptr() as *const ::std::os::raw::c_char,
+        code.len(),
+    );
     if !code_str.is_null() {
         rooted!(&in(cx_ref) let cv = mozjs::jsval::StringValue(&*code_str));
         rooted!(&in(cx_ref) let this_root = this_obj);
-        JS_DefineProperty(cx, this_root.handle().into(), c"__code".as_ptr(), cv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            this_root.handle().into(),
+            c"__code".as_ptr(),
+            cv.handle().into(),
+            0,
+        );
     }
-    let fn_str = JS_NewStringCopyN(cx, filename.as_ptr() as *const ::std::os::raw::c_char, filename.len());
+    let fn_str = JS_NewStringCopyN(
+        cx,
+        filename.as_ptr() as *const ::std::os::raw::c_char,
+        filename.len(),
+    );
     if !fn_str.is_null() {
         rooted!(&in(cx_ref) let fv = mozjs::jsval::StringValue(&*fn_str));
         rooted!(&in(cx_ref) let this_root2 = this_obj);
-        JS_DefineProperty(cx, this_root2.handle().into(), c"__filename".as_ptr(), fv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            this_root2.handle().into(),
+            c"__filename".as_ptr(),
+            fv.handle().into(),
+            0,
+        );
     }
 
     args.rval().set(ObjectValue(this_obj));
@@ -880,7 +1007,10 @@ unsafe extern "C" fn vm_script_run_in_this_context(
         cx,
         this.handle().into(),
         c"__code".as_ptr(),
-        MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut code_val },
+        MutableHandle::<JSVal> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut code_val,
+        },
     );
     let code = crate::js_to_rust_string(cx, code_val);
 
@@ -889,7 +1019,10 @@ unsafe extern "C" fn vm_script_run_in_this_context(
         cx,
         this.handle().into(),
         c"__filename".as_ptr(),
-        MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
+        MutableHandle::<JSVal> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut fn_val,
+        },
     );
     let filename = crate::js_to_rust_string(cx, fn_val);
 
@@ -938,7 +1071,10 @@ unsafe extern "C" fn vm_script_run_in_context(
         cx,
         this.handle().into(),
         c"__code".as_ptr(),
-        MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut code_val },
+        MutableHandle::<JSVal> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut code_val,
+        },
     );
     let code = crate::js_to_rust_string(cx, code_val);
 
@@ -947,20 +1083,29 @@ unsafe extern "C" fn vm_script_run_in_context(
         cx,
         this.handle().into(),
         c"__filename".as_ptr(),
-        MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
+        MutableHandle::<JSVal> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut fn_val,
+        },
     );
     let filename = crate::js_to_rust_string(cx, fn_val);
 
     // Get contextified sandbox (arg 0)
     if argc == 0 || !(*args.get(0).ptr).is_object() {
-        JS_ReportErrorUTF8(cx, c"runInContext requires a contextified sandbox argument".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"runInContext requires a contextified sandbox argument".as_ptr(),
+        );
         return false;
     }
     rooted!(&in(cx_ref) let sandbox = (*args.get(0).ptr).to_object());
 
     let sandbox_global = get_context_global(sandbox.get());
     if sandbox_global.is_none() {
-        JS_ReportErrorUTF8(cx, c"runInContext: sandbox is not a contextified object".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"runInContext: sandbox is not a contextified object".as_ptr(),
+        );
         return false;
     }
     let global_ptr = sandbox_global.unwrap();
@@ -1020,7 +1165,10 @@ unsafe extern "C" fn vm_script_run_in_new_context(
         cx,
         this.handle().into(),
         c"__code".as_ptr(),
-        MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut code_val },
+        MutableHandle::<JSVal> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut code_val,
+        },
     );
     let code = crate::js_to_rust_string(cx, code_val);
 
@@ -1029,7 +1177,10 @@ unsafe extern "C" fn vm_script_run_in_new_context(
         cx,
         this.handle().into(),
         c"__filename".as_ptr(),
-        MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
+        MutableHandle::<JSVal> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut fn_val,
+        },
     );
     let filename = crate::js_to_rust_string(cx, fn_val);
 
@@ -1052,8 +1203,17 @@ unsafe extern "C" fn vm_script_run_in_new_context(
     let sandbox_global = if is_context_registered(sandbox) {
         get_context_global(sandbox).unwrap_or(ptr::null_mut())
     } else {
-        let opts_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
-        let mut ctx_vp = [UndefinedValue(), UndefinedValue(), ObjectValue(sandbox), opts_val];
+        let opts_val = if argc > 1 {
+            *args.get(1).ptr
+        } else {
+            UndefinedValue()
+        };
+        let mut ctx_vp = [
+            UndefinedValue(),
+            UndefinedValue(),
+            ObjectValue(sandbox),
+            opts_val,
+        ];
         if !vm_create_context(cx, 2, ctx_vp.as_mut_ptr()) {
             args.rval().set(UndefinedValue());
             return false;
@@ -1062,7 +1222,10 @@ unsafe extern "C" fn vm_script_run_in_new_context(
     };
 
     if sandbox_global.is_null() {
-        JS_ReportErrorUTF8(cx, c"Script.runInNewContext: failed to create sandbox context".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"Script.runInNewContext: failed to create sandbox context".as_ptr(),
+        );
         return false;
     }
 
@@ -1097,4 +1260,3 @@ unsafe extern "C" fn vm_script_run_in_new_context(
     args.rval().set(rval.get());
     true
 }
-

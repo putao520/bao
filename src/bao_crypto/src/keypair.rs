@@ -83,7 +83,13 @@ fn bio_to_vec(bio: *mut BIO) -> Result<Vec<u8>, CryptoError> {
         return Ok(Vec::new());
     }
     let mut buf = vec![0u8; len];
-    let n = unsafe { BIO_read(bio, buf.as_mut_ptr() as *mut c_void, len as core::ffi::c_int) };
+    let n = unsafe {
+        BIO_read(
+            bio,
+            buf.as_mut_ptr() as *mut c_void,
+            len as core::ffi::c_int,
+        )
+    };
     if n < 0 {
         return Err(CryptoError::EncodingFailed("BIO_read failed".into()));
     }
@@ -136,7 +142,9 @@ fn serialize_pkey(pkey: *mut EVP_PKEY) -> Result<KeyPairResult, CryptoError> {
         )
     } != 1
     {
-        return Err(CryptoError::EncodingFailed("PEM_write_bio_PKCS8PrivateKey failed".into()));
+        return Err(CryptoError::EncodingFailed(
+            "PEM_write_bio_PKCS8PrivateKey failed".into(),
+        ));
     }
     let private_key_pem = bio_to_string(priv_bio.0).ok();
 
@@ -146,7 +154,9 @@ fn serialize_pkey(pkey: *mut EVP_PKEY) -> Result<KeyPairResult, CryptoError> {
         return Err(CryptoError::EncodingFailed("BIO_new failed".into()));
     }
     if unsafe { PEM_write_bio_PUBKEY(pub_bio.0, pkey) } != 1 {
-        return Err(CryptoError::EncodingFailed("PEM_write_bio_PUBKEY failed".into()));
+        return Err(CryptoError::EncodingFailed(
+            "PEM_write_bio_PUBKEY failed".into(),
+        ));
     }
     let public_key_pem = bio_to_string(pub_bio.0).ok();
 
@@ -172,7 +182,9 @@ fn generate_rsa(bits: usize) -> Result<KeyPairResult, CryptoError> {
         return Err(CryptoError::KeyPairError("BN_set_word failed".into()));
     }
     if unsafe { RSA_generate_key_ex(rsa.0, bits as c_int, e.0, std::ptr::null_mut()) } != 1 {
-        return Err(CryptoError::KeyPairError("RSA_generate_key_ex failed".into()));
+        return Err(CryptoError::KeyPairError(
+            "RSA_generate_key_ex failed".into(),
+        ));
     }
 
     let pkey = PkeyGuard(unsafe { EVP_PKEY_new() });
@@ -194,10 +206,14 @@ fn generate_ec(curve: EcCurve) -> Result<KeyPairResult, CryptoError> {
 
     let ec_key = EcKeyGuard(unsafe { EC_KEY_new_by_curve_name(nid) });
     if ec_key.0.is_null() {
-        return Err(CryptoError::KeyPairError("EC_KEY_new_by_curve_name failed".into()));
+        return Err(CryptoError::KeyPairError(
+            "EC_KEY_new_by_curve_name failed".into(),
+        ));
     }
     if unsafe { EC_KEY_generate_key(ec_key.0) } != 1 {
-        return Err(CryptoError::KeyPairError("EC_KEY_generate_key failed".into()));
+        return Err(CryptoError::KeyPairError(
+            "EC_KEY_generate_key failed".into(),
+        ));
     }
 
     let pkey = PkeyGuard(unsafe { EVP_PKEY_new() });
@@ -205,7 +221,9 @@ fn generate_ec(curve: EcCurve) -> Result<KeyPairResult, CryptoError> {
         return Err(CryptoError::KeyPairError("EVP_PKEY_new failed".into()));
     }
     if unsafe { EVP_PKEY_set1_EC_KEY(pkey.0, ec_key.0) } != 1 {
-        return Err(CryptoError::KeyPairError("EVP_PKEY_set1_EC_KEY failed".into()));
+        return Err(CryptoError::KeyPairError(
+            "EVP_PKEY_set1_EC_KEY failed".into(),
+        ));
     }
 
     serialize_pkey(pkey.0)
@@ -220,7 +238,9 @@ fn generate_ed25519() -> Result<KeyPairResult, CryptoError> {
         EVP_PKEY_from_raw_private_key(EVP_pkey_ed25519(), seed.as_ptr(), seed.len())
     });
     if pkey.0.is_null() {
-        return Err(CryptoError::KeyPairError("EVP_PKEY_from_raw_private_key (ed25519) failed".into()));
+        return Err(CryptoError::KeyPairError(
+            "EVP_PKEY_from_raw_private_key (ed25519) failed".into(),
+        ));
     }
     serialize_pkey(pkey.0)
 }
@@ -233,7 +253,9 @@ fn generate_x25519() -> Result<KeyPairResult, CryptoError> {
         EVP_PKEY_from_raw_private_key(EVP_pkey_x25519(), seed.as_ptr(), seed.len())
     });
     if pkey.0.is_null() {
-        return Err(CryptoError::KeyPairError("EVP_PKEY_from_raw_private_key (x25519) failed".into()));
+        return Err(CryptoError::KeyPairError(
+            "EVP_PKEY_from_raw_private_key (x25519) failed".into(),
+        ));
     }
     serialize_pkey(pkey.0)
 }

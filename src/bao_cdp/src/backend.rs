@@ -188,7 +188,9 @@ mod tests {
     #[test]
     fn internal_backend_send_command_page_enable_returns_ok() {
         let backend = InternalBackend::new();
-        let result = backend.send_command("Page.enable", &None, "test-target").unwrap();
+        let result = backend
+            .send_command("Page.enable", &None, "test-target")
+            .unwrap();
         assert_eq!(result, serde_json::json!({}));
     }
 
@@ -196,7 +198,9 @@ mod tests {
     #[test]
     fn internal_backend_send_command_runtime_enable_returns_ok_with_execution_context_id() {
         let backend = InternalBackend::new();
-        let result = backend.send_command("Runtime.enable", &None, "test-target").unwrap();
+        let result = backend
+            .send_command("Runtime.enable", &None, "test-target")
+            .unwrap();
         assert!(result.get("executionContextId").is_some());
         assert_eq!(result["executionContextId"], 1);
     }
@@ -205,7 +209,9 @@ mod tests {
     #[test]
     fn internal_backend_send_command_dom_get_document_returns_ok() {
         let backend = InternalBackend::new();
-        let result = backend.send_command("DOM.getDocument", &None, "test-target").unwrap();
+        let result = backend
+            .send_command("DOM.getDocument", &None, "test-target")
+            .unwrap();
         assert!(result.get("root").is_some());
         assert_eq!(result["root"]["nodeId"], 1);
         assert_eq!(result["root"]["nodeType"], 9);
@@ -215,7 +221,9 @@ mod tests {
     #[test]
     fn internal_backend_send_command_network_enable_returns_ok() {
         let backend = InternalBackend::new();
-        let result = backend.send_command("Network.enable", &None, "test-target").unwrap();
+        let result = backend
+            .send_command("Network.enable", &None, "test-target")
+            .unwrap();
         assert_eq!(result, serde_json::json!({}));
     }
 
@@ -223,7 +231,9 @@ mod tests {
     #[test]
     fn internal_backend_send_command_debugger_enable_returns_ok() {
         let backend = InternalBackend::new();
-        let result = backend.send_command("Debugger.enable", &None, "test-target").unwrap();
+        let result = backend
+            .send_command("Debugger.enable", &None, "test-target")
+            .unwrap();
         assert_eq!(result, serde_json::json!({}));
     }
 
@@ -231,7 +241,9 @@ mod tests {
     #[test]
     fn internal_backend_send_command_unknown_returns_error_32601() {
         let backend = InternalBackend::new();
-        let err = backend.send_command("Foo.bar", &None, "test-target").unwrap_err();
+        let err = backend
+            .send_command("Foo.bar", &None, "test-target")
+            .unwrap_err();
         assert_eq!(err.code, -32601);
     }
 
@@ -239,7 +251,9 @@ mod tests {
     #[test]
     fn internal_backend_send_command_page_get_layout_metrics_returns_dimensions() {
         let backend = InternalBackend::new();
-        let result = backend.send_command("Page.getLayoutMetrics", &None, "test-target").unwrap();
+        let result = backend
+            .send_command("Page.getLayoutMetrics", &None, "test-target")
+            .unwrap();
         assert!(result.get("contentSize").is_some());
         assert_eq!(result["contentSize"]["width"], 1920);
         assert_eq!(result["contentSize"]["height"], 1080);
@@ -249,7 +263,9 @@ mod tests {
     #[test]
     fn internal_backend_send_command_with_target_id_passed_through() {
         let backend = InternalBackend::new();
-        let result = backend.send_command("Target.getTargets", &None, "my-custom-target").unwrap();
+        let result = backend
+            .send_command("Target.getTargets", &None, "my-custom-target")
+            .unwrap();
         let infos = result["targetInfos"].as_array().unwrap();
         assert_eq!(infos[0]["targetId"], "my-custom-target");
     }
@@ -258,7 +274,9 @@ mod tests {
     #[test]
     fn internal_backend_send_command_css_enable_returns_ok() {
         let backend = InternalBackend::new();
-        let result = backend.send_command("CSS.enable", &None, "test-target").unwrap();
+        let result = backend
+            .send_command("CSS.enable", &None, "test-target")
+            .unwrap();
         assert_eq!(result, serde_json::json!({}));
     }
 
@@ -266,7 +284,9 @@ mod tests {
     #[test]
     fn internal_backend_send_command_log_enable_returns_ok() {
         let backend = InternalBackend::new();
-        let result = backend.send_command("Log.enable", &None, "test-target").unwrap();
+        let result = backend
+            .send_command("Log.enable", &None, "test-target")
+            .unwrap();
         assert_eq!(result, serde_json::json!({}));
     }
 
@@ -275,7 +295,9 @@ mod tests {
     fn internal_backend_send_command_fetch_enable_returns_ok() {
         let backend = InternalBackend::new();
         let params = Some(serde_json::json!({"patterns": [{"urlPattern": "*"}]}));
-        let result = backend.send_command("Fetch.enable", &params, "test-target").unwrap();
+        let result = backend
+            .send_command("Fetch.enable", &params, "test-target")
+            .unwrap();
         assert_eq!(result["patternCount"], 1);
     }
 

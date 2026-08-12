@@ -9,7 +9,7 @@ use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, BooleanValue, ObjectValue, StringValue};
+use mozjs::jsval::{BooleanValue, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -28,11 +28,46 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        w2::JS_DefineFunction(cx, inspector_obj.handle(), c"open".as_ptr(), Some(inspector_open), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, inspector_obj.handle(), c"close".as_ptr(), Some(inspector_close), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, inspector_obj.handle(), c"url".as_ptr(), Some(inspector_url), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, inspector_obj.handle(), c"waitForDebugger".as_ptr(), Some(inspector_wait_for_debugger), 0, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, inspector_obj.handle(), c"console".as_ptr(), Some(inspector_console), 0, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            inspector_obj.handle(),
+            c"open".as_ptr(),
+            Some(inspector_open),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            inspector_obj.handle(),
+            c"close".as_ptr(),
+            Some(inspector_close),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            inspector_obj.handle(),
+            c"url".as_ptr(),
+            Some(inspector_url),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            inspector_obj.handle(),
+            c"waitForDebugger".as_ptr(),
+            Some(inspector_wait_for_debugger),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            inspector_obj.handle(),
+            c"console".as_ptr(),
+            Some(inspector_console),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     cache_builtin(cx, "inspector", inspector_obj.get());
@@ -103,7 +138,11 @@ unsafe extern "C" fn inspector_url(cx: *mut JSContext, _argc: u32, vp: *mut JSVa
 /// inspector.waitForDebugger()
 /// Returns a Promise that resolves immediately (no real debugger wait in Bao).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn inspector_wait_for_debugger(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn inspector_wait_for_debugger(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
 
     // Create a resolved Promise. We use JS::NewPromiseObject if available,
@@ -119,8 +158,15 @@ unsafe extern "C" fn inspector_wait_for_debugger(cx: *mut JSContext, _argc: u32,
     rooted!(&in(wrapped_cx) let global_root = global);
 
     let mut promise_ctor_val = UndefinedValue();
-    JS_GetProperty(cx, global_root.handle().into(), c"Promise".as_ptr(),
-        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut promise_ctor_val });
+    JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        c"Promise".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut promise_ctor_val,
+        },
+    );
 
     if promise_ctor_val.is_object() {
         rooted!(&in(wrapped_cx) let ctor_obj = promise_ctor_val.to_object());
@@ -138,12 +184,22 @@ unsafe extern "C" fn inspector_wait_for_debugger(cx: *mut JSContext, _argc: u32,
             rooted!(&in(wrapped_cx) let fn_val = ObjectValue(fn_obj));
 
             let elems = [fn_val.get()];
-            let call_args = HandleValueArray { length_: elems.len(), elements_: elems.as_ptr() };
+            let call_args = HandleValueArray {
+                length_: elems.len(),
+                elements_: elems.as_ptr(),
+            };
 
             let mut rval = UndefinedValue();
-            JS_CallFunctionValue(cx, ctor_obj.handle().into(), fn_val.handle().into(),
+            JS_CallFunctionValue(
+                cx,
+                ctor_obj.handle().into(),
+                fn_val.handle().into(),
                 &call_args,
-                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
 
             args.rval().set(rval);
             return true;
@@ -168,9 +224,16 @@ unsafe extern "C" fn inspector_resolve_fn(cx: *mut JSContext, argc: u32, vp: *mu
 
             let empty_args = HandleValueArray::empty();
             let mut rval = UndefinedValue();
-            JS_CallFunctionValue(cx, resolve_obj.handle().into(), resolve_fn_val.handle().into(),
+            JS_CallFunctionValue(
+                cx,
+                resolve_obj.handle().into(),
+                resolve_fn_val.handle().into(),
                 &empty_args,
-                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
         }
     }
     args.rval().set(UndefinedValue());

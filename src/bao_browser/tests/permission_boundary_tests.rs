@@ -1,7 +1,7 @@
 // @trace TEST-LIB-004-PERM [req:REQ-LIB-004] [level:unit]
 // Permission boundary tests: subdomain matching, env/run booleans, Display, guard modes
 
-use bao_browser::{Permission, PermissionGuard, PermissionDenied};
+use bao_browser::{Permission, PermissionDenied, PermissionGuard};
 
 // ---- Permission::is_net_allowed subdomain matching ----
 
@@ -103,13 +103,19 @@ fn test_env_allowed_default() {
 
 #[test]
 fn test_env_explicit_true() {
-    let perm = Permission { env: Some(true), ..Default::default() };
+    let perm = Permission {
+        env: Some(true),
+        ..Default::default()
+    };
     assert!(perm.is_env_allowed());
 }
 
 #[test]
 fn test_env_explicit_false() {
-    let perm = Permission { env: Some(false), ..Default::default() };
+    let perm = Permission {
+        env: Some(false),
+        ..Default::default()
+    };
     assert!(!perm.is_env_allowed());
 }
 
@@ -121,7 +127,10 @@ fn test_run_allowed_default() {
 
 #[test]
 fn test_run_explicit_false() {
-    let perm = Permission { run: Some(false), ..Default::default() };
+    let perm = Permission {
+        run: Some(false),
+        ..Default::default()
+    };
     assert!(!perm.is_run_allowed());
 }
 

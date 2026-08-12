@@ -127,8 +127,8 @@ impl InMemoryBridge for CDPRdpBridge {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::servo_backend::MockServoBackend;
+    use super::*;
     use serde_json::json;
 
     #[test]

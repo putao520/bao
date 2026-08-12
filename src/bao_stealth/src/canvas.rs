@@ -118,9 +118,14 @@ mod tests {
                     break;
                 }
             }
-            if any_different { break; }
+            if any_different {
+                break;
+            }
         }
-        assert!(any_different, "different seeds should produce different pixels somewhere");
+        assert!(
+            any_different,
+            "different seeds should produce different pixels somewhere"
+        );
     }
 
     #[test]

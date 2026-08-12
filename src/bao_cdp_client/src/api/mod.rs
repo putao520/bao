@@ -60,8 +60,7 @@ pub use coverage::Coverage;
 pub use dialog::Dialog;
 pub use element_handle::ElementHandle;
 pub use event_emitter::{
-    EventHandler, HandlerId, EventEmitter, EventEmitterInner,
-    SubscriptionResult,
+    EventEmitter, EventEmitterInner, EventHandler, HandlerId, SubscriptionResult,
 };
 // `delegate_event_emitter!` 是 #[macro_export],挂在 crate 根。
 pub use crate::delegate_event_emitter;

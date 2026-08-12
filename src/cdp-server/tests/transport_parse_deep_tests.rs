@@ -4,8 +4,8 @@
 // TargetInfo field/serde completeness.
 
 use cdp_server::{
-    TargetInfo, parse_close_request, parse_activate_request,
-    parse_new_request, is_websocket_upgrade,
+    is_websocket_upgrade, parse_activate_request, parse_close_request, parse_new_request,
+    TargetInfo,
 };
 
 // ---- parse_close_request ----
@@ -18,7 +18,10 @@ fn test_close_valid() {
 
 #[test]
 fn test_close_simple() {
-    assert_eq!(parse_close_request("GET /json/close/target-1 "), Some("target-1".into()));
+    assert_eq!(
+        parse_close_request("GET /json/close/target-1 "),
+        Some("target-1".into())
+    );
 }
 
 #[test]
@@ -75,7 +78,10 @@ fn test_close_long_id() {
 #[test]
 fn test_close_special_chars_in_id() {
     let req = "GET /json/close/target%20with%20spaces HTTP/1.1";
-    assert_eq!(parse_close_request(req), Some("target%20with%20spaces".into()));
+    assert_eq!(
+        parse_close_request(req),
+        Some("target%20with%20spaces".into())
+    );
 }
 
 // ---- parse_activate_request ----
@@ -88,12 +94,18 @@ fn test_activate_valid() {
 
 #[test]
 fn test_activate_simple() {
-    assert_eq!(parse_activate_request("GET /json/activate/t1 "), Some("t1".into()));
+    assert_eq!(
+        parse_activate_request("GET /json/activate/t1 "),
+        Some("t1".into())
+    );
 }
 
 #[test]
 fn test_activate_no_space() {
-    assert_eq!(parse_activate_request("GET /json/activate/xyz"), Some("xyz".into()));
+    assert_eq!(
+        parse_activate_request("GET /json/activate/xyz"),
+        Some("xyz".into())
+    );
 }
 
 #[test]
@@ -112,7 +124,10 @@ fn test_activate_wrong_path() {
 
 #[test]
 fn test_activate_post_method() {
-    assert_eq!(parse_activate_request("POST /json/activate/abc HTTP/1.1"), None);
+    assert_eq!(
+        parse_activate_request("POST /json/activate/abc HTTP/1.1"),
+        None
+    );
 }
 
 #[test]
@@ -162,19 +177,28 @@ fn test_new_empty_query() {
 #[test]
 fn test_new_percent_encoded_url() {
     let req = "GET /json/new?https%3A%2F%2Fexample.com%2Fpath%3Fq%3D1 HTTP/1.1";
-    assert_eq!(parse_new_request(req), Some("https://example.com/path?q=1".into()));
+    assert_eq!(
+        parse_new_request(req),
+        Some("https://example.com/path?q=1".into())
+    );
 }
 
 #[test]
 fn test_new_percent_encoded_spaces() {
     let req = "GET /json/new?https%3A%2F%2Fexample.com%2Fhello%20world HTTP/1.1";
-    assert_eq!(parse_new_request(req), Some("https://example.com/hello world".into()));
+    assert_eq!(
+        parse_new_request(req),
+        Some("https://example.com/hello world".into())
+    );
 }
 
 #[test]
 fn test_new_plus_as_space() {
     let req = "GET /json/new?https://example.com/hello+world HTTP/1.1";
-    assert_eq!(parse_new_request(req), Some("https://example.com/hello world".into()));
+    assert_eq!(
+        parse_new_request(req),
+        Some("https://example.com/hello world".into())
+    );
 }
 
 #[test]
@@ -191,7 +215,10 @@ fn test_new_percent_encoded_multibyte() {
 #[test]
 fn test_new_mixed_encoding() {
     let req = "GET /json/new?https%3A%2F%2Fexample.com%2Fa+b%20c HTTP/1.1";
-    assert_eq!(parse_new_request(req), Some("https://example.com/a b c".into()));
+    assert_eq!(
+        parse_new_request(req),
+        Some("https://example.com/a b c".into())
+    );
 }
 
 #[test]
@@ -262,7 +289,8 @@ fn test_new_long_url() {
 
 #[test]
 fn test_ws_upgrade_standard() {
-    let req = "GET /devtools/page/abc HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+    let req =
+        "GET /devtools/page/abc HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
     assert!(is_websocket_upgrade(req));
 }
 
@@ -325,7 +353,10 @@ fn test_target_info_construction() {
     assert_eq!(info.target_type, "page");
     assert_eq!(info.title, "Test Page");
     assert_eq!(info.url, "https://example.com");
-    assert_eq!(info.web_socket_debugger_url, "ws://localhost:9222/devtools/page/target-1");
+    assert_eq!(
+        info.web_socket_debugger_url,
+        "ws://localhost:9222/devtools/page/target-1"
+    );
 }
 
 #[test]
@@ -374,7 +405,10 @@ fn test_target_info_serde_roundtrip() {
     assert_eq!(deserialized.target_type, "page");
     assert_eq!(deserialized.title, "My Page");
     assert_eq!(deserialized.url, "https://example.com/page");
-    assert_eq!(deserialized.web_socket_debugger_url, "ws://127.0.0.1:9222/devtools/page/target-42");
+    assert_eq!(
+        deserialized.web_socket_debugger_url,
+        "ws://127.0.0.1:9222/devtools/page/target-42"
+    );
 }
 
 #[test]
@@ -389,7 +423,10 @@ fn test_target_info_serde_rename_type() {
     let json = serde_json::to_string(&info).unwrap();
     // "target_type" should serialize as "type" due to #[serde(rename = "type")]
     assert!(json.contains(r#""type":"iframe""#));
-    assert!(!json.contains("target_type"), "should not contain target_type field name");
+    assert!(
+        !json.contains("target_type"),
+        "should not contain target_type field name"
+    );
 }
 
 #[test]

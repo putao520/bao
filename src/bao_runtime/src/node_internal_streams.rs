@@ -38,11 +38,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
 /// Look up the `stream` builtin, extract the named class, and cache it
 /// under the internal module name.
-fn install_stream_alias(
-    cx: &mut mozjs::context::JSContext,
-    module_name: &str,
-    prop: &str,
-) {
+fn install_stream_alias(cx: &mut mozjs::context::JSContext, module_name: &str, prop: &str) {
     // Guard: never clobber a natively-implemented module.
     let cache_key = format!("builtin:{}", module_name);
     if let Some(existing) = crate::gc_store::gc_store_get(unsafe { cx.raw_cx() }, &cache_key) {
@@ -134,7 +130,10 @@ fn install_stream_wrap(cx: &mut mozjs::context::JSContext) {
                 );
                 if emit_warning_val.is_object() {
                     rooted!(&in(cx) let ew_fn = emit_warning_val.to_object());
-                    let msg_str = JS_NewStringCopyZ(raw_cx, c"The _stream_wrap module is deprecated.".as_ptr());
+                    let msg_str = JS_NewStringCopyZ(
+                        raw_cx,
+                        c"The _stream_wrap module is deprecated.".as_ptr(),
+                    );
                     if !msg_str.is_null() {
                         let msg_val = mozjs::jsval::StringValue(&*msg_str);
                         rooted!(&in(cx) let msg_root = msg_val);

@@ -22,6 +22,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     // Fallback: if util is not yet cached (should not happen since node_util::install_util
     // runs before node_sys::install in globals.rs), register an empty object.
     rooted!(&in(cx) let obj = unsafe { w2::JS_NewPlainObject(cx) });
-    if obj.get().is_null() { return; }
+    if obj.get().is_null() {
+        return;
+    }
     cache_builtin(cx, "sys", obj.get());
 }

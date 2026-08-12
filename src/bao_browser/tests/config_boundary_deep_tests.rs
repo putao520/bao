@@ -9,8 +9,8 @@
 use std::time::Duration;
 
 use bao_browser::{
-    BaoConfig, BrowserConfig, BrowserError, PageConfig, PageState,
-    Permission, PermissionDenied, PermissionGuard, ScreenshotFormat,
+    BaoConfig, BrowserConfig, BrowserError, PageConfig, PageState, Permission, PermissionDenied,
+    PermissionGuard, ScreenshotFormat,
 };
 use bao_stealth::StealthProfile;
 
@@ -161,10 +161,7 @@ fn validate_max_pages_0_fails() {
         err.contains("max_pages must be >= 1"),
         "unexpected error: {err}"
     );
-    assert!(
-        err.contains("0"),
-        "error should report value 0, got: {err}"
-    );
+    assert!(err.contains("0"), "error should report value 0, got: {err}");
 }
 
 #[test]
@@ -579,36 +576,54 @@ fn browser_error_cdp_display() {
 fn browser_error_init_debug() {
     let err = BrowserError::Init("crash".into());
     let debug = format!("{err:?}");
-    assert!(debug.contains("Init"), "Debug should contain variant: {debug}");
-    assert!(debug.contains("crash"), "Debug should contain message: {debug}");
+    assert!(
+        debug.contains("Init"),
+        "Debug should contain variant: {debug}"
+    );
+    assert!(
+        debug.contains("crash"),
+        "Debug should contain message: {debug}"
+    );
 }
 
 #[test]
 fn browser_error_navigation_debug() {
     let err = BrowserError::Navigation("timeout".into());
     let debug = format!("{err:?}");
-    assert!(debug.contains("Navigation"), "Debug should contain variant: {debug}");
+    assert!(
+        debug.contains("Navigation"),
+        "Debug should contain variant: {debug}"
+    );
 }
 
 #[test]
 fn browser_error_rendering_debug() {
     let err = BrowserError::Rendering("oom".into());
     let debug = format!("{err:?}");
-    assert!(debug.contains("Rendering"), "Debug should contain variant: {debug}");
+    assert!(
+        debug.contains("Rendering"),
+        "Debug should contain variant: {debug}"
+    );
 }
 
 #[test]
 fn browser_error_javascript_debug() {
     let err = BrowserError::JavaScript("ref error".into());
     let debug = format!("{err:?}");
-    assert!(debug.contains("JavaScript"), "Debug should contain variant: {debug}");
+    assert!(
+        debug.contains("JavaScript"),
+        "Debug should contain variant: {debug}"
+    );
 }
 
 #[test]
 fn browser_error_cdp_debug() {
     let err = BrowserError::CDP("handshake".into());
     let debug = format!("{err:?}");
-    assert!(debug.contains("CDP"), "Debug should contain variant: {debug}");
+    assert!(
+        debug.contains("CDP"),
+        "Debug should contain variant: {debug}"
+    );
 }
 
 #[test]
@@ -679,7 +694,11 @@ fn screenshot_format_png_encode_100x100() {
     let result = bao_browser::encode_image(&img, ScreenshotFormat::Png);
     assert!(result.is_ok());
     let data = result.unwrap();
-    assert!(data.len() > 100, "PNG data should be nontrivial: {} bytes", data.len());
+    assert!(
+        data.len() > 100,
+        "PNG data should be nontrivial: {} bytes",
+        data.len()
+    );
 }
 
 #[test]
@@ -689,7 +708,11 @@ fn screenshot_format_jpeg_encode_100x100() {
     let result = bao_browser::encode_image(&img, ScreenshotFormat::Jpeg);
     assert!(result.is_ok());
     let data = result.unwrap();
-    assert!(data.len() > 100, "JPEG data should be nontrivial: {} bytes", data.len());
+    assert!(
+        data.len() > 100,
+        "JPEG data should be nontrivial: {} bytes",
+        data.len()
+    );
 }
 
 #[test]
@@ -721,7 +744,10 @@ fn screenshot_format_jpeg_strips_alpha_channel() {
     use image::Rgba;
     let img = image::RgbaImage::from_pixel(10, 10, Rgba([255, 0, 0, 128]));
     let result = bao_browser::encode_image(&img, ScreenshotFormat::Jpeg);
-    assert!(result.is_ok(), "JPEG encoding of semi-transparent image should succeed");
+    assert!(
+        result.is_ok(),
+        "JPEG encoding of semi-transparent image should succeed"
+    );
 }
 
 // ============================================================
@@ -789,7 +815,10 @@ fn permission_guard_exact_match_path() {
     assert!(guard.check_read("/tmp/file.txt").is_ok());
     assert!(guard.check_read("/tmp/cache/data").is_ok());
     // starts_with("/tmp2", "/tmp") == true — prefix match, not path segment match
-    assert!(guard.check_read("/tmp2").is_ok(), "prefix /tmp matches /tmp2 via starts_with");
+    assert!(
+        guard.check_read("/tmp2").is_ok(),
+        "prefix /tmp matches /tmp2 via starts_with"
+    );
     // To avoid matching /tmp2, use trailing slash: "/tmp/"
     let perm_strict = Permission {
         read: Some(vec!["/tmp/".into()]),
@@ -797,7 +826,10 @@ fn permission_guard_exact_match_path() {
     };
     let guard_strict = PermissionGuard::new(perm_strict);
     assert!(guard_strict.check_read("/tmp/file.txt").is_ok());
-    assert!(guard_strict.check_read("/tmp2").is_err(), "trailing slash prevents /tmp2 match");
+    assert!(
+        guard_strict.check_read("/tmp2").is_err(),
+        "trailing slash prevents /tmp2 match"
+    );
 }
 
 #[test]
@@ -932,7 +964,10 @@ fn page_state_all_variants_are_distinct() {
     ];
     for i in 0..states.len() {
         for j in (i + 1)..states.len() {
-            assert_ne!(states[i], states[j], "PageState variants should be distinct");
+            assert_ne!(
+                states[i], states[j],
+                "PageState variants should be distinct"
+            );
         }
     }
 }

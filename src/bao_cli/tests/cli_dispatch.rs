@@ -131,8 +131,7 @@ fn dispatch_subcommands_parse_correctly() {
 
     // 断言 2: 5 个必备子命令全部在 fixture 中出现 (对抗子命令缩水)。
     let required_subcommands = ["run", "build", "test", "install", "browser"];
-    let surface_names: Vec<&str> =
-        COMMAND_SURFACE.iter().map(|(name, _)| *name).collect();
+    let surface_names: Vec<&str> = COMMAND_SURFACE.iter().map(|(name, _)| *name).collect();
     for required in &required_subcommands {
         assert!(
             surface_names.contains(required),
@@ -371,8 +370,10 @@ fn bao_env_vars_aliased_to_bun_at_runtime_init() {
                 std::env::remove_var(&unique);
                 std::env::remove_var(&bun_key);
             }
-            eprintln!("skip: BaoRuntime::new() failed (SpiderMonkey init), \
-                       cannot verify BAO_*→BUN_* alias at runtime");
+            eprintln!(
+                "skip: BaoRuntime::new() failed (SpiderMonkey init), \
+                       cannot verify BAO_*→BUN_* alias at runtime"
+            );
             return;
         }
     };

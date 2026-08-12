@@ -2,8 +2,8 @@
 // JsValue type predicates, as_* accessors, to_display_string, format_number edge cases.
 // JsError Display, Debug, field access. Pure unit tests (no JSContext).
 
-use bao_engine::value::JsValue;
 use bao_engine::error::JsError;
+use bao_engine::value::JsValue;
 
 // ---- JsValue type predicates ----
 
@@ -146,17 +146,26 @@ fn test_display_number_nan() {
 
 #[test]
 fn test_display_number_infinity() {
-    assert_eq!(JsValue::Number(f64::INFINITY).to_display_string(), "Infinity");
+    assert_eq!(
+        JsValue::Number(f64::INFINITY).to_display_string(),
+        "Infinity"
+    );
 }
 
 #[test]
 fn test_display_number_neg_infinity() {
-    assert_eq!(JsValue::Number(f64::NEG_INFINITY).to_display_string(), "-Infinity");
+    assert_eq!(
+        JsValue::Number(f64::NEG_INFINITY).to_display_string(),
+        "-Infinity"
+    );
 }
 
 #[test]
 fn test_display_number_large_int() {
-    assert_eq!(JsValue::Number(1_000_000_000_000.0).to_display_string(), "1000000000000");
+    assert_eq!(
+        JsValue::Number(1_000_000_000_000.0).to_display_string(),
+        "1000000000000"
+    );
 }
 
 #[test]
@@ -175,7 +184,10 @@ fn test_display_number_just_below_boundary() {
 
 #[test]
 fn test_display_string() {
-    assert_eq!(JsValue::String("hello world".into()).to_display_string(), "hello world");
+    assert_eq!(
+        JsValue::String("hello world".into()).to_display_string(),
+        "hello world"
+    );
 }
 
 #[test]
@@ -185,12 +197,18 @@ fn test_display_string_empty() {
 
 #[test]
 fn test_display_string_unicode() {
-    assert_eq!(JsValue::String("日本語テスト".into()).to_display_string(), "日本語テスト");
+    assert_eq!(
+        JsValue::String("日本語テスト".into()).to_display_string(),
+        "日本語テスト"
+    );
 }
 
 #[test]
 fn test_display_object() {
-    assert_eq!(JsValue::Object(std::ptr::null_mut()).to_display_string(), "[object Object]");
+    assert_eq!(
+        JsValue::Object(std::ptr::null_mut()).to_display_string(),
+        "[object Object]"
+    );
 }
 
 // ---- JsValue Debug/Clone ----

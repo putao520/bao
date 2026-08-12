@@ -5,13 +5,12 @@
 //! `InstallCommand::exec(ctx)` (pub(crate) in bun_runtime), we enter directly
 //! from `bao_bin`'s clap dispatch through `bao_runtime::run_install()`.
 
-use bun_install::package_manager_real::{
-    CommandLineArguments, PackageManager, Subcommand,
-    install_with_manager, update_package_json_and_install_with_manager,
-    ROOT_PACKAGE_JSON_PATH,
-};
-use bun_install::package_manager_real::Command;
 use bun_core::{Global, Output};
+use bun_install::package_manager_real::Command;
+use bun_install::package_manager_real::{
+    CommandLineArguments, PackageManager, ROOT_PACKAGE_JSON_PATH, Subcommand, install_with_manager,
+    update_package_json_and_install_with_manager,
+};
 
 /// Execute `bao install` / `bao add`.
 ///
@@ -64,9 +63,13 @@ pub fn run_install() -> Result<(), i32> {
             ));
             Output::flush();
         }
-        return match update_package_json_and_install_with_manager(manager, &mut ctx, &original_cwd) {
+        return match update_package_json_and_install_with_manager(manager, &mut ctx, &original_cwd)
+        {
             Ok(()) => Ok(()),
-            Err(e) => { eprintln!("bao add: {}", e); Err(1) }
+            Err(e) => {
+                eprintln!("bao add: {}", e);
+                Err(1)
+            }
         };
     }
 
@@ -89,6 +92,9 @@ pub fn run_install() -> Result<(), i32> {
                 Ok(())
             }
         }
-        Err(e) => { eprintln!("bao install: {}", e); Err(1) }
+        Err(e) => {
+            eprintln!("bao install: {}", e);
+            Err(1)
+        }
     }
 }

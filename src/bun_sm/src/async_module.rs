@@ -18,11 +18,17 @@ pub struct AsyncModule {
 
 impl AsyncModule {
     pub fn new(module: *mut mozjs::jsapi::JSObject) -> Self {
-        AsyncModule { module, state: AtomicU8::new(STATE_PENDING) }
+        AsyncModule {
+            module,
+            state: AtomicU8::new(STATE_PENDING),
+        }
     }
 
     pub fn new_pending() -> Self {
-        AsyncModule { module: std::ptr::null_mut(), state: AtomicU8::new(STATE_PENDING) }
+        AsyncModule {
+            module: std::ptr::null_mut(),
+            state: AtomicU8::new(STATE_PENDING),
+        }
     }
 
     pub fn is_fulfilled(&self) -> bool {
@@ -71,25 +77,45 @@ pub struct Queue {
 
 impl Queue {
     pub fn new() -> Self {
-        Queue { wake_callback: None, error_callback: None }
+        Queue {
+            wake_callback: None,
+            error_callback: None,
+        }
     }
 
     pub fn set_wake_handler(&mut self, callback: *mut mozjs::jsapi::JSObject) {
-        self.wake_callback = if callback.is_null() { None } else { Some(callback) };
+        self.wake_callback = if callback.is_null() {
+            None
+        } else {
+            Some(callback)
+        };
     }
 
     pub fn set_error_handler(&mut self, callback: *mut mozjs::jsapi::JSObject) {
-        self.error_callback = if callback.is_null() { None } else { Some(callback) };
+        self.error_callback = if callback.is_null() {
+            None
+        } else {
+            Some(callback)
+        };
     }
 
-    pub unsafe fn on_wake_handler(cx: *mut mozjs::jsapi::JSContext, module: *mut mozjs::jsapi::JSObject) {
-        if module.is_null() { return; }
+    pub unsafe fn on_wake_handler(
+        cx: *mut mozjs::jsapi::JSContext,
+        module: *mut mozjs::jsapi::JSObject,
+    ) {
+        if module.is_null() {
+            return;
+        }
         let global = unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx) };
-        if global.is_null() { return; }
+        if global.is_null() {
+            return;
+        }
         let key = format!("__async_wake_{:p}", module);
         if let Some(cb) = unsafe { crate::gc::gc_store::get(cx, &key) } {
             // BCE-012: root global + cb_val — JS_CallFunctionValue can trigger GC
-            let wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            let wrapped_cx = unsafe {
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
+            };
             let cb_val = mozjs::jsval::ObjectValue(cb);
             let module_val = mozjs::jsval::ObjectValue(module);
             let args = [module_val];
@@ -104,21 +130,43 @@ impl Queue {
                 _phantom_0: std::marker::PhantomData,
                 ptr: &mut rval,
             };
-            unsafe { mozjs::jsapi::JS_CallFunctionValue(cx, global_root.handle().into(), cb_val_root.handle().into(), &call_args, rval_h); }
+            unsafe {
+                mozjs::jsapi::JS_CallFunctionValue(
+                    cx,
+                    global_root.handle().into(),
+                    cb_val_root.handle().into(),
+                    &call_args,
+                    rval_h,
+                );
+            }
         }
     }
 
-    pub unsafe fn on_dependency_error(cx: *mut mozjs::jsapi::JSContext, module: *mut mozjs::jsapi::JSObject, error: *mut mozjs::jsapi::JSObject) {
-        if module.is_null() { return; }
+    pub unsafe fn on_dependency_error(
+        cx: *mut mozjs::jsapi::JSContext,
+        module: *mut mozjs::jsapi::JSObject,
+        error: *mut mozjs::jsapi::JSObject,
+    ) {
+        if module.is_null() {
+            return;
+        }
         let key = format!("__async_err_{:p}", module);
         if let Some(cb) = unsafe { crate::gc::gc_store::get(cx, &key) } {
             let global = unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx) };
-            if global.is_null() { return; }
+            if global.is_null() {
+                return;
+            }
             // BCE-012: root global + cb_val — JS_CallFunctionValue can trigger GC
-            let wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            let wrapped_cx = unsafe {
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
+            };
             let cb_val = mozjs::jsval::ObjectValue(cb);
             let module_val = mozjs::jsval::ObjectValue(module);
-            let error_val = if error.is_null() { mozjs::jsval::UndefinedValue() } else { mozjs::jsval::ObjectValue(error) };
+            let error_val = if error.is_null() {
+                mozjs::jsval::UndefinedValue()
+            } else {
+                mozjs::jsval::ObjectValue(error)
+            };
             let args = [module_val, error_val];
             let call_args = mozjs::jsapi::HandleValueArray {
                 length_: args.len(),
@@ -131,7 +179,15 @@ impl Queue {
                 _phantom_0: std::marker::PhantomData,
                 ptr: &mut rval,
             };
-            unsafe { mozjs::jsapi::JS_CallFunctionValue(cx, global_root.handle().into(), cb_val_root.handle().into(), &call_args, rval_h); }
+            unsafe {
+                mozjs::jsapi::JS_CallFunctionValue(
+                    cx,
+                    global_root.handle().into(),
+                    cb_val_root.handle().into(),
+                    &call_args,
+                    rval_h,
+                );
+            }
         }
     }
 }
@@ -149,7 +205,10 @@ pub struct InitOpts {
 
 impl Default for InitOpts {
     fn default() -> Self {
-        InitOpts { module: std::ptr::null_mut(), is_top_level_await: false }
+        InitOpts {
+            module: std::ptr::null_mut(),
+            is_top_level_await: false,
+        }
     }
 }
 

@@ -37,13 +37,16 @@ fn test_secure_context_set_key_stores_pem() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var tls = require('tls');
         var sc = tls.createSecureContext();
         sc.setKey("-----BEGIN PRIVATE KEY-----\nfakekey\n-----END PRIVATE KEY-----");
         // setKey should not throw and should store the PEM
         "ok"
-    "#);
+    "#,
+    );
     assert_eq!(result, "ok");
     bun_runtime::shutdown_thread_sm();
 }
@@ -56,12 +59,15 @@ fn test_secure_context_set_cert_stores_pem() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var tls = require('tls');
         var sc = tls.createSecureContext();
         sc.setCert("-----BEGIN CERTIFICATE-----\nfakecert\n-----END CERTIFICATE-----");
         "ok"
-    "#);
+    "#,
+    );
     assert_eq!(result, "ok");
     bun_runtime::shutdown_thread_sm();
 }
@@ -74,13 +80,16 @@ fn test_secure_context_add_ca_cert_appends() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var tls = require('tls');
         var sc = tls.createSecureContext();
         sc.addCACert("-----BEGIN CERTIFICATE-----\nca1\n-----END CERTIFICATE-----");
         sc.addCACert("-----BEGIN CERTIFICATE-----\nca2\n-----END CERTIFICATE-----");
         "ok"
-    "#);
+    "#,
+    );
     assert_eq!(result, "ok");
     bun_runtime::shutdown_thread_sm();
 }
@@ -93,12 +102,15 @@ fn test_secure_context_set_ca_replaces() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var tls = require('tls');
         var sc = tls.createSecureContext();
         sc.setCA("-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----");
         "ok"
-    "#);
+    "#,
+    );
     assert_eq!(result, "ok");
     bun_runtime::shutdown_thread_sm();
 }
@@ -113,7 +125,9 @@ fn test_create_server_has_event_methods() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var tls = require('tls');
         var s = tls.createServer();
         var results = [];
@@ -123,12 +137,25 @@ fn test_create_server_has_event_methods() {
         results.push(typeof s.removeListener === 'function' ? 'rm_ok' : 'rm_fail');
         results.push(typeof s.removeAllListeners === 'function' ? 'rma_ok' : 'rma_fail');
         results.join('|')
-    "#);
+    "#,
+    );
     assert!(results.contains("on_ok"), "createServer should have .on");
-    assert!(results.contains("once_ok"), "createServer should have .once");
-    assert!(results.contains("emit_ok"), "createServer should have .emit");
-    assert!(results.contains("rm_ok"), "createServer should have .removeListener");
-    assert!(results.contains("rma_ok"), "createServer should have .removeAllListeners");
+    assert!(
+        results.contains("once_ok"),
+        "createServer should have .once"
+    );
+    assert!(
+        results.contains("emit_ok"),
+        "createServer should have .emit"
+    );
+    assert!(
+        results.contains("rm_ok"),
+        "createServer should have .removeListener"
+    );
+    assert!(
+        results.contains("rma_ok"),
+        "createServer should have .removeAllListeners"
+    );
     bun_runtime::shutdown_thread_sm();
 }
 
@@ -140,15 +167,21 @@ fn test_create_server_on_registers_callback() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var tls = require('tls');
         var s = tls.createServer();
         var called = false;
         s.on('connection', function() { called = true; });
         s.emit('connection');
         called ? "emitted" : "not_emitted"
-    "#);
-    assert_eq!(result, "emitted", "createServer .on should register event listener");
+    "#,
+    );
+    assert_eq!(
+        result, "emitted",
+        "createServer .on should register event listener"
+    );
     bun_runtime::shutdown_thread_sm();
 }
 
@@ -160,14 +193,17 @@ fn test_create_server_with_options_stores_key_cert() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var tls = require('tls');
         var s = tls.createServer({
             key: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
             cert: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"
         });
         typeof s.listen === 'function' ? 'ok' : 'fail'
-    "#);
+    "#,
+    );
     assert_eq!(result, "ok");
     bun_runtime::shutdown_thread_sm();
 }
@@ -182,15 +218,21 @@ fn test_tls_socket_event_methods_work() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var tls = require('tls');
         var s = new tls.TLSSocket();
         var received = false;
         s.on('data', function() { received = true; });
         s.emit('data');
         received ? "ok" : "fail"
-    "#);
-    assert_eq!(result, "ok", "TLSSocket .on/.emit should work via EventEmitter");
+    "#,
+    );
+    assert_eq!(
+        result, "ok",
+        "TLSSocket .on/.emit should work via EventEmitter"
+    );
     bun_runtime::shutdown_thread_sm();
 }
 
@@ -202,7 +244,9 @@ fn test_tls_socket_once_fires_only_once() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var tls = require('tls');
         var s = new tls.TLSSocket();
         var count = 0;
@@ -210,7 +254,8 @@ fn test_tls_socket_once_fires_only_once() {
         s.emit('data');
         s.emit('data');
         count === 1 ? "ok" : "fail_" + count
-    "#);
+    "#,
+    );
     assert_eq!(result, "ok", "TLSSocket .once should fire only once");
     bun_runtime::shutdown_thread_sm();
 }
@@ -229,7 +274,9 @@ fn test_bao_event_from_console_text() {
     use cdp_server::BaoEvent;
 
     // Valid event
-    let evt = BaoEvent::from_console_text("__BAO_EVT__Debugger.scriptParsed\n{\"scriptId\":\"1\",\"url\":\"test.js\"}");
+    let evt = BaoEvent::from_console_text(
+        "__BAO_EVT__Debugger.scriptParsed\n{\"scriptId\":\"1\",\"url\":\"test.js\"}",
+    );
     assert!(evt.is_some(), "should parse valid BaoEvent");
 
     // Unknown method
@@ -242,7 +289,10 @@ fn test_bao_event_from_console_text() {
 
     // Malformed JSON — from_console_text falls back to defaults, still returns Some
     let evt = BaoEvent::from_console_text("__BAO_EVT__Debugger.scriptParsed\nnotjson");
-    assert!(evt.is_some(), "malformed JSON should still parse with defaults");
+    assert!(
+        evt.is_some(),
+        "malformed JSON should still parse with defaults"
+    );
 }
 
 #[test]
@@ -250,14 +300,38 @@ fn test_bao_event_all_8_types() {
     use cdp_server::BaoEvent;
 
     let cases = [
-        ("__BAO_EVT__Fetch.requestPaused\n{\"requestId\":\"1\"}", "Fetch.requestPaused"),
-        ("__BAO_EVT__Network.requestWillBeSent\n{\"requestId\":\"1\"}", "Network.requestWillBeSent"),
-        ("__BAO_EVT__Network.responseReceived\n{\"requestId\":\"1\"}", "Network.responseReceived"),
-        ("__BAO_EVT__Network.loadingFailed\n{\"requestId\":\"1\"}", "Network.loadingFailed"),
-        ("__BAO_EVT__Debugger.scriptParsed\n{\"scriptId\":\"1\"}", "Debugger.scriptParsed"),
-        ("__BAO_EVT__Debugger.paused\n{\"callFrames\":[]}", "Debugger.paused"),
-        ("__BAO_EVT__Runtime.exceptionThrown\n{\"timestamp\":0}", "Runtime.exceptionThrown"),
-        ("__BAO_EVT__Page.loadEventFired\n{\"timestamp\":0}", "Page.loadEventFired"),
+        (
+            "__BAO_EVT__Fetch.requestPaused\n{\"requestId\":\"1\"}",
+            "Fetch.requestPaused",
+        ),
+        (
+            "__BAO_EVT__Network.requestWillBeSent\n{\"requestId\":\"1\"}",
+            "Network.requestWillBeSent",
+        ),
+        (
+            "__BAO_EVT__Network.responseReceived\n{\"requestId\":\"1\"}",
+            "Network.responseReceived",
+        ),
+        (
+            "__BAO_EVT__Network.loadingFailed\n{\"requestId\":\"1\"}",
+            "Network.loadingFailed",
+        ),
+        (
+            "__BAO_EVT__Debugger.scriptParsed\n{\"scriptId\":\"1\"}",
+            "Debugger.scriptParsed",
+        ),
+        (
+            "__BAO_EVT__Debugger.paused\n{\"callFrames\":[]}",
+            "Debugger.paused",
+        ),
+        (
+            "__BAO_EVT__Runtime.exceptionThrown\n{\"timestamp\":0}",
+            "Runtime.exceptionThrown",
+        ),
+        (
+            "__BAO_EVT__Page.loadEventFired\n{\"timestamp\":0}",
+            "Page.loadEventFired",
+        ),
     ];
 
     for (text, _method) in &cases {

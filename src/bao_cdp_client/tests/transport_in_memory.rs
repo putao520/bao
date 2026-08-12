@@ -60,7 +60,9 @@ fn in_memory_transport_send_command_echo() {
     let bridge = Arc::new(EchoMethodBridge);
     let mut t = InMemoryTransport::new(bridge);
     // Act
-    let r = t.send_command("Page.navigate", json!({"url": "about:blank"}), None).unwrap();
+    let r = t
+        .send_command("Page.navigate", json!({"url": "about:blank"}), None)
+        .unwrap();
     // Assert
     assert_eq!(r["result"], "Page.navigate");
 }
@@ -71,7 +73,9 @@ fn in_memory_transport_send_command_session_id() {
     let bridge = Arc::new(EchoMethodBridge);
     let mut t = InMemoryTransport::new(bridge);
     // Act
-    let r = t.send_command("Page.navigate", json!({}), Some("TARGET-1")).unwrap();
+    let r = t
+        .send_command("Page.navigate", json!({}), Some("TARGET-1"))
+        .unwrap();
     // Assert
     assert_eq!(r["result"], "Page.navigate");
 }
@@ -84,7 +88,9 @@ fn in_memory_transport_command_error_propagates() {
         msg: "method not implemented".into(),
     });
     let mut t = InMemoryTransport::new(bridge);
-    let err = t.send_command("Unknown.method", json!({}), None).unwrap_err();
+    let err = t
+        .send_command("Unknown.method", json!({}), None)
+        .unwrap_err();
     let s = err.to_string();
     // Assert
     assert!(s.contains("CDP protocol error"), "got: {}", s);
@@ -132,8 +138,7 @@ fn in_memory_transport_recv_event_with_session_id() {
     sender
         .send(
             // Act
-            CdpEvent::new("Network.requestWillBeSent", json!({}))
-                .with_session("TARGET-7"),
+            CdpEvent::new("Network.requestWillBeSent", json!({})).with_session("TARGET-7"),
         )
         .unwrap();
     let ev = t.recv_event().unwrap().expect("expected event");
@@ -228,10 +233,11 @@ impl InMemoryBridge for RecordingBridge {
         params: Value,
         session_id: Option<&str>,
     ) -> InMemoryBridgeResponse {
-        self.history
-            .lock()
-            .unwrap()
-            .push((method.to_string(), params.clone(), session_id.map(|s| s.to_string())));
+        self.history.lock().unwrap().push((
+            method.to_string(),
+            params.clone(),
+            session_id.map(|s| s.to_string()),
+        ));
         InMemoryBridgeResponse::Ok(json!({"ok": true}))
     }
 }

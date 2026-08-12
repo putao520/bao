@@ -21,20 +21,20 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bao_workflow_host::{
-    install_workflow_host_on_bun, install_workflow_host_on_global, js_to_rust_string,
-    set_workflow_host_callbacks, take_workflow_host_callbacks, WorkflowHostCallbacks,
+    WorkflowHostCallbacks, install_workflow_host_on_bun, install_workflow_host_on_global,
+    js_to_rust_string, set_workflow_host_callbacks, take_workflow_host_callbacks,
 };
 use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps};
 use mozjs::jsapi::{
-    CurrentGlobalOrNull, HandleValueArray, JSObject, JS_CallFunctionValue, JS_ClearPendingException,
-    JS_DefineProperty, JS_DeleteProperty1, JS_GetProperty, OnNewGlobalHookOption,
+    CurrentGlobalOrNull, HandleValueArray, JS_CallFunctionValue, JS_ClearPendingException,
+    JS_DefineProperty, JS_DeleteProperty1, JS_GetProperty, JSObject, OnNewGlobalHookOption,
 };
+use mozjs::jsapi::{Handle as RawHandle, MutableHandle as RawMutableHandle};
 use mozjs::jsval::{ObjectValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_NewGlobalObject, RunJobs, SetJobQueue};
 use mozjs::rust::{CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
-use mozjs::jsapi::{Handle as RawHandle, MutableHandle as RawMutableHandle};
 
 // ── minimal SM job queue (embedding traps; mirrors bao_engine JobQueue shape) ──
 
@@ -64,7 +64,10 @@ impl TestJobQueue {
             dropInterruptQueues: Some(drop_interrupt_queues),
         };
         let queue = unsafe { CreateJobQueue(&traps, ptr::null(), ptr::null_mut()) };
-        assert!(!queue.is_null(), "CreateJobQueue must succeed for Promise drain");
+        assert!(
+            !queue.is_null(),
+            "CreateJobQueue must succeed for Promise drain"
+        );
         QUEUE_PTR.with(|p| *p.borrow_mut() = queue);
         unsafe {
             SetJobQueue(cx, queue);
@@ -113,8 +116,7 @@ unsafe extern "C" fn enqueue_job(
         return true;
     }
     let prop = job_prop_name(id);
-    let wrapped_cx =
-        mozjs::context::JSContext::from_ptr(ptr::NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let job_root = ObjectValue(job_obj));
     rooted!(&in(wrapped_cx) let global_root = global);
     JS_DefineProperty(
@@ -139,8 +141,7 @@ unsafe extern "C" fn run_jobs_trap(_queue: *const c_void, cx: *mut mozjs::jsapi:
             break;
         }
         let prop = job_prop_name(id);
-        let wrapped_cx =
-            mozjs::context::JSContext::from_ptr(ptr::NonNull::new_unchecked(cx));
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(ptr::NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let global_root = global);
         let mut job_val = UndefinedValue();
         JS_GetProperty(
@@ -324,10 +325,7 @@ fn eval_async(
         "globalThis.__async_err == null ? '' : String(globalThis.__async_err)",
         &format!("{label}-err"),
     );
-    assert!(
-        err.is_empty(),
-        "{label}: async body threw: {err}"
-    );
+    assert!(err.is_empty(), "{label}: async body threw: {err}");
 
     eval_str(
         cx,
@@ -584,8 +582,7 @@ fn bao_workflow_host_phase_log_agent_hard_green() {
             "<fixture-nest-1>",
         );
         assert_eq!(
-            nest1,
-            r#"{"nested":{"nested":"child-a","args":{"x":1},"status":"ok"},"status":"ok"}"#,
+            nest1, r#"{"nested":{"nested":"child-a","args":{"x":1},"status":"ok"},"status":"ok"}"#,
             "workflow nest one-deep exact: {nest1}"
         );
         eprintln!("[hard-green] nest1={nest1}");
@@ -617,8 +614,7 @@ fn bao_workflow_host_phase_log_agent_hard_green() {
             "<wf-date-now>",
         );
         assert_eq!(
-            now,
-            "workflow host: non-deterministic API 'Date.now' is forbidden",
+            now, "workflow host: non-deterministic API 'Date.now' is forbidden",
             "Date.now exact: now={now}"
         );
         let rnd = eval_str(
@@ -631,8 +627,7 @@ fn bao_workflow_host_phase_log_agent_hard_green() {
             "<wf-math-random>",
         );
         assert_eq!(
-            rnd,
-            "workflow host: non-deterministic API 'Math.random' is forbidden",
+            rnd, "workflow host: non-deterministic API 'Math.random' is forbidden",
             "Math.random exact: rnd={rnd}"
         );
         eprintln!("[hard-green] nondet now={now} rnd={rnd}");

@@ -37,12 +37,23 @@ impl RuntimeTranspilerCache {
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        self.store.lock().unwrap_or_else(|e| e.into_inner()).get(key).map(|e| e.output.clone())
+        self.store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .map(|e| e.output.clone())
     }
 
     pub fn set(&self, key: &str, value: &str) {
-        let entry = Entry { key: key.to_string(), source_hash: 0, output: value.to_string() };
-        self.store.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), entry);
+        let entry = Entry {
+            key: key.to_string(),
+            source_hash: 0,
+            output: value.to_string(),
+        };
+        self.store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.to_string(), entry);
     }
 
     pub fn clear(&self) {
@@ -59,7 +70,9 @@ impl RuntimeTranspilerCache {
 }
 
 impl Default for RuntimeTranspilerCache {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct RuntimeTranspilerStore {
@@ -68,15 +81,24 @@ pub struct RuntimeTranspilerStore {
 
 impl RuntimeTranspilerStore {
     pub fn new() -> Self {
-        RuntimeTranspilerStore { data: Mutex::new(HashMap::new()) }
+        RuntimeTranspilerStore {
+            data: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn get(&self, hash: &str) -> Option<Vec<u8>> {
-        self.data.lock().unwrap_or_else(|e| e.into_inner()).get(hash).cloned()
+        self.data
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(hash)
+            .cloned()
     }
 
     pub fn set(&self, hash: &str, data: &[u8]) {
-        self.data.lock().unwrap_or_else(|e| e.into_inner()).insert(hash.to_string(), data.to_vec());
+        self.data
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(hash.to_string(), data.to_vec());
     }
 
     pub fn len(&self) -> usize {
@@ -85,7 +107,9 @@ impl RuntimeTranspilerStore {
 }
 
 impl Default for RuntimeTranspilerStore {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

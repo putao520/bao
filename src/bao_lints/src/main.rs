@@ -37,14 +37,19 @@ fn main() -> ExitCode {
 
     match parsed.command {
         Command::Bce012Check { path, summary_only } => run_bce012_check(&path, summary_only),
-        Command::SpecIdCheck { path, baseline, summary_only } => {
-            run_spec_id_check(&path, baseline.as_deref(), summary_only)
-        }
+        Command::SpecIdCheck {
+            path,
+            baseline,
+            summary_only,
+        } => run_spec_id_check(&path, baseline.as_deref(), summary_only),
     }
 }
 
 enum Command {
-    Bce012Check { path: PathBuf, summary_only: bool },
+    Bce012Check {
+        path: PathBuf,
+        summary_only: bool,
+    },
     SpecIdCheck {
         path: PathBuf,
         baseline: Option<PathBuf>,
@@ -195,10 +200,7 @@ fn collect_rust_files(path: &Path) -> Vec<PathBuf> {
     if !path.is_dir() {
         return out;
     }
-    for entry in WalkDir::new(path)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
+    for entry in WalkDir::new(path).into_iter().filter_map(Result::ok) {
         let p = entry.path();
         if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("rs") {
             out.push(p.to_path_buf());
@@ -210,11 +212,7 @@ fn collect_rust_files(path: &Path) -> Vec<PathBuf> {
 
 // ─── REQ-SPEC-001 SPEC API element id scan ──────────────────────────────────
 
-fn run_spec_id_check(
-    path: &Path,
-    baseline: Option<&Path>,
-    summary_only: bool,
-) -> ExitCode {
+fn run_spec_id_check(path: &Path, baseline: Option<&Path>, summary_only: bool) -> ExitCode {
     let result = match spec_id::scan_path(path, baseline) {
         Ok(r) => r,
         Err(e) => {

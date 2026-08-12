@@ -301,7 +301,10 @@ fn test_firefox_record_size_limit_none() {
 #[test]
 fn test_chrome_latest_record_size_limit_some() {
     assert!(TlsFingerprint::chrome_latest().record_size_limit.is_some());
-    assert_eq!(TlsFingerprint::chrome_latest().record_size_limit.unwrap(), 0x4001);
+    assert_eq!(
+        TlsFingerprint::chrome_latest().record_size_limit.unwrap(),
+        0x4001
+    );
 }
 
 #[test]
@@ -320,12 +323,16 @@ fn test_chrome_latest_application_settings() {
 
 #[test]
 fn test_firefox_no_compress_cert() {
-    assert!(TlsFingerprint::firefox().compress_certificate_algos.is_empty());
+    assert!(TlsFingerprint::firefox()
+        .compress_certificate_algos
+        .is_empty());
 }
 
 #[test]
 fn test_firefox_no_application_settings() {
-    assert!(TlsFingerprint::firefox().application_settings_protocol.is_none());
+    assert!(TlsFingerprint::firefox()
+        .application_settings_protocol
+        .is_none());
 }
 
 #[test]

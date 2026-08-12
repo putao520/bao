@@ -70,8 +70,14 @@ mod tests {
     fn debug_format_roundtrip() {
         let err = BrowserError::Navigation("page load".into());
         let debug = format!("{err:?}");
-        assert!(debug.contains("Navigation"), "Debug should contain variant name: {debug}");
-        assert!(debug.contains("page load"), "Debug should contain message: {debug}");
+        assert!(
+            debug.contains("Navigation"),
+            "Debug should contain variant name: {debug}"
+        );
+        assert!(
+            debug.contains("page load"),
+            "Debug should contain message: {debug}"
+        );
     }
 
     #[test]

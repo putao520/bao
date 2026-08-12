@@ -34,10 +34,16 @@ impl BaoConfig {
             return Err(format!("max_pages must be >= 1, got {}", self.max_pages));
         }
         if self.default_viewport_width < 800 {
-            return Err(format!("viewport_width must be >= 800, got {}", self.default_viewport_width));
+            return Err(format!(
+                "viewport_width must be >= 800, got {}",
+                self.default_viewport_width
+            ));
         }
         if self.default_viewport_height < 600 {
-            return Err(format!("viewport_height must be >= 600, got {}", self.default_viewport_height));
+            return Err(format!(
+                "viewport_height must be >= 600, got {}",
+                self.default_viewport_height
+            ));
         }
         Ok(())
     }
@@ -114,7 +120,10 @@ mod tests {
         let mut cfg = BaoConfig::default();
         cfg.max_pages = 0;
         let err = cfg.validate().unwrap_err();
-        assert!(err.contains("max_pages must be >= 1"), "unexpected error: {err}");
+        assert!(
+            err.contains("max_pages must be >= 1"),
+            "unexpected error: {err}"
+        );
         assert!(err.contains("0"), "error should report the value 0: {err}");
     }
 
@@ -123,8 +132,14 @@ mod tests {
         let mut cfg = BaoConfig::default();
         cfg.default_viewport_width = 799;
         let err = cfg.validate().unwrap_err();
-        assert!(err.contains("viewport_width must be >= 800"), "unexpected error: {err}");
-        assert!(err.contains("799"), "error should report the value 799: {err}");
+        assert!(
+            err.contains("viewport_width must be >= 800"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("799"),
+            "error should report the value 799: {err}"
+        );
     }
 
     #[test]
@@ -132,8 +147,14 @@ mod tests {
         let mut cfg = BaoConfig::default();
         cfg.default_viewport_height = 599;
         let err = cfg.validate().unwrap_err();
-        assert!(err.contains("viewport_height must be >= 600"), "unexpected error: {err}");
-        assert!(err.contains("599"), "error should report the value 599: {err}");
+        assert!(
+            err.contains("viewport_height must be >= 600"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("599"),
+            "error should report the value 599: {err}"
+        );
     }
 
     #[test]

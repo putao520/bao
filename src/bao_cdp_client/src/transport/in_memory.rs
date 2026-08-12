@@ -270,7 +270,8 @@ mod mock_bridge {
         /// 命令历史(测试断言用)。
         pub history: Mutex<Vec<(String, Value, Option<String>)>>,
         /// 响应工厂:输入 (method, params, session_id) → response。
-        pub responder: Box<dyn Fn(&str, &Value, Option<&str>) -> InMemoryBridgeResponse + Send + Sync>,
+        pub responder:
+            Box<dyn Fn(&str, &Value, Option<&str>) -> InMemoryBridgeResponse + Send + Sync>,
     }
 
     impl MockInMemoryBridge {
@@ -303,10 +304,11 @@ mod mock_bridge {
             params: Value,
             session_id: Option<&str>,
         ) -> InMemoryBridgeResponse {
-            self.history
-                .lock()
-                .unwrap()
-                .push((method.to_string(), params.clone(), session_id.map(|s| s.to_string())));
+            self.history.lock().unwrap().push((
+                method.to_string(),
+                params.clone(),
+                session_id.map(|s| s.to_string()),
+            ));
             (self.responder)(method, &params, session_id)
         }
     }
@@ -362,7 +364,10 @@ mod mock_bridge {
         // Push event through sender.
         let sender = t.event_sender();
         sender
-            .send(CdpEvent::new("Page.frameNavigated", serde_json::json!({"url": "x"})))
+            .send(CdpEvent::new(
+                "Page.frameNavigated",
+                serde_json::json!({"url": "x"}),
+            ))
             .unwrap();
         // recv with default 100ms timeout should get the event immediately.
         let ev = t.recv_event().unwrap().expect("expected an event");

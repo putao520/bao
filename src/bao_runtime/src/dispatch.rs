@@ -11,9 +11,7 @@
 //! link time.
 
 use bun_core::Timespec;
-use bun_event_loop::EventLoopTimer::{
-    EventLoopTimer, State as TimerState, Tag,
-};
+use bun_event_loop::EventLoopTimer::{EventLoopTimer, State as TimerState, Tag};
 
 #[cfg(not(windows))]
 use bun_io::posix_event_loop::FilePoll;
@@ -30,7 +28,9 @@ pub unsafe extern "Rust" fn __bun_fire_timer(
     now: *const Timespec,
     _vm: *mut (),
 ) {
-    if t.is_null() { return; }
+    if t.is_null() {
+        return;
+    }
 
     match (*t).tag {
         Tag::TimeoutObject | Tag::ImmediateObject => {
@@ -96,10 +96,7 @@ pub unsafe extern "Rust" fn __bun_js_timer_epoch(
 /// and `owner.ptr` must be a valid pointer of the type indicated by `owner.tag`.
 #[cfg(not(windows))]
 #[unsafe(no_mangle)]
-pub unsafe extern "Rust" fn __bun_run_file_poll(
-    poll: *mut FilePoll,
-    size_or_offset: i64,
-) {
+pub unsafe extern "Rust" fn __bun_run_file_poll(poll: *mut FilePoll, size_or_offset: i64) {
     use bun_io::posix_event_loop::{PollTag, poll_tag};
 
     if poll.is_null() {
@@ -107,7 +104,9 @@ pub unsafe extern "Rust" fn __bun_run_file_poll(
     }
     let poll_ref = unsafe { &mut *poll };
     let owner = poll_ref.owner;
-    let hup = poll_ref.flags.contains(bun_io::posix_event_loop::Flags::Hup);
+    let hup = poll_ref
+        .flags
+        .contains(bun_io::posix_event_loop::Flags::Hup);
 
     match owner.tag() {
         poll_tag::BUFFERED_READER => {
@@ -166,18 +165,14 @@ pub fn __bun_get_vm_ctx(kind: bun_io::AllocatorType) -> bun_io::EventLoopCtx {
             };
             // SAFETY: init_global / GLOBAL guarantee a live MiniEventLoop for
             // this thread; EventLoopCtx holds a raw owner pointer only.
-            unsafe {
-                bun_io::EventLoopCtx::new(bun_io::EventLoopCtxKind::Mini, ptr)
-            }
+            unsafe { bun_io::EventLoopCtx::new(bun_io::EventLoopCtxKind::Mini, ptr) }
         }
         bun_io::AllocatorType::Js => {
             // SpiderMonkey BaoEventLoop (link_impl EventLoopCtx Js arm lives in bun_sm).
             let cell = bao_engine::dispatch_sm::BaoEventLoop::current();
             let owner_ptr = cell as *const _ as *mut core::ffi::c_void;
             // SAFETY: current() returns the live thread-local BaoEventLoop.
-            unsafe {
-                bun_io::EventLoopCtx::new(bun_io::EventLoopCtxKind::Js, owner_ptr)
-            }
+            unsafe { bun_io::EventLoopCtx::new(bun_io::EventLoopCtxKind::Js, owner_ptr) }
         }
     }
 }

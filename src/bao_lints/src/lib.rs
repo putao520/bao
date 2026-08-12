@@ -28,5 +28,5 @@ pub mod detector;
 pub mod pattern;
 pub mod spec_id;
 
-pub use detector::{scan_source, Finding};
-pub use spec_id::{scan_html, scan_path, Reason, SpecIdFinding};
+pub use detector::{Finding, scan_source};
+pub use spec_id::{Reason, SpecIdFinding, scan_html, scan_path};

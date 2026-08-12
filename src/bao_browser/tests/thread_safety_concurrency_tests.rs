@@ -183,7 +183,10 @@ fn test_concurrent_send_with_close_race() {
     drainer.join().expect("drainer panicked");
     assert!(closed_flag.load(Ordering::SeqCst), "receiver must see EOF");
     // Some sends must have succeeded (exact count is nondeterministic).
-    assert!(success.load(Ordering::SeqCst) > 0, "at least some sends must succeed");
+    assert!(
+        success.load(Ordering::SeqCst) > 0,
+        "at least some sends must succeed"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +205,10 @@ fn test_fire_and_forget_stress() {
     let recv_count = Arc::clone(&received);
     let drainer = thread::spawn(move || {
         while let Ok((cmd, resp_tx)) = rx.recv() {
-            assert!(resp_tx.is_none(), "fire_and_forget must have None responder");
+            assert!(
+                resp_tx.is_none(),
+                "fire_and_forget must have None responder"
+            );
             if let BridgeCommand::Navigate(url) = cmd {
                 assert!(url.starts_with("https://stress"));
             } else {
@@ -217,12 +223,11 @@ fn test_fire_and_forget_stress() {
         let tx_c = Arc::clone(&tx);
         handles.push(thread::spawn(move || {
             for i in 0..msgs_per_thread {
-                tx_c
-                    .fire_and_forget(BridgeCommand::Navigate(format!(
-                        "https://stress-{}/{}",
-                        tid, i
-                    )))
-                    .expect("fire_and_forget must not block or fail while rx is alive");
+                tx_c.fire_and_forget(BridgeCommand::Navigate(format!(
+                    "https://stress-{}/{}",
+                    tid, i
+                )))
+                .expect("fire_and_forget must not block or fail while rx is alive");
             }
         }));
     }
@@ -286,12 +291,21 @@ fn test_is_alive_cross_thread_visibility() {
     observer_tx.join().expect("tx observer panicked");
     observer_tx2.join().expect("tx observer2 panicked");
 
-    assert!(seen_dead_tx.load(Ordering::SeqCst), "tx observer must see is_alive=false");
-    assert!(seen_dead_tx2.load(Ordering::SeqCst), "tx observer2 must see is_alive=false");
+    assert!(
+        seen_dead_tx.load(Ordering::SeqCst),
+        "tx observer must see is_alive=false"
+    );
+    assert!(
+        seen_dead_tx2.load(Ordering::SeqCst),
+        "tx observer2 must see is_alive=false"
+    );
     assert!(!tx.is_alive());
 
     // rx shares the same Arc<AtomicBool>, verify on main thread (rx is !Sync).
-    assert!(!rx.is_alive(), "rx must also see is_alive=false after close");
+    assert!(
+        !rx.is_alive(),
+        "rx must also see is_alive=false after close"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -361,12 +375,18 @@ fn test_send_timeout_under_contention() {
     let successes = success_count.load(Ordering::SeqCst);
     let timeouts = timeout_count.load(Ordering::SeqCst);
     let errors = error_count.load(Ordering::SeqCst);
-    assert!(successes >= 1, "at least one send_timeout must succeed, got {}", successes);
+    assert!(
+        successes >= 1,
+        "at least one send_timeout must succeed, got {}",
+        successes
+    );
     assert_eq!(
         successes + timeouts + errors,
         n_contenders,
         "total must equal contender count (successes={}, timeouts={}, errors={})",
-        successes, timeouts, errors,
+        successes,
+        timeouts,
+        errors,
     );
 }
 
@@ -385,7 +405,10 @@ fn test_tx_drop_causes_rx_eof() {
 
     drop(tx);
     let result = rx_handle.join().expect("rx thread panicked");
-    assert!(result.is_err(), "rx.recv() must return Err after tx is dropped");
+    assert!(
+        result.is_err(),
+        "rx.recv() must return Err after tx is dropped"
+    );
     assert_eq!(result.unwrap_err(), "channel closed");
 }
 
@@ -396,7 +419,10 @@ fn test_rx_drop_causes_tx_send_error() {
     drop(rx);
 
     let result = tx.send(BridgeCommand::Close);
-    assert!(result.is_err(), "tx.send() must return Err after rx is dropped");
+    assert!(
+        result.is_err(),
+        "tx.send() must return Err after rx is dropped"
+    );
     assert_eq!(result.unwrap_err(), "bridge closed");
 }
 
@@ -407,7 +433,10 @@ fn test_rx_drop_causes_fire_and_forget_error() {
     drop(rx);
 
     let result = tx.fire_and_forget(BridgeCommand::Navigate("https://example.com".into()));
-    assert!(result.is_err(), "fire_and_forget must return Err after rx is dropped");
+    assert!(
+        result.is_err(),
+        "fire_and_forget must return Err after rx is dropped"
+    );
     assert_eq!(result.unwrap_err(), "bridge closed");
 }
 
@@ -418,7 +447,10 @@ fn test_rx_drop_causes_send_timeout_error() {
     drop(rx);
 
     let result = tx.send_timeout(BridgeCommand::GetTitle, Duration::from_secs(1));
-    assert!(result.is_err(), "send_timeout must return Err after rx is dropped");
+    assert!(
+        result.is_err(),
+        "send_timeout must return Err after rx is dropped"
+    );
     assert_eq!(result.unwrap_err(), "bridge closed");
 }
 
@@ -457,7 +489,10 @@ fn test_arc_atomic_bool_alive_flag_sharing() {
     // Let readers observe alive=true first — use SeqCst barrier to ensure visibility.
     thread::sleep(Duration::from_millis(100));
     let alive_count = alive_seen.load(Ordering::SeqCst);
-    assert_eq!(alive_count, n_readers, "all readers must initially see alive=true");
+    assert_eq!(
+        alive_count, n_readers,
+        "all readers must initially see alive=true"
+    );
 
     // rx shares the same Arc<AtomicBool> — verify on main thread.
     assert!(rx.is_alive(), "rx must see alive=true before close");
@@ -470,7 +505,10 @@ fn test_arc_atomic_bool_alive_flag_sharing() {
     }
 
     let dead_count = dead_seen.load(Ordering::SeqCst);
-    assert_eq!(dead_count, n_readers, "all readers must eventually see alive=false");
+    assert_eq!(
+        dead_count, n_readers,
+        "all readers must eventually see alive=false"
+    );
     assert!(!rx.is_alive(), "rx must see alive=false after close");
 }
 
@@ -483,7 +521,10 @@ fn test_recv_timeout_returns_timeout_error() {
     let (_tx, rx) = BridgeChannel::new();
 
     let result = rx.recv_timeout(Duration::from_millis(10));
-    assert!(result.is_err(), "recv_timeout must return Err when no message arrives");
+    assert!(
+        result.is_err(),
+        "recv_timeout must return Err when no message arrives"
+    );
     assert!(
         result.unwrap_err().contains("timed out"),
         "error message must mention timeout"

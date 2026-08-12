@@ -14,16 +14,16 @@
 // - GC is shared across both Realms
 // - Node Realm lifecycle is tied to Page — destroyed when Page closes
 
-use crate::page::PageHandle;
 use crate::error::BrowserError;
+use crate::page::PageHandle;
 // NOTE: bao_engine::WebWorker bypass removed per DEC-WK-001 BCE-20260627-008.
 // Workers now route through servo's native Worker::Constructor.
 use dashmap::DashMap;
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::ptr::{self, NonNull};
-use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 
 use std::time::Duration;
@@ -48,12 +48,18 @@ pub struct EvaluateResult {
 impl EvaluateResult {
     /// Create an ok result with a serialized value.
     pub fn ok(value: String) -> Self {
-        EvaluateResult { value: Some(value), error: None }
+        EvaluateResult {
+            value: Some(value),
+            error: None,
+        }
     }
 
     /// Create an error result with a message.
     pub fn err(error: String) -> Self {
-        EvaluateResult { value: None, error: Some(error) }
+        EvaluateResult {
+            value: None,
+            error: Some(error),
+        }
     }
 
     /// Returns true when the evaluation succeeded (no error).
@@ -196,8 +202,8 @@ pub fn register_refresh_dom_proxies(
     // pointer anymore — the mapping is keyed by WebViewId, and the callback
     // receives the NEW page_global directly from servo.
     let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
-        Box::new(move |_cx_ptr, new_page_global_ptr| {
-            unsafe { refresh_dom_proxies_native(webview_id, new_page_global_ptr); }
+        Box::new(move |_cx_ptr, new_page_global_ptr| unsafe {
+            refresh_dom_proxies_native(webview_id, new_page_global_ptr);
         });
 
     servo::register_script_thread_callback(webview_id, callback);
@@ -230,10 +236,7 @@ unsafe fn refresh_dom_proxies_native(
     // keeps its own alias entry which still points at the same profile Arc.
     // @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
     if let Some(old_addr) = old_page_global_opt {
-        bao_stealth::engine_props::register_global_alias(
-            old_addr,
-            new_page_global as usize,
-        );
+        bao_stealth::engine_props::register_global_alias(old_addr, new_page_global as usize);
     }
 }
 
@@ -260,8 +263,8 @@ unsafe fn refresh_dom_proxies_native(
 // dereference.
 pub fn create_node_realm(webview_id: servo::WebViewId) -> bool {
     let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
-        Box::new(move |cx_ptr, page_global_ptr| {
-            unsafe { create_node_realm_native(webview_id, cx_ptr, page_global_ptr); }
+        Box::new(move |cx_ptr, page_global_ptr| unsafe {
+            create_node_realm_native(webview_id, cx_ptr, page_global_ptr);
         });
 
     servo::register_script_thread_callback(webview_id, callback);
@@ -316,8 +319,8 @@ pub unsafe fn evaluate_in_node_realm(
     use mozjs::jsapi::JSContext as RawJSContext;
     use mozjs::jsval::UndefinedValue;
     use mozjs::realm::AutoRealm;
-    use mozjs::rust::CompileOptionsWrapper;
     use mozjs::rust::evaluate_script;
+    use mozjs::rust::CompileOptionsWrapper;
 
     if node_global.is_null() {
         let _ = result_out.set(EvaluateResult::err("node_global is null".into()));
@@ -361,7 +364,13 @@ pub unsafe fn evaluate_in_node_realm(
     options.set_hide_script_from_debugger(true);
 
     rooted!(&in(realm) let mut rval = UndefinedValue());
-    let eval_result = evaluate_script(realm, node_global_handle, script, rval.handle_mut(), options);
+    let eval_result = evaluate_script(
+        realm,
+        node_global_handle,
+        script,
+        rval.handle_mut(),
+        options,
+    );
 
     if eval_result.is_err() {
         let _ = result_out.set(EvaluateResult {
@@ -433,8 +442,8 @@ pub fn evaluate_js_via_node_realm(
     let result_clone = result.clone();
     let script_owned = script.to_string();
 
-    let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
-        Box::new(move |cx_ptr: *mut std::ffi::c_void, _page_global: *mut std::ffi::c_void| {
+    let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> = Box::new(
+        move |cx_ptr: *mut std::ffi::c_void, _page_global: *mut std::ffi::c_void| {
             // Look up Node Realm for THIS page via WebViewId. servo routes this
             // callback to the ScriptThread that owns this WebViewId, so the
             // node_global pointer is dereferenced on the thread that created it.
@@ -442,7 +451,8 @@ pub fn evaluate_js_via_node_realm(
             unsafe {
                 evaluate_in_node_realm(cx_ptr, node_global, &script_owned, result_clone);
             }
-        });
+        },
+    );
 
     servo::register_script_thread_callback(webview_id, callback);
     result
@@ -473,10 +483,12 @@ unsafe fn create_node_realm_native(
     page_global_ptr: *mut std::ffi::c_void,
 ) {
     use mozjs::context::JSContext;
-    use mozjs::jsapi::{JSContext as RawJSContext, JSObject, OnNewGlobalHookOption, JS_FireOnNewGlobalObject};
+    use mozjs::jsapi::{
+        JSContext as RawJSContext, JSObject, JS_FireOnNewGlobalObject, OnNewGlobalHookOption,
+    };
     use mozjs::realm::AutoRealm;
-    use mozjs::rust::wrappers2::{JS_NewGlobalObject, JS_WrapObject, JS_SetProperty};
-    use mozjs::rust::{RealmOptions, SIMPLE_GLOBAL_CLASS, Handle, MutableHandle};
+    use mozjs::rust::wrappers2::{JS_NewGlobalObject, JS_SetProperty, JS_WrapObject};
+    use mozjs::rust::{Handle, MutableHandle, RealmOptions, SIMPLE_GLOBAL_CLASS};
 
     let raw_cx = cx_ptr as *mut RawJSContext;
     let page_global = page_global_ptr as *mut JSObject;
@@ -488,7 +500,8 @@ unsafe fn create_node_realm_native(
     let mut cx = JSContext::from_ptr(cx_nn);
 
     let mut options = RealmOptions::default();
-    options.creationOptions_.compSpec_ = mozjs::jsapi::JS::CompartmentSpecifier::NewCompartmentAndZone;
+    options.creationOptions_.compSpec_ =
+        mozjs::jsapi::JS::CompartmentSpecifier::NewCompartmentAndZone;
 
     rooted!(&in(cx) let global = JS_NewGlobalObject(
         &mut cx,
@@ -573,7 +586,12 @@ unsafe fn wrap_and_install_dom_proxy(
     // Get the property from Page Realm's Window global.
     let c_name = bun_core::ZBox::from_bytes(property_name.as_bytes());
     rooted!(&in(cx) let mut prop_val = UndefinedValue());
-    JS_GetProperty(raw_cx, page_global_root.handle().into(), c_name.as_ptr(), prop_val.handle_mut().into());
+    JS_GetProperty(
+        raw_cx,
+        page_global_root.handle().into(),
+        c_name.as_ptr(),
+        prop_val.handle_mut().into(),
+    );
 
     // If the property is an object, wrap it for the Node Realm.
     if prop_val.get().is_object() {
@@ -587,7 +605,12 @@ unsafe fn wrap_and_install_dom_proxy(
 
         // Install the wrapped proxy on the Node Realm's global.
         rooted!(&in(cx) let mut wrapped_val = ObjectValue(prop_obj.get()));
-        JS_SetProperty(raw_cx, node_global.into(), c_name.as_ptr(), wrapped_val.handle_mut().into());
+        JS_SetProperty(
+            raw_cx,
+            node_global.into(),
+            c_name.as_ptr(),
+            wrapped_val.handle_mut().into(),
+        );
     }
 }
 
@@ -612,7 +635,9 @@ unsafe fn install_lazy_dom_getters(
     // Constructor getters (Worker/SharedWorker/ServiceWorker): enumerable + readonly + permanent.
     // JSPROP_PERMANENT makes them non-configurable (non-deletable), matching Web IDL semantics
     // where interface constructors on the global must not be deletable.
-    let ctor_attrs = (mozjs::jsapi::JSPROP_ENUMERATE | mozjs::jsapi::JSPROP_READONLY | mozjs::jsapi::JSPROP_PERMANENT) as u32;
+    let ctor_attrs = (mozjs::jsapi::JSPROP_ENUMERATE
+        | mozjs::jsapi::JSPROP_READONLY
+        | mozjs::jsapi::JSPROP_PERMANENT) as u32;
 
     let obj_getters: &[(&std::ffi::CStr, mozjs::jsapi::JSNative)] = &[
         (c"window", Some(lazy_dom_getter_window)),
@@ -631,10 +656,24 @@ unsafe fn install_lazy_dom_getters(
         (c"ServiceWorker", Some(lazy_dom_getter_service_worker)),
     ];
     for &(name, getter) in obj_getters {
-        JS_DefineProperty1(raw_cx, node_global.into(), name.as_ptr(), getter, None, obj_attrs);
+        JS_DefineProperty1(
+            raw_cx,
+            node_global.into(),
+            name.as_ptr(),
+            getter,
+            None,
+            obj_attrs,
+        );
     }
     for &(name, getter) in ctor_getters {
-        JS_DefineProperty1(raw_cx, node_global.into(), name.as_ptr(), getter, None, ctor_attrs);
+        JS_DefineProperty1(
+            raw_cx,
+            node_global.into(),
+            name.as_ptr(),
+            getter,
+            None,
+            ctor_attrs,
+        );
     }
 }
 
@@ -751,7 +790,7 @@ unsafe fn lazy_constructor_getter_impl(
     property_name: &str,
 ) -> bool {
     use mozjs::context::JSContext;
-    use mozjs::jsapi::{JS_GetProperty, JSObject, JS_DefineProperty1};
+    use mozjs::jsapi::{JSObject, JS_DefineProperty1, JS_GetProperty};
     use mozjs::jsval::{ObjectValue, UndefinedValue};
     use mozjs::rust::wrappers2::JS_WrapObject;
     use std::ptr::NonNull;
@@ -785,7 +824,12 @@ unsafe fn lazy_constructor_getter_impl(
     rooted!(&in(cx) let page_global_root = page_global);
     let c_name = bun_core::ZBox::from_bytes(property_name.as_bytes());
     rooted!(&in(cx) let mut prop_val = UndefinedValue());
-    JS_GetProperty(raw_cx, page_global_root.handle().into(), c_name.as_ptr(), prop_val.handle_mut().into());
+    JS_GetProperty(
+        raw_cx,
+        page_global_root.handle().into(),
+        c_name.as_ptr(),
+        prop_val.handle_mut().into(),
+    );
 
     if !prop_val.get().is_object() {
         // The constructor property doesn't exist on the Page Realm's Window.
@@ -924,7 +968,7 @@ unsafe fn lazy_dom_getter_impl(
     property_name: &str,
 ) -> bool {
     use mozjs::context::JSContext;
-    use mozjs::jsapi::{JS_GetProperty, JSObject};
+    use mozjs::jsapi::{JSObject, JS_GetProperty};
     use mozjs::jsval::{ObjectValue, UndefinedValue};
     use mozjs::rust::wrappers2::JS_WrapObject;
     use std::ptr::NonNull;
@@ -962,7 +1006,12 @@ unsafe fn lazy_dom_getter_impl(
 
     let c_name = bun_core::ZBox::from_bytes(property_name.as_bytes());
     rooted!(&in(cx) let mut prop_val = UndefinedValue());
-    JS_GetProperty(raw_cx, page_global_root.handle().into(), c_name.as_ptr(), prop_val.handle_mut().into());
+    JS_GetProperty(
+        raw_cx,
+        page_global_root.handle().into(),
+        c_name.as_ptr(),
+        prop_val.handle_mut().into(),
+    );
 
     if !prop_val.get().is_object() {
         return true;
@@ -1004,8 +1053,12 @@ pub fn inject_node_apis(page: &PageHandle) -> Result<(), BrowserError> {
 // (WebViewId-keyed), NOT via the global LAST_PAGE_GLOBAL. This eliminates the
 // race where two pages' create_node_realm callbacks compete for the single
 // global slot and PageInner captures the wrong page's pointer.
-pub fn inject_node_apis_with_stealth(page: &PageHandle, stealth_profile: Option<bao_stealth::StealthProfile>) -> Result<(), BrowserError> {
-    let webview_id = page.webview_id()
+pub fn inject_node_apis_with_stealth(
+    page: &PageHandle,
+    stealth_profile: Option<bao_stealth::StealthProfile>,
+) -> Result<(), BrowserError> {
+    let webview_id = page
+        .webview_id()
         .ok_or_else(|| BrowserError::Init("page has no webview".into()))?;
 
     let registered = register_native_host_functions(webview_id, stealth_profile);
@@ -1013,7 +1066,10 @@ pub fn inject_node_apis_with_stealth(page: &PageHandle, stealth_profile: Option<
     // Also create Node Realm for this page (dual-Realm architecture, REQ-SEC-002).
     // The callback is queued on servo's script thread and will execute during drain.
     let node_realm_registered = create_node_realm(webview_id);
-    debug_assert!(node_realm_registered, "create_node_realm registration failed");
+    debug_assert!(
+        node_realm_registered,
+        "create_node_realm registration failed"
+    );
 
     // Drain the callback by triggering servo's handle_evaluate_javascript.
     // servo drains pending register_script_thread_callback callbacks before
@@ -1050,11 +1106,16 @@ pub fn inject_node_apis_with_stealth(page: &PageHandle, stealth_profile: Option<
 // @trace REQ-BRW-003 [req:REQ-BRW-003] [criterion:C10]
 // BCE-20260621-001: WebViewId captured by callback so install_all_native can
 // store the page_global under the correct WebViewId key, not a global slot.
-fn register_native_host_functions(webview_id: servo::WebViewId, stealth_profile: Option<bao_stealth::StealthProfile>) -> bool {
+fn register_native_host_functions(
+    webview_id: servo::WebViewId,
+    stealth_profile: Option<bao_stealth::StealthProfile>,
+) -> bool {
     let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
         Box::new(move |cx_ptr, global_ptr| {
             // SAFETY: Called on servo's script thread with valid JSContext/JSObject.
-            unsafe { install_all_native(webview_id, cx_ptr, global_ptr, &stealth_profile); }
+            unsafe {
+                install_all_native(webview_id, cx_ptr, global_ptr, &stealth_profile);
+            }
         });
 
     servo::register_script_thread_callback(webview_id, callback);
@@ -1228,7 +1289,10 @@ pub fn inject_all(page: &PageHandle, stealth: bool) -> Result<(), BrowserError> 
 // @trace DEC-WK-001 servo-native Worker path
 // @trace DEC-WK-003 dual-track: bypass (CLI/data:) vs native (https/http)
 // @trace REQ-BRW-004 [entity:Worker] [criterion:1,3,7] servo Worker scope
-pub fn inject_all_with_profile(page: &PageHandle, profile: &Option<bao_stealth::StealthProfile>) -> Result<(), BrowserError> {
+pub fn inject_all_with_profile(
+    page: &PageHandle,
+    profile: &Option<bao_stealth::StealthProfile>,
+) -> Result<(), BrowserError> {
     inject_node_apis_with_stealth(page, profile.clone())?;
 
     // Register the servo-native Worker scope callback. This fires on any
@@ -1293,13 +1357,17 @@ pub fn register_worker_scope_callback_native(profile: Option<bao_stealth::Stealt
                 return;
             }
             // TASK-63 DIAG: confirm worker scope callback fired (worker thread alive + scope created)
-            eprintln!("[TASK-63-DIAG] worker scope callback FIRED (worker thread alive, scope created)");
+            eprintln!(
+                "[TASK-63-DIAG] worker scope callback FIRED (worker thread alive, scope created)"
+            );
             log::debug!(
                 "[register_worker_scope_callback_native] servo-native Worker \
                  scope created — installing bao stealth + Web APIs (DEC-WK-001 / \
                  DEC-WK-003 dual-track)"
             );
-            unsafe { worker_scope_init_native(raw_cx, raw_global, &config); }
+            unsafe {
+                worker_scope_init_native(raw_cx, raw_global, &config);
+            }
         });
 
     servo::register_worker_scope_callback(callback);
@@ -1328,7 +1396,8 @@ pub fn register_worker_scope_callback_native(profile: Option<bao_stealth::Stealt
 ///
 /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
 /// @trace REQ-BRW-004 [criterion:12..17] stealth consistency
-pub type WorkerScopeInitFn = Box<dyn FnOnce(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject) + Send>;
+pub type WorkerScopeInitFn =
+    Box<dyn FnOnce(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject) + Send>;
 
 /// Native implementation: install stealth properties on the Worker's global object.
 ///
@@ -2087,9 +2156,7 @@ impl BridgeReceiver {
         &self,
         timeout: Duration,
     ) -> Result<(BridgeCommand, Option<mpsc::Sender<BridgeResponse>>), String> {
-        self.rx
-            .recv_timeout(timeout)
-            .map_err(|e| format!("{}", e))
+        self.rx.recv_timeout(timeout).map_err(|e| format!("{}", e))
     }
 
     /// Whether the bridge has been marked alive (both sides share the flag).
@@ -2132,18 +2199,22 @@ impl BridgeChannel {
         self.tx
             .send((cmd, Some(resp_tx)))
             .map_err(|_| "bridge closed".to_string())?;
-        resp_rx.recv().map_err(|_| "response channel closed".to_string())
+        resp_rx
+            .recv()
+            .map_err(|_| "response channel closed".to_string())
     }
 
     /// Send a command and wait at most `timeout` for a response.
-    pub fn send_timeout(&self, cmd: BridgeCommand, timeout: Duration) -> Result<BridgeResponse, String> {
+    pub fn send_timeout(
+        &self,
+        cmd: BridgeCommand,
+        timeout: Duration,
+    ) -> Result<BridgeResponse, String> {
         let (resp_tx, resp_rx) = mpsc::channel();
         self.tx
             .send((cmd, Some(resp_tx)))
             .map_err(|_| "bridge closed".to_string())?;
-        resp_rx
-            .recv_timeout(timeout)
-            .map_err(|e| format!("{}", e))
+        resp_rx.recv_timeout(timeout).map_err(|e| format!("{}", e))
     }
 
     /// Send a command without waiting for a response.
@@ -2198,7 +2269,11 @@ impl RuntimeBridge {
 
     /// Send a command and wait at most `timeout` for a response.
     /// See [`BridgeChannel::send_timeout`].
-    pub fn send_timeout(&self, cmd: BridgeCommand, timeout: Duration) -> Result<BridgeResponse, String> {
+    pub fn send_timeout(
+        &self,
+        cmd: BridgeCommand,
+        timeout: Duration,
+    ) -> Result<BridgeResponse, String> {
         self.channel.send_timeout(cmd, timeout)
     }
 
@@ -2255,8 +2330,14 @@ mod tests {
 
     #[test]
     fn bridge_command_resize_equality() {
-        assert_eq!(super::BridgeCommand::Resize(800, 600), super::BridgeCommand::Resize(800, 600));
-        assert_ne!(super::BridgeCommand::Resize(800, 600), super::BridgeCommand::Resize(1024, 768));
+        assert_eq!(
+            super::BridgeCommand::Resize(800, 600),
+            super::BridgeCommand::Resize(800, 600)
+        );
+        assert_ne!(
+            super::BridgeCommand::Resize(800, 600),
+            super::BridgeCommand::Resize(1024, 768)
+        );
     }
 
     #[test]
@@ -2296,21 +2377,21 @@ mod tests {
     #[test]
     fn bridge_response_null_not_err() {
         let resp = super::BridgeResponse::Null;
-        assert!(!resp.is_ok());  // Null is not BridgeResponse::Ok
+        assert!(!resp.is_ok()); // Null is not BridgeResponse::Ok
         assert!(!resp.is_err()); // Null is also not an error
     }
 
     #[test]
     fn bridge_response_value_not_err() {
         let resp = super::BridgeResponse::Value("result".into());
-        assert!(!resp.is_ok());  // Value is not BridgeResponse::Ok
+        assert!(!resp.is_ok()); // Value is not BridgeResponse::Ok
         assert!(!resp.is_err());
     }
 
     #[test]
     fn bridge_response_binary_not_err() {
         let resp = super::BridgeResponse::Binary(vec![1, 2, 3]);
-        assert!(!resp.is_ok());  // Binary is not BridgeResponse::Ok
+        assert!(!resp.is_ok()); // Binary is not BridgeResponse::Ok
         assert!(!resp.is_err());
     }
 
@@ -2362,7 +2443,9 @@ mod tests {
     #[test]
     fn bridge_channel_fire_and_forget() {
         let (channel, receiver) = super::BridgeChannel::new();
-        assert!(channel.fire_and_forget(super::BridgeCommand::GetTitle).is_ok());
+        assert!(channel
+            .fire_and_forget(super::BridgeCommand::GetTitle)
+            .is_ok());
         let (cmd, responder) = receiver.recv().unwrap();
         assert_eq!(cmd, super::BridgeCommand::GetTitle);
         assert!(responder.is_none());
@@ -2375,7 +2458,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let (_cmd, responder) = receiver.recv().unwrap();
             if let Some(resp_tx) = responder {
-                resp_tx.send(super::BridgeResponse::Value("title".into())).unwrap();
+                resp_tx
+                    .send(super::BridgeResponse::Value("title".into()))
+                    .unwrap();
             }
         });
         let result = channel.send(super::BridgeCommand::GetTitle).unwrap();
@@ -2647,9 +2732,15 @@ mod tests {
     #[test]
     fn bridge_channel_fire_and_forget_multiple() {
         let (channel, receiver) = super::BridgeChannel::new();
-        assert!(channel.fire_and_forget(super::BridgeCommand::GetTitle).is_ok());
-        assert!(channel.fire_and_forget(super::BridgeCommand::GetUrl).is_ok());
-        assert!(channel.fire_and_forget(super::BridgeCommand::Screenshot).is_ok());
+        assert!(channel
+            .fire_and_forget(super::BridgeCommand::GetTitle)
+            .is_ok());
+        assert!(channel
+            .fire_and_forget(super::BridgeCommand::GetUrl)
+            .is_ok());
+        assert!(channel
+            .fire_and_forget(super::BridgeCommand::Screenshot)
+            .is_ok());
 
         let (cmd1, _) = receiver.recv().unwrap();
         let (cmd2, _) = receiver.recv().unwrap();
@@ -2702,8 +2793,12 @@ mod tests {
                 let (cmd, responder) = receiver.recv().unwrap();
                 if let Some(resp_tx) = responder {
                     let resp = match cmd {
-                        super::BridgeCommand::GetTitle => super::BridgeResponse::Value("Title".into()),
-                        super::BridgeCommand::GetUrl => super::BridgeResponse::Value("https://url.com".into()),
+                        super::BridgeCommand::GetTitle => {
+                            super::BridgeResponse::Value("Title".into())
+                        }
+                        super::BridgeCommand::GetUrl => {
+                            super::BridgeResponse::Value("https://url.com".into())
+                        }
                         _ => super::BridgeResponse::Ok,
                     };
                     resp_tx.send(resp).unwrap();
@@ -2775,7 +2870,10 @@ mod tests {
                 std::time::Duration::from_secs(5),
             )
             .unwrap();
-        assert_eq!(result, super::BridgeResponse::Value("evaluated: 1+1".into()));
+        assert_eq!(
+            result,
+            super::BridgeResponse::Value("evaluated: 1+1".into())
+        );
 
         worker.join().unwrap();
     }
@@ -3101,7 +3199,8 @@ mod tests {
     #[test]
     fn runtime_bridge_calls_web_apis_not_install_all() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn install_all_native")
+        let func_start = source
+            .find("unsafe fn install_all_native")
             .expect("install_all_native function not found");
         // Extract just the function body — 5000 chars max to avoid test code.
         let func_body = &source[func_start..func_start + 5000.min(source.len() - func_start)];
@@ -3134,7 +3233,8 @@ mod tests {
     #[test]
     fn worker_scope_init_native_is_stealth_only() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn worker_scope_init_native")
+        let func_start = source
+            .find("unsafe fn worker_scope_init_native")
             .expect("worker_scope_init_native function not found");
         // Extract just the function body — bounded to next fn/doc to avoid overflow.
         let search_end = source[func_start..]
@@ -3179,16 +3279,21 @@ mod tests {
     fn runtime_bridge_node_realm_uses_new_compartment() {
         let source = include_str!("runtime_bridge.rs");
 
-        let func_start = source.find("unsafe fn create_node_realm_native")
+        let func_start = source
+            .find("unsafe fn create_node_realm_native")
             .expect("create_node_realm_native function not found");
-        let func_body_start = source[func_start..].find("{")
+        let func_body_start = source[func_start..]
+            .find("{")
             .expect("function body start not found");
         let search_limit = source[func_start + func_body_start..]
             .find("pub fn inject_node_apis")
-            .or_else(|| source[func_start + func_body_start..].find("/// Inject Node.js APIs as native"))
+            .or_else(|| {
+                source[func_start + func_body_start..].find("/// Inject Node.js APIs as native")
+            })
             .unwrap_or(3000)
             .min(3000);
-        let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+        let func_body =
+            &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
             func_body.contains("NewCompartmentAndZone"),
@@ -3214,15 +3319,18 @@ mod tests {
     fn runtime_bridge_evaluate_in_node_realm_uses_auto_realm() {
         let source = include_str!("runtime_bridge.rs");
 
-        let func_start = source.find("pub unsafe fn evaluate_in_node_realm")
+        let func_start = source
+            .find("pub unsafe fn evaluate_in_node_realm")
             .expect("evaluate_in_node_realm function not found");
-        let func_body_start = source[func_start..].find("{")
+        let func_body_start = source[func_start..]
+            .find("{")
             .expect("function body start not found");
         let search_limit = source[func_start + func_body_start..]
             .find("unsafe fn create_node_realm_native")
             .unwrap_or(3000)
             .min(3000);
-        let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+        let func_body =
+            &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
             func_body.contains("AutoRealm::new"),
@@ -3292,9 +3400,11 @@ mod tests {
     fn runtime_bridge_drain_uses_callbacks_method() {
         let source = include_str!("runtime_bridge.rs");
 
-        let func_start = source.find("pub fn inject_node_apis_with_stealth")
+        let func_start = source
+            .find("pub fn inject_node_apis_with_stealth")
             .expect("inject_node_apis_with_stealth function not found");
-        let func_end = source[func_start..].find("fn register_native_host_functions")
+        let func_end = source[func_start..]
+            .find("fn register_native_host_functions")
             .expect("end boundary not found");
         let func_body = &source[func_start..func_start + func_end];
 
@@ -3316,9 +3426,18 @@ mod tests {
     #[test]
     fn node_polyfills_contains_security_sensitive_names() {
         let poly = super::NODE_POLYFILLS;
-        assert!(poly.contains("require"), "NODE_POLYFILLS must contain 'require'");
-        assert!(poly.contains("Buffer"), "NODE_POLYFILLS must contain 'Buffer'");
-        assert!(poly.contains("process"), "NODE_POLYFILLS must contain 'process'");
+        assert!(
+            poly.contains("require"),
+            "NODE_POLYFILLS must contain 'require'"
+        );
+        assert!(
+            poly.contains("Buffer"),
+            "NODE_POLYFILLS must contain 'Buffer'"
+        );
+        assert!(
+            poly.contains("process"),
+            "NODE_POLYFILLS must contain 'process'"
+        );
     }
 
     // ── TEST-SEC-003: Node API Sandbox Isolation ────────────────────────
@@ -3328,13 +3447,34 @@ mod tests {
     #[test]
     fn web_polyfills_excludes_node_apis() {
         let poly = super::WEB_POLYFILLS;
-        assert!(!poly.contains("require"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'require'");
-        assert!(!poly.contains("Buffer"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'Buffer'");
-        assert!(!poly.contains("process"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'process'");
-        assert!(!poly.contains("Bun"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'Bun'");
-        assert!(!poly.contains("module"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'module'");
-        assert!(!poly.contains("__dirname"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain '__dirname'");
-        assert!(!poly.contains("__filename"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain '__filename'");
+        assert!(
+            !poly.contains("require"),
+            "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'require'"
+        );
+        assert!(
+            !poly.contains("Buffer"),
+            "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'Buffer'"
+        );
+        assert!(
+            !poly.contains("process"),
+            "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'process'"
+        );
+        assert!(
+            !poly.contains("Bun"),
+            "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'Bun'"
+        );
+        assert!(
+            !poly.contains("module"),
+            "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'module'"
+        );
+        assert!(
+            !poly.contains("__dirname"),
+            "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain '__dirname'"
+        );
+        assert!(
+            !poly.contains("__filename"),
+            "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain '__filename'"
+        );
     }
 
     /// Verify WEB_POLYFILLS includes essential Web APIs.
@@ -3342,10 +3482,19 @@ mod tests {
     #[test]
     fn web_polyfills_includes_web_apis() {
         let poly = super::WEB_POLYFILLS;
-        assert!(poly.contains("TextEncoder"), "WEB_POLYFILLS must contain TextEncoder");
-        assert!(poly.contains("TextDecoder"), "WEB_POLYFILLS must contain TextDecoder");
+        assert!(
+            poly.contains("TextEncoder"),
+            "WEB_POLYFILLS must contain TextEncoder"
+        );
+        assert!(
+            poly.contains("TextDecoder"),
+            "WEB_POLYFILLS must contain TextDecoder"
+        );
         assert!(poly.contains("URL"), "WEB_POLYFILLS must contain URL");
-        assert!(poly.contains("URLSearchParams"), "WEB_POLYFILLS must contain URLSearchParams");
+        assert!(
+            poly.contains("URLSearchParams"),
+            "WEB_POLYFILLS must contain URLSearchParams"
+        );
         assert!(poly.contains("btoa"), "WEB_POLYFILLS must contain btoa");
         assert!(poly.contains("atob"), "WEB_POLYFILLS must contain atob");
     }
@@ -3356,9 +3505,11 @@ mod tests {
     fn fallback_uses_web_polyfills_not_node_polyfills() {
         let source = include_str!("runtime_bridge.rs");
 
-        let func_start = source.find("pub fn inject_node_apis_with_stealth")
+        let func_start = source
+            .find("pub fn inject_node_apis_with_stealth")
             .expect("inject_node_apis_with_stealth function not found");
-        let func_end = source[func_start..].find("fn register_native_host_functions")
+        let func_end = source[func_start..]
+            .find("fn register_native_host_functions")
             .expect("end boundary not found");
         let func_body = &source[func_start..func_start + func_end];
 
@@ -3367,7 +3518,8 @@ mod tests {
             "REQ-SEC-003 REGRESSION: fallback must use WEB_POLYFILLS (not NODE_POLYFILLS)"
         );
         // The fallback path should NOT reference NODE_POLYFILLS
-        let fallback_section = func_body.find("if !registered")
+        let fallback_section = func_body
+            .find("if !registered")
             .map(|i| &func_body[i..])
             .unwrap_or("");
         assert!(
@@ -3382,16 +3534,21 @@ mod tests {
     fn install_all_native_web_apis_only() {
         let source = include_str!("runtime_bridge.rs");
 
-        let func_start = source.find("unsafe fn install_all_native")
+        let func_start = source
+            .find("unsafe fn install_all_native")
             .expect("install_all_native function not found");
-        let func_body_start = source[func_start..].find("{")
+        let func_body_start = source[func_start..]
+            .find("{")
             .expect("function body start not found");
         let search_limit = source[func_start + func_body_start..]
             .find("const NODE_POLYFILLS")
-            .or_else(|| source[func_start + func_body_start..].find("/// Inject Node.js APIs as native"))
+            .or_else(|| {
+                source[func_start + func_body_start..].find("/// Inject Node.js APIs as native")
+            })
             .unwrap_or(5000)
             .min(5000);
-        let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+        let func_body =
+            &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
             func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
@@ -3417,16 +3574,19 @@ mod tests {
     fn node_apis_installed_in_node_realm_only() {
         let source = include_str!("runtime_bridge.rs");
 
-        let func_start = source.find("unsafe fn create_node_realm_native")
+        let func_start = source
+            .find("unsafe fn create_node_realm_native")
             .expect("create_node_realm_native function not found");
-        let func_body_start = source[func_start..].find("{")
+        let func_body_start = source[func_start..]
+            .find("{")
             .expect("function body start not found");
         let search_limit = source[func_start + func_body_start..]
             .find("unsafe fn wrap_and_install_dom_proxy")
             .or_else(|| source[func_start + func_body_start..].find("/// Wrap a DOM property"))
             .unwrap_or(3000)
             .min(3000);
-        let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+        let func_body =
+            &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
             func_body.contains("bun_runtime::globals::install_node_apis"),
@@ -3442,7 +3602,10 @@ mod tests {
     #[test]
     fn web_polyfills_is_valid_js() {
         let poly = super::WEB_POLYFILLS;
-        assert!(poly.starts_with("(function()"), "WEB_POLYFILLS must be an IIFE");
+        assert!(
+            poly.starts_with("(function()"),
+            "WEB_POLYFILLS must be an IIFE"
+        );
         assert!(poly.ends_with("})();"), "WEB_POLYFILLS must close IIFE");
     }
 
@@ -3469,11 +3632,16 @@ mod tests {
     #[test]
     fn webview_id_keyed_storage_api_exists() {
         // Compile-time check that the WebViewId-keyed API exists.
-        let _store: fn(servo::WebViewId, *mut mozjs::jsapi::JSObject, *mut mozjs::jsapi::JSObject) = super::store_node_realm;
-        let _get_node: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject = super::get_node_realm_by_id;
-        let _get_page: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject = super::get_page_global_by_id;
-        let _get_node_global: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject = super::get_node_realm_global;
-        let _get_page_global: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject = super::get_page_global;
+        let _store: fn(servo::WebViewId, *mut mozjs::jsapi::JSObject, *mut mozjs::jsapi::JSObject) =
+            super::store_node_realm;
+        let _get_node: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject =
+            super::get_node_realm_by_id;
+        let _get_page: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject =
+            super::get_page_global_by_id;
+        let _get_node_global: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject =
+            super::get_node_realm_global;
+        let _get_page_global: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject =
+            super::get_page_global;
         let _remove: fn(servo::WebViewId) = super::remove_node_realm_by_id;
     }
 
@@ -3549,7 +3717,8 @@ mod tests {
     #[test]
     fn constructor_getter_reads_from_page_realm_not_node_realm() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn lazy_constructor_getter_impl")
+        let func_start = source
+            .find("unsafe fn lazy_constructor_getter_impl")
             .expect("lazy_constructor_getter_impl not found");
         let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
 
@@ -3577,7 +3746,8 @@ mod tests {
     #[test]
     fn constructor_getter_uses_js_wrap_object_for_cross_compartment_proxy() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn lazy_constructor_getter_impl")
+        let func_start = source
+            .find("unsafe fn lazy_constructor_getter_impl")
             .expect("lazy_constructor_getter_impl not found");
         let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
 
@@ -3599,7 +3769,8 @@ mod tests {
     #[test]
     fn constructor_getter_validates_is_constructor_before_wrapping() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn lazy_constructor_getter_impl")
+        let func_start = source
+            .find("unsafe fn lazy_constructor_getter_impl")
             .expect("lazy_constructor_getter_impl not found");
         let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
 
@@ -3621,7 +3792,8 @@ mod tests {
     #[test]
     fn constructor_getter_throws_reference_error_on_failure() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn lazy_constructor_getter_impl")
+        let func_start = source
+            .find("unsafe fn lazy_constructor_getter_impl")
             .expect("lazy_constructor_getter_impl not found");
         let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
 
@@ -3649,7 +3821,8 @@ mod tests {
     #[test]
     fn constructor_getter_throws_on_null_page_global() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn lazy_constructor_getter_impl")
+        let func_start = source
+            .find("unsafe fn lazy_constructor_getter_impl")
             .expect("lazy_constructor_getter_impl not found");
         let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
 
@@ -3661,7 +3834,8 @@ mod tests {
         // Must throw ReferenceError (return false) on null page_global
         // Search specifically for "page_global.is_null()" context — there's also
         // node_global.is_null() earlier in the function which returns true silently.
-        let page_global_null_pos = func_body.find("page_global.is_null()")
+        let page_global_null_pos = func_body
+            .find("page_global.is_null()")
             .expect("DF-WK-11: page_global.is_null() check not found");
         let after_null_check = &func_body[page_global_null_pos..page_global_null_pos + 300];
         assert!(
@@ -3682,7 +3856,8 @@ mod tests {
     #[test]
     fn install_lazy_dom_getters_uses_js_define_property1_for_constructors() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn install_lazy_dom_getters")
+        let func_start = source
+            .find("unsafe fn install_lazy_dom_getters")
             .expect("install_lazy_dom_getters not found");
         let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
 
@@ -3711,7 +3886,8 @@ mod tests {
     #[test]
     fn lazy_dom_getters_installed_on_node_realm_not_page_realm() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn create_node_realm_native")
+        let func_start = source
+            .find("unsafe fn create_node_realm_native")
             .expect("create_node_realm_native not found");
         // Search the function body for install_lazy_dom_getters call
         let func_body = &source[func_start..func_start + 5000.min(source.len() - func_start)];
@@ -3739,7 +3915,8 @@ mod tests {
     #[test]
     fn report_reference_error_uses_reference_err_type() {
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source.find("unsafe fn report_reference_error")
+        let func_start = source
+            .find("unsafe fn report_reference_error")
             .expect("report_reference_error not found");
         let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
 
@@ -3762,11 +3939,15 @@ mod tests {
     fn storage_is_webview_id_keyed_dashmap() {
         let source = include_str!("runtime_bridge.rs");
         assert!(
-            source.contains("static NODE_REALM_BY_WEBVIEW: OnceLock<DashMap<servo::WebViewId, usize>>"),
+            source.contains(
+                "static NODE_REALM_BY_WEBVIEW: OnceLock<DashMap<servo::WebViewId, usize>>"
+            ),
             "BCE-20260621-001 REGRESSION: NODE_REALM_BY_WEBVIEW must be WebViewId-keyed"
         );
         assert!(
-            source.contains("static PAGE_GLOBAL_BY_WEBVIEW: OnceLock<DashMap<servo::WebViewId, usize>>"),
+            source.contains(
+                "static PAGE_GLOBAL_BY_WEBVIEW: OnceLock<DashMap<servo::WebViewId, usize>>"
+            ),
             "BCE-20260621-001 REGRESSION: PAGE_GLOBAL_BY_WEBVIEW must be WebViewId-keyed"
         );
         assert!(

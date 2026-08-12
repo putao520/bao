@@ -295,7 +295,10 @@ fn extract_header(headers: &str, name: &str) -> Option<String> {
     let needle = format!("\r\n{}: ", name);
     lower.find(&needle).map(|i| {
         let start = i + needle.len();
-        let end = lower[start..].find("\r\n").map(|e| start + e).unwrap_or(lower.len());
+        let end = lower[start..]
+            .find("\r\n")
+            .map(|e| start + e)
+            .unwrap_or(lower.len());
         lower[start..end].trim().to_string()
     })
 }
@@ -401,7 +404,11 @@ fn scenario_1_rust_server_servo_client(pool: &PagePool, report: &mut Report) {
         }
         Err(_) => false,
     };
-    report.assert(probe_ok, &format!("{}::probe", name), &format!("{}::probe", name));
+    report.assert(
+        probe_ok,
+        &format!("{}::probe", name),
+        &format!("{}::probe", name),
+    );
 
     // We do NOT navigate servo to http://127.0.0.1 — servo's network stack
     // in the headless test environment is unreliable. Instead we prove the
@@ -420,8 +427,16 @@ fn scenario_1_rust_server_servo_client(pool: &PagePool, report: &mut Report) {
         }
     };
 
-    report.assert(page.is_alive(), &format!("{}::page_alive", name), &format!("{}::page_alive", name));
-    report.assert(page.id() >= 1, &format!("{}::page_id", name), &format!("{}::page_id", name));
+    report.assert(
+        page.is_alive(),
+        &format!("{}::page_alive", name),
+        &format!("{}::page_alive", name),
+    );
+    report.assert(
+        page.id() >= 1,
+        &format!("{}::page_id", name),
+        &format!("{}::page_id", name),
+    );
 
     // Verify the server is reachable AND that the fixture probe was served.
     let server_served_at_least_one = server.count() >= 1;
@@ -480,14 +495,23 @@ fn scenario_2_data_url_inline_form(pool: &PagePool, report: &mut Report) {
     match page.evaluate_js("document.getElementById('t').textContent") {
         Ok(s) if s == "OK" => report.pass(&format!("{}::heading", name)),
         Ok(other) => report.fail(&format!("{}::heading", name), &format!("got '{}'", other)),
-        Err(e) => report.skip(&format!("{}::heading", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::heading", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // DOM list count.
     match page.evaluate_js("document.querySelectorAll('#list li').length") {
         Ok(s) if s.trim() == "2" => report.pass(&format!("{}::list_count", name)),
-        Ok(other) => report.fail(&format!("{}::list_count", name), &format!("got '{}'", other)),
-        Err(e) => report.skip(&format!("{}::list_count", name), &format!("evaluate_js: {}", e)),
+        Ok(other) => report.fail(
+            &format!("{}::list_count", name),
+            &format!("got '{}'", other),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::list_count", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Title via JS.
@@ -516,14 +540,19 @@ fn scenario_3_form_submission_e2e(pool: &PagePool, report: &mut Report) {
     <input type="email" id="email" name="email" value="">
   </form>
   <div id="status">not submitted</div>
-</body></html>"#.to_string();
+</body></html>"#
+        .to_string();
 
     let post_log: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let post_log_clone = Arc::clone(&post_log);
 
     let server = FixtureServer::spawn(move |req| {
         if req.method == "GET" {
-            ("200 OK".into(), "text/html".into(), get_html.as_bytes().to_vec())
+            (
+                "200 OK".into(),
+                "text/html".into(),
+                get_html.as_bytes().to_vec(),
+            )
         } else if req.method == "POST" {
             post_log_clone.lock().unwrap().push(req.body.clone());
             let resp = b"<html><body><p id=\"r\">submitted</p></body></html>".to_vec();
@@ -564,7 +593,10 @@ submitForm('Alice', 'alice@example.com');
 </body></html>"#,
         port = server.port
     );
-    let data_url = format!("data:text/html;charset=utf-8,{}", html_escape_minimal(&page_html));
+    let data_url = format!(
+        "data:text/html;charset=utf-8,{}",
+        html_escape_minimal(&page_html)
+    );
 
     let page = match pool.create_page(&PageConfig {
         url: Some(data_url),
@@ -589,8 +621,7 @@ submitForm('Alice', 'alice@example.com');
         let posts = post_log.lock().unwrap().clone();
         let last = posts.last().cloned().unwrap_or_default();
         let body_str = String::from_utf8_lossy(&last).to_string();
-        if body_str.contains("name=Alice") && body_str.contains("email=alice")
-        {
+        if body_str.contains("name=Alice") && body_str.contains("email=alice") {
             report.pass(&format!("{}::post_body", name));
         } else {
             report.fail(
@@ -664,7 +695,10 @@ fetch('http://127.0.0.1:{port}/')
 </body></html>"#,
         port = server.port
     );
-    let data_url = format!("data:text/html;charset=utf-8,{}", html_escape_minimal(&page_html));
+    let data_url = format!(
+        "data:text/html;charset=utf-8,{}",
+        html_escape_minimal(&page_html)
+    );
 
     let page = match pool.create_page(&PageConfig {
         url: Some(data_url),
@@ -784,7 +818,10 @@ fn scenario_5_pool_stats_full_stack(pool: &PagePool, report: &mut Report) {
                 isolation_ok = false;
             }
             Err(e) => {
-                report.skip(&format!("{}::isolation_{}", name, i), &format!("evaluate_js: {}", e));
+                report.skip(
+                    &format!("{}::isolation_{}", name, i),
+                    &format!("evaluate_js: {}", e),
+                );
                 isolation_ok = false;
             }
         }

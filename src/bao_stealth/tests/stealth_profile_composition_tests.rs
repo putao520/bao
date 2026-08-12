@@ -5,9 +5,8 @@
 // default values sanity, profile roundtrip.
 
 use bao_stealth::{
-    StealthProfile, StealthEngine, TlsFingerprint, Http2Fingerprint,
-    CanvasNoise, NavigatorProfile, ScreenProfile, WebGLProfile, AudioProfile,
-    BehaviorSimulator,
+    AudioProfile, BehaviorSimulator, CanvasNoise, Http2Fingerprint, NavigatorProfile,
+    ScreenProfile, StealthEngine, StealthProfile, TlsFingerprint, WebGLProfile,
 };
 
 // ===========================================================================
@@ -31,7 +30,10 @@ fn test_replace_http2_does_not_affect_canvas() {
     let original_pixel = profile.canvas.apply_to_pixel(128, 128, 128, 255, 5, 5);
     profile.http2 = Http2Fingerprint::chrome();
     assert_eq!(profile.canvas.seed(), original_seed);
-    assert_eq!(profile.canvas.apply_to_pixel(128, 128, 128, 255, 5, 5), original_pixel);
+    assert_eq!(
+        profile.canvas.apply_to_pixel(128, 128, 128, 255, 5, 5),
+        original_pixel
+    );
 }
 
 #[test]
@@ -106,34 +108,47 @@ fn test_replace_canvas_does_not_affect_screen() {
 fn test_firefox_vs_chrome_tls_differ() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert_ne!(ff.tls.compute_ja3(), ch.tls.compute_ja3(),
-        "Firefox and Chrome should have different TLS JA3 fingerprints");
+    assert_ne!(
+        ff.tls.compute_ja3(),
+        ch.tls.compute_ja3(),
+        "Firefox and Chrome should have different TLS JA3 fingerprints"
+    );
 }
 
 #[test]
 fn test_firefox_vs_chrome_http2_differ() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert_ne!(ff.http2.akamai_fingerprint(), ch.http2.akamai_fingerprint(),
-        "Firefox and Chrome should have different HTTP/2 Akamai fingerprints");
+    assert_ne!(
+        ff.http2.akamai_fingerprint(),
+        ch.http2.akamai_fingerprint(),
+        "Firefox and Chrome should have different HTTP/2 Akamai fingerprints"
+    );
 }
 
 #[test]
 fn test_firefox_vs_chrome_canvas_seed_differ() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert_ne!(ff.canvas.seed(), ch.canvas.seed(),
-        "Firefox and Chrome should have different canvas noise seeds");
+    assert_ne!(
+        ff.canvas.seed(),
+        ch.canvas.seed(),
+        "Firefox and Chrome should have different canvas noise seeds"
+    );
 }
 
 #[test]
 fn test_firefox_vs_chrome_navigator_differ() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert_ne!(ff.navigator.user_agent, ch.navigator.user_agent,
-        "Firefox and Chrome should have different user agents");
-    assert_ne!(ff.navigator.vendor, ch.navigator.vendor,
-        "Firefox and Chrome should have different navigator.vendor");
+    assert_ne!(
+        ff.navigator.user_agent, ch.navigator.user_agent,
+        "Firefox and Chrome should have different user agents"
+    );
+    assert_ne!(
+        ff.navigator.vendor, ch.navigator.vendor,
+        "Firefox and Chrome should have different navigator.vendor"
+    );
 }
 
 #[test]
@@ -150,26 +165,36 @@ fn test_firefox_vs_chrome_screen_same() {
 fn test_firefox_vs_chrome_webgl_differ() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert_ne!(ff.webgl.vendor, ch.webgl.vendor,
-        "Firefox and Chrome should have different WebGL vendors");
-    assert_ne!(ff.webgl.renderer, ch.webgl.renderer,
-        "Firefox and Chrome should have different WebGL renderers");
+    assert_ne!(
+        ff.webgl.vendor, ch.webgl.vendor,
+        "Firefox and Chrome should have different WebGL vendors"
+    );
+    assert_ne!(
+        ff.webgl.renderer, ch.webgl.renderer,
+        "Firefox and Chrome should have different WebGL renderers"
+    );
 }
 
 #[test]
 fn test_firefox_vs_chrome_audio_seed_differ() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert_ne!(ff.audio.seed(), ch.audio.seed(),
-        "Firefox and Chrome should have different audio seeds");
+    assert_ne!(
+        ff.audio.seed(),
+        ch.audio.seed(),
+        "Firefox and Chrome should have different audio seeds"
+    );
 }
 
 #[test]
 fn test_firefox_vs_chrome_behavior_seed_differ() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert_ne!(ff.behavior.seed(), ch.behavior.seed(),
-        "Firefox and Chrome should have different behavior seeds");
+    assert_ne!(
+        ff.behavior.seed(),
+        ch.behavior.seed(),
+        "Firefox and Chrome should have different behavior seeds"
+    );
 }
 
 #[test]
@@ -185,9 +210,16 @@ fn test_firefox_vs_chrome_7_of_8_components_differ() {
     let webgl_differs = ff.webgl.vendor != ch.webgl.vendor;
     let audio_differs = ff.audio.seed() != ch.audio.seed();
     let behavior_differs = ff.behavior.seed() != ch.behavior.seed();
-    assert!(tls_differs && http2_differs && canvas_differs && nav_differs
-        && webgl_differs && audio_differs && behavior_differs,
-        "7 of 8 components should differ between Firefox and Chrome profiles");
+    assert!(
+        tls_differs
+            && http2_differs
+            && canvas_differs
+            && nav_differs
+            && webgl_differs
+            && audio_differs
+            && behavior_differs,
+        "7 of 8 components should differ between Firefox and Chrome profiles"
+    );
 }
 
 // ===========================================================================
@@ -199,8 +231,11 @@ fn test_clone_mutation_isolation_tls() {
     let original = StealthProfile::firefox_default();
     let mut cloned = original.clone();
     cloned.tls = TlsFingerprint::chrome();
-    assert_ne!(original.tls.compute_ja3(), cloned.tls.compute_ja3(),
-        "Mutating cloned TLS should not affect original");
+    assert_ne!(
+        original.tls.compute_ja3(),
+        cloned.tls.compute_ja3(),
+        "Mutating cloned TLS should not affect original"
+    );
 }
 
 #[test]
@@ -208,8 +243,10 @@ fn test_clone_mutation_isolation_navigator() {
     let original = StealthProfile::firefox_default();
     let mut cloned = original.clone();
     cloned.navigator = NavigatorProfile::chrome();
-    assert_ne!(original.navigator.user_agent, cloned.navigator.user_agent,
-        "Mutating cloned navigator should not affect original");
+    assert_ne!(
+        original.navigator.user_agent, cloned.navigator.user_agent,
+        "Mutating cloned navigator should not affect original"
+    );
 }
 
 #[test]
@@ -217,8 +254,11 @@ fn test_clone_mutation_isolation_canvas() {
     let original = StealthProfile::firefox_default();
     let mut cloned = original.clone();
     cloned.canvas = CanvasNoise::new(999);
-    assert_ne!(original.canvas.seed(), cloned.canvas.seed(),
-        "Mutating cloned canvas should not affect original");
+    assert_ne!(
+        original.canvas.seed(),
+        cloned.canvas.seed(),
+        "Mutating cloned canvas should not affect original"
+    );
 }
 
 #[test]
@@ -226,8 +266,10 @@ fn test_clone_mutation_isolation_webgl() {
     let original = StealthProfile::firefox_default();
     let mut cloned = original.clone();
     cloned.webgl = WebGLProfile::chrome();
-    assert_ne!(original.webgl.vendor, cloned.webgl.vendor,
-        "Mutating cloned WebGL should not affect original");
+    assert_ne!(
+        original.webgl.vendor, cloned.webgl.vendor,
+        "Mutating cloned WebGL should not affect original"
+    );
 }
 
 #[test]
@@ -235,8 +277,11 @@ fn test_clone_mutation_isolation_audio() {
     let original = StealthProfile::firefox_default();
     let mut cloned = original.clone();
     cloned.audio = AudioProfile::new(500);
-    assert_ne!(original.audio.seed(), cloned.audio.seed(),
-        "Mutating cloned audio should not affect original");
+    assert_ne!(
+        original.audio.seed(),
+        cloned.audio.seed(),
+        "Mutating cloned audio should not affect original"
+    );
 }
 
 #[test]
@@ -244,8 +289,11 @@ fn test_clone_mutation_isolation_behavior() {
     let original = StealthProfile::firefox_default();
     let mut cloned = original.clone();
     cloned.behavior = BehaviorSimulator::new(500);
-    assert_ne!(original.behavior.seed(), cloned.behavior.seed(),
-        "Mutating cloned behavior should not affect original");
+    assert_ne!(
+        original.behavior.seed(),
+        cloned.behavior.seed(),
+        "Mutating cloned behavior should not affect original"
+    );
 }
 
 #[test]
@@ -253,8 +301,10 @@ fn test_clone_mutation_isolation_screen() {
     let original = StealthProfile::firefox_default();
     let mut cloned = original.clone();
     cloned.screen = ScreenProfile::new(3840, 2160, 2.0);
-    assert_ne!(original.screen.width, cloned.screen.width,
-        "Mutating cloned screen should not affect original");
+    assert_ne!(
+        original.screen.width, cloned.screen.width,
+        "Mutating cloned screen should not affect original"
+    );
 }
 
 #[test]
@@ -262,8 +312,11 @@ fn test_clone_mutation_isolation_http2() {
     let original = StealthProfile::firefox_default();
     let mut cloned = original.clone();
     cloned.http2 = Http2Fingerprint::chrome();
-    assert_ne!(original.http2.akamai_fingerprint(), cloned.http2.akamai_fingerprint(),
-        "Mutating cloned HTTP/2 should not affect original");
+    assert_ne!(
+        original.http2.akamai_fingerprint(),
+        cloned.http2.akamai_fingerprint(),
+        "Mutating cloned HTTP/2 should not affect original"
+    );
 }
 
 // ===========================================================================
@@ -274,8 +327,11 @@ fn test_clone_mutation_isolation_http2() {
 fn test_debug_format_stealth_profile_firefox() {
     let profile = StealthProfile::firefox_default();
     let debug = format!("{:?}", profile);
-    assert!(debug.contains("StealthProfile"),
-        "Debug output should contain 'StealthProfile', got: {}", &debug[..debug.len().min(200)]);
+    assert!(
+        debug.contains("StealthProfile"),
+        "Debug output should contain 'StealthProfile', got: {}",
+        &debug[..debug.len().min(200)]
+    );
     assert!(!debug.is_empty());
 }
 
@@ -283,72 +339,90 @@ fn test_debug_format_stealth_profile_firefox() {
 fn test_debug_format_stealth_profile_chrome() {
     let profile = StealthProfile::chrome_default();
     let debug = format!("{:?}", profile);
-    assert!(debug.contains("StealthProfile"),
-        "Debug output should contain 'StealthProfile'");
+    assert!(
+        debug.contains("StealthProfile"),
+        "Debug output should contain 'StealthProfile'"
+    );
 }
 
 #[test]
 fn test_debug_format_tls_fingerprint() {
     let tls = TlsFingerprint::firefox();
     let debug = format!("{:?}", tls);
-    assert!(debug.contains("TlsFingerprint"),
-        "TLS debug should contain 'TlsFingerprint'");
+    assert!(
+        debug.contains("TlsFingerprint"),
+        "TLS debug should contain 'TlsFingerprint'"
+    );
 }
 
 #[test]
 fn test_debug_format_http2_fingerprint() {
     let http2 = Http2Fingerprint::firefox();
     let debug = format!("{:?}", http2);
-    assert!(debug.contains("Http2Fingerprint"),
-        "HTTP/2 debug should contain 'Http2Fingerprint'");
+    assert!(
+        debug.contains("Http2Fingerprint"),
+        "HTTP/2 debug should contain 'Http2Fingerprint'"
+    );
 }
 
 #[test]
 fn test_debug_format_canvas_noise() {
     let canvas = CanvasNoise::new(42);
     let debug = format!("{:?}", canvas);
-    assert!(debug.contains("CanvasNoise"),
-        "Canvas debug should contain 'CanvasNoise'");
+    assert!(
+        debug.contains("CanvasNoise"),
+        "Canvas debug should contain 'CanvasNoise'"
+    );
 }
 
 #[test]
 fn test_debug_format_navigator_profile() {
     let nav = NavigatorProfile::firefox();
     let debug = format!("{:?}", nav);
-    assert!(debug.contains("NavigatorProfile"),
-        "Navigator debug should contain 'NavigatorProfile'");
+    assert!(
+        debug.contains("NavigatorProfile"),
+        "Navigator debug should contain 'NavigatorProfile'"
+    );
 }
 
 #[test]
 fn test_debug_format_screen_profile() {
     let screen = ScreenProfile::default();
     let debug = format!("{:?}", screen);
-    assert!(debug.contains("ScreenProfile"),
-        "Screen debug should contain 'ScreenProfile'");
+    assert!(
+        debug.contains("ScreenProfile"),
+        "Screen debug should contain 'ScreenProfile'"
+    );
 }
 
 #[test]
 fn test_debug_format_webgl_profile() {
     let webgl = WebGLProfile::firefox();
     let debug = format!("{:?}", webgl);
-    assert!(debug.contains("WebGLProfile"),
-        "WebGL debug should contain 'WebGLProfile'");
+    assert!(
+        debug.contains("WebGLProfile"),
+        "WebGL debug should contain 'WebGLProfile'"
+    );
 }
 
 #[test]
 fn test_debug_format_audio_profile() {
     let audio = AudioProfile::new(42);
     let debug = format!("{:?}", audio);
-    assert!(debug.contains("AudioProfile"),
-        "Audio debug should contain 'AudioProfile'");
+    assert!(
+        debug.contains("AudioProfile"),
+        "Audio debug should contain 'AudioProfile'"
+    );
 }
 
 #[test]
 fn test_debug_format_behavior_simulator() {
     let behavior = BehaviorSimulator::new(42);
     let debug = format!("{:?}", behavior);
-    assert!(debug.contains("BehaviorSimulator"),
-        "Behavior debug should contain 'BehaviorSimulator'");
+    assert!(
+        debug.contains("BehaviorSimulator"),
+        "Behavior debug should contain 'BehaviorSimulator'"
+    );
 }
 
 // ===========================================================================
@@ -365,7 +439,9 @@ fn test_same_seed_canvas_noise_identical_output() {
             assert_eq!(
                 c1.apply_to_pixel(128, 128, 128, 255, x, y),
                 c2.apply_to_pixel(128, 128, 128, 255, x, y),
-                "Same seed canvas noise should produce identical pixels at ({}, {})", x, y
+                "Same seed canvas noise should produce identical pixels at ({}, {})",
+                x,
+                y
             );
         }
     }
@@ -380,7 +456,8 @@ fn test_same_seed_audio_profile_identical_output() {
         assert_eq!(
             a1.apply_noise(0.5, i),
             a2.apply_noise(0.5, i),
-            "Same seed audio should produce identical noise at index {}", i
+            "Same seed audio should produce identical noise at index {}",
+            i
         );
     }
 }
@@ -391,7 +468,10 @@ fn test_same_seed_behavior_simulator_identical_mouse_path() {
     let b2 = BehaviorSimulator::new(42);
     let path1 = b1.generate_mouse_path(0.0, 0.0, 500.0, 300.0, 20);
     let path2 = b2.generate_mouse_path(0.0, 0.0, 500.0, 300.0, 20);
-    assert_eq!(path1, path2, "Same seed behavior should produce identical mouse paths");
+    assert_eq!(
+        path1, path2,
+        "Same seed behavior should produce identical mouse paths"
+    );
 }
 
 #[test]
@@ -400,7 +480,10 @@ fn test_same_seed_behavior_simulator_identical_typing_delays() {
     let b2 = BehaviorSimulator::new(42);
     let delays1 = b1.generate_typing_delays(30);
     let delays2 = b2.generate_typing_delays(30);
-    assert_eq!(delays1, delays2, "Same seed behavior should produce identical typing delays");
+    assert_eq!(
+        delays1, delays2,
+        "Same seed behavior should produce identical typing delays"
+    );
 }
 
 #[test]
@@ -409,7 +492,10 @@ fn test_same_seed_behavior_simulator_identical_scroll_deltas() {
     let b2 = BehaviorSimulator::new(42);
     let deltas1 = b1.generate_scroll_deltas(1000.0, 20);
     let deltas2 = b2.generate_scroll_deltas(1000.0, 20);
-    assert_eq!(deltas1, deltas2, "Same seed behavior should produce identical scroll deltas");
+    assert_eq!(
+        deltas1, deltas2,
+        "Same seed behavior should produce identical scroll deltas"
+    );
 }
 
 #[test]
@@ -444,14 +530,21 @@ fn test_different_seed_canvas_noise_produces_different_output() {
     let mut any_differ = false;
     for x in 0..10u32 {
         for y in 0..10u32 {
-            if c1.apply_to_pixel(128, 128, 128, 255, x, y) != c2.apply_to_pixel(128, 128, 128, 255, x, y) {
+            if c1.apply_to_pixel(128, 128, 128, 255, x, y)
+                != c2.apply_to_pixel(128, 128, 128, 255, x, y)
+            {
                 any_differ = true;
                 break;
             }
         }
-        if any_differ { break; }
+        if any_differ {
+            break;
+        }
     }
-    assert!(any_differ, "Different seeds should produce different canvas noise");
+    assert!(
+        any_differ,
+        "Different seeds should produce different canvas noise"
+    );
 }
 
 #[test]
@@ -465,7 +558,10 @@ fn test_different_seed_audio_produces_different_output() {
             break;
         }
     }
-    assert!(any_differ, "Different seeds should produce different audio noise");
+    assert!(
+        any_differ,
+        "Different seeds should produce different audio noise"
+    );
 }
 
 // ===========================================================================
@@ -478,9 +574,17 @@ fn test_tls_ja3_format_comma_separated_five_fields() {
     let ja3 = ff.tls.compute_ja3();
     let fields: Vec<&str> = ja3.split(',').collect();
     // compute_ja3 format: "771,ciphers,extensions,curves,sigs" = 5 comma-separated fields
-    assert_eq!(fields.len(), 5,
-        "JA3 should have 5 comma-separated fields (version,ciphers,exts,curves,sigs), got {}: {:?}", fields.len(), fields);
-    assert_eq!(fields[0], "771", "First JA3 field should be TLS version 771");
+    assert_eq!(
+        fields.len(),
+        5,
+        "JA3 should have 5 comma-separated fields (version,ciphers,exts,curves,sigs), got {}: {:?}",
+        fields.len(),
+        fields
+    );
+    assert_eq!(
+        fields[0], "771",
+        "First JA3 field should be TLS version 771"
+    );
 }
 
 #[test]
@@ -488,8 +592,11 @@ fn test_tls_ja3_hash_format_firefox() {
     let ff = StealthProfile::firefox_default();
     let ja3_hash = ff.tls.ja3_hash;
     let fields: Vec<&str> = ja3_hash.split(',').collect();
-    assert_eq!(fields.len(), 5,
-        "JA3 hash should have 5 comma-separated fields (version,ciphers,exts,curves,sigs)");
+    assert_eq!(
+        fields.len(),
+        5,
+        "JA3 hash should have 5 comma-separated fields (version,ciphers,exts,curves,sigs)"
+    );
 }
 
 #[test]
@@ -497,18 +604,26 @@ fn test_tls_ja3_hash_format_chrome() {
     let ch = StealthProfile::chrome_default();
     let ja3_hash = ch.tls.ja3_hash;
     let fields: Vec<&str> = ja3_hash.split(',').collect();
-    assert_eq!(fields.len(), 5,
-        "JA3 hash should have 5 comma-separated fields");
+    assert_eq!(
+        fields.len(),
+        5,
+        "JA3 hash should have 5 comma-separated fields"
+    );
 }
 
 #[test]
 fn test_tls_ja4_format_prefix() {
     let ff = StealthProfile::firefox_default();
     let ja4 = ff.tls.compute_ja4();
-    assert!(ja4.starts_with("t13d"),
-        "JA4 fingerprint should start with 't13d', got: {}", ja4);
-    assert!(ja4.contains('_'),
-        "JA4 fingerprint should contain underscore separator");
+    assert!(
+        ja4.starts_with("t13d"),
+        "JA4 fingerprint should start with 't13d', got: {}",
+        ja4
+    );
+    assert!(
+        ja4.contains('_'),
+        "JA4 fingerprint should contain underscore separator"
+    );
 }
 
 #[test]
@@ -516,11 +631,18 @@ fn test_http2_akamai_fingerprint_format_six_colon_fields() {
     let ff = StealthProfile::firefox_default();
     let akamai = ff.http2.akamai_fingerprint();
     let fields: Vec<&str> = akamai.split(':').collect();
-    assert_eq!(fields.len(), 6,
-        "Akamai fingerprint should have 6 colon-separated fields");
+    assert_eq!(
+        fields.len(),
+        6,
+        "Akamai fingerprint should have 6 colon-separated fields"
+    );
     for (i, field) in fields.iter().enumerate() {
-        assert!(field.parse::<u32>().is_ok(),
-            "Akamai field {} should be numeric, got: {}", i, field);
+        assert!(
+            field.parse::<u32>().is_ok(),
+            "Akamai field {} should be numeric, got: {}",
+            i,
+            field
+        );
     }
 }
 
@@ -529,62 +651,93 @@ fn test_http2_akamai_fingerprint_chrome_format() {
     let ch = StealthProfile::chrome_default();
     let akamai = ch.http2.akamai_fingerprint();
     let fields: Vec<&str> = akamai.split(':').collect();
-    assert_eq!(fields.len(), 6,
-        "Chrome Akamai fingerprint should have 6 colon-separated fields");
+    assert_eq!(
+        fields.len(),
+        6,
+        "Chrome Akamai fingerprint should have 6 colon-separated fields"
+    );
 }
 
 #[test]
 fn test_navigator_user_agent_format_firefox() {
     let ff = StealthProfile::firefox_default();
     let ua = &ff.navigator.user_agent;
-    assert!(ua.starts_with("Mozilla/5.0"),
-        "User agent should start with 'Mozilla/5.0', got: {}", ua);
-    assert!(ua.contains("Firefox"),
-        "Firefox user agent should contain 'Firefox'");
-    assert!(ua.contains("Gecko"),
-        "Firefox user agent should contain 'Gecko'");
+    assert!(
+        ua.starts_with("Mozilla/5.0"),
+        "User agent should start with 'Mozilla/5.0', got: {}",
+        ua
+    );
+    assert!(
+        ua.contains("Firefox"),
+        "Firefox user agent should contain 'Firefox'"
+    );
+    assert!(
+        ua.contains("Gecko"),
+        "Firefox user agent should contain 'Gecko'"
+    );
 }
 
 #[test]
 fn test_navigator_user_agent_format_chrome() {
     let ch = StealthProfile::chrome_default();
     let ua = &ch.navigator.user_agent;
-    assert!(ua.starts_with("Mozilla/5.0"),
-        "User agent should start with 'Mozilla/5.0', got: {}", ua);
-    assert!(ua.contains("Chrome"),
-        "Chrome user agent should contain 'Chrome'");
-    assert!(ua.contains("AppleWebKit"),
-        "Chrome user agent should contain 'AppleWebKit'");
-    assert!(ua.contains("Safari"),
-        "Chrome user agent should contain 'Safari'");
+    assert!(
+        ua.starts_with("Mozilla/5.0"),
+        "User agent should start with 'Mozilla/5.0', got: {}",
+        ua
+    );
+    assert!(
+        ua.contains("Chrome"),
+        "Chrome user agent should contain 'Chrome'"
+    );
+    assert!(
+        ua.contains("AppleWebKit"),
+        "Chrome user agent should contain 'AppleWebKit'"
+    );
+    assert!(
+        ua.contains("Safari"),
+        "Chrome user agent should contain 'Safari'"
+    );
 }
 
 #[test]
 fn test_navigator_platform_format() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert!(ff.navigator.platform.contains("Linux"),
-        "Firefox platform should contain 'Linux'");
-    assert!(ch.navigator.platform.contains("Linux"),
-        "Chrome platform should contain 'Linux'");
+    assert!(
+        ff.navigator.platform.contains("Linux"),
+        "Firefox platform should contain 'Linux'"
+    );
+    assert!(
+        ch.navigator.platform.contains("Linux"),
+        "Chrome platform should contain 'Linux'"
+    );
 }
 
 #[test]
 fn test_webgl_vendor_renderer_format_firefox() {
     let ff = StealthProfile::firefox_default();
-    assert_eq!(ff.webgl.vendor, "Mozilla",
-        "Firefox WebGL vendor should be 'Mozilla'");
-    assert!(ff.webgl.renderer.contains("WebGL") || ff.webgl.renderer.contains("OpenGL"),
-        "Firefox WebGL renderer should reference WebGL/OpenGL");
+    assert_eq!(
+        ff.webgl.vendor, "Mozilla",
+        "Firefox WebGL vendor should be 'Mozilla'"
+    );
+    assert!(
+        ff.webgl.renderer.contains("WebGL") || ff.webgl.renderer.contains("OpenGL"),
+        "Firefox WebGL renderer should reference WebGL/OpenGL"
+    );
 }
 
 #[test]
 fn test_webgl_vendor_renderer_format_chrome() {
     let ch = StealthProfile::chrome_default();
-    assert!(ch.webgl.vendor.contains("Google"),
-        "Chrome WebGL vendor should contain 'Google'");
-    assert!(ch.webgl.renderer.contains("ANGLE"),
-        "Chrome WebGL renderer should contain 'ANGLE'");
+    assert!(
+        ch.webgl.vendor.contains("Google"),
+        "Chrome WebGL vendor should contain 'Google'"
+    );
+    assert!(
+        ch.webgl.renderer.contains("ANGLE"),
+        "Chrome WebGL renderer should contain 'ANGLE'"
+    );
 }
 
 // ===========================================================================
@@ -595,21 +748,60 @@ fn test_webgl_vendor_renderer_format_chrome() {
 fn test_firefox_all_string_fields_non_empty() {
     let ff = StealthProfile::firefox_default();
     // TLS
-    assert!(!ff.tls.ja3_hash.is_empty(), "Firefox JA3 hash should not be empty");
-    assert!(!ff.tls.tls_version.is_empty(), "Firefox TLS version should not be empty");
-    assert!(!ff.tls.cipher_suites.is_empty(), "Firefox cipher suites should not be empty");
-    assert!(!ff.tls.extensions.is_empty(), "Firefox extensions should not be empty");
-    assert!(!ff.tls.alpn_protocols.is_empty(), "Firefox ALPN should not be empty");
+    assert!(
+        !ff.tls.ja3_hash.is_empty(),
+        "Firefox JA3 hash should not be empty"
+    );
+    assert!(
+        !ff.tls.tls_version.is_empty(),
+        "Firefox TLS version should not be empty"
+    );
+    assert!(
+        !ff.tls.cipher_suites.is_empty(),
+        "Firefox cipher suites should not be empty"
+    );
+    assert!(
+        !ff.tls.extensions.is_empty(),
+        "Firefox extensions should not be empty"
+    );
+    assert!(
+        !ff.tls.alpn_protocols.is_empty(),
+        "Firefox ALPN should not be empty"
+    );
     // Navigator
-    assert!(!ff.navigator.user_agent.is_empty(), "Firefox user agent should not be empty");
-    assert!(!ff.navigator.platform.is_empty(), "Firefox platform should not be empty");
-    assert!(!ff.navigator.language.is_empty(), "Firefox language should not be empty");
-    assert!(!ff.navigator.app_version.is_empty(), "Firefox app version should not be empty");
-    assert!(!ff.navigator.product_sub.is_empty(), "Firefox product sub should not be empty");
+    assert!(
+        !ff.navigator.user_agent.is_empty(),
+        "Firefox user agent should not be empty"
+    );
+    assert!(
+        !ff.navigator.platform.is_empty(),
+        "Firefox platform should not be empty"
+    );
+    assert!(
+        !ff.navigator.language.is_empty(),
+        "Firefox language should not be empty"
+    );
+    assert!(
+        !ff.navigator.app_version.is_empty(),
+        "Firefox app version should not be empty"
+    );
+    assert!(
+        !ff.navigator.product_sub.is_empty(),
+        "Firefox product sub should not be empty"
+    );
     // WebGL
-    assert!(!ff.webgl.vendor.is_empty(), "Firefox WebGL vendor should not be empty");
-    assert!(!ff.webgl.renderer.is_empty(), "Firefox WebGL renderer should not be empty");
-    assert!(!ff.webgl.extensions.is_empty(), "Firefox WebGL extensions should not be empty");
+    assert!(
+        !ff.webgl.vendor.is_empty(),
+        "Firefox WebGL vendor should not be empty"
+    );
+    assert!(
+        !ff.webgl.renderer.is_empty(),
+        "Firefox WebGL renderer should not be empty"
+    );
+    assert!(
+        !ff.webgl.extensions.is_empty(),
+        "Firefox WebGL extensions should not be empty"
+    );
 }
 
 #[test]
@@ -687,16 +879,28 @@ fn test_chrome_all_numeric_fields_positive() {
 fn test_firefox_alpn_contains_h2_and_http11() {
     let ff = StealthProfile::firefox_default();
     let alpn = ff.tls.alpn_strings();
-    assert!(alpn.iter().any(|s| *s == "h2"), "Firefox ALPN should include h2");
-    assert!(alpn.iter().any(|s| *s == "http/1.1"), "Firefox ALPN should include http/1.1");
+    assert!(
+        alpn.iter().any(|s| *s == "h2"),
+        "Firefox ALPN should include h2"
+    );
+    assert!(
+        alpn.iter().any(|s| *s == "http/1.1"),
+        "Firefox ALPN should include http/1.1"
+    );
 }
 
 #[test]
 fn test_chrome_alpn_contains_h2_and_http11() {
     let ch = StealthProfile::chrome_default();
     let alpn = ch.tls.alpn_strings();
-    assert!(alpn.iter().any(|s| *s == "h2"), "Chrome ALPN should include h2");
-    assert!(alpn.iter().any(|s| *s == "http/1.1"), "Chrome ALPN should include http/1.1");
+    assert!(
+        alpn.iter().any(|s| *s == "h2"),
+        "Chrome ALPN should include h2"
+    );
+    assert!(
+        alpn.iter().any(|s| *s == "http/1.1"),
+        "Chrome ALPN should include http/1.1"
+    );
 }
 
 #[test]
@@ -705,15 +909,27 @@ fn test_http2_pseudo_header_order_complete() {
     let ch = StealthProfile::chrome_default();
     let required_pseudo = [":method", ":path", ":authority", ":scheme"];
     for pseudo in &required_pseudo {
-        assert!(ff.http2.pseudo_header_order.contains(pseudo),
-            "Firefox HTTP/2 should include pseudo header {}", pseudo);
-        assert!(ch.http2.pseudo_header_order.contains(pseudo),
-            "Chrome HTTP/2 should include pseudo header {}", pseudo);
+        assert!(
+            ff.http2.pseudo_header_order.contains(pseudo),
+            "Firefox HTTP/2 should include pseudo header {}",
+            pseudo
+        );
+        assert!(
+            ch.http2.pseudo_header_order.contains(pseudo),
+            "Chrome HTTP/2 should include pseudo header {}",
+            pseudo
+        );
     }
-    assert_eq!(ff.http2.pseudo_header_order.len(), 4,
-        "Firefox should have exactly 4 pseudo headers");
-    assert_eq!(ch.http2.pseudo_header_order.len(), 4,
-        "Chrome should have exactly 4 pseudo headers");
+    assert_eq!(
+        ff.http2.pseudo_header_order.len(),
+        4,
+        "Firefox should have exactly 4 pseudo headers"
+    );
+    assert_eq!(
+        ch.http2.pseudo_header_order.len(),
+        4,
+        "Chrome should have exactly 4 pseudo headers"
+    );
 }
 
 #[test]
@@ -742,9 +958,18 @@ fn test_firefox_roundtrip_clone_equality() {
     assert_eq!(original.tls.extensions, cloned.tls.extensions);
     assert_eq!(original.tls.alpn_protocols, cloned.tls.alpn_protocols);
     // HTTP/2
-    assert_eq!(original.http2.akamai_fingerprint(), cloned.http2.akamai_fingerprint());
-    assert_eq!(original.http2.header_table_size, cloned.http2.header_table_size);
-    assert_eq!(original.http2.pseudo_header_order, cloned.http2.pseudo_header_order);
+    assert_eq!(
+        original.http2.akamai_fingerprint(),
+        cloned.http2.akamai_fingerprint()
+    );
+    assert_eq!(
+        original.http2.header_table_size,
+        cloned.http2.header_table_size
+    );
+    assert_eq!(
+        original.http2.pseudo_header_order,
+        cloned.http2.pseudo_header_order
+    );
     // Canvas
     assert_eq!(original.canvas.seed(), cloned.canvas.seed());
     // Navigator
@@ -752,12 +977,21 @@ fn test_firefox_roundtrip_clone_equality() {
     assert_eq!(original.navigator.platform, cloned.navigator.platform);
     assert_eq!(original.navigator.vendor, cloned.navigator.vendor);
     assert_eq!(original.navigator.language, cloned.navigator.language);
-    assert_eq!(original.navigator.hardware_concurrency, cloned.navigator.hardware_concurrency);
-    assert_eq!(original.navigator.max_touch_points, cloned.navigator.max_touch_points);
+    assert_eq!(
+        original.navigator.hardware_concurrency,
+        cloned.navigator.hardware_concurrency
+    );
+    assert_eq!(
+        original.navigator.max_touch_points,
+        cloned.navigator.max_touch_points
+    );
     // Screen
     assert_eq!(original.screen.width, cloned.screen.width);
     assert_eq!(original.screen.height, cloned.screen.height);
-    assert_eq!(original.screen.device_pixel_ratio, cloned.screen.device_pixel_ratio);
+    assert_eq!(
+        original.screen.device_pixel_ratio,
+        cloned.screen.device_pixel_ratio
+    );
     // WebGL
     assert_eq!(original.webgl.vendor, cloned.webgl.vendor);
     assert_eq!(original.webgl.renderer, cloned.webgl.renderer);
@@ -776,8 +1010,14 @@ fn test_chrome_roundtrip_clone_equality() {
     assert_eq!(original.tls.compute_ja4(), cloned.tls.compute_ja4());
     assert_eq!(original.tls.ja3_hash, cloned.tls.ja3_hash);
     assert_eq!(original.tls.cipher_suites, cloned.tls.cipher_suites);
-    assert_eq!(original.http2.akamai_fingerprint(), cloned.http2.akamai_fingerprint());
-    assert_eq!(original.http2.pseudo_header_order, cloned.http2.pseudo_header_order);
+    assert_eq!(
+        original.http2.akamai_fingerprint(),
+        cloned.http2.akamai_fingerprint()
+    );
+    assert_eq!(
+        original.http2.pseudo_header_order,
+        cloned.http2.pseudo_header_order
+    );
     assert_eq!(original.canvas.seed(), cloned.canvas.seed());
     assert_eq!(original.navigator.user_agent, cloned.navigator.user_agent);
     assert_eq!(original.navigator.vendor, cloned.navigator.vendor);
@@ -795,7 +1035,10 @@ fn test_firefox_roundtrip_clone_double() {
     let cloned = original.clone();
     let double_cloned = cloned.clone();
     assert_eq!(original.tls.compute_ja3(), double_cloned.tls.compute_ja3());
-    assert_eq!(original.navigator.user_agent, double_cloned.navigator.user_agent);
+    assert_eq!(
+        original.navigator.user_agent,
+        double_cloned.navigator.user_agent
+    );
     assert_eq!(original.canvas.seed(), double_cloned.canvas.seed());
     assert_eq!(original.webgl.vendor, double_cloned.webgl.vendor);
     assert_eq!(original.audio.seed(), double_cloned.audio.seed());
@@ -808,7 +1051,10 @@ fn test_chrome_roundtrip_clone_double() {
     let cloned = original.clone();
     let double_cloned = cloned.clone();
     assert_eq!(original.tls.compute_ja3(), double_cloned.tls.compute_ja3());
-    assert_eq!(original.navigator.user_agent, double_cloned.navigator.user_agent);
+    assert_eq!(
+        original.navigator.user_agent,
+        double_cloned.navigator.user_agent
+    );
     assert_eq!(original.canvas.seed(), double_cloned.canvas.seed());
     assert_eq!(original.webgl.vendor, double_cloned.webgl.vendor);
     assert_eq!(original.audio.seed(), double_cloned.audio.seed());
@@ -821,7 +1067,10 @@ fn test_roundtrip_via_engine_firefox() {
     let engine = StealthEngine::new(profile.clone());
     let from_engine = engine.profile().clone();
     assert_eq!(profile.tls.compute_ja3(), from_engine.tls.compute_ja3());
-    assert_eq!(profile.navigator.user_agent, from_engine.navigator.user_agent);
+    assert_eq!(
+        profile.navigator.user_agent,
+        from_engine.navigator.user_agent
+    );
     assert_eq!(profile.canvas.seed(), from_engine.canvas.seed());
     assert_eq!(profile.webgl.vendor, from_engine.webgl.vendor);
     assert_eq!(profile.audio.seed(), from_engine.audio.seed());
@@ -834,7 +1083,10 @@ fn test_roundtrip_via_engine_chrome() {
     let engine = StealthEngine::new(profile.clone());
     let from_engine = engine.profile().clone();
     assert_eq!(profile.tls.compute_ja3(), from_engine.tls.compute_ja3());
-    assert_eq!(profile.navigator.user_agent, from_engine.navigator.user_agent);
+    assert_eq!(
+        profile.navigator.user_agent,
+        from_engine.navigator.user_agent
+    );
     assert_eq!(profile.canvas.seed(), from_engine.canvas.seed());
     assert_eq!(profile.webgl.vendor, from_engine.webgl.vendor);
     assert_eq!(profile.audio.seed(), from_engine.audio.seed());
@@ -848,67 +1100,93 @@ fn test_roundtrip_via_engine_chrome() {
 #[test]
 fn test_firefox_canvas_and_audio_share_same_seed() {
     let ff = StealthProfile::firefox_default();
-    assert_eq!(ff.canvas.seed(), ff.audio.seed(),
-        "Firefox profile should use the same seed for canvas and audio");
+    assert_eq!(
+        ff.canvas.seed(),
+        ff.audio.seed(),
+        "Firefox profile should use the same seed for canvas and audio"
+    );
 }
 
 #[test]
 fn test_firefox_canvas_and_behavior_share_same_seed() {
     let ff = StealthProfile::firefox_default();
-    assert_eq!(ff.canvas.seed(), ff.behavior.seed(),
-        "Firefox profile should use the same seed for canvas and behavior");
+    assert_eq!(
+        ff.canvas.seed(),
+        ff.behavior.seed(),
+        "Firefox profile should use the same seed for canvas and behavior"
+    );
 }
 
 #[test]
 fn test_chrome_canvas_and_audio_share_same_seed() {
     let ch = StealthProfile::chrome_default();
-    assert_eq!(ch.canvas.seed(), ch.audio.seed(),
-        "Chrome profile should use the same seed for canvas and audio");
+    assert_eq!(
+        ch.canvas.seed(),
+        ch.audio.seed(),
+        "Chrome profile should use the same seed for canvas and audio"
+    );
 }
 
 #[test]
 fn test_chrome_canvas_and_behavior_share_same_seed() {
     let ch = StealthProfile::chrome_default();
-    assert_eq!(ch.canvas.seed(), ch.behavior.seed(),
-        "Chrome profile should use the same seed for canvas and behavior");
+    assert_eq!(
+        ch.canvas.seed(),
+        ch.behavior.seed(),
+        "Chrome profile should use the same seed for canvas and behavior"
+    );
 }
 
 #[test]
 fn test_firefox_navigator_oscpu_present_chrome_absent() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert!(ff.navigator.oscpu.is_some(),
-        "Firefox navigator should have oscpu");
-    assert!(ch.navigator.oscpu.is_none(),
-        "Chrome navigator should not have oscpu");
+    assert!(
+        ff.navigator.oscpu.is_some(),
+        "Firefox navigator should have oscpu"
+    );
+    assert!(
+        ch.navigator.oscpu.is_none(),
+        "Chrome navigator should not have oscpu"
+    );
 }
 
 #[test]
 fn test_firefox_navigator_build_id_present_chrome_absent() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert!(ff.navigator.build_id.is_some(),
-        "Firefox navigator should have build_id");
-    assert!(ch.navigator.build_id.is_none(),
-        "Chrome navigator should not have build_id");
+    assert!(
+        ff.navigator.build_id.is_some(),
+        "Firefox navigator should have build_id"
+    );
+    assert!(
+        ch.navigator.build_id.is_none(),
+        "Chrome navigator should not have build_id"
+    );
 }
 
 #[test]
 fn test_firefox_vendor_empty_chrome_vendor_google() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert_eq!(ff.navigator.vendor, "",
-        "Firefox navigator.vendor should be empty string");
-    assert_eq!(ch.navigator.vendor, "Google Inc.",
-        "Chrome navigator.vendor should be 'Google Inc.'");
+    assert_eq!(
+        ff.navigator.vendor, "",
+        "Firefox navigator.vendor should be empty string"
+    );
+    assert_eq!(
+        ch.navigator.vendor, "Google Inc.",
+        "Chrome navigator.vendor should be 'Google Inc.'"
+    );
 }
 
 #[test]
 fn test_firefox_product_sub_differs_from_chrome() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert_ne!(ff.navigator.product_sub, ch.navigator.product_sub,
-        "Firefox and Chrome should have different product_sub values");
+    assert_ne!(
+        ff.navigator.product_sub, ch.navigator.product_sub,
+        "Firefox and Chrome should have different product_sub values"
+    );
 }
 
 #[test]
@@ -916,35 +1194,53 @@ fn test_webgl_extensions_firefox_superset_of_chrome() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
     // Firefox has more WebGL extensions than Chrome
-    assert!(ff.webgl.extensions.len() > ch.webgl.extensions.len(),
-        "Firefox WebGL should have more extensions than Chrome");
+    assert!(
+        ff.webgl.extensions.len() > ch.webgl.extensions.len(),
+        "Firefox WebGL should have more extensions than Chrome"
+    );
     // Both should have WEBGL_debug_renderer_info
-    assert!(ff.webgl.extensions.iter().any(|e| e == "WEBGL_debug_renderer_info"));
-    assert!(ch.webgl.extensions.iter().any(|e| e == "WEBGL_debug_renderer_info"));
+    assert!(ff
+        .webgl
+        .extensions
+        .iter()
+        .any(|e| e == "WEBGL_debug_renderer_info"));
+    assert!(ch
+        .webgl
+        .extensions
+        .iter()
+        .any(|e| e == "WEBGL_debug_renderer_info"));
 }
 
 #[test]
 fn test_tls_firefox_more_cipher_suites_than_chrome() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert!(ff.tls.cipher_suites.len() > ch.tls.cipher_suites.len(),
-        "Firefox should have more TLS cipher suites than Chrome");
+    assert!(
+        ff.tls.cipher_suites.len() > ch.tls.cipher_suites.len(),
+        "Firefox should have more TLS cipher suites than Chrome"
+    );
 }
 
 #[test]
 fn test_tls_firefox_more_supported_groups_than_chrome() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert!(ff.tls.supported_groups.len() > ch.tls.supported_groups.len(),
-        "Firefox should have more supported groups than Chrome");
+    assert!(
+        ff.tls.supported_groups.len() > ch.tls.supported_groups.len(),
+        "Firefox should have more supported groups than Chrome"
+    );
 }
 
 #[test]
 fn test_http2_firefox_smaller_window_than_chrome() {
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
-    assert!(ff.http2.initial_window_size < ch.http2.initial_window_size,
-        "Firefox HTTP/2 initial window size should be smaller than Chrome");
-    assert!(ff.http2.window_update_size < ch.http2.window_update_size,
-        "Firefox HTTP/2 window update size should be smaller than Chrome");
+    assert!(
+        ff.http2.initial_window_size < ch.http2.initial_window_size,
+        "Firefox HTTP/2 initial window size should be smaller than Chrome"
+    );
+    assert!(
+        ff.http2.window_update_size < ch.http2.window_update_size,
+        "Firefox HTTP/2 window update size should be smaller than Chrome"
+    );
 }

@@ -65,19 +65,19 @@ fn test_bao_engine_core_all() {
 
     // --- Undefined ---
     match ctx.eval("undefined", "<test>") {
-        Ok(JsValue::Undefined) => {},
+        Ok(JsValue::Undefined) => {}
         other => panic!("expected undefined, got: {:?}", other),
     }
 
     // --- Null ---
     match ctx.eval("null", "<test>") {
-        Ok(JsValue::Null) => {},
+        Ok(JsValue::Null) => {}
         other => panic!("expected null, got: {:?}", other),
     }
 
     // --- Object ---
     match ctx.eval("({a: 1})", "<test>") {
-        Ok(JsValue::Object(_)) => {},
+        Ok(JsValue::Object(_)) => {}
         other => panic!("expected object, got: {:?}", other),
     }
 
@@ -85,7 +85,11 @@ fn test_bao_engine_core_all() {
     let result = ctx.eval("throw new Error('test error')", "<test>");
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.message.contains("test error"), "error message should contain 'test error', got: {}", err.message);
+    assert!(
+        err.message.contains("test error"),
+        "error message should contain 'test error', got: {}",
+        err.message
+    );
 
     // --- Syntax error ---
     let result = ctx.eval("function(", "<test>");
@@ -94,7 +98,10 @@ fn test_bao_engine_core_all() {
     // --- Arithmetic ---
     assert_eq!(eval_number(&mut ctx, "10 / 3"), 10.0 / 3.0);
     assert_eq!(eval_number(&mut ctx, "2 ** 10"), 1024.0);
-    assert_eq!(eval_number(&mut ctx, "Math.PI > 3.14 && Math.PI < 3.15 ? 1 : 0"), 1.0);
+    assert_eq!(
+        eval_number(&mut ctx, "Math.PI > 3.14 && Math.PI < 3.15 ? 1 : 0"),
+        1.0
+    );
 
     // --- JSON ---
     let result = eval_string(&mut ctx, "JSON.stringify({x: 1, y: [2, 3]})");
@@ -104,14 +111,26 @@ fn test_bao_engine_core_all() {
     assert_eq!(result, 42.0);
 
     // --- Array methods ---
-    assert_eq!(eval_string(&mut ctx, "[1,2,3].map(x => x * 2).join(',')"), "2,4,6");
-    assert_eq!(eval_number(&mut ctx, "[1,2,3,4,5].filter(x => x > 3).length"), 2.0);
-    assert_eq!(eval_number(&mut ctx, "[10,20,30].reduce((a,b) => a+b, 0)"), 60.0);
+    assert_eq!(
+        eval_string(&mut ctx, "[1,2,3].map(x => x * 2).join(',')"),
+        "2,4,6"
+    );
+    assert_eq!(
+        eval_number(&mut ctx, "[1,2,3,4,5].filter(x => x > 3).length"),
+        2.0
+    );
+    assert_eq!(
+        eval_number(&mut ctx, "[10,20,30].reduce((a,b) => a+b, 0)"),
+        60.0
+    );
 
     // --- String methods ---
     assert_eq!(eval_string(&mut ctx, "'hello'.toUpperCase()"), "HELLO");
     assert_eq!(eval_string(&mut ctx, "'HELLO'.toLowerCase()"), "hello");
-    assert_eq!(eval_string(&mut ctx, "'abc'.split('').reverse().join('')"), "cba");
+    assert_eq!(
+        eval_string(&mut ctx, "'abc'.split('').reverse().join('')"),
+        "cba"
+    );
 
     // --- Console ---
     match ctx.eval("typeof console === 'object'", "<test>") {
@@ -134,7 +153,10 @@ fn test_bao_engine_core_all() {
         Ok(JsValue::Bool(b)) => assert!(b),
         other => panic!("expected bool for regex test, got: {:?}", other),
     }
-    assert_eq!(eval_string(&mut ctx, "'abc123def'.replace(/\\d+/, 'NUM')"), "abcNUMdef");
+    assert_eq!(
+        eval_string(&mut ctx, "'abc123def'.replace(/\\d+/, 'NUM')"),
+        "abcNUMdef"
+    );
 
     // --- Date ---
     match ctx.eval("new Date().getTime() > 0", "<test>") {
@@ -143,12 +165,15 @@ fn test_bao_engine_core_all() {
     }
 
     // --- Map/Set ---
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         var m = new Map();
         m.set('key', 'val');
         var s = new Set([1,2,3]);
         m.get('key') + ',' + s.size
-    "#);
+    "#,
+    );
     assert_eq!(result, "val,3");
 
     // --- JsError struct ---

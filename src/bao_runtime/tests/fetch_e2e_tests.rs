@@ -13,8 +13,8 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bao_engine::context::JsContext;
@@ -101,24 +101,27 @@ fn test_sync_http_request_real_tcp_connection() {
     std::thread::sleep(Duration::from_millis(50));
 
     let url = format!("http://127.0.0.1:{}/", port);
-    let result = bun_runtime::http_client::http_request(
-        bun_http::Method::GET,
-        &url,
-        &[],
-        None,
-    );
+    let result = bun_runtime::http_client::http_request(bun_http::Method::GET, &url, &[], None);
 
     match result {
         Ok(resp) => {
-            assert_eq!(resp.status_code, 200, "Expected status 200, got {}", resp.status_code);
+            assert_eq!(
+                resp.status_code, 200,
+                "Expected status 200, got {}",
+                resp.status_code
+            );
             assert!(
-                resp.body.windows(b"hello_sync".len()).any(|w| w == b"hello_sync"),
+                resp.body
+                    .windows(b"hello_sync".len())
+                    .any(|w| w == b"hello_sync"),
                 "Response body should contain 'hello_sync', got: {:?}",
                 std::str::from_utf8(&resp.body)
             );
             eprintln!(
                 "[PASS] Sync http_request: connected to 127.0.0.1:{}, status={}, body_len={}",
-                port, resp.status_code, resp.body.len()
+                port,
+                resp.status_code,
+                resp.body.len()
             );
         }
         Err(e) => {
@@ -188,9 +191,12 @@ fn test_async_fetch_real_tcp_connection_e2e() {
     // Drive the event loop to allow HTTPThread + ConcurrentTask to complete
     drive_event_loop(&mut ctx, 500);
 
-    let result = eval_string(&mut ctx, r#"
+    let result = eval_string(
+        &mut ctx,
+        r#"
         globalThis.__fetch_done ? ("DONE:" + (globalThis.__fetch_result || globalThis.__fetch_error)) : "PENDING"
-    "#);
+    "#,
+    );
 
     if result.starts_with("DONE:") {
         let body = &result[5..];

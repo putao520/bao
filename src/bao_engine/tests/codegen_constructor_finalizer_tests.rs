@@ -181,9 +181,18 @@ fn test_finalizer_uses_to_private_to_extract_pointer() {
 fn test_class_ops_generated_when_finalize_true() {
     let class = make_class_with_ctor_and_finalize("OpsGen");
     let bindings = generate_bindings(&class);
-    let ops = bindings.class_ops_def.as_ref().expect("class_ops_def must be Some when finalize=true");
-    assert!(ops.contains("JSClassOps"), "class_ops_def must contain JSClassOps struct");
-    assert!(ops.contains("finalize: Some"), "class_ops must set finalize to Some(...)");
+    let ops = bindings
+        .class_ops_def
+        .as_ref()
+        .expect("class_ops_def must be Some when finalize=true");
+    assert!(
+        ops.contains("JSClassOps"),
+        "class_ops_def must contain JSClassOps struct"
+    );
+    assert!(
+        ops.contains("finalize: Some"),
+        "class_ops must set finalize to Some(...)"
+    );
 }
 
 #[test]
@@ -231,7 +240,9 @@ fn test_js_class_flags_foreground_finalize_when_finalize_true() {
     let class = make_class_with_ctor_and_finalize("FlagFinalize");
     let bindings = generate_bindings(&class);
     assert!(
-        bindings.js_class_def.contains("JSCLASS_FOREGROUND_FINALIZE"),
+        bindings
+            .js_class_def
+            .contains("JSCLASS_FOREGROUND_FINALIZE"),
         "JSClass flags must include JSCLASS_FOREGROUND_FINALIZE when finalize=true"
     );
 }
@@ -294,8 +305,12 @@ fn test_module_emits_class_ops_before_js_class() {
     let bindings = generate_bindings(&class);
     let module = generate_module(&[bindings], "order_module");
 
-    let ops_pos = module.find("OrderMod_ClassOps").expect("ClassOps must be in module");
-    let class_pos = module.find("static OrderMod_Class: JSClass").expect("JSClass must be in module");
+    let ops_pos = module
+        .find("OrderMod_ClassOps")
+        .expect("ClassOps must be in module");
+    let class_pos = module
+        .find("static OrderMod_Class: JSClass")
+        .expect("JSClass must be in module");
     assert!(
         ops_pos < class_pos,
         "ClassOps must appear before JSClass in module output"

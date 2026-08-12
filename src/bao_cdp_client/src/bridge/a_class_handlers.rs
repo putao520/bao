@@ -44,7 +44,10 @@ fn get_str(params: &Value, key: &str) -> Result<String, BridgeError> {
 
 /// 从 params 抽取可选字符串字段(允许缺失)。
 fn get_opt_str(params: &Value, key: &str) -> Option<String> {
-    params.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    params
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// 从 params 抽取可选 i64 字段(允许缺失,缺失返回 default)。
@@ -236,12 +239,8 @@ pub fn runtime_call_function_on(
         .and_then(|v| v.as_array())
         .map(|a| a.clone())
         .unwrap_or_default();
-    let r = backend.runtime_call_function_on(
-        target_id,
-        &object_id,
-        &function_declaration,
-        &args,
-    )?;
+    let r =
+        backend.runtime_call_function_on(target_id, &object_id, &function_declaration, &args)?;
     Ok(evaluate_result_to_json(&r))
 }
 
@@ -703,9 +702,7 @@ fn navigation_history_to_json(h: &NavigationHistory) -> Value {
     let entries: Vec<Value> = h
         .entries
         .iter()
-        .map(|e: &NavigationEntry| {
-            json!({ "id": e.id, "url": e.url, "title": e.title })
-        })
+        .map(|e: &NavigationEntry| json!({ "id": e.id, "url": e.url, "title": e.title }))
         .collect();
     json!({
         "currentIndex": h.current_index,
@@ -1017,8 +1014,8 @@ pub(crate) fn base64_encode(input: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::servo_backend::MockServoBackend;
+    use super::*;
 
     #[test]
     fn base64_encode_known_vectors() {

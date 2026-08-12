@@ -142,7 +142,11 @@ fn test_typing_delays_at_least_count() {
     let sim = BehaviorSimulator::new(42);
     let delays = sim.generate_typing_delays(10);
     // Should produce at least `count` delays (may have extra backspace events)
-    assert!(delays.len() >= 10, "Expected >= 10 delays, got {}", delays.len());
+    assert!(
+        delays.len() >= 10,
+        "Expected >= 10 delays, got {}",
+        delays.len()
+    );
 }
 
 #[test]
@@ -277,7 +281,11 @@ fn test_scroll_deltas_small_total() {
     assert!(!deltas.is_empty());
     // Sum should be close to 1.0
     let sum: f64 = deltas.iter().sum();
-    assert!((sum - 1.0).abs() < 0.5, "Sum {} should be close to 1.0", sum);
+    assert!(
+        (sum - 1.0).abs() < 0.5,
+        "Sum {} should be close to 1.0",
+        sum
+    );
 }
 
 #[test]
@@ -326,7 +334,12 @@ fn test_human_mouse_path_has_time_progression() {
     let path = sim.generate_human_mouse_path((0.0, 0.0), (500.0, 500.0), 20.0);
     // Time should monotonically increase
     for w in path.windows(2) {
-        assert!(w[1].2 >= w[0].2, "Time should increase: {} -> {}", w[0].2, w[1].2);
+        assert!(
+            w[1].2 >= w[0].2,
+            "Time should increase: {} -> {}",
+            w[0].2,
+            w[1].2
+        );
     }
 }
 
@@ -353,7 +366,11 @@ fn test_click_sequence_has_mouse_down_up_click() {
     let sim = BehaviorSimulator::new(42);
     let events = sim.generate_click_sequence(100.0, 200.0, 30.0);
     // Should have at least: mousemove (pre-click), mousedown, mouseup, click
-    assert!(events.len() >= 3, "Click sequence should have >= 3 events, got {}", events.len());
+    assert!(
+        events.len() >= 3,
+        "Click sequence should have >= 3 events, got {}",
+        events.len()
+    );
 }
 
 #[test]
@@ -364,7 +381,11 @@ fn test_click_sequence_press_duration_reasonable() {
     for e in &events {
         if e.delay_after_ms > 0 {
             // Press durations should be in reasonable human range (30-300ms)
-            assert!(e.delay_after_ms < 500, "Press duration {} too long", e.delay_after_ms);
+            assert!(
+                e.delay_after_ms < 500,
+                "Press duration {} too long",
+                e.delay_after_ms
+            );
         }
     }
 }
@@ -385,7 +406,11 @@ fn test_human_typing_basic_text() {
     let sim = BehaviorSimulator::new(42);
     let events = sim.generate_human_typing("hello");
     // Base chars: h, e, l, l, o = 5 minimum (may have extra backspaces)
-    assert!(events.len() >= 5, "Should have >= 5 events, got {}", events.len());
+    assert!(
+        events.len() >= 5,
+        "Should have >= 5 events, got {}",
+        events.len()
+    );
 }
 
 #[test]

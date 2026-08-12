@@ -80,7 +80,10 @@ fn wait_for_load(page: &bao_browser::PageHandle, max_ms: u64) {
 
 /// Inject stealth profile values as non-configurable getters on navigator/screen/window.
 /// Uses the same profile data source as engine_props, ensuring value consistency.
-fn inject_stealth_js(page: &bao_browser::PageHandle, profile: &StealthProfile) -> Result<(), String> {
+fn inject_stealth_js(
+    page: &bao_browser::PageHandle,
+    profile: &StealthProfile,
+) -> Result<(), String> {
     // Navigator properties
     let nav_overrides = [
         ("userAgent", &profile.navigator.user_agent),
@@ -94,12 +97,16 @@ fn inject_stealth_js(page: &bao_browser::PageHandle, profile: &StealthProfile) -
             "(function() {{ try {{ Object.defineProperty(navigator, '{}', {{get: function(){{return '{}';}}, configurable: false}}); }} catch(e){{}} }})()",
             prop, escaped
         );
-        page.evaluate_js_web(&js).map_err(|e| format!("inject nav.{}: {}", prop, e))?;
+        page.evaluate_js_web(&js)
+            .map_err(|e| format!("inject nav.{}: {}", prop, e))?;
     }
 
     // Navigator numeric properties
     let nav_num_overrides = [
-        ("hardwareConcurrency", profile.navigator.hardware_concurrency),
+        (
+            "hardwareConcurrency",
+            profile.navigator.hardware_concurrency,
+        ),
         ("maxTouchPoints", profile.navigator.max_touch_points),
     ];
     for (prop, value) in &nav_num_overrides {
@@ -107,12 +114,14 @@ fn inject_stealth_js(page: &bao_browser::PageHandle, profile: &StealthProfile) -
             "(function() {{ try {{ Object.defineProperty(navigator, '{}', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
             prop, value
         );
-        page.evaluate_js_web(&js).map_err(|e| format!("inject nav.{}: {}", prop, e))?;
+        page.evaluate_js_web(&js)
+            .map_err(|e| format!("inject nav.{}: {}", prop, e))?;
     }
 
     // Navigator.webdriver
     let js = "(function() { try { Object.defineProperty(navigator, 'webdriver', {get: function(){return false;}, configurable: false}); } catch(e){} })()";
-    page.evaluate_js_web(&js).map_err(|e| format!("inject webdriver: {}", e))?;
+    page.evaluate_js_web(&js)
+        .map_err(|e| format!("inject webdriver: {}", e))?;
 
     // Screen properties
     let screen_overrides = [
@@ -128,7 +137,8 @@ fn inject_stealth_js(page: &bao_browser::PageHandle, profile: &StealthProfile) -
             "(function() {{ try {{ Object.defineProperty(screen, '{}', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
             prop, value
         );
-        page.evaluate_js_web(&js).map_err(|e| format!("inject screen.{}: {}", prop, e))?;
+        page.evaluate_js_web(&js)
+            .map_err(|e| format!("inject screen.{}: {}", prop, e))?;
     }
 
     // devicePixelRatio
@@ -136,7 +146,8 @@ fn inject_stealth_js(page: &bao_browser::PageHandle, profile: &StealthProfile) -
         "(function() {{ try {{ Object.defineProperty(window, 'devicePixelRatio', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
         profile.screen.device_pixel_ratio
     );
-    page.evaluate_js_web(&js).map_err(|e| format!("inject dpr: {}", e))?;
+    page.evaluate_js_web(&js)
+        .map_err(|e| format!("inject dpr: {}", e))?;
 
     Ok(())
 }
@@ -154,7 +165,9 @@ fn inject_stealth_js(page: &bao_browser::PageHandle, profile: &StealthProfile) -
 fn realworld_anti_scraping_e2e() {
     // Guard: skip if no DISPLAY environment (headless CI without Xvfb)
     if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        eprintln!("[skip] 环境不可用: no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
+        eprintln!(
+            "[skip] 环境不可用: no DISPLAY or WAYLAND_DISPLAY — servo requires a display server"
+        );
         return;
     }
 
@@ -194,7 +207,11 @@ fn realworld_anti_scraping_e2e() {
     }
     // Hard failures on stealth properties = real regression.
     // Network failures are tolerable (skip), but stealth property failures are not.
-    let stealth_fails = report.messages.iter().filter(|m| m.starts_with("FAIL") && m.contains("stealth")).count();
+    let stealth_fails = report
+        .messages
+        .iter()
+        .filter(|m| m.starts_with("FAIL") && m.contains("stealth"))
+        .count();
     assert_eq!(
         stealth_fails, 0,
         "{} stealth property assertions failed — see stderr above",
@@ -233,15 +250,27 @@ fn scenario_stealth_properties(pool: &PagePool, report: &mut Report) {
     // Verify navigator.userAgent contains Firefox
     match page.evaluate_js_web("navigator.userAgent") {
         Ok(ua) if ua.contains("Firefox") => report.pass(&format!("{}::ua_firefox", name)),
-        Ok(ua) => report.fail(&format!("{}::ua_firefox", name), &format!("UA missing Firefox: {}", ua)),
-        Err(e) => report.skip(&format!("{}::ua_firefox", name), &format!("evaluate_js: {}", e)),
+        Ok(ua) => report.fail(
+            &format!("{}::ua_firefox", name),
+            &format!("UA missing Firefox: {}", ua),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::ua_firefox", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Verify navigator.webdriver === false
     match page.evaluate_js_web("String(navigator.webdriver)") {
         Ok(s) if s == "false" => report.pass(&format!("{}::webdriver_false", name)),
-        Ok(s) => report.fail(&format!("{}::webdriver_false", name), &format!("webdriver={}", s)),
-        Err(e) => report.skip(&format!("{}::webdriver_false", name), &format!("evaluate_js: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::webdriver_false", name),
+            &format!("webdriver={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::webdriver_false", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Verify screen dimensions match profile
@@ -250,21 +279,36 @@ fn scenario_stealth_properties(pool: &PagePool, report: &mut Report) {
             report.pass(&format!("{}::screen_dims", name))
         }
         Ok(s) => report.fail(&format!("{}::screen_dims", name), &format!("screen={}", s)),
-        Err(e) => report.skip(&format!("{}::screen_dims", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::screen_dims", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Verify screen.colorDepth
     match page.evaluate_js_web("String(screen.colorDepth)") {
         Ok(s) if s == "24" => report.pass(&format!("{}::color_depth", name)),
-        Ok(s) => report.fail(&format!("{}::color_depth", name), &format!("colorDepth={}", s)),
-        Err(e) => report.skip(&format!("{}::color_depth", name), &format!("evaluate_js: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::color_depth", name),
+            &format!("colorDepth={}", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::color_depth", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Verify navigator.vendor is empty (Firefox)
     match page.evaluate_js_web("navigator.vendor") {
         Ok(s) if s.is_empty() => report.pass(&format!("{}::vendor_empty", name)),
-        Ok(s) => report.fail(&format!("{}::vendor_empty", name), &format!("vendor='{}'", s)),
-        Err(e) => report.skip(&format!("{}::vendor_empty", name), &format!("evaluate_js: {}", e)),
+        Ok(s) => report.fail(
+            &format!("{}::vendor_empty", name),
+            &format!("vendor='{}'", s),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::vendor_empty", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Verify navigator.hardwareConcurrency
@@ -274,17 +318,26 @@ fn scenario_stealth_properties(pool: &PagePool, report: &mut Report) {
             if val == 8 {
                 report.pass(&format!("{}::hardware_concurrency", name));
             } else {
-                report.fail(&format!("{}::hardware_concurrency", name), &format!("expected 8 got: {}", s));
+                report.fail(
+                    &format!("{}::hardware_concurrency", name),
+                    &format!("expected 8 got: {}", s),
+                );
             }
         }
-        Err(e) => report.skip(&format!("{}::hardware_concurrency", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::hardware_concurrency", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Verify navigator.platform
     match page.evaluate_js_web("navigator.platform") {
         Ok(s) if s.contains("Linux") => report.pass(&format!("{}::platform", name)),
         Ok(s) => report.fail(&format!("{}::platform", name), &format!("platform='{}'", s)),
-        Err(e) => report.skip(&format!("{}::platform", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::platform", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Verify no "HeadlessChrome" in UA
@@ -292,8 +345,14 @@ fn scenario_stealth_properties(pool: &PagePool, report: &mut Report) {
         Ok(ua) if !ua.contains("Headless") && !ua.contains("headless") => {
             report.pass(&format!("{}::no_headless_ua", name))
         }
-        Ok(ua) => report.fail(&format!("{}::no_headless_ua", name), &format!("UA contains headless: {}", ua)),
-        Err(e) => report.skip(&format!("{}::no_headless_ua", name), &format!("evaluate_js: {}", e)),
+        Ok(ua) => report.fail(
+            &format!("{}::no_headless_ua", name),
+            &format!("UA contains headless: {}", ua),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::no_headless_ua", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -328,7 +387,10 @@ fn scenario_navigate_58_com(pool: &PagePool, report: &mut Report) {
             report.pass(&format!("{}::has_title", name));
             eprintln!("  [58.com] title: {}", t);
         }
-        _ => report.skip(&format!("{}::has_title", name), "no title (network/rendering)"),
+        _ => report.skip(
+            &format!("{}::has_title", name),
+            "no title (network/rendering)",
+        ),
     }
 
     // Verify UA is still Firefox after navigation
@@ -337,9 +399,15 @@ fn scenario_navigate_58_com(pool: &PagePool, report: &mut Report) {
             report.pass(&format!("{}::ua_persists", name));
         }
         Ok(ua) => {
-            report.fail(&format!("{}::ua_persists", name), &format!("UA changed: {}", ua));
+            report.fail(
+                &format!("{}::ua_persists", name),
+                &format!("UA changed: {}", ua),
+            );
         }
-        Err(e) => report.skip(&format!("{}::ua_persists", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::ua_persists", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Verify webdriver still false after navigation
@@ -348,9 +416,15 @@ fn scenario_navigate_58_com(pool: &PagePool, report: &mut Report) {
             report.pass(&format!("{}::webdriver_persists", name));
         }
         Ok(s) => {
-            report.fail(&format!("{}::webdriver_persists", name), &format!("webdriver after nav: {}", s));
+            report.fail(
+                &format!("{}::webdriver_persists", name),
+                &format!("webdriver after nav: {}", s),
+            );
         }
-        Err(e) => report.skip(&format!("{}::webdriver_persists", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::webdriver_persists", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -386,31 +460,49 @@ fn scenario_navigate_meituan(pool: &PagePool, report: &mut Report) {
             eprintln!("  [meituan.com] title: {}", t);
         }
         Some(t) if !t.is_empty() => {
-            report.skip(&format!("{}::has_title", name), &format!("unexpected title: {}", t));
+            report.skip(
+                &format!("{}::has_title", name),
+                &format!("unexpected title: {}", t),
+            );
         }
         _ => report.skip(&format!("{}::has_title", name), "no title (WAF or network)"),
     }
 
     // Check if WAF blocked us
-    match page.evaluate_js_web("document.body ? document.body.innerText.substring(0, 200) : 'no body'") {
+    match page
+        .evaluate_js_web("document.body ? document.body.innerText.substring(0, 200) : 'no body'")
+    {
         Ok(text) => {
-            if text.contains("验证") || text.contains("challenge") || text.contains("请完成验证") {
-                report.skip(&format!("{}::waf_challenge", name), "WAF challenge page detected");
+            if text.contains("验证") || text.contains("challenge") || text.contains("请完成验证")
+            {
+                report.skip(
+                    &format!("{}::waf_challenge", name),
+                    "WAF challenge page detected",
+                );
             } else if !text.is_empty() {
                 report.pass(&format!("{}::page_loaded", name));
-                eprintln!("  [meituan.com] body preview: {}...", &text[..text.len().min(100)]);
+                eprintln!(
+                    "  [meituan.com] body preview: {}...",
+                    &text[..text.len().min(100)]
+                );
             } else {
                 report.skip(&format!("{}::page_loaded", name), "empty body");
             }
         }
-        Err(e) => report.skip(&format!("{}::page_content", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::page_content", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     // Stealth properties should persist
     match page.evaluate_js_web("navigator.userAgent") {
         Ok(ua) if ua.contains("Firefox") => report.pass(&format!("{}::ua_persists", name)),
         Ok(ua) => report.fail(&format!("{}::ua_persists", name), &format!("UA: {}", ua)),
-        Err(e) => report.skip(&format!("{}::ua_persists", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::ua_persists", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -451,7 +543,9 @@ fn scenario_navigate_example_com(pool: &PagePool, report: &mut Report) {
     }
 
     // Verify DOM loaded
-    match page.evaluate_js_web("document.querySelector('h1') ? document.querySelector('h1').textContent : 'none'") {
+    match page.evaluate_js_web(
+        "document.querySelector('h1') ? document.querySelector('h1').textContent : 'none'",
+    ) {
         Ok(s) if s.contains("Example") => report.pass(&format!("{}::dom_h1", name)),
         Ok(s) => report.skip(&format!("{}::dom_h1", name), &format!("h1={}", s)),
         Err(e) => report.skip(&format!("{}::dom_h1", name), &format!("evaluate_js: {}", e)),
@@ -461,7 +555,10 @@ fn scenario_navigate_example_com(pool: &PagePool, report: &mut Report) {
     match page.evaluate_js_web("navigator.userAgent") {
         Ok(ua) if ua.contains("Firefox") => report.pass(&format!("{}::stealth_ua", name)),
         Ok(ua) => report.fail(&format!("{}::stealth_ua", name), &format!("UA: {}", ua)),
-        Err(e) => report.skip(&format!("{}::stealth_ua", name), &format!("evaluate_js: {}", e)),
+        Err(e) => report.skip(
+            &format!("{}::stealth_ua", name),
+            &format!("evaluate_js: {}", e),
+        ),
     }
 
     let _ = page.close();
@@ -493,8 +590,14 @@ fn scenario_screenshot_capture(pool: &PagePool, report: &mut Report) {
             report.pass(&format!("{}::png_valid", name));
             eprintln!("  [screenshot] PNG size: {} bytes", data.len());
         }
-        Ok(data) => report.fail(&format!("{}::png_valid", name), &format!("too small: {} bytes", data.len())),
-        Err(e) => report.skip(&format!("{}::png_valid", name), &format!("screenshot: {}", e)),
+        Ok(data) => report.fail(
+            &format!("{}::png_valid", name),
+            &format!("too small: {} bytes", data.len()),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::png_valid", name),
+            &format!("screenshot: {}", e),
+        ),
     }
 
     // JPEG screenshot
@@ -503,8 +606,14 @@ fn scenario_screenshot_capture(pool: &PagePool, report: &mut Report) {
             report.pass(&format!("{}::jpeg_valid", name));
             eprintln!("  [screenshot] JPEG size: {} bytes", data.len());
         }
-        Ok(data) => report.fail(&format!("{}::jpeg_valid", name), &format!("too small: {} bytes", data.len())),
-        Err(e) => report.skip(&format!("{}::jpeg_valid", name), &format!("screenshot: {}", e)),
+        Ok(data) => report.fail(
+            &format!("{}::jpeg_valid", name),
+            &format!("too small: {} bytes", data.len()),
+        ),
+        Err(e) => report.skip(
+            &format!("{}::jpeg_valid", name),
+            &format!("screenshot: {}", e),
+        ),
     }
 
     let _ = page.close();

@@ -50,12 +50,12 @@ pub enum CryptoError {
     OperationFailed(String),
 }
 
-pub mod sign;
-pub mod verify;
+pub mod certificate;
 pub mod cipher;
+pub mod dh;
+pub mod kdf;
 pub mod key_exchange;
 pub mod keypair;
-pub mod certificate;
-pub mod kdf;
 pub mod random;
-pub mod dh;
+pub mod sign;
+pub mod verify;

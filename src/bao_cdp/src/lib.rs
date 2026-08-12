@@ -47,11 +47,11 @@ pub use bun_uws::ws_handshake::{
 };
 pub use bun_uws::ws_server::{self, ReplayStream, WsServerConnection};
 
-mod protocol;
 mod backend;
+pub mod domains;
+mod protocol;
 mod router;
 pub mod servo_bridge;
-pub mod domains;
 
 // BAO-specific 11-domain CDP command dispatch + JSON-RPC 2.0 codec helpers.
 // Wire types come from cdp_server (re-exported above); the codec helpers are

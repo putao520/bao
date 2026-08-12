@@ -25,11 +25,11 @@
 // Each registered object carries a `__stub: true` marker for debugging
 // (non-enumerable). Real implementations replace the stub when they ship.
 
+use ::std::ptr::NonNull;
 use mozjs::jsapi::*;
 use mozjs::jsval::ObjectValue;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
-use ::std::ptr::NonNull;
 
 use crate::require::cache_builtin;
 
@@ -69,13 +69,7 @@ fn register_stub(cx: &mut mozjs::context::JSContext, name: &str) {
             _phantom_0: ::std::marker::PhantomData,
             ptr: &true_val,
         };
-        let _ = JS_DefineProperty(
-            raw_cx,
-            obj.handle().into(),
-            c"__stub".as_ptr(),
-            h,
-            0,
-        );
+        let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"__stub".as_ptr(), h, 0);
     }
     // @trace REQ-ENG-006 — node:v8 surface that upstream tests probe
     // (stubs.test.js iterates `for (let key in require("v8").getHeapStatistics())`
@@ -84,7 +78,9 @@ fn register_stub(cx: &mut mozjs::context::JSContext, name: &str) {
     // object literal on every call so the test sees a stable, plausible
     // shape even though the SM heap doesn't expose V8's exact field names.
     if name == "v8" {
-        unsafe { install_v8_methods(cx, obj.handle().into()); }
+        unsafe {
+            install_v8_methods(cx, obj.handle().into());
+        }
     }
     cache_builtin(cx, name, obj.get());
 }
@@ -112,7 +108,13 @@ unsafe fn install_v8_methods(cx: &mut mozjs::context::JSContext, obj_h: Handle<*
     if !get_heap_stats_fn.is_null() {
         let fn_obj = JS_GetFunctionObject(get_heap_stats_fn);
         rooted!(&in(cx) let val = ObjectValue(fn_obj));
-        let _ = JS_DefineProperty(raw_cx, obj_h, c"getHeapStatistics".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj_h,
+            c"getHeapStatistics".as_ptr(),
+            val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
     // cachedDataVersionTag(): constant plausible value.
     let cdvt_fn = JS_NewFunction(
@@ -125,7 +127,13 @@ unsafe fn install_v8_methods(cx: &mut mozjs::context::JSContext, obj_h: Handle<*
     if !cdvt_fn.is_null() {
         let fn_obj = JS_GetFunctionObject(cdvt_fn);
         rooted!(&in(cx) let val = ObjectValue(fn_obj));
-        let _ = JS_DefineProperty(raw_cx, obj_h, c"cachedDataVersionTag".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj_h,
+            c"cachedDataVersionTag".as_ptr(),
+            val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 }
 
@@ -172,7 +180,13 @@ unsafe extern "C" fn v8_get_heap_statistics(
     for (k, v) in fields {
         let ckey = ::std::ffi::CString::new(*k).unwrap();
         rooted!(&in(wrapped_cx) let dv = mozjs::jsval::DoubleValue(*v as f64));
-        let _ = JS_DefineProperty(cx, out_root.handle().into(), ckey.as_ptr(), dv.handle().into(), JSPROP_ENUMERATE as u32);
+        let _ = JS_DefineProperty(
+            cx,
+            out_root.handle().into(),
+            ckey.as_ptr(),
+            dv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
     args.rval().set(mozjs::jsval::ObjectValue(out_root.get()));
     true
@@ -197,7 +211,9 @@ fn read_process_rss() -> u64 {
     // Avoid `std::fs::read` overhead — we read a few hundred bytes.
     let mut buf = [0u8; 256];
     let path = "/proc/self/statm";
-    let n = match ::std::fs::File::open(path).and_then(|mut f| ::std::io::Read::read(&mut f, &mut buf)) {
+    let n = match ::std::fs::File::open(path)
+        .and_then(|mut f| ::std::io::Read::read(&mut f, &mut buf))
+    {
         Ok(n) => n,
         Err(_) => return 32 * 1024 * 1024,
     };
@@ -212,14 +228,21 @@ fn read_process_rss() -> u64 {
 fn read_totalmem() -> u64 {
     let mut buf = [0u8; 1024];
     let path = "/proc/meminfo";
-    let n = match ::std::fs::File::open(path).and_then(|mut f| ::std::io::Read::read(&mut f, &mut buf)) {
+    let n = match ::std::fs::File::open(path)
+        .and_then(|mut f| ::std::io::Read::read(&mut f, &mut buf))
+    {
         Ok(n) => n,
         Err(_) => return 16 * 1024 * 1024 * 1024,
     };
     let text = ::std::str::from_utf8(&buf[..n]).unwrap_or("");
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("MemTotal:") {
-            let kb: u64 = rest.trim().split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(16 * 1024 * 1024);
+            let kb: u64 = rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(16 * 1024 * 1024);
             return kb.saturating_mul(1024);
         }
     }

@@ -16,27 +16,47 @@
 //   (7) Bridge-absent default values: title="Bao", url="about:blank",
 //       type="page", attached=true (live_target_info).
 
-use bao_cdp::{handle_command, serialize_response, serialize_event, CdpMessage, CdpResponse, CdpEvent};
+use bao_cdp::{
+    handle_command, serialize_event, serialize_response, CdpEvent, CdpMessage, CdpResponse,
+};
 
 const TID: &str = "test-target";
 use serde_json::json;
 
-
 fn dispatch(method: &str, params: Option<serde_json::Value>) -> CdpResponse {
     let p = params;
-    let msg = CdpMessage { id: Some(1), method: method.to_string(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(1),
+        method: method.to_string(),
+        params: None,
+        session_id: None,
+    };
     handle_command(msg, "test-target", &p, None)
 }
 
 /// dispatch with a custom id — verifies id propagation invariant.
 fn dispatch_id(id: Option<i64>, method: &str, params: Option<serde_json::Value>) -> CdpResponse {
-    let msg = CdpMessage { id, method: method.to_string(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id,
+        method: method.to_string(),
+        params: None,
+        session_id: None,
+    };
     handle_command(msg, "test-target", &params, None)
 }
 
 /// dispatch with a custom target_id — verifies target_id echoes into responses.
-fn dispatch_target(target_id: &str, method: &str, params: Option<serde_json::Value>) -> CdpResponse {
-    let msg = CdpMessage { id: Some(1), method: method.to_string(), params: None, session_id: None };
+fn dispatch_target(
+    target_id: &str,
+    method: &str,
+    params: Option<serde_json::Value>,
+) -> CdpResponse {
+    let msg = CdpMessage {
+        id: Some(1),
+        method: method.to_string(),
+        params: None,
+        session_id: None,
+    };
     handle_command(msg, target_id, &params, None)
 }
 
@@ -70,55 +90,130 @@ fn assert_jsonrpc_invariant(resp: &CdpResponse, ctx: &str) {
 fn test_invariant_all_ok_responses() {
     // Every known ok command must carry result AND NOT error.
     for method in [
-        "Target.getTargets", "Target.getTargetTargets", "Target.createTarget",
-        "Target.closeTarget", "Target.setAutoAttach", "Target.setDiscoverTargets",
-        "Target.getTargetInfo", "Target.attachToTarget", "Target.detachFromTarget",
+        "Target.getTargets",
+        "Target.getTargetTargets",
+        "Target.createTarget",
+        "Target.closeTarget",
+        "Target.setAutoAttach",
+        "Target.setDiscoverTargets",
+        "Target.getTargetInfo",
+        "Target.attachToTarget",
+        "Target.detachFromTarget",
         "Target.sendMessageToTarget",
-        "Page.enable", "Page.disable", "Page.navigate", "Page.reload",
-        "Page.getFrameTree", "Page.getNavigationHistory", "Page.captureScreenshot",
-        "Page.setContent", "Page.close", "Page.bringToFront", "Page.getLayoutMetrics",
-        "Page.addScriptToEvaluateOnNewDocument", "Page.removeScriptToEvaluateOnNewDocument",
-        "Runtime.enable", "Runtime.disable", "Runtime.evaluate", "Runtime.callFunctionOn",
-        "Runtime.getProperties", "Runtime.runScript", "Runtime.releaseObject",
-        "Runtime.releaseObjectGroup", "Runtime.compileScript",
-        "DOM.enable", "DOM.disable", "DOM.getDocument", "DOM.describeNode",
-        "DOM.querySelector", "DOM.querySelectorAll", "DOM.getBoxModel",
-        "DOM.setAttributeValue", "DOM.removeAttribute", "DOM.setOuterHTML",
-        "DOM.insertBefore", "DOM.removeNode", "DOM.getOuterHTML", "DOM.resolveNode",
+        "Page.enable",
+        "Page.disable",
+        "Page.navigate",
+        "Page.reload",
+        "Page.getFrameTree",
+        "Page.getNavigationHistory",
+        "Page.captureScreenshot",
+        "Page.setContent",
+        "Page.close",
+        "Page.bringToFront",
+        "Page.getLayoutMetrics",
+        "Page.addScriptToEvaluateOnNewDocument",
+        "Page.removeScriptToEvaluateOnNewDocument",
+        "Runtime.enable",
+        "Runtime.disable",
+        "Runtime.evaluate",
+        "Runtime.callFunctionOn",
+        "Runtime.getProperties",
+        "Runtime.runScript",
+        "Runtime.releaseObject",
+        "Runtime.releaseObjectGroup",
+        "Runtime.compileScript",
+        "DOM.enable",
+        "DOM.disable",
+        "DOM.getDocument",
+        "DOM.describeNode",
+        "DOM.querySelector",
+        "DOM.querySelectorAll",
+        "DOM.getBoxModel",
+        "DOM.setAttributeValue",
+        "DOM.removeAttribute",
+        "DOM.setOuterHTML",
+        "DOM.insertBefore",
+        "DOM.removeNode",
+        "DOM.getOuterHTML",
+        "DOM.resolveNode",
         "DOM.pushNodesByBackendIdsToFrontend",
-        "Network.enable", "Network.disable", "Network.getResponseBody",
-        "Network.setCacheDisabled", "Network.setExtraHTTPHeaders",
-        "Network.emulateNetworkConditions", "Network.setRequestInterception",
-        "Network.continueInterceptedRequest", "Network.getCookies",
-        "Network.getAllCookies", "Network.deleteCookies", "Network.setCookie",
-        "CSS.enable", "CSS.disable", "CSS.getComputedStyleForNode",
-        "CSS.getMatchedStylesForNode", "CSS.getInlineStylesForNode", "CSS.setStyleTexts",
-        "Emulation.setDeviceMetricsOverride", "Emulation.clearDeviceMetricsOverride",
-        "Emulation.setUserAgentOverride", "Emulation.setTouchEmulationEnabled",
-        "Emulation.setScriptExecutionDisabled", "Emulation.setFocusEmulationEnabled",
-        "Emulation.setCPUThrottlingRate", "Emulation.setDefaultBackgroundColorOverride",
-        "Input.dispatchMouseEvent", "Input.dispatchKeyEvent", "Input.dispatchTouchEvent",
-        "Input.insertText", "Input.setIgnoreInputEvents", "Input.setInterceptDrags",
-        "Overlay.enable", "Overlay.disable", "Overlay.highlightNode",
-        "Overlay.hideHighlight", "Overlay.setInspectMode",
+        "Network.enable",
+        "Network.disable",
+        "Network.getResponseBody",
+        "Network.setCacheDisabled",
+        "Network.setExtraHTTPHeaders",
+        "Network.emulateNetworkConditions",
+        "Network.setRequestInterception",
+        "Network.continueInterceptedRequest",
+        "Network.getCookies",
+        "Network.getAllCookies",
+        "Network.deleteCookies",
+        "Network.setCookie",
+        "CSS.enable",
+        "CSS.disable",
+        "CSS.getComputedStyleForNode",
+        "CSS.getMatchedStylesForNode",
+        "CSS.getInlineStylesForNode",
+        "CSS.setStyleTexts",
+        "Emulation.setDeviceMetricsOverride",
+        "Emulation.clearDeviceMetricsOverride",
+        "Emulation.setUserAgentOverride",
+        "Emulation.setTouchEmulationEnabled",
+        "Emulation.setScriptExecutionDisabled",
+        "Emulation.setFocusEmulationEnabled",
+        "Emulation.setCPUThrottlingRate",
+        "Emulation.setDefaultBackgroundColorOverride",
+        "Input.dispatchMouseEvent",
+        "Input.dispatchKeyEvent",
+        "Input.dispatchTouchEvent",
+        "Input.insertText",
+        "Input.setIgnoreInputEvents",
+        "Input.setInterceptDrags",
+        "Overlay.enable",
+        "Overlay.disable",
+        "Overlay.highlightNode",
+        "Overlay.hideHighlight",
+        "Overlay.setInspectMode",
         "Overlay.setPausedInDebuggerMessage",
-        "Debugger.enable", "Debugger.disable", "Debugger.setBreakpointByUrl",
-        "Debugger.removeBreakpoint", "Debugger.pause", "Debugger.resume",
-        "Debugger.stepOver", "Debugger.stepInto", "Debugger.stepOut",
-        "Debugger.setSkipAllPauses", "Debugger.setBreakpointsActive",
-        "Debugger.evaluateOnCallFrame", "Debugger.getPossibleBreakpoints",
-        "Debugger.getScriptSource", "Debugger.setPauseOnExceptions",
-        "Log.enable", "Log.disable", "Log.clear",
-        "Log.startViolationsReport", "Log.stopViolationsReport",
-        "Fetch.enable", "Fetch.disable", "Fetch.continueRequest",
-        "Fetch.continueWithResponse", "Fetch.failRequest", "Fetch.fulfillRequest",
-        "Fetch.getRequestPostData", "Fetch.continueWithAuth",
+        "Debugger.enable",
+        "Debugger.disable",
+        "Debugger.setBreakpointByUrl",
+        "Debugger.removeBreakpoint",
+        "Debugger.pause",
+        "Debugger.resume",
+        "Debugger.stepOver",
+        "Debugger.stepInto",
+        "Debugger.stepOut",
+        "Debugger.setSkipAllPauses",
+        "Debugger.setBreakpointsActive",
+        "Debugger.evaluateOnCallFrame",
+        "Debugger.getPossibleBreakpoints",
+        "Debugger.getScriptSource",
+        "Debugger.setPauseOnExceptions",
+        "Log.enable",
+        "Log.disable",
+        "Log.clear",
+        "Log.startViolationsReport",
+        "Log.stopViolationsReport",
+        "Fetch.enable",
+        "Fetch.disable",
+        "Fetch.continueRequest",
+        "Fetch.continueWithResponse",
+        "Fetch.failRequest",
+        "Fetch.fulfillRequest",
+        "Fetch.getRequestPostData",
+        "Fetch.continueWithAuth",
         "Fetch.takeResponseBodyAsStream",
     ] {
         let r = dispatch(method, None);
         assert_jsonrpc_invariant(&r, method);
         // Success responses must carry a non-null result object (per CDP convention).
-        assert!(r.result.is_some(), "[{}] expected success but got error: {:?}", method, r.error);
+        assert!(
+            r.result.is_some(),
+            "[{}] expected success but got error: {:?}",
+            method,
+            r.error
+        );
     }
 }
 
@@ -126,25 +221,53 @@ fn test_invariant_all_ok_responses() {
 fn test_invariant_all_error_responses() {
     // Every unknown command (within a known domain) must carry error AND NOT result.
     for method in [
-        "Target.nonexistent", "Page.nonexistent", "Runtime.nonexistent",
-        "DOM.nonexistent", "Network.nonexistent", "CSS.nonexistent",
-        "Emulation.nonexistent", "Input.nonexistent", "Overlay.nonexistent",
-        "Debugger.nonexistent", "Log.nonexistent", "Fetch.nonexistent",
+        "Target.nonexistent",
+        "Page.nonexistent",
+        "Runtime.nonexistent",
+        "DOM.nonexistent",
+        "Network.nonexistent",
+        "CSS.nonexistent",
+        "Emulation.nonexistent",
+        "Input.nonexistent",
+        "Overlay.nonexistent",
+        "Debugger.nonexistent",
+        "Log.nonexistent",
+        "Fetch.nonexistent",
         // Adversarial: empty method / unknown domain / no-dot method
-        "", "Page", "NoDomain", "Page.navigate.to",
+        "",
+        "Page",
+        "NoDomain",
+        "Page.navigate.to",
     ] {
         let r = dispatch(method, None);
         assert_jsonrpc_invariant(&r, method);
-        assert!(r.error.is_some(), "[{}] expected error but got result: {:?}", method, r.result);
-        assert_eq!(r.error.as_ref().unwrap().code, -32601,
-            "[{}] JSON-RPC method-not-found code must be -32601", method);
+        assert!(
+            r.error.is_some(),
+            "[{}] expected error but got result: {:?}",
+            method,
+            r.result
+        );
+        assert_eq!(
+            r.error.as_ref().unwrap().code,
+            -32601,
+            "[{}] JSON-RPC method-not-found code must be -32601",
+            method
+        );
     }
 }
 
 #[test]
 fn test_id_propagation_all_boundaries() {
     // id must echo back exactly for: None, 0, 1, -1, i64::MIN, i64::MAX.
-    for id in [None, Some(0i64), Some(1), Some(-1), Some(-42), Some(i64::MIN), Some(i64::MAX)] {
+    for id in [
+        None,
+        Some(0i64),
+        Some(1),
+        Some(-1),
+        Some(-42),
+        Some(i64::MIN),
+        Some(i64::MAX),
+    ] {
         let r = dispatch_id(id, "Page.enable", None);
         assert_eq!(r.id, id, "id must propagate unchanged for {:?}", id);
     }
@@ -185,7 +308,9 @@ fn test_error_message_contains_domain_and_command() {
         assert!(
             msg.contains(expected_substr),
             "[{}] error message {:?} must contain {:?}",
-            method, msg, expected_substr
+            method,
+            msg,
+            expected_substr
         );
     }
 }
@@ -194,13 +319,28 @@ fn test_error_message_contains_domain_and_command() {
 fn test_empty_error_message_never() {
     // Adversarial: no error message may be empty (debuggability contract).
     for method in [
-        "Target.x", "Page.x", "Runtime.x", "DOM.x", "Network.x", "CSS.x",
-        "Emulation.x", "Input.x", "Overlay.x", "Debugger.x", "Log.x", "Fetch.x",
-        "", "NoDomain",
+        "Target.x",
+        "Page.x",
+        "Runtime.x",
+        "DOM.x",
+        "Network.x",
+        "CSS.x",
+        "Emulation.x",
+        "Input.x",
+        "Overlay.x",
+        "Debugger.x",
+        "Log.x",
+        "Fetch.x",
+        "",
+        "NoDomain",
     ] {
         let r = dispatch(method, None);
         if let Some(e) = r.error {
-            assert!(!e.message.is_empty(), "[{}] error message must be non-empty", method);
+            assert!(
+                !e.message.is_empty(),
+                "[{}] error message must be non-empty",
+                method
+            );
         }
     }
 }
@@ -272,7 +412,9 @@ fn test_target_get_targets() {
     let r = dispatch("Target.getTargets", None);
     assert_jsonrpc_invariant(&r, "Target.getTargets");
     let result = r.result.unwrap();
-    let infos = result["targetInfos"].as_array().expect("targetInfos must be array");
+    let infos = result["targetInfos"]
+        .as_array()
+        .expect("targetInfos must be array");
     assert!(!infos.is_empty(), "targetInfos must be non-empty");
     let info = &infos[0];
     // live_target_info default contract (no bridge):
@@ -323,10 +465,21 @@ fn test_target_get_targets_and_get_target_targets_equivalent_schema() {
     let a = dispatch("Target.getTargets", None).result.unwrap();
     let b = dispatch("Target.getTargetTargets", None).result.unwrap();
     let a_keys: std::collections::BTreeSet<String> = a["targetInfos"][0]
-        .as_object().unwrap().keys().cloned().collect();
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
     let b_keys: std::collections::BTreeSet<String> = b["targetInfos"][0]
-        .as_object().unwrap().keys().cloned().collect();
-    assert_eq!(a_keys, b_keys, "getTargets and getTargetTargets must have identical schema");
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        a_keys, b_keys,
+        "getTargets and getTargetTargets must have identical schema"
+    );
 }
 
 #[test]
@@ -337,7 +490,11 @@ fn test_target_create_target() {
     assert_eq!(result["targetId"], "test-target");
     // createTarget returns ONLY targetId (no extra fields that could confuse clients).
     let obj = result.as_object().unwrap();
-    assert_eq!(obj.len(), 1, "createTarget result must contain only targetId");
+    assert_eq!(
+        obj.len(),
+        1,
+        "createTarget result must contain only targetId"
+    );
     assert!(obj.contains_key("targetId"));
 }
 
@@ -375,7 +532,10 @@ fn test_target_close_target_no_params() {
 fn test_target_set_auto_attach() {
     let r = dispatch("Target.setAutoAttach", Some(json!({"flatten":true})));
     assert_jsonrpc_invariant(&r, "Target.setAutoAttach");
-    assert!(ok_resp("Target.setAutoAttach", Some(json!({"flatten":true}))));
+    assert!(ok_resp(
+        "Target.setAutoAttach",
+        Some(json!({"flatten":true}))
+    ));
 }
 
 #[test]
@@ -395,32 +555,57 @@ fn test_target_get_target_info() {
     assert_eq!(info["url"], "about:blank");
     assert_eq!(info["attached"], true);
     // targetInfo must have exactly these 5 fields.
-    let keys: std::collections::BTreeSet<String> = info.as_object().unwrap().keys().cloned().collect();
-    let expected: std::collections::BTreeSet<String> = [
-        "targetId", "type", "title", "url", "attached",
-    ].iter().map(|s| s.to_string()).collect();
-    assert_eq!(keys, expected, "targetInfo schema must be exactly targetId/type/title/url/attached");
+    let keys: std::collections::BTreeSet<String> =
+        info.as_object().unwrap().keys().cloned().collect();
+    let expected: std::collections::BTreeSet<String> =
+        ["targetId", "type", "title", "url", "attached"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+    assert_eq!(
+        keys, expected,
+        "targetInfo schema must be exactly targetId/type/title/url/attached"
+    );
 }
 
 #[test]
 fn test_target_attach_to_target() {
     let r = dispatch("Target.attachToTarget", None);
     assert_jsonrpc_invariant(&r, "Target.attachToTarget");
-    let sid = r.result.unwrap()["sessionId"].as_str().expect("sessionId must be string").to_string();
+    let sid = r.result.unwrap()["sessionId"]
+        .as_str()
+        .expect("sessionId must be string")
+        .to_string();
     assert!(!sid.is_empty(), "sessionId must be non-empty");
     // sessionId is a hex string of length 16 (format!("{:016x}", ...)).
     assert_eq!(sid.len(), 16, "sessionId must be 16-char hex");
-    assert!(sid.chars().all(|c| c.is_ascii_hexdigit()), "sessionId must be hex: {}", sid);
+    assert!(
+        sid.chars().all(|c| c.is_ascii_hexdigit()),
+        "sessionId must be hex: {}",
+        sid
+    );
 }
 
 #[test]
 fn test_target_attach_to_target_deterministic_per_target_id() {
     // Adversarial: same target_id → same sessionId (deterministic hash of chars).
-    let a = dispatch_target("abc", "Target.attachToTarget", None).result.unwrap()["sessionId"].clone();
-    let b = dispatch_target("abc", "Target.attachToTarget", None).result.unwrap()["sessionId"].clone();
-    assert_eq!(a, b, "sessionId must be deterministic for the same target_id");
+    let a = dispatch_target("abc", "Target.attachToTarget", None)
+        .result
+        .unwrap()["sessionId"]
+        .clone();
+    let b = dispatch_target("abc", "Target.attachToTarget", None)
+        .result
+        .unwrap()["sessionId"]
+        .clone();
+    assert_eq!(
+        a, b,
+        "sessionId must be deterministic for the same target_id"
+    );
     // Different target_id → different sessionId.
-    let c = dispatch_target("xyz", "Target.attachToTarget", None).result.unwrap()["sessionId"].clone();
+    let c = dispatch_target("xyz", "Target.attachToTarget", None)
+        .result
+        .unwrap()["sessionId"]
+        .clone();
     assert_ne!(a, c, "sessionId must differ for different target_id");
 }
 
@@ -473,8 +658,13 @@ fn test_page_navigate_default_url() {
     let result = r.result.unwrap();
     assert_eq!(result["frameId"], "0");
     // NavigateReturnObject also carries loaderId (REQ-CDP-004-C1).
-    assert!(result.get("loaderId").is_some(), "Page.navigate must return loaderId");
-    let loader_id = result["loaderId"].as_str().expect("loaderId must be string");
+    assert!(
+        result.get("loaderId").is_some(),
+        "Page.navigate must return loaderId"
+    );
+    let loader_id = result["loaderId"]
+        .as_str()
+        .expect("loaderId must be string");
     assert!(!loader_id.is_empty(), "loaderId must be non-empty");
 }
 
@@ -499,8 +689,14 @@ fn test_page_navigate_with_url() {
 #[test]
 fn test_page_navigate_loader_id_depends_on_url_length() {
     // Adversarial: loaderId is hex of url.len() — different url lengths → different loaderId.
-    let short = dispatch("Page.navigate", Some(json!({"url":"ab"}))).result.unwrap()["loaderId"].clone();
-    let long = dispatch("Page.navigate", Some(json!({"url":"abcdefghij"}))).result.unwrap()["loaderId"].clone();
+    let short = dispatch("Page.navigate", Some(json!({"url":"ab"})))
+        .result
+        .unwrap()["loaderId"]
+        .clone();
+    let long = dispatch("Page.navigate", Some(json!({"url":"abcdefghij"})))
+        .result
+        .unwrap()["loaderId"]
+        .clone();
     assert_ne!(short, long, "loaderId must vary with url length");
     assert_eq!(short, "0000000000000002");
     assert_eq!(long, "000000000000000a");
@@ -558,9 +754,13 @@ fn test_page_get_frame_tree() {
     assert_eq!(frame["id"], "0");
     // Full frame schema (REQ-CDP-004-C5):
     assert!(frame["url"].is_string(), "frame.url must be string");
-    assert!(frame["loaderId"].is_string(), "frame.loaderId must be string");
+    assert!(
+        frame["loaderId"].is_string(),
+        "frame.loaderId must be string"
+    );
     assert_eq!(frame["mimeType"], "text/html");
-    let keys: std::collections::BTreeSet<String> = frame.as_object().unwrap().keys().cloned().collect();
+    let keys: std::collections::BTreeSet<String> =
+        frame.as_object().unwrap().keys().cloned().collect();
     for required in ["id", "url", "loaderId", "mimeType"] {
         assert!(keys.contains(required), "frame must contain {}", required);
     }
@@ -581,7 +781,11 @@ fn test_page_get_navigation_history() {
     assert_eq!(result["currentIndex"], 0);
     assert!(result["entries"].is_array());
     let entries = result["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), 1, "default navigation history has exactly 1 entry");
+    assert_eq!(
+        entries.len(),
+        1,
+        "default navigation history has exactly 1 entry"
+    );
     let entry = &entries[0];
     assert_eq!(entry["id"], 0);
     assert!(entry["url"].is_string());
@@ -595,7 +799,10 @@ fn test_page_capture_screenshot_default() {
     // No bridge → data is empty string (not absent).
     let result = r.result.unwrap();
     assert!(result["data"].is_string(), "data must be string");
-    assert_eq!(result["data"], "", "no-bridge screenshot data must be empty string");
+    assert_eq!(
+        result["data"], "",
+        "no-bridge screenshot data must be empty string"
+    );
 }
 
 #[test]
@@ -655,7 +862,10 @@ fn test_page_get_layout_metrics() {
 
 #[test]
 fn test_page_add_script() {
-    let r = dispatch("Page.addScriptToEvaluateOnNewDocument", Some(json!({"source":"console.log(1)"})));
+    let r = dispatch(
+        "Page.addScriptToEvaluateOnNewDocument",
+        Some(json!({"source":"console.log(1)"})),
+    );
     assert_jsonrpc_invariant(&r, "Page.addScriptToEvaluateOnNewDocument");
     assert_eq!(r.result.unwrap()["identifier"], "1");
 }
@@ -663,7 +873,10 @@ fn test_page_add_script() {
 #[test]
 fn test_page_add_script_empty_source() {
     // Adversarial: empty source — still returns identifier "1".
-    let r = dispatch("Page.addScriptToEvaluateOnNewDocument", Some(json!({"source":""})));
+    let r = dispatch(
+        "Page.addScriptToEvaluateOnNewDocument",
+        Some(json!({"source":""})),
+    );
     assert_eq!(r.result.unwrap()["identifier"], "1");
 }
 
@@ -698,7 +911,10 @@ fn test_runtime_enable() {
     assert_jsonrpc_invariant(&r, "Runtime.enable");
     let result = r.result.unwrap();
     assert!(result["executionContextId"].is_number());
-    assert_eq!(result["executionContextId"], 1, "default execution context id is 1");
+    assert_eq!(
+        result["executionContextId"], 1,
+        "default execution context id is 1"
+    );
 }
 
 #[test]
@@ -713,7 +929,10 @@ fn test_runtime_evaluate_default() {
     let result = r.result.unwrap();
     assert_eq!(result["result"]["type"], "undefined");
     // No-bridge / empty expression also carries exceptionDetails: null.
-    assert!(result.get("exceptionDetails").is_some(), "Runtime.evaluate must return exceptionDetails");
+    assert!(
+        result.get("exceptionDetails").is_some(),
+        "Runtime.evaluate must return exceptionDetails"
+    );
     assert_eq!(result["exceptionDetails"], serde_json::Value::Null);
 }
 
@@ -739,7 +958,10 @@ fn test_runtime_evaluate_expression_no_bridge() {
 #[test]
 fn test_runtime_evaluate_return_by_value_false() {
     // Adversarial: returnByValue=false — param is read but without bridge, stub returned.
-    let r = dispatch("Runtime.evaluate", Some(json!({"expression":"x","returnByValue":false})));
+    let r = dispatch(
+        "Runtime.evaluate",
+        Some(json!({"expression":"x","returnByValue":false})),
+    );
     assert!(r.result.is_some());
 }
 
@@ -822,7 +1044,10 @@ fn test_dom_get_document() {
     assert_eq!(root["backendNodeId"], 1);
     assert_eq!(root["localName"], "");
     assert_eq!(root["nodeValue"], "");
-    assert!(root["childNodeCount"].as_i64().unwrap_or(0) >= 1, "document must have >=1 child");
+    assert!(
+        root["childNodeCount"].as_i64().unwrap_or(0) >= 1,
+        "document must have >=1 child"
+    );
     let children = root["children"].as_array().expect("children must be array");
     assert!(!children.is_empty());
     let html = &children[0];
@@ -880,17 +1105,28 @@ fn test_dom_get_box_model() {
     assert_eq!(model["width"], 1920);
     assert_eq!(model["height"], 1080);
     let content = model["content"].as_array().expect("content must be array");
-    assert_eq!(content.len(), 8, "box model content has 8 coords (4 corners × 2)");
+    assert_eq!(
+        content.len(),
+        8,
+        "box model content has 8 coords (4 corners × 2)"
+    );
     // Quad corners: (0,0) (1920,0) (1920,1080) (0,1080).
-    assert_eq!(content[0], 0); assert_eq!(content[1], 0);
-    assert_eq!(content[2], 1920); assert_eq!(content[3], 0);
-    assert_eq!(content[4], 1920); assert_eq!(content[5], 1080);
-    assert_eq!(content[6], 0); assert_eq!(content[7], 1080);
+    assert_eq!(content[0], 0);
+    assert_eq!(content[1], 0);
+    assert_eq!(content[2], 1920);
+    assert_eq!(content[3], 0);
+    assert_eq!(content[4], 1920);
+    assert_eq!(content[5], 1080);
+    assert_eq!(content[6], 0);
+    assert_eq!(content[7], 1080);
 }
 
 #[test]
 fn test_dom_set_attribute_value() {
-    let r = dispatch("DOM.setAttributeValue", Some(json!({"nodeId":1,"name":"class","value":"active"})));
+    let r = dispatch(
+        "DOM.setAttributeValue",
+        Some(json!({"nodeId":1,"name":"class","value":"active"})),
+    );
     assert_jsonrpc_invariant(&r, "DOM.setAttributeValue");
     // No bridge → empty object ack.
     assert_eq!(r.result.unwrap(), json!({}));
@@ -899,7 +1135,10 @@ fn test_dom_set_attribute_value() {
 #[test]
 fn test_dom_set_attribute_value_missing_node_id() {
     // Adversarial: missing nodeId → defaults to 0, no panic.
-    let r = dispatch("DOM.setAttributeValue", Some(json!({"name":"class","value":"x"})));
+    let r = dispatch(
+        "DOM.setAttributeValue",
+        Some(json!({"name":"class","value":"x"})),
+    );
     assert!(r.result.is_some());
 }
 
@@ -1023,8 +1262,14 @@ fn test_network_get_all_cookies() {
 #[test]
 fn test_network_get_cookies_and_all_cookies_default_empty() {
     // Adversarial: both default to empty arrays.
-    assert_eq!(dispatch("Network.getCookies", None).result.unwrap()["cookies"], json!([]));
-    assert_eq!(dispatch("Network.getAllCookies", None).result.unwrap()["cookies"], json!([]));
+    assert_eq!(
+        dispatch("Network.getCookies", None).result.unwrap()["cookies"],
+        json!([])
+    );
+    assert_eq!(
+        dispatch("Network.getAllCookies", None).result.unwrap()["cookies"],
+        json!([])
+    );
 }
 
 #[test]
@@ -1110,7 +1355,10 @@ fn test_css_unknown() {
 
 #[test]
 fn test_emulation_set_device_metrics() {
-    let r = dispatch("Emulation.setDeviceMetricsOverride", Some(json!({"width":1280,"height":720})));
+    let r = dispatch(
+        "Emulation.setDeviceMetricsOverride",
+        Some(json!({"width":1280,"height":720})),
+    );
     assert_jsonrpc_invariant(&r, "Emulation.setDeviceMetricsOverride");
     assert!(r.result.is_some());
 }
@@ -1126,8 +1374,10 @@ fn test_emulation_set_device_metrics_default() {
 #[test]
 fn test_emulation_set_device_metrics_with_dsf() {
     // Adversarial: deviceScaleFactor present — must not panic.
-    let r = dispatch("Emulation.setDeviceMetricsOverride",
-        Some(json!({"width":800,"height":600,"deviceScaleFactor":2.0})));
+    let r = dispatch(
+        "Emulation.setDeviceMetricsOverride",
+        Some(json!({"width":800,"height":600,"deviceScaleFactor":2.0})),
+    );
     assert!(r.result.is_some());
 }
 
@@ -1138,7 +1388,10 @@ fn test_emulation_clear_device_metrics() {
 
 #[test]
 fn test_emulation_set_user_agent() {
-    let r = dispatch("Emulation.setUserAgentOverride", Some(json!({"userAgent":"TestBot"})));
+    let r = dispatch(
+        "Emulation.setUserAgentOverride",
+        Some(json!({"userAgent":"TestBot"})),
+    );
     assert_jsonrpc_invariant(&r, "Emulation.setUserAgentOverride");
     // No bridge → empty ack (UA is accepted but not forwarded).
     assert_eq!(r.result.unwrap(), json!({}));
@@ -1191,7 +1444,10 @@ fn test_emulation_unknown() {
 
 #[test]
 fn test_input_dispatch_mouse() {
-    let r = dispatch("Input.dispatchMouseEvent", Some(json!({"type":"mousePressed","x":10,"y":20})));
+    let r = dispatch(
+        "Input.dispatchMouseEvent",
+        Some(json!({"type":"mousePressed","x":10,"y":20})),
+    );
     assert_jsonrpc_invariant(&r, "Input.dispatchMouseEvent");
     // No bridge → empty ack.
     assert_eq!(r.result.unwrap(), json!({}));
@@ -1207,15 +1463,21 @@ fn test_input_dispatch_mouse_default() {
 #[test]
 fn test_input_dispatch_mouse_with_button_and_click_count() {
     // Adversarial: full mouse event params — must not panic.
-    let r = dispatch("Input.dispatchMouseEvent", Some(json!({
-        "type":"mouseReleased","x":100,"y":200,"button":1,"clickCount":2
-    })));
+    let r = dispatch(
+        "Input.dispatchMouseEvent",
+        Some(json!({
+            "type":"mouseReleased","x":100,"y":200,"button":1,"clickCount":2
+        })),
+    );
     assert!(r.result.is_some());
 }
 
 #[test]
 fn test_input_dispatch_key() {
-    let r = dispatch("Input.dispatchKeyEvent", Some(json!({"type":"keyDown","key":"a","code":"KeyA"})));
+    let r = dispatch(
+        "Input.dispatchKeyEvent",
+        Some(json!({"type":"keyDown","key":"a","code":"KeyA"})),
+    );
     assert_jsonrpc_invariant(&r, "Input.dispatchKeyEvent");
     assert_eq!(r.result.unwrap(), json!({}));
 }
@@ -1223,9 +1485,12 @@ fn test_input_dispatch_key() {
 #[test]
 fn test_input_dispatch_key_with_text() {
     // Adversarial: keyDown with text payload — must not panic.
-    let r = dispatch("Input.dispatchKeyEvent", Some(json!({
-        "type":"char","key":"a","code":"KeyA","text":"a"
-    })));
+    let r = dispatch(
+        "Input.dispatchKeyEvent",
+        Some(json!({
+            "type":"char","key":"a","code":"KeyA","text":"a"
+        })),
+    );
     assert!(r.result.is_some());
 }
 
@@ -1465,7 +1730,10 @@ fn test_fetch_enable() {
 
 #[test]
 fn test_fetch_enable_with_patterns() {
-    let r = dispatch("Fetch.enable", Some(json!({"patterns":[{"urlPattern":"*"}]})));
+    let r = dispatch(
+        "Fetch.enable",
+        Some(json!({"patterns":[{"urlPattern":"*"}]})),
+    );
     assert_jsonrpc_invariant(&r, "Fetch.enable");
     let result = r.result.unwrap();
     assert_eq!(result["patternCount"], 1);
@@ -1475,9 +1743,12 @@ fn test_fetch_enable_with_patterns() {
 #[test]
 fn test_fetch_enable_with_multiple_patterns() {
     // Adversarial: multiple patterns → patternCount reflects array length.
-    let r = dispatch("Fetch.enable", Some(json!({
-        "patterns":[{"urlPattern":"*.js"},{"urlPattern":"*.css"},{"urlPattern":"*.png"}]
-    })));
+    let r = dispatch(
+        "Fetch.enable",
+        Some(json!({
+            "patterns":[{"urlPattern":"*.js"},{"urlPattern":"*.css"},{"urlPattern":"*.png"}]
+        })),
+    );
     assert_eq!(r.result.unwrap()["patternCount"], 3);
 }
 
@@ -1520,7 +1791,10 @@ fn test_fetch_continue_request_no_request_id() {
 
 #[test]
 fn test_fetch_continue_with_response() {
-    let r = dispatch("Fetch.continueWithResponse", Some(json!({"requestId":"r2"})));
+    let r = dispatch(
+        "Fetch.continueWithResponse",
+        Some(json!({"requestId":"r2"})),
+    );
     assert_jsonrpc_invariant(&r, "Fetch.continueWithResponse");
     let result = r.result.unwrap();
     assert_eq!(result["continued"], true);
@@ -1530,7 +1804,10 @@ fn test_fetch_continue_with_response() {
 
 #[test]
 fn test_fetch_fail_request() {
-    let r = dispatch("Fetch.failRequest", Some(json!({"requestId":"r3","reason":"Aborted"})));
+    let r = dispatch(
+        "Fetch.failRequest",
+        Some(json!({"requestId":"r3","reason":"Aborted"})),
+    );
     assert_jsonrpc_invariant(&r, "Fetch.failRequest");
     let result = r.result.unwrap();
     assert_eq!(result["failed"], true);
@@ -1549,7 +1826,10 @@ fn test_fetch_fail_request_default_reason() {
 
 #[test]
 fn test_fetch_fulfill_request() {
-    let r = dispatch("Fetch.fulfillRequest", Some(json!({"requestId":"r4","responseCode":200,"body":"hello"})));
+    let r = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId":"r4","responseCode":200,"body":"hello"})),
+    );
     assert_jsonrpc_invariant(&r, "Fetch.fulfillRequest");
     let result = r.result.unwrap();
     assert_eq!(result["fulfilled"], true);
@@ -1561,7 +1841,10 @@ fn test_fetch_fulfill_request() {
 #[test]
 fn test_fetch_fulfill_request_default_response_code() {
     // Adversarial: missing responseCode → defaults to 200.
-    let r = dispatch("Fetch.fulfillRequest", Some(json!({"requestId":"r4","body":"abc"})));
+    let r = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId":"r4","body":"abc"})),
+    );
     let result = r.result.unwrap();
     assert_eq!(result["responseCode"], 200);
     assert_eq!(result["bodyLength"], 3);
@@ -1570,7 +1853,10 @@ fn test_fetch_fulfill_request_default_response_code() {
 #[test]
 fn test_fetch_fulfill_request_empty_body() {
     // Adversarial: empty body → bodyLength 0.
-    let r = dispatch("Fetch.fulfillRequest", Some(json!({"requestId":"r4","body":""})));
+    let r = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId":"r4","body":""})),
+    );
     assert_eq!(r.result.unwrap()["bodyLength"], 0);
 }
 
@@ -1585,7 +1871,10 @@ fn test_fetch_fulfill_request_missing_body() {
 fn test_fetch_fulfill_request_unicode_body() {
     // Adversarial: unicode body — bodyLength is byte length (not char count).
     // "你好" = 6 bytes in UTF-8, 2 chars. params_str returns String; .len() is bytes.
-    let r = dispatch("Fetch.fulfillRequest", Some(json!({"requestId":"r4","body":"你好"})));
+    let r = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId":"r4","body":"你好"})),
+    );
     let result = r.result.unwrap();
     // Note: String::len() counts bytes, so "你好" → 6.
     assert_eq!(result["bodyLength"], 6);
@@ -1612,7 +1901,10 @@ fn test_fetch_continue_with_auth() {
 
 #[test]
 fn test_fetch_take_response_body() {
-    let r = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({"requestId":"r7"})));
+    let r = dispatch(
+        "Fetch.takeResponseBodyAsStream",
+        Some(json!({"requestId":"r7"})),
+    );
     assert_jsonrpc_invariant(&r, "Fetch.takeResponseBodyAsStream");
     let result = r.result.unwrap();
     assert!(result["stream"].is_string());
@@ -1641,30 +1933,50 @@ fn test_fetch_unknown() {
 
 #[test]
 fn test_serialize_ok_response() {
-    let resp = CdpResponse { id: Some(42), result: Some(json!({"ok":true})), error: None };
+    let resp = CdpResponse {
+        id: Some(42),
+        result: Some(json!({"ok":true})),
+        error: None,
+    };
     let s = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
     assert_eq!(parsed["id"], 42);
     assert_eq!(parsed["result"]["ok"], true);
     // Adversarial: serialized success MUST NOT carry error key.
-    assert!(parsed.get("error").is_none(), "success response must not carry error");
+    assert!(
+        parsed.get("error").is_none(),
+        "success response must not carry error"
+    );
 }
 
 #[test]
 fn test_serialize_error_response() {
-    let resp = CdpResponse { id: Some(1), result: None, error: Some(bao_cdp::CdpError { code: -32601, message: "not found".into() }) };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: None,
+        error: Some(bao_cdp::CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
+    };
     let s = serialize_response(&resp);
     assert!(s.contains("-32601"));
     // Adversarial: round-trip parse and verify structure.
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
     assert_eq!(parsed["error"]["code"], -32601);
     assert_eq!(parsed["error"]["message"], "not found");
-    assert!(parsed.get("result").is_none(), "error response must not carry result");
+    assert!(
+        parsed.get("result").is_none(),
+        "error response must not carry result"
+    );
 }
 
 #[test]
 fn test_serialize_event() {
-    let ev = CdpEvent { method: "Page.load".into(), params: Some(json!({"ts":1})) };
+    let ev = CdpEvent {
+        method: "Page.load".into(),
+        params: Some(json!({"ts":1})),
+    };
     let s = serialize_event(&ev);
     assert!(s.contains("Page.load"));
     // Adversarial: round-trip parse.
@@ -1676,7 +1988,10 @@ fn test_serialize_event() {
 #[test]
 fn test_serialize_event_no_params() {
     // Adversarial: event with None params.
-    let ev = CdpEvent { method: "Page.load".into(), params: None };
+    let ev = CdpEvent {
+        method: "Page.load".into(),
+        params: None,
+    };
     let s = serialize_event(&ev);
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
     assert_eq!(parsed["method"], "Page.load");
@@ -1685,7 +2000,11 @@ fn test_serialize_event_no_params() {
 #[test]
 fn test_serialize_response_id_none() {
     // Adversarial: None id (notification) — must round-trip as JSON null.
-    let resp = CdpResponse { id: None, result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: None,
+        result: Some(json!({})),
+        error: None,
+    };
     let s = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
     assert!(parsed["id"].is_null());
@@ -1713,14 +2032,24 @@ fn test_domain_only_no_command() {
 
 #[test]
 fn test_response_id_matches_input() {
-    let msg = CdpMessage { id: Some(999), method: "Page.enable".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(999),
+        method: "Page.enable".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t", &None, None);
     assert_eq!(resp.id, Some(999));
 }
 
 #[test]
 fn test_negative_id_preserved() {
-    let msg = CdpMessage { id: Some(-42), method: "Page.enable".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(-42),
+        method: "Page.enable".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t", &None, None);
     assert_eq!(resp.id, Some(-42));
 }
@@ -1728,7 +2057,12 @@ fn test_negative_id_preserved() {
 #[test]
 fn test_zero_id_preserved() {
     // Adversarial: id = 0 (falsy but valid JSON-RPC id) must be preserved.
-    let msg = CdpMessage { id: Some(0), method: "Page.enable".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(0),
+        method: "Page.enable".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t", &None, None);
     assert_eq!(resp.id, Some(0));
 }
@@ -1736,7 +2070,12 @@ fn test_zero_id_preserved() {
 #[test]
 fn test_none_id_preserved() {
     // Adversarial: None id (notification) must be preserved as None.
-    let msg = CdpMessage { id: None, method: "Page.enable".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: None,
+        method: "Page.enable".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t", &None, None);
     assert_eq!(resp.id, None);
 }
@@ -1744,7 +2083,12 @@ fn test_none_id_preserved() {
 #[test]
 fn test_max_id_preserved() {
     // Adversarial: i64::MAX id must be preserved.
-    let msg = CdpMessage { id: Some(i64::MAX), method: "Page.enable".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(i64::MAX),
+        method: "Page.enable".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t", &None, None);
     assert_eq!(resp.id, Some(i64::MAX));
 }
@@ -1752,7 +2096,12 @@ fn test_max_id_preserved() {
 #[test]
 fn test_min_id_preserved() {
     // Adversarial: i64::MIN id must be preserved.
-    let msg = CdpMessage { id: Some(i64::MIN), method: "Page.enable".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(i64::MIN),
+        method: "Page.enable".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t", &None, None);
     assert_eq!(resp.id, Some(i64::MIN));
 }

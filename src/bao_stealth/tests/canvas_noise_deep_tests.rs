@@ -58,7 +58,9 @@ fn test_apply_to_pixel_different_seeds_differ() {
     for x in 0..10000u32 {
         let p1 = cn1.apply_to_pixel(128, 128, 128, 255, x, 0);
         let p2 = cn2.apply_to_pixel(128, 128, 128, 255, x, 0);
-        if p1 != p2 { break; }
+        if p1 != p2 {
+            break;
+        }
     }
     // With amplitude 0.001, may not produce different u8 values for all coords.
     // At minimum, verify they don't panic and produce valid results.

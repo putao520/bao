@@ -153,7 +153,9 @@ fn dispatch_mouse_event(page: &PageHandle, ev_type: &str, x: f64, y: f64) -> Res
         x = x,
         y = y
     );
-    let result = page.evaluate_js_web(&js).map_err(|e| format!("eval: {}", e))?;
+    let result = page
+        .evaluate_js_web(&js)
+        .map_err(|e| format!("eval: {}", e))?;
     if result == "OK" {
         Ok(())
     } else {
@@ -178,7 +180,10 @@ fn click_human_e2e() {
     let runtime = match BaoRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] BaoRuntime::new failed (likely missing servo runtime): {}", e);
+            eprintln!(
+                "[skip] BaoRuntime::new failed (likely missing servo runtime): {}",
+                e
+            );
             return;
         }
     };
@@ -192,7 +197,11 @@ fn click_human_e2e() {
     pool.close_all();
     report.finish();
 
-    assert_eq!(report.failed, 0, "{} sub-assertions failed — see stderr above", report.failed);
+    assert_eq!(
+        report.failed, 0,
+        "{} sub-assertions failed — see stderr above",
+        report.failed
+    );
 }
 
 /// Dispatch N human-like clicks using Firefox config, verify press duration variance.
@@ -258,7 +267,10 @@ fn scenario_firefox_click_variance(pool: &PagePool, report: &mut Report) {
     }
 
     if dispatch_failures > click_count {
-        report.skip(name, &format!("too many dispatch failures: {}", dispatch_failures));
+        report.skip(
+            name,
+            &format!("too many dispatch failures: {}", dispatch_failures),
+        );
         let _ = page.close();
         return;
     }
@@ -278,7 +290,10 @@ fn scenario_firefox_click_variance(pool: &PagePool, report: &mut Report) {
         .collect();
 
     if durations.len() < 2 {
-        report.skip(name, &format!("too few press durations: {}", durations.len()));
+        report.skip(
+            name,
+            &format!("too few press durations: {}", durations.len()),
+        );
         let _ = page.close();
         return;
     }
@@ -292,7 +307,10 @@ fn scenario_firefox_click_variance(pool: &PagePool, report: &mut Report) {
     report.assert_actual(
         range > 0.0,
         &format!("{}::duration_variance (range={:.1}ms)", name, range),
-        &format!("{}::duration_variance (all identical — BUG-STL-008 regression)", name),
+        &format!(
+            "{}::duration_variance (all identical — BUG-STL-008 regression)",
+            name
+        ),
     );
 
     // Assertion 2: press durations fall within configured range [40, 200] ms
@@ -302,7 +320,10 @@ fn scenario_firefox_click_variance(pool: &PagePool, report: &mut Report) {
     report.assert_actual(
         in_range,
         &format!("{}::durations_in_range", name),
-        &format!("{}::durations_in_range (min={:.1}, max={:.1})", name, min_d, max_d),
+        &format!(
+            "{}::durations_in_range (min={:.1}, max={:.1})",
+            name, min_d, max_d
+        ),
     );
 
     // Assertion 3: click count recorded
@@ -313,7 +334,10 @@ fn scenario_firefox_click_variance(pool: &PagePool, report: &mut Report) {
     report.assert_actual(
         click_count_recorded >= click_count as u32,
         &format!("{}::clicks_recorded_{}", name, click_count_recorded),
-        &format!("{}::clicks_recorded (got {}, want {})", name, click_count_recorded, click_count),
+        &format!(
+            "{}::clicks_recorded (got {}, want {})",
+            name, click_count_recorded, click_count
+        ),
     );
 
     let _ = page.close();
@@ -373,7 +397,10 @@ fn scenario_chrome_click_variance(pool: &PagePool, report: &mut Report) {
         .collect();
 
     if durations.len() < 2 {
-        report.skip(name, &format!("too few press durations: {}", durations.len()));
+        report.skip(
+            name,
+            &format!("too few press durations: {}", durations.len()),
+        );
         let _ = page.close();
         return;
     }

@@ -22,7 +22,9 @@ fn test_esm_import_deep() {
     // === ESM import/export deep integration tests ===
     // Tests ESM-like patterns in CJS context (SpiderMonkey supports ESM syntax)
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         function check(label, fn) {
             try { var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }
@@ -414,7 +416,8 @@ fn test_esm_import_deep() {
         });
 
         results.join("|")
-    "#);
+    "#,
+    );
 
     let mut pass = 0;
     let mut fail = 0;

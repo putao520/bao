@@ -1,8 +1,10 @@
 // @trace TEST-BRW-001~003 [req:REQ-BRW-001~003] [level:unit]
 // Unit tests for bao_browser core: screenshot encode, delegate, config, permission edge cases
 
-use bao_browser::{BaoConfig, BrowserConfig, PageConfig, BrowserError, Permission, PermissionGuard};
 use bao_browser::ScreenshotFormat;
+use bao_browser::{
+    BaoConfig, BrowserConfig, BrowserError, PageConfig, Permission, PermissionGuard,
+};
 use bao_stealth::StealthProfile;
 
 // ---- Screenshot encode tests ----
@@ -42,7 +44,10 @@ fn test_screenshot_encode_large_image() {
     let img = RgbaImage::from_pixel(1920, 1080, image::Rgba([100, 150, 200, 255]));
     let png = bao_browser::encode_image(&img, ScreenshotFormat::Png);
     assert!(png.is_ok(), "large PNG encode should succeed");
-    assert!(png.unwrap().len() > 1000, "large PNG should have substantial size");
+    assert!(
+        png.unwrap().len() > 1000,
+        "large PNG should have substantial size"
+    );
 }
 
 #[test]
@@ -71,7 +76,10 @@ fn test_screenshot_encode_gradient() {
 #[test]
 fn test_bao_servo_delegate_new() {
     let delegate = bao_browser::BaoServoDelegate::new();
-    assert!(delegate.last_error().is_none(), "new delegate should have no error");
+    assert!(
+        delegate.last_error().is_none(),
+        "new delegate should have no error"
+    );
 }
 
 // ---- PageConfig ----
@@ -80,8 +88,14 @@ fn test_bao_servo_delegate_new() {
 fn test_page_config_default_values() {
     let config = PageConfig::default();
     assert!(config.url.is_none(), "default url should be None");
-    assert!(config.stealth_profile.is_none(), "default stealth should be None");
-    assert!(config.permission.is_none(), "default permission should be None");
+    assert!(
+        config.stealth_profile.is_none(),
+        "default stealth should be None"
+    );
+    assert!(
+        config.permission.is_none(),
+        "default permission should be None"
+    );
     assert!(config.viewport_width.is_none());
     assert!(config.viewport_height.is_none());
 }
@@ -108,14 +122,20 @@ fn test_page_config_with_url() {
 fn test_bao_config_zero_max_pages_rejected() {
     let mut config = BaoConfig::default();
     config.max_pages = 0;
-    assert!(config.validate().is_err(), "zero max_pages should be rejected");
+    assert!(
+        config.validate().is_err(),
+        "zero max_pages should be rejected"
+    );
 }
 
 #[test]
 fn test_bao_config_large_max_pages() {
     let mut config = BaoConfig::default();
     config.max_pages = 1000;
-    assert!(config.validate().is_ok(), "large max_pages should be accepted");
+    assert!(
+        config.validate().is_ok(),
+        "large max_pages should be accepted"
+    );
 }
 
 #[test]
@@ -123,7 +143,10 @@ fn test_bao_config_viewport_boundaries() {
     let mut config = BaoConfig::default();
     config.default_viewport_width = 800;
     config.default_viewport_height = 600;
-    assert!(config.validate().is_ok(), "800x600 viewport should be accepted");
+    assert!(
+        config.validate().is_ok(),
+        "800x600 viewport should be accepted"
+    );
 
     config.default_viewport_width = 799;
     assert!(config.validate().is_err(), "799 width should be rejected");
@@ -167,7 +190,10 @@ fn test_browser_error_all_variants() {
     for err in &variants {
         let msg = format!("{}", err);
         assert!(!msg.is_empty(), "error should display non-empty message");
-        assert!(std::error::Error::source(err).is_none(), "BrowserError has no source");
+        assert!(
+            std::error::Error::source(err).is_none(),
+            "BrowserError has no source"
+        );
     }
 }
 
@@ -181,7 +207,7 @@ fn test_permission_all_restricted() {
         net: Some(vec![]),
         env: Some(false),
         run: Some(false),
-    ..Default::default()
+        ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -200,7 +226,7 @@ fn test_permission_partial_restrictions() {
         net: Some(vec!["api.example.com".into()]),
         env: None,
         run: Some(false),
-    ..Default::default()
+        ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -221,7 +247,7 @@ fn test_permission_exact_path_match() {
         net: None,
         env: None,
         run: None,
-    ..Default::default()
+        ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.check_read("/exact/path").is_ok());
@@ -236,11 +262,21 @@ fn test_page_state_variants() {
     use bao_browser::PageState;
     // SM PageLifecycle (SPEC 03-PROCESS): 6 states including intermediate Closing.
     // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state in enum
-    let states = [PageState::Created, PageState::Navigating, PageState::Interactive, PageState::Idle, PageState::Closing, PageState::Closed];
+    let states = [
+        PageState::Created,
+        PageState::Navigating,
+        PageState::Interactive,
+        PageState::Idle,
+        PageState::Closing,
+        PageState::Closed,
+    ];
     // Verify all variants exist and are distinct
     for i in 0..states.len() {
-        for j in (i+1)..states.len() {
-            assert_ne!(states[i], states[j], "PageState variants should be distinct");
+        for j in (i + 1)..states.len() {
+            assert_ne!(
+                states[i], states[j],
+                "PageState variants should be distinct"
+            );
         }
     }
 }

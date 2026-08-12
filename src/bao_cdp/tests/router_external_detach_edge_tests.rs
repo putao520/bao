@@ -3,7 +3,7 @@
 // send_command routing branches, detach_session edge cases,
 // session ID uniqueness, CdpError field verification.
 
-use bao_cdp::{CdpRouter, BackendKind};
+use bao_cdp::{BackendKind, CdpRouter};
 
 const TID: &str = "test-target";
 
@@ -27,7 +27,9 @@ fn test_connect_external_empty_string() {
 #[test]
 fn test_connect_external_returns_external_browser() {
     let router = CdpRouter::new();
-    let ext = router.connect_external("ws://127.0.0.1:9222/devtools").unwrap();
+    let ext = router
+        .connect_external("ws://127.0.0.1:9222/devtools")
+        .unwrap();
     assert_eq!(ext.endpoint, "ws://127.0.0.1:9222/devtools");
     assert!(!ext.session_id.is_empty());
 }
@@ -222,8 +224,11 @@ fn test_router_send_command_with_params() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t");
     let sid = session.session_id();
-    let result = router.send_command(sid, "Page.navigate",
-        Some(serde_json::json!({"url": "https://example.com"})));
+    let result = router.send_command(
+        sid,
+        "Page.navigate",
+        Some(serde_json::json!({"url": "https://example.com"})),
+    );
     assert!(result.is_ok());
 }
 
@@ -303,7 +308,9 @@ fn test_backend_kind_all_debug_variants() {
 #[test]
 fn test_cdp_error_session_not_found() {
     let router = CdpRouter::new();
-    let err = router.send_command("bad-id", "Page.enable", None).unwrap_err();
+    let err = router
+        .send_command("bad-id", "Page.enable", None)
+        .unwrap_err();
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("session not found"));
 }
@@ -312,7 +319,9 @@ fn test_cdp_error_session_not_found() {
 fn test_cdp_error_method_not_found() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t");
-    let err = session.send(&router, "InvalidDomain.nonexistent", None).unwrap_err();
+    let err = session
+        .send(&router, "InvalidDomain.nonexistent", None)
+        .unwrap_err();
     assert_eq!(err.code, -32601);
     assert!(err.message.contains("wasn't found"));
 }

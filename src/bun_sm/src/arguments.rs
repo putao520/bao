@@ -23,7 +23,10 @@ impl<'a> ArgumentsSlice<'a> {
     }
 
     pub fn get(&self, index: usize) -> JSValue {
-        self.values.get(index).cloned().unwrap_or(JSValue::UNDEFINED)
+        self.values
+            .get(index)
+            .cloned()
+            .unwrap_or(JSValue::UNDEFINED)
     }
 
     /// Get the JSContext pointer.

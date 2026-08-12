@@ -30,7 +30,10 @@ fn memory_scheme_routes_to_in_memory() {
     let browser = Browser::connect(url).expect("memory://bao should succeed");
 
     // Assert
-    assert!(browser.is_in_memory(), "memory://bao must route to InMemory transport");
+    assert!(
+        browser.is_in_memory(),
+        "memory://bao must route to InMemory transport"
+    );
     assert_eq!(browser.transport_kind(), TransportKind::InMemory);
     assert_eq!(browser.scheme(), "memory");
     assert_eq!(browser.url(), "memory://bao");
@@ -48,7 +51,10 @@ fn ws_scheme_routes_to_websocket() {
     let browser = Browser::connect(url).expect("ws:// URL should parse successfully");
 
     // Assert
-    assert!(browser.is_websocket(), "ws:// must route to WebSocket transport");
+    assert!(
+        browser.is_websocket(),
+        "ws:// must route to WebSocket transport"
+    );
     assert!(!browser.is_in_memory());
     assert_eq!(browser.scheme(), "ws");
     assert_eq!(browser.url(), "ws://127.0.0.1:9222");
@@ -67,7 +73,10 @@ fn http_scheme_routes_to_websocket_with_discovery() {
         .expect("http:// URL should parse successfully (TASK-1 routing only, no network)");
 
     // Assert
-    assert!(browser.is_websocket(), "http:// must route to WebSocket transport (with discovery pending in TASK-2)");
+    assert!(
+        browser.is_websocket(),
+        "http:// must route to WebSocket transport (with discovery pending in TASK-2)"
+    );
     assert_eq!(browser.scheme(), "http");
 }
 
@@ -86,7 +95,10 @@ fn invalid_scheme_returns_invalid_scheme_error() {
     let err = result.expect_err("ftp:// should fail with InvalidScheme");
     match err {
         ConnectError::InvalidScheme(scheme) => {
-            assert_eq!(scheme, "ftp", "InvalidScheme must carry the offending scheme");
+            assert_eq!(
+                scheme, "ftp",
+                "InvalidScheme must carry the offending scheme"
+            );
         }
         other => panic!("expected InvalidScheme, got {:?}", other),
     }
@@ -134,7 +146,11 @@ fn empty_url_returns_invalid_url() {
     let err = Browser::connect(url).expect_err("empty string must fail");
 
     // Assert
-    assert!(matches!(err, ConnectError::InvalidUrl), "empty URL must return InvalidUrl, got {:?}", err);
+    assert!(
+        matches!(err, ConnectError::InvalidUrl),
+        "empty URL must return InvalidUrl, got {:?}",
+        err
+    );
 }
 
 #[test]
@@ -147,7 +163,11 @@ fn url_without_scheme_separator_returns_invalid_url() {
     let err = Browser::connect(url).expect_err("missing-scheme URL must fail");
 
     // Assert
-    assert!(matches!(err, ConnectError::InvalidUrl), "missing-scheme URL must return InvalidUrl, got {:?}", err);
+    assert!(
+        matches!(err, ConnectError::InvalidUrl),
+        "missing-scheme URL must return InvalidUrl, got {:?}",
+        err
+    );
 }
 
 #[test]
@@ -230,7 +250,11 @@ fn browser_display_includes_url() {
     let display = format!("{}", browser);
 
     // Assert
-    assert!(display.contains("ws://127.0.0.1:9222"), "display: {}", display);
+    assert!(
+        display.contains("ws://127.0.0.1:9222"),
+        "display: {}",
+        display
+    );
     assert!(display.contains("WebSocket"), "display: {}", display);
 }
 
@@ -265,13 +289,19 @@ fn all_five_supported_schemes_succeed() {
 
     // Act + Assert — memory → InMemory; 其他 → WebSocket
     for url in urls {
-        let browser = Browser::connect(url).unwrap_or_else(|e| panic!("{} should succeed: {:?}", url, e));
+        let browser =
+            Browser::connect(url).unwrap_or_else(|e| panic!("{} should succeed: {:?}", url, e));
         let expected = if url.starts_with("memory://") {
             TransportKind::InMemory
         } else {
             TransportKind::WebSocket
         };
-        assert_eq!(browser.transport_kind(), expected, "wrong transport kind for {}", url);
+        assert_eq!(
+            browser.transport_kind(),
+            expected,
+            "wrong transport kind for {}",
+            url
+        );
     }
 }
 
@@ -293,7 +323,10 @@ fn uppercase_memory_scheme_rejected() {
     // Assert — InvalidScheme 携带原始大小写,便于诊断
     match err {
         ConnectError::InvalidScheme(s) => {
-            assert_eq!(s, "MEMORY", "InvalidScheme must preserve original case for diagnosis");
+            assert_eq!(
+                s, "MEMORY",
+                "InvalidScheme must preserve original case for diagnosis"
+            );
         }
         other => panic!("expected InvalidScheme, got {:?}", other),
     }
@@ -540,7 +573,8 @@ fn empty_host_all_four_ws_schemes_route() {
 
     // Act + Assert
     for url in urls {
-        let browser = Browser::connect(url).unwrap_or_else(|e| panic!("{} should succeed: {:?}", url, e));
+        let browser =
+            Browser::connect(url).unwrap_or_else(|e| panic!("{} should succeed: {:?}", url, e));
         assert_eq!(
             browser.transport_kind(),
             TransportKind::WebSocket,
@@ -620,7 +654,11 @@ fn userinfo_preserved() {
     let browser = Browser::connect(url).unwrap();
 
     // Assert
-    assert_eq!(browser.url(), url, "userinfo (incl. percent-encoded) must roundtrip unchanged");
+    assert_eq!(
+        browser.url(),
+        url,
+        "userinfo (incl. percent-encoded) must roundtrip unchanged"
+    );
 }
 
 #[test]
@@ -694,12 +732,28 @@ fn scheme_url_transport_consistency_for_all_supported_schemes() {
     // Act + Assert
     for (url, expected_scheme, expected_kind) in cases {
         let browser = Browser::connect(url).unwrap_or_else(|e| panic!("{} failed: {:?}", url, e));
-        assert_eq!(browser.scheme(), *expected_scheme, "scheme mismatch for {}", url);
-        assert_eq!(browser.transport_kind(), *expected_kind, "kind mismatch for {}", url);
+        assert_eq!(
+            browser.scheme(),
+            *expected_scheme,
+            "scheme mismatch for {}",
+            url
+        );
+        assert_eq!(
+            browser.transport_kind(),
+            *expected_kind,
+            "kind mismatch for {}",
+            url
+        );
         assert_eq!(browser.url(), *url, "url roundtrip mismatch for {}", url);
         // is_in_memory / is_websocket 与 transport_kind 一致
-        assert_eq!(browser.is_in_memory(), *expected_kind == TransportKind::InMemory);
-        assert_eq!(browser.is_websocket(), *expected_kind == TransportKind::WebSocket);
+        assert_eq!(
+            browser.is_in_memory(),
+            *expected_kind == TransportKind::InMemory
+        );
+        assert_eq!(
+            browser.is_websocket(),
+            *expected_kind == TransportKind::WebSocket
+        );
     }
 }
 
@@ -762,10 +816,26 @@ fn browser_debug_format_contract() {
     let debug = format!("{:?}", browser);
 
     // Assert
-    assert!(debug.contains("url"), "Debug must expose url field: {}", debug);
-    assert!(debug.contains("scheme"), "Debug must expose scheme field: {}", debug);
-    assert!(debug.contains("transport_kind"), "Debug must expose transport_kind: {}", debug);
-    assert!(debug.contains("wss://x:443"), "Debug must contain url: {}", debug);
+    assert!(
+        debug.contains("url"),
+        "Debug must expose url field: {}",
+        debug
+    );
+    assert!(
+        debug.contains("scheme"),
+        "Debug must expose scheme field: {}",
+        debug
+    );
+    assert!(
+        debug.contains("transport_kind"),
+        "Debug must expose transport_kind: {}",
+        debug
+    );
+    assert!(
+        debug.contains("wss://x:443"),
+        "Debug must contain url: {}",
+        debug
+    );
 }
 
 // ── 对抗验证:ConnectError Display + Error trait 契约 ──────────────────────
@@ -826,7 +896,10 @@ fn connect_error_implements_std_error() {
 
     // source() 对 ConnectError 目前为 None(无 nested cause),锁定非 panic
     let src = std::error::Error::source(&err);
-    assert!(src.is_none(), "ConnectError::InvalidScheme source should be None");
+    assert!(
+        src.is_none(),
+        "ConnectError::InvalidScheme source should be None"
+    );
 }
 
 #[test]
@@ -869,7 +942,10 @@ fn http_routing_does_not_trigger_network_io() {
     let elapsed = start.elapsed();
 
     // Assert — 路由成功 + 耗时极短(无 TCP 握手 / HTTP 请求)
-    assert!(browser.is_websocket(), "http:// must route to WebSocket (discovery pending)");
+    assert!(
+        browser.is_websocket(),
+        "http:// must route to WebSocket (discovery pending)"
+    );
     assert_eq!(browser.scheme(), "http");
     assert!(
         elapsed.as_millis() < 1000,
@@ -903,7 +979,9 @@ fn build_in_memory_transport_rejects_ws_url_without_network() {
     let bridge: Arc<dyn InMemoryBridge> = Arc::new(NoopBridge);
 
     // Act
-    let err = browser.build_in_memory_transport(bridge).expect_err("ws URL must reject in_memory build");
+    let err = browser
+        .build_in_memory_transport(bridge)
+        .expect_err("ws URL must reject in_memory build");
 
     // Assert — InvalidScheme 且携带诊断,且 dispatch_command 未被调用(unreachable! 没 panic)
     match err {
@@ -926,7 +1004,9 @@ fn build_websocket_transport_rejects_memory_url_without_network() {
     let browser = Browser::connect("memory://bao").unwrap();
 
     // Act
-    let err = browser.build_websocket_transport().expect_err("memory URL must reject ws build");
+    let err = browser
+        .build_websocket_transport()
+        .expect_err("memory URL must reject ws build");
 
     // Assert
     match err {
@@ -937,6 +1017,9 @@ fn build_websocket_transport_rejects_memory_url_without_network() {
                 msg
             );
         }
-        other => panic!("expected InvalidScheme for memory+websocket, got {:?}", other),
+        other => panic!(
+            "expected InvalidScheme for memory+websocket, got {:?}",
+            other
+        ),
     }
 }

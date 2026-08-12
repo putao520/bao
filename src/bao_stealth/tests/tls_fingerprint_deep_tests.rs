@@ -423,7 +423,11 @@ fn test_chrome_latest_extensions_superset_of_120() {
     let c120 = TlsFingerprint::chrome_120();
     let cl = TlsFingerprint::chrome_latest();
     for ext in &c120.extensions {
-        assert!(cl.extensions.contains(ext), "Chrome latest missing extension {}", ext);
+        assert!(
+            cl.extensions.contains(ext),
+            "Chrome latest missing extension {}",
+            ext
+        );
     }
 }
 
@@ -509,8 +513,14 @@ fn test_tls_fingerprint_clone_chrome_latest() {
     let cl = TlsFingerprint::chrome_latest();
     let cloned = cl.clone();
     assert_eq!(cloned.record_size_limit, cl.record_size_limit);
-    assert_eq!(cloned.compress_certificate_algos, cl.compress_certificate_algos);
-    assert_eq!(cloned.application_settings_protocol, cl.application_settings_protocol);
+    assert_eq!(
+        cloned.compress_certificate_algos,
+        cl.compress_certificate_algos
+    );
+    assert_eq!(
+        cloned.application_settings_protocol,
+        cl.application_settings_protocol
+    );
 }
 
 #[test]

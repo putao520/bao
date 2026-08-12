@@ -4,38 +4,64 @@
 // categories. createTracing() returns a disabled Tracing object;
 // getEnabledCategories() returns empty string.
 
+use ::std::ptr::NonNull;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
-use ::std::ptr::NonNull;
 
 use crate::require::cache_builtin;
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
     rooted!(&in(cx) let obj = unsafe { w2::JS_NewPlainObject(cx) });
-    if obj.get().is_null() { return; }
+    if obj.get().is_null() {
+        return;
+    }
 
     unsafe {
         let raw_cx = cx.raw_cx();
 
         // createTracing(opts) — returns a Tracing object with enabled=false, categories=""
-        let create_fn = JS_NewFunction(raw_cx, Some(trace_create_tracing), 1, 0, c"createTracing".as_ptr());
+        let create_fn = JS_NewFunction(
+            raw_cx,
+            Some(trace_create_tracing),
+            1,
+            0,
+            c"createTracing".as_ptr(),
+        );
         if !create_fn.is_null() {
             let fn_obj = JS_GetFunctionObject(create_fn);
             if !fn_obj.is_null() {
                 rooted!(&in(cx) let val = ObjectValue(fn_obj));
-                let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"createTracing".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
+                let _ = JS_DefineProperty(
+                    raw_cx,
+                    obj.handle().into(),
+                    c"createTracing".as_ptr(),
+                    val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
 
         // getEnabledCategories() — returns ""
-        let get_fn = JS_NewFunction(raw_cx, Some(trace_get_enabled_categories), 0, 0, c"getEnabledCategories".as_ptr());
+        let get_fn = JS_NewFunction(
+            raw_cx,
+            Some(trace_get_enabled_categories),
+            0,
+            0,
+            c"getEnabledCategories".as_ptr(),
+        );
         if !get_fn.is_null() {
             let fn_obj = JS_GetFunctionObject(get_fn);
             if !fn_obj.is_null() {
                 rooted!(&in(cx) let val = ObjectValue(fn_obj));
-                let _ = JS_DefineProperty(raw_cx, obj.handle().into(), c"getEnabledCategories".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
+                let _ = JS_DefineProperty(
+                    raw_cx,
+                    obj.handle().into(),
+                    c"getEnabledCategories".as_ptr(),
+                    val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
     }
@@ -61,13 +87,25 @@ unsafe extern "C" fn trace_create_tracing(
     }
     // enabled = false
     rooted!(&in(cx_ref) let en = BooleanValue(false));
-    let _ = JS_DefineProperty(cx, tracing_obj.handle().into(), c"enabled".as_ptr(), en.handle().into(), JSPROP_ENUMERATE as u32);
+    let _ = JS_DefineProperty(
+        cx,
+        tracing_obj.handle().into(),
+        c"enabled".as_ptr(),
+        en.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // categories = ""
     let cat_str = JS_NewStringCopyZ(cx, c"".as_ptr());
     if !cat_str.is_null() {
         rooted!(&in(cx_ref) let cat_val = mozjs::jsval::StringValue(&*cat_str));
-        let _ = JS_DefineProperty(cx, tracing_obj.handle().into(), c"categories".as_ptr(), cat_val.handle().into(), JSPROP_ENUMERATE as u32);
+        let _ = JS_DefineProperty(
+            cx,
+            tracing_obj.handle().into(),
+            c"categories".as_ptr(),
+            cat_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
     args.rval().set(ObjectValue(tracing_obj.get()));
     true

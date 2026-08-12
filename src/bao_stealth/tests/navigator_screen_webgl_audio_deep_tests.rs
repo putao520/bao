@@ -3,9 +3,7 @@
 // preset field validation, custom construction, clone/debug, edge cases,
 // cross-preset differentiation, engine-layer property injection.
 
-use bao_stealth::{
-    NavigatorProfile, ScreenProfile, WebGLProfile, AudioProfile,
-};
+use bao_stealth::{AudioProfile, NavigatorProfile, ScreenProfile, WebGLProfile};
 
 // ---- NavigatorProfile presets ----
 
@@ -225,7 +223,9 @@ fn test_webgl_firefox_renderer() {
 fn test_webgl_firefox_extensions() {
     let gl = WebGLProfile::firefox();
     assert!(gl.extensions.len() > 10);
-    assert!(gl.extensions.contains(&"WEBGL_debug_renderer_info".to_string()));
+    assert!(gl
+        .extensions
+        .contains(&"WEBGL_debug_renderer_info".to_string()));
     assert!(gl.extensions.contains(&"OES_texture_float".to_string()));
 }
 

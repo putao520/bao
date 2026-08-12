@@ -270,7 +270,11 @@ fn a_dom_query_selector() {
     // Arrange
     // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     // Act
-    let r = run("DOM.querySelector", json!({"nodeId":1,"selector":"div.class"})).unwrap();
+    let r = run(
+        "DOM.querySelector",
+        json!({"nodeId":1,"selector":"div.class"}),
+    )
+    .unwrap();
     // Assert
     assert!(r["nodeId"].is_i64());
 }
@@ -559,7 +563,13 @@ fn a_target_close_target() {
     // First create a target, then close it.
     // Act
     let b = backend();
-    let create_r = dispatch_command(&*b, "Target.createTarget", json!({"url":"about:blank"}), "1").unwrap();
+    let create_r = dispatch_command(
+        &*b,
+        "Target.createTarget",
+        json!({"url":"about:blank"}),
+        "1",
+    )
+    .unwrap();
     let target_id = create_r["targetId"].as_str().unwrap().to_string();
     let r = dispatch_command(
         &*b,

@@ -21,21 +21,49 @@ pub struct Flags {
 
 impl Flags {
     pub const NONE: Flags = Flags { bits: 0 };
-    pub const GLOBAL: Flags = Flags { bits: mozjs::jsapi::RegExpFlag_Global };
-    pub const IGNORE_CASE: Flags = Flags { bits: mozjs::jsapi::RegExpFlag_IgnoreCase };
-    pub const MULTILINE: Flags = Flags { bits: mozjs::jsapi::RegExpFlag_Multiline };
-    pub const DOT_ALL: Flags = Flags { bits: mozjs::jsapi::RegExpFlag_DotAll };
-    pub const STICKY: Flags = Flags { bits: mozjs::jsapi::RegExpFlag_Sticky };
-    pub const UNICODE: Flags = Flags { bits: mozjs::jsapi::RegExpFlag_Unicode };
-    pub const HAS_INDICES: Flags = Flags { bits: mozjs::jsapi::RegExpFlag_HasIndices };
-    pub const UNICODE_SETS: Flags = Flags { bits: mozjs::jsapi::RegExpFlag_UnicodeSets };
+    pub const GLOBAL: Flags = Flags {
+        bits: mozjs::jsapi::RegExpFlag_Global,
+    };
+    pub const IGNORE_CASE: Flags = Flags {
+        bits: mozjs::jsapi::RegExpFlag_IgnoreCase,
+    };
+    pub const MULTILINE: Flags = Flags {
+        bits: mozjs::jsapi::RegExpFlag_Multiline,
+    };
+    pub const DOT_ALL: Flags = Flags {
+        bits: mozjs::jsapi::RegExpFlag_DotAll,
+    };
+    pub const STICKY: Flags = Flags {
+        bits: mozjs::jsapi::RegExpFlag_Sticky,
+    };
+    pub const UNICODE: Flags = Flags {
+        bits: mozjs::jsapi::RegExpFlag_Unicode,
+    };
+    pub const HAS_INDICES: Flags = Flags {
+        bits: mozjs::jsapi::RegExpFlag_HasIndices,
+    };
+    pub const UNICODE_SETS: Flags = Flags {
+        bits: mozjs::jsapi::RegExpFlag_UnicodeSets,
+    };
 
-    pub fn is_global(&self) -> bool { self.bits & mozjs::jsapi::RegExpFlag_Global != 0 }
-    pub fn is_ignore_case(&self) -> bool { self.bits & mozjs::jsapi::RegExpFlag_IgnoreCase != 0 }
-    pub fn is_multiline(&self) -> bool { self.bits & mozjs::jsapi::RegExpFlag_Multiline != 0 }
-    pub fn is_dot_all(&self) -> bool { self.bits & mozjs::jsapi::RegExpFlag_DotAll != 0 }
-    pub fn is_sticky(&self) -> bool { self.bits & mozjs::jsapi::RegExpFlag_Sticky != 0 }
-    pub fn is_unicode(&self) -> bool { self.bits & mozjs::jsapi::RegExpFlag_Unicode != 0 }
+    pub fn is_global(&self) -> bool {
+        self.bits & mozjs::jsapi::RegExpFlag_Global != 0
+    }
+    pub fn is_ignore_case(&self) -> bool {
+        self.bits & mozjs::jsapi::RegExpFlag_IgnoreCase != 0
+    }
+    pub fn is_multiline(&self) -> bool {
+        self.bits & mozjs::jsapi::RegExpFlag_Multiline != 0
+    }
+    pub fn is_dot_all(&self) -> bool {
+        self.bits & mozjs::jsapi::RegExpFlag_DotAll != 0
+    }
+    pub fn is_sticky(&self) -> bool {
+        self.bits & mozjs::jsapi::RegExpFlag_Sticky != 0
+    }
+    pub fn is_unicode(&self) -> bool {
+        self.bits & mozjs::jsapi::RegExpFlag_Unicode != 0
+    }
 
     fn to_sm_flags(&self) -> mozjs::jsapi::RegExpFlags {
         mozjs::jsapi::RegExpFlags { flags_: self.bits }
@@ -44,7 +72,11 @@ impl Flags {
 
 impl ::std::ops::BitOr for Flags {
     type Output = Self;
-    fn bitor(self, rhs: Self) -> Self { Flags { bits: self.bits | rhs.bits } }
+    fn bitor(self, rhs: Self) -> Self {
+        Flags {
+            bits: self.bits | rhs.bits,
+        }
+    }
 }
 
 /// A compiled regular expression backed by SpiderMonkey's RegExpObject.
@@ -63,9 +95,8 @@ impl RegularExpression {
     /// `cx` must be a valid JSContext.
     #[allow(unsafe_op_in_unsafe_fn)]
     pub unsafe fn compile(cx: *mut RawJSContext, pattern: &str, flags: Flags) -> Option<Self> {
-        let mut cx_ref = mozjs::context::JSContext::from_ptr(
-            ::std::ptr::NonNull::new_unchecked(cx)
-        );
+        let mut cx_ref =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let c_pattern = CString::new(pattern).unwrap_or_default();
         let sm_flags = flags.to_sm_flags();
         let obj = unsafe {
@@ -88,7 +119,10 @@ impl RegularExpression {
     /// # Safety
     /// `obj` must be a valid RegExpObject.
     pub unsafe fn from_object(obj: *mut JSObject) -> Self {
-        RegularExpression { obj, flags: Flags::NONE }
+        RegularExpression {
+            obj,
+            flags: Flags::NONE,
+        }
     }
 
     /// Get the underlying JSObject pointer.
@@ -159,7 +193,10 @@ mod tests {
 
     #[test]
     fn regex_null_check() {
-        let re = RegularExpression { obj: ::std::ptr::null_mut(), flags: Flags::NONE };
+        let re = RegularExpression {
+            obj: ::std::ptr::null_mut(),
+            flags: Flags::NONE,
+        };
         assert!(re.is_null());
     }
 }

@@ -23,7 +23,11 @@ proto: {
     let props = &result.classes[0].proto;
     assert_eq!(props.len(), 1);
     match &props[0].kind {
-        PropertyKind::Accessor { getter, setter, cache } => {
+        PropertyKind::Accessor {
+            getter,
+            setter,
+            cache,
+        } => {
             assert_eq!(getter, "get_prop");
             assert_eq!(setter, "set_prop");
             assert!(*cache);
@@ -304,7 +308,10 @@ fn test_generate_bindings_with_method_generates_function_spec() {
         has_pending_activity: false,
         proto: vec![PropertyDef {
             name: "doIt".into(),
-            kind: PropertyKind::Method { fn_name: "do_it_fn".into(), length: 2 },
+            kind: PropertyKind::Method {
+                fn_name: "do_it_fn".into(),
+                length: 2,
+            },
         }],
         static_props: vec![],
     };
@@ -326,7 +333,10 @@ fn test_generate_bindings_with_getter_generates_property_spec() {
         has_pending_activity: false,
         proto: vec![PropertyDef {
             name: "value".into(),
-            kind: PropertyKind::Getter { fn_name: "get_value".into(), cache: false },
+            kind: PropertyKind::Getter {
+                fn_name: "get_value".into(),
+                cache: false,
+            },
         }],
         static_props: vec![],
     };
@@ -375,13 +385,19 @@ fn test_generate_bindings_value_emits_string_value_spec() {
         has_pending_activity: false,
         proto: vec![PropertyDef {
             name: "version".into(),
-            kind: PropertyKind::Value { value: "1.0".into() },
+            kind: PropertyKind::Value {
+                value: "1.0".into(),
+            },
         }],
         static_props: vec![],
     };
     let bindings = generate_bindings(&class_def);
     assert!(bindings.function_specs.is_empty());
-    assert_eq!(bindings.property_specs.len(), 1, "Value kind must emit one property spec");
+    assert_eq!(
+        bindings.property_specs.len(),
+        1,
+        "Value kind must emit one property spec"
+    );
     let spec = &bindings.property_specs[0];
     assert!(spec.contains("c\"version\""));
     assert!(spec.contains("JSPropertySpec_ValueWrapper::StringValue"));
@@ -512,7 +528,10 @@ fn test_parse_result_empty_source() {
 
 #[test]
 fn test_property_kind_clone() {
-    let kind = PropertyKind::Method { fn_name: "test".into(), length: 3 };
+    let kind = PropertyKind::Method {
+        fn_name: "test".into(),
+        length: 3,
+    };
     let cloned = kind.clone();
     match cloned {
         PropertyKind::Method { fn_name, length } => {
@@ -526,10 +545,34 @@ fn test_property_kind_clone() {
 #[test]
 fn test_property_kind_debug_all_variants() {
     let variants = vec![
-        format!("{:?}", PropertyKind::Getter { fn_name: "g".into(), cache: false }),
-        format!("{:?}", PropertyKind::Setter { fn_name: "s".into() }),
-        format!("{:?}", PropertyKind::Accessor { getter: "g".into(), setter: "s".into(), cache: true }),
-        format!("{:?}", PropertyKind::Method { fn_name: "m".into(), length: 0 }),
+        format!(
+            "{:?}",
+            PropertyKind::Getter {
+                fn_name: "g".into(),
+                cache: false
+            }
+        ),
+        format!(
+            "{:?}",
+            PropertyKind::Setter {
+                fn_name: "s".into()
+            }
+        ),
+        format!(
+            "{:?}",
+            PropertyKind::Accessor {
+                getter: "g".into(),
+                setter: "s".into(),
+                cache: true
+            }
+        ),
+        format!(
+            "{:?}",
+            PropertyKind::Method {
+                fn_name: "m".into(),
+                length: 0
+            }
+        ),
         format!("{:?}", PropertyKind::Value { value: "v".into() }),
     ];
     assert!(variants[0].contains("Getter"));

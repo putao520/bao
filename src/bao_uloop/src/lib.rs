@@ -56,8 +56,9 @@
 //! `Pollable::FILE_POLL_TAG` in `io/posix_event_loop.rs`.
 
 #![allow(clippy::missing_safety_doc)]
-#![allow(dead_code)] // BUG-353 fix: loop entry points now extern "C" from C/C++ libs.
-                     // Internal helpers retained for poll.rs (FilePoll graft).
+#![allow(dead_code)]
+// BUG-353 fix: loop entry points now extern "C" from C/C++ libs.
+// Internal helpers retained for poll.rs (FilePoll graft).
 #![cfg(target_os = "linux")] // 74-C.1: Linux epoll only; kqueue = 74-C.8
 
 pub mod poll;
@@ -167,10 +168,14 @@ impl Drop for BaoLoopState {
         if !self.wakeup_async_ptr.is_null() {
             let wakeup = unsafe { &*self.wakeup_async_ptr };
             if wakeup.fd >= 0 {
-                unsafe { libc::close(wakeup.fd); }
+                unsafe {
+                    libc::close(wakeup.fd);
+                }
             }
             // Reconstruct the Box so Rust drops it.
-            unsafe { drop(Box::from_raw(self.wakeup_async_ptr)); }
+            unsafe {
+                drop(Box::from_raw(self.wakeup_async_ptr));
+            }
             self.wakeup_async_ptr = ptr::null_mut();
         }
 
@@ -178,19 +183,27 @@ impl Drop for BaoLoopState {
         if !self.loop_ptr.is_null() {
             let internal = unsafe { &(*self.loop_ptr).internal_loop_data };
             if !internal.recv_buf.is_null() {
-                unsafe { libc::free(internal.recv_buf as *mut c_void); }
+                unsafe {
+                    libc::free(internal.recv_buf as *mut c_void);
+                }
             }
             if !internal.send_buf.is_null() {
-                unsafe { libc::free(internal.send_buf as *mut c_void); }
+                unsafe {
+                    libc::free(internal.send_buf as *mut c_void);
+                }
             }
             // 3. Free PosixLoop itself (Box::into_raw-allocated).
-            unsafe { drop(Box::from_raw(self.loop_ptr)); }
+            unsafe {
+                drop(Box::from_raw(self.loop_ptr));
+            }
             self.loop_ptr = ptr::null_mut();
         }
 
         // 4. Close epoll fd (last — child resources may reference it during teardown).
         if self.epfd >= 0 {
-            unsafe { libc::close(self.epfd); }
+            unsafe {
+                libc::close(self.epfd);
+            }
             self.epfd = -1;
         }
     }
@@ -232,11 +245,17 @@ fn create_loop(
     // pointer remains libc-free-able.
     const RECV_BUF_LEN: usize = 524_288;
     let recv_buf: *mut u8 = unsafe { libc::malloc(RECV_BUF_LEN) as *mut u8 };
-    assert!(!recv_buf.is_null(), "bao_uloop: libc::malloc(recv_buf) failed");
+    assert!(
+        !recv_buf.is_null(),
+        "bao_uloop: libc::malloc(recv_buf) failed"
+    );
     unsafe { ptr::write_bytes(recv_buf, 0, RECV_BUF_LEN) };
 
     let send_buf: *mut u8 = unsafe { libc::malloc(RECV_BUF_LEN) as *mut u8 };
-    assert!(!send_buf.is_null(), "bao_uloop: libc::malloc(send_buf) failed");
+    assert!(
+        !send_buf.is_null(),
+        "bao_uloop: libc::malloc(send_buf) failed"
+    );
     unsafe { ptr::write_bytes(send_buf, 0, RECV_BUF_LEN) };
 
     // Create the epoll fd. This is the single poll set shared by FilePoll
@@ -333,10 +352,7 @@ fn create_loop(
 
 /// Run `f` with the BaoLoopState if it matches `loop_`. Returns `None` if no
 /// state is present or the pointer doesn't match.
-fn with_matching_state<R>(
-    loop_: *mut Loop,
-    f: impl FnOnce(&mut BaoLoopState) -> R,
-) -> Option<R> {
+fn with_matching_state<R>(loop_: *mut Loop, f: impl FnOnce(&mut BaoLoopState) -> R) -> Option<R> {
     BAO_LOOP.with(|cell| {
         let mut slot = cell.borrow_mut();
         let state = slot.as_mut()?;
@@ -410,19 +426,15 @@ fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
 
     let epfd = BAO_LOOP.with(|cell| {
         let slot = cell.borrow();
-        slot.as_ref().filter(|s| ptr::eq(s.loop_ptr, loop_)).map(|s| s.epfd)
+        slot.as_ref()
+            .filter(|s| ptr::eq(s.loop_ptr, loop_))
+            .map(|s| s.epfd)
     });
     let Some(epfd) = epfd else { return };
 
     let loop_ptr: *mut PosixLoop = loop_;
-    let nfds = unsafe {
-        libc::epoll_wait(
-            epfd,
-            (*loop_ptr).ready_polls.as_mut_ptr(),
-            1024,
-            timeout_ms,
-        )
-    };
+    let nfds =
+        unsafe { libc::epoll_wait(epfd, (*loop_ptr).ready_polls.as_mut_ptr(), 1024, timeout_ms) };
 
     if nfds <= 0 {
         return;
@@ -436,9 +448,8 @@ fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
     // Drain the wakeup eventfd first (if it's in the ready set).
     // The wakeup is registered with WAKEUP_TAG in data.u64, so we identify
     // it by checking against InternalLoopData.wakeup_async.
-    let wakeup_async_raw = unsafe {
-        (*loop_ptr).internal_loop_data.wakeup_async as *mut BaoWakeupAsync
-    };
+    let wakeup_async_raw =
+        unsafe { (*loop_ptr).internal_loop_data.wakeup_async as *mut BaoWakeupAsync };
 
     for i in 0..nfds {
         let event = unsafe { (*loop_ptr).ready_polls[i as usize] };
@@ -454,12 +465,16 @@ fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
                 }
             }
             // Null this event so the dispatch loop skips it
-            unsafe { (*loop_ptr).ready_polls[i as usize].u64 = 0; }
+            unsafe {
+                (*loop_ptr).ready_polls[i as usize].u64 = 0;
+            }
         }
     }
 
     // Dispatch remaining events via the CLEAR_POINTER_TAG pattern.
-    unsafe { poll::dispatch_ready_polls(loop_); }
+    unsafe {
+        poll::dispatch_ready_polls(loop_);
+    }
 }
 
 fn bump_iteration_nr(loop_: *mut Loop) {
@@ -548,8 +563,8 @@ unsafe extern "C" {
 // routing logic: read `s.kind()` → for Invalid, panic → get
 // `s.raw_group().vtable` → call the callback if present, else return `s`.
 
-use bun_uws_sys::{SocketKind, us_socket_t, ConnectingSocket, us_bun_verify_error_t};
 use bun_uws_sys::socket_group::VTable;
+use bun_uws_sys::{ConnectingSocket, SocketKind, us_bun_verify_error_t, us_socket_t};
 
 /// Dispatch a socket event through its group's vtable. Returns the socket
 /// unchanged if the group has no vtable or the callback slot is None.
@@ -595,12 +610,14 @@ pub unsafe extern "C" fn us_dispatch_open(
     ip_length: c_int,
 ) -> *mut c_void {
     unsafe {
-        dispatch_via_vtable(s, || s, |vt, sock| {
-            match vt.on_open {
+        dispatch_via_vtable(
+            s,
+            || s,
+            |vt, sock| match vt.on_open {
                 Some(cb) => cb(sock, is_client, ip, ip_length) as *mut c_void,
                 None => s,
-            }
-        })
+            },
+        )
     }
 }
 
@@ -613,12 +630,14 @@ pub unsafe extern "C" fn us_dispatch_data(
     length: c_int,
 ) -> *mut c_void {
     unsafe {
-        dispatch_via_vtable(s, || s, |vt, sock| {
-            match vt.on_data {
+        dispatch_via_vtable(
+            s,
+            || s,
+            |vt, sock| match vt.on_data {
                 Some(cb) => cb(sock, data, length) as *mut c_void,
                 None => s,
-            }
-        })
+            },
+        )
     }
 }
 
@@ -627,12 +646,14 @@ pub unsafe extern "C" fn us_dispatch_data(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn us_dispatch_fd(s: *mut c_void, fd: c_int) -> *mut c_void {
     unsafe {
-        dispatch_via_vtable(s, || s, |vt, sock| {
-            match vt.on_fd {
+        dispatch_via_vtable(
+            s,
+            || s,
+            |vt, sock| match vt.on_fd {
                 Some(cb) => cb(sock, fd) as *mut c_void,
                 None => s,
-            }
-        })
+            },
+        )
     }
 }
 
@@ -641,12 +662,14 @@ pub unsafe extern "C" fn us_dispatch_fd(s: *mut c_void, fd: c_int) -> *mut c_voi
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn us_dispatch_writable(s: *mut c_void) -> *mut c_void {
     unsafe {
-        dispatch_via_vtable(s, || s, |vt, sock| {
-            match vt.on_writable {
+        dispatch_via_vtable(
+            s,
+            || s,
+            |vt, sock| match vt.on_writable {
                 Some(cb) => cb(sock) as *mut c_void,
                 None => s,
-            }
-        })
+            },
+        )
     }
 }
 
@@ -659,12 +682,14 @@ pub unsafe extern "C" fn us_dispatch_close(
     reason: *mut c_void,
 ) -> *mut c_void {
     unsafe {
-        dispatch_via_vtable(s, || s, |vt, sock| {
-            match vt.on_close {
+        dispatch_via_vtable(
+            s,
+            || s,
+            |vt, sock| match vt.on_close {
                 Some(cb) => cb(sock, code, reason) as *mut c_void,
                 None => s,
-            }
-        })
+            },
+        )
     }
 }
 
@@ -673,12 +698,14 @@ pub unsafe extern "C" fn us_dispatch_close(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn us_dispatch_timeout(s: *mut c_void) -> *mut c_void {
     unsafe {
-        dispatch_via_vtable(s, || s, |vt, sock| {
-            match vt.on_timeout {
+        dispatch_via_vtable(
+            s,
+            || s,
+            |vt, sock| match vt.on_timeout {
                 Some(cb) => cb(sock) as *mut c_void,
                 None => s,
-            }
-        })
+            },
+        )
     }
 }
 
@@ -687,12 +714,14 @@ pub unsafe extern "C" fn us_dispatch_timeout(s: *mut c_void) -> *mut c_void {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn us_dispatch_long_timeout(s: *mut c_void) -> *mut c_void {
     unsafe {
-        dispatch_via_vtable(s, || s, |vt, sock| {
-            match vt.on_long_timeout {
+        dispatch_via_vtable(
+            s,
+            || s,
+            |vt, sock| match vt.on_long_timeout {
                 Some(cb) => cb(sock) as *mut c_void,
                 None => s,
-            }
-        })
+            },
+        )
     }
 }
 
@@ -701,12 +730,14 @@ pub unsafe extern "C" fn us_dispatch_long_timeout(s: *mut c_void) -> *mut c_void
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn us_dispatch_end(s: *mut c_void) -> *mut c_void {
     unsafe {
-        dispatch_via_vtable(s, || s, |vt, sock| {
-            match vt.on_end {
+        dispatch_via_vtable(
+            s,
+            || s,
+            |vt, sock| match vt.on_end {
                 Some(cb) => cb(sock) as *mut c_void,
                 None => s,
-            }
-        })
+            },
+        )
     }
 }
 
@@ -715,22 +746,21 @@ pub unsafe extern "C" fn us_dispatch_end(s: *mut c_void) -> *mut c_void {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn us_dispatch_connect_error(s: *mut c_void, code: c_int) -> *mut c_void {
     unsafe {
-        dispatch_via_vtable(s, || s, |vt, sock| {
-            match vt.on_connect_error {
+        dispatch_via_vtable(
+            s,
+            || s,
+            |vt, sock| match vt.on_connect_error {
                 Some(cb) => cb(sock, code) as *mut c_void,
                 None => s,
-            }
-        })
+            },
+        )
     }
 }
 
 /// Connecting socket error.
 /// Routes to `group.vtable.on_connecting_error` if available, else returns `c`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_dispatch_connecting_error(
-    c: *mut c_void,
-    code: c_int,
-) -> *mut c_void {
+pub unsafe extern "C" fn us_dispatch_connecting_error(c: *mut c_void, code: c_int) -> *mut c_void {
     let conn = c as *mut ConnectingSocket;
     let conn_ref = unsafe { &mut *conn };
     // ConnectingSocket dispatch also goes through its group's vtable,
@@ -760,11 +790,15 @@ pub unsafe extern "C" fn us_dispatch_handshake(
     err: us_bun_verify_error_t,
 ) {
     unsafe {
-        dispatch_via_vtable(s, || {}, |vt, sock| {
-            if let Some(cb) = vt.on_handshake {
-                cb(sock, success, err, core::ptr::null_mut());
-            }
-        })
+        dispatch_via_vtable(
+            s,
+            || {},
+            |vt, sock| {
+                if let Some(cb) = vt.on_handshake {
+                    cb(sock, success, err, core::ptr::null_mut());
+                }
+            },
+        )
     }
 }
 
@@ -799,35 +833,23 @@ pub unsafe extern "C" fn Bun__addrinfo_get(
 
 /// Associate a connecting socket with a DNS request. No-op.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Bun__addrinfo_set(
-    _ptr: *mut c_void,
-    _socket: *mut c_void,
-) -> c_int {
+pub unsafe extern "C" fn Bun__addrinfo_set(_ptr: *mut c_void, _socket: *mut c_void) -> c_int {
     0
 }
 
 /// Cancel a DNS request association. No-op.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Bun__addrinfo_cancel(
-    _ptr: *mut c_void,
-    _socket: *mut c_void,
-) -> c_int {
+pub unsafe extern "C" fn Bun__addrinfo_cancel(_ptr: *mut c_void, _socket: *mut c_void) -> c_int {
     0
 }
 
 /// Free a DNS request. No-op.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Bun__addrinfo_freeRequest(
-    _req: *mut c_void,
-    _error: c_int,
-) {
-}
+pub unsafe extern "C" fn Bun__addrinfo_freeRequest(_req: *mut c_void, _error: c_int) {}
 
 /// Get the result of a DNS request. Returns NULL (no result).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Bun__addrinfo_getRequestResult(
-    _req: *mut c_void,
-) -> *mut c_void {
+pub unsafe extern "C" fn Bun__addrinfo_getRequestResult(_req: *mut c_void) -> *mut c_void {
     ptr::null_mut()
 }
 

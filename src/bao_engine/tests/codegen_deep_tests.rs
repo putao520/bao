@@ -71,7 +71,11 @@ define({
 
     // Check accessor
     match &class.proto[1].kind {
-        PropertyKind::Accessor { getter, setter, cache } => {
+        PropertyKind::Accessor {
+            getter,
+            setter,
+            cache,
+        } => {
             assert_eq!(getter, "getReadWriteProp");
             assert_eq!(setter, "setReadWriteProp");
             assert!(!cache);
@@ -99,7 +103,11 @@ define({
     // Check value — note: parser trims quotes but not trailing commas
     match &class.proto[4].kind {
         PropertyKind::Value { value } => {
-            assert!(value.starts_with("42"), "expected value starting with 42, got: {}", value);
+            assert!(
+                value.starts_with("42"),
+                "expected value starting with 42, got: {}",
+                value
+            );
         }
         _ => panic!("expected value for constantValue"),
     }
@@ -175,9 +183,17 @@ fn test_bindings_js_class_def_format() {
         static_props: vec![],
     };
     let bindings = generate_bindings(&class);
-    assert!(bindings.js_class_def.contains("static Buffer_Class: JSClass"));
+    assert!(
+        bindings
+            .js_class_def
+            .contains("static Buffer_Class: JSClass")
+    );
     assert!(bindings.js_class_def.contains("c\"Buffer\""));
-    assert!(bindings.js_class_def.contains("JSCLASS_FOREGROUND_FINALIZE"));
+    assert!(
+        bindings
+            .js_class_def
+            .contains("JSCLASS_FOREGROUND_FINALIZE")
+    );
 }
 
 #[test]
@@ -236,19 +252,26 @@ fn test_bindings_init_fn_structure() {
         proto: vec![
             PropertyDef {
                 name: "read".into(),
-                kind: PropertyKind::Method { fn_name: "streamRead".into(), length: 1 },
+                kind: PropertyKind::Method {
+                    fn_name: "streamRead".into(),
+                    length: 1,
+                },
             },
             PropertyDef {
                 name: "close".into(),
-                kind: PropertyKind::Method { fn_name: "streamClose".into(), length: 0 },
+                kind: PropertyKind::Method {
+                    fn_name: "streamClose".into(),
+                    length: 0,
+                },
             },
         ],
-        static_props: vec![
-            PropertyDef {
-                name: "create".into(),
-                kind: PropertyKind::Method { fn_name: "streamCreate".into(), length: 2 },
+        static_props: vec![PropertyDef {
+            name: "create".into(),
+            kind: PropertyKind::Method {
+                fn_name: "streamCreate".into(),
+                length: 2,
             },
-        ],
+        }],
     };
     let bindings = generate_bindings(&class);
     let init = &bindings.init_class_fn;
@@ -275,11 +298,17 @@ fn test_bindings_specs_separation() {
         proto: vec![
             PropertyDef {
                 name: "getter1".into(),
-                kind: PropertyKind::Getter { fn_name: "getGetter1".into(), cache: false },
+                kind: PropertyKind::Getter {
+                    fn_name: "getGetter1".into(),
+                    cache: false,
+                },
             },
             PropertyDef {
                 name: "method1".into(),
-                kind: PropertyKind::Method { fn_name: "doMethod1".into(), length: 0 },
+                kind: PropertyKind::Method {
+                    fn_name: "doMethod1".into(),
+                    length: 0,
+                },
             },
             PropertyDef {
                 name: "accessor1".into(),
@@ -337,7 +366,10 @@ fn test_module_output_ordering() {
 
     let zebra_pos = module.find("Zebra").unwrap();
     let alpha_pos = module.find("Alpha").unwrap();
-    assert!(zebra_pos < alpha_pos, "Classes should appear in input order");
+    assert!(
+        zebra_pos < alpha_pos,
+        "Classes should appear in input order"
+    );
 
     // init_all should have Zebra before Alpha
     let init_start = module.find("init_all").unwrap();
@@ -359,19 +391,26 @@ fn test_module_proto_and_static_arrays() {
         proto: vec![
             PropertyDef {
                 name: "render".into(),
-                kind: PropertyKind::Method { fn_name: "widgetRender".into(), length: 0 },
+                kind: PropertyKind::Method {
+                    fn_name: "widgetRender".into(),
+                    length: 0,
+                },
             },
             PropertyDef {
                 name: "color".into(),
-                kind: PropertyKind::Getter { fn_name: "getColor".into(), cache: false },
+                kind: PropertyKind::Getter {
+                    fn_name: "getColor".into(),
+                    cache: false,
+                },
             },
         ],
-        static_props: vec![
-            PropertyDef {
-                name: "defaultColor".into(),
-                kind: PropertyKind::Getter { fn_name: "getDefaultColor".into(), cache: true },
+        static_props: vec![PropertyDef {
+            name: "defaultColor".into(),
+            kind: PropertyKind::Getter {
+                fn_name: "getDefaultColor".into(),
+                cache: true,
             },
-        ],
+        }],
     };
     let bindings = generate_bindings(&class);
     let module = generate_module(&[bindings], "widget_module");
@@ -524,7 +563,10 @@ fn test_js_value_to_display_string() {
     assert_eq!(JsValue::Bool(false).to_display_string(), "false");
     assert_eq!(JsValue::Number(42.0).to_display_string(), "42");
     assert_eq!(JsValue::String("hello".into()).to_display_string(), "hello");
-    assert_eq!(JsValue::Object(std::ptr::null_mut()).to_display_string(), "[object Object]");
+    assert_eq!(
+        JsValue::Object(std::ptr::null_mut()).to_display_string(),
+        "[object Object]"
+    );
 }
 
 #[test]
@@ -532,8 +574,14 @@ fn test_js_value_to_display_number_edge_cases() {
     use bao_engine::value::JsValue;
 
     assert_eq!(JsValue::Number(f64::NAN).to_display_string(), "NaN");
-    assert_eq!(JsValue::Number(f64::INFINITY).to_display_string(), "Infinity");
-    assert_eq!(JsValue::Number(f64::NEG_INFINITY).to_display_string(), "-Infinity");
+    assert_eq!(
+        JsValue::Number(f64::INFINITY).to_display_string(),
+        "Infinity"
+    );
+    assert_eq!(
+        JsValue::Number(f64::NEG_INFINITY).to_display_string(),
+        "-Infinity"
+    );
     assert_eq!(JsValue::Number(0.0).to_display_string(), "0");
     assert_eq!(JsValue::Number(-0.0).to_display_string(), "0");
     assert_eq!(JsValue::Number(1.5).to_display_string(), "1.5");
@@ -619,11 +667,25 @@ fn test_js_value_clone() {
 
 #[test]
 fn test_property_kind_variants() {
-    let getter = PropertyKind::Getter { fn_name: "getX".into(), cache: true };
-    let setter = PropertyKind::Setter { fn_name: "setX".into() };
-    let accessor = PropertyKind::Accessor { getter: "g".into(), setter: "s".into(), cache: false };
-    let method = PropertyKind::Method { fn_name: "doIt".into(), length: 2 };
-    let value = PropertyKind::Value { value: "hello".into() };
+    let getter = PropertyKind::Getter {
+        fn_name: "getX".into(),
+        cache: true,
+    };
+    let setter = PropertyKind::Setter {
+        fn_name: "setX".into(),
+    };
+    let accessor = PropertyKind::Accessor {
+        getter: "g".into(),
+        setter: "s".into(),
+        cache: false,
+    };
+    let method = PropertyKind::Method {
+        fn_name: "doIt".into(),
+        length: 2,
+    };
+    let value = PropertyKind::Value {
+        value: "hello".into(),
+    };
 
     // Just verify all variants compile and match
     match getter {
@@ -638,7 +700,11 @@ fn test_property_kind_variants() {
         _ => panic!("wrong variant"),
     }
     match accessor {
-        PropertyKind::Accessor { getter, setter, cache } => {
+        PropertyKind::Accessor {
+            getter,
+            setter,
+            cache,
+        } => {
             assert_eq!(getter, "g");
             assert_eq!(setter, "s");
             assert!(!cache);
@@ -669,7 +735,10 @@ fn test_class_def_debug_output() {
         has_pending_activity: true,
         proto: vec![PropertyDef {
             name: "x".into(),
-            kind: PropertyKind::Getter { fn_name: "getX".into(), cache: false },
+            kind: PropertyKind::Getter {
+                fn_name: "getX".into(),
+                cache: false,
+            },
         }],
         static_props: vec![],
     };
@@ -721,7 +790,11 @@ define({
     match &class.proto[0].kind {
         PropertyKind::Value { value } => {
             // Parser trims quotes but may leave trailing comma
-            assert!(value.starts_with("1.0.0"), "expected value starting with 1.0.0, got: {}", value);
+            assert!(
+                value.starts_with("1.0.0"),
+                "expected value starting with 1.0.0, got: {}",
+                value
+            );
         }
         _ => panic!("expected value property"),
     }

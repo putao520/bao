@@ -69,11 +69,7 @@ unsafe extern "C" {
         input: *const u8,
         inl: c_int,
     ) -> c_int;
-    fn EVP_CipherFinal_ex(
-        ctx: *mut evp_cipher_ctx_st,
-        out: *mut u8,
-        outl: *mut c_int,
-    ) -> c_int;
+    fn EVP_CipherFinal_ex(ctx: *mut evp_cipher_ctx_st, out: *mut u8, outl: *mut c_int) -> c_int;
 }
 
 /// RAII EVP_CIPHER_CTX (non-AEAD). Reset on drop.
@@ -85,7 +81,9 @@ impl EvpCipherCtx {
     fn new() -> Result<Self, CryptoError> {
         let ctx = unsafe { EVP_CIPHER_CTX_new() };
         if ctx.is_null() {
-            return Err(CryptoError::EncryptionFailed("EVP_CIPHER_CTX_new failed".into()));
+            return Err(CryptoError::EncryptionFailed(
+                "EVP_CIPHER_CTX_new failed".into(),
+            ));
         }
         Ok(EvpCipherCtx { ctx })
     }
@@ -99,10 +97,19 @@ impl EvpCipherCtx {
     ) -> Result<(), CryptoError> {
         let enc: c_int = if encrypt { 1 } else { 0 };
         let rc = unsafe {
-            EVP_CipherInit_ex(self.ctx, cipher, ptr::null_mut(), key.as_ptr(), iv.as_ptr(), enc)
+            EVP_CipherInit_ex(
+                self.ctx,
+                cipher,
+                ptr::null_mut(),
+                key.as_ptr(),
+                iv.as_ptr(),
+                enc,
+            )
         };
         if rc != 1 {
-            return Err(CryptoError::EncryptionFailed("EVP_CipherInit_ex failed".into()));
+            return Err(CryptoError::EncryptionFailed(
+                "EVP_CipherInit_ex failed".into(),
+            ));
         }
         Ok(())
     }
@@ -113,10 +120,18 @@ impl EvpCipherCtx {
         let mut out = vec![0u8; max_out];
         let mut outl: c_int = 0;
         let rc = unsafe {
-            EVP_CipherUpdate(self.ctx, out.as_mut_ptr(), &mut outl, input.as_ptr(), input.len() as c_int)
+            EVP_CipherUpdate(
+                self.ctx,
+                out.as_mut_ptr(),
+                &mut outl,
+                input.as_ptr(),
+                input.len() as c_int,
+            )
         };
         if rc != 1 {
-            return Err(CryptoError::EncryptionFailed("EVP_CipherUpdate failed".into()));
+            return Err(CryptoError::EncryptionFailed(
+                "EVP_CipherUpdate failed".into(),
+            ));
         }
         out.truncate(outl.max(0) as usize);
         Ok(out)
@@ -127,7 +142,9 @@ impl EvpCipherCtx {
         let mut outl: c_int = 0;
         let rc = unsafe { EVP_CipherFinal_ex(self.ctx, out.as_mut_ptr(), &mut outl) };
         if rc != 1 {
-            return Err(CryptoError::DecryptionFailed("EVP_CipherFinal_ex failed".into()));
+            return Err(CryptoError::DecryptionFailed(
+                "EVP_CipherFinal_ex failed".into(),
+            ));
         }
         out.truncate(outl.max(0) as usize);
         Ok(out)
@@ -170,9 +187,14 @@ impl AeadCtx {
             )
         };
         if rc != 1 {
-            Err(CryptoError::EncryptionFailed("EVP_AEAD_CTX_init failed".into()))
+            Err(CryptoError::EncryptionFailed(
+                "EVP_AEAD_CTX_init failed".into(),
+            ))
         } else {
-            Ok(Self { storage, initialized: true })
+            Ok(Self {
+                storage,
+                initialized: true,
+            })
         }
     }
 
@@ -220,12 +242,12 @@ impl CipherAlgorithm {
 
     pub fn key_len(self) -> usize {
         match self {
-            CipherAlgorithm::Aes128Cbc | CipherAlgorithm::Aes128Ctr | CipherAlgorithm::Aes128Gcm => {
-                AES_128_KEY_LEN
-            }
-            CipherAlgorithm::Aes192Cbc | CipherAlgorithm::Aes192Ctr | CipherAlgorithm::Aes192Gcm => {
-                AES_192_KEY_LEN
-            }
+            CipherAlgorithm::Aes128Cbc
+            | CipherAlgorithm::Aes128Ctr
+            | CipherAlgorithm::Aes128Gcm => AES_128_KEY_LEN,
+            CipherAlgorithm::Aes192Cbc
+            | CipherAlgorithm::Aes192Ctr
+            | CipherAlgorithm::Aes192Gcm => AES_192_KEY_LEN,
             CipherAlgorithm::Aes256Cbc
             | CipherAlgorithm::Aes256Ctr
             | CipherAlgorithm::Aes256Gcm
@@ -243,9 +265,9 @@ impl CipherAlgorithm {
             CipherAlgorithm::Aes128Cbc
             | CipherAlgorithm::Aes192Cbc
             | CipherAlgorithm::Aes256Cbc => AES_BLOCK_SIZE,
-            CipherAlgorithm::Aes128Ctr | CipherAlgorithm::Aes192Ctr | CipherAlgorithm::Aes256Ctr => {
-                AES_BLOCK_SIZE
-            }
+            CipherAlgorithm::Aes128Ctr
+            | CipherAlgorithm::Aes192Ctr
+            | CipherAlgorithm::Aes256Ctr => AES_BLOCK_SIZE,
             CipherAlgorithm::DesEde3Cbc => DES_BLOCK_SIZE,
         }
     }
@@ -348,13 +370,18 @@ pub fn encrypt(
         )
     };
     if rc != 1 {
-        return Err(CryptoError::EncryptionFailed("EVP_AEAD_CTX_seal failed".into()));
+        return Err(CryptoError::EncryptionFailed(
+            "EVP_AEAD_CTX_seal failed".into(),
+        ));
     }
 
     let ct_len = out_len - AEAD_TAG_LEN;
     let ciphertext = out[..ct_len].to_vec();
     let auth_tag = out[ct_len..out_len].to_vec();
-    Ok(EncryptResult { ciphertext, auth_tag })
+    Ok(EncryptResult {
+        ciphertext,
+        auth_tag,
+    })
 }
 
 pub fn decrypt(
@@ -412,7 +439,9 @@ pub fn decrypt(
         )
     };
     if rc != 1 {
-        return Err(CryptoError::DecryptionFailed("EVP_AEAD_CTX_open failed".into()));
+        return Err(CryptoError::DecryptionFailed(
+            "EVP_AEAD_CTX_open failed".into(),
+        ));
     }
     debug_assert_eq!(out_len, ciphertext.len());
     out.truncate(out_len);
@@ -509,7 +538,9 @@ impl CipherCtx {
     /// For non-AEAD this is a real streaming update; for AEAD it accumulates.
     pub fn update(&mut self, input: &[u8]) -> Result<Vec<u8>, CryptoError> {
         if self.finalized {
-            return Err(CryptoError::EncryptionFailed("update() after final()".into()));
+            return Err(CryptoError::EncryptionFailed(
+                "update() after final()".into(),
+            ));
         }
         if self.algo.is_aead() {
             self.aead_buffer.extend_from_slice(input);
@@ -534,7 +565,9 @@ impl CipherCtx {
     /// Provide the auth tag for AEAD decryption (set before final()).
     pub fn set_auth_tag(&mut self, tag: &[u8]) -> Result<(), CryptoError> {
         if !self.algo.is_aead() {
-            return Err(CryptoError::UnsupportedAlgorithm("set_auth_tag on non-AEAD".into()));
+            return Err(CryptoError::UnsupportedAlgorithm(
+                "set_auth_tag on non-AEAD".into(),
+            ));
         }
         if tag.len() != AEAD_TAG_LEN {
             return Err(CryptoError::InvalidLength(format!(
@@ -550,7 +583,9 @@ impl CipherCtx {
     /// the full ciphertext since AEAD buffers until final).
     pub fn final_ex(&mut self) -> Result<Vec<u8>, CryptoError> {
         if self.finalized {
-            return Err(CryptoError::EncryptionFailed("final() already called".into()));
+            return Err(CryptoError::EncryptionFailed(
+                "final() already called".into(),
+            ));
         }
         self.finalized = true;
 
@@ -565,7 +600,9 @@ impl CipherCtx {
 
     fn final_aead(&mut self) -> Result<Vec<u8>, CryptoError> {
         if self.aead_phase != AeadPhase::Accumulating {
-            return Err(CryptoError::EncryptionFailed("AEAD already finalized".into()));
+            return Err(CryptoError::EncryptionFailed(
+                "AEAD already finalized".into(),
+            ));
         }
         self.aead_phase = AeadPhase::Done;
         let aead = self.algo.aead_cipher().ok_or_else(|| {
@@ -595,7 +632,9 @@ impl CipherCtx {
                     )
                 };
                 if rc != 1 {
-                    return Err(CryptoError::EncryptionFailed("EVP_AEAD_CTX_seal failed".into()));
+                    return Err(CryptoError::EncryptionFailed(
+                        "EVP_AEAD_CTX_seal failed".into(),
+                    ));
                 }
                 let ct_len = out_len - AEAD_TAG_LEN;
                 self.aead_tag = out[ct_len..out_len].to_vec();
@@ -612,8 +651,9 @@ impl CipherCtx {
                 combined.extend_from_slice(&ciphertext);
                 combined.extend_from_slice(&self.aead_tag);
 
-                let mut ctx = AeadCtx::new(aead, &self.key)
-                    .map_err(|_| CryptoError::DecryptionFailed("EVP_AEAD_CTX_init failed".into()))?;
+                let mut ctx = AeadCtx::new(aead, &self.key).map_err(|_| {
+                    CryptoError::DecryptionFailed("EVP_AEAD_CTX_init failed".into())
+                })?;
                 let mut out = vec![0u8; ciphertext.len()];
                 let mut out_len: usize = 0;
                 let aad: &[u8] = self.aead_aad.as_slice();
@@ -632,7 +672,9 @@ impl CipherCtx {
                     )
                 };
                 if rc != 1 {
-                    return Err(CryptoError::DecryptionFailed("EVP_AEAD_CTX_open failed".into()));
+                    return Err(CryptoError::DecryptionFailed(
+                        "EVP_AEAD_CTX_open failed".into(),
+                    ));
                 }
                 out.truncate(out_len);
                 self.aead_result = out.clone();
@@ -643,7 +685,8 @@ impl CipherCtx {
 
     /// Read the AEAD auth tag (valid after final() of an encrypt context).
     pub fn take_auth_tag(&mut self) -> Option<Vec<u8>> {
-        if self.algo.is_aead() && self.direction == Direction::Encrypt && !self.aead_tag.is_empty() {
+        if self.algo.is_aead() && self.direction == Direction::Encrypt && !self.aead_tag.is_empty()
+        {
             Some(core::mem::take(&mut self.aead_tag))
         } else {
             None
@@ -670,7 +713,15 @@ mod tests {
         let plaintext = b"hello aes-128-gcm";
         let result = encrypt(CipherAlgorithm::Aes128Gcm, key, iv, None, plaintext).unwrap();
         assert_eq!(result.auth_tag.len(), 16);
-        let decrypted = decrypt(CipherAlgorithm::Aes128Gcm, key, iv, None, &result.ciphertext, &result.auth_tag).unwrap();
+        let decrypted = decrypt(
+            CipherAlgorithm::Aes128Gcm,
+            key,
+            iv,
+            None,
+            &result.ciphertext,
+            &result.auth_tag,
+        )
+        .unwrap();
         assert_eq!(decrypted, plaintext.to_vec());
     }
 
@@ -681,7 +732,15 @@ mod tests {
         let plaintext = b"hello aes-256-gcm";
         let result = encrypt(CipherAlgorithm::Aes256Gcm, key, iv, None, plaintext).unwrap();
         assert_eq!(result.auth_tag.len(), 16);
-        let decrypted = decrypt(CipherAlgorithm::Aes256Gcm, key, iv, None, &result.ciphertext, &result.auth_tag).unwrap();
+        let decrypted = decrypt(
+            CipherAlgorithm::Aes256Gcm,
+            key,
+            iv,
+            None,
+            &result.ciphertext,
+            &result.auth_tag,
+        )
+        .unwrap();
         assert_eq!(decrypted, plaintext.to_vec());
     }
 
@@ -692,7 +751,15 @@ mod tests {
         let plaintext = b"hello chacha20-poly1305";
         let result = encrypt(CipherAlgorithm::ChaCha20Poly1305, key, iv, None, plaintext).unwrap();
         assert_eq!(result.auth_tag.len(), 16);
-        let decrypted = decrypt(CipherAlgorithm::ChaCha20Poly1305, key, iv, None, &result.ciphertext, &result.auth_tag).unwrap();
+        let decrypted = decrypt(
+            CipherAlgorithm::ChaCha20Poly1305,
+            key,
+            iv,
+            None,
+            &result.ciphertext,
+            &result.auth_tag,
+        )
+        .unwrap();
         assert_eq!(decrypted, plaintext.to_vec());
     }
 
@@ -703,7 +770,15 @@ mod tests {
         let aad = b"additional data";
         let plaintext = b"hello with aad";
         let result = encrypt(CipherAlgorithm::Aes256Gcm, key, iv, Some(aad), plaintext).unwrap();
-        let decrypted = decrypt(CipherAlgorithm::Aes256Gcm, key, iv, Some(aad), &result.ciphertext, &result.auth_tag).unwrap();
+        let decrypted = decrypt(
+            CipherAlgorithm::Aes256Gcm,
+            key,
+            iv,
+            Some(aad),
+            &result.ciphertext,
+            &result.auth_tag,
+        )
+        .unwrap();
         assert_eq!(decrypted, plaintext.to_vec());
     }
 
@@ -714,12 +789,24 @@ mod tests {
         let iv = &[1u8; 12];
         let plaintext = b"secret message";
         let result = encrypt(CipherAlgorithm::Aes256Gcm, key, iv, None, plaintext).unwrap();
-        assert!(decrypt(CipherAlgorithm::Aes256Gcm, wrong_key, iv, None, &result.ciphertext, &result.auth_tag).is_err());
+        assert!(
+            decrypt(
+                CipherAlgorithm::Aes256Gcm,
+                wrong_key,
+                iv,
+                None,
+                &result.ciphertext,
+                &result.auth_tag
+            )
+            .is_err()
+        );
     }
 
     // ── Non-AEAD streaming roundtrips ────────────────────────────────────────
     fn roundtrip_streaming(algo: CipherAlgorithm, klen: usize, ivlen: usize) {
-        let key: Vec<u8> = (0..klen).map(|i| (i as u8).wrapping_mul(7).wrapping_add(1)).collect();
+        let key: Vec<u8> = (0..klen)
+            .map(|i| (i as u8).wrapping_mul(7).wrapping_add(1))
+            .collect();
         let iv: Vec<u8> = (0..ivlen).map(|i| (0xa0u8).wrapping_add(i as u8)).collect();
         let pt = b"the quick brown fox 1234567890 !@#";
 
@@ -767,17 +854,21 @@ mod tests {
     // ── AEAD streaming roundtrip (buffered via final) ────────────────────────
     #[test]
     fn aes_256_gcm_streaming_roundtrip() {
-        let key: Vec<u8> = (0..32).map(|i| (i as u8).wrapping_mul(7).wrapping_add(1)).collect();
+        let key: Vec<u8> = (0..32)
+            .map(|i| (i as u8).wrapping_mul(7).wrapping_add(1))
+            .collect();
         let iv: Vec<u8> = (0..12).map(|i| (0xa0u8).wrapping_add(i as u8)).collect();
         let pt = b"gcm secret payload";
 
-        let mut enc = CipherCtx::new(CipherAlgorithm::Aes256Gcm, &key, &iv, Direction::Encrypt).unwrap();
+        let mut enc =
+            CipherCtx::new(CipherAlgorithm::Aes256Gcm, &key, &iv, Direction::Encrypt).unwrap();
         let _ = enc.update(pt).unwrap();
         let ct = enc.final_ex().unwrap();
         let tag = enc.take_auth_tag().unwrap();
         assert_eq!(tag.len(), 16);
 
-        let mut dec = CipherCtx::new(CipherAlgorithm::Aes256Gcm, &key, &iv, Direction::Decrypt).unwrap();
+        let mut dec =
+            CipherCtx::new(CipherAlgorithm::Aes256Gcm, &key, &iv, Direction::Decrypt).unwrap();
         dec.set_auth_tag(&tag).unwrap();
         let _ = dec.update(&ct).unwrap();
         let rec = dec.final_ex().unwrap();
@@ -786,17 +877,31 @@ mod tests {
 
     #[test]
     fn chacha20_poly1305_streaming_roundtrip() {
-        let key: Vec<u8> = (0..32).map(|i| (i as u8).wrapping_mul(3).wrapping_add(5)).collect();
+        let key: Vec<u8> = (0..32)
+            .map(|i| (i as u8).wrapping_mul(3).wrapping_add(5))
+            .collect();
         let iv: Vec<u8> = (0..12).map(|i| (0x50u8).wrapping_add(i as u8)).collect();
         let pt = b"chacha aead";
 
-        let mut enc = CipherCtx::new(CipherAlgorithm::ChaCha20Poly1305, &key, &iv, Direction::Encrypt).unwrap();
+        let mut enc = CipherCtx::new(
+            CipherAlgorithm::ChaCha20Poly1305,
+            &key,
+            &iv,
+            Direction::Encrypt,
+        )
+        .unwrap();
         let _ = enc.update(pt).unwrap();
         let ct = enc.final_ex().unwrap();
         let tag = enc.take_auth_tag().unwrap();
         assert_eq!(tag.len(), 16);
 
-        let mut dec = CipherCtx::new(CipherAlgorithm::ChaCha20Poly1305, &key, &iv, Direction::Decrypt).unwrap();
+        let mut dec = CipherCtx::new(
+            CipherAlgorithm::ChaCha20Poly1305,
+            &key,
+            &iv,
+            Direction::Decrypt,
+        )
+        .unwrap();
         dec.set_auth_tag(&tag).unwrap();
         let _ = dec.update(&ct).unwrap();
         let rec = dec.final_ex().unwrap();
@@ -805,17 +910,21 @@ mod tests {
 
     #[test]
     fn aes_256_gcm_tampered_tag_fails() {
-        let key: Vec<u8> = (0..32).map(|i| (i as u8).wrapping_mul(7).wrapping_add(1)).collect();
+        let key: Vec<u8> = (0..32)
+            .map(|i| (i as u8).wrapping_mul(7).wrapping_add(1))
+            .collect();
         let iv: Vec<u8> = (0..12).map(|i| (0xa0u8).wrapping_add(i as u8)).collect();
         let pt = b"tamper me";
 
-        let mut enc = CipherCtx::new(CipherAlgorithm::Aes256Gcm, &key, &iv, Direction::Encrypt).unwrap();
+        let mut enc =
+            CipherCtx::new(CipherAlgorithm::Aes256Gcm, &key, &iv, Direction::Encrypt).unwrap();
         let _ = enc.update(pt).unwrap();
         let ct = enc.final_ex().unwrap();
         let mut tag = enc.take_auth_tag().unwrap();
         tag[0] ^= 0xff;
 
-        let mut dec = CipherCtx::new(CipherAlgorithm::Aes256Gcm, &key, &iv, Direction::Decrypt).unwrap();
+        let mut dec =
+            CipherCtx::new(CipherAlgorithm::Aes256Gcm, &key, &iv, Direction::Decrypt).unwrap();
         dec.set_auth_tag(&tag).unwrap();
         let _ = dec.update(&ct).unwrap();
         assert!(dec.final_ex().is_err());

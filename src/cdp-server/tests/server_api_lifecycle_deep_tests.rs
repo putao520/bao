@@ -201,7 +201,9 @@ fn test_builder_browser_name() {
 
 #[test]
 fn test_builder_user_agent() {
-    let config = ServerConfig::builder().user_agent("Mozilla/5.0 TestBot").build();
+    let config = ServerConfig::builder()
+        .user_agent("Mozilla/5.0 TestBot")
+        .build();
     assert_eq!(config.user_agent.as_deref(), Some("Mozilla/5.0 TestBot"));
 }
 
@@ -241,10 +243,7 @@ fn test_builder_all_fields() {
 
 #[test]
 fn test_builder_chaining_overwrites() {
-    let config = ServerConfig::builder()
-        .port(1111)
-        .port(2222)
-        .build();
+    let config = ServerConfig::builder().port(1111).port(2222).build();
     assert_eq!(config.port, 2222);
 }
 
@@ -266,8 +265,15 @@ struct TrackedHandler {
 }
 
 impl DomainHandler for TrackedHandler {
-    fn domain_name(&self) -> &'static str { self.domain }
-    fn handle_command(&self, _cmd: &str, _params: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        self.domain
+    }
+    fn handle_command(
+        &self,
+        _cmd: &str,
+        _params: Value,
+        _: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         Ok(json!({}))
     }
     fn on_session_created(&self, session_id: &str) {
@@ -283,11 +289,13 @@ fn test_registry_notify_session_created() {
     let registry = DomainRegistry::<TrackedHandler>::new();
     let created: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let destroyed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    registry.register(TrackedHandler {
-        domain: "TestDomain",
-        created: created.clone(),
-        destroyed: destroyed.clone(),
-    }).unwrap();
+    registry
+        .register(TrackedHandler {
+            domain: "TestDomain",
+            created: created.clone(),
+            destroyed: destroyed.clone(),
+        })
+        .unwrap();
 
     registry.notify_session_created("TestDomain", "sess-1");
     let c = created.lock().unwrap();
@@ -300,11 +308,13 @@ fn test_registry_notify_session_created_unknown_domain() {
     let registry = DomainRegistry::<TrackedHandler>::new();
     let created: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let destroyed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    registry.register(TrackedHandler {
-        domain: "Foo",
-        created: created.clone(),
-        destroyed: destroyed.clone(),
-    }).unwrap();
+    registry
+        .register(TrackedHandler {
+            domain: "Foo",
+            created: created.clone(),
+            destroyed: destroyed.clone(),
+        })
+        .unwrap();
 
     registry.notify_session_created("Bar", "sess-1");
     assert!(created.lock().unwrap().is_empty());
@@ -318,16 +328,20 @@ fn test_registry_notify_session_destroyed_multiple_domains() {
     let created_b: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let destroyed_b: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
-    registry.register(TrackedHandler {
-        domain: "Alpha",
-        created: created_a.clone(),
-        destroyed: destroyed_a.clone(),
-    }).unwrap();
-    registry.register(TrackedHandler {
-        domain: "Beta",
-        created: created_b.clone(),
-        destroyed: destroyed_b.clone(),
-    }).unwrap();
+    registry
+        .register(TrackedHandler {
+            domain: "Alpha",
+            created: created_a.clone(),
+            destroyed: destroyed_a.clone(),
+        })
+        .unwrap();
+    registry
+        .register(TrackedHandler {
+            domain: "Beta",
+            created: created_b.clone(),
+            destroyed: destroyed_b.clone(),
+        })
+        .unwrap();
 
     registry.notify_session_destroyed(&["Alpha".into(), "Beta".into()], "sess-99");
     assert_eq!(destroyed_a.lock().unwrap().len(), 1);
@@ -340,11 +354,13 @@ fn test_registry_notify_session_destroyed_multiple_domains() {
 fn test_registry_notify_session_destroyed_empty() {
     let registry = DomainRegistry::<TrackedHandler>::new();
     let destroyed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    registry.register(TrackedHandler {
-        domain: "Gamma",
-        created: Arc::new(Mutex::new(Vec::new())),
-        destroyed: destroyed.clone(),
-    }).unwrap();
+    registry
+        .register(TrackedHandler {
+            domain: "Gamma",
+            created: Arc::new(Mutex::new(Vec::new())),
+            destroyed: destroyed.clone(),
+        })
+        .unwrap();
 
     registry.notify_session_destroyed(&[], "sess-x");
     assert!(destroyed.lock().unwrap().is_empty());
@@ -354,11 +370,13 @@ fn test_registry_notify_session_destroyed_empty() {
 fn test_registry_notify_session_destroyed_unknown_domain() {
     let registry = DomainRegistry::<TrackedHandler>::new();
     let destroyed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    registry.register(TrackedHandler {
-        domain: "Delta",
-        created: Arc::new(Mutex::new(Vec::new())),
-        destroyed: destroyed.clone(),
-    }).unwrap();
+    registry
+        .register(TrackedHandler {
+            domain: "Delta",
+            created: Arc::new(Mutex::new(Vec::new())),
+            destroyed: destroyed.clone(),
+        })
+        .unwrap();
 
     registry.notify_session_destroyed(&["NonExistent".into()], "sess-z");
     assert!(destroyed.lock().unwrap().is_empty());
@@ -372,8 +390,17 @@ fn test_registry_notify_session_destroyed_unknown_domain() {
 fn test_registry_register_duplicate_returns_err() {
     struct H;
     impl DomainHandler for H {
-        fn domain_name(&self) -> &'static str { "Dupe" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> { Ok(json!({})) }
+        fn domain_name(&self) -> &'static str {
+            "Dupe"
+        }
+        fn handle_command(
+            &self,
+            _: &str,
+            _: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
+            Ok(json!({}))
+        }
     }
     let registry = DomainRegistry::<H>::new();
     assert!(registry.register(H).is_ok());
@@ -386,8 +413,17 @@ fn test_registry_register_duplicate_returns_err() {
 fn test_registry_has_domain_after_register() {
     struct H;
     impl DomainHandler for H {
-        fn domain_name(&self) -> &'static str { "Check" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> { Ok(json!({})) }
+        fn domain_name(&self) -> &'static str {
+            "Check"
+        }
+        fn handle_command(
+            &self,
+            _: &str,
+            _: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
+            Ok(json!({}))
+        }
     }
     let registry = DomainRegistry::<H>::new();
     assert!(!registry.has_domain("Check"));
@@ -406,8 +442,15 @@ fn test_registry_dispatch_unknown_domain() {
 fn test_registry_dispatch_returns_handler_result() {
     struct H;
     impl DomainHandler for H {
-        fn domain_name(&self) -> &'static str { "Echo" }
-        fn handle_command(&self, cmd: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+        fn domain_name(&self) -> &'static str {
+            "Echo"
+        }
+        fn handle_command(
+            &self,
+            cmd: &str,
+            _: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
             Ok(json!({"echo": cmd}))
         }
     }
@@ -424,9 +467,19 @@ fn test_registry_dispatch_returns_handler_result() {
 fn test_registry_dispatch_handler_error() {
     struct H;
     impl DomainHandler for H {
-        fn domain_name(&self) -> &'static str { "Fail" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
-            Err(CdpError { code: -32000, message: "custom error".into() })
+        fn domain_name(&self) -> &'static str {
+            "Fail"
+        }
+        fn handle_command(
+            &self,
+            _: &str,
+            _: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
+            Err(CdpError {
+                code: -32000,
+                message: "custom error".into(),
+            })
         }
     }
     let registry = DomainRegistry::<H>::new();
@@ -441,8 +494,17 @@ fn test_registry_dispatch_handler_error() {
 fn test_registry_dispatch_no_dot_in_method() {
     struct H;
     impl DomainHandler for H {
-        fn domain_name(&self) -> &'static str { "" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> { Ok(json!({})) }
+        fn domain_name(&self) -> &'static str {
+            ""
+        }
+        fn handle_command(
+            &self,
+            _: &str,
+            _: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
+            Ok(json!({}))
+        }
     }
     let registry = DomainRegistry::<H>::new();
     registry.register(H).unwrap();
@@ -475,7 +537,10 @@ fn test_target_info_serialize() {
     assert_eq!(json["type"], "page");
     assert_eq!(json["title"], "Test Page");
     assert_eq!(json["url"], "https://example.com");
-    assert_eq!(json["web_socket_debugger_url"], "ws://127.0.0.1:9222/devtools/page/t1");
+    assert_eq!(
+        json["web_socket_debugger_url"],
+        "ws://127.0.0.1:9222/devtools/page/t1"
+    );
 }
 
 #[test]
@@ -492,7 +557,10 @@ fn test_target_info_deserialize() {
     assert_eq!(info.target_type, "page");
     assert_eq!(info.title, "Page 2");
     assert_eq!(info.url, "about:blank");
-    assert_eq!(info.web_socket_debugger_url, "ws://localhost:9222/devtools/page/t2");
+    assert_eq!(
+        info.web_socket_debugger_url,
+        "ws://localhost:9222/devtools/page/t2"
+    );
 }
 
 #[test]
@@ -547,7 +615,12 @@ fn test_target_info_clone() {
 
 #[test]
 fn test_session_state_variants() {
-    let states = [SessionState::Created, SessionState::Active, SessionState::Closing, SessionState::Closed];
+    let states = [
+        SessionState::Created,
+        SessionState::Active,
+        SessionState::Closing,
+        SessionState::Closed,
+    ];
     assert_eq!(states.len(), 4);
 }
 
@@ -605,7 +678,10 @@ fn test_session_error_debug_io() {
 
 #[test]
 fn test_cdp_error_serialize() {
-    let err = CdpError { code: -32601, message: "Method not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "Method not found".into(),
+    };
     let json = serde_json::to_value(&err).unwrap();
     assert_eq!(json["code"], -32601);
     assert_eq!(json["message"], "Method not found");
@@ -613,7 +689,10 @@ fn test_cdp_error_serialize() {
 
 #[test]
 fn test_cdp_error_clone() {
-    let err = CdpError { code: -32000, message: "test".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "test".into(),
+    };
     let cloned = err.clone();
     assert_eq!(cloned.code, err.code);
     assert_eq!(cloned.message, err.message);
@@ -621,7 +700,10 @@ fn test_cdp_error_clone() {
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -1, message: "dbg".into() };
+    let err = CdpError {
+        code: -1,
+        message: "dbg".into(),
+    };
     let s = format!("{:?}", err);
     assert!(s.contains("CdpError"));
     assert!(s.contains("-1"));
@@ -643,8 +725,9 @@ fn test_cdp_message_parse_minimal() {
 #[test]
 fn test_cdp_message_parse_full() {
     let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":42,"method":"Page.navigate","params":{"url":"http://x"},"session_id":"s1"}"#
-    ).unwrap();
+        r#"{"id":42,"method":"Page.navigate","params":{"url":"http://x"},"session_id":"s1"}"#,
+    )
+    .unwrap();
     assert_eq!(msg.id, Some(42));
     assert_eq!(msg.method, "Page.navigate");
     assert_eq!(msg.params.as_ref().unwrap()["url"], "http://x");
@@ -728,7 +811,10 @@ fn test_cdp_response_error() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let json = serde_json::to_value(&resp).unwrap();
     assert_eq!(json["id"], 2);
@@ -826,7 +912,10 @@ fn test_serialize_response_error() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32600, message: "bad".into() }),
+        error: Some(CdpError {
+            code: -32600,
+            message: "bad".into(),
+        }),
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains("-32600"));
@@ -928,17 +1017,23 @@ fn test_parse_new_request_multi_percent() {
 
 #[test]
 fn test_is_websocket_upgrade_uppercase() {
-    assert!(is_websocket_upgrade("GET / HTTP/1.1\r\nUpgrade: websocket\r\n"));
+    assert!(is_websocket_upgrade(
+        "GET / HTTP/1.1\r\nUpgrade: websocket\r\n"
+    ));
 }
 
 #[test]
 fn test_is_websocket_upgrade_lowercase() {
-    assert!(is_websocket_upgrade("GET / HTTP/1.1\r\nupgrade: websocket\r\n"));
+    assert!(is_websocket_upgrade(
+        "GET / HTTP/1.1\r\nupgrade: websocket\r\n"
+    ));
 }
 
 #[test]
 fn test_is_websocket_upgrade_no_upgrade() {
-    assert!(!is_websocket_upgrade("GET / HTTP/1.1\r\nHost: localhost\r\n"));
+    assert!(!is_websocket_upgrade(
+        "GET / HTTP/1.1\r\nHost: localhost\r\n"
+    ));
 }
 
 #[test]
@@ -983,12 +1078,25 @@ fn test_broadcaster_clone() {
 fn test_custom_handler_invoke() {
     struct MyHandler;
     impl DomainHandler for MyHandler {
-        fn domain_name(&self) -> &'static str { "Custom" }
-        fn handle_command(&self, cmd: &str, params: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+        fn domain_name(&self) -> &'static str {
+            "Custom"
+        }
+        fn handle_command(
+            &self,
+            cmd: &str,
+            params: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
             match cmd {
                 "Custom.echo" => Ok(params),
-                "Custom.fail" => Err(CdpError { code: -32000, message: "fail".into() }),
-                _ => Err(CdpError { code: -32601, message: format!("'{}' wasn't found", cmd) }),
+                "Custom.fail" => Err(CdpError {
+                    code: -32000,
+                    message: "fail".into(),
+                }),
+                _ => Err(CdpError {
+                    code: -32601,
+                    message: format!("'{}' wasn't found", cmd),
+                }),
             }
         }
     }
@@ -1000,7 +1108,9 @@ fn test_custom_handler_invoke() {
     let err = h.handle_command("Custom.fail", json!({}), &es).unwrap_err();
     assert_eq!(err.code, -32000);
 
-    let unknown = h.handle_command("Custom.unknown", json!({}), &es).unwrap_err();
+    let unknown = h
+        .handle_command("Custom.unknown", json!({}), &es)
+        .unwrap_err();
     assert_eq!(unknown.code, -32601);
 }
 
@@ -1011,8 +1121,17 @@ fn test_custom_handler_lifecycle_callbacks() {
         destroyed: Arc<Mutex<bool>>,
     }
     impl DomainHandler for LifeHandler {
-        fn domain_name(&self) -> &'static str { "Life" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> { Ok(json!({})) }
+        fn domain_name(&self) -> &'static str {
+            "Life"
+        }
+        fn handle_command(
+            &self,
+            _: &str,
+            _: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
+            Ok(json!({}))
+        }
         fn on_session_created(&self, _: &str) {
             *self.created.lock().unwrap() = true;
         }
@@ -1022,7 +1141,10 @@ fn test_custom_handler_lifecycle_callbacks() {
     }
     let created = Arc::new(Mutex::new(false));
     let destroyed = Arc::new(Mutex::new(false));
-    let h = LifeHandler { created: created.clone(), destroyed: destroyed.clone() };
+    let h = LifeHandler {
+        created: created.clone(),
+        destroyed: destroyed.clone(),
+    };
     h.on_session_created("s1");
     assert!(*created.lock().unwrap());
     h.on_session_destroyed("s1");
@@ -1074,10 +1196,7 @@ fn test_target_provider_activate() {
 
 #[test]
 fn test_server_with_provider_ws_url() {
-    let mut server = CdpServer::new(ServerConfig::builder()
-        .host("10.0.0.1")
-        .port(5555)
-        .build());
+    let mut server = CdpServer::new(ServerConfig::builder().host("10.0.0.1").port(5555).build());
     server.set_target_provider(Arc::new(NoopTargetProvider));
     let url = server.ws_url_for_target("abc");
     assert_eq!(url, "ws://10.0.0.1:5555/devtools/page/abc");
@@ -1087,14 +1206,25 @@ fn test_server_with_provider_ws_url() {
 fn test_server_registry_with_handler() {
     struct H;
     impl DomainHandler for H {
-        fn domain_name(&self) -> &'static str { "Custom" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> { Ok(json!({"ok": true})) }
+        fn domain_name(&self) -> &'static str {
+            "Custom"
+        }
+        fn handle_command(
+            &self,
+            _: &str,
+            _: Value,
+            _: &dyn EventSender,
+        ) -> Result<Value, CdpError> {
+            Ok(json!({"ok": true}))
+        }
     }
     let reg = Arc::new(DomainRegistry::<H>::new());
     reg.register(H).unwrap();
     let server = CdpServer::with_registry(ServerConfig::default(), reg);
     assert!(server.registry().has_domain("Custom"));
-    let result = server.registry().dispatch_command("Custom.test", json!({}), &NoopEventSender);
+    let result = server
+        .registry()
+        .dispatch_command("Custom.test", json!({}), &NoopEventSender);
     assert_eq!(result.unwrap().unwrap()["ok"], true);
 }
 
@@ -1104,6 +1234,20 @@ fn test_server_registry_with_handler() {
 
 #[test]
 fn test_error_constants_values() {
-    assert_eq!(cdp_server::CdpError { code: -32600, message: "".into() }.code, -32600);
-    assert_eq!(cdp_server::CdpError { code: -32601, message: "".into() }.code, -32601);
+    assert_eq!(
+        cdp_server::CdpError {
+            code: -32600,
+            message: "".into()
+        }
+        .code,
+        -32600
+    );
+    assert_eq!(
+        cdp_server::CdpError {
+            code: -32601,
+            message: "".into()
+        }
+        .code,
+        -32601
+    );
 }

@@ -1,6 +1,6 @@
 // @trace REQ-ENG-007
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
@@ -174,11 +174,7 @@ const HTTPS_JS: &str = r#"
 // internal non-JS caller that still wants the serialized form, but the
 // JS-native entry no longer touches it — C2 invariant satisfied.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn https_request(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn https_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let url = if argc > 0 && (*args.get(0).ptr).is_string() {
@@ -208,10 +204,7 @@ unsafe extern "C" fn https_request(
     // Build the PENDING Promise. The network round-trip runs off the JS thread.
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let null_global = ::std::ptr::null_mut::<JSObject>());
-    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(
-        cx,
-        null_global.handle().into(),
-    );
+    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, null_global.handle().into());
     if promise.is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -296,13 +289,23 @@ fn perform_https_request(url: &str, method: &str, headers_json: &str, body: &str
     let headers_vec: Vec<(String, String)> = headers_map.into_iter().collect();
 
     let result = crate::stealth_http::stealth_http_request(
-        &None, bun_method, url, &headers_vec, if body.is_empty() { None } else { Some(body.as_bytes()) },
+        &None,
+        bun_method,
+        url,
+        &headers_vec,
+        if body.is_empty() {
+            None
+        } else {
+            Some(body.as_bytes())
+        },
     );
 
     match result {
         Ok(resp) => {
             let status_code = resp.status_code;
-            let headers_json_parts: Vec<String> = resp.headers.iter()
+            let headers_json_parts: Vec<String> = resp
+                .headers
+                .iter()
                 .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)))
                 .collect();
             let headers_str = headers_json_parts.join(",");
@@ -322,7 +325,10 @@ fn perform_https_request(url: &str, method: &str, headers_json: &str, body: &str
             )
         }
         Err(e) => {
-            format!("{{\"statusCode\":0,\"statusMessage\":\"\",\"httpVersion\":\"\",\"headers\":{{}},\"body\":\"\",\"error\":\"{}\"}}", escape_json(&e))
+            format!(
+                "{{\"statusCode\":0,\"statusMessage\":\"\",\"httpVersion\":\"\",\"headers\":{{}},\"body\":\"\",\"error\":\"{}\"}}",
+                escape_json(&e)
+            )
         }
     }
 }

@@ -19,7 +19,9 @@ fn test_permission_bridge_deep() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         function check(label, fn) {
             try { var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }
@@ -205,7 +207,8 @@ fn test_permission_bridge_deep() {
         });
 
         results.join("|")
-    "#);
+    "#,
+    );
 
     let mut pass = 0;
     let mut fail = 0;
@@ -217,7 +220,11 @@ fn test_permission_bridge_deep() {
             eprintln!("FAILED: {}", item);
         }
     }
-    assert_eq!(fail, 0, "permission_bridge deep tests had {} failures", fail);
+    assert_eq!(
+        fail, 0,
+        "permission_bridge deep tests had {} failures",
+        fail
+    );
     assert!(pass >= 15, "Expected at least 15 passes, got {}", pass);
 
     // === Rust-level permission_bridge API tests ===
@@ -227,147 +234,222 @@ fn test_permission_bridge_deep() {
     bun_runtime::permission_bridge::set_permission(None);
 
     // Test 1: No permission allows all operations
-    assert!(bun_runtime::permission_bridge::check_fs_read("/etc/passwd").is_ok(),
-        "check_fs_read should allow when no permission set");
-    assert!(bun_runtime::permission_bridge::check_fs_write("/tmp/test").is_ok(),
-        "check_fs_write should allow when no permission set");
-    assert!(bun_runtime::permission_bridge::check_net("evil.com").is_ok(),
-        "check_net should allow when no permission set");
-    assert!(bun_runtime::permission_bridge::check_env().is_ok(),
-        "check_env should allow when no permission set");
-    assert!(bun_runtime::permission_bridge::check_run().is_ok(),
-        "check_run should allow when no permission set");
+    assert!(
+        bun_runtime::permission_bridge::check_fs_read("/etc/passwd").is_ok(),
+        "check_fs_read should allow when no permission set"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_fs_write("/tmp/test").is_ok(),
+        "check_fs_write should allow when no permission set"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_net("evil.com").is_ok(),
+        "check_net should allow when no permission set"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_env().is_ok(),
+        "check_env should allow when no permission set"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_run().is_ok(),
+        "check_run should allow when no permission set"
+    );
 
     // Test 2: FS read permission with allowed prefix
-    bun_runtime::permission_bridge::set_permission(Some(bun_runtime::permission_bridge::PermissionCheck {
-        read_paths: Some(vec!["/home".to_string(), "/tmp".to_string()]),
-        write_paths: None,
-        net_hosts: None,
-        env_allowed: true,
-        run_allowed: true,
-    }));
-    assert!(bun_runtime::permission_bridge::check_fs_read("/home/user/file").is_ok(),
-        "check_fs_read should allow /home prefix");
-    assert!(bun_runtime::permission_bridge::check_fs_read("/tmp/data").is_ok(),
-        "check_fs_read should allow /tmp prefix");
-    assert!(bun_runtime::permission_bridge::check_fs_read("/etc/passwd").is_err(),
-        "check_fs_read should deny /etc without prefix");
+    bun_runtime::permission_bridge::set_permission(Some(
+        bun_runtime::permission_bridge::PermissionCheck {
+            read_paths: Some(vec!["/home".to_string(), "/tmp".to_string()]),
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        },
+    ));
+    assert!(
+        bun_runtime::permission_bridge::check_fs_read("/home/user/file").is_ok(),
+        "check_fs_read should allow /home prefix"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_fs_read("/tmp/data").is_ok(),
+        "check_fs_read should allow /tmp prefix"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_fs_read("/etc/passwd").is_err(),
+        "check_fs_read should deny /etc without prefix"
+    );
 
     // Test 3: FS write permission
-    bun_runtime::permission_bridge::set_permission(Some(bun_runtime::permission_bridge::PermissionCheck {
-        read_paths: None,
-        write_paths: Some(vec!["/tmp".to_string()]),
-        net_hosts: None,
-        env_allowed: true,
-        run_allowed: true,
-    }));
-    assert!(bun_runtime::permission_bridge::check_fs_write("/tmp/output").is_ok(),
-        "check_fs_write should allow /tmp prefix");
-    assert!(bun_runtime::permission_bridge::check_fs_write("/etc/shadow").is_err(),
-        "check_fs_write should deny /etc without prefix");
+    bun_runtime::permission_bridge::set_permission(Some(
+        bun_runtime::permission_bridge::PermissionCheck {
+            read_paths: None,
+            write_paths: Some(vec!["/tmp".to_string()]),
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        },
+    ));
+    assert!(
+        bun_runtime::permission_bridge::check_fs_write("/tmp/output").is_ok(),
+        "check_fs_write should allow /tmp prefix"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_fs_write("/etc/shadow").is_err(),
+        "check_fs_write should deny /etc without prefix"
+    );
 
     // Test 4: Network permission - exact match
-    bun_runtime::permission_bridge::set_permission(Some(bun_runtime::permission_bridge::PermissionCheck {
-        read_paths: None,
-        write_paths: None,
-        net_hosts: Some(vec!["example.com".to_string()]),
-        env_allowed: true,
-        run_allowed: true,
-    }));
-    assert!(bun_runtime::permission_bridge::check_net("example.com").is_ok(),
-        "check_net should allow exact match");
-    assert!(bun_runtime::permission_bridge::check_net("evil.com").is_err(),
-        "check_net should deny non-matching host");
+    bun_runtime::permission_bridge::set_permission(Some(
+        bun_runtime::permission_bridge::PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: Some(vec!["example.com".to_string()]),
+            env_allowed: true,
+            run_allowed: true,
+        },
+    ));
+    assert!(
+        bun_runtime::permission_bridge::check_net("example.com").is_ok(),
+        "check_net should allow exact match"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_net("evil.com").is_err(),
+        "check_net should deny non-matching host"
+    );
 
     // Test 5: Network permission - subdomain match
-    assert!(bun_runtime::permission_bridge::check_net("sub.example.com").is_ok(),
-        "check_net should allow subdomain");
-    assert!(bun_runtime::permission_bridge::check_net("deep.sub.example.com").is_ok(),
-        "check_net should allow deep subdomain");
+    assert!(
+        bun_runtime::permission_bridge::check_net("sub.example.com").is_ok(),
+        "check_net should allow subdomain"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_net("deep.sub.example.com").is_ok(),
+        "check_net should allow deep subdomain"
+    );
 
     // Test 6: Network permission - partial mismatch (security check)
-    assert!(bun_runtime::permission_bridge::check_net("notexample.com").is_err(),
-        "check_net should deny partial suffix match (security)");
-    assert!(bun_runtime::permission_bridge::check_net("xnotexample.com").is_err(),
-        "check_net should deny partial suffix match (security)");
+    assert!(
+        bun_runtime::permission_bridge::check_net("notexample.com").is_err(),
+        "check_net should deny partial suffix match (security)"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_net("xnotexample.com").is_err(),
+        "check_net should deny partial suffix match (security)"
+    );
 
     // Test 7: env_allowed = false
-    bun_runtime::permission_bridge::set_permission(Some(bun_runtime::permission_bridge::PermissionCheck {
-        read_paths: None,
-        write_paths: None,
-        net_hosts: None,
-        env_allowed: false,
-        run_allowed: true,
-    }));
-    assert!(bun_runtime::permission_bridge::check_env().is_err(),
-        "check_env should deny when env_allowed=false");
-    assert!(bun_runtime::permission_bridge::check_run().is_ok(),
-        "check_run should allow when run_allowed=true");
+    bun_runtime::permission_bridge::set_permission(Some(
+        bun_runtime::permission_bridge::PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: false,
+            run_allowed: true,
+        },
+    ));
+    assert!(
+        bun_runtime::permission_bridge::check_env().is_err(),
+        "check_env should deny when env_allowed=false"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_run().is_ok(),
+        "check_run should allow when run_allowed=true"
+    );
 
     // Test 8: run_allowed = false
-    bun_runtime::permission_bridge::set_permission(Some(bun_runtime::permission_bridge::PermissionCheck {
-        read_paths: None,
-        write_paths: None,
-        net_hosts: None,
-        env_allowed: true,
-        run_allowed: false,
-    }));
-    assert!(bun_runtime::permission_bridge::check_env().is_ok(),
-        "check_env should allow when env_allowed=true");
-    assert!(bun_runtime::permission_bridge::check_run().is_err(),
-        "check_run should deny when run_allowed=false");
+    bun_runtime::permission_bridge::set_permission(Some(
+        bun_runtime::permission_bridge::PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: false,
+        },
+    ));
+    assert!(
+        bun_runtime::permission_bridge::check_env().is_ok(),
+        "check_env should allow when env_allowed=true"
+    );
+    assert!(
+        bun_runtime::permission_bridge::check_run().is_err(),
+        "check_run should deny when run_allowed=false"
+    );
 
     // Test 9: Error messages are descriptive
-    bun_runtime::permission_bridge::set_permission(Some(bun_runtime::permission_bridge::PermissionCheck {
-        read_paths: Some(vec!["/allowed".to_string()]),
-        write_paths: Some(vec!["/allowed".to_string()]),
-        net_hosts: Some(vec!["safe.com".to_string()]),
-        env_allowed: false,
-        run_allowed: false,
-    }));
+    bun_runtime::permission_bridge::set_permission(Some(
+        bun_runtime::permission_bridge::PermissionCheck {
+            read_paths: Some(vec!["/allowed".to_string()]),
+            write_paths: Some(vec!["/allowed".to_string()]),
+            net_hosts: Some(vec!["safe.com".to_string()]),
+            env_allowed: false,
+            run_allowed: false,
+        },
+    ));
     let read_err = bun_runtime::permission_bridge::check_fs_read("/denied").unwrap_err();
-    assert!(read_err.contains("read on /denied"),
-        "Error message should contain 'read on /denied', got: {}", read_err);
+    assert!(
+        read_err.contains("read on /denied"),
+        "Error message should contain 'read on /denied', got: {}",
+        read_err
+    );
     let write_err = bun_runtime::permission_bridge::check_fs_write("/denied").unwrap_err();
-    assert!(write_err.contains("write on /denied"),
-        "Error message should contain 'write on /denied', got: {}", write_err);
+    assert!(
+        write_err.contains("write on /denied"),
+        "Error message should contain 'write on /denied', got: {}",
+        write_err
+    );
     let net_err = bun_runtime::permission_bridge::check_net("evil.com").unwrap_err();
-    assert!(net_err.contains("net on evil.com"),
-        "Error message should contain 'net on evil.com', got: {}", net_err);
-    assert_eq!(bun_runtime::permission_bridge::check_env().unwrap_err(), "Permission denied: env");
-    assert_eq!(bun_runtime::permission_bridge::check_run().unwrap_err(), "Permission denied: run");
+    assert!(
+        net_err.contains("net on evil.com"),
+        "Error message should contain 'net on evil.com', got: {}",
+        net_err
+    );
+    assert_eq!(
+        bun_runtime::permission_bridge::check_env().unwrap_err(),
+        "Permission denied: env"
+    );
+    assert_eq!(
+        bun_runtime::permission_bridge::check_run().unwrap_err(),
+        "Permission denied: run"
+    );
 
     // Test 10: set_permission overrides previous
-    bun_runtime::permission_bridge::set_permission(Some(bun_runtime::permission_bridge::PermissionCheck {
-        read_paths: Some(vec!["/safe".to_string()]),
-        write_paths: None,
-        net_hosts: None,
-        env_allowed: true,
-        run_allowed: true,
-    }));
+    bun_runtime::permission_bridge::set_permission(Some(
+        bun_runtime::permission_bridge::PermissionCheck {
+            read_paths: Some(vec!["/safe".to_string()]),
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        },
+    ));
     assert!(bun_runtime::permission_bridge::check_fs_read("/safe/file").is_ok());
     assert!(bun_runtime::permission_bridge::check_fs_read("/unsafe").is_err());
 
-    bun_runtime::permission_bridge::set_permission(Some(bun_runtime::permission_bridge::PermissionCheck {
-        read_paths: Some(vec!["/unsafe".to_string()]),
-        write_paths: None,
-        net_hosts: None,
-        env_allowed: true,
-        run_allowed: true,
-    }));
+    bun_runtime::permission_bridge::set_permission(Some(
+        bun_runtime::permission_bridge::PermissionCheck {
+            read_paths: Some(vec!["/unsafe".to_string()]),
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        },
+    ));
     assert!(bun_runtime::permission_bridge::check_fs_read("/unsafe/file").is_ok());
     assert!(bun_runtime::permission_bridge::check_fs_read("/safe/file").is_err());
 
     // Test 11: None in allowed lists means allow all
-    bun_runtime::permission_bridge::set_permission(Some(bun_runtime::permission_bridge::PermissionCheck {
-        read_paths: None,  // None = allow all
-        write_paths: None,
-        net_hosts: None,
-        env_allowed: true,
-        run_allowed: true,
-    }));
-    assert!(bun_runtime::permission_bridge::check_fs_read("/anything").is_ok(),
-        "read_paths: None should allow all reads");
+    bun_runtime::permission_bridge::set_permission(Some(
+        bun_runtime::permission_bridge::PermissionCheck {
+            read_paths: None, // None = allow all
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        },
+    ));
+    assert!(
+        bun_runtime::permission_bridge::check_fs_read("/anything").is_ok(),
+        "read_paths: None should allow all reads"
+    );
 
     // Cleanup
     bun_runtime::permission_bridge::set_permission(None);

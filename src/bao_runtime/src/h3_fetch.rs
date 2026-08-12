@@ -95,7 +95,7 @@ pub fn is_h3_default_enabled_set() -> bool {
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [entity:AltSvc]
 pub fn parse_alt_svc(field_value: &[u8]) -> Result<Option<u16>, AltSvcClear> {
-    use bun_http::h3::alt_svc::{parse, ParseError};
+    use bun_http::h3::alt_svc::{ParseError, parse};
     match parse(field_value) {
         Ok(Some(entry)) => Ok(Some(entry.port)),
         Ok(None) => Ok(None),
@@ -158,7 +158,11 @@ mod tests {
     #[test]
     fn alt_svc_parse_standard_h3_port() {
         let result = parse_alt_svc(b"h3=\":443\"");
-        assert_eq!(result.unwrap(), Some(443), "REQ-H3-001: standard Alt-Svc h3=\":443\"");
+        assert_eq!(
+            result.unwrap(),
+            Some(443),
+            "REQ-H3-001: standard Alt-Svc h3=\":443\""
+        );
     }
 
     /// REQ-H3-001-C2: 自定义端口的 `h3=":8443"` 解析为端口 8443。
@@ -186,7 +190,11 @@ mod tests {
     #[test]
     fn alt_svc_parse_ignores_draft_versions() {
         let result = parse_alt_svc(b"h3-29=\":443\"");
-        assert_eq!(result.unwrap(), None, "draft h3-NN must be ignored, only final h3");
+        assert_eq!(
+            result.unwrap(),
+            None,
+            "draft h3-NN must be ignored, only final h3"
+        );
     }
 
     /// REQ-H3-001: 空 Alt-Svc 返回 None。
@@ -214,7 +222,11 @@ mod tests {
     #[test]
     fn alt_svc_parse_rejects_cross_host() {
         let result = parse_alt_svc(b"h3=\"other.host:443\"");
-        assert_eq!(result.unwrap(), None, "cross-host alternatives must be rejected");
+        assert_eq!(
+            result.unwrap(),
+            None,
+            "cross-host alternatives must be rejected"
+        );
     }
 
     /// REQ-H3-001: 带 OWS（可选空白）的 Alt-Svc 正确解析。

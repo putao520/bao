@@ -120,11 +120,8 @@ impl CdpSession {
         let cdp_msg: CdpMessage = match protocol::parse_message(&msg) {
             Some(m) => m,
             None => {
-                let resp = protocol::error_response(
-                    None,
-                    protocol::ERR_INVALID_REQUEST,
-                    "Invalid JSON",
-                );
+                let resp =
+                    protocol::error_response(None, protocol::ERR_INVALID_REQUEST, "Invalid JSON");
                 let _ = self.send_text(&protocol::serialize_response(&resp));
                 return Ok(());
             }
@@ -187,7 +184,9 @@ impl CdpSession {
     /// Send raw text over WebSocket.
     pub fn send_text(&mut self, data: &str) -> Result<(), SessionError> {
         use tungstenite::Message;
-        self.ws.send(Message::Text(data.into())).map_err(|_| SessionError::Io)
+        self.ws
+            .send(Message::Text(data.into()))
+            .map_err(|_| SessionError::Io)
     }
 
     /// Get all enabled domain names (for on_session_destroyed notification).

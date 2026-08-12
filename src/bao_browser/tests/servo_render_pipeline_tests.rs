@@ -24,7 +24,9 @@
 // **运行约束**: servo Opts 是 per-process 单例,所有断言合并到单个 #[test]。
 // 网络 navigate(https://example.com)用 graceful skip + BAO_TEST_NETWORK=1 启用。
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PagePool, PageState, ScreenshotFormat};
+use bao_browser::{
+    BaoConfig, BaoRuntime, PageConfig, PageHandle, PagePool, PageState, ScreenshotFormat,
+};
 use std::time::{Duration, Instant};
 
 // ─── 容错 Report ─────────────────────────────────────────────────────────────
@@ -123,7 +125,11 @@ fn servo_render_pipeline_data_url_default_run() {
 
     // ── §2 page.is_alive + id ───────────────────────────────────────────
     report.assert(page.is_alive(), "§2::page_alive", "§2::page_alive");
-    report.assert(page.id() >= 1, "§2::page_id_positive", "§2::page_id_positive");
+    report.assert(
+        page.id() >= 1,
+        "§2::page_id_positive",
+        "§2::page_id_positive",
+    );
 
     // ── §3 DOM 可查询 — document.title ─────────────────────────────────
     //
@@ -156,9 +162,7 @@ fn servo_render_pipeline_data_url_default_run() {
     // 这一步证明 servo 真渲染:我们能写入 DOM,servo 反映修改。
     //
     // Act + Assert
-    let _ = page.evaluate_js(
-        "document.getElementById('count').textContent = '42'; 'ok'",
-    );
+    let _ = page.evaluate_js("document.getElementById('count').textContent = '42'; 'ok'");
     match page.evaluate_js("document.getElementById('count').textContent") {
         Ok(s) if s.trim() == "42" => report.pass("§6::dom_mutate_text"),
         Ok(other) => report.fail("§6::dom_mutate_text", &format!("got '{}'", other)),
@@ -205,11 +209,19 @@ fn servo_render_pipeline_data_url_default_run() {
     // Act + Assert
     match page.take_screenshot(ScreenshotFormat::Png) {
         Ok(bytes) => {
-            report.assert(bytes.len() > 1000, "§9::screenshot_nonempty", "§9::screenshot_nonempty");
+            report.assert(
+                bytes.len() > 1000,
+                "§9::screenshot_nonempty",
+                "§9::screenshot_nonempty",
+            );
             // PNG magic: 89 50 4E 47 0D 0A 1A 0A
             let png_magic = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
             let magic_ok = bytes.len() >= 8 && bytes[..8] == png_magic;
-            report.assert(magic_ok, "§9::screenshot_png_magic", "§9::screenshot_png_magic");
+            report.assert(
+                magic_ok,
+                "§9::screenshot_png_magic",
+                "§9::screenshot_png_magic",
+            );
         }
         Err(e) => report.skip("§9::screenshot", &format!("take_screenshot: {}", e)),
     }
@@ -225,7 +237,9 @@ fn servo_render_pipeline_data_url_default_run() {
         assert!(
             pass_ratio >= 0.5,
             "too few render-pipeline sub-assertions passed: {}/{} (ratio {:.2})",
-            report.passed, total, pass_ratio
+            report.passed,
+            total,
+            pass_ratio
         );
     }
     assert_eq!(
@@ -269,8 +283,13 @@ fn servo_render_pipeline_network_example_com() {
     );
 
     // screenshot — 真页面截图
-    let png = page.take_screenshot(ScreenshotFormat::Png).expect("screenshot");
-    assert!(png.len() > 5000, "example.com screenshot should be substantial");
+    let png = page
+        .take_screenshot(ScreenshotFormat::Png)
+        .expect("screenshot");
+    assert!(
+        png.len() > 5000,
+        "example.com screenshot should be substantial"
+    );
 
     let _ = page.close();
 }

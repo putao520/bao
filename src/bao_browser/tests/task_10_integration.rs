@@ -19,11 +19,8 @@
 #![allow(dead_code)]
 
 use bao_browser::{
-    WorkerHandle,
-    SharedWorkerHandle,
-    ServiceWorkerRegistrationId, ServiceWorkerRegistrationState,
-    ServiceWorkerFetchInterceptMode, ServiceWorkerHandle,
-    ServiceWorkerScopeConfig,
+    ServiceWorkerFetchInterceptMode, ServiceWorkerHandle, ServiceWorkerRegistrationId,
+    ServiceWorkerRegistrationState, ServiceWorkerScopeConfig, SharedWorkerHandle, WorkerHandle,
 };
 use bao_stealth::StealthProfile;
 
@@ -49,11 +46,7 @@ fn test_service_worker_types_export() {
 /// @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
 #[test]
 fn test_service_worker_handle_new_starts_installing() {
-    let handle = ServiceWorkerHandle::new(
-        "https://example.com/sw.js".into(),
-        "/".into(),
-        None,
-    );
+    let handle = ServiceWorkerHandle::new("https://example.com/sw.js".into(), "/".into(), None);
     assert_eq!(handle.script_url, "https://example.com/sw.js");
     assert_eq!(handle.scope, "/");
     assert!(!handle.is_closing());
@@ -70,16 +63,28 @@ fn test_service_worker_state_transitions() {
     let handle = ServiceWorkerHandle::new("sw2.js".into(), "/api/".into(), None);
 
     handle.transition_state(ServiceWorkerRegistrationState::Installed);
-    assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Installed);
+    assert_eq!(
+        handle.registration_state(),
+        ServiceWorkerRegistrationState::Installed
+    );
 
     handle.transition_state(ServiceWorkerRegistrationState::Activating);
-    assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Activating);
+    assert_eq!(
+        handle.registration_state(),
+        ServiceWorkerRegistrationState::Activating
+    );
 
     handle.transition_state(ServiceWorkerRegistrationState::Activated);
-    assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Activated);
+    assert_eq!(
+        handle.registration_state(),
+        ServiceWorkerRegistrationState::Activated
+    );
 
     handle.transition_state(ServiceWorkerRegistrationState::Redundant);
-    assert_eq!(handle.registration_state(), ServiceWorkerRegistrationState::Redundant);
+    assert_eq!(
+        handle.registration_state(),
+        ServiceWorkerRegistrationState::Redundant
+    );
 }
 
 /// @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
@@ -239,7 +244,11 @@ fn test_crash_safe_worker_concurrent_destroy() {
 
     // Verify all workers are closing
     for handle in &handles {
-        assert!(handle.is_closing(), "worker {} should be closing", handle.script_url);
+        assert!(
+            handle.is_closing(),
+            "worker {} should be closing",
+            handle.script_url
+        );
     }
 
     // Zero-addr unregister should be safe (no-op)
@@ -318,7 +327,7 @@ fn test_zero_jsobject_cross_thread_safe() {
 #[test]
 fn test_task_10_completeness() {
     assert_eq!(
-        76 + 13,  // existing + new TASK-10
+        76 + 13, // existing + new TASK-10
         89,
         "TASK-10 must add 13 integration tests to existing 76",
     );

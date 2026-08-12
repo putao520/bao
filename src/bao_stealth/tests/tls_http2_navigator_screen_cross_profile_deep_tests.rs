@@ -2,7 +2,10 @@
 // TLS chrome_latest fields, HTTP2 ordered_headers edge cases,
 // ScreenProfile::new boundary values, NavigatorProfile cross-profile consistency.
 
-use bao_stealth::{TlsFingerprint, Http2Fingerprint, NavigatorProfile, ScreenProfile, StealthProfile, StealthEngine};
+use bao_stealth::{
+    Http2Fingerprint, NavigatorProfile, ScreenProfile, StealthEngine, StealthProfile,
+    TlsFingerprint,
+};
 
 // ============================================================================
 // TLS: chrome_latest specific fields
@@ -109,7 +112,11 @@ fn test_tls13_partition_completeness_chrome_120() {
 fn test_firefox_chrome_share_some_cipher_suites() {
     let ff = TlsFingerprint::firefox();
     let cr = TlsFingerprint::chrome_latest();
-    let shared: Vec<_> = ff.cipher_suites.iter().filter(|c| cr.cipher_suites.contains(c)).collect();
+    let shared: Vec<_> = ff
+        .cipher_suites
+        .iter()
+        .filter(|c| cr.cipher_suites.contains(c))
+        .collect();
     assert!(shared.len() > 5);
 }
 
@@ -220,13 +227,16 @@ fn test_ordered_headers_all_regular_no_pseudo() {
 #[test]
 fn test_ordered_headers_preserves_values() {
     let h2 = Http2Fingerprint::chrome();
-    let headers = vec![
-        (":method", "POST"),
-        (":path", "/api/data"),
-    ];
+    let headers = vec![(":method", "POST"), (":path", "/api/data")];
     let ordered = h2.ordered_headers(&headers);
-    assert_eq!(ordered.iter().find(|(k, _)| *k == ":method").unwrap().1, "POST");
-    assert_eq!(ordered.iter().find(|(k, _)| *k == ":path").unwrap().1, "/api/data");
+    assert_eq!(
+        ordered.iter().find(|(k, _)| *k == ":method").unwrap().1,
+        "POST"
+    );
+    assert_eq!(
+        ordered.iter().find(|(k, _)| *k == ":path").unwrap().1,
+        "/api/data"
+    );
 }
 
 #[test]
@@ -408,7 +418,9 @@ fn test_firefox_ua_contains_gecko() {
 
 #[test]
 fn test_chrome_ua_contains_applewebkit() {
-    assert!(NavigatorProfile::chrome().user_agent.contains("AppleWebKit"));
+    assert!(NavigatorProfile::chrome()
+        .user_agent
+        .contains("AppleWebKit"));
 }
 
 // ============================================================================
@@ -593,13 +605,19 @@ fn test_profiles_share_screen() {
 #[test]
 fn test_engine_firefox_tls_matches_profile() {
     let engine = StealthEngine::new(StealthProfile::firefox_default());
-    assert_eq!(engine.tls_config().ja3_hash, TlsFingerprint::firefox().ja3_hash);
+    assert_eq!(
+        engine.tls_config().ja3_hash,
+        TlsFingerprint::firefox().ja3_hash
+    );
 }
 
 #[test]
 fn test_engine_chrome_tls_matches_profile() {
     let engine = StealthEngine::new(StealthProfile::chrome_default());
-    assert_eq!(engine.tls_config().compute_ja3(), TlsFingerprint::chrome().compute_ja3());
+    assert_eq!(
+        engine.tls_config().compute_ja3(),
+        TlsFingerprint::chrome().compute_ja3()
+    );
 }
 
 #[test]

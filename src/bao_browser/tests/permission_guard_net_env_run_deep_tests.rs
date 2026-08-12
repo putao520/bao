@@ -2,7 +2,7 @@
 // PermissionGuard check_read/check_write/check_net/check_env/check_run,
 // PermissionDenied Display/Error, net subdomain matching, edge cases.
 
-use bao_browser::{Permission, PermissionGuard, PermissionDenied};
+use bao_browser::{Permission, PermissionDenied, PermissionGuard};
 
 // ---- Permission defaults ----
 
@@ -20,7 +20,10 @@ fn test_permission_default_all_none() {
 
 #[test]
 fn test_read_allowed_none_means_all() {
-    let p = Permission { read: None, ..Default::default() };
+    let p = Permission {
+        read: None,
+        ..Default::default()
+    };
     assert!(p.is_read_allowed("/any/path"));
     assert!(p.is_read_allowed("/"));
     assert!(p.is_read_allowed("C:\\Windows"));
@@ -28,28 +31,40 @@ fn test_read_allowed_none_means_all() {
 
 #[test]
 fn test_read_allowed_matching_prefix() {
-    let p = Permission { read: Some(vec!["/home".into(), "/tmp".into()]), ..Default::default() };
+    let p = Permission {
+        read: Some(vec!["/home".into(), "/tmp".into()]),
+        ..Default::default()
+    };
     assert!(p.is_read_allowed("/home/user/file.txt"));
     assert!(p.is_read_allowed("/tmp/log.txt"));
 }
 
 #[test]
 fn test_read_allowed_no_match() {
-    let p = Permission { read: Some(vec!["/home".into()]), ..Default::default() };
+    let p = Permission {
+        read: Some(vec!["/home".into()]),
+        ..Default::default()
+    };
     assert!(!p.is_read_allowed("/etc/passwd"));
     assert!(!p.is_read_allowed("/var/log"));
 }
 
 #[test]
 fn test_read_allowed_exact_match() {
-    let p = Permission { read: Some(vec!["/exact".into()]), ..Default::default() };
+    let p = Permission {
+        read: Some(vec!["/exact".into()]),
+        ..Default::default()
+    };
     assert!(p.is_read_allowed("/exact"));
     assert!(p.is_read_allowed("/exact/file"));
 }
 
 #[test]
 fn test_read_allowed_empty_list() {
-    let p = Permission { read: Some(vec![]), ..Default::default() };
+    let p = Permission {
+        read: Some(vec![]),
+        ..Default::default()
+    };
     assert!(!p.is_read_allowed("/anything"));
 }
 
@@ -57,20 +72,29 @@ fn test_read_allowed_empty_list() {
 
 #[test]
 fn test_write_allowed_none_means_all() {
-    let p = Permission { write: None, ..Default::default() };
+    let p = Permission {
+        write: None,
+        ..Default::default()
+    };
     assert!(p.is_write_allowed("/any/path"));
 }
 
 #[test]
 fn test_write_allowed_matching() {
-    let p = Permission { write: Some(vec!["/tmp".into()]), ..Default::default() };
+    let p = Permission {
+        write: Some(vec!["/tmp".into()]),
+        ..Default::default()
+    };
     assert!(p.is_write_allowed("/tmp/output.txt"));
     assert!(!p.is_write_allowed("/etc/shadow"));
 }
 
 #[test]
 fn test_write_allowed_multiple_paths() {
-    let p = Permission { write: Some(vec!["/a".into(), "/b".into(), "/c".into()]), ..Default::default() };
+    let p = Permission {
+        write: Some(vec!["/a".into(), "/b".into(), "/c".into()]),
+        ..Default::default()
+    };
     assert!(p.is_write_allowed("/a/file"));
     assert!(p.is_write_allowed("/b/file"));
     assert!(p.is_write_allowed("/c/file"));
@@ -81,40 +105,58 @@ fn test_write_allowed_multiple_paths() {
 
 #[test]
 fn test_net_allowed_none_means_all() {
-    let p = Permission { net: None, ..Default::default() };
+    let p = Permission {
+        net: None,
+        ..Default::default()
+    };
     assert!(p.is_net_allowed("example.com"));
     assert!(p.is_net_allowed("evil.com"));
 }
 
 #[test]
 fn test_net_allowed_exact_match() {
-    let p = Permission { net: Some(vec!["example.com".into()]), ..Default::default() };
+    let p = Permission {
+        net: Some(vec!["example.com".into()]),
+        ..Default::default()
+    };
     assert!(p.is_net_allowed("example.com"));
 }
 
 #[test]
 fn test_net_allowed_subdomain_match() {
-    let p = Permission { net: Some(vec!["example.com".into()]), ..Default::default() };
+    let p = Permission {
+        net: Some(vec!["example.com".into()]),
+        ..Default::default()
+    };
     assert!(p.is_net_allowed("sub.example.com"));
     assert!(p.is_net_allowed("deep.sub.example.com"));
 }
 
 #[test]
 fn test_net_allowed_no_partial_match() {
-    let p = Permission { net: Some(vec!["example.com".into()]), ..Default::default() };
+    let p = Permission {
+        net: Some(vec!["example.com".into()]),
+        ..Default::default()
+    };
     assert!(!p.is_net_allowed("notexample.com"));
     assert!(!p.is_net_allowed("example.com.evil.org"));
 }
 
 #[test]
 fn test_net_allowed_empty_list() {
-    let p = Permission { net: Some(vec![]), ..Default::default() };
+    let p = Permission {
+        net: Some(vec![]),
+        ..Default::default()
+    };
     assert!(!p.is_net_allowed("any.com"));
 }
 
 #[test]
 fn test_net_allowed_multiple_domains() {
-    let p = Permission { net: Some(vec!["a.com".into(), "b.org".into()]), ..Default::default() };
+    let p = Permission {
+        net: Some(vec!["a.com".into(), "b.org".into()]),
+        ..Default::default()
+    };
     assert!(p.is_net_allowed("a.com"));
     assert!(p.is_net_allowed("b.org"));
     assert!(p.is_net_allowed("sub.a.com"));
@@ -123,7 +165,10 @@ fn test_net_allowed_multiple_domains() {
 
 #[test]
 fn test_net_allowed_localhost() {
-    let p = Permission { net: Some(vec!["localhost".into()]), ..Default::default() };
+    let p = Permission {
+        net: Some(vec!["localhost".into()]),
+        ..Default::default()
+    };
     assert!(p.is_net_allowed("localhost"));
     assert!(!p.is_net_allowed("example.com"));
 }
@@ -138,13 +183,19 @@ fn test_env_allowed_default() {
 
 #[test]
 fn test_env_allowed_true() {
-    let p = Permission { env: Some(true), ..Default::default() };
+    let p = Permission {
+        env: Some(true),
+        ..Default::default()
+    };
     assert!(p.is_env_allowed());
 }
 
 #[test]
 fn test_env_allowed_false() {
-    let p = Permission { env: Some(false), ..Default::default() };
+    let p = Permission {
+        env: Some(false),
+        ..Default::default()
+    };
     assert!(!p.is_env_allowed());
 }
 
@@ -157,13 +208,19 @@ fn test_run_allowed_default() {
 
 #[test]
 fn test_run_allowed_true() {
-    let p = Permission { run: Some(true), ..Default::default() };
+    let p = Permission {
+        run: Some(true),
+        ..Default::default()
+    };
     assert!(p.is_run_allowed());
 }
 
 #[test]
 fn test_run_allowed_false() {
-    let p = Permission { run: Some(false), ..Default::default() };
+    let p = Permission {
+        run: Some(false),
+        ..Default::default()
+    };
     assert!(!p.is_run_allowed());
 }
 
@@ -205,7 +262,10 @@ fn test_guard_new_default_perm_all_allowed() {
 
 #[test]
 fn test_guard_new_restricted_read() {
-    let perm = Permission { read: Some(vec!["/safe".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/safe".into()]),
+        ..Default::default()
+    };
     let g = PermissionGuard::new(perm);
     assert!(g.check_read("/safe/file").is_ok());
     assert!(g.check_read("/unsafe").is_err());
@@ -213,7 +273,10 @@ fn test_guard_new_restricted_read() {
 
 #[test]
 fn test_guard_new_restricted_write() {
-    let perm = Permission { write: Some(vec!["/tmp".into()]), ..Default::default() };
+    let perm = Permission {
+        write: Some(vec!["/tmp".into()]),
+        ..Default::default()
+    };
     let g = PermissionGuard::new(perm);
     assert!(g.check_write("/tmp/out").is_ok());
     assert!(g.check_write("/etc/shadow").is_err());
@@ -221,7 +284,10 @@ fn test_guard_new_restricted_write() {
 
 #[test]
 fn test_guard_new_restricted_net() {
-    let perm = Permission { net: Some(vec!["allowed.com".into()]), ..Default::default() };
+    let perm = Permission {
+        net: Some(vec!["allowed.com".into()]),
+        ..Default::default()
+    };
     let g = PermissionGuard::new(perm);
     assert!(g.check_net("allowed.com").is_ok());
     assert!(g.check_net("denied.com").is_err());
@@ -229,14 +295,20 @@ fn test_guard_new_restricted_net() {
 
 #[test]
 fn test_guard_new_restricted_env() {
-    let perm = Permission { env: Some(false), ..Default::default() };
+    let perm = Permission {
+        env: Some(false),
+        ..Default::default()
+    };
     let g = PermissionGuard::new(perm);
     assert!(g.check_env().is_err());
 }
 
 #[test]
 fn test_guard_new_restricted_run() {
-    let perm = Permission { run: Some(false), ..Default::default() };
+    let perm = Permission {
+        run: Some(false),
+        ..Default::default()
+    };
     let g = PermissionGuard::new(perm);
     assert!(g.check_run().is_err());
 }
@@ -249,7 +321,7 @@ fn test_guard_new_all_restricted() {
         net: Some(vec!["safe.com".into()]),
         env: Some(false),
         run: Some(false),
-    ..Default::default()
+        ..Default::default()
     };
     let g = PermissionGuard::new(perm);
     assert!(g.check_read("/r/file").is_ok());
@@ -317,7 +389,10 @@ fn test_permission_denied_clone() {
 
 #[test]
 fn test_check_read_returns_permission_denied() {
-    let perm = Permission { read: Some(vec!["/safe".into()]), ..Default::default() };
+    let perm = Permission {
+        read: Some(vec!["/safe".into()]),
+        ..Default::default()
+    };
     let g = PermissionGuard::new(perm);
     let err = g.check_read("/unsafe").unwrap_err();
     assert_eq!(err.category, "read");
@@ -326,7 +401,10 @@ fn test_check_read_returns_permission_denied() {
 
 #[test]
 fn test_check_write_returns_permission_denied() {
-    let perm = Permission { write: Some(vec!["/safe".into()]), ..Default::default() };
+    let perm = Permission {
+        write: Some(vec!["/safe".into()]),
+        ..Default::default()
+    };
     let g = PermissionGuard::new(perm);
     let err = g.check_write("/unsafe").unwrap_err();
     assert_eq!(err.category, "write");
@@ -334,7 +412,10 @@ fn test_check_write_returns_permission_denied() {
 
 #[test]
 fn test_check_net_returns_permission_denied() {
-    let perm = Permission { net: Some(vec!["safe.com".into()]), ..Default::default() };
+    let perm = Permission {
+        net: Some(vec!["safe.com".into()]),
+        ..Default::default()
+    };
     let g = PermissionGuard::new(perm);
     let err = g.check_net("evil.com").unwrap_err();
     assert_eq!(err.category, "net");
@@ -343,7 +424,10 @@ fn test_check_net_returns_permission_denied() {
 
 #[test]
 fn test_check_env_returns_permission_denied() {
-    let perm = Permission { env: Some(false), ..Default::default() };
+    let perm = Permission {
+        env: Some(false),
+        ..Default::default()
+    };
     let g = PermissionGuard::new(perm);
     let err = g.check_env().unwrap_err();
     assert_eq!(err.category, "env");
@@ -352,7 +436,10 @@ fn test_check_env_returns_permission_denied() {
 
 #[test]
 fn test_check_run_returns_permission_denied() {
-    let perm = Permission { run: Some(false), ..Default::default() };
+    let perm = Permission {
+        run: Some(false),
+        ..Default::default()
+    };
     let g = PermissionGuard::new(perm);
     let err = g.check_run().unwrap_err();
     assert_eq!(err.category, "run");
@@ -370,7 +457,10 @@ fn test_permission_debug() {
 
 #[test]
 fn test_permission_clone() {
-    let p = Permission { read: Some(vec!["/a".into()]), ..Default::default() };
+    let p = Permission {
+        read: Some(vec!["/a".into()]),
+        ..Default::default()
+    };
     let cloned = p.clone();
     assert_eq!(cloned.read, p.read);
 }
@@ -386,7 +476,10 @@ fn test_guard_debug() {
 
 #[test]
 fn test_guard_clone() {
-    let g = PermissionGuard::new(Permission { run: Some(false), ..Default::default() });
+    let g = PermissionGuard::new(Permission {
+        run: Some(false),
+        ..Default::default()
+    });
     let cloned = g.clone();
     assert_eq!(cloned.is_restricted(), g.is_restricted());
 }

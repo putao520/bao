@@ -2,21 +2,21 @@
 // P1-B.2: Replaced hand-written TcpListener + HTTP parsing with bun_uws::App<false>.
 // uWS C++ layer handles HTTP parsing; route handler bridges to JS callbacks.
 use ::std::cell::RefCell;
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicU64, Ordering};
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, StringValue, ObjectValue};
+use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 use bun_uws_sys::app::App;
-use bun_uws_sys::response::Response;
 use bun_uws_sys::request::Request;
+use bun_uws_sys::response::Response;
 use bun_uws_sys::socket_context::BunSocketContextOptions;
 
-use crate::gc_store::{gc_store_insert_ns, gc_store_get_ns, gc_store_remove_ns};
+use crate::gc_store::{gc_store_get_ns, gc_store_insert_ns, gc_store_remove_ns};
 use crate::require::cache_builtin;
 
 /// Monotonic server ID for GcStore key namespacing.
@@ -100,9 +100,30 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        w2::JS_DefineFunction(cx, http_obj.handle(), c"createServer".as_ptr(), Some(http_create_server), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, http_obj.handle(), c"request".as_ptr(), Some(http_request), 3, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, http_obj.handle(), c"get".as_ptr(), Some(http_get), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(
+            cx,
+            http_obj.handle(),
+            c"createServer".as_ptr(),
+            Some(http_create_server),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            http_obj.handle(),
+            c"request".as_ptr(),
+            Some(http_request),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            http_obj.handle(),
+            c"get".as_ptr(),
+            Some(http_get),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
 
         {
             let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"node:http".as_ptr(), 1);
@@ -113,18 +134,30 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                      Server.prototype.close = function() { return this; };\
                      Server.prototype.on = function(e, fn) { if (!this._events) this._events = {}; (this._events[e] || (this._events[e] = [])).push(fn); return this; };\
                      Server.prototype.emit = function(e) { var a = Array.prototype.slice.call(arguments, 1); var ls = this._events && this._events[e]; if (ls) for (var i = 0; i < ls.length; i++) ls[i].apply(this, a); return this; };\
-                     Server"
+                     Server",
                 );
                 let mut rval = UndefinedValue();
-                JS::Evaluate2(cx.raw_cx(), opts, &mut src_text, MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
-                });
+                JS::Evaluate2(
+                    cx.raw_cx(),
+                    opts,
+                    &mut src_text,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut rval,
+                    },
+                );
                 libc::free(opts as *mut _);
                 if rval.is_object() {
                     rooted!(&in(cx) let ctor_root = rval.to_object());
                     let server_ctor = ObjectValue(ctor_root.get());
                     rooted!(&in(cx) let sv = server_ctor);
-                    JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"Server".as_ptr(), sv.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+                    JS_DefineProperty(
+                        cx.raw_cx(),
+                        http_obj.handle().into(),
+                        c"Server".as_ptr(),
+                        sv.handle().into(),
+                        (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+                    );
                 }
             }
         }
@@ -132,38 +165,69 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         rooted!(&in(cx) let status_obj = w2::JS_NewPlainObject(cx));
         if !status_obj.get().is_null() {
             let codes: &[(&str, &str)] = &[
-                ("100", "Continue"), ("101", "Switching Protocols"),
+                ("100", "Continue"),
+                ("101", "Switching Protocols"),
                 ("102", "Processing"),
-                ("200", "OK"), ("201", "Created"), ("202", "Accepted"),
-                ("203", "Non-Authoritative Information"), ("204", "No Content"),
-                ("205", "Reset Content"), ("206", "Partial Content"),
-                ("207", "Multi-Status"), ("208", "Already Reported"),
+                ("200", "OK"),
+                ("201", "Created"),
+                ("202", "Accepted"),
+                ("203", "Non-Authoritative Information"),
+                ("204", "No Content"),
+                ("205", "Reset Content"),
+                ("206", "Partial Content"),
+                ("207", "Multi-Status"),
+                ("208", "Already Reported"),
                 ("226", "IM Used"),
-                ("300", "Multiple Choices"), ("301", "Moved Permanently"),
-                ("302", "Found"), ("303", "See Other"), ("304", "Not Modified"),
-                ("305", "Use Proxy"), ("306", "(Unused)"),
-                ("307", "Temporary Redirect"), ("308", "Permanent Redirect"),
-                ("400", "Bad Request"), ("401", "Unauthorized"),
-                ("402", "Payment Required"), ("403", "Forbidden"),
-                ("404", "Not Found"), ("405", "Method Not Allowed"),
-                ("406", "Not Acceptable"), ("407", "Proxy Authentication Required"),
-                ("408", "Request Timeout"), ("409", "Conflict"),
-                ("410", "Gone"), ("411", "Length Required"),
-                ("412", "Precondition Failed"), ("413", "Payload Too Large"),
-                ("414", "URI Too Long"), ("415", "Unsupported Media Type"),
-                ("416", "Range Not Satisfiable"), ("417", "Expectation Failed"),
-                ("418", "I'm a Teapot"), ("421", "Misdirected Request"),
-                ("422", "Unprocessable Entity"), ("423", "Locked"),
-                ("424", "Failed Dependency"), ("425", "Too Early"),
-                ("426", "Upgrade Required"), ("428", "Precondition Required"),
-                ("429", "Too Many Requests"), ("431", "Request Header Fields Too Large"),
+                ("300", "Multiple Choices"),
+                ("301", "Moved Permanently"),
+                ("302", "Found"),
+                ("303", "See Other"),
+                ("304", "Not Modified"),
+                ("305", "Use Proxy"),
+                ("306", "(Unused)"),
+                ("307", "Temporary Redirect"),
+                ("308", "Permanent Redirect"),
+                ("400", "Bad Request"),
+                ("401", "Unauthorized"),
+                ("402", "Payment Required"),
+                ("403", "Forbidden"),
+                ("404", "Not Found"),
+                ("405", "Method Not Allowed"),
+                ("406", "Not Acceptable"),
+                ("407", "Proxy Authentication Required"),
+                ("408", "Request Timeout"),
+                ("409", "Conflict"),
+                ("410", "Gone"),
+                ("411", "Length Required"),
+                ("412", "Precondition Failed"),
+                ("413", "Payload Too Large"),
+                ("414", "URI Too Long"),
+                ("415", "Unsupported Media Type"),
+                ("416", "Range Not Satisfiable"),
+                ("417", "Expectation Failed"),
+                ("418", "I'm a Teapot"),
+                ("421", "Misdirected Request"),
+                ("422", "Unprocessable Entity"),
+                ("423", "Locked"),
+                ("424", "Failed Dependency"),
+                ("425", "Too Early"),
+                ("426", "Upgrade Required"),
+                ("428", "Precondition Required"),
+                ("429", "Too Many Requests"),
+                ("431", "Request Header Fields Too Large"),
                 ("451", "Unavailable For Legal Reasons"),
-                ("500", "Internal Server Error"), ("501", "Not Implemented"),
-                ("502", "Bad Gateway"), ("503", "Service Unavailable"),
-                ("504", "Gateway Timeout"), ("505", "HTTP Version Not Supported"),
-                ("506", "Variant Also Negotiates"), ("507", "Insufficient Storage"),
-                ("508", "Loop Detected"), ("509", "Bandwidth Limit Exceeded"),
-                ("510", "Not Extended"), ("511", "Network Authentication Required"),
+                ("500", "Internal Server Error"),
+                ("501", "Not Implemented"),
+                ("502", "Bad Gateway"),
+                ("503", "Service Unavailable"),
+                ("504", "Gateway Timeout"),
+                ("505", "HTTP Version Not Supported"),
+                ("506", "Variant Also Negotiates"),
+                ("507", "Insufficient Storage"),
+                ("508", "Loop Detected"),
+                ("509", "Bandwidth Limit Exceeded"),
+                ("510", "Not Extended"),
+                ("511", "Network Authentication Required"),
             ];
             for (code, msg) in codes {
                 let c_code = ZBox::from_bytes(code.as_bytes());
@@ -172,12 +236,24 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 if !js_msg.is_null() {
                     let mv = StringValue(&*js_msg);
                     rooted!(&in(cx) let mvr = mv);
-                    JS_DefineProperty(cx.raw_cx(), status_obj.handle().into(), c_code.as_ptr(), mvr.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(
+                        cx.raw_cx(),
+                        status_obj.handle().into(),
+                        c_code.as_ptr(),
+                        mvr.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
                 }
             }
             let status_val = ObjectValue(status_obj.get());
             rooted!(&in(cx) let status_r = status_val);
-            JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"STATUS_CODES".as_ptr(), status_r.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                http_obj.handle().into(),
+                c"STATUS_CODES".as_ptr(),
+                status_r.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         // http.METHODS — Node.js exposes this as a sorted array of HTTP method
@@ -187,12 +263,40 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         //  the same list derived from the IANA HTTP method registry.)
         {
             let methods = [
-                "ACL", "BIND", "CHECKOUT", "CONNECT", "COPY", "DELETE", "GET",
-                "HEAD", "LINK", "LOCK", "M-SEARCH", "MERGE", "MKACTIVITY",
-                "MKCALENDAR", "MKCOL", "MOVE", "NOTIFY", "OPTIONS", "PATCH",
-                "POST", "PROPFIND", "PROPPATCH", "PURGE", "PUT", "REBIND",
-                "REPORT", "SEARCH", "SOURCE", "SUBSCRIBE", "TRACE", "UNBIND",
-                "UNLINK", "UNLOCK", "UNSUBSCRIBE",
+                "ACL",
+                "BIND",
+                "CHECKOUT",
+                "CONNECT",
+                "COPY",
+                "DELETE",
+                "GET",
+                "HEAD",
+                "LINK",
+                "LOCK",
+                "M-SEARCH",
+                "MERGE",
+                "MKACTIVITY",
+                "MKCALENDAR",
+                "MKCOL",
+                "MOVE",
+                "NOTIFY",
+                "OPTIONS",
+                "PATCH",
+                "POST",
+                "PROPFIND",
+                "PROPPATCH",
+                "PURGE",
+                "PUT",
+                "REBIND",
+                "REPORT",
+                "SEARCH",
+                "SOURCE",
+                "SUBSCRIBE",
+                "TRACE",
+                "UNBIND",
+                "UNLINK",
+                "UNLOCK",
+                "UNSUBSCRIBE",
             ];
             rooted!(&in(cx) let arr = w2::NewArrayObject1(cx, methods.len()));
             if !arr.get().is_null() {
@@ -201,18 +305,36 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     let js_m = JS_NewStringCopyZ(cx.raw_cx(), c_m.as_ptr());
                     if !js_m.is_null() {
                         rooted!(&in(cx) let mv = StringValue(&*js_m));
-                        JS_DefineElement(cx.raw_cx(), arr.handle().into(), i as u32, mv.handle().into(), JSPROP_ENUMERATE as u32);
+                        JS_DefineElement(
+                            cx.raw_cx(),
+                            arr.handle().into(),
+                            i as u32,
+                            mv.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
                     }
                 }
                 let av = ObjectValue(arr.get());
                 rooted!(&in(cx) let avr = av);
-                JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"METHODS".as_ptr(), avr.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    http_obj.handle().into(),
+                    c"METHODS".as_ptr(),
+                    avr.handle().into(),
+                    (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+                );
             }
         }
 
         // http.maxRedirects — Node.js (via http_tohttps Ninjas) defaults to 21.
         rooted!(&in(cx) let mr_val = mozjs::jsval::Int32Value(21));
-        JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"maxRedirects".as_ptr(), mr_val.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+        JS_DefineProperty(
+            cx.raw_cx(),
+            http_obj.handle().into(),
+            c"maxRedirects".as_ptr(),
+            mr_val.handle().into(),
+            (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+        );
 
         // http.validateHeaderName / validateHeaderValue — Node.js surfaces
         // these from _http_server.ts as validation helpers. See
@@ -241,19 +363,35 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 })"#;
             let mut vsrc = mozjs::rust::transform_str_to_source_text(validate_src);
             let mut vval = UndefinedValue();
-            let vh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut vval };
+            let vh = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut vval,
+            };
             let vopts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<http-validate>".as_ptr(), 1);
             if !vopts.is_null() {
                 if JS::Evaluate2(cx.raw_cx(), vopts, &mut vsrc, vh) && vval.is_object() {
-                    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                    let wrapped_cx =
+                        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let global_root = CurrentGlobalOrNull(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let http_val_root = ObjectValue(http_obj.get()));
-                    let args_arr = HandleValueArray { length_: 1, elements_: &http_val_root.get() as *const Value };
+                    let args_arr = HandleValueArray {
+                        length_: 1,
+                        elements_: &http_val_root.get() as *const Value,
+                    };
                     let mut call_rval = UndefinedValue();
-                    let call_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval };
+                    let call_rval_h = MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut call_rval,
+                    };
                     rooted!(&in(wrapped_cx) let factory_obj = vval.to_object());
                     rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
-                    JS_CallFunctionValue(cx.raw_cx(), global_root.handle().into(), factory_obj_h.handle().into(), &args_arr, call_rval_h);
+                    JS_CallFunctionValue(
+                        cx.raw_cx(),
+                        global_root.handle().into(),
+                        factory_obj_h.handle().into(),
+                        &args_arr,
+                        call_rval_h,
+                    );
                 }
                 libc::free(vopts as *mut _);
             }
@@ -296,19 +434,35 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 })"#;
             let mut csrc = mozjs::rust::transform_str_to_source_text(classes_src);
             let mut cval = UndefinedValue();
-            let ch = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut cval };
+            let ch = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut cval,
+            };
             let copts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<http-classes>".as_ptr(), 1);
             if !copts.is_null() {
                 if JS::Evaluate2(cx.raw_cx(), copts, &mut csrc, ch) && cval.is_object() {
-                    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                    let wrapped_cx =
+                        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let global_root = CurrentGlobalOrNull(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let http_val_root = ObjectValue(http_obj.get()));
-                    let args_arr = HandleValueArray { length_: 1, elements_: &http_val_root.get() as *const Value };
+                    let args_arr = HandleValueArray {
+                        length_: 1,
+                        elements_: &http_val_root.get() as *const Value,
+                    };
                     let mut call_rval = UndefinedValue();
-                    let call_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval };
+                    let call_rval_h = MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut call_rval,
+                    };
                     rooted!(&in(wrapped_cx) let factory_obj = cval.to_object());
                     rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
-                    JS_CallFunctionValue(cx.raw_cx(), global_root.handle().into(), factory_obj_h.handle().into(), &args_arr, call_rval_h);
+                    JS_CallFunctionValue(
+                        cx.raw_cx(),
+                        global_root.handle().into(),
+                        factory_obj_h.handle().into(),
+                        &args_arr,
+                        call_rval_h,
+                    );
                 }
                 libc::free(copts as *mut _);
             }
@@ -321,18 +475,33 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         if !agent_obj.get().is_null() {
             let av = ObjectValue(agent_obj.get());
             rooted!(&in(cx) let avr = av);
-            JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"globalAgent".as_ptr(), avr.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                http_obj.handle().into(),
+                c"globalAgent".as_ptr(),
+                avr.handle().into(),
+                (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+            );
             // http.Agent — constructor reference (alias of plain function).
             let agent_ctor_src = "function Agent(opts) { for (var k in opts) this[k] = opts[k]; }";
             let mut asrc = mozjs::rust::transform_str_to_source_text(agent_ctor_src);
             let mut aval = UndefinedValue();
-            let ah = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut aval };
+            let ah = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut aval,
+            };
             let aopts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<http-agent>".as_ptr(), 1);
             if !aopts.is_null() {
                 if JS::Evaluate2(cx.raw_cx(), aopts, &mut asrc, ah) && aval.is_object() {
                     let av2 = ObjectValue(aval.to_object());
                     rooted!(&in(cx) let av2r = av2);
-                    JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"Agent".as_ptr(), av2r.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+                    JS_DefineProperty(
+                        cx.raw_cx(),
+                        http_obj.handle().into(),
+                        c"Agent".as_ptr(),
+                        av2r.handle().into(),
+                        (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+                    );
                 }
                 libc::free(aopts as *mut _);
             }
@@ -363,7 +532,12 @@ struct ServerUserData {
 
 impl ServerUserData {
     /// Create a new ServerUserData, storing global, handler, and server object in GcStore.
-    fn new(cx: *mut JSContext, global: *mut JSObject, handler: *mut JSObject, server_obj: *mut JSObject) -> Self {
+    fn new(
+        cx: *mut JSContext,
+        global: *mut JSObject,
+        handler: *mut JSObject,
+        server_obj: *mut JSObject,
+    ) -> Self {
         let server_id = NEXT_SERVER_ID.fetch_add(1, Ordering::Relaxed);
         let global_key = format!("http_server_{}_global", server_id);
         let handler_key = format!("http_server_{}_handler", server_id);
@@ -371,7 +545,12 @@ impl ServerUserData {
         gc_store_insert_ns(cx, "http", &global_key, global);
         gc_store_insert_ns(cx, "http", &handler_key, handler);
         gc_store_insert_ns(cx, "http", &server_obj_key, server_obj);
-        Self { cx, global_key, handler_key, server_obj_key }
+        Self {
+            cx,
+            global_key,
+            handler_key,
+            server_obj_key,
+        }
     }
 
     /// Retrieve the global object from GcStore.
@@ -415,14 +594,20 @@ unsafe extern "C" fn uws_route_handler(
 
     let ud = &*(user_data as *const ServerUserData);
     let cx = ud.cx;
-    if cx.is_null() { return; }
+    if cx.is_null() {
+        return;
+    }
 
     let raw_cx = cx;
     let Some(global) = ud.global() else { return };
-    if global.is_null() { return; }
+    if global.is_null() {
+        return;
+    }
 
     let Some(handler) = ud.handler() else { return };
-    if handler.is_null() { return; }
+    if handler.is_null() {
+        return;
+    }
 
     // Read method/url from uWS Request (C++ already parsed).
     let req_ref = bun_opaque::opaque_deref_mut(req);
@@ -436,14 +621,22 @@ unsafe extern "C" fn uws_route_handler(
 
     // Build JS request object.
     rooted!(&in(cx_ref) let req_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
-    if req_obj.get().is_null() { return; }
+    if req_obj.get().is_null() {
+        return;
+    }
 
     let c_method = ZBox::from_bytes(method_str.as_bytes());
     let js_method = JS_NewStringCopyZ(raw_cx, c_method.as_ptr());
     if !js_method.is_null() {
         let mv = StringValue(&*js_method);
         rooted!(&in(cx_ref) let mvr = mv);
-        JS_DefineProperty(raw_cx, req_obj.handle().into(), c"method".as_ptr(), mvr.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            raw_cx,
+            req_obj.handle().into(),
+            c"method".as_ptr(),
+            mvr.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     let c_url = ZBox::from_bytes(url_str.as_bytes());
@@ -451,7 +644,13 @@ unsafe extern "C" fn uws_route_handler(
     if !js_url.is_null() {
         let uv = StringValue(&*js_url);
         rooted!(&in(cx_ref) let uvr = uv);
-        JS_DefineProperty(raw_cx, req_obj.handle().into(), c"url".as_ptr(), uvr.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            raw_cx,
+            req_obj.handle().into(),
+            c"url".as_ptr(),
+            uvr.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     // Build headers object from ALL headers via uWS forEachHeader.
@@ -471,17 +670,32 @@ unsafe extern "C" fn uws_route_handler(
             if !js_v.is_null() {
                 let hv = StringValue(&*js_v);
                 rooted!(&in(cx_ref) let hvr = hv);
-                JS_DefineProperty(raw_cx, headers_obj.handle().into(), c_k.as_ptr(), hvr.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    raw_cx,
+                    headers_obj.handle().into(),
+                    c_k.as_ptr(),
+                    hvr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
         let hdrs_val = ObjectValue(headers_obj.get());
         rooted!(&in(cx_ref) let hdrs_r = hdrs_val);
-        JS_DefineProperty(raw_cx, req_obj.handle().into(), c"headers".as_ptr(), hdrs_r.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            raw_cx,
+            req_obj.handle().into(),
+            c"headers".as_ptr(),
+            hdrs_r.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     // Detect WebSocket upgrade: if `Upgrade: websocket` header is present,
     // emit 'upgrade' event on the server object instead of 'request'.
-    let upgrade_header = req_ref.header(b"upgrade").map(|h| h.to_vec()).unwrap_or_default();
+    let upgrade_header = req_ref
+        .header(b"upgrade")
+        .map(|h| h.to_vec())
+        .unwrap_or_default();
     let is_ws_upgrade = upgrade_header.eq_ignore_ascii_case(b"websocket");
 
     if is_ws_upgrade {
@@ -492,14 +706,40 @@ unsafe extern "C" fn uws_route_handler(
             // to call res.end() or write headers for the 101 response).
             rooted!(&in(cx_ref) let upgrade_res_obj = w2::JS_NewPlainObject(cx_ref));
             if !upgrade_res_obj.get().is_null() {
-                w2::JS_DefineFunction(cx_ref, upgrade_res_obj.handle(), c"writeHead".as_ptr(), Some(res_write_head), 2, JSPROP_ENUMERATE as u32);
-                w2::JS_DefineFunction(cx_ref, upgrade_res_obj.handle(), c"end".as_ptr(), Some(res_end), 1, JSPROP_ENUMERATE as u32);
+                w2::JS_DefineFunction(
+                    cx_ref,
+                    upgrade_res_obj.handle(),
+                    c"writeHead".as_ptr(),
+                    Some(res_write_head),
+                    2,
+                    JSPROP_ENUMERATE as u32,
+                );
+                w2::JS_DefineFunction(
+                    cx_ref,
+                    upgrade_res_obj.handle(),
+                    c"end".as_ptr(),
+                    Some(res_end),
+                    1,
+                    JSPROP_ENUMERATE as u32,
+                );
                 let status_val = Int32Value(101);
                 rooted!(&in(cx_ref) let sv = status_val);
-                JS_DefineProperty(raw_cx, upgrade_res_obj.handle().into(), c"statusCode".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
+                JS_DefineProperty(
+                    raw_cx,
+                    upgrade_res_obj.handle().into(),
+                    c"statusCode".as_ptr(),
+                    sv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
                 let res_ptr_val = mozjs::jsval::PrivateValue(res as *const core::ffi::c_void);
                 rooted!(&in(cx_ref) let rv = res_ptr_val);
-                JS_DefineProperty(raw_cx, upgrade_res_obj.handle().into(), c"_uwsRes".as_ptr(), rv.handle().into(), 0);
+                JS_DefineProperty(
+                    raw_cx,
+                    upgrade_res_obj.handle().into(),
+                    c"_uwsRes".as_ptr(),
+                    rv.handle().into(),
+                    0,
+                );
             }
 
             // Emit 'upgrade' event on the server object: server.emit('upgrade', req, socket, head)
@@ -509,8 +749,15 @@ unsafe extern "C" fn uws_route_handler(
                     rooted!(&in(cx_ref) let global_root = global);
                     // Get the emit function from the server object.
                     let mut emit_val = UndefinedValue();
-                    JS_GetProperty(raw_cx, server_root.handle().into(), c"emit".as_ptr(),
-                        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut emit_val });
+                    JS_GetProperty(
+                        raw_cx,
+                        server_root.handle().into(),
+                        c"emit".as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut emit_val,
+                        },
+                    );
                     if emit_val.is_object() {
                         rooted!(&in(cx_ref) let emit_fn = emit_val.to_object());
                         let event_name_str = JS_NewStringCopyZ(raw_cx, c"upgrade".as_ptr());
@@ -520,17 +767,30 @@ unsafe extern "C" fn uws_route_handler(
                                 ev_val,
                                 ObjectValue(req_obj.get()),
                                 ObjectValue(socket_obj.get()),
-                                ObjectValue(if !upgrade_res_obj.get().is_null() { upgrade_res_obj.get() } else { socket_obj.get() }),
+                                ObjectValue(if !upgrade_res_obj.get().is_null() {
+                                    upgrade_res_obj.get()
+                                } else {
+                                    socket_obj.get()
+                                }),
                             ];
                             let call_args = HandleValueArray {
                                 length_: 4,
                                 elements_: args_vals.as_ptr(),
                             };
                             let mut rval = UndefinedValue();
-                            let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+                            let rval_h = MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut rval,
+                            };
                             let emit_fn_val = ObjectValue(emit_fn.get());
                             rooted!(&in(cx_ref) let emit_fn_root = emit_fn_val);
-                            JS_CallFunctionValue(raw_cx, server_root.handle().into(), emit_fn_root.handle().into(), &call_args, rval_h);
+                            JS_CallFunctionValue(
+                                raw_cx,
+                                server_root.handle().into(),
+                                emit_fn_root.handle().into(),
+                                &call_args,
+                                rval_h,
+                            );
                             JS_ClearPendingException(raw_cx);
                         }
                     }
@@ -542,20 +802,55 @@ unsafe extern "C" fn uws_route_handler(
 
     // Build JS response object with writeHead/write/end bridging to uWS Response.
     rooted!(&in(cx_ref) let res_obj = w2::JS_NewPlainObject(cx_ref));
-    if res_obj.get().is_null() { return; }
+    if res_obj.get().is_null() {
+        return;
+    }
 
-    w2::JS_DefineFunction(cx_ref, res_obj.handle(), c"writeHead".as_ptr(), Some(res_write_head), 2, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, res_obj.handle(), c"write".as_ptr(), Some(res_write), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, res_obj.handle(), c"end".as_ptr(), Some(res_end), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        res_obj.handle(),
+        c"writeHead".as_ptr(),
+        Some(res_write_head),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        res_obj.handle(),
+        c"write".as_ptr(),
+        Some(res_write),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        res_obj.handle(),
+        c"end".as_ptr(),
+        Some(res_end),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
 
     let status_val = Int32Value(200);
     rooted!(&in(cx_ref) let sv = status_val);
-    JS_DefineProperty(raw_cx, res_obj.handle().into(), c"statusCode".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        raw_cx,
+        res_obj.handle().into(),
+        c"statusCode".as_ptr(),
+        sv.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // Store uWS res pointer on the JS response object for write/end.
     let res_ptr_val = mozjs::jsval::PrivateValue(res as *const core::ffi::c_void);
     rooted!(&in(cx_ref) let rv = res_ptr_val);
-    JS_DefineProperty(raw_cx, res_obj.handle().into(), c"_uwsRes".as_ptr(), rv.handle().into(), 0);
+    JS_DefineProperty(
+        raw_cx,
+        res_obj.handle().into(),
+        c"_uwsRes".as_ptr(),
+        rv.handle().into(),
+        0,
+    );
 
     // Call the JS request handler: handler(req, res)
     rooted!(&in(cx_ref) let handler_root = ObjectValue(handler));
@@ -568,8 +863,17 @@ unsafe extern "C" fn uws_route_handler(
     };
 
     let mut rval = UndefinedValue();
-    let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-    JS_CallFunctionValue(raw_cx, global_root.handle().into(), handler_root.handle().into(), &call_args, rval_h);
+    let rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    JS_CallFunctionValue(
+        raw_cx,
+        global_root.handle().into(),
+        handler_root.handle().into(),
+        &call_args,
+        rval_h,
+    );
     JS_ClearPendingException(raw_cx);
 }
 
@@ -590,12 +894,23 @@ fn val_is_private(v: &JSVal) -> bool {
 
 /// Recover the `*mut uws_res` stored as `_uwsRes` on the JS response object.
 #[inline]
-unsafe fn get_uws_res(cx: *mut JSContext, obj: *mut JSObject) -> *mut bun_uws_sys::response::c::uws_res {
+unsafe fn get_uws_res(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+) -> *mut bun_uws_sys::response::c::uws_res {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_root = obj);
     let mut ptr_val = UndefinedValue();
-    JS_GetProperty(cx, obj_root.handle().into(), c"_uwsRes".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ptr_val });
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"_uwsRes".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ptr_val,
+        },
+    );
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().
     if !val_is_private(&ptr_val) {
         return core::ptr::null_mut();
@@ -621,7 +936,12 @@ unsafe extern "C" fn res_write_head(
             let this = args.thisv();
             rooted!(&in(cx_ref) let obj = this.to_object());
             rooted!(&in(cx_ref) let v_root = v);
-            JS_SetProperty(cx, obj.handle().into(), c"statusCode".as_ptr(), v_root.handle().into());
+            JS_SetProperty(
+                cx,
+                obj.handle().into(),
+                c"statusCode".as_ptr(),
+                v_root.handle().into(),
+            );
 
             // Write status to uWS Response.
             let uws_res = get_uws_res(cx, obj.get());
@@ -648,13 +968,25 @@ unsafe extern "C" fn res_write_head(
                             ids.handle_mut(),
                         ) {
                             for jsid in &*ids {
-                                if !jsid.is_string() { continue; }
+                                if !jsid.is_string() {
+                                    continue;
+                                }
                                 let key_str = jsid.to_string();
-                                let key = mozjs::conversions::jsstr_to_string(cx, NonNull::new_unchecked(key_str));
+                                let key = mozjs::conversions::jsstr_to_string(
+                                    cx,
+                                    NonNull::new_unchecked(key_str),
+                                );
                                 let mut hv = UndefinedValue();
                                 let c_key = ZBox::from_bytes(key.as_bytes());
-                                JS_GetProperty(cx, hdrs_obj.handle().into(), c_key.as_ptr(),
-                                    MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hv });
+                                JS_GetProperty(
+                                    cx,
+                                    hdrs_obj.handle().into(),
+                                    c_key.as_ptr(),
+                                    MutableHandle::<Value> {
+                                        _phantom_0: ::std::marker::PhantomData,
+                                        ptr: &mut hv,
+                                    },
+                                );
                                 if hv.is_string() {
                                     let val = crate::js_to_rust_string(cx, hv);
                                     // Convert header name to lowercase for uWS.
@@ -702,7 +1034,10 @@ unsafe extern "C" fn res_write(
 
             // Also accumulate in _body for res.end() to access if needed.
             let mut body_val = UndefinedValue();
-            let body_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
+            let body_mh = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut body_val,
+            };
             JS_GetProperty(cx, obj.handle().into(), c"_body".as_ptr(), body_mh);
             let existing = if body_val.is_string() {
                 crate::js_to_rust_string(cx, body_val)
@@ -716,7 +1051,12 @@ unsafe extern "C" fn res_write(
             if !js_combined.is_null() {
                 let cv = StringValue(&*js_combined);
                 rooted!(&in(cx_ref) let cv_root = cv);
-                JS_SetProperty(cx, obj.handle().into(), c"_body".as_ptr(), cv_root.handle().into());
+                JS_SetProperty(
+                    cx,
+                    obj.handle().into(),
+                    c"_body".as_ptr(),
+                    cv_root.handle().into(),
+                );
             }
         }
     }
@@ -727,11 +1067,7 @@ unsafe extern "C" fn res_write(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn res_end(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut mozjs::jsval::JSVal,
-) -> bool {
+unsafe extern "C" fn res_end(cx: *mut JSContext, argc: u32, vp: *mut mozjs::jsval::JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -745,11 +1081,16 @@ unsafe extern "C" fn res_end(
             let this = args.thisv();
             rooted!(&in(cx_ref) let obj = this.to_object());
             let mut body_val = UndefinedValue();
-            let body_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
+            let body_mh = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut body_val,
+            };
             JS_GetProperty(cx, obj.handle().into(), c"_body".as_ptr(), body_mh);
             let existing = if body_val.is_string() {
                 crate::js_to_rust_string(cx, body_val)
-            } else { String::new() };
+            } else {
+                String::new()
+            };
             let mut combined = existing;
             combined.push_str(&data);
             let c_combined = ZBox::from_bytes(combined.as_bytes());
@@ -757,7 +1098,12 @@ unsafe extern "C" fn res_end(
             if !js_combined.is_null() {
                 let cv = StringValue(&*js_combined);
                 rooted!(&in(cx_ref) let cv_root = cv);
-                JS_SetProperty(cx, obj.handle().into(), c"_body".as_ptr(), cv_root.handle().into());
+                JS_SetProperty(
+                    cx,
+                    obj.handle().into(),
+                    c"_body".as_ptr(),
+                    cv_root.handle().into(),
+                );
             }
         }
     }
@@ -767,11 +1113,16 @@ unsafe extern "C" fn res_end(
     rooted!(&in(cx_ref) let obj = this.to_object());
 
     let mut body_val = UndefinedValue();
-    let body_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
+    let body_mh = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut body_val,
+    };
     JS_GetProperty(cx, obj.handle().into(), c"_body".as_ptr(), body_mh);
     let body = if body_val.is_string() {
         crate::js_to_rust_string(cx, body_val)
-    } else { String::new() };
+    } else {
+        String::new()
+    };
 
     let uws_res = get_uws_res(cx, obj.get());
     if !uws_res.is_null() {
@@ -779,9 +1130,16 @@ unsafe extern "C" fn res_end(
 
         // If writeHead was not called, write a default status.
         let mut status_val = Int32Value(200);
-        let status_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut status_val };
+        let status_mh = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut status_val,
+        };
         JS_GetProperty(cx, obj.handle().into(), c"statusCode".as_ptr(), status_mh);
-        let status = if status_val.is_int32() { status_val.to_int32() } else { 200 };
+        let status = if status_val.is_int32() {
+            status_val.to_int32()
+        } else {
+            200
+        };
 
         // Check if status was already written (uWS state tracks this).
         if !(*res_mut).state().is_http_status_called() {
@@ -823,18 +1181,50 @@ unsafe extern "C" fn http_create_server(
             rooted!(&in(cx_ref) let cb_obj = v.to_object());
             let cb_val = ObjectValue(cb_obj.get());
             rooted!(&in(cx_ref) let cb_root = cb_val);
-            JS_DefineProperty(cx, server_obj.handle().into(), c"_onRequest".as_ptr(), cb_root.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx,
+                server_obj.handle().into(),
+                c"_onRequest".as_ptr(),
+                cb_root.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
 
             rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
             if !global.get().is_null() {
-                JS_SetProperty(cx, global.handle().into(), c"_httpRequestHandler".as_ptr(), cb_root.handle().into());
+                JS_SetProperty(
+                    cx,
+                    global.handle().into(),
+                    c"_httpRequestHandler".as_ptr(),
+                    cb_root.handle().into(),
+                );
             }
         }
     }
 
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"listen".as_ptr(), Some(server_listen), 3, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"close".as_ptr(), Some(server_close), 0, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"address".as_ptr(), Some(server_address), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"listen".as_ptr(),
+        Some(server_listen),
+        3,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"close".as_ptr(),
+        Some(server_close),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"address".as_ptr(),
+        Some(server_address),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
 
     // @trace REQ-ENG-007 [sm:HttpServer]
     // Node.js: http.Server extends EventEmitter, so `server.on("request", fn)`
@@ -842,14 +1232,70 @@ unsafe extern "C" fn http_create_server(
     // methods from node_events directly onto each server instance. The EE
     // state is stored in a hidden property on the server object, so this works
     // without changing the server's prototype.
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"on".as_ptr(), Some(crate::node_events::ee_on), 2, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"addListener".as_ptr(), Some(crate::node_events::ee_on), 2, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"once".as_ptr(), Some(crate::node_events::ee_once), 2, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"off".as_ptr(), Some(crate::node_events::ee_off), 2, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"removeListener".as_ptr(), Some(crate::node_events::ee_off), 2, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"emit".as_ptr(), Some(crate::node_events::ee_emit), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"prependListener".as_ptr(), Some(crate::node_events::ee_prepend), 2, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"removeAllListeners".as_ptr(), Some(crate::node_events::ee_remove_all), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"on".as_ptr(),
+        Some(crate::node_events::ee_on),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"addListener".as_ptr(),
+        Some(crate::node_events::ee_on),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"once".as_ptr(),
+        Some(crate::node_events::ee_once),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"off".as_ptr(),
+        Some(crate::node_events::ee_off),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"removeListener".as_ptr(),
+        Some(crate::node_events::ee_off),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"emit".as_ptr(),
+        Some(crate::node_events::ee_emit),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"prependListener".as_ptr(),
+        Some(crate::node_events::ee_prepend),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        server_obj.handle(),
+        c"removeAllListeners".as_ptr(),
+        Some(crate::node_events::ee_remove_all),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
 
     args.rval().set(ObjectValue(server_obj.get()));
     true
@@ -878,10 +1324,16 @@ unsafe extern "C" fn server_listen(
 
     let port: u16 = if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_int32() { v.to_int32() as u16 }
-        else if v.is_double() { v.to_double() as u16 }
-        else { 3000 }
-    } else { 3000 };
+        if v.is_int32() {
+            v.to_int32() as u16
+        } else if v.is_double() {
+            v.to_double() as u16
+        } else {
+            3000
+        }
+    } else {
+        3000
+    };
 
     // BCE-012: root callback objects before any GC trigger (App::create, JS_GetProperty, etc.)
     let callback = if argc > 2 {
@@ -889,14 +1341,20 @@ unsafe extern "C" fn server_listen(
         if v.is_object() {
             rooted!(&in(cx_ref) let cb = v.to_object());
             Some(cb.get())
-        } else { None }
+        } else {
+            None
+        }
     } else if argc > 1 {
         let v = *args.get(1).ptr;
         if v.is_object() {
             rooted!(&in(cx_ref) let cb = v.to_object());
             Some(cb.get())
-        } else { None }
-    } else { None };
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Create uWS App<false> (non-SSL).
     let opts = BunSocketContextOptions::default();
@@ -916,8 +1374,16 @@ unsafe extern "C" fn server_listen(
     rooted!(&in(cx_ref) let server_obj = this.to_object());
 
     let mut handler_val = UndefinedValue();
-    let handler_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut handler_val };
-    JS_GetProperty(cx, server_obj.handle().into(), c"_onRequest".as_ptr(), handler_mh);
+    let handler_mh = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut handler_val,
+    };
+    JS_GetProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_onRequest".as_ptr(),
+        handler_mh,
+    );
 
     rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
     if global.get().is_null() || !handler_val.is_object() {
@@ -930,41 +1396,94 @@ unsafe extern "C" fn server_listen(
 
     // Allocate ServerUserData on the heap. GC-safe: global+handler+server stored in GcStore.
     rooted!(&in(cx_ref) let handler_root = handler_val.to_object());
-    let ud = Box::new(ServerUserData::new(cx, global.get(), handler_root.get(), server_obj.get()));
+    let ud = Box::new(ServerUserData::new(
+        cx,
+        global.get(),
+        handler_root.get(),
+        server_obj.get(),
+    ));
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
     // Register catch-all route: app.any("/*", handler, user_data)
     // SAFETY: `unsafe extern "C"` and `extern "C"` fn pointers have identical ABI;
     // transmute is sound because the C layer only cares about the calling convention.
-    let safe_handler: Option<extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void)> =
-        unsafe { ::std::mem::transmute(Some(uws_route_handler as unsafe extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void))) };
+    let safe_handler: Option<
+        extern "C" fn(
+            *mut bun_uws_sys::response::c::uws_res,
+            *mut bun_uws_sys::Request,
+            *mut ::std::ffi::c_void,
+        ),
+    > = unsafe {
+        ::std::mem::transmute(Some(
+            uws_route_handler
+                as unsafe extern "C" fn(
+                    *mut bun_uws_sys::response::c::uws_res,
+                    *mut bun_uws_sys::Request,
+                    *mut ::std::ffi::c_void,
+                ),
+        ))
+    };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
     // Store the ServerUserData pointer on the server object for cleanup in server_close.
     {
         let ud_val = mozjs::jsval::PrivateValue(ud_ptr as *const core::ffi::c_void);
         rooted!(&in(cx_ref) let udv = ud_val);
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), udv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_udPtr".as_ptr(),
+            udv.handle().into(),
+            0,
+        );
     }
 
     // Listen on the specified port.
     // SAFETY: same ABI transmute rationale as above.
-    let safe_listen_cb: extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void) =
-        unsafe { ::std::mem::transmute(uws_listen_callback as unsafe extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void)) };
+    let safe_listen_cb: extern "C" fn(
+        *mut bun_uws_sys::listen_socket::ListenSocket,
+        *mut ::std::ffi::c_void,
+    ) = unsafe {
+        ::std::mem::transmute(
+            uws_listen_callback
+                as unsafe extern "C" fn(
+                    *mut bun_uws_sys::listen_socket::ListenSocket,
+                    *mut ::std::ffi::c_void,
+                ),
+        )
+    };
     (*app_ptr).listen(port as i32, safe_listen_cb, core::ptr::null_mut());
 
     // Store app pointer on server object for close/destroy.
     {
         let app_ptr_val = mozjs::jsval::PrivateValue(app_ptr as *const core::ffi::c_void);
         rooted!(&in(cx_ref) let apv = app_ptr_val);
-        JS_DefineProperty(cx, server_obj.handle().into(), c"_appPtr".as_ptr(), apv.handle().into(), 0);
+        JS_DefineProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_appPtr".as_ptr(),
+            apv.handle().into(),
+            0,
+        );
     }
 
     rooted!(&in(cx_ref) let port_root = Int32Value(port as i32));
-    JS_DefineProperty(cx, server_obj.handle().into(), c"_listeningPort".as_ptr(), port_root.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_listeningPort".as_ptr(),
+        port_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     rooted!(&in(cx_ref) let listening_root = mozjs::jsval::BooleanValue(true));
-    JS_DefineProperty(cx, server_obj.handle().into(), c"listening".as_ptr(), listening_root.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"listening".as_ptr(),
+        listening_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     ACTIVE_APPS.with(|s| s.borrow_mut().push(app_ptr));
 
@@ -972,8 +1491,17 @@ unsafe extern "C" fn server_listen(
     if let Some(cb) = callback {
         rooted!(&in(cx_ref) let fval_root = ObjectValue(cb));
         let mut rval = UndefinedValue();
-        let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-        JS_CallFunctionValue(cx, global.handle().into(), fval_root.handle().into(), &HandleValueArray::empty(), rval_h);
+        let rval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        JS_CallFunctionValue(
+            cx,
+            global.handle().into(),
+            fval_root.handle().into(),
+            &HandleValueArray::empty(),
+            rval_h,
+        );
         JS_ClearPendingException(cx);
     }
 
@@ -997,7 +1525,15 @@ unsafe extern "C" fn server_close(
 
     // Destroy the uWS App if it exists.
     let mut app_ptr_val = UndefinedValue();
-    JS_GetProperty(cx, server_obj.handle().into(), c"_appPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut app_ptr_val });
+    JS_GetProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_appPtr".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut app_ptr_val,
+        },
+    );
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().
     // http.createServer(fn).close() before listen leaves _appPtr undefined;
     // to_private() on undefined asserts is_double() → panic across extern "C".
@@ -1013,7 +1549,9 @@ unsafe extern "C" fn server_close(
         // `ACTIVE_APPS.retain` so the liveness registry has one update path.
         // Safety: app_ptr was registered by `server_listen` via the same
         // registry; idempotent if already removed.
-        unsafe { unregister_active_app(app_ptr); }
+        unsafe {
+            unregister_active_app(app_ptr);
+        }
 
         // @trace BCE-20260618-006 [level:regression] [api:http.createServer close]
         // Clear `_appPtr` on the JS server object so subsequent `close()`
@@ -1024,12 +1562,25 @@ unsafe extern "C" fn server_close(
         // private value (UndefinedValue) so the val_is_private guard above
         // correctly takes the null path on re-entry.
         rooted!(&in(cx_ref) let undef_root = UndefinedValue());
-        JS_SetProperty(cx, server_obj.handle().into(), c"_appPtr".as_ptr(), undef_root.handle().into());
+        JS_SetProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_appPtr".as_ptr(),
+            undef_root.handle().into(),
+        );
     }
 
     // Cleanup: reclaim ServerUserData box and remove GcStore entries.
     let mut ud_ptr_val = UndefinedValue();
-    JS_GetProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ud_ptr_val });
+    JS_GetProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_udPtr".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ud_ptr_val,
+        },
+    );
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().
     let ud_ptr = if val_is_private(&ud_ptr_val) {
         ud_ptr_val.to_private() as *mut ServerUserData
@@ -1045,7 +1596,12 @@ unsafe extern "C" fn server_close(
         // class as `_appPtr` above. Clear `_udPtr` so a second `close()` is
         // a no-op (the Box has been consumed and the memory freed).
         rooted!(&in(cx_ref) let undef_root2 = UndefinedValue());
-        JS_SetProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), undef_root2.handle().into());
+        JS_SetProperty(
+            cx,
+            server_obj.handle().into(),
+            c"_udPtr".as_ptr(),
+            undef_root2.handle().into(),
+        );
     }
 
     args.rval().set(UndefinedValue());
@@ -1073,20 +1629,40 @@ unsafe extern "C" fn server_address(
     rooted!(&in(cx_ref) let server_obj = this.to_object());
 
     let mut port_val = UndefinedValue();
-    let port_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut port_val };
-    JS_GetProperty(cx, server_obj.handle().into(), c"_listeningPort".as_ptr(), port_mh);
+    let port_mh = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut port_val,
+    };
+    JS_GetProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_listeningPort".as_ptr(),
+        port_mh,
+    );
 
     if port_val.is_int32() {
         let p = port_val.to_int32();
         rooted!(&in(cx_ref) let pvr = Int32Value(p));
-        JS_DefineProperty(cx, addr_obj.handle().into(), c"port".as_ptr(), pvr.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(
+            cx,
+            addr_obj.handle().into(),
+            c"port".as_ptr(),
+            pvr.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
 
         let c_family = ZBox::from_bytes("IPv4".as_bytes());
         let js_family = JS_NewStringCopyZ(cx, c_family.as_ptr());
         if !js_family.is_null() {
             let fv = StringValue(&*js_family);
             rooted!(&in(cx_ref) let fvr = fv);
-            JS_DefineProperty(cx, addr_obj.handle().into(), c"family".as_ptr(), fvr.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx,
+                addr_obj.handle().into(),
+                c"family".as_ptr(),
+                fvr.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
         let c_addr = ZBox::from_bytes("0.0.0.0".as_bytes());
@@ -1094,7 +1670,13 @@ unsafe extern "C" fn server_address(
         if !js_addr.is_null() {
             let av = StringValue(&*js_addr);
             rooted!(&in(cx_ref) let avr = av);
-            JS_DefineProperty(cx, addr_obj.handle().into(), c"address".as_ptr(), avr.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(
+                cx,
+                addr_obj.handle().into(),
+                c"address".as_ptr(),
+                avr.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
         }
     }
 
@@ -1129,15 +1711,23 @@ unsafe extern "C" fn http_request(
         let v = *args.get(0).ptr;
         if v.is_string() {
             crate::js_to_rust_string(cx, v)
-        } else { String::new() }
-    } else { String::new() };
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
 
     let method = if argc > 1 {
         let v = *args.get(1).ptr;
         if v.is_string() {
             crate::js_to_rust_string(cx, v)
-        } else { "GET".to_string() }
-    } else { "GET".to_string() };
+        } else {
+            "GET".to_string()
+        }
+    } else {
+        "GET".to_string()
+    };
 
     // Create the PENDING Promise *while cx_ref holds a rooting context*,
     // then release cx_ref before scheduling (the worker must not outlive the
@@ -1188,11 +1778,7 @@ unsafe extern "C" fn http_request(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn http_get(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut mozjs::jsval::JSVal,
-) -> bool {
+unsafe extern "C" fn http_get(cx: *mut JSContext, argc: u32, vp: *mut mozjs::jsval::JSVal) -> bool {
     // http.get delegates to http_request (which now returns a pending Promise
     // and never blocks). The delegated call chain reaches no send_sync/
     // stealth_http_request on the JS thread — C2 invariant satisfied.
@@ -1339,9 +1925,18 @@ mod tests {
             handler_key: "http_server_999_handler".to_string(),
             server_obj_key: "http_server_999_server_obj".to_string(),
         };
-        assert!(ud.global().is_none(), "gc_store_get with null cx returns None");
-        assert!(ud.handler().is_none(), "gc_store_get with null cx returns None");
-        assert!(ud.server_obj().is_none(), "gc_store_get with null cx returns None");
+        assert!(
+            ud.global().is_none(),
+            "gc_store_get with null cx returns None"
+        );
+        assert!(
+            ud.handler().is_none(),
+            "gc_store_get with null cx returns None"
+        );
+        assert!(
+            ud.server_obj().is_none(),
+            "gc_store_get with null cx returns None"
+        );
     }
 
     #[test]
@@ -1359,38 +1954,69 @@ mod tests {
     // ── HTTP STATUS_CODES (static data) ──
 
     static STATUS_CODES: &[(&str, &str)] = &[
-        ("100", "Continue"), ("101", "Switching Protocols"),
+        ("100", "Continue"),
+        ("101", "Switching Protocols"),
         ("102", "Processing"),
-        ("200", "OK"), ("201", "Created"), ("202", "Accepted"),
-        ("203", "Non-Authoritative Information"), ("204", "No Content"),
-        ("205", "Reset Content"), ("206", "Partial Content"),
-        ("207", "Multi-Status"), ("208", "Already Reported"),
+        ("200", "OK"),
+        ("201", "Created"),
+        ("202", "Accepted"),
+        ("203", "Non-Authoritative Information"),
+        ("204", "No Content"),
+        ("205", "Reset Content"),
+        ("206", "Partial Content"),
+        ("207", "Multi-Status"),
+        ("208", "Already Reported"),
         ("226", "IM Used"),
-        ("300", "Multiple Choices"), ("301", "Moved Permanently"),
-        ("302", "Found"), ("303", "See Other"), ("304", "Not Modified"),
-        ("305", "Use Proxy"), ("306", "(Unused)"),
-        ("307", "Temporary Redirect"), ("308", "Permanent Redirect"),
-        ("400", "Bad Request"), ("401", "Unauthorized"),
-        ("402", "Payment Required"), ("403", "Forbidden"),
-        ("404", "Not Found"), ("405", "Method Not Allowed"),
-        ("406", "Not Acceptable"), ("407", "Proxy Authentication Required"),
-        ("408", "Request Timeout"), ("409", "Conflict"),
-        ("410", "Gone"), ("411", "Length Required"),
-        ("412", "Precondition Failed"), ("413", "Payload Too Large"),
-        ("414", "URI Too Long"), ("415", "Unsupported Media Type"),
-        ("416", "Range Not Satisfiable"), ("417", "Expectation Failed"),
-        ("418", "I'm a Teapot"), ("421", "Misdirected Request"),
-        ("422", "Unprocessable Entity"), ("423", "Locked"),
-        ("424", "Failed Dependency"), ("425", "Too Early"),
-        ("426", "Upgrade Required"), ("428", "Precondition Required"),
-        ("429", "Too Many Requests"), ("431", "Request Header Fields Too Large"),
+        ("300", "Multiple Choices"),
+        ("301", "Moved Permanently"),
+        ("302", "Found"),
+        ("303", "See Other"),
+        ("304", "Not Modified"),
+        ("305", "Use Proxy"),
+        ("306", "(Unused)"),
+        ("307", "Temporary Redirect"),
+        ("308", "Permanent Redirect"),
+        ("400", "Bad Request"),
+        ("401", "Unauthorized"),
+        ("402", "Payment Required"),
+        ("403", "Forbidden"),
+        ("404", "Not Found"),
+        ("405", "Method Not Allowed"),
+        ("406", "Not Acceptable"),
+        ("407", "Proxy Authentication Required"),
+        ("408", "Request Timeout"),
+        ("409", "Conflict"),
+        ("410", "Gone"),
+        ("411", "Length Required"),
+        ("412", "Precondition Failed"),
+        ("413", "Payload Too Large"),
+        ("414", "URI Too Long"),
+        ("415", "Unsupported Media Type"),
+        ("416", "Range Not Satisfiable"),
+        ("417", "Expectation Failed"),
+        ("418", "I'm a Teapot"),
+        ("421", "Misdirected Request"),
+        ("422", "Unprocessable Entity"),
+        ("423", "Locked"),
+        ("424", "Failed Dependency"),
+        ("425", "Too Early"),
+        ("426", "Upgrade Required"),
+        ("428", "Precondition Required"),
+        ("429", "Too Many Requests"),
+        ("431", "Request Header Fields Too Large"),
         ("451", "Unavailable For Legal Reasons"),
-        ("500", "Internal Server Error"), ("501", "Not Implemented"),
-        ("502", "Bad Gateway"), ("503", "Service Unavailable"),
-        ("504", "Gateway Timeout"), ("505", "HTTP Version Not Supported"),
-        ("506", "Variant Also Negotiates"), ("507", "Insufficient Storage"),
-        ("508", "Loop Detected"), ("509", "Bandwidth Limit Exceeded"),
-        ("510", "Not Extended"), ("511", "Network Authentication Required"),
+        ("500", "Internal Server Error"),
+        ("501", "Not Implemented"),
+        ("502", "Bad Gateway"),
+        ("503", "Service Unavailable"),
+        ("504", "Gateway Timeout"),
+        ("505", "HTTP Version Not Supported"),
+        ("506", "Variant Also Negotiates"),
+        ("507", "Insufficient Storage"),
+        ("508", "Loop Detected"),
+        ("509", "Bandwidth Limit Exceeded"),
+        ("510", "Not Extended"),
+        ("511", "Network Authentication Required"),
     ];
 
     #[test]
@@ -1405,12 +2031,20 @@ mod tests {
 
     #[test]
     fn status_codes_contains_404_not_found() {
-        assert!(STATUS_CODES.iter().any(|(c, m)| *c == "404" && *m == "Not Found"));
+        assert!(
+            STATUS_CODES
+                .iter()
+                .any(|(c, m)| *c == "404" && *m == "Not Found")
+        );
     }
 
     #[test]
     fn status_codes_contains_500_internal_server_error() {
-        assert!(STATUS_CODES.iter().any(|(c, m)| *c == "500" && *m == "Internal Server Error"));
+        assert!(
+            STATUS_CODES
+                .iter()
+                .any(|(c, m)| *c == "500" && *m == "Internal Server Error")
+        );
     }
 
     #[test]
@@ -1473,7 +2107,15 @@ mod tests {
             collected.push((*name, *value));
         }
         assert_eq!(collected.len(), 3);
-        assert!(collected.iter().any(|(n, v)| *n == b"host" && *v == b"example.com"));
-        assert!(collected.iter().any(|(n, v)| *n == b"x-custom" && *v == b"value"));
+        assert!(
+            collected
+                .iter()
+                .any(|(n, v)| *n == b"host" && *v == b"example.com")
+        );
+        assert!(
+            collected
+                .iter()
+                .any(|(n, v)| *n == b"x-custom" && *v == b"value")
+        );
     }
 }

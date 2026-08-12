@@ -35,7 +35,13 @@ pub fn run() -> Result<(), i32> {
     let width = checks.iter().map(|c| c.label.len()).max().unwrap_or(8);
     for c in &checks {
         let mark = if c.ok { "✓" } else { "✗" };
-        println!("  {} {:<width$}  {}", mark, c.label, c.detail, width = width);
+        println!(
+            "  {} {:<width$}  {}",
+            mark,
+            c.label,
+            c.detail,
+            width = width
+        );
         if !c.ok {
             all_ok = false;
         }
@@ -90,7 +96,11 @@ fn rustc_check() -> Check {
 
 fn cargo_check() -> Check {
     match version_line("cargo", &["--version"]) {
-        Some(v) => Check { label: "Cargo", ok: true, detail: v },
+        Some(v) => Check {
+            label: "Cargo",
+            ok: true,
+            detail: v,
+        },
         None => Check {
             label: "Cargo",
             ok: false,
@@ -103,7 +113,11 @@ fn clang_check() -> Check {
     // mozjs compiles SpiderMonkey (C++) from source; a C/C++ compiler is mandatory.
     for c in ["clang", "gcc", "cc"] {
         if let Some(v) = version_line(c, &["--version"]) {
-            return Check { label: "C/C++ compiler", ok: true, detail: format!("{}: {}", c, first_token(&v)) };
+            return Check {
+                label: "C/C++ compiler",
+                ok: true,
+                detail: format!("{}: {}", c, first_token(&v)),
+            };
         }
     }
     Check {
@@ -115,7 +129,11 @@ fn clang_check() -> Check {
 
 fn pkg_config_check() -> Check {
     match version_line("pkg-config", &["--version"]) {
-        Some(v) => Check { label: "pkg-config", ok: true, detail: v },
+        Some(v) => Check {
+            label: "pkg-config",
+            ok: true,
+            detail: v,
+        },
         None => Check {
             label: "pkg-config",
             ok: false,
@@ -195,10 +213,7 @@ fn cdp_port_check() -> Check {
     // If something answers on 9222, a Bao (or Chrome) CDP server is likely
     // already running. Connect-only, short timeout — never start a server here.
     let addr = "127.0.0.1:9222";
-    match std::net::TcpStream::connect_timeout(
-        &addr.parse().unwrap(),
-        Duration::from_millis(300),
-    ) {
+    match std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(300)) {
         Ok(_) => Check {
             label: "CDP :9222",
             ok: true,

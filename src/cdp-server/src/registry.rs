@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::{DomainHandler, EventSender, CdpError};
+use crate::{CdpError, DomainHandler, EventSender};
 
 /// Registry of CDP domain handlers. Thread-safe (Mutex-protected).
 /// Generic over handler type H — enables enum dispatch (H=DomainDispatch)
@@ -23,9 +23,14 @@ pub struct DomainRegistry<H: DomainHandler> {
 pub struct EmptyHandler;
 
 impl DomainHandler for EmptyHandler {
-    fn domain_name(&self) -> &'static str { "" }
+    fn domain_name(&self) -> &'static str {
+        ""
+    }
     fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
-        Err(CdpError { code: -32601, message: "empty handler".into() })
+        Err(CdpError {
+            code: -32601,
+            message: "empty handler".into(),
+        })
     }
 }
 
@@ -115,7 +120,10 @@ impl<H: DomainHandler> DomainRegistry<H> {
     /// Register a DomainHandler. Returns Err if a handler with the same
     /// domain_name is already registered (REQ-CDS-006 C5: no overwrite).
     pub fn register(&self, handler: H) -> Result<(), String> {
-        let mut map = self.handlers.lock().map_err(|_| -> String { "lock poisoned".into() })?;
+        let mut map = self
+            .handlers
+            .lock()
+            .map_err(|_| -> String { "lock poisoned".into() })?;
         let name = handler.domain_name();
         if map.contains_key(name) {
             return Err(format!("domain '{}' already registered", name));
@@ -175,7 +183,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{DomainHandler, EventSender, CdpError};
+    use crate::{CdpError, DomainHandler, EventSender};
 
     struct NoopSender;
     impl EventSender for NoopSender {
@@ -326,7 +334,12 @@ mod tests {
                     Self::Runtime(h) => h.domain_name(),
                 }
             }
-            fn handle_command(&self, cmd: &str, p: Value, s: &dyn EventSender) -> Result<Value, CdpError> {
+            fn handle_command(
+                &self,
+                cmd: &str,
+                p: Value,
+                s: &dyn EventSender,
+            ) -> Result<Value, CdpError> {
                 match self {
                     Self::Page(h) => h.handle_command(cmd, p, s),
                     Self::Runtime(h) => h.handle_command(cmd, p, s),
@@ -334,8 +347,10 @@ mod tests {
             }
         }
         let reg = DomainRegistry::<TestDispatch>::new();
-        reg.register(TestDispatch::Page(MockHandler { name: "Page" })).unwrap();
-        reg.register(TestDispatch::Runtime(MockHandler { name: "Runtime" })).unwrap();
+        reg.register(TestDispatch::Page(MockHandler { name: "Page" }))
+            .unwrap();
+        reg.register(TestDispatch::Runtime(MockHandler { name: "Runtime" }))
+            .unwrap();
         assert!(reg.has_domain("Page"));
         assert!(reg.has_domain("Runtime"));
         let result = reg.dispatch_command("Page.navigate", json!(null), &NoopSender);

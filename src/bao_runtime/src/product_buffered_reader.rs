@@ -305,9 +305,7 @@ mod tests {
         let mut p = SubprocessPipeReaderParent::new();
         assert!(!p.state.done);
         unsafe {
-            <SubprocessPipeReaderParent as BufferedReaderParent>::on_reader_done(
-                &mut p as *mut _,
-            );
+            <SubprocessPipeReaderParent as BufferedReaderParent>::on_reader_done(&mut p as *mut _);
         }
         assert!(p.state.done);
         assert!(p.state.last_error.is_none());
@@ -432,9 +430,7 @@ mod tests {
                 b"d",
                 ReadState::Eof,
             );
-            <ShellPipeReaderParent as BufferedReaderParent>::on_reader_done(
-                &mut shell as *mut _,
-            );
+            <ShellPipeReaderParent as BufferedReaderParent>::on_reader_done(&mut shell as *mut _);
         }
         assert_eq!(shell.state.buffer, b"a");
         assert_eq!(shell_io.state.buffer, b"b");
@@ -478,10 +474,7 @@ mod tests {
             ShellPipeReaderParent::KIND,
             BufferedReaderParentLinkKind::ShellPipeReader
         );
-        assert_eq!(
-            TerminalParent::KIND,
-            BufferedReaderParentLinkKind::Terminal
-        );
+        assert_eq!(TerminalParent::KIND, BufferedReaderParentLinkKind::Terminal);
         assert_eq!(
             MultiRunPipeReaderParent::KIND,
             BufferedReaderParentLinkKind::MultiRunPipeReader

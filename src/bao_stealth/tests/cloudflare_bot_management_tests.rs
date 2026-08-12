@@ -16,10 +16,7 @@
 // that match real browser fingerprints, defeating Cloudflare's first three
 // layers without behavioral artifacts.
 
-use bao_stealth::{
-    StealthEngine, StealthProfile, StealthHooks,
-    TlsFingerprint, Http2Fingerprint,
-};
+use bao_stealth::{Http2Fingerprint, StealthEngine, StealthHooks, StealthProfile, TlsFingerprint};
 
 // ===========================================================================
 // 1. TLS JA3 must match known browser hash (Cloudflare edge blocks unknowns)
@@ -129,8 +126,11 @@ fn cloudflare_ja4_format_matches_standard() {
     // Hex suffix must be 12 chars (SHA256 of ALPN, first 12 hex chars)
     let suffix = ja4.split('_').nth(1).unwrap_or("");
     assert_eq!(
-        suffix.len(), 12,
-        "JA4 suffix must be 12 hex chars — got {} ('{}')", suffix.len(), suffix
+        suffix.len(),
+        12,
+        "JA4 suffix must be 12 hex chars — got {} ('{}')",
+        suffix.len(),
+        suffix
     );
     assert!(
         suffix.chars().all(|c| c.is_ascii_hexdigit()),
@@ -289,9 +289,16 @@ fn cloudflare_js_challenge_navigator_overrides_present() {
     // Arrange — Cloudflare JS challenge (cf-chl) reads navigator.userAgent etc.
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
@@ -327,9 +334,16 @@ fn cloudflare_js_challenge_screen_overrides_present() {
     // Arrange
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
@@ -352,9 +366,16 @@ fn cloudflare_js_challenge_webgl_overrides_present() {
     // Arrange — cf-chl probes WebGL debug renderer info
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
@@ -401,7 +422,8 @@ fn cloudflare_mouse_path_has_sufficient_entropy() {
         "Mouse path must have ≥5 waypoints — Cloudflare movement check"
     );
     // Total distance traveled must be > 0 (not a single point)
-    let total_dist: f64 = path.windows(2)
+    let total_dist: f64 = path
+        .windows(2)
         .map(|w| {
             let dx = w[1].0 - w[0].0;
             let dy = w[1].1 - w[0].1;
@@ -465,7 +487,10 @@ fn cloudflare_firefox_profile_passes_all_layers() {
     assert!(tls.compute_ja3().contains("65037")); // GREASE
 
     // Assert — Layer 2 (HTTP/2): Firefox Akamai fingerprint
-    assert_eq!(http2.akamai_fingerprint(), "65536:0:100:131072:16384:262144");
+    assert_eq!(
+        http2.akamai_fingerprint(),
+        "65536:0:100:131072:16384:262144"
+    );
 
     // Assert — Layer 3 (JS challenge): navigator + screen + WebGL Firefox-coherent
     assert!(nav.user_agent.contains("Firefox"));
@@ -492,11 +517,16 @@ fn cloudflare_chrome_profile_passes_all_layers() {
     // Assert — Layer 1: Chrome JA3 (no Firefox DHE cipher 158)
     let ja3 = tls.compute_ja3();
     assert!(ja3.starts_with("771,4865-"));
-    assert!(!ja3.contains("-158-") && !ja3.contains("158-"),
-        "Chrome JA3 must not include Firefox DHE cipher");
+    assert!(
+        !ja3.contains("-158-") && !ja3.contains("158-"),
+        "Chrome JA3 must not include Firefox DHE cipher"
+    );
 
     // Assert — Layer 2: Chrome Akamai fingerprint
-    assert_eq!(http2.akamai_fingerprint(), "65536:0:1000:6291456:16384:262144");
+    assert_eq!(
+        http2.akamai_fingerprint(),
+        "65536:0:1000:6291456:16384:262144"
+    );
 
     // Assert — Layer 3: Chrome navigator + WebGL coherent
     assert!(nav.user_agent.contains("Chrome"));

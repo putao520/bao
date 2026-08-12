@@ -20,7 +20,10 @@ fn test_cdp_message_deserialize_full() {
     let msg: CdpMessage = serde_json::from_str(raw).unwrap();
     assert_eq!(msg.id, Some(1));
     assert_eq!(msg.method, "Page.navigate");
-    assert_eq!(msg.params.as_ref().unwrap().get("url").unwrap().as_str(), Some("https://example.com"));
+    assert_eq!(
+        msg.params.as_ref().unwrap().get("url").unwrap().as_str(),
+        Some("https://example.com")
+    );
     // session_id defaulted to None when absent (REQ-CDS-004-C1: sessionId field).
     assert!(msg.session_id.is_none());
 }
@@ -102,7 +105,8 @@ fn test_cdp_message_null_params_is_none() {
 fn test_cdp_message_array_params() {
     // REQ-CDS-004-C1: params may be any JSON value, including arrays.
     let msg: CdpMessage =
-        serde_json::from_str(r#"{"id":3,"method":"DOM.querySelectorAll","params":["div","span"]}"#).unwrap();
+        serde_json::from_str(r#"{"id":3,"method":"DOM.querySelectorAll","params":["div","span"]}"#)
+            .unwrap();
     let params = msg.params.unwrap();
     assert!(params.is_array());
     assert_eq!(params.as_array().unwrap().len(), 2);
@@ -156,7 +160,8 @@ fn test_cdp_message_round_trip_serialize_deserialize() {
 fn test_cdp_message_session_id_alone_without_params() {
     // REQ-CDS-004-C6: sessionId must be accepted even when params is absent.
     let msg: CdpMessage =
-        serde_json::from_str(r#"{"id":1,"method":"Target.detachFromTarget","session_id":"s2"}"#).unwrap();
+        serde_json::from_str(r#"{"id":1,"method":"Target.detachFromTarget","session_id":"s2"}"#)
+            .unwrap();
     assert_eq!(msg.session_id, Some("s2".into()));
     assert!(msg.params.is_none());
 }
@@ -186,7 +191,10 @@ fn test_cdp_response_error() {
     let resp = CdpResponse {
         id: Some(2),
         result: None,
-        error: Some(CdpError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains("-32601"));
@@ -216,10 +224,16 @@ fn test_cdp_response_result_and_error_mutually_exclusive_when_none() {
     let resp = CdpResponse {
         id: Some(9),
         result: None,
-        error: Some(CdpError { code: -32600, message: "bad".into() }),
+        error: Some(CdpError {
+            code: -32600,
+            message: "bad".into(),
+        }),
     };
     let s = serde_json::to_string(&resp).unwrap();
-    assert!(!s.contains("result"), "None result must be omitted, not emitted as null");
+    assert!(
+        !s.contains("result"),
+        "None result must be omitted, not emitted as null"
+    );
     let v: Value = serde_json::from_str(&s).unwrap();
     assert!(v.get("result").is_none());
     assert!(v.get("error").is_some());
@@ -287,12 +301,22 @@ fn test_cdp_event_no_params() {
 #[test]
 fn test_cdp_event_method_format_domain_dot_eventname() {
     // REQ-CDS-005-C4: method format is "Domain.eventName".
-    for method in ["Page.loadEventFired", "Runtime.consoleAPICalled", "Target.attachedToTarget"] {
-        let ev = CdpEvent { method: method.into(), params: None };
+    for method in [
+        "Page.loadEventFired",
+        "Runtime.consoleAPICalled",
+        "Target.attachedToTarget",
+    ] {
+        let ev = CdpEvent {
+            method: method.into(),
+            params: None,
+        };
         let s = serde_json::to_string(&ev).unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["method"], method);
-        assert!(method.contains('.'), "CDP event method must be Domain.eventName");
+        assert!(
+            method.contains('.'),
+            "CDP event method must be Domain.eventName"
+        );
     }
 }
 
@@ -303,7 +327,10 @@ fn test_cdp_event_method_format_domain_dot_eventname() {
 
 #[test]
 fn test_cdp_error_fields() {
-    let err = CdpError { code: -32600, message: "invalid request".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "invalid request".into(),
+    };
     assert_eq!(err.code, -32600);
     assert_eq!(err.message, "invalid request");
     let s = serde_json::to_string(&err).unwrap();
@@ -397,7 +424,10 @@ fn test_target_info_round_trip_all_fields() {
     assert_eq!(back.target_type, original.target_type);
     assert_eq!(back.title, original.title);
     assert_eq!(back.url, original.url);
-    assert_eq!(back.web_socket_debugger_url, original.web_socket_debugger_url);
+    assert_eq!(
+        back.web_socket_debugger_url,
+        original.web_socket_debugger_url
+    );
 }
 
 #[test]
@@ -414,7 +444,10 @@ fn test_target_info_rename_type_field() {
     };
     let s = serde_json::to_string(&info).unwrap();
     assert!(s.contains(r#""type":"page""#));
-    assert!(!s.contains("target_type"), "wire format must use 'type', not 'target_type'");
+    assert!(
+        !s.contains("target_type"),
+        "wire format must use 'type', not 'target_type'"
+    );
 }
 
 // ---- HTTP path parsers (REQ-CDS-002-C1/C2/C3, REQ-CDS-001-C3/C4) ----
@@ -463,7 +496,10 @@ fn test_parse_activate_request_wrong_path_returns_none() {
 fn test_parse_new_request_extracts_query_url() {
     // REQ-CDS-002-C1: GET /json/new?{url}
     let req = "GET /json/new?url=https://example.com HTTP/1.1";
-    assert_eq!(parse_new_request(req), Some("url=https://example.com".to_string()));
+    assert_eq!(
+        parse_new_request(req),
+        Some("url=https://example.com".to_string())
+    );
 }
 
 #[test]
@@ -484,14 +520,22 @@ fn test_parse_new_request_percent_decodes() {
     // Adversarial: query with %20 / + encodings must be decoded.
     let req = "GET /json/new?url=https%3A%2F%2Fx.com%20path HTTP/1.1";
     let res = parse_new_request(req).expect("new request must parse");
-    assert!(res.contains("https://x.com path"), "percent-decoded url must contain '://' and decoded space, got: {}", res);
+    assert!(
+        res.contains("https://x.com path"),
+        "percent-decoded url must contain '://' and decoded space, got: {}",
+        res
+    );
 }
 
 #[test]
 fn test_is_websocket_upgrade_detects_header() {
     // REQ-CDS-001-C3/C4: WebSocket upgrade detection recognizes the header.
-    assert!(is_websocket_upgrade("GET /devtools/page/abc HTTP/1.1\r\nUpgrade: websocket\r\n\r\n"));
-    assert!(is_websocket_upgrade("GET /devtools/page/abc HTTP/1.1\r\nupgrade: websocket\r\n\r\n"));
+    assert!(is_websocket_upgrade(
+        "GET /devtools/page/abc HTTP/1.1\r\nUpgrade: websocket\r\n\r\n"
+    ));
+    assert!(is_websocket_upgrade(
+        "GET /devtools/page/abc HTTP/1.1\r\nupgrade: websocket\r\n\r\n"
+    ));
 }
 
 #[test]
@@ -501,12 +545,16 @@ fn test_is_websocket_upgrade_only_two_casings_documented_boundary() {
     // does NOT perform full case-insensitive matching — a fully uppercase
     // header is not recognized. This pins the current behavior so a future
     // refactor cannot silently weaken detection.
-    assert!(!is_websocket_upgrade("GET /devtools/page/abc HTTP/1.1\r\nUPGRADE: WEBSOCKET\r\n\r\n"));
+    assert!(!is_websocket_upgrade(
+        "GET /devtools/page/abc HTTP/1.1\r\nUPGRADE: WEBSOCKET\r\n\r\n"
+    ));
 }
 
 #[test]
 fn test_is_websocket_upgrade_missing_header() {
-    assert!(!is_websocket_upgrade("GET /json/version HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+    assert!(!is_websocket_upgrade(
+        "GET /json/version HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    ));
     assert!(!is_websocket_upgrade(""));
     assert!(!is_websocket_upgrade("GET / HTTP/1.1"));
 }
@@ -535,7 +583,10 @@ fn test_server_config_spec_defaults() {
     assert_eq!(d.port, 9222, "REQ-CDS-008-C1 default port");
     assert_eq!(d.http_timeout_seconds, 30, "REQ-CDS-008-C2 default timeout");
     assert_eq!(d.max_sessions, 100, "REQ-CDS-008-C3 default max sessions");
-    assert_eq!(d.protocol_version, "1.3", "REQ-CDS-008-C4 default protocol version");
+    assert_eq!(
+        d.protocol_version, "1.3",
+        "REQ-CDS-008-C4 default protocol version"
+    );
     assert_eq!(d.browser_name, "Bao/0.1.0");
     // Version fields default to None (filled by TargetProvider at runtime).
     assert!(d.user_agent.is_none());
@@ -570,9 +621,7 @@ fn test_server_config_v8_webkit_versions() {
 
 #[test]
 fn test_server_config_max_sessions() {
-    let config = ServerConfig::builder()
-        .max_sessions(100)
-        .build();
+    let config = ServerConfig::builder().max_sessions(100).build();
     assert_eq!(config.max_sessions, 100);
 }
 
@@ -647,8 +696,12 @@ fn test_registry_new_empty() {
 fn test_registry_dispatch_unknown_returns_none() {
     let reg = DomainRegistry::<cdp_server::EmptyHandler>::new();
     struct Nop;
-    impl EventSender for Nop { fn send_event(&self, _: &str, _: Value) {} }
-    assert!(reg.dispatch_command("Unknown.method", json!({}), &Nop).is_none());
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
+    assert!(reg
+        .dispatch_command("Unknown.method", json!({}), &Nop)
+        .is_none());
 }
 
 #[test]
@@ -658,7 +711,9 @@ fn test_registry_dispatch_no_dot_method_extracts_empty_domain() {
     // that key, dispatch returns None.
     let reg = DomainRegistry::<cdp_server::EmptyHandler>::new();
     struct Nop;
-    impl EventSender for Nop { fn send_event(&self, _: &str, _: Value) {} }
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
     assert!(reg.dispatch_command("bareword", json!({}), &Nop).is_none());
 }
 
@@ -667,7 +722,9 @@ fn test_registry_dispatch_empty_method_returns_none() {
     // Adversarial boundary: empty method string → empty domain → None.
     let reg = DomainRegistry::<cdp_server::EmptyHandler>::new();
     struct Nop;
-    impl EventSender for Nop { fn send_event(&self, _: &str, _: Value) {} }
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
     assert!(reg.dispatch_command("", json!({}), &Nop).is_none());
 }
 
@@ -676,10 +733,15 @@ fn test_empty_handler_returns_method_not_found_error() {
     // REQ-CDS-001-C8: EmptyHandler.handle_command returns -32601 Method not found.
     let handler = cdp_server::EmptyHandler;
     struct Nop;
-    impl EventSender for Nop { fn send_event(&self, _: &str, _: Value) {} }
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
     let result = handler.handle_command("Any.thing", json!({}), &Nop);
     let err = result.expect_err("EmptyHandler must return Err");
-    assert_eq!(err.code, -32601, "EmptyHandler error code must be -32601 (Method not found)");
+    assert_eq!(
+        err.code, -32601,
+        "EmptyHandler error code must be -32601 (Method not found)"
+    );
     assert!(!err.message.is_empty());
 }
 
@@ -697,7 +759,8 @@ fn test_empty_handler_domain_name_is_empty() {
 #[test]
 fn test_cdp_message_large_params() {
     let large_array: Vec<i32> = (0..1000).collect();
-    let raw = json!({"id": 10, "method": "test.large", "params": {"data": large_array}}).to_string();
+    let raw =
+        json!({"id": 10, "method": "test.large", "params": {"data": large_array}}).to_string();
     let msg: CdpMessage = serde_json::from_str(&raw).unwrap();
     assert_eq!(msg.params.unwrap()["data"].as_array().unwrap().len(), 1000);
 }
@@ -706,7 +769,10 @@ fn test_cdp_message_large_params() {
 fn test_cdp_message_unicode_params() {
     let raw = r#"{"id":11,"method":"Page.navigate","params":{"url":"https://例子.测试"}}"#;
     let msg: CdpMessage = serde_json::from_str(raw).unwrap();
-    assert!(msg.params.unwrap()["url"].as_str().unwrap().contains("例子"));
+    assert!(msg.params.unwrap()["url"]
+        .as_str()
+        .unwrap()
+        .contains("例子"));
 }
 
 #[test]
@@ -731,7 +797,8 @@ fn test_cdp_message_zero_id() {
 
 #[test]
 fn test_cdp_message_large_id() {
-    let msg: CdpMessage = serde_json::from_str(r#"{"id":9999999999,"method":"Test.method"}"#).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":9999999999,"method":"Test.method"}"#).unwrap();
     assert_eq!(msg.id, Some(9999999999));
 }
 
@@ -761,9 +828,9 @@ fn test_cdp_message_i64_overflow_rejected() {
 #[test]
 fn test_cdp_message_extra_fields_ignored() {
     // Forward-compat: unknown fields must be ignored (serde default).
-    let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":1,"method":"Page.reload","extra":"ignored","another":123}"#,
-    ).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":1,"method":"Page.reload","extra":"ignored","another":123}"#)
+            .unwrap();
     assert_eq!(msg.id, Some(1));
     assert_eq!(msg.method, "Page.reload");
 }

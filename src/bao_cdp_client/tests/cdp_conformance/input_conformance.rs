@@ -111,13 +111,8 @@ fn input_dispatch_key_event_all_types_accepted() {
     // @trace REQ-CDP-001 [domain:Input] [level:integration]
     let b = backend();
     for t in ["keyDown", "keyUp", "rawKeyDown", "char"] {
-        let result = dispatch_command(
-            &*b,
-            "Input.dispatchKeyEvent",
-            json!({"type":t}),
-            "1",
-        )
-        .unwrap();
+        let result =
+            dispatch_command(&*b, "Input.dispatchKeyEvent", json!({"type":t}), "1").unwrap();
         assert!(result.as_object().map(|o| o.is_empty()).unwrap_or(false));
     }
 }

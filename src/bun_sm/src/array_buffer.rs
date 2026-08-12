@@ -57,7 +57,14 @@ impl ArrayBuffer {
         let mut data_len: usize = 0;
         let mut is_shared: bool = false;
         let mut data_ptr: *mut u8 = ::std::ptr::null_mut();
-        unsafe { GetArrayBufferLengthAndData(self.obj.as_ptr(), &mut data_len, &mut is_shared, &mut data_ptr) };
+        unsafe {
+            GetArrayBufferLengthAndData(
+                self.obj.as_ptr(),
+                &mut data_len,
+                &mut is_shared,
+                &mut data_ptr,
+            )
+        };
         if data_ptr.is_null() || data_len == 0 {
             return None;
         }
@@ -73,7 +80,14 @@ impl ArrayBuffer {
         let mut data_len: usize = 0;
         let mut is_shared: bool = false;
         let mut data_ptr: *mut u8 = ::std::ptr::null_mut();
-        unsafe { GetArrayBufferLengthAndData(self.obj.as_ptr(), &mut data_len, &mut is_shared, &mut data_ptr) };
+        unsafe {
+            GetArrayBufferLengthAndData(
+                self.obj.as_ptr(),
+                &mut data_len,
+                &mut is_shared,
+                &mut data_ptr,
+            )
+        };
         data_len
     }
 

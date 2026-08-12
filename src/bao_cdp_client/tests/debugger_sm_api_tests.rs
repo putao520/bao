@@ -215,13 +215,7 @@ fn sm_api_get_script_source_routes_to_backend() {
     // @trace REQ-CDP-003 [domain:Debugger]
     // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
     let b = MockServoBackend::new();
-    let r = dispatch_command(
-        &b,
-        "Debugger.getScriptSource",
-        json!({"scriptId":"1"}),
-        "1",
-    )
-    .unwrap();
+    let r = dispatch_command(&b, "Debugger.getScriptSource", json!({"scriptId":"1"}), "1").unwrap();
     assert!(r["scriptSource"].is_string());
     let log = b.call_log.lock().unwrap();
     assert!(log

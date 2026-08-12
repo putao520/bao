@@ -17,11 +17,11 @@ use ::std::ffi::CString;
 // Avoid `mozjs::jsapi::Result` shadowing `std::result::Result`.
 type StdResult<T, E> = ::core::result::Result<T, E>;
 
+use bun_core::ZBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, NullValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject};
-use bun_core::ZBox;
 
 /// Convert a JS value to a Rust string (null-safe).
 ///

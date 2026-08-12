@@ -177,7 +177,7 @@ fn test_canvas_noise_stays_in_range() {
     for x in 0..100u32 {
         for y in 0..100u32 {
             let (r, g, b, _) = cn.apply_to_pixel(0, 0, 0, 255, x, y);
-                                }
+        }
     }
 }
 
@@ -191,9 +191,14 @@ fn test_canvas_different_seeds_differ() {
         for y in 0..50u32 {
             let p1 = cn1.apply_to_pixel(200, 180, 160, 255, x, y);
             let p2 = cn2.apply_to_pixel(200, 180, 160, 255, x, y);
-            if p1 != p2 { differ = true; break; }
+            if p1 != p2 {
+                differ = true;
+                break;
+            }
         }
-        if differ { break; }
+        if differ {
+            break;
+        }
     }
     assert!(differ, "different seeds should produce different pixels");
 }
@@ -252,7 +257,9 @@ fn test_webgl_firefox() {
     let gl = WebGLProfile::firefox();
     assert_eq!(gl.vendor, "Mozilla");
     assert!(!gl.extensions.is_empty());
-    assert!(gl.extensions.contains(&"WEBGL_debug_renderer_info".to_string()));
+    assert!(gl
+        .extensions
+        .contains(&"WEBGL_debug_renderer_info".to_string()));
     assert_eq!(gl.max_texture_size, 16384);
 }
 
@@ -320,7 +327,11 @@ fn test_behavior_typing_delays() {
     let sim = BehaviorSimulator::new(42);
     let delays = sim.generate_typing_delays(10);
     // May have extra backspace events from typo correction
-    assert!(delays.len() >= 10, "Expected >= 10 delays, got {}", delays.len());
+    assert!(
+        delays.len() >= 10,
+        "Expected >= 10 delays, got {}",
+        delays.len()
+    );
     for d in &delays {
         assert!(*d > 0 && *d < 5000, "delay {} out of range", d);
     }

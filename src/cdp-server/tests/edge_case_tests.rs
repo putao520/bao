@@ -4,7 +4,7 @@
 // @trace TEST-CDS-016 [req:REQ-CDS-008] [level:unit]
 // Edge case tests: dispatch, config validation, handler registration, empty/null params.
 
-use cdp_server::{CdpError, DomainHandler, EventSender, DomainRegistry, ServerConfig, CdpMessage};
+use cdp_server::{CdpError, CdpMessage, DomainHandler, DomainRegistry, EventSender, ServerConfig};
 use serde_json::{json, Value};
 
 #[derive(Clone)]
@@ -19,9 +19,16 @@ struct EchoHandler {
 }
 
 impl DomainHandler for EchoHandler {
-    fn domain_name(&self) -> &'static str { self.domain }
+    fn domain_name(&self) -> &'static str {
+        self.domain
+    }
 
-    fn handle_command(&self, command: &str, params: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+    fn handle_command(
+        &self,
+        command: &str,
+        params: Value,
+        _: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         Ok(json!({ "command": command, "params": params }))
     }
 }
@@ -29,10 +36,20 @@ impl DomainHandler for EchoHandler {
 struct ErrorHandler;
 
 impl DomainHandler for ErrorHandler {
-    fn domain_name(&self) -> &'static str { "Error" }
+    fn domain_name(&self) -> &'static str {
+        "Error"
+    }
 
-    fn handle_command(&self, command: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
-        Err(CdpError { code: -32000, message: format!("command '{}' failed", command) })
+    fn handle_command(
+        &self,
+        command: &str,
+        _: Value,
+        _: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
+        Err(CdpError {
+            code: -32000,
+            message: format!("command '{}' failed", command),
+        })
     }
 }
 
@@ -41,9 +58,16 @@ struct MultiCmdHandler {
 }
 
 impl DomainHandler for MultiCmdHandler {
-    fn domain_name(&self) -> &'static str { self.domain }
+    fn domain_name(&self) -> &'static str {
+        self.domain
+    }
 
-    fn handle_command(&self, command: &str, params: Value, _: &dyn EventSender) -> Result<Value, CdpError> {
+    fn handle_command(
+        &self,
+        command: &str,
+        params: Value,
+        _: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
         match command {
             d if command.ends_with("enable") => Ok(json!({"state": "enabled"})),
             d if command.ends_with("disable") => Ok(json!({"state": "disabled"})),
@@ -51,7 +75,6 @@ impl DomainHandler for MultiCmdHandler {
         }
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // TestDispatch — enum dispatch for multi-handler tests
@@ -71,7 +94,12 @@ impl DomainHandler for TestDispatch {
             Self::Multi(h) => h.domain_name(),
         }
     }
-    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: serde_json::Value,
+        sender: &dyn EventSender,
+    ) -> Result<serde_json::Value, CdpError> {
         match self {
             Self::Echo(h) => h.handle_command(cmd, params, sender),
             Self::Error(h) => h.handle_command(cmd, params, sender),
@@ -134,7 +162,8 @@ fn test_cdp_message_null_params() {
 #[test]
 fn test_registry_dispatch_echo() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Echo(EchoHandler { domain: "Test" })).unwrap();
+    reg.register(TestDispatch::Echo(EchoHandler { domain: "Test" }))
+        .unwrap();
 
     let sender = CaptureEventSender;
     let result = reg.dispatch_command("Test.echo", json!({"key": "val"}), &sender);
@@ -165,9 +194,12 @@ fn test_registry_dispatch_handler_error() {
 #[test]
 fn test_registry_multiple_domains() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Echo(EchoHandler { domain: "Page" })).unwrap();
-    reg.register(TestDispatch::Echo(EchoHandler { domain: "Runtime" })).unwrap();
-    reg.register(TestDispatch::Echo(EchoHandler { domain: "DOM" })).unwrap();
+    reg.register(TestDispatch::Echo(EchoHandler { domain: "Page" }))
+        .unwrap();
+    reg.register(TestDispatch::Echo(EchoHandler { domain: "Runtime" }))
+        .unwrap();
+    reg.register(TestDispatch::Echo(EchoHandler { domain: "DOM" }))
+        .unwrap();
 
     assert!(reg.has_domain("Page"));
     assert!(reg.has_domain("Runtime"));
@@ -175,16 +207,25 @@ fn test_registry_multiple_domains() {
     assert!(!reg.has_domain("Network"));
 
     let sender = CaptureEventSender;
-    assert!(reg.dispatch_command("Page.reload", json!({}), &sender).is_some());
-    assert!(reg.dispatch_command("Runtime.evaluate", json!({}), &sender).is_some());
-    assert!(reg.dispatch_command("DOM.getDocument", json!({}), &sender).is_some());
-    assert!(reg.dispatch_command("Network.enable", json!({}), &sender).is_none());
+    assert!(reg
+        .dispatch_command("Page.reload", json!({}), &sender)
+        .is_some());
+    assert!(reg
+        .dispatch_command("Runtime.evaluate", json!({}), &sender)
+        .is_some());
+    assert!(reg
+        .dispatch_command("DOM.getDocument", json!({}), &sender)
+        .is_some());
+    assert!(reg
+        .dispatch_command("Network.enable", json!({}), &sender)
+        .is_none());
 }
 
 #[test]
 fn test_registry_duplicate_registration() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Echo(EchoHandler { domain: "Test" })).unwrap();
+    reg.register(TestDispatch::Echo(EchoHandler { domain: "Test" }))
+        .unwrap();
     let result = reg.register(TestDispatch::Echo(EchoHandler { domain: "Test" }));
     assert!(result.is_err());
 }
@@ -192,7 +233,8 @@ fn test_registry_duplicate_registration() {
 #[test]
 fn test_registry_multi_cmd_handler() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Multi(MultiCmdHandler { domain: "Page" })).unwrap();
+    reg.register(TestDispatch::Multi(MultiCmdHandler { domain: "Page" }))
+        .unwrap();
 
     let sender = CaptureEventSender;
     let enable = reg.dispatch_command("Page.enable", json!({}), &sender);
@@ -202,7 +244,8 @@ fn test_registry_multi_cmd_handler() {
         _ => panic!("expected ok from enable"),
     }
 
-    let navigate = reg.dispatch_command("Page.navigate", json!({"url": "http://test.com"}), &sender);
+    let navigate =
+        reg.dispatch_command("Page.navigate", json!({"url": "http://test.com"}), &sender);
     assert!(navigate.is_some());
 }
 
@@ -266,10 +309,7 @@ fn test_config_builder_high_port() {
 
 #[test]
 fn test_config_builder_partial() {
-    let config = ServerConfig::builder()
-        .port(8080)
-        .max_sessions(50)
-        .build();
+    let config = ServerConfig::builder().port(8080).max_sessions(50).build();
     assert_eq!(config.port, 8080);
     assert_eq!(config.max_sessions, 50);
     assert_eq!(config.host, "127.0.0.1"); // default
@@ -279,14 +319,20 @@ fn test_config_builder_partial() {
 
 #[test]
 fn test_cdp_error_fields() {
-    let err = CdpError { code: -32601, message: "method not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "method not found".into(),
+    };
     assert_eq!(err.code, -32601);
     assert_eq!(err.message, "method not found");
 }
 
 #[test]
 fn test_cdp_error_clone() {
-    let err = CdpError { code: -32000, message: "test".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "test".into(),
+    };
     let cloned = err.clone();
     assert_eq!(cloned.code, err.code);
     assert_eq!(cloned.message, err.message);

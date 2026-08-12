@@ -3,10 +3,10 @@
 // DomainRegistry dispatch roundtrip, TargetInfo, ServerConfig
 
 use cdp_server::{
-    CdpMessage, CdpError, CdpResponse, CdpEvent, SessionError,
-    DomainRegistry, ServerConfig, TargetInfo,
+    CdpError, CdpEvent, CdpMessage, CdpResponse, DomainRegistry, ServerConfig, SessionError,
+    TargetInfo,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 // ---- CdpMessage deserialization (JSON-RPC 2.0 parsing) ----
 
@@ -21,18 +21,16 @@ fn test_parse_valid_minimal_request() {
 
 #[test]
 fn test_parse_request_with_null_params() {
-    let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":2,"method":"Page.enable","params":null}"#,
-    ).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":2,"method":"Page.enable","params":null}"#).unwrap();
     assert_eq!(msg.id, Some(2));
     assert!(msg.params.is_none());
 }
 
 #[test]
 fn test_parse_request_with_empty_object_params() {
-    let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":3,"method":"Page.disable","params":{}}"#,
-    ).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":3,"method":"Page.disable","params":{}}"#).unwrap();
     assert_eq!(msg.params, Some(json!({})));
 }
 
@@ -68,17 +66,16 @@ fn test_parse_request_zero_id() {
 
 #[test]
 fn test_parse_request_max_i64_id() {
-    let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":9223372036854775807,"method":"Test.ping"}"#,
-    ).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":9223372036854775807,"method":"Test.ping"}"#).unwrap();
     assert_eq!(msg.id, Some(i64::MAX));
 }
 
 #[test]
 fn test_parse_notification_no_id() {
-    let msg: CdpMessage = serde_json::from_str(
-        r#"{"method":"Page.loadEventFired","params":{"timestamp":1234.5}}"#,
-    ).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"method":"Page.loadEventFired","params":{"timestamp":1234.5}}"#)
+            .unwrap();
     assert!(msg.id.is_none());
     assert_eq!(msg.method, "Page.loadEventFired");
 }
@@ -133,7 +130,8 @@ fn test_parse_unicode_method() {
 fn test_parse_emoji_params() {
     let msg: CdpMessage = serde_json::from_str(
         r#"{"id":1,"method":"Page.navigate","params":{"url":"https://example.com/🎉"}}"#,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(msg.params.unwrap()["url"], "https://example.com/🎉");
 }
 
@@ -176,7 +174,10 @@ fn test_serialize_error_response() {
     let resp = CdpResponse {
         id: Some(10),
         result: None,
-        error: Some(CdpError { code: -32601, message: "Method not found".into() }),
+        error: Some(CdpError {
+            code: -32601,
+            message: "Method not found".into(),
+        }),
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -191,7 +192,10 @@ fn test_serialize_response_null_id() {
     let resp = CdpResponse {
         id: None,
         result: None,
-        error: Some(CdpError { code: -32700, message: "Parse error".into() }),
+        error: Some(CdpError {
+            code: -32700,
+            message: "Parse error".into(),
+        }),
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -250,7 +254,10 @@ fn test_session_error_debug_variants() {
 
 #[test]
 fn test_cdp_error_serialization() {
-    let err = CdpError { code: -32600, message: "Invalid Request".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "Invalid Request".into(),
+    };
     let serialized = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&serialized).unwrap();
     assert_eq!(parsed["code"], -32600);
@@ -259,7 +266,10 @@ fn test_cdp_error_serialization() {
 
 #[test]
 fn test_cdp_error_empty_message() {
-    let err = CdpError { code: -1, message: String::new() };
+    let err = CdpError {
+        code: -1,
+        message: String::new(),
+    };
     let serialized = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&serialized).unwrap();
     assert_eq!(parsed["message"], "");
@@ -267,7 +277,10 @@ fn test_cdp_error_empty_message() {
 
 #[test]
 fn test_cdp_error_unicode_message() {
-    let err = CdpError { code: -32000, message: "错误：无效的参数 🚫".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "错误：无效的参数 🚫".into(),
+    };
     let serialized = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&serialized).unwrap();
     assert_eq!(parsed["message"], "错误：无效的参数 🚫");
@@ -290,7 +303,10 @@ fn test_target_info_roundtrip() {
     assert_eq!(parsed["type"], "page");
     assert_eq!(parsed["title"], "Test Page");
     assert_eq!(parsed["url"], "https://example.com");
-    assert_eq!(parsed["web_socket_debugger_url"], "ws://127.0.0.1:9222/devtools/page/target-123");
+    assert_eq!(
+        parsed["web_socket_debugger_url"],
+        "ws://127.0.0.1:9222/devtools/page/target-123"
+    );
 }
 
 #[test]
@@ -307,13 +323,26 @@ fn test_target_info_deserialize() {
 
 struct EchoDomain;
 impl cdp_server::DomainHandler for EchoDomain {
-    fn domain_name(&self) -> &'static str { "Echo" }
-    fn handle_command(&self, cmd: &str, params: Value, _: &dyn cdp_server::EventSender) -> Result<Value, CdpError> {
+    fn domain_name(&self) -> &'static str {
+        "Echo"
+    }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: Value,
+        _: &dyn cdp_server::EventSender,
+    ) -> Result<Value, CdpError> {
         match cmd {
             "Echo.ping" => Ok(json!({"pong": true})),
             "Echo.echo" => Ok(params),
-            "Echo.fail" => Err(CdpError { code: -32000, message: "deliberate failure".into() }),
-            _ => Err(CdpError { code: -32601, message: format!("'{}' wasn't found", cmd) }),
+            "Echo.fail" => Err(CdpError {
+                code: -32000,
+                message: "deliberate failure".into(),
+            }),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' wasn't found", cmd),
+            }),
         }
     }
 }
@@ -329,7 +358,8 @@ fn test_full_roundtrip_success() {
     reg.register(EchoDomain).unwrap();
     let sender = NopSender;
 
-    let msg: CdpMessage = serde_json::from_str(r#"{"id":100,"method":"Echo.ping","params":{}}"#).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":100,"method":"Echo.ping","params":{}}"#).unwrap();
     let result = reg.dispatch_command(&msg.method, msg.params.unwrap_or_default(), &sender);
     assert!(result.is_some());
     let val = result.unwrap().unwrap();
@@ -344,7 +374,8 @@ fn test_full_roundtrip_echo() {
 
     let msg: CdpMessage = serde_json::from_str(
         r#"{"id":101,"method":"Echo.echo","params":{"hello":"world","n":42}}"#,
-    ).unwrap();
+    )
+    .unwrap();
     let result = reg.dispatch_command(&msg.method, msg.params.unwrap_or_default(), &sender);
     let val = result.unwrap().unwrap();
     assert_eq!(val["hello"], "world");
@@ -357,7 +388,8 @@ fn test_full_roundtrip_handler_error() {
     reg.register(EchoDomain).unwrap();
     let sender = NopSender;
 
-    let msg: CdpMessage = serde_json::from_str(r#"{"id":200,"method":"Echo.fail","params":{}}"#).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":200,"method":"Echo.fail","params":{}}"#).unwrap();
     let result = reg.dispatch_command(&msg.method, msg.params.unwrap_or_default(), &sender);
     let err = result.unwrap().unwrap_err();
     assert_eq!(err.code, -32000);
@@ -369,7 +401,8 @@ fn test_full_roundtrip_unknown_method_in_domain() {
     reg.register(EchoDomain).unwrap();
     let sender = NopSender;
 
-    let msg: CdpMessage = serde_json::from_str(r#"{"id":201,"method":"Echo.nonexistent","params":{}}"#).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":201,"method":"Echo.nonexistent","params":{}}"#).unwrap();
     let result = reg.dispatch_command(&msg.method, msg.params.unwrap_or_default(), &sender);
     let err = result.unwrap().unwrap_err();
     assert_eq!(err.code, -32601);
@@ -380,7 +413,8 @@ fn test_full_roundtrip_unknown_domain() {
     let reg = DomainRegistry::<EchoDomain>::new();
     let sender = NopSender;
 
-    let msg: CdpMessage = serde_json::from_str(r#"{"id":300,"method":"Foo.bar","params":{}}"#).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":300,"method":"Foo.bar","params":{}}"#).unwrap();
     let result = reg.dispatch_command(&msg.method, msg.params.unwrap_or_default(), &sender);
     assert!(result.is_none());
 }
@@ -487,8 +521,7 @@ fn test_dispatch_after_multiple_errors_recovers() {
 fn test_parse_null_id_is_none_jsonrpc_semantics() {
     // JSON-RPC 2.0: explicit "id":null is a notification (no response expected)
     // and must deserialize to None, NOT Some(null-shaped value).
-    let msg: CdpMessage =
-        serde_json::from_str(r#"{"id":null,"method":"Page.reload"}"#).unwrap();
+    let msg: CdpMessage = serde_json::from_str(r#"{"id":null,"method":"Page.reload"}"#).unwrap();
     assert_eq!(msg.id, None);
 }
 
@@ -506,10 +539,9 @@ fn test_parse_float_id_fails_jsonrpc_strictness() {
 #[test]
 fn test_parse_params_array_preserved() {
     // REQ-CDS-001-C5: params may be an Array or Object (JSON-RPC §4.2).
-    let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":7,"method":"DOM.querySelectorAll","params":["div","span"]}"#,
-    )
-    .unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":7,"method":"DOM.querySelectorAll","params":["div","span"]}"#)
+            .unwrap();
     let params = msg.params.unwrap();
     assert!(params.is_array());
     assert_eq!(params.as_array().unwrap().len(), 2);
@@ -521,8 +553,7 @@ fn test_parse_params_array_preserved() {
 fn test_parse_params_scalar_preserved() {
     // Boundary: params is a bare scalar (technically allowed by JSON-RPC §4.2
     // "structured value"; serde_json::Value accepts it). Verify it survives.
-    let msg: CdpMessage =
-        serde_json::from_str(r#"{"id":8,"method":"X.y","params":42}"#).unwrap();
+    let msg: CdpMessage = serde_json::from_str(r#"{"id":8,"method":"X.y","params":42}"#).unwrap();
     assert_eq!(msg.params.unwrap(), 42);
 }
 
@@ -552,10 +583,9 @@ fn test_parse_extra_fields_ignored_not_rejected() {
 #[test]
 fn test_parse_jsonrpc_2_0_field_accepted() {
     // Strict JSON-RPC 2.0 envelope includes "jsonrpc":"2.0"; must parse.
-    let msg: CdpMessage = serde_json::from_str(
-        r#"{"jsonrpc":"2.0","id":1,"method":"Page.reload","params":{}}"#,
-    )
-    .unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"Page.reload","params":{}}"#)
+            .unwrap();
     assert_eq!(msg.id, Some(1));
 }
 
@@ -570,10 +600,7 @@ fn test_parse_min_i64_id() {
 #[test]
 fn test_parse_object_method_fails() {
     // type-safety: method must be a string.
-    assert!(serde_json::from_str::<CdpMessage>(
-        r#"{"id":1,"method":{"nested":true}}"#
-    )
-    .is_err());
+    assert!(serde_json::from_str::<CdpMessage>(r#"{"id":1,"method":{"nested":true}}"#).is_err());
 }
 
 #[test]
@@ -687,7 +714,10 @@ fn test_response_result_and_error_mutually_exclusive() {
     let err = CdpResponse {
         id: Some(1),
         result: None,
-        error: Some(CdpError { code: -1, message: "x".into() }),
+        error: Some(CdpError {
+            code: -1,
+            message: "x".into(),
+        }),
     };
     let raw = serde_json::to_string(&err).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
@@ -702,7 +732,10 @@ fn test_response_id_always_present_even_on_error() {
     let resp = CdpResponse {
         id: None,
         result: None,
-        error: Some(CdpError { code: -32600, message: "x".into() }),
+        error: Some(CdpError {
+            code: -32600,
+            message: "x".into(),
+        }),
     };
     let v: Value = serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
     // "id" key must be present (None serializes to null, not omitted).
@@ -752,7 +785,10 @@ fn test_dispatch_method_without_dot_extracts_full_as_domain() {
     reg.register(EchoDomain).unwrap();
     let sender = NopSender;
     let result = reg.dispatch_command("no_dot_here", json!({}), &sender);
-    assert!(result.is_none(), "method with no dot → domain lookup misses");
+    assert!(
+        result.is_none(),
+        "method with no dot → domain lookup misses"
+    );
 }
 
 #[test]
@@ -776,7 +812,10 @@ fn test_dispatch_method_with_multiple_dots_extracts_first_segment() {
     // Echo handler matches on full cmd; pass full string, domain extraction
     // must still select Echo domain.
     let result = reg.dispatch_command("Echo.ping.extra", json!({}), &sender);
-    assert!(result.is_some(), "domain extraction takes first dot segment");
+    assert!(
+        result.is_some(),
+        "domain extraction takes first dot segment"
+    );
 }
 
 #[test]
@@ -821,17 +860,29 @@ fn test_register_duplicate_domain_rejected_no_overwrite() {
     // MUST NOT overwrite the existing handler.
     struct Original;
     impl cdp_server::DomainHandler for Original {
-        fn domain_name(&self) -> &'static str { "Echo" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn cdp_server::EventSender)
-            -> Result<Value, CdpError> {
+        fn domain_name(&self) -> &'static str {
+            "Echo"
+        }
+        fn handle_command(
+            &self,
+            _: &str,
+            _: Value,
+            _: &dyn cdp_server::EventSender,
+        ) -> Result<Value, CdpError> {
             Ok(json!({"which": "original"}))
         }
     }
     struct Replacement;
     impl cdp_server::DomainHandler for Replacement {
-        fn domain_name(&self) -> &'static str { "Echo" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn cdp_server::EventSender)
-            -> Result<Value, CdpError> {
+        fn domain_name(&self) -> &'static str {
+            "Echo"
+        }
+        fn handle_command(
+            &self,
+            _: &str,
+            _: Value,
+            _: &dyn cdp_server::EventSender,
+        ) -> Result<Value, CdpError> {
             Ok(json!({"which": "replacement"}))
         }
     }
@@ -864,9 +915,15 @@ fn test_register_multiple_distinct_domains_all_dispatchable() {
     // rely on the single-domain registry but verify lookup misses correctly.
     reg.register(EchoDomain).unwrap();
     let sender = NopSender;
-    assert!(reg.dispatch_command("Echo.ping", json!({}), &sender).is_some());
-    assert!(reg.dispatch_command("Page.navigate", json!({}), &sender).is_none());
-    assert!(reg.dispatch_command("Runtime.evaluate", json!({}), &sender).is_none());
+    assert!(reg
+        .dispatch_command("Echo.ping", json!({}), &sender)
+        .is_some());
+    assert!(reg
+        .dispatch_command("Page.navigate", json!({}), &sender)
+        .is_none());
+    assert!(reg
+        .dispatch_command("Runtime.evaluate", json!({}), &sender)
+        .is_none());
 }
 
 #[test]
@@ -887,7 +944,8 @@ fn test_notification_dispatch_does_not_require_id() {
     let reg = DomainRegistry::<EchoDomain>::new();
     reg.register(EchoDomain).unwrap();
     let sender = NopSender;
-    let msg: CdpMessage = serde_json::from_str(r#"{"method":"Echo.echo","params":{"a":1}}"#).unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"method":"Echo.echo","params":{"a":1}}"#).unwrap();
     assert!(msg.id.is_none());
     let out = reg
         .dispatch_command(&msg.method, msg.params.unwrap(), &sender)
@@ -911,10 +969,8 @@ fn test_session_id_roundtrip_preserved_on_parse() {
 
 #[test]
 fn test_session_id_unicode_preserved() {
-    let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":1,"method":"X.y","session_id":"会话-🎉"}"#,
-    )
-    .unwrap();
+    let msg: CdpMessage =
+        serde_json::from_str(r#"{"id":1,"method":"X.y","session_id":"会话-🎉"}"#).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some("会话-🎉"));
 }
 
@@ -955,7 +1011,10 @@ fn test_error_response_omits_result_key_via_skip() {
     let resp = CdpResponse {
         id: Some(1),
         result: None,
-        error: Some(CdpError { code: -1, message: "e".into() }),
+        error: Some(CdpError {
+            code: -1,
+            message: "e".into(),
+        }),
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let obj: serde_json::Map<String, Value> = serde_json::from_str(&raw).unwrap();
@@ -1072,7 +1131,10 @@ fn test_server_config_protocol_version_default_is_1_3() {
 fn test_cdp_error_extreme_codes_serialize() {
     // Boundary: min/max i64 error codes survive serialization.
     for code in [i64::MIN, -1, 0, 1, i64::MAX] {
-        let err = CdpError { code, message: format!("e{code}") };
+        let err = CdpError {
+            code,
+            message: format!("e{code}"),
+        };
         let v: Value = serde_json::from_str(&serde_json::to_string(&err).unwrap()).unwrap();
         assert_eq!(v["code"].as_i64(), Some(code));
     }
@@ -1081,7 +1143,10 @@ fn test_cdp_error_extreme_codes_serialize() {
 #[test]
 fn test_cdp_error_clone_preserves_fields() {
     // CdpError must be Clone (used across session/error paths).
-    let err = CdpError { code: -32601, message: "m".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "m".into(),
+    };
     let cloned = err.clone();
     assert_eq!(err.code, cloned.code);
     assert_eq!(err.message, cloned.message);

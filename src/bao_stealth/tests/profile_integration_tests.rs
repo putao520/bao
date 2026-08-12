@@ -165,13 +165,19 @@ fn test_screen_dpr_positive() {
 #[test]
 fn test_webgl_firefox_has_debug_renderer() {
     let gl = WebGLProfile::firefox();
-    assert!(gl.extensions.iter().any(|e| e == "WEBGL_debug_renderer_info"));
+    assert!(gl
+        .extensions
+        .iter()
+        .any(|e| e == "WEBGL_debug_renderer_info"));
 }
 
 #[test]
 fn test_webgl_chrome_has_debug_renderer() {
     let gl = WebGLProfile::chrome();
-    assert!(gl.extensions.iter().any(|e| e == "WEBGL_debug_renderer_info"));
+    assert!(gl
+        .extensions
+        .iter()
+        .any(|e| e == "WEBGL_debug_renderer_info"));
 }
 
 #[test]
@@ -288,7 +294,11 @@ fn test_behavior_typing_delays_in_range() {
     let sim = BehaviorSimulator::new(42);
     let delays = sim.generate_typing_delays(50);
     // May have extra backspace events from typo correction
-    assert!(delays.len() >= 50, "Expected >= 50 delays, got {}", delays.len());
+    assert!(
+        delays.len() >= 50,
+        "Expected >= 50 delays, got {}",
+        delays.len()
+    );
     for d in &delays {
         assert!(*d > 0 && *d < 5000, "delay {} out of valid range", d);
     }
@@ -310,6 +320,16 @@ fn test_behavior_mouse_path_reaches_target() {
     let target_y = 300.0;
     let path = sim.generate_mouse_path(0.0, 0.0, target_x, target_y, 20);
     let (last_x, last_y) = *path.last().unwrap();
-    assert!((last_x - target_x).abs() < 10.0, "last x {} should be near target {}", last_x, target_x);
-    assert!((last_y - target_y).abs() < 10.0, "last y {} should be near target {}", last_y, target_y);
+    assert!(
+        (last_x - target_x).abs() < 10.0,
+        "last x {} should be near target {}",
+        last_x,
+        target_x
+    );
+    assert!(
+        (last_y - target_y).abs() < 10.0,
+        "last y {} should be near target {}",
+        last_y,
+        target_y
+    );
 }

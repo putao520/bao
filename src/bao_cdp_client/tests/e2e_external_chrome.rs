@@ -91,7 +91,10 @@ impl MiniCdpServer {
                 handler(stream);
             }
         });
-        Self { addr, handle: Some(handle) }
+        Self {
+            addr,
+            handle: Some(handle),
+        }
     }
 
     fn url(&self) -> String {
@@ -255,7 +258,11 @@ fn e2e_external_command_with_session_id_passes_through() {
 
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     let r = t
-        .send_command("Target.sendMessageToTarget", json!({"msg":"hi"}), Some("TARGET-99"))
+        .send_command(
+            "Target.sendMessageToTarget",
+            json!({"msg":"hi"}),
+            Some("TARGET-99"),
+        )
         .unwrap();
     // Assert
     assert_eq!(r["echoedSession"], "TARGET-99");
@@ -506,9 +513,7 @@ fn e2e_real_chrome_navigation_and_screenshot() {
                 continue;
             }
         };
-        let main_url = tree["frameTree"]["frame"]["url"]
-            .as_str()
-            .unwrap_or("");
+        let main_url = tree["frameTree"]["frame"]["url"].as_str().unwrap_or("");
         if main_url.contains("example.com") {
             ready = true;
             break;
@@ -536,11 +541,7 @@ fn e2e_real_chrome_navigation_and_screenshot() {
     assert!(!data.is_empty(), "screenshot base64 must be non-empty");
 
     // Cleanup — 关闭 target
-    let _ = t.send_command(
-        "Target.closeTarget",
-        json!({"targetId": target_id}),
-        None,
-    );
+    let _ = t.send_command("Target.closeTarget", json!({"targetId": target_id}), None);
 }
 
 #[test]
@@ -591,9 +592,5 @@ fn e2e_real_chrome_runtime_evaluate() {
     assert_eq!(r["result"]["value"], 2, "1+1 must equal 2, got: {r}");
 
     // Cleanup — 关闭 target
-    let _ = t.send_command(
-        "Target.closeTarget",
-        json!({"targetId": target_id}),
-        None,
-    );
+    let _ = t.send_command("Target.closeTarget", json!({"targetId": target_id}), None);
 }

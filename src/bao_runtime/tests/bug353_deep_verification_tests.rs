@@ -29,23 +29,29 @@ fn test_bug354_stop_does_not_crash() {
 
     // ── T1: Bun.serve + stop — BUG-354 pointer preservation ──
     eprintln!("== T1: serve+stop ==");
-    let t1 = eval_str(&mut ctx, r#"
+    let t1 = eval_str(
+        &mut ctx,
+        r#"
         var s = Bun.serve({ port: 0 });
         var portOk = typeof s.port === "number";
         var methodsOk = typeof s.stop === "function" && typeof s.ref === "function" && typeof s.unref === "function";
         s.stop();
         portOk && methodsOk ? "ok" : "fail"
-    "#);
+    "#,
+    );
     assert_eq!(t1, "ok", "T1 Bun.serve+stop: {}", t1);
 
     // ── T2: Second serve after stop — loop reuse ──
     eprintln!("== T2: second serve after stop ==");
-    let t2 = eval_str(&mut ctx, r#"
+    let t2 = eval_str(
+        &mut ctx,
+        r#"
         var s1 = Bun.serve({ port: 0 });
         s1.stop();
         var s2 = Bun.serve({ port: 0 });
         typeof s2 === "object" ? "ok" : "fail:" + typeof s2
-    "#);
+    "#,
+    );
     assert_eq!(t2, "ok", "T2 second serve after stop: {}", t2);
     // cleanup
     eprintln!("== T2 cleanup ==");
@@ -53,7 +59,9 @@ fn test_bug354_stop_does_not_crash() {
 
     // ── T3: 5 consecutive create+stop cycles ──
     eprintln!("== T3: 5 cycles ==");
-    let t3 = eval_str(&mut ctx, r#"
+    let t3 = eval_str(
+        &mut ctx,
+        r#"
         var count = 0;
         for (var i = 0; i < 5; i++) {
             var s = Bun.serve({ port: 0 });
@@ -61,24 +69,30 @@ fn test_bug354_stop_does_not_crash() {
             s.stop();
         }
         count === 5 ? "ok" : "fail:" + count
-    "#);
+    "#,
+    );
     assert_eq!(t3, "ok", "T3 5 create-stop cycles: {}", t3);
 
     // ── T4: Bun.serve with fetch handler + stop ──
     eprintln!("== T4: fetch handler + stop ==");
-    let t4 = eval_str(&mut ctx, r#"
+    let t4 = eval_str(
+        &mut ctx,
+        r#"
         var sv = Bun.serve({
             port: 0,
             fetch: function(req) { return new Response("hello"); }
         });
         sv.stop();
         "ok"
-    "#);
+    "#,
+    );
     assert_eq!(t4, "ok", "T4 fetch handler + stop: {}", t4);
 
     // ── T5: http.createServer + listen + close ──
     eprintln!("== T5: http lifecycle ==");
-    let t5 = eval_str(&mut ctx, r#"
+    let t5 = eval_str(
+        &mut ctx,
+        r#"
         var http = require("http");
         var srv = http.createServer(function(req, res) { res.end("ok"); });
         srv.listen(0);
@@ -86,18 +100,22 @@ fn test_bug354_stop_does_not_crash() {
         var addrOk = typeof addr === "object" && typeof addr.port === "number";
         srv.close();
         addrOk ? "ok" : "fail"
-    "#);
+    "#,
+    );
     assert_eq!(t5, "ok", "T5 http lifecycle: {}", t5);
 
     // ── T6: Multiple concurrent servers ──
     eprintln!("== T6: concurrent servers ==");
-    let t6 = eval_str(&mut ctx, r#"
+    let t6 = eval_str(
+        &mut ctx,
+        r#"
         var s1 = Bun.serve({ port: 0 });
         var s2 = Bun.serve({ port: 0 });
         var ok = typeof s1 === "object" && typeof s2 === "object";
         s1.stop(); s2.stop();
         ok ? "ok" : "fail"
-    "#);
+    "#,
+    );
     assert_eq!(t6, "ok", "T6 concurrent servers: {}", t6);
 
     // ── T7: BCE-005 — Bun.serve({port:0}) exposes actual bound port ──
@@ -107,12 +125,15 @@ fn test_bug354_stop_does_not_crash() {
     // captures the OS-assigned port into BunServeUserData.actual_port; the
     // JS server object exposes it via the port property.
     eprintln!("== T7: BCE-005 server.port > 0 ==");
-    let t7 = eval_str(&mut ctx, r#"
+    let t7 = eval_str(
+        &mut ctx,
+        r#"
         var s = Bun.serve({ port: 0 });
         var portVal = s.port;
         s.stop();
         (typeof portVal === "number" && portVal > 0) ? "ok:" + portVal : "fail:" + portVal
-    "#);
+    "#,
+    );
     assert!(
         t7.starts_with("ok:"),
         "T7 BCE-005 server.port > 0 after Bun.serve({{port:0}}): {}",
@@ -149,24 +170,30 @@ fn test_bce006_double_stop_idempotent() {
 
     // ── T8: Bun.serve().stop().stop() — no SIGSEGV ──
     eprintln!("== T8: Bun.serve double-stop ==");
-    let t8 = eval_str(&mut ctx, r#"
+    let t8 = eval_str(
+        &mut ctx,
+        r#"
         var s = Bun.serve({ port: 0 });
         s.stop();
         s.stop();
         "ok"
-    "#);
+    "#,
+    );
     assert_eq!(t8, "ok", "T8 Bun.serve double-stop: {}", t8);
 
     // ── T9: http.createServer().listen().close().close() — no SIGSEGV ──
     eprintln!("== T9: http.createServer double-close ==");
-    let t9 = eval_str(&mut ctx, r#"
+    let t9 = eval_str(
+        &mut ctx,
+        r#"
         var http = require("http");
         var srv = http.createServer(function(req, res) { res.end("ok"); });
         srv.listen(0);
         srv.close();
         srv.close();
         "ok"
-    "#);
+    "#,
+    );
     assert_eq!(t9, "ok", "T9 http.createServer double-close: {}", t9);
 
     // ── T10: Bun.serve with fetch handler + double-stop (finishTests pattern) ──
@@ -176,7 +203,9 @@ fn test_bce006_double_stop_idempotent() {
     // handler can be safely stopped twice (the test_http_depth.js finishTests
     // path that originally hit the use-after-free).
     eprintln!("== T10: Bun.serve with fetch + double-stop ==");
-    let t10 = eval_str(&mut ctx, r#"
+    let t10 = eval_str(
+        &mut ctx,
+        r#"
         var sv = Bun.serve({
             port: 0,
             fetch: function(req) { return new Response("hello"); }
@@ -184,12 +213,15 @@ fn test_bce006_double_stop_idempotent() {
         sv.stop();
         sv.stop();
         "ok"
-    "#);
+    "#,
+    );
     assert_eq!(t10, "ok", "T10 Bun.serve with fetch + double-stop: {}", t10);
 
     // ── T11: try/finally with stop (catch+finally double-stop) ──
     eprintln!("== T11: try/finally double-stop ==");
-    let t11 = eval_str(&mut ctx, r#"
+    let t11 = eval_str(
+        &mut ctx,
+        r#"
         var sv = Bun.serve({ port: 0, fetch: function(r) { return new Response("x"); } });
         var outcome = "ok";
         try {
@@ -200,7 +232,8 @@ fn test_bce006_double_stop_idempotent() {
             try { sv.stop(); } catch (e2) { outcome = "finally:" + e2; }
         }
         outcome
-    "#);
+    "#,
+    );
     assert_eq!(t11, "ok", "T11 try/finally double-stop: {}", t11);
 
     bun_runtime::shutdown_thread_sm();

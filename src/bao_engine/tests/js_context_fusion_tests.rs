@@ -114,7 +114,10 @@ fn js_context_fusion_node_and_web_api_coexist() {
     );
     // Assert
     assert_eq!(buf_len, "5", "Buffer.from('hello').length must be 5");
-    assert_eq!(buf_to_str, "hi", "Buffer.from([104, 105]).toString() must be 'hi'");
+    assert_eq!(
+        buf_to_str, "hi",
+        "Buffer.from([104, 105]).toString() must be 'hi'"
+    );
 
     // ── §5 process.env 可读写 — 真功能验证 ──────────────────────────────
     //
@@ -149,8 +152,7 @@ fn js_context_fusion_node_and_web_api_coexist() {
     );
     // Assert — [97, 98, 99] * 2 = [194, 196, 198]
     assert_eq!(
-        cross_api,
-        "[194,196,198]",
+        cross_api, "[194,196,198]",
         "Node Buffer → array → map → JSON pipeline must work in single context"
     );
 
@@ -203,13 +205,24 @@ fn js_context_fusion_node_and_web_api_coexist() {
         })"#,
     );
     // Assert — snapshot 必须可解析为 JSON 对象,且关键字段非 'undefined'
-    let v: serde_json::Value = serde_json::from_str(&snapshot)
-        .expect("typeof snapshot must be valid JSON");
+    let v: serde_json::Value =
+        serde_json::from_str(&snapshot).expect("typeof snapshot must be valid JSON");
     let obj = v.as_object().expect("snapshot must be a JSON object");
     for key in [
-        "require", "module", "exports", "Bun", "Bao",
-        "Buffer", "process", "globalThis", "console",
-        "TextEncoder", "TextDecoder", "URL", "setTimeout", "Promise",
+        "require",
+        "module",
+        "exports",
+        "Bun",
+        "Bao",
+        "Buffer",
+        "process",
+        "globalThis",
+        "console",
+        "TextEncoder",
+        "TextDecoder",
+        "URL",
+        "setTimeout",
+        "Promise",
     ] {
         let ty = obj.get(key).and_then(|x| x.as_str()).unwrap_or("<missing>");
         assert_ne!(

@@ -4,13 +4,12 @@
 // CdpMessage parse edge cases, serialize_response/serialize_event,
 // InternalBackend send_command, CdpResponse/CdpError construction.
 
-use bao_cdp::{CdpMessage, CdpResponse, CdpError, CdpEvent};
+use bao_cdp::{CdpError, CdpEvent, CdpMessage, CdpResponse};
 
 const TID: &str = "test-target";
-use bao_cdp::{parse_message, handle_command, serialize_response, serialize_event};
+use bao_cdp::{handle_command, parse_message, serialize_event, serialize_response};
 
 use serde_json::json;
-
 
 // ---- CdpMessage parse edge cases ----
 
@@ -35,7 +34,8 @@ fn test_parse_minimal_message() {
 fn test_parse_with_session_id() {
     // serde deserializes snake_case field names, so "sessionId" won't match
     // unless there's a #[serde(rename)]. Test with snake_case.
-    let msg = parse_message(r#"{"id":5,"method":"Runtime.evaluate","session_id":"sess1"}"#).unwrap();
+    let msg =
+        parse_message(r#"{"id":5,"method":"Runtime.evaluate","session_id":"sess1"}"#).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some("sess1"));
 }
 
@@ -97,7 +97,11 @@ fn test_parse_params_array() {
 
 #[test]
 fn test_serialize_response_ok() {
-    let resp = CdpResponse { id: Some(1), result: Some(json!({"status": "ok"})), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(json!({"status": "ok"})),
+        error: None,
+    };
     let s = serialize_response(&resp);
     assert!(s.contains(r#""id":1"#));
     assert!(s.contains(r#""status":"ok""#));
@@ -106,7 +110,14 @@ fn test_serialize_response_ok() {
 
 #[test]
 fn test_serialize_response_error() {
-    let resp = CdpResponse { id: Some(2), result: None, error: Some(CdpError { code: -32601, message: "not found".into() }) };
+    let resp = CdpResponse {
+        id: Some(2),
+        result: None,
+        error: Some(CdpError {
+            code: -32601,
+            message: "not found".into(),
+        }),
+    };
     let s = serialize_response(&resp);
     assert!(s.contains(r#""id":2"#));
     assert!(s.contains("-32601"));
@@ -116,14 +127,22 @@ fn test_serialize_response_error() {
 
 #[test]
 fn test_serialize_response_empty_result() {
-    let resp = CdpResponse { id: Some(3), result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: Some(3),
+        result: Some(json!({})),
+        error: None,
+    };
     let s = serialize_response(&resp);
     assert!(s.contains(r#""id":3"#));
 }
 
 #[test]
 fn test_serialize_response_null_result() {
-    let resp = CdpResponse { id: Some(4), result: Some(json!(null)), error: None };
+    let resp = CdpResponse {
+        id: Some(4),
+        result: Some(json!(null)),
+        error: None,
+    };
     let s = serialize_response(&resp);
     assert!(s.contains(r#""id":4"#));
 }
@@ -132,7 +151,10 @@ fn test_serialize_response_null_result() {
 
 #[test]
 fn test_serialize_event_with_params() {
-    let ev = CdpEvent { method: "Page.loadEventFired".into(), params: Some(json!({"timestamp": 123})) };
+    let ev = CdpEvent {
+        method: "Page.loadEventFired".into(),
+        params: Some(json!({"timestamp": 123})),
+    };
     let s = serialize_event(&ev);
     assert!(s.contains("Page.loadEventFired"));
     assert!(s.contains("123"));
@@ -140,7 +162,10 @@ fn test_serialize_event_with_params() {
 
 #[test]
 fn test_serialize_event_no_params() {
-    let ev = CdpEvent { method: "Runtime.executionContextCreated".into(), params: None };
+    let ev = CdpEvent {
+        method: "Runtime.executionContextCreated".into(),
+        params: None,
+    };
     let s = serialize_event(&ev);
     assert!(s.contains("Runtime.executionContextCreated"));
     assert!(!s.contains("params"));
@@ -150,7 +175,10 @@ fn test_serialize_event_no_params() {
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CdpError { code: -32601, message: "test".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "test".into(),
+    };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32601"));
     assert!(debug.contains("test"));
@@ -158,7 +186,10 @@ fn test_cdp_error_debug() {
 
 #[test]
 fn test_cdp_error_serialize() {
-    let err = CdpError { code: -32700, message: "parse error".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "parse error".into(),
+    };
     let s = serde_json::to_string(&err).unwrap();
     assert!(s.contains("-32700"));
     assert!(s.contains("parse error"));
@@ -167,12 +198,22 @@ fn test_cdp_error_serialize() {
 // ---- handle_command all domains without bridge ----
 
 fn handle(method: &str) -> CdpResponse {
-    let msg = CdpMessage { id: Some(42), method: method.into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(42),
+        method: method.into(),
+        params: None,
+        session_id: None,
+    };
     handle_command(msg, "t1", &None, None)
 }
 
 fn handle_params(method: &str, params: serde_json::Value) -> CdpResponse {
-    let msg = CdpMessage { id: Some(42), method: method.into(), params: Some(params.clone()), session_id: None };
+    let msg = CdpMessage {
+        id: Some(42),
+        method: method.into(),
+        params: Some(params.clone()),
+        session_id: None,
+    };
     handle_command(msg, "t1", &Some(params), None)
 }
 
@@ -348,7 +389,9 @@ fn test_page_add_script_no_bridge() {
 
 #[test]
 fn test_page_remove_script() {
-    assert!(handle("Page.removeScriptToEvaluateOnNewDocument").result.is_some());
+    assert!(handle("Page.removeScriptToEvaluateOnNewDocument")
+        .result
+        .is_some());
 }
 
 #[test]
@@ -492,17 +535,25 @@ fn test_dom_remove_node() {
 #[test]
 fn test_dom_get_outer_html_no_bridge() {
     let resp = handle("DOM.getOuterHTML");
-    assert_eq!(resp.result.unwrap()["outerHTML"], "<html><body></body></html>");
+    assert_eq!(
+        resp.result.unwrap()["outerHTML"],
+        "<html><body></body></html>"
+    );
 }
 
 #[test]
 fn test_dom_resolve_node() {
-    assert_eq!(handle("DOM.resolveNode").result.unwrap()["object"]["type"], "node");
+    assert_eq!(
+        handle("DOM.resolveNode").result.unwrap()["object"]["type"],
+        "node"
+    );
 }
 
 #[test]
 fn test_dom_push_nodes() {
-    assert!(handle("DOM.pushNodesByBackendIdsToFrontend").result.is_some());
+    assert!(handle("DOM.pushNodesByBackendIdsToFrontend")
+        .result
+        .is_some());
 }
 
 #[test]
@@ -546,7 +597,9 @@ fn test_network_set_request_interception() {
 
 #[test]
 fn test_network_continue_intercepted() {
-    assert!(handle("Network.continueInterceptedRequest").result.is_some());
+    assert!(handle("Network.continueInterceptedRequest")
+        .result
+        .is_some());
 }
 
 #[test]
@@ -578,12 +631,16 @@ fn test_network_unknown() {
 
 #[test]
 fn test_emulation_set_metrics_no_bridge() {
-    assert!(handle("Emulation.setDeviceMetricsOverride").result.is_some());
+    assert!(handle("Emulation.setDeviceMetricsOverride")
+        .result
+        .is_some());
 }
 
 #[test]
 fn test_emulation_clear_metrics() {
-    assert!(handle("Emulation.clearDeviceMetricsOverride").result.is_some());
+    assert!(handle("Emulation.clearDeviceMetricsOverride")
+        .result
+        .is_some());
 }
 
 #[test]
@@ -593,17 +650,23 @@ fn test_emulation_set_ua_no_bridge() {
 
 #[test]
 fn test_emulation_set_touch() {
-    assert!(handle("Emulation.setTouchEmulationEnabled").result.is_some());
+    assert!(handle("Emulation.setTouchEmulationEnabled")
+        .result
+        .is_some());
 }
 
 #[test]
 fn test_emulation_set_script_disabled() {
-    assert!(handle("Emulation.setScriptExecutionDisabled").result.is_some());
+    assert!(handle("Emulation.setScriptExecutionDisabled")
+        .result
+        .is_some());
 }
 
 #[test]
 fn test_emulation_set_focus() {
-    assert!(handle("Emulation.setFocusEmulationEnabled").result.is_some());
+    assert!(handle("Emulation.setFocusEmulationEnabled")
+        .result
+        .is_some());
 }
 
 #[test]
@@ -613,7 +676,9 @@ fn test_emulation_set_cpu_throttle() {
 
 #[test]
 fn test_emulation_set_default_bg() {
-    assert!(handle("Emulation.setDefaultBackgroundColorOverride").result.is_some());
+    assert!(handle("Emulation.setDefaultBackgroundColorOverride")
+        .result
+        .is_some());
 }
 
 #[test]
@@ -683,7 +748,9 @@ fn test_overlay_set_inspect_mode() {
 
 #[test]
 fn test_overlay_set_paused_debugger() {
-    assert!(handle("Overlay.setPausedInDebuggerMessage").result.is_some());
+    assert!(handle("Overlay.setPausedInDebuggerMessage")
+        .result
+        .is_some());
 }
 
 #[test]
@@ -815,7 +882,10 @@ fn test_fetch_continue_request() {
 
 #[test]
 fn test_fetch_fail_request() {
-    let resp = handle_params("Fetch.failRequest", json!({"requestId": "r2", "reason": "Aborted"}));
+    let resp = handle_params(
+        "Fetch.failRequest",
+        json!({"requestId": "r2", "reason": "Aborted"}),
+    );
     let val = resp.result.unwrap();
     assert_eq!(val["requestId"], "r2");
     assert_eq!(val["failed"], true);
@@ -824,7 +894,10 @@ fn test_fetch_fail_request() {
 
 #[test]
 fn test_fetch_fulfill_request() {
-    let resp = handle_params("Fetch.fulfillRequest", json!({"requestId": "r3", "responseCode": 200, "body": "hi"}));
+    let resp = handle_params(
+        "Fetch.fulfillRequest",
+        json!({"requestId": "r3", "responseCode": 200, "body": "hi"}),
+    );
     let val = resp.result.unwrap();
     assert_eq!(val["fulfilled"], true);
     assert_eq!(val["bodyLength"], 2);
@@ -898,14 +971,24 @@ fn test_css_unknown() {
 
 #[test]
 fn test_response_id_propagated() {
-    let msg = CdpMessage { id: Some(12345), method: "Page.enable".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(12345),
+        method: "Page.enable".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t1", &None, None);
     assert_eq!(resp.id, Some(12345));
 }
 
 #[test]
 fn test_response_id_negative() {
-    let msg = CdpMessage { id: Some(-999), method: "Runtime.enable".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(-999),
+        method: "Runtime.enable".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t1", &None, None);
     assert_eq!(resp.id, Some(-999));
 }

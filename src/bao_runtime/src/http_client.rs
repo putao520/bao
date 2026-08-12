@@ -82,13 +82,12 @@ pub fn http_request(
         headers_buf,
         response_buffer,
         body_slice,
-        None,  // http_proxy
-        None,  // hostname
+        None, // http_proxy
+        None, // hostname
         FetchRedirect::Follow,
     );
 
-    let result = async_http.send_sync()
-        .map_err(|e| format!("{:?}", e))?;
+    let result = async_http.send_sync().map_err(|e| format!("{:?}", e))?;
 
     // Read body from response_buffer via zero-copy take (avoids clone of potentially MB-sized buffer)
     let body_vec = unsafe { std::mem::take(&mut (*response_buffer).list) };
@@ -100,15 +99,18 @@ pub fn http_request(
 
     // Extract fields from picohttp::Response into owned HttpResponse
     let status_code = result.status_code;
-    let status_text = CompactString::new(
-        ::std::str::from_utf8(result.status).unwrap_or("")
-    );
+    let status_text = CompactString::new(::std::str::from_utf8(result.status).unwrap_or(""));
 
-    let headers: SmallVec<[(CompactString, CompactString); 8]> = result.headers.list.iter().map(|h| {
-        let name = CompactString::new(::std::str::from_utf8(h.name()).unwrap_or(""));
-        let value = CompactString::new(::std::str::from_utf8(h.value()).unwrap_or(""));
-        (name, value)
-    }).collect();
+    let headers: SmallVec<[(CompactString, CompactString); 8]> = result
+        .headers
+        .list
+        .iter()
+        .map(|h| {
+            let name = CompactString::new(::std::str::from_utf8(h.name()).unwrap_or(""));
+            let value = CompactString::new(::std::str::from_utf8(h.value()).unwrap_or(""));
+            (name, value)
+        })
+        .collect();
 
     ::std::result::Result::Ok(HttpResponse {
         status_code,
@@ -225,7 +227,9 @@ mod tests {
 
     #[test]
     fn test_http_response_status_codes_range() {
-        for code in [200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 500, 502, 503] {
+        for code in [
+            200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 500, 502, 503,
+        ] {
             let resp = HttpResponse {
                 status_code: code,
                 status_text: CompactString::new(""),
@@ -252,7 +256,10 @@ mod tests {
         let resp = HttpResponse {
             status_code: 200,
             status_text: CompactString::new("OK"),
-            headers: smallvec::smallvec![("content-type".into(), "text/html; charset=utf-8".into())],
+            headers: smallvec::smallvec![(
+                "content-type".into(),
+                "text/html; charset=utf-8".into()
+            )],
             body: Bytes::new(),
         };
         assert!(resp.headers[0].1.contains("charset=utf-8"));
@@ -327,7 +334,10 @@ mod tests {
         let resp = HttpResponse {
             status_code: 200,
             status_text: CompactString::new("OK"),
-            headers: smallvec::smallvec![("content-type".into(), "text/plain; charset=utf-8".into())],
+            headers: smallvec::smallvec![(
+                "content-type".into(),
+                "text/plain; charset=utf-8".into()
+            )],
             body: Bytes::from(unicode_body.clone()),
         };
         assert_eq!(&resp.body[..], &unicode_body[..]);
@@ -395,7 +405,11 @@ mod tests {
         let ptr = original.as_ptr();
         let b = Bytes::from(original);
         // Bytes::from(Vec) reuses the same allocation — pointer is identical
-        assert_eq!(b.as_ptr(), ptr, "Bytes::from(Vec) must reuse the same allocation (zero-copy)");
+        assert_eq!(
+            b.as_ptr(),
+            ptr,
+            "Bytes::from(Vec) must reuse the same allocation (zero-copy)"
+        );
         assert_eq!(&b[..], &[0xDE, 0xAD, 0xBE, 0xEF]);
     }
 }

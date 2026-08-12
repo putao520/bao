@@ -85,16 +85,23 @@ fn test_06_eval_simple_expressions(ctx: &mut JsContext) {
     assert_eq!(val.as_number().unwrap(), 3.0);
 
     // String concatenation
-    let val = ctx.eval("'hello' + ' ' + 'world'", "string.js").expect("string concat should succeed");
+    let val = ctx
+        .eval("'hello' + ' ' + 'world'", "string.js")
+        .expect("string concat should succeed");
     assert!(val.is_string(), "concat should produce a string");
     assert_eq!(val.as_string().unwrap(), "hello world");
 
     // Boolean — SM returns bool as boolean JSVal → JsValue::Bool
     let val = ctx.eval("true", "bool.js").expect("true should succeed");
-    assert!(val.as_bool().unwrap_or(false) || val.is_number(), "true should be bool or number");
+    assert!(
+        val.as_bool().unwrap_or(false) || val.is_number(),
+        "true should be bool or number"
+    );
 
     // Undefined
-    let val = ctx.eval("undefined", "undef.js").expect("undefined should succeed");
+    let val = ctx
+        .eval("undefined", "undef.js")
+        .expect("undefined should succeed");
     assert!(val.is_undefined());
 
     // Null
@@ -103,21 +110,28 @@ fn test_06_eval_simple_expressions(ctx: &mut JsContext) {
 }
 
 fn test_07_eval_syntax_error(ctx: &mut JsContext) {
-    let err = ctx.eval("function(", "syntax_err.js").expect_err("syntax error should be Err");
+    let err = ctx
+        .eval("function(", "syntax_err.js")
+        .expect_err("syntax error should be Err");
     assert!(!err.message.is_empty(), "error message should not be empty");
     assert_eq!(err.filename, "syntax_err.js");
 }
 
 fn test_07_eval_reference_error(ctx: &mut JsContext) {
-    let err = ctx.eval("nonexistentVariable", "ref_err.js").expect_err("reference error should be Err");
+    let err = ctx
+        .eval("nonexistentVariable", "ref_err.js")
+        .expect_err("reference error should be Err");
     assert!(!err.message.is_empty());
 }
 
 fn test_07_eval_throw_error(ctx: &mut JsContext) {
-    let err = ctx.eval("throw new Error('test error')", "throw.js").expect_err("throw should be Err");
+    let err = ctx
+        .eval("throw new Error('test error')", "throw.js")
+        .expect_err("throw should be Err");
     assert!(
         err.message.contains("test error"),
-        "message should contain 'test error', got: {}", err.message
+        "message should contain 'test error', got: {}",
+        err.message
     );
 }
 
@@ -136,7 +150,10 @@ fn test_08_global_setup_hook(ctx: &mut JsContext) {
 
     let result = ctx.eval("1", "setup_test.js");
     assert!(result.is_ok());
-    assert!(CALLED.load(Ordering::SeqCst), "global_setup should have been called");
+    assert!(
+        CALLED.load(Ordering::SeqCst),
+        "global_setup should have been called"
+    );
 }
 
 fn test_09_post_eval_hook(ctx: &mut JsContext) {
@@ -152,7 +169,10 @@ fn test_09_post_eval_hook(ctx: &mut JsContext) {
 
     let result = ctx.eval("42", "hook_test.js");
     assert!(result.is_ok());
-    assert!(HOOK_CALLED.load(Ordering::SeqCst), "post_eval_hook should have been called");
+    assert!(
+        HOOK_CALLED.load(Ordering::SeqCst),
+        "post_eval_hook should have been called"
+    );
 
     // Verify hook is called per eval
     static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -165,7 +185,11 @@ fn test_09_post_eval_hook(ctx: &mut JsContext) {
     ctx.eval("1", "count1.js").unwrap();
     ctx.eval("2", "count2.js").unwrap();
     ctx.eval("3", "count3.js").unwrap();
-    assert_eq!(CALL_COUNT.load(Ordering::SeqCst), 3, "hook should fire once per eval");
+    assert_eq!(
+        CALL_COUNT.load(Ordering::SeqCst),
+        3,
+        "hook should fire once per eval"
+    );
 }
 
 fn test_10_cx_mut(ctx: &mut JsContext) {
@@ -188,7 +212,10 @@ fn test_extra_eval_isolation(ctx: &mut JsContext) {
     // Each eval creates a new global — variables do NOT persist across evals
     let result = ctx.eval("typeof x === 'undefined'", "state2.js").unwrap();
     // x should be undefined in the new global
-    assert!(result.as_bool().unwrap_or(false), "each eval should be isolated (new global)");
+    assert!(
+        result.as_bool().unwrap_or(false),
+        "each eval should be isolated (new global)"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -82,9 +82,8 @@ pub fn build_iife(body: &str) -> String {
 ///
 /// @trace REQ-BAO-API-005 [method:Runtime.evaluate]
 pub fn build_iife_with_args(body: &str, args: &[Value]) -> Result<String, BridgeError> {
-    let args_json = serde_json::to_string(args).map_err(|e| {
-        BridgeError::InvalidParams(format!("args serialization failed: {e}"))
-    })?;
+    let args_json = serde_json::to_string(args)
+        .map_err(|e| BridgeError::InvalidParams(format!("args serialization failed: {e}")))?;
     Ok(format!(
         "(function(){{ var __args={args_json}; return (function(){{ {body} }}).apply(null, __args); }})()"
     ))
@@ -108,10 +107,13 @@ pub fn build_iife_with_args(body: &str, args: &[Value]) -> Result<String, Bridge
 ///
 /// @trace REQ-BAO-API-005 [domain:DOM]
 #[allow(dead_code)]
-pub fn build_iife_element(body: &str, backend_node_id: i64, extra_args: &[Value]) -> Result<String, BridgeError> {
-    let extra_json = serde_json::to_string(extra_args).map_err(|e| {
-        BridgeError::InvalidParams(format!("extra args serialization failed: {e}"))
-    })?;
+pub fn build_iife_element(
+    body: &str,
+    backend_node_id: i64,
+    extra_args: &[Value],
+) -> Result<String, BridgeError> {
+    let extra_json = serde_json::to_string(extra_args)
+        .map_err(|e| BridgeError::InvalidParams(format!("extra args serialization failed: {e}")))?;
     Ok(format!(
         "(function(){{ var __args={extra_json}; return (function(){{ var el=document.querySelector('[data-bao-backend-node-id=\"{backend_node_id}\"]'); if(!el){{throw new Error('element not found: {backend_node_id}');}} {body} }}).apply(null, __args); }})()"
     ))
@@ -245,21 +247,14 @@ mod tests {
 
     #[test]
     fn object_args_are_serialized_correctly() {
-        let s = build_iife_with_args(
-            "return __args[0].x;",
-            &[json!({"x": 1, "y": "a"})],
-        )
-        .unwrap();
+        let s = build_iife_with_args("return __args[0].x;", &[json!({"x": 1, "y": "a"})]).unwrap();
         assert!(s.contains("var __args=[{\"x\":1,\"y\":\"a\"}];"));
     }
 
     #[test]
     fn array_args_are_serialized_correctly() {
-        let s = build_iife_with_args(
-            "return __args[0].length;",
-            &[json!(["a", "b", "c"])],
-        )
-        .unwrap();
+        let s =
+            build_iife_with_args("return __args[0].length;", &[json!(["a", "b", "c"])]).unwrap();
         assert!(s.contains("var __args=[[\"a\",\"b\",\"c\"]]"));
     }
 

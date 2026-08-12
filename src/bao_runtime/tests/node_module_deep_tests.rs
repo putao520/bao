@@ -19,7 +19,9 @@ fn test_node_module_deep() {
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
-    let results = eval_string(&mut ctx, r#"
+    let results = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         function check(label, fn) {
             try { var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }
@@ -184,7 +186,8 @@ fn test_node_module_deep() {
         check("Module_wrap_type", function() { return typeof M.wrap === 'function' || typeof M.wrap === 'undefined'; });
 
         results.join("|")
-    "#);
+    "#,
+    );
 
     let mut pass = 0;
     let mut fail = 0;

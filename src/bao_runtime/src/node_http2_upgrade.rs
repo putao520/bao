@@ -1,10 +1,10 @@
 // @trace REQ-ENG-006 [api:node:_http2_upgrade]
 // HTTP/2 upgrade handler — creates a TLS-like socket wrapper for H2 upgrade
-use bun_core::ZBox;
 use ::std::ptr::NonNull;
+use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue};
+use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 

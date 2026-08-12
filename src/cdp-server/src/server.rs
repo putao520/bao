@@ -44,7 +44,10 @@ impl CdpServer {
 
     /// Create CdpServer with a pre-built registry (e.g. DomainRegistry<DomainDispatch>
     /// for enum dispatch). Any `Arc<R>` where `R: RegistryDispatch` is accepted.
-    pub fn with_registry<R: crate::RegistryDispatch + 'static>(config: ServerConfig, registry: Arc<R>) -> Self {
+    pub fn with_registry<R: crate::RegistryDispatch + 'static>(
+        config: ServerConfig,
+        registry: Arc<R>,
+    ) -> Self {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let broadcaster = Arc::new(EventBroadcaster::new(Arc::clone(&sessions)));
         CdpServer {
@@ -94,7 +97,11 @@ impl CdpServer {
             .set_nonblocking(true)
             .map_err(|e| format!("nonblocking: {}", e))?;
 
-        log::info!("CDP listening on ws://{}:{}", self.config.host, self.config.port);
+        log::info!(
+            "CDP listening on ws://{}:{}",
+            self.config.host,
+            self.config.port
+        );
 
         loop {
             // Drain session events (not used currently, but placeholder for future command channel).
@@ -119,7 +126,10 @@ impl CdpServer {
                         Err(_) => continue,
                     };
                     let event_sender: Box<dyn EventSender> = self.broadcaster.sender();
-                    if session.process(&self.registry, event_sender.as_ref()).is_err() {
+                    if session
+                        .process(&self.registry, event_sender.as_ref())
+                        .is_err()
+                    {
                         to_remove.push(id.clone());
                         let domains = session.enabled_domains();
                         let sid = session.session_id().to_string();
@@ -254,7 +264,9 @@ impl CdpServer {
         }
 
         // GET /json/version and /json/list
-        if request.starts_with("GET /json/version") || (request.starts_with("GET /json") && !request.starts_with("GET /json/")) {
+        if request.starts_with("GET /json/version")
+            || (request.starts_with("GET /json") && !request.starts_with("GET /json/"))
+        {
             let targets = self.get_target_list();
             transport::handle_http_request(&mut stream, request, &self.config, &targets);
             return;
@@ -262,13 +274,14 @@ impl CdpServer {
 
         // WebSocket upgrade.
         if request.contains("Upgrade: websocket") || request.contains("upgrade: websocket") {
-            let (target_id, is_browser) = if let Some(rest) = request.strip_prefix("GET /devtools/page/") {
-                (rest.split(' ').next().unwrap_or("").to_string(), false)
-            } else if request.starts_with("GET /devtools/browser") {
-                ("__browser__".to_string(), true)
-            } else {
-                return;
-            };
+            let (target_id, is_browser) =
+                if let Some(rest) = request.strip_prefix("GET /devtools/page/") {
+                    (rest.split(' ').next().unwrap_or("").to_string(), false)
+                } else if request.starts_with("GET /devtools/browser") {
+                    ("__browser__".to_string(), true)
+                } else {
+                    return;
+                };
 
             let replay = ReplayStream::new(stream, buf[..n].to_vec());
             let ws = match accept(replay) {
@@ -290,7 +303,10 @@ impl CdpServer {
                 sessions.insert(session_id, Arc::new(Mutex::new(session)));
             }
         } else {
-            transport::respond_raw(&mut stream, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+            transport::respond_raw(
+                &mut stream,
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+            );
         }
     }
 
@@ -309,7 +325,9 @@ impl CdpServer {
 
 fn generate_session_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let ns = d.as_nanos() as u64;
     format!("{:016x}", ns ^ (ns >> 17) ^ (ns >> 35))
 }
@@ -413,7 +431,11 @@ mod tests {
         server.set_console_receiver(rx);
         assert!(server.console_rx.is_some());
         // Send a Log message through the channel
-        tx.send(ConsoleMessage::Log { level: "info".into(), text: "hello".into() }).unwrap();
+        tx.send(ConsoleMessage::Log {
+            level: "info".into(),
+            text: "hello".into(),
+        })
+        .unwrap();
         let msg = server.console_rx.as_ref().unwrap().try_recv().unwrap();
         match msg {
             ConsoleMessage::Log { level, text } => {
@@ -429,9 +451,21 @@ mod tests {
         let mut server = CdpServer::new(ServerConfig::default());
         let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         server.set_console_receiver(rx);
-        tx.send(ConsoleMessage::Log { level: "info".into(), text: "msg1".into() }).unwrap();
-        tx.send(ConsoleMessage::Log { level: "error".into(), text: "msg2".into() }).unwrap();
-        tx.send(ConsoleMessage::Log { level: "warning".into(), text: "msg3".into() }).unwrap();
+        tx.send(ConsoleMessage::Log {
+            level: "info".into(),
+            text: "msg1".into(),
+        })
+        .unwrap();
+        tx.send(ConsoleMessage::Log {
+            level: "error".into(),
+            text: "msg2".into(),
+        })
+        .unwrap();
+        tx.send(ConsoleMessage::Log {
+            level: "warning".into(),
+            text: "msg3".into(),
+        })
+        .unwrap();
         let rx_ref = server.console_rx.as_ref().unwrap();
         let mut messages = Vec::new();
         while let Ok(msg) = rx_ref.try_recv() {
@@ -445,7 +479,10 @@ mod tests {
         let mut server = CdpServer::new(ServerConfig::default());
         let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         server.set_console_receiver(rx);
-        tx.send(ConsoleMessage::Event(BaoEvent::PageLoadEventFired { timestamp: 12345.0 })).unwrap();
+        tx.send(ConsoleMessage::Event(BaoEvent::PageLoadEventFired {
+            timestamp: 12345.0,
+        }))
+        .unwrap();
         let msg = server.console_rx.as_ref().unwrap().try_recv().unwrap();
         match msg {
             ConsoleMessage::Event(BaoEvent::PageLoadEventFired { timestamp }) => {
@@ -465,7 +502,8 @@ mod tests {
             url: "test.js".into(),
             start_line: 0,
             end_line: 10,
-        })).unwrap();
+        }))
+        .unwrap();
         let msg = server.console_rx.as_ref().unwrap().try_recv().unwrap();
         match msg {
             ConsoleMessage::Event(BaoEvent::DebuggerScriptParsed { script_id, url, .. }) => {
@@ -485,7 +523,8 @@ mod tests {
             call_frames: serde_json::json!([]),
             reason: "breakpoint".into(),
             hit_breakpoints: serde_json::json!([]),
-        })).unwrap();
+        }))
+        .unwrap();
         let msg = server.console_rx.as_ref().unwrap().try_recv().unwrap();
         match msg {
             ConsoleMessage::Event(BaoEvent::DebuggerPaused { reason, .. }) => {
@@ -507,7 +546,8 @@ mod tests {
             line: 10,
             column: 5,
             stack_trace: serde_json::Value::Null,
-        })).unwrap();
+        }))
+        .unwrap();
         let msg = server.console_rx.as_ref().unwrap().try_recv().unwrap();
         match msg {
             ConsoleMessage::Event(BaoEvent::RuntimeExceptionThrown { text, .. }) => {
@@ -524,34 +564,55 @@ mod tests {
         server.set_console_receiver(rx);
         let events = vec![
             ConsoleMessage::Event(BaoEvent::FetchRequestPaused {
-                request_id: "r1".into(), url: "http://test.com".into(),
-                method: "GET".into(), headers: serde_json::json!({}),
-                post_data: None, resource_type: "Document".into(),
+                request_id: "r1".into(),
+                url: "http://test.com".into(),
+                method: "GET".into(),
+                headers: serde_json::json!({}),
+                post_data: None,
+                resource_type: "Document".into(),
             }),
             ConsoleMessage::Event(BaoEvent::NetworkRequestWillBeSent {
-                request_id: "req1".into(), url: "http://test.com".into(),
-                method: "GET".into(), headers: serde_json::json!({}),
-                request: serde_json::json!({}), timestamp: 0.0, resource_type: "Document".into(),
+                request_id: "req1".into(),
+                url: "http://test.com".into(),
+                method: "GET".into(),
+                headers: serde_json::json!({}),
+                request: serde_json::json!({}),
+                timestamp: 0.0,
+                resource_type: "Document".into(),
             }),
             ConsoleMessage::Event(BaoEvent::NetworkResponseReceived {
-                request_id: "req2".into(), url: "http://test.com".into(),
-                status: 200, status_text: "OK".into(), headers: serde_json::json!({}),
-                timestamp: 0.0, resource_type: "Document".into(),
+                request_id: "req2".into(),
+                url: "http://test.com".into(),
+                status: 200,
+                status_text: "OK".into(),
+                headers: serde_json::json!({}),
+                timestamp: 0.0,
+                resource_type: "Document".into(),
             }),
             ConsoleMessage::Event(BaoEvent::NetworkLoadingFailed {
-                request_id: "req3".into(), resource_type: "XHR".into(),
-                error_text: "Network error".into(), timestamp: 0.0,
+                request_id: "req3".into(),
+                resource_type: "XHR".into(),
+                error_text: "Network error".into(),
+                timestamp: 0.0,
             }),
             ConsoleMessage::Event(BaoEvent::DebuggerScriptParsed {
-                script_id: "1".into(), url: "test.js".into(), start_line: 0, end_line: 10,
+                script_id: "1".into(),
+                url: "test.js".into(),
+                start_line: 0,
+                end_line: 10,
             }),
             ConsoleMessage::Event(BaoEvent::DebuggerPaused {
-                call_frames: serde_json::json!([]), reason: "other".into(),
+                call_frames: serde_json::json!([]),
+                reason: "other".into(),
                 hit_breakpoints: serde_json::json!([]),
             }),
             ConsoleMessage::Event(BaoEvent::RuntimeExceptionThrown {
-                timestamp: 0.0, text: String::new(), url: String::new(),
-                line: 0, column: 0, stack_trace: serde_json::Value::Null,
+                timestamp: 0.0,
+                text: String::new(),
+                url: String::new(),
+                line: 0,
+                column: 0,
+                stack_trace: serde_json::Value::Null,
             }),
             ConsoleMessage::Event(BaoEvent::PageLoadEventFired { timestamp: 0.0 }),
         ];

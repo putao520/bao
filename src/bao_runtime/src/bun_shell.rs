@@ -27,7 +27,7 @@ use bun_shell_parser::parse::{self as shell_parse, Lexer, Parser};
 // ──────────────────── bun_spawn reuse ────────────────────
 // @trace REQ-BAO-API-018 [reuse:bun_spawn] — spawn/run replaces std::process::Command
 
-use bun_spawn::{run, RunOptions, Term};
+use bun_spawn::{RunOptions, Term, run};
 
 // ──────────────────── ID counters ────────────────────
 
@@ -87,8 +87,7 @@ impl<'a> ShellInterpreter<'a> {
 
         // Lex: Lexer requires &mut [BunString] for string escaping refs.
         // Allocate an empty slice from the bump allocator to satisfy the lifetime.
-        let string_refs: &mut [bun_core::String] =
-            bump.alloc_slice_fill_default(0);
+        let string_refs: &mut [bun_core::String] = bump.alloc_slice_fill_default(0);
         let mut lexer = Lexer::<{ shell_parse::StringEncoding::Ascii }>::new(
             &bump,
             src,
@@ -115,7 +114,7 @@ impl<'a> ShellInterpreter<'a> {
                     stdout: Vec::new(),
                     stderr: format!("Bun.Shell: parse error: {:?}", e).into_bytes(),
                     exit_code: 1,
-                }
+                };
             }
         };
 
@@ -129,7 +128,7 @@ impl<'a> ShellInterpreter<'a> {
                     stdout: Vec::new(),
                     stderr: format!("Bun.Shell: parse error: {:?}", e).into_bytes(),
                     exit_code: 1,
-                }
+                };
             }
         };
 
@@ -736,11 +735,7 @@ impl ShellOutput {
 /// ShellOutput.text() — returns stdout as string.
 /// @trace REQ-BAO-API-018 [api:Bun.Shell/$ ShellOutput.text]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn shell_output_text(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn shell_output_text(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, 0);
     let this = args.thisv();
     if !this.is_object() {
@@ -767,11 +762,7 @@ unsafe extern "C" fn shell_output_text(
 /// ShellOutput.json() — parses stdout as JSON.
 /// @trace REQ-BAO-API-018 [api:Bun.Shell/$ ShellOutput.json]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn shell_output_json(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn shell_output_json(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, 0);
     let this = args.thisv();
     if !this.is_object() {
@@ -803,11 +794,7 @@ unsafe extern "C" fn shell_output_json(
                 _phantom_0: ::std::marker::PhantomData,
                 ptr: &mut parsed,
             };
-            let _ = mozjs_sys::jsapi::JS_ParseJSON1(
-                cx,
-                str_root.handle().into(),
-                parsed_h,
-            );
+            let _ = mozjs_sys::jsapi::JS_ParseJSON1(cx, str_root.handle().into(), parsed_h);
             args.rval().set(parsed);
             return true;
         }
@@ -819,11 +806,7 @@ unsafe extern "C" fn shell_output_json(
 /// ShellOutput.lines() — splits stdout by newline into JS array.
 /// @trace REQ-BAO-API-018 [api:Bun.Shell/$ ShellOutput.lines]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn shell_output_lines(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn shell_output_lines(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, 0);
     let this = args.thisv();
     if !this.is_object() {
@@ -871,11 +854,7 @@ unsafe extern "C" fn shell_output_lines(
 /// ShellOutput.bytes() — returns stdout as Uint8Array.
 /// @trace REQ-BAO-API-018 [api:Bun.Shell/$ ShellOutput.bytes]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn shell_output_bytes(
-    cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn shell_output_bytes(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, 0);
     let this = args.thisv();
     if !this.is_object() {
@@ -928,11 +907,7 @@ unsafe extern "C" fn shell_output_bytes(
 /// new Bun.Shell() constructor callback.
 /// @trace REQ-BAO-API-018 [api:Bun.Shell constructor]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn shell_constructor(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn shell_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -1006,11 +981,7 @@ unsafe extern "C" fn shell_constructor(
 /// shell.run(command, callback) → void (async, callback receives ShellOutput).
 /// @trace REQ-BAO-API-018 [api:Bun.Shell.run]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn shell_run(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn shell_run(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         JS_ReportErrorUTF8(cx, c"Shell.run() requires a command string".as_ptr());
@@ -1121,17 +1092,16 @@ unsafe extern "C" fn shell_run(
 /// shell.setenv(key, value) — set environment variable override for this shell.
 /// @trace REQ-BAO-API-018 [api:Bun.Shell.setenv]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn shell_setenv(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn shell_setenv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
     if argc < 2 {
-        JS_ReportErrorUTF8(cx, c"Shell.setenv() requires key and value arguments".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"Shell.setenv() requires key and value arguments".as_ptr(),
+        );
         return false;
     }
 
@@ -1170,11 +1140,7 @@ unsafe extern "C" fn shell_setenv(
 /// shell.cd(path) — set working directory override for this shell.
 /// @trace REQ-BAO-API-018 [api:Bun.Shell.cd]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn shell_cd(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn shell_cd(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -1220,24 +1186,26 @@ unsafe extern "C" fn shell_cd(
 ///
 /// @trace REQ-BAO-API-018 [api:Bun.$ tagged template]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn bun_dollar(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn bun_dollar(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, c"Bun.$ requires at least a template strings array".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"Bun.$ requires at least a template strings array".as_ptr(),
+        );
         return false;
     }
 
     // First argument is the template strings array (from tagged template literal)
     let strings_val = *args.get(0).ptr;
     if !strings_val.is_object() {
-        JS_ReportErrorUTF8(cx, c"Bun.$ first argument must be a template strings array".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"Bun.$ first argument must be a template strings array".as_ptr(),
+        );
         return false;
     }
 
@@ -1312,21 +1280,27 @@ pub unsafe fn install_bun_shell(
     if !shell_ctor.is_null() {
         let shell_proto = JS_GetFunctionObject(shell_ctor);
         rooted!(&in(cx) let shell_ctor_obj = shell_proto);
-        w2::JS_DefineProperty3(cx, bun_obj, c"Shell".as_ptr(), shell_ctor_obj.handle(), JSPROP_ENUMERATE as u32);
+        w2::JS_DefineProperty3(
+            cx,
+            bun_obj,
+            c"Shell".as_ptr(),
+            shell_ctor_obj.handle(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     // Install Bun.$ as tagged template function
-    let dollar_fn = JS_NewFunction(
-        cx.raw_cx(),
-        Some(bun_dollar),
-        0,
-        0,
-        c"$".as_ptr(),
-    );
+    let dollar_fn = JS_NewFunction(cx.raw_cx(), Some(bun_dollar), 0, 0, c"$".as_ptr());
     if !dollar_fn.is_null() {
         let dollar_obj = JS_GetFunctionObject(dollar_fn);
         rooted!(&in(cx) let dollar_fn_obj = dollar_obj);
-        w2::JS_DefineProperty3(cx, bun_obj, c"$".as_ptr(), dollar_fn_obj.handle(), JSPROP_ENUMERATE as u32);
+        w2::JS_DefineProperty3(
+            cx,
+            bun_obj,
+            c"$".as_ptr(),
+            dollar_fn_obj.handle(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 }
 

@@ -27,7 +27,10 @@ fn test_bao_config_validate_ok() {
 
 #[test]
 fn test_bao_config_validate_max_pages_zero() {
-    let config = BaoConfig { max_pages: 0, ..Default::default() };
+    let config = BaoConfig {
+        max_pages: 0,
+        ..Default::default()
+    };
     let err = config.validate().unwrap_err();
     assert!(err.contains("max_pages"));
     assert!(err.contains("0"));
@@ -35,13 +38,19 @@ fn test_bao_config_validate_max_pages_zero() {
 
 #[test]
 fn test_bao_config_validate_max_pages_one() {
-    let config = BaoConfig { max_pages: 1, ..Default::default() };
+    let config = BaoConfig {
+        max_pages: 1,
+        ..Default::default()
+    };
     assert!(config.validate().is_ok());
 }
 
 #[test]
 fn test_bao_config_validate_viewport_width_too_small() {
-    let config = BaoConfig { default_viewport_width: 799, ..Default::default() };
+    let config = BaoConfig {
+        default_viewport_width: 799,
+        ..Default::default()
+    };
     let err = config.validate().unwrap_err();
     assert!(err.contains("viewport_width"));
     assert!(err.contains("799"));
@@ -49,20 +58,29 @@ fn test_bao_config_validate_viewport_width_too_small() {
 
 #[test]
 fn test_bao_config_validate_viewport_width_800() {
-    let config = BaoConfig { default_viewport_width: 800, ..Default::default() };
+    let config = BaoConfig {
+        default_viewport_width: 800,
+        ..Default::default()
+    };
     assert!(config.validate().is_ok());
 }
 
 #[test]
 fn test_bao_config_validate_viewport_height_too_small() {
-    let config = BaoConfig { default_viewport_height: 599, ..Default::default() };
+    let config = BaoConfig {
+        default_viewport_height: 599,
+        ..Default::default()
+    };
     let err = config.validate().unwrap_err();
     assert!(err.contains("viewport_height"));
 }
 
 #[test]
 fn test_bao_config_validate_viewport_height_600() {
-    let config = BaoConfig { default_viewport_height: 600, ..Default::default() };
+    let config = BaoConfig {
+        default_viewport_height: 600,
+        ..Default::default()
+    };
     assert!(config.validate().is_ok());
 }
 
@@ -141,7 +159,10 @@ fn test_page_config_clone() {
 
 #[test]
 fn test_page_config_debug() {
-    let config = PageConfig { url: Some("test".into()), ..Default::default() };
+    let config = PageConfig {
+        url: Some("test".into()),
+        ..Default::default()
+    };
     let debug = format!("{:?}", config);
     assert!(debug.contains("url"));
 }
@@ -187,7 +208,10 @@ fn test_browser_config_clone() {
 
 #[test]
 fn test_browser_config_debug() {
-    let config = BrowserConfig { cdp_port: 9999, ..Default::default() };
+    let config = BrowserConfig {
+        cdp_port: 9999,
+        ..Default::default()
+    };
     let debug = format!("{:?}", config);
     assert!(debug.contains("9999"));
 }

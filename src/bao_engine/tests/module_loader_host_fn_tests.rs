@@ -223,9 +223,18 @@ fn test_module_loader_host_fn_all() {
     // 1.1 Basic ESM: export const
     {
         let mut cx = ctx.cx();
-        let result =
-            ModuleLoader::eval_module(&mut cx, "export const x = 42;", "test_basic.mjs", None, None);
-        assert!(result.is_ok(), "ESM 'export const' should evaluate: {:?}", result);
+        let result = ModuleLoader::eval_module(
+            &mut cx,
+            "export const x = 42;",
+            "test_basic.mjs",
+            None,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "ESM 'export const' should evaluate: {:?}",
+            result
+        );
     }
 
     // 1.2 ESM: export with string
@@ -238,7 +247,11 @@ fn test_module_loader_host_fn_all() {
             None,
             None,
         );
-        assert!(result.is_ok(), "ESM string export should evaluate: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "ESM string export should evaluate: {:?}",
+            result
+        );
     }
 
     // 1.3 ESM: export function
@@ -251,15 +264,28 @@ fn test_module_loader_host_fn_all() {
             None,
             None,
         );
-        assert!(result.is_ok(), "ESM function export should evaluate: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "ESM function export should evaluate: {:?}",
+            result
+        );
     }
 
     // 1.4 ESM: export default
     {
         let mut cx = ctx.cx();
-        let result =
-            ModuleLoader::eval_module(&mut cx, "export default 42;", "test_default.mjs", None, None);
-        assert!(result.is_ok(), "ESM default export should evaluate: {:?}", result);
+        let result = ModuleLoader::eval_module(
+            &mut cx,
+            "export default 42;",
+            "test_default.mjs",
+            None,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "ESM default export should evaluate: {:?}",
+            result
+        );
     }
 
     // 1.5 ESM: named export block
@@ -272,7 +298,11 @@ fn test_module_loader_host_fn_all() {
             None,
             None,
         );
-        assert!(result.is_ok(), "ESM named export should evaluate: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "ESM named export should evaluate: {:?}",
+            result
+        );
     }
 
     // 1.6 ESM: re-export
@@ -306,8 +336,7 @@ fn test_module_loader_host_fn_all() {
     // 1.8 ESM: empty module
     {
         let mut cx = ctx.cx();
-        let result =
-            ModuleLoader::eval_module(&mut cx, "", "test_empty.mjs", None, None);
+        let result = ModuleLoader::eval_module(&mut cx, "", "test_empty.mjs", None, None);
         assert!(result.is_ok(), "Empty module should evaluate: {:?}", result);
     }
 
@@ -338,7 +367,11 @@ fn test_module_loader_host_fn_all() {
             None,
             None,
         );
-        assert!(result.is_ok(), "ESM with object/function should evaluate: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "ESM with object/function should evaluate: {:?}",
+            result
+        );
     }
 
     // =====================================================================
@@ -349,7 +382,10 @@ fn test_module_loader_host_fn_all() {
     {
         let _dir = TempDir::new("resolve_js");
         _dir.create_file("dep.js", "export const val = 10;");
-        let main_path = _dir.create_file("main.mjs", "import { val } from './dep.js';\nexport { val };");
+        let main_path = _dir.create_file(
+            "main.mjs",
+            "import { val } from './dep.js';\nexport { val };",
+        );
         let content = fs::read_to_string(&main_path).unwrap();
         let mut cx = ctx.cx();
         let result =
@@ -365,7 +401,10 @@ fn test_module_loader_host_fn_all() {
     {
         let _dir = TempDir::new("resolve_mjs");
         _dir.create_file("dep.mjs", "export const val = 20;");
-        let main_path = _dir.create_file("main.mjs", "import { val } from './dep.mjs';\nexport { val };");
+        let main_path = _dir.create_file(
+            "main.mjs",
+            "import { val } from './dep.mjs';\nexport { val };",
+        );
         let content = fs::read_to_string(&main_path).unwrap();
         let mut cx = ctx.cx();
         let result =
@@ -432,10 +471,8 @@ fn test_module_loader_host_fn_all() {
     {
         let _dir = TempDir::new("resolve_nm");
         _dir.create_file("node_modules/helper/index.js", "export const val = 60;");
-        let main_path = _dir.create_file(
-            "main.mjs",
-            "import { val } from 'helper';\nexport { val };",
-        );
+        let main_path =
+            _dir.create_file("main.mjs", "import { val } from 'helper';\nexport { val };");
         let content = fs::read_to_string(&main_path).unwrap();
         let mut cx = ctx.cx();
         let result =
@@ -451,8 +488,10 @@ fn test_module_loader_host_fn_all() {
     {
         let _dir = TempDir::new("cache_test");
         _dir.create_file("dep.mjs", "export const val = 100;");
-        let main_path =
-            _dir.create_file("main.mjs", "import { val } from './dep.mjs';\nexport { val };");
+        let main_path = _dir.create_file(
+            "main.mjs",
+            "import { val } from './dep.mjs';\nexport { val };",
+        );
         let content = fs::read_to_string(&main_path).unwrap();
         let path_str = main_path.to_str().unwrap().to_owned();
 
@@ -460,7 +499,11 @@ fn test_module_loader_host_fn_all() {
             let mut cx = ctx.cx();
             ModuleLoader::eval_module(&mut cx, &content, &path_str, None, None)
         };
-        assert!(result1.is_ok(), "First module eval should succeed: {:?}", result1);
+        assert!(
+            result1.is_ok(),
+            "First module eval should succeed: {:?}",
+            result1
+        );
 
         let result2 = {
             let mut cx = ctx.cx();
@@ -492,7 +535,11 @@ fn test_module_loader_host_fn_all() {
             let mut cx = ctx.cx();
             ModuleLoader::eval_module(&mut cx, &content_a, a_path.to_str().unwrap(), None, None)
         };
-        assert!(result_a.is_ok(), "Module A should load shared dep: {:?}", result_a);
+        assert!(
+            result_a.is_ok(),
+            "Module A should load shared dep: {:?}",
+            result_a
+        );
 
         let result_b = {
             let mut cx = ctx.cx();
@@ -515,18 +562,17 @@ fn test_module_loader_host_fn_all() {
         let mut cx = ctx.cx();
         let result =
             ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
-        assert!(
-            result.is_ok(),
-            "ESM ./ import should resolve: {:?}",
-            result
-        );
+        assert!(result.is_ok(), "ESM ./ import should resolve: {:?}", result);
     }
 
     // 2.10 Static resolve: import with ../ prefix (parent directory traversal)
     {
         let _dir = TempDir::new("resolve_parent");
         _dir.create_file("sub/dep.mjs", "export const val = 80;");
-        _dir.create_file("sub/main.mjs", "import { val } from './dep.mjs';\nexport { val };");
+        _dir.create_file(
+            "sub/main.mjs",
+            "import { val } from './dep.mjs';\nexport { val };",
+        );
         let main_path = _dir.absolute_path("sub/main.mjs");
         let content = fs::read_to_string(&main_path).unwrap();
         let mut cx = ctx.cx();
@@ -543,14 +589,8 @@ fn test_module_loader_host_fn_all() {
     {
         let _dir = TempDir::new("resolve_nm_nested");
         _dir.create_file("node_modules/pkg/src/lib.js", "export const val = 300;");
-        _dir.create_file(
-            "node_modules/pkg/package.json",
-            r#"{"main": "src/lib.js"}"#,
-        );
-        let main_path = _dir.create_file(
-            "main.mjs",
-            "import { val } from 'pkg';\nexport { val };",
-        );
+        _dir.create_file("node_modules/pkg/package.json", r#"{"main": "src/lib.js"}"#);
+        let main_path = _dir.create_file("main.mjs", "import { val } from 'pkg';\nexport { val };");
         let content = fs::read_to_string(&main_path).unwrap();
         let mut cx = ctx.cx();
         let result =
@@ -574,10 +614,7 @@ fn test_module_loader_host_fn_all() {
         let result =
             ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         // This should fail since the package doesn't exist
-        assert!(
-            result.is_err(),
-            "Unresolvable bare import should error"
-        );
+        assert!(result.is_err(), "Unresolvable bare import should error");
     }
 
     // =====================================================================
@@ -596,7 +633,10 @@ fn test_module_loader_host_fn_all() {
         eval_number(&mut ctx, "identityInt(2147483647)"),
         2147483647.0
     );
-    assert_eq!(eval_number(&mut ctx, "identityInt(-2147483648)"), -2147483648.0);
+    assert_eq!(
+        eval_number(&mut ctx, "identityInt(-2147483648)"),
+        -2147483648.0
+    );
 
     // 3.2 f64 extraction
     assert!((eval_number(&mut ctx, "identityF64(3.14)") - 3.14).abs() < 1e-10);
@@ -611,15 +651,9 @@ fn test_module_loader_host_fn_all() {
     assert!(!eval_bool(&mut ctx, "identityBool(1)"));
 
     // 3.4 String extraction
-    assert_eq!(
-        eval_string(&mut ctx, r#"identityString("hello")"#),
-        "hello"
-    );
+    assert_eq!(eval_string(&mut ctx, r#"identityString("hello")"#), "hello");
     assert_eq!(eval_string(&mut ctx, r#"identityString("")"#), "");
-    assert_eq!(
-        eval_string(&mut ctx, r#"identityString("a b c")"#),
-        "a b c"
-    );
+    assert_eq!(eval_string(&mut ctx, r#"identityString("a b c")"#), "a b c");
 
     // 3.5 Optional string: present string
     assert_eq!(
@@ -644,28 +678,19 @@ fn test_module_loader_host_fn_all() {
 
     // 3.7 get_value / identityValue roundtrip
     assert_eq!(eval_number(&mut ctx, "identityValue(42)"), 42.0);
-    assert_eq!(
-        eval_number(&mut ctx, "identityValue(3.14)"),
-        3.14
-    );
+    assert_eq!(eval_number(&mut ctx, "identityValue(3.14)"), 3.14);
     assert!(eval_bool(&mut ctx, "identityValue(true)"));
     assert!(!eval_bool(&mut ctx, "identityValue(false)"));
 
     // 3.8 get_value: identity with string
-    assert_eq!(
-        eval_string(&mut ctx, r#"identityValue("hello")"#),
-        "hello"
-    );
+    assert_eq!(eval_string(&mut ctx, r#"identityValue("hello")"#), "hello");
 
     // =====================================================================
     // MODULE 4 — host_fn: ArgReader type-mismatch error path
     // =====================================================================
 
     // 4.1 String passed where int expected → returns 0 (default)
-    assert_eq!(
-        eval_number(&mut ctx, r#"stringToInt("not a number")"#),
-        0.0
-    );
+    assert_eq!(eval_number(&mut ctx, r#"stringToInt("not a number")"#), 0.0);
 
     // 4.2 Number passed where bool expected → returns false (default)
     assert!(!eval_bool(&mut ctx, "numberToBool(42)"));
@@ -770,23 +795,20 @@ fn test_module_loader_host_fn_all() {
     }
 
     // 6.5 Host function within an expression
-    assert_eq!(
-        eval_number(&mut ctx, "identityInt(doubleInt(10))"),
-        20.0
-    );
+    assert_eq!(eval_number(&mut ctx, "identityInt(doubleInt(10))"), 20.0);
 
     // 6.6 Host function with mixed types
     assert_eq!(
-        eval_string(
-            &mut ctx,
-            r#""result: " + identityString("ok")"#
-        ),
+        eval_string(&mut ctx, r#""result: " + identityString("ok")"#),
         "result: ok"
     );
 
     // 6.7 Multiple host functions in one expression
     assert_eq!(
-        eval_number(&mut ctx, "identityInt(10) + identityInt(20) + identityInt(30)"),
+        eval_number(
+            &mut ctx,
+            "identityInt(10) + identityInt(20) + identityInt(30)"
+        ),
         60.0
     );
 

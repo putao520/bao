@@ -17,9 +17,15 @@ fn test_tls_chrome_120_has_cipher_suites() {
 fn test_tls_chrome_latest_has_cipher_suites() {
     let fp = TlsFingerprint::chrome_latest();
     let suites = fp.tls12_suites();
-    assert!(!suites.is_empty(), "chrome_latest should have TLS 1.2 suites");
+    assert!(
+        !suites.is_empty(),
+        "chrome_latest should have TLS 1.2 suites"
+    );
     let tls13 = fp.tls13_suites();
-    assert!(!tls13.is_empty(), "chrome_latest should have TLS 1.3 suites");
+    assert!(
+        !tls13.is_empty(),
+        "chrome_latest should have TLS 1.3 suites"
+    );
 }
 
 #[test]
@@ -48,7 +54,7 @@ fn test_tls_all_variants_different_ja3() {
     ];
     let ja3s: Vec<String> = variants.iter().map(|v| v.compute_ja3()).collect();
     for i in 0..ja3s.len() {
-        for j in (i+1)..ja3s.len() {
+        for j in (i + 1)..ja3s.len() {
             // Not all must differ (chrome variants might share JA3), but verify non-empty
             assert!(!ja3s[i].is_empty(), "variant {} should produce JA3", i);
             assert!(!ja3s[j].is_empty(), "variant {} should produce JA3", j);
@@ -58,7 +64,11 @@ fn test_tls_all_variants_different_ja3() {
 
 #[test]
 fn test_tls_alpn_all_variants() {
-    for fp in &[TlsFingerprint::firefox(), TlsFingerprint::chrome(), TlsFingerprint::chrome_latest()] {
+    for fp in &[
+        TlsFingerprint::firefox(),
+        TlsFingerprint::chrome(),
+        TlsFingerprint::chrome_latest(),
+    ] {
         let alpn = fp.alpn_strings();
         assert!(!alpn.is_empty(), "should have ALPN strings");
     }
@@ -150,14 +160,21 @@ fn test_audio_noise_many_samples() {
     }
     let avg = sum / 1000.0;
     // Average should be close to 0.5 with small noise
-    assert!((avg - 0.5).abs() < 0.1, "average should be close to input, got {}", avg);
+    assert!(
+        (avg - 0.5).abs() < 0.1,
+        "average should be close to input, got {}",
+        avg
+    );
 }
 
 #[test]
 fn test_behavior_mouse_path_single_step() {
     let bs = BehaviorSimulator::new(42);
     let path = bs.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 1);
-    assert!(!path.is_empty(), "single step should produce at least one point");
+    assert!(
+        !path.is_empty(),
+        "single step should produce at least one point"
+    );
 }
 
 #[test]
@@ -175,7 +192,12 @@ fn test_behavior_scroll_deltas_sum_to_total() {
     let steps = 20;
     let deltas = bs.generate_scroll_deltas(total, steps);
     let sum: f64 = deltas.iter().sum();
-    assert!((sum - total).abs() < total * 0.5, "deltas should approximate total, got {} vs {}", sum, total);
+    assert!(
+        (sum - total).abs() < total * 0.5,
+        "deltas should approximate total, got {} vs {}",
+        sum,
+        total
+    );
 }
 
 #[test]
@@ -198,6 +220,9 @@ fn test_tls_is_tls13_suite_recognized() {
     let fp = TlsFingerprint::chrome_latest();
     let tls13 = fp.tls13_suites();
     if !tls13.is_empty() {
-        assert!(fp.is_tls13_suite(tls13[0]), "should recognize its own TLS 1.3 suites");
+        assert!(
+            fp.is_tls13_suite(tls13[0]),
+            "should recognize its own TLS 1.3 suites"
+        );
     }
 }

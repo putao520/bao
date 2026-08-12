@@ -6,21 +6,25 @@
 // lifecycle transitions, ServerConfig builder boundary values,
 // EventBroadcaster with no subscribers.
 
-use bao_cdp::{CdpMessage, CdpResponse, CdpError, CdpEvent, parse_message, serialize_response, serialize_event, handle_command};
+use bao_cdp::{
+    handle_command, parse_message, serialize_event, serialize_response, CdpError, CdpEvent,
+    CdpMessage, CdpResponse,
+};
 
 const TID: &str = "test-target";
 // TASK-6: ServerConfig/DomainRegistry/EventBroadcaster are cdp-server crate types
 // (no longer re-exported via bao_cdp).
-use cdp_server::{ServerConfig, DomainRegistry, EventBroadcaster};
+use cdp_server::{DomainRegistry, EventBroadcaster, ServerConfig};
 
-use cdp_server::{DomainHandler, EventSender, CdpError as ServerCdpError, SessionState, TargetInfo};
+use cdp_server::{
+    CdpError as ServerCdpError, DomainHandler, EventSender, SessionState, TargetInfo,
+};
 
 use serde_json::{json, Value};
 
 use std::collections::HashMap;
 
 use std::sync::{Arc, Mutex};
-
 
 // ---------------------------------------------------------------------------
 // 1. CdpMessage parsing with unusual/edge-case inputs
@@ -211,7 +215,8 @@ fn parse_message_id_min_i64() {
 
 #[test]
 fn parse_message_unicode_in_params() {
-    let raw = r#"{"id":1,"method":"Test.run","params":{"emoji":"🎉","cjk":"漢字","arabic":"مرحبا"}}"#;
+    let raw =
+        r#"{"id":1,"method":"Test.run","params":{"emoji":"🎉","cjk":"漢字","arabic":"مرحبا"}}"#;
     let msg = parse_message(raw).unwrap();
     let p = msg.params.unwrap();
     assert_eq!(p["emoji"], "🎉");
@@ -266,7 +271,11 @@ fn parse_message_duplicate_keys_last_wins() {
 
 #[test]
 fn serialize_response_both_none_fields() {
-    let resp = CdpResponse { id: Some(1), result: None, error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: None,
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["id"], 1);
@@ -277,7 +286,11 @@ fn serialize_response_both_none_fields() {
 #[test]
 fn serialize_response_result_is_null_value() {
     // result: Some(Value::Null) — different from result: None
-    let resp = CdpResponse { id: Some(2), result: Some(json!(null)), error: None };
+    let resp = CdpResponse {
+        id: Some(2),
+        result: Some(json!(null)),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert!(parsed["result"].is_null());
@@ -285,7 +298,11 @@ fn serialize_response_result_is_null_value() {
 
 #[test]
 fn serialize_response_result_is_empty_object() {
-    let resp = CdpResponse { id: Some(3), result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: Some(3),
+        result: Some(json!({})),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert!(parsed["result"].as_object().unwrap().is_empty());
@@ -293,7 +310,11 @@ fn serialize_response_result_is_empty_object() {
 
 #[test]
 fn serialize_response_result_is_empty_array() {
-    let resp = CdpResponse { id: Some(4), result: Some(json!([])), error: None };
+    let resp = CdpResponse {
+        id: Some(4),
+        result: Some(json!([])),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert!(parsed["result"].as_array().unwrap().is_empty());
@@ -301,7 +322,11 @@ fn serialize_response_result_is_empty_array() {
 
 #[test]
 fn serialize_response_result_is_false() {
-    let resp = CdpResponse { id: Some(5), result: Some(json!(false)), error: None };
+    let resp = CdpResponse {
+        id: Some(5),
+        result: Some(json!(false)),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["result"], false);
@@ -309,7 +334,11 @@ fn serialize_response_result_is_false() {
 
 #[test]
 fn serialize_response_result_is_zero() {
-    let resp = CdpResponse { id: Some(6), result: Some(json!(0)), error: None };
+    let resp = CdpResponse {
+        id: Some(6),
+        result: Some(json!(0)),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["result"], 0);
@@ -317,7 +346,11 @@ fn serialize_response_result_is_zero() {
 
 #[test]
 fn serialize_response_result_is_empty_string() {
-    let resp = CdpResponse { id: Some(7), result: Some(json!("")), error: None };
+    let resp = CdpResponse {
+        id: Some(7),
+        result: Some(json!("")),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["result"], "");
@@ -328,7 +361,10 @@ fn serialize_response_error_with_empty_message() {
     let resp = CdpResponse {
         id: Some(8),
         result: None,
-        error: Some(CdpError { code: -32600, message: String::new() }),
+        error: Some(CdpError {
+            code: -32600,
+            message: String::new(),
+        }),
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -340,7 +376,10 @@ fn serialize_response_error_with_unicode_message() {
     let resp = CdpResponse {
         id: Some(9),
         result: None,
-        error: Some(CdpError { code: -32600, message: "エラー: 不正なリクエスト".into() }),
+        error: Some(CdpError {
+            code: -32600,
+            message: "エラー: 不正なリクエスト".into(),
+        }),
     };
     let raw = serialize_response(&resp);
     assert!(raw.contains("エラー"));
@@ -352,7 +391,10 @@ fn serialize_response_error_with_very_long_message() {
     let resp = CdpResponse {
         id: Some(10),
         result: None,
-        error: Some(CdpError { code: -32600, message: long_msg.clone() }),
+        error: Some(CdpError {
+            code: -32600,
+            message: long_msg.clone(),
+        }),
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -373,7 +415,11 @@ fn serialize_response_deterministic_output() {
 
 #[test]
 fn serialize_response_id_boundary_min() {
-    let resp = CdpResponse { id: Some(i64::MIN), result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: Some(i64::MIN),
+        result: Some(json!({})),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["id"].as_i64(), Some(i64::MIN));
@@ -381,7 +427,11 @@ fn serialize_response_id_boundary_min() {
 
 #[test]
 fn serialize_response_id_boundary_max() {
-    let resp = CdpResponse { id: Some(i64::MAX), result: Some(json!({})), error: None };
+    let resp = CdpResponse {
+        id: Some(i64::MAX),
+        result: Some(json!({})),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["id"].as_i64(), Some(i64::MAX));
@@ -393,7 +443,11 @@ fn serialize_response_deeply_nested_result() {
     for i in 0..20 {
         result = json!({ format!("level_{}", i): result });
     }
-    let resp = CdpResponse { id: Some(1), result: Some(result), error: None };
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(result),
+        error: None,
+    };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert!(parsed["result"].is_object());
@@ -420,7 +474,10 @@ fn serialize_response_roundtrip_fidelity() {
 #[test]
 fn cdp_error_parse_error_code() {
     // -32700: Parse error
-    let err = CdpError { code: -32700, message: "Parse error".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "Parse error".into(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["code"], -32700);
@@ -430,7 +487,10 @@ fn cdp_error_parse_error_code() {
 #[test]
 fn cdp_error_invalid_request_code() {
     // -32600: Invalid Request
-    let err = CdpError { code: -32600, message: "Invalid Request".into() };
+    let err = CdpError {
+        code: -32600,
+        message: "Invalid Request".into(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["code"], -32600);
@@ -439,7 +499,10 @@ fn cdp_error_invalid_request_code() {
 #[test]
 fn cdp_error_method_not_found_code() {
     // -32601: Method not found
-    let err = CdpError { code: -32601, message: "Method not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "Method not found".into(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["code"], -32601);
@@ -448,7 +511,10 @@ fn cdp_error_method_not_found_code() {
 #[test]
 fn cdp_error_invalid_params_code() {
     // -32602: Invalid params
-    let err = CdpError { code: -32602, message: "Invalid params".into() };
+    let err = CdpError {
+        code: -32602,
+        message: "Invalid params".into(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["code"], -32602);
@@ -457,7 +523,10 @@ fn cdp_error_invalid_params_code() {
 #[test]
 fn cdp_error_internal_error_code() {
     // -32603: Internal error
-    let err = CdpError { code: -32603, message: "Internal error".into() };
+    let err = CdpError {
+        code: -32603,
+        message: "Internal error".into(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["code"], -32603);
@@ -468,7 +537,10 @@ fn cdp_error_all_standard_codes_are_distinct() {
     let codes = [-32700i64, -32600, -32601, -32602, -32603];
     for i in 0..codes.len() {
         for j in (i + 1)..codes.len() {
-            assert_ne!(codes[i], codes[j], "all standard error codes must be distinct");
+            assert_ne!(
+                codes[i], codes[j],
+                "all standard error codes must be distinct"
+            );
         }
     }
 }
@@ -476,13 +548,19 @@ fn cdp_error_all_standard_codes_are_distinct() {
 #[test]
 fn cdp_error_code_range_server_defined() {
     // JSON-RPC 2.0: -32000 to -32099 are reserved for implementation-defined
-    let err = CdpError { code: -32000, message: "Server error".into() };
+    let err = CdpError {
+        code: -32000,
+        message: "Server error".into(),
+    };
     assert!(err.code >= -32099 && err.code <= -32000);
 }
 
 #[test]
 fn cdp_error_clone_preserves_fields() {
-    let err = CdpError { code: -32601, message: "Method not found".into() };
+    let err = CdpError {
+        code: -32601,
+        message: "Method not found".into(),
+    };
     let cloned = err.clone();
     assert_eq!(cloned.code, err.code);
     assert_eq!(cloned.message, err.message);
@@ -490,7 +568,10 @@ fn cdp_error_clone_preserves_fields() {
 
 #[test]
 fn cdp_error_debug_includes_code_and_message() {
-    let err = CdpError { code: -32700, message: "Parse error".into() };
+    let err = CdpError {
+        code: -32700,
+        message: "Parse error".into(),
+    };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32700"));
     assert!(debug.contains("Parse error"));
@@ -498,7 +579,10 @@ fn cdp_error_debug_includes_code_and_message() {
 
 #[test]
 fn cdp_error_positive_custom_code() {
-    let err = CdpError { code: 9999, message: "Custom".into() };
+    let err = CdpError {
+        code: 9999,
+        message: "Custom".into(),
+    };
     assert_eq!(err.code, 9999);
     let json = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&json).unwrap();
@@ -507,7 +591,10 @@ fn cdp_error_positive_custom_code() {
 
 #[test]
 fn cdp_error_i64_min_code() {
-    let err = CdpError { code: i64::MIN, message: "Extreme".into() };
+    let err = CdpError {
+        code: i64::MIN,
+        message: "Extreme".into(),
+    };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["code"].as_i64(), Some(i64::MIN));
@@ -518,7 +605,10 @@ fn cdp_error_roundtrip_through_response() {
     let resp = CdpResponse {
         id: Some(1),
         result: None,
-        error: Some(CdpError { code: -32602, message: "Invalid params".into() }),
+        error: Some(CdpError {
+            code: -32602,
+            message: "Invalid params".into(),
+        }),
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -535,7 +625,9 @@ struct EdgeDomain {
 }
 
 impl DomainHandler for EdgeDomain {
-    fn domain_name(&self) -> &'static str { self.name }
+    fn domain_name(&self) -> &'static str {
+        self.name
+    }
 
     fn handle_command(
         &self,
@@ -546,13 +638,18 @@ impl DomainHandler for EdgeDomain {
         if command == format!("{}.echo", self.name) {
             Ok(params)
         } else if command == format!("{}.fail", self.name) {
-            Err(ServerCdpError { code: -32603, message: "deliberate failure".into() })
+            Err(ServerCdpError {
+                code: -32603,
+                message: "deliberate failure".into(),
+            })
         } else {
-            Err(ServerCdpError { code: -32601, message: format!("'{}' wasn't found", command) })
+            Err(ServerCdpError {
+                code: -32601,
+                message: format!("'{}' wasn't found", command),
+            })
         }
     }
 }
-
 
 // TestDispatch — enum dispatch for EdgeDomain in registry tests
 enum TestDispatch {
@@ -561,10 +658,19 @@ enum TestDispatch {
 
 impl DomainHandler for TestDispatch {
     fn domain_name(&self) -> &'static str {
-        match self { Self::Edge(h) => h.domain_name() }
+        match self {
+            Self::Edge(h) => h.domain_name(),
+        }
     }
-    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, ServerCdpError> {
-        match self { Self::Edge(h) => h.handle_command(cmd, params, sender) }
+    fn handle_command(
+        &self,
+        cmd: &str,
+        params: serde_json::Value,
+        sender: &dyn EventSender,
+    ) -> Result<serde_json::Value, ServerCdpError> {
+        match self {
+            Self::Edge(h) => h.handle_command(cmd, params, sender),
+        }
     }
 }
 
@@ -578,23 +684,34 @@ fn registry_dispatch_empty_domain_name() {
     let reg = DomainRegistry::<TestDispatch>::new();
     // Empty domain: method is ".command"
     let result = reg.dispatch_command(".enable", json!({}), &NopSender);
-    assert!(result.is_none(), "empty domain should not match any handler");
+    assert!(
+        result.is_none(),
+        "empty domain should not match any handler"
+    );
 }
 
 #[test]
 fn registry_dispatch_empty_command_name() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Edge(EdgeDomain { name: "TestDomain" })).unwrap();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "TestDomain" }))
+        .unwrap();
     // Method "TestDomain." — command part is empty
     let result = reg.dispatch_command("TestDomain.", json!({}), &NopSender);
-    assert!(result.is_some(), "domain is registered, dispatch should attempt");
-    assert!(result.unwrap().is_err(), "empty command should not match any handler method");
+    assert!(
+        result.is_some(),
+        "domain is registered, dispatch should attempt"
+    );
+    assert!(
+        result.unwrap().is_err(),
+        "empty command should not match any handler method"
+    );
 }
 
 #[test]
 fn registry_dispatch_very_long_command_name() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Edge(EdgeDomain { name: "TestDomain" })).unwrap();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "TestDomain" }))
+        .unwrap();
     let long_cmd = format!("TestDomain.{}", "x".repeat(10000));
     let result = reg.dispatch_command(&long_cmd, json!({}), &NopSender);
     assert!(result.is_some());
@@ -604,34 +721,46 @@ fn registry_dispatch_very_long_command_name() {
 #[test]
 fn registry_dispatch_no_dot_in_method() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Edge(EdgeDomain { name: "TestDomain" })).unwrap();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "TestDomain" }))
+        .unwrap();
     // Method without dot: split('.').next() returns "TestDomain" as domain,
     // so the handler IS found (dispatch_command returns Some), but the
     // command part is empty — the handler will see "TestDomain" as the
     // full method and likely return an error for unrecognized command.
     let result = reg.dispatch_command("TestDomain", json!({}), &NopSender);
-    assert!(result.is_some(), "domain 'TestDomain' is found, dispatch attempts");
+    assert!(
+        result.is_some(),
+        "domain 'TestDomain' is found, dispatch attempts"
+    );
     // The handler receives the full method "TestDomain" which doesn't match
     // any known command pattern, so it returns an error.
-    assert!(result.unwrap().is_err(), "no-dot method is not a recognized command");
+    assert!(
+        result.unwrap().is_err(),
+        "no-dot method is not a recognized command"
+    );
 }
 
 #[test]
 fn registry_dispatch_case_sensitive_domain() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Edge(EdgeDomain { name: "Page" })).unwrap();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "Page" }))
+        .unwrap();
     assert!(reg.has_domain("Page"));
     assert!(!reg.has_domain("page"));
     assert!(!reg.has_domain("PAGE"));
 
     let result_lower = reg.dispatch_command("page.enable", json!({}), &NopSender);
-    assert!(result_lower.is_none(), "lowercase 'page' should not match 'Page'");
+    assert!(
+        result_lower.is_none(),
+        "lowercase 'page' should not match 'Page'"
+    );
 }
 
 #[test]
 fn registry_dispatch_with_null_params() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Edge(EdgeDomain { name: "Echo" })).unwrap();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "Echo" }))
+        .unwrap();
     let result = reg.dispatch_command("Echo.echo", json!(null), &NopSender);
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
@@ -640,7 +769,8 @@ fn registry_dispatch_with_null_params() {
 #[test]
 fn registry_dispatch_with_large_params() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Edge(EdgeDomain { name: "Echo" })).unwrap();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "Echo" }))
+        .unwrap();
     let large_array: Vec<i32> = (0..10000).collect();
     let result = reg.dispatch_command("Echo.echo", json!({"data": large_array}), &NopSender);
     assert!(result.is_some());
@@ -651,7 +781,8 @@ fn registry_dispatch_with_large_params() {
 #[test]
 fn registry_dispatch_handler_returns_error() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Edge(EdgeDomain { name: "Fail" })).unwrap();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "Fail" }))
+        .unwrap();
     let result = reg.dispatch_command("Fail.fail", json!({}), &NopSender);
     assert!(result.is_some());
     let err = result.unwrap().unwrap_err();
@@ -665,17 +796,24 @@ fn registry_dispatch_unicode_domain() {
     // register only accepts &'static str, so we use ASCII here
     // but dispatch receives a &str, so test with unicode in method
     let result = reg.dispatch_command("ページ.enable", json!({}), &NopSender);
-    assert!(result.is_none(), "unregistered unicode domain should return None");
+    assert!(
+        result.is_none(),
+        "unregistered unicode domain should return None"
+    );
 }
 
 #[test]
 fn registry_dispatch_multiple_dots_in_method() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Edge(EdgeDomain { name: "A" })).unwrap();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "A" }))
+        .unwrap();
     // "A.B.C" — domain is "A", command is "B.C"
     let result = reg.dispatch_command("A.B.C", json!({}), &NopSender);
     assert!(result.is_some(), "domain A is registered");
-    assert!(result.unwrap().is_err(), "command B.C not a known handler method");
+    assert!(
+        result.unwrap().is_err(),
+        "command B.C not a known handler method"
+    );
 }
 
 #[test]
@@ -694,8 +832,11 @@ fn registry_notify_session_destroyed_empty_list_no_panic() {
 #[test]
 fn registry_register_duplicate_returns_error() {
     let reg = DomainRegistry::<TestDispatch>::new();
-    reg.register(TestDispatch::Edge(EdgeDomain { name: "Dup" })).unwrap();
-    let err = reg.register(TestDispatch::Edge(EdgeDomain { name: "Dup" })).unwrap_err();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "Dup" }))
+        .unwrap();
+    let err = reg
+        .register(TestDispatch::Edge(EdgeDomain { name: "Dup" }))
+        .unwrap_err();
     assert!(err.contains("Dup"));
 }
 
@@ -708,12 +849,10 @@ fn registry_many_domains_registered() {
         let _ = i; // just ensure the registry works for small counts
     }
     // Use static names instead
-    let names: &[&'static str] = &[
-        "A1", "A2", "A3", "A4", "A5",
-        "B1", "B2", "B3", "B4", "B5",
-    ];
+    let names: &[&'static str] = &["A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3", "B4", "B5"];
     for &name in names {
-        reg.register(TestDispatch::Edge(EdgeDomain { name })).unwrap();
+        reg.register(TestDispatch::Edge(EdgeDomain { name }))
+            .unwrap();
     }
     for &name in names {
         assert!(reg.has_domain(name));
@@ -830,8 +969,14 @@ fn target_info_serde_renames_type_field() {
         web_socket_debugger_url: "ws://test/t-renamed".into(),
     };
     let json = serde_json::to_string(&info).unwrap();
-    assert!(json.contains(r#""type":"page""#), "target_type should serialize as 'type'");
-    assert!(!json.contains(r#""target_type""#), "target_type should NOT appear in JSON");
+    assert!(
+        json.contains(r#""type":"page""#),
+        "target_type should serialize as 'type'"
+    );
+    assert!(
+        !json.contains(r#""target_type""#),
+        "target_type should NOT appear in JSON"
+    );
     let parsed: TargetInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.target_type, "page");
 }
@@ -851,13 +996,15 @@ fn target_info_debug_format() {
 
 #[test]
 fn target_info_json_array_serialization() {
-    let targets: Vec<TargetInfo> = (0..5).map(|i| TargetInfo {
-        id: format!("t-{}", i),
-        target_type: "page".into(),
-        title: format!("Page {}", i),
-        url: format!("https://example.com/{}", i),
-        web_socket_debugger_url: format!("ws://127.0.0.1:9222/devtools/page/t-{}", i),
-    }).collect();
+    let targets: Vec<TargetInfo> = (0..5)
+        .map(|i| TargetInfo {
+            id: format!("t-{}", i),
+            target_type: "page".into(),
+            title: format!("Page {}", i),
+            url: format!("https://example.com/{}", i),
+            web_socket_debugger_url: format!("ws://127.0.0.1:9222/devtools/page/t-{}", i),
+        })
+        .collect();
     let json = serde_json::to_string(&targets).unwrap();
     let parsed: Vec<TargetInfo> = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.len(), 5);
@@ -912,8 +1059,10 @@ fn session_state_all_variants_are_distinct() {
     ];
     for i in 0..variants.len() {
         for j in (i + 1)..variants.len() {
-            assert_ne!(variants[i], variants[j],
-                "SessionState variants must all be distinct");
+            assert_ne!(
+                variants[i], variants[j],
+                "SessionState variants must all be distinct"
+            );
         }
     }
 }
@@ -1019,7 +1168,9 @@ fn server_config_http_timeout_zero() {
 
 #[test]
 fn server_config_http_timeout_u64_max() {
-    let cfg = ServerConfig::builder().http_timeout_seconds(u64::MAX).build();
+    let cfg = ServerConfig::builder()
+        .http_timeout_seconds(u64::MAX)
+        .build();
     assert_eq!(cfg.http_timeout_seconds, u64::MAX);
 }
 
@@ -1221,7 +1372,12 @@ fn broadcaster_send_event_with_empty_object_params_no_subscribers() {
 
 #[test]
 fn handle_command_empty_method_returns_method_not_found() {
-    let msg = CdpMessage { id: Some(1), method: String::new(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(1),
+        method: String::new(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t-1", &None, None);
     assert!(resp.error.is_some());
     assert_eq!(resp.error.unwrap().code, -32601);
@@ -1229,7 +1385,12 @@ fn handle_command_empty_method_returns_method_not_found() {
 
 #[test]
 fn handle_command_method_no_dot_returns_method_not_found() {
-    let msg = CdpMessage { id: Some(1), method: "NoDotMethod".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(1),
+        method: "NoDotMethod".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t-1", &None, None);
     assert!(resp.error.is_some());
     assert_eq!(resp.error.unwrap().code, -32601);
@@ -1238,13 +1399,27 @@ fn handle_command_method_no_dot_returns_method_not_found() {
 #[test]
 fn handle_command_all_12_domains_unknown_command_error_code() {
     let domains = [
-        "Target", "Page", "Runtime", "DOM", "Network",
-        "CSS", "Emulation", "Input", "Overlay", "Debugger",
-        "Log", "Fetch",
+        "Target",
+        "Page",
+        "Runtime",
+        "DOM",
+        "Network",
+        "CSS",
+        "Emulation",
+        "Input",
+        "Overlay",
+        "Debugger",
+        "Log",
+        "Fetch",
     ];
     for domain in &domains {
         let method = format!("{}.nonexistentCommandXYZ", domain);
-        let msg = CdpMessage { id: Some(1), method, params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(1),
+            method,
+            params: None,
+            session_id: None,
+        };
         let resp = handle_command(msg, "t-1", &None, None);
         assert!(resp.error.is_some(), "{} should return error", domain);
         assert_eq!(resp.error.as_ref().unwrap().code, -32601);
@@ -1253,7 +1428,12 @@ fn handle_command_all_12_domains_unknown_command_error_code() {
 
 #[test]
 fn handle_command_target_info_fields_no_bridge() {
-    let msg = CdpMessage { id: Some(1), method: "Target.getTargets".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(1),
+        method: "Target.getTargets".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "target-xyz", &None, None);
     let result = resp.result.unwrap();
     let infos = result["targetInfos"].as_array().unwrap();
@@ -1266,7 +1446,12 @@ fn handle_command_target_info_fields_no_bridge() {
 #[test]
 fn handle_command_preserves_id_for_success() {
     for id in [0i64, 1, -1, i64::MAX, i64::MIN] {
-        let msg = CdpMessage { id: Some(id), method: "Page.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage {
+            id: Some(id),
+            method: "Page.enable".into(),
+            params: None,
+            session_id: None,
+        };
         let resp = handle_command(msg, "t-1", &None, None);
         assert_eq!(resp.id, Some(id), "response id should match request id");
     }
@@ -1274,7 +1459,12 @@ fn handle_command_preserves_id_for_success() {
 
 #[test]
 fn handle_command_preserves_id_for_error() {
-    let msg = CdpMessage { id: Some(-999), method: "Unknown.method".into(), params: None, session_id: None };
+    let msg = CdpMessage {
+        id: Some(-999),
+        method: "Unknown.method".into(),
+        params: None,
+        session_id: None,
+    };
     let resp = handle_command(msg, "t-1", &None, None);
     assert_eq!(resp.id, Some(-999));
     assert!(resp.error.is_some());
@@ -1283,7 +1473,12 @@ fn handle_command_preserves_id_for_error() {
 #[test]
 fn handle_command_no_bridge_returns_internal_error_for_bridge_commands() {
     // Commands that require bridge should return -32603
-    let msg = CdpMessage { id: Some(1), method: "Runtime.evaluate".into(), params: Some(json!({"expression": "1+1"})), session_id: None };
+    let msg = CdpMessage {
+        id: Some(1),
+        method: "Runtime.evaluate".into(),
+        params: Some(json!({"expression": "1+1"})),
+        session_id: None,
+    };
     // With a non-empty expression and no bridge, the legacy path returns undefined
     // (only certain bridge-required paths return -32603)
     let resp = handle_command(msg, "t-1", &Some(json!({"expression": "1+1"})), None);
@@ -1298,7 +1493,10 @@ fn handle_command_no_bridge_returns_internal_error_for_bridge_commands() {
 
 #[test]
 fn serialize_event_with_null_params() {
-    let ev = CdpEvent { method: "Test.event".into(), params: Some(json!(null)) };
+    let ev = CdpEvent {
+        method: "Test.event".into(),
+        params: Some(json!(null)),
+    };
     let raw = serialize_event(&ev);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["params"], json!(null));
@@ -1306,7 +1504,10 @@ fn serialize_event_with_null_params() {
 
 #[test]
 fn serialize_event_with_empty_string_method() {
-    let ev = CdpEvent { method: String::new(), params: None };
+    let ev = CdpEvent {
+        method: String::new(),
+        params: None,
+    };
     let raw = serialize_event(&ev);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["method"], "");
@@ -1314,20 +1515,29 @@ fn serialize_event_with_empty_string_method() {
 
 #[test]
 fn serialize_event_with_unicode_method() {
-    let ev = CdpEvent { method: "ページ.読み込み完了".into(), params: Some(json!({"ts": 1})) };
+    let ev = CdpEvent {
+        method: "ページ.読み込み完了".into(),
+        params: Some(json!({"ts": 1})),
+    };
     let raw = serialize_event(&ev);
     assert!(raw.contains("ページ"));
 }
 
 #[test]
 fn serialize_event_deterministic() {
-    let ev = CdpEvent { method: "Page.loadEventFired".into(), params: Some(json!({"timestamp": 123})) };
+    let ev = CdpEvent {
+        method: "Page.loadEventFired".into(),
+        params: Some(json!({"timestamp": 123})),
+    };
     assert_eq!(serialize_event(&ev), serialize_event(&ev));
 }
 
 #[test]
 fn serialize_event_clone_and_serialize_match() {
-    let ev = CdpEvent { method: "Test.clone".into(), params: Some(json!({"x": 1})) };
+    let ev = CdpEvent {
+        method: "Test.clone".into(),
+        params: Some(json!({"x": 1})),
+    };
     let cloned = ev.clone();
     assert_eq!(serialize_event(&ev), serialize_event(&cloned));
 }

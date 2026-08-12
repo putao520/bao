@@ -3,7 +3,9 @@
 // PageState enum exhaustiveness, BrowserError Display/Error,
 // ScreenshotFormat enum, BaoWebViewState Default, BaoServoDelegate new/last_error.
 
-use bao_browser::{BaoConfig, BrowserConfig, PageConfig, PageState, BrowserError, ScreenshotFormat};
+use bao_browser::{
+    BaoConfig, BrowserConfig, BrowserError, PageConfig, PageState, ScreenshotFormat,
+};
 use std::time::Duration;
 
 // ---- BaoConfig default ----
@@ -44,7 +46,10 @@ fn test_validate_default_ok() {
 
 #[test]
 fn test_validate_zero_max_pages() {
-    let cfg = BaoConfig { max_pages: 0, ..Default::default() };
+    let cfg = BaoConfig {
+        max_pages: 0,
+        ..Default::default()
+    };
     let err = cfg.validate().unwrap_err();
     assert!(err.contains("max_pages must be >= 1"));
     assert!(err.contains("0"));
@@ -52,19 +57,28 @@ fn test_validate_zero_max_pages() {
 
 #[test]
 fn test_validate_one_max_pages() {
-    let cfg = BaoConfig { max_pages: 1, ..Default::default() };
+    let cfg = BaoConfig {
+        max_pages: 1,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
 #[test]
 fn test_validate_large_max_pages() {
-    let cfg = BaoConfig { max_pages: 10000, ..Default::default() };
+    let cfg = BaoConfig {
+        max_pages: 10000,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
 #[test]
 fn test_validate_viewport_width_too_small() {
-    let cfg = BaoConfig { default_viewport_width: 799, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_width: 799,
+        ..Default::default()
+    };
     let err = cfg.validate().unwrap_err();
     assert!(err.contains("viewport_width must be >= 800"));
     assert!(err.contains("799"));
@@ -72,13 +86,19 @@ fn test_validate_viewport_width_too_small() {
 
 #[test]
 fn test_validate_viewport_width_800_ok() {
-    let cfg = BaoConfig { default_viewport_width: 800, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_width: 800,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
 #[test]
 fn test_validate_viewport_height_too_small() {
-    let cfg = BaoConfig { default_viewport_height: 599, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_height: 599,
+        ..Default::default()
+    };
     let err = cfg.validate().unwrap_err();
     assert!(err.contains("viewport_height must be >= 600"));
     assert!(err.contains("599"));
@@ -86,7 +106,10 @@ fn test_validate_viewport_height_too_small() {
 
 #[test]
 fn test_validate_viewport_height_600_ok() {
-    let cfg = BaoConfig { default_viewport_height: 600, ..Default::default() };
+    let cfg = BaoConfig {
+        default_viewport_height: 600,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 
@@ -116,7 +139,10 @@ fn test_validate_custom_ok() {
 
 #[test]
 fn test_validate_with_cdp_port() {
-    let cfg = BaoConfig { cdp_port: Some(9222), ..Default::default() };
+    let cfg = BaoConfig {
+        cdp_port: Some(9222),
+        ..Default::default()
+    };
     assert!(cfg.validate().is_ok());
 }
 

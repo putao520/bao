@@ -18,10 +18,7 @@
 // so a leak (e.g. accidental "HeadlessChrome" in a UA) surfaces as a failed test
 // rather than being silently swallowed.
 
-use bao_stealth::{
-    StealthEngine, StealthProfile, StealthHooks,
-    ScreenProfile, NavigatorProfile,
-};
+use bao_stealth::{NavigatorProfile, ScreenProfile, StealthEngine, StealthHooks, StealthProfile};
 
 // ===========================================================================
 // 1. bot.sannysoft.com vectors
@@ -36,9 +33,16 @@ fn sannysoft_webdriver_flag_hidden_in_hooks_js() {
     // Arrange — bot.sannysoft.com row "WebDriver": red if navigator.webdriver === true
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
@@ -73,11 +77,13 @@ fn sannysoft_user_agent_has_no_headless_marker() {
     // Assert — neither Firefox nor Chrome profile may leak headless UA
     assert!(
         !ff.user_agent.to_lowercase().contains("headless"),
-        "Firefox UA must not leak 'headless' — got: {}", ff.user_agent
+        "Firefox UA must not leak 'headless' — got: {}",
+        ff.user_agent
     );
     assert!(
         !ch.user_agent.to_lowercase().contains("headless"),
-        "Chrome UA must not leak 'headless' — got: {}", ch.user_agent
+        "Chrome UA must not leak 'headless' — got: {}",
+        ch.user_agent
     );
     assert!(
         !ff.user_agent.contains("HeadlessChrome"),
@@ -119,9 +125,16 @@ fn sannysoft_navigator_languages_is_nonempty_array() {
     // Languages array must be properly serialized to JSON array in hook JS
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
-        &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
-        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
         &profile.screen_display,
     );
     let js = hooks.navigator_js();
@@ -130,7 +143,8 @@ fn sannysoft_navigator_languages_is_nonempty_array() {
         "navigator JS must override languages — sannysoft Languages row"
     );
     // Languages JSON literal must start with [ and end with ]
-    let langs_line = js.lines()
+    let langs_line = js
+        .lines()
         .find(|l| l.contains("navigator, 'languages'"))
         .unwrap_or("");
     assert!(
@@ -151,11 +165,13 @@ fn sannysoft_hardware_concurrency_in_human_range() {
     // Assert — must be in plausible human range (typical desktop: 4-32)
     assert!(
         ff.hardware_concurrency >= 2 && ff.hardware_concurrency <= 64,
-        "Firefox hardwareConcurrency {} out of human range [2, 64]", ff.hardware_concurrency
+        "Firefox hardwareConcurrency {} out of human range [2, 64]",
+        ff.hardware_concurrency
     );
     assert!(
         ch.hardware_concurrency >= 2 && ch.hardware_concurrency <= 64,
-        "Chrome hardwareConcurrency {} out of human range [2, 64]", ch.hardware_concurrency
+        "Chrome hardwareConcurrency {} out of human range [2, 64]",
+        ch.hardware_concurrency
     );
 }
 
@@ -172,11 +188,13 @@ fn sannysoft_device_memory_in_human_range() {
     // Both must be plausible positive values.
     assert!(
         ff.device_memory > 0.0 && ff.device_memory <= 8.0,
-        "Firefox deviceMemory {} out of range (0, 8]", ff.device_memory
+        "Firefox deviceMemory {} out of range (0, 8]",
+        ff.device_memory
     );
     assert!(
         ch.device_memory > 0.0 && ch.device_memory <= 8.0,
-        "Chrome deviceMemory {} out of range (0, 8]", ch.device_memory
+        "Chrome deviceMemory {} out of range (0, 8]",
+        ch.device_memory
     );
 }
 
@@ -201,7 +219,8 @@ fn creepjs_navigator_vendor_coherent_with_useragent() {
     // Assert
     assert!(
         ff.vendor.is_empty(),
-        "Firefox vendor must be empty string (Firefox convention) — got: {:?}", ff.vendor
+        "Firefox vendor must be empty string (Firefox convention) — got: {:?}",
+        ff.vendor
     );
     assert_eq!(
         ch.vendor, "Google Inc.",
@@ -345,13 +364,15 @@ fn pixelscan_avail_height_le_full_height() {
     assert!(
         screen.avail_height <= screen.height,
         "avail_height {} must be ≤ height {} — pixelscan coherence",
-        screen.avail_height, screen.height
+        screen.avail_height,
+        screen.height
     );
     // availHeight should be slightly less than height (typical: height - 40)
     assert!(
         screen.avail_height < screen.height,
         "avail_height {} should be < height {} (real OS has taskbar) — pixelscan",
-        screen.avail_height, screen.height
+        screen.avail_height,
+        screen.height
     );
     assert_eq!(
         screen.avail_width, screen.width,
@@ -395,7 +416,9 @@ fn pixelscan_device_pixel_ratio_plausible() {
     // Must be a "standard" ratio (1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0)
     let standard = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
     assert!(
-        standard.iter().any(|&s| (screen.device_pixel_ratio - s).abs() < 0.01),
+        standard
+            .iter()
+            .any(|&s| (screen.device_pixel_ratio - s).abs() < 0.01),
         "devicePixelRatio {} not a standard value — pixelscan dpr standard",
         screen.device_pixel_ratio
     );

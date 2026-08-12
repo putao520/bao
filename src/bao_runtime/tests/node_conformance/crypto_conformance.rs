@@ -7,7 +7,7 @@
 #[path = "../conformance_common.rs"]
 mod common;
 
-use common::{make_ctx, run_checks, CHECK_SCAFFOLD};
+use common::{CHECK_SCAFFOLD, make_ctx, run_checks};
 
 #[test]
 fn test_crypto_conformance_suite() {

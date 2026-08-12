@@ -259,7 +259,11 @@ impl Connection {
         self.event_handlers
             .entry(method.to_string())
             .or_default()
-            .push(EventListenerEntry { id, handler, once: false });
+            .push(EventListenerEntry {
+                id,
+                handler,
+                once: false,
+            });
         id
     }
 
@@ -275,7 +279,11 @@ impl Connection {
         self.event_handlers
             .entry(method.to_string())
             .or_default()
-            .push(EventListenerEntry { id, handler, once: true });
+            .push(EventListenerEntry {
+                id,
+                handler,
+                once: true,
+            });
         id
     }
 
@@ -291,7 +299,12 @@ impl Connection {
             false
         };
         // Clean up empty entry after the mutable borrow on the Vec is done.
-        if removed && self.event_handlers.get(method).map_or(false, |v| v.is_empty()) {
+        if removed
+            && self
+                .event_handlers
+                .get(method)
+                .map_or(false, |v| v.is_empty())
+        {
             self.event_handlers.remove(method);
         }
         removed
@@ -320,14 +333,22 @@ impl Connection {
         let to_call: Vec<(EventListenerId, EventListener, bool)> = self
             .event_handlers
             .get(&event.method)
-            .map(|v| v.iter().map(|e| (e.id, e.handler.clone(), e.once)).collect())
+            .map(|v| {
+                v.iter()
+                    .map(|e| (e.id, e.handler.clone(), e.once))
+                    .collect()
+            })
             .unwrap_or_default();
 
         // 也收集通配符 handler(method 为 "*")。
         let wildcard_to_call: Vec<(EventListenerId, EventListener, bool)> = self
             .event_handlers
             .get("*")
-            .map(|v| v.iter().map(|e| (e.id, e.handler.clone(), e.once)).collect())
+            .map(|v| {
+                v.iter()
+                    .map(|e| (e.id, e.handler.clone(), e.once))
+                    .collect()
+            })
             .unwrap_or_default();
 
         // 2. 收集需要移除的 once handler ID。
@@ -480,8 +501,7 @@ mod tests {
 
     #[test]
     fn connection_send_command_returns_response() {
-        let mut conn =
-            make_mock_with_response(serde_json::json!({"url": "https://example.com"}));
+        let mut conn = make_mock_with_response(serde_json::json!({"url": "https://example.com"}));
         let result = conn
             .send_command("Page.navigate", serde_json::json!({}))
             .unwrap();
@@ -492,9 +512,7 @@ mod tests {
     fn connection_send_command_after_close_returns_error() {
         let mut conn = make_mock_with_response(Value::Null);
         conn.close().unwrap();
-        let err = conn
-            .send_command("X.y", serde_json::json!({}))
-            .unwrap_err();
+        let err = conn.send_command("X.y", serde_json::json!({})).unwrap_err();
         assert!(matches!(err, CdpError::ConnectionClosed));
     }
 

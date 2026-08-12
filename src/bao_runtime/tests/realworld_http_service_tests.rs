@@ -44,7 +44,9 @@ fn test_realworld_http_service_all() {
     // Verify the public API exists, then probe whether server.listen()
     // actually binds. We record both outcomes so the rest of the test is
     // informative regardless of build configuration.
-    let surface = eval_string(&mut ctx, r#"
+    let surface = eval_string(
+        &mut ctx,
+        r#"
         var http = require('http');
         var results = [];
         function probe(label, fn) {
@@ -81,16 +83,53 @@ fn test_realworld_http_service_all() {
         results.push('real_listen=' + listenOutcome);
 
         results.join('|')
-    "#);
-    assert!(surface.contains("http_module=ok"), "http module loaded: {}", surface);
-    assert!(surface.contains("createServer_fn=yes"), "createServer is function: {}", surface);
-    assert!(surface.contains("STATUS_CODES_200=OK"), "STATUS_CODES 200: {}", surface);
-    assert!(surface.contains("STATUS_CODES_404=Not Found"), "STATUS_CODES 404: {}", surface);
-    assert!(surface.contains("STATUS_CODES_500=Internal Server Error"), "STATUS_CODES 500: {}", surface);
-    assert!(surface.contains("server_has_listen=yes"), "server.listen exists: {}", surface);
-    assert!(surface.contains("server_has_close=yes"), "server.close exists: {}", surface);
-    assert!(surface.contains("server_has_address=yes"), "server.address exists: {}", surface);
-    assert!(surface.contains("real_listen="), "listen probe ran: {}", surface);
+    "#,
+    );
+    assert!(
+        surface.contains("http_module=ok"),
+        "http module loaded: {}",
+        surface
+    );
+    assert!(
+        surface.contains("createServer_fn=yes"),
+        "createServer is function: {}",
+        surface
+    );
+    assert!(
+        surface.contains("STATUS_CODES_200=OK"),
+        "STATUS_CODES 200: {}",
+        surface
+    );
+    assert!(
+        surface.contains("STATUS_CODES_404=Not Found"),
+        "STATUS_CODES 404: {}",
+        surface
+    );
+    assert!(
+        surface.contains("STATUS_CODES_500=Internal Server Error"),
+        "STATUS_CODES 500: {}",
+        surface
+    );
+    assert!(
+        surface.contains("server_has_listen=yes"),
+        "server.listen exists: {}",
+        surface
+    );
+    assert!(
+        surface.contains("server_has_close=yes"),
+        "server.close exists: {}",
+        surface
+    );
+    assert!(
+        surface.contains("server_has_address=yes"),
+        "server.address exists: {}",
+        surface
+    );
+    assert!(
+        surface.contains("real_listen="),
+        "listen probe ran: {}",
+        surface
+    );
     // Ground truth: in this build the stub returns null, so we expect a throw.
     // If this ever flips to bound:_listeningPort=N the rest of the test is
     // still valid — handler unit tests work either way.
@@ -103,7 +142,9 @@ fn test_realworld_http_service_all() {
     // The mock harness builds the same {method, url, headers} req object and
     // {writeHead, write, end, statusCode, _body, _headers} res object the
     // real uWS bridge produces (see node_http.rs uws_route_handler).
-    let routes = eval_string(&mut ctx, r#"
+    let routes = eval_string(
+        &mut ctx,
+        r#"
         var http = require('http');
 
         // --- in-memory state (would live in a DB in production) ---
@@ -305,47 +346,142 @@ fn test_realworld_http_service_all() {
 
         out.push('ROUTES_DONE');
         out.join('|')
-    "#);
-    assert!(routes.contains("home_status=200"), "GET / status: {}", routes);
-    assert!(routes.contains("home_body=Hello from Bao"), "GET / body: {}", routes);
-    assert!(routes.contains("home_ct=text/plain"), "GET / Content-Type: {}", routes);
+    "#,
+    );
+    assert!(
+        routes.contains("home_status=200"),
+        "GET / status: {}",
+        routes
+    );
+    assert!(
+        routes.contains("home_body=Hello from Bao"),
+        "GET / body: {}",
+        routes
+    );
+    assert!(
+        routes.contains("home_ct=text/plain"),
+        "GET / Content-Type: {}",
+        routes
+    );
 
-    assert!(routes.contains("list_status=200"), "GET /api/users status: {}", routes);
-    assert!(routes.contains("list_count=3"), "GET /api/users count: {}", routes);
-    assert!(routes.contains("list_first=Alice"), "first user: {}", routes);
-    assert!(routes.contains("list_ct=application/json"), "list Content-Type: {}", routes);
+    assert!(
+        routes.contains("list_status=200"),
+        "GET /api/users status: {}",
+        routes
+    );
+    assert!(
+        routes.contains("list_count=3"),
+        "GET /api/users count: {}",
+        routes
+    );
+    assert!(
+        routes.contains("list_first=Alice"),
+        "first user: {}",
+        routes
+    );
+    assert!(
+        routes.contains("list_ct=application/json"),
+        "list Content-Type: {}",
+        routes
+    );
 
-    assert!(routes.contains("create_status=201"), "POST /api/users status: {}", routes);
+    assert!(
+        routes.contains("create_status=201"),
+        "POST /api/users status: {}",
+        routes
+    );
     assert!(routes.contains("create_id=4"), "created id: {}", routes);
-    assert!(routes.contains("create_name=Dave"), "created name: {}", routes);
-    assert!(routes.contains("create_email=dave@example.com"), "created email: {}", routes);
+    assert!(
+        routes.contains("create_name=Dave"),
+        "created name: {}",
+        routes
+    );
+    assert!(
+        routes.contains("create_email=dave@example.com"),
+        "created email: {}",
+        routes
+    );
 
-    assert!(routes.contains("badjson_status=400"), "invalid JSON: {}", routes);
-    assert!(routes.contains("badjson_err=invalid JSON body"), "invalid JSON error: {}", routes);
+    assert!(
+        routes.contains("badjson_status=400"),
+        "invalid JSON: {}",
+        routes
+    );
+    assert!(
+        routes.contains("badjson_err=invalid JSON body"),
+        "invalid JSON error: {}",
+        routes
+    );
 
-    assert!(routes.contains("badval_status=422"), "missing name: {}", routes);
-    assert!(routes.contains("badval_err=name is required"), "missing name error: {}", routes);
+    assert!(
+        routes.contains("badval_status=422"),
+        "missing name: {}",
+        routes
+    );
+    assert!(
+        routes.contains("badval_err=name is required"),
+        "missing name error: {}",
+        routes
+    );
 
     assert!(routes.contains("get1_status=200"), "GET user 1: {}", routes);
-    assert!(routes.contains("get1_name=Alice"), "user 1 name: {}", routes);
+    assert!(
+        routes.contains("get1_name=Alice"),
+        "user 1 name: {}",
+        routes
+    );
 
-    assert!(routes.contains("get_missing_status=404"), "missing user: {}", routes);
-    assert!(routes.contains("get_missing_err=user not found"), "missing user error: {}", routes);
+    assert!(
+        routes.contains("get_missing_status=404"),
+        "missing user: {}",
+        routes
+    );
+    assert!(
+        routes.contains("get_missing_err=user not found"),
+        "missing user error: {}",
+        routes
+    );
 
-    assert!(routes.contains("after_create_count=4"), "count after create: {}", routes);
-    assert!(routes.contains("after_create_includes_dave=true"), "Dave in list: {}", routes);
+    assert!(
+        routes.contains("after_create_count=4"),
+        "count after create: {}",
+        routes
+    );
+    assert!(
+        routes.contains("after_create_includes_dave=true"),
+        "Dave in list: {}",
+        routes
+    );
 
     assert!(routes.contains("err_status=500"), "forced 500: {}", routes);
-    assert!(routes.contains("err_body=internal server error"), "500 body: {}", routes);
+    assert!(
+        routes.contains("err_body=internal server error"),
+        "500 body: {}",
+        routes
+    );
 
-    assert!(routes.contains("notfound_status=404"), "unknown route: {}", routes);
-    assert!(routes.contains("notfound_err=route not found"), "404 error: {}", routes);
-    assert!(routes.contains("ROUTES_DONE"), "route table complete: {}", routes);
+    assert!(
+        routes.contains("notfound_status=404"),
+        "unknown route: {}",
+        routes
+    );
+    assert!(
+        routes.contains("notfound_err=route not found"),
+        "404 error: {}",
+        routes
+    );
+    assert!(
+        routes.contains("ROUTES_DONE"),
+        "route table complete: {}",
+        routes
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 3. JSON round-trip — request body parse + response body serialize
     // ═══════════════════════════════════════════════════════════════
-    let json_rt = eval_string(&mut ctx, r#"
+    let json_rt = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
 
         // Build a couple of payloads, serialize, parse back, verify equality.
@@ -378,7 +514,8 @@ fn test_realworld_http_service_all() {
 
         results.push('JSON_RT_DONE');
         results.join('|')
-    "#);
+    "#,
+    );
     assert!(json_rt.contains("id=42"), "id round-trip: {}", json_rt);
     assert!(json_rt.contains("name=Élodie"), "unicode name: {}", json_rt);
     assert!(json_rt.contains("tags_len=3"), "tags length: {}", json_rt);
@@ -388,10 +525,22 @@ fn test_realworld_http_service_all() {
     assert!(json_rt.contains("ratio=1.5"), "ratio: {}", json_rt);
     assert!(json_rt.contains("zero=0"), "zero: {}", json_rt);
     assert!(json_rt.contains("empty=null"), "empty: {}", json_rt);
-    assert!(json_rt.contains("symmetric=yes"), "symmetric JSON: {}", json_rt);
+    assert!(
+        json_rt.contains("symmetric=yes"),
+        "symmetric JSON: {}",
+        json_rt
+    );
     assert!(json_rt.contains("nested_sum=6"), "nested sum: {}", json_rt);
-    assert!(json_rt.contains("unicode=2"), "unicode chars (包子 = 2 code points): {}", json_rt);
-    assert!(json_rt.contains("JSON_RT_DONE"), "JSON round-trip done: {}", json_rt);
+    assert!(
+        json_rt.contains("unicode=2"),
+        "unicode chars (包子 = 2 code points): {}",
+        json_rt
+    );
+    assert!(
+        json_rt.contains("JSON_RT_DONE"),
+        "JSON round-trip done: {}",
+        json_rt
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 4. Concurrent fetch via Promise.all — fan-out / fan-in pattern
@@ -402,9 +551,12 @@ fn test_realworld_http_service_all() {
     // captured before RunJobs). So we drive the same fan-out / fan-in
     // synchronously against the in-process handler to prove concurrency
     // semantics (ordering, integrity, error separation).
-    let _concurrent_async_note = "Promise.all + .then surface verified in §5; synchronous fan-out below";
+    let _concurrent_async_note =
+        "Promise.all + .then surface verified in §5; synchronous fan-out below";
     // The synchronous version — collected in a single eval:
-    let concurrent_sync = eval_string(&mut ctx, r#"
+    let concurrent_sync = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
 
         // Synchronous handler — no Promise / microtask timing concerns.
@@ -443,17 +595,58 @@ fn test_realworld_http_service_all() {
 
         results.push('CONCURRENT_SYNC_DONE');
         results.join('|')
-    "#);
-    assert!(concurrent_sync.contains("count=5"), "5 fetches: {}", concurrent_sync);
-    assert!(concurrent_sync.contains("r0=200:true:Hello from Bao"), "fetch /: {}", concurrent_sync);
-    assert!(concurrent_sync.contains("r1_count=1"), "fetch /api/users: {}", concurrent_sync);
-    assert!(concurrent_sync.contains("r2_name=X"), "fetch user 42: {}", concurrent_sync);
-    assert!(concurrent_sync.contains("r3_err=boom"), "fetch /error: {}", concurrent_sync);
-    assert!(concurrent_sync.contains("r4_status=404:ok=false"), "fetch /missing: {}", concurrent_sync);
-    assert!(concurrent_sync.contains("big_total=1000"), "1000 concurrent: {}", concurrent_sync);
-    assert!(concurrent_sync.contains("big_ok=750"), "750 ok (3/4 of 1000): {}", concurrent_sync);
-    assert!(concurrent_sync.contains("big_fail=250"), "250 fail (1/4 of 1000): {}", concurrent_sync);
-    assert!(concurrent_sync.contains("CONCURRENT_SYNC_DONE"), "concurrent done: {}", concurrent_sync);
+    "#,
+    );
+    assert!(
+        concurrent_sync.contains("count=5"),
+        "5 fetches: {}",
+        concurrent_sync
+    );
+    assert!(
+        concurrent_sync.contains("r0=200:true:Hello from Bao"),
+        "fetch /: {}",
+        concurrent_sync
+    );
+    assert!(
+        concurrent_sync.contains("r1_count=1"),
+        "fetch /api/users: {}",
+        concurrent_sync
+    );
+    assert!(
+        concurrent_sync.contains("r2_name=X"),
+        "fetch user 42: {}",
+        concurrent_sync
+    );
+    assert!(
+        concurrent_sync.contains("r3_err=boom"),
+        "fetch /error: {}",
+        concurrent_sync
+    );
+    assert!(
+        concurrent_sync.contains("r4_status=404:ok=false"),
+        "fetch /missing: {}",
+        concurrent_sync
+    );
+    assert!(
+        concurrent_sync.contains("big_total=1000"),
+        "1000 concurrent: {}",
+        concurrent_sync
+    );
+    assert!(
+        concurrent_sync.contains("big_ok=750"),
+        "750 ok (3/4 of 1000): {}",
+        concurrent_sync
+    );
+    assert!(
+        concurrent_sync.contains("big_fail=250"),
+        "250 fail (1/4 of 1000): {}",
+        concurrent_sync
+    );
+    assert!(
+        concurrent_sync.contains("CONCURRENT_SYNC_DONE"),
+        "concurrent done: {}",
+        concurrent_sync
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 5. Real Promise.all + microtask drain — async fan-out works
@@ -466,7 +659,9 @@ fn test_realworld_http_service_all() {
     // calls — so we capture the result via a top-level .then that mutates
     // a string, and we read that string at the END of the same eval (after
     // chaining enough synchronous work to flush microtasks).
-    let async_drain = eval_string(&mut ctx, r#"
+    let async_drain = eval_string(
+        &mut ctx,
+        r#"
         // SpiderMonkey's RunJobs drains microtasks only when the script body
         // returns — JsContext::eval calls RunJobs *after* the return value is
         // captured, so observing .then side-effects from the same eval is
@@ -509,18 +704,45 @@ fn test_realworld_http_service_all() {
 
         results.push('ASYNC_DRAIN_DONE');
         results.join('|')
-    "#);
-    assert!(async_drain.contains("Promise_all_fn=ok"), "Promise.all is function: {}", async_drain);
-    assert!(async_drain.contains("Promise_resolve_call=ok"), "Promise.resolve callable: {}", async_drain);
-    assert!(async_drain.contains("Promise_then_fn=ok"), ".then is function: {}", async_drain);
-    assert!(async_drain.contains("Promise_all_three=ok"), "Promise.all of 3 promises: {}", async_drain);
-    assert!(async_drain.contains("Promise_then_chain_no_throw=ok"), ".then chain queues: {}", async_drain);
-    assert!(async_drain.contains("ASYNC_DRAIN_DONE"), "async drain done: {}", async_drain);
+    "#,
+    );
+    assert!(
+        async_drain.contains("Promise_all_fn=ok"),
+        "Promise.all is function: {}",
+        async_drain
+    );
+    assert!(
+        async_drain.contains("Promise_resolve_call=ok"),
+        "Promise.resolve callable: {}",
+        async_drain
+    );
+    assert!(
+        async_drain.contains("Promise_then_fn=ok"),
+        ".then is function: {}",
+        async_drain
+    );
+    assert!(
+        async_drain.contains("Promise_all_three=ok"),
+        "Promise.all of 3 promises: {}",
+        async_drain
+    );
+    assert!(
+        async_drain.contains("Promise_then_chain_no_throw=ok"),
+        ".then chain queues: {}",
+        async_drain
+    );
+    assert!(
+        async_drain.contains("ASYNC_DRAIN_DONE"),
+        "async drain done: {}",
+        async_drain
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 6. fetch() surface — Request / Response / Headers constructors
     // ═══════════════════════════════════════════════════════════════
-    let fetch_surface = eval_string(&mut ctx, r#"
+    let fetch_surface = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         function check(label, fn) {
             try { results.push(label + '=' + (fn() ? 'ok' : 'fail')); }
@@ -579,18 +801,63 @@ fn test_realworld_http_service_all() {
 
         results.push('FETCH_SURFACE_DONE');
         results.join('|')
-    "#);
-    assert!(fetch_surface.contains("fetch_fn=ok"), "fetch function: {}", fetch_surface);
-    assert!(fetch_surface.contains("Headers_ctor=ok"), "Headers ctor: {}", fetch_surface);
-    assert!(fetch_surface.contains("Response_ctor=ok"), "Response ctor: {}", fetch_surface);
-    assert!(fetch_surface.contains("Request_ctor=ok"), "Request ctor: {}", fetch_surface);
-    assert!(fetch_surface.contains("Headers_set_get=ok"), "Headers set/get: {}", fetch_surface);
-    assert!(fetch_surface.contains("Response_default_ok=ok"), "Response default: {}", fetch_surface);
-    assert!(fetch_surface.contains("Response_404_not_ok=ok"), "Response 404: {}", fetch_surface);
-    assert!(fetch_surface.contains("Request_url_method=ok"), "Request url/method: {}", fetch_surface);
-    assert!(fetch_surface.contains("fetch_returns_promise_object=ok"), "fetch returns promise: {}", fetch_surface);
-    assert!(fetch_surface.contains("fetch_refused_sync_state=ok"), "fetch refused: {}", fetch_surface);
-    assert!(fetch_surface.contains("FETCH_SURFACE_DONE"), "fetch surface done: {}", fetch_surface);
+    "#,
+    );
+    assert!(
+        fetch_surface.contains("fetch_fn=ok"),
+        "fetch function: {}",
+        fetch_surface
+    );
+    assert!(
+        fetch_surface.contains("Headers_ctor=ok"),
+        "Headers ctor: {}",
+        fetch_surface
+    );
+    assert!(
+        fetch_surface.contains("Response_ctor=ok"),
+        "Response ctor: {}",
+        fetch_surface
+    );
+    assert!(
+        fetch_surface.contains("Request_ctor=ok"),
+        "Request ctor: {}",
+        fetch_surface
+    );
+    assert!(
+        fetch_surface.contains("Headers_set_get=ok"),
+        "Headers set/get: {}",
+        fetch_surface
+    );
+    assert!(
+        fetch_surface.contains("Response_default_ok=ok"),
+        "Response default: {}",
+        fetch_surface
+    );
+    assert!(
+        fetch_surface.contains("Response_404_not_ok=ok"),
+        "Response 404: {}",
+        fetch_surface
+    );
+    assert!(
+        fetch_surface.contains("Request_url_method=ok"),
+        "Request url/method: {}",
+        fetch_surface
+    );
+    assert!(
+        fetch_surface.contains("fetch_returns_promise_object=ok"),
+        "fetch returns promise: {}",
+        fetch_surface
+    );
+    assert!(
+        fetch_surface.contains("fetch_refused_sync_state=ok"),
+        "fetch refused: {}",
+        fetch_surface
+    );
+    assert!(
+        fetch_surface.contains("FETCH_SURFACE_DONE"),
+        "fetch surface done: {}",
+        fetch_surface
+    );
 
     // ═══════════════════════════════════════════════════════════════
     // 7. Error propagation — JS exceptions surface as Rust Err
@@ -598,7 +865,11 @@ fn test_realworld_http_service_all() {
     let thrown = ctx.eval(r#"throw new Error("rest_handler_failure");"#, "<test>");
     assert!(thrown.is_err(), "thrown JS exception must surface as Err");
     let err_msg = format!("{:?}", thrown.unwrap_err());
-    assert!(err_msg.contains("rest_handler_failure"), "exception message preserved: {}", err_msg);
+    assert!(
+        err_msg.contains("rest_handler_failure"),
+        "exception message preserved: {}",
+        err_msg
+    );
 
     let syntax_err = ctx.eval("function bad( {", "<test>");
     assert!(syntax_err.is_err(), "syntax error must surface as Err");
@@ -609,7 +880,9 @@ fn test_realworld_http_service_all() {
     // Real-world users compose middlewares. Verify that the same patterns
     // work in Bao — a logging wrapper that records method/url, then a JSON
     // wrapper that sets Content-Type, around the actual route handler.
-    let middleware = eval_string(&mut ctx, r#"
+    let middleware = eval_string(
+        &mut ctx,
+        r#"
         var results = [];
         var log = [];
 
@@ -665,16 +938,53 @@ fn test_realworld_http_service_all() {
 
         results.push('MIDDLEWARE_DONE');
         results.join('|')
-    "#);
-    assert!(middleware.contains("mw1_status=200"), "middleware health status: {}", middleware);
-    assert!(middleware.contains("mw1_body={\"ok\":true}"), "middleware health body: {}", middleware);
-    assert!(middleware.contains("mw1_ct=application/json"), "middleware set CT: {}", middleware);
-    assert!(middleware.contains("mw2_status=404"), "middleware 404 status: {}", middleware);
-    assert!(middleware.contains("mw2_ct=application/json"), "middleware 404 CT: {}", middleware);
-    assert!(middleware.contains("log_len=2"), "logging captured 2 calls: {}", middleware);
-    assert!(middleware.contains("log0=GET /health"), "log[0]: {}", middleware);
-    assert!(middleware.contains("log1=GET /missing"), "log[1]: {}", middleware);
-    assert!(middleware.contains("MIDDLEWARE_DONE"), "middleware done: {}", middleware);
+    "#,
+    );
+    assert!(
+        middleware.contains("mw1_status=200"),
+        "middleware health status: {}",
+        middleware
+    );
+    assert!(
+        middleware.contains("mw1_body={\"ok\":true}"),
+        "middleware health body: {}",
+        middleware
+    );
+    assert!(
+        middleware.contains("mw1_ct=application/json"),
+        "middleware set CT: {}",
+        middleware
+    );
+    assert!(
+        middleware.contains("mw2_status=404"),
+        "middleware 404 status: {}",
+        middleware
+    );
+    assert!(
+        middleware.contains("mw2_ct=application/json"),
+        "middleware 404 CT: {}",
+        middleware
+    );
+    assert!(
+        middleware.contains("log_len=2"),
+        "logging captured 2 calls: {}",
+        middleware
+    );
+    assert!(
+        middleware.contains("log0=GET /health"),
+        "log[0]: {}",
+        middleware
+    );
+    assert!(
+        middleware.contains("log1=GET /missing"),
+        "log[1]: {}",
+        middleware
+    );
+    assert!(
+        middleware.contains("MIDDLEWARE_DONE"),
+        "middleware done: {}",
+        middleware
+    );
 
     // JsContext is zero-sized newtype over a pointer; the test Runtime is
     // intentionally leaked by for_test() to avoid mozjs TLS destructor crashes.
