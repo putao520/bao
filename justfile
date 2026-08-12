@@ -28,34 +28,39 @@ release_bin := "target/release/bao"
 
 # ─── 构建 ────────────────────────────────────────────────────────────────────
 
+# 生成 codegen stubs(bun_core/build.rs 需要 build/debug/codegen/*.rs 才能编译;
+# Bun 上游用 `bun bd` 生成,Bao 是确定性 SM-migration stub)。幂等,缺啥补啥。
+codegen:
+    ./scripts/ensure-codegen.sh
+
 # 构建 CLI binary(debug)。
-build:
+build: codegen
     cargo build --jobs {{jobs}} -p bao_bin
 
 # 构建 CLI binary(release,LTO,首次很慢)。
-build-release:
+build-release: codegen
     cargo build --release --jobs {{jobs}} -p bao_bin
 
 # 仅 check(不产 binary,比 build 快一点)。
-check:
+check: codegen
     cargo check --jobs {{jobs}} -p bao_bin
 
 # check 整个 workspace(慢,含 mozjs 全栈)。
-check-all:
+check-all: codegen
     cargo check --jobs {{jobs}} --workspace
 
 # ─── 测试 ────────────────────────────────────────────────────────────────────
 
 # 跑全仓测试(--jobs 1 / --test-threads=1 是 mozjs EBUSY 铁律)。
-test:
+test: codegen
     cargo test --jobs {{jobs}} -- --test-threads=1
 
 # 跑单个 crate 的测试。用法:just test-crate bao_browser
-test-crate crate:
+test-crate crate: codegen
     cargo test --jobs {{jobs}} -p {{crate}} -- --test-threads=1
 
 # 只跑 bao 库测试(快速回归)。
-test-lib:
+test-lib: codegen
     cargo test --jobs {{jobs}} -p bao --lib -- --test-threads=1
 
 # ─── 代码质量 ────────────────────────────────────────────────────────────────
@@ -74,11 +79,11 @@ fmt:
     cargo fmt
 
 # clippy(默认开 warnings,核心 bao_* crate)。
-lint:
+lint: codegen
     cargo clippy --jobs {{jobs}} -p bao_bin -p bao_browser -p bao_cdp -p bao_runtime
 
 # clippy 整个 workspace 并拒绝 warnings(严格,慢)。
-lint-strict:
+lint-strict: codegen
     cargo clippy --jobs {{jobs}} --workspace --all-targets -- -D warnings
 
 # ─── BCE 门禁(复用 Makefile,不重复造) ───────────────────────────────────────

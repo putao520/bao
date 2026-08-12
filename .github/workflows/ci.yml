@@ -80,6 +80,11 @@ jobs:
             ${{ runner.os }}-target-check-
             ${{ runner.os }}-target-
 
+      # Generate the Bao codegen stubs (bun_core/build.rs requires them; Bun
+      # upstream generates via `bun bd`, Bao uses deterministic SM-migration stubs).
+      - name: Ensure codegen stubs
+        run: ./scripts/ensure-codegen.sh
+
       # --jobs 1 是 CLAUDE.md 铁律(mozjs EBUSY patch 在 libtest 线程池下需要单线程编译)
       # 只 check bao_bin(bao_engine + bao_browser + bao_cdp + bao_cli 链路);
       # vendor/servo 在 workspace 外,不需要 check。
@@ -130,6 +135,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-target-clippy-
             ${{ runner.os }}-target-
+
+      # Generate codegen stubs (required by bun_core/build.rs before any cargo step).
+      - name: Ensure codegen stubs
+        run: ./scripts/ensure-codegen.sh
 
       # TODO(后续优化): 初版允许 warnings 不阻断 PR,待核心 lint 清零后改 -D warnings
       # 只对 bao_bin 链路 clippy,避免对 vendor/bun_* 上游 crate 跑(那是外部维护的)

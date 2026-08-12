@@ -56,6 +56,11 @@ command -v pkg-config >/dev/null 2>&1 || warn "pkg-config not found — some ven
 # ─── 3. Build ────────────────────────────────────────────────────────────────
 cd "$(dirname "$0")/.."
 
+# Generate the codegen stubs bun_core/build.rs requires (Bun upstream uses
+# `bun bd`; Bao uses deterministic SM-migration stubs). Idempotent.
+say "Ensuring codegen stubs (build/debug/codegen)..."
+./scripts/ensure-codegen.sh
+
 say "Building bao_bin ($BUILD_MODE). First build compiles SpiderMonkey — this is slow."
 if [ "$BUILD_MODE" = "release" ]; then
     # --jobs 1 is NOT required for build (only for `cargo test` per the EBUSY patch).

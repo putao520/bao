@@ -67,6 +67,11 @@ jobs:
             ${{ runner.os }}-target-release-
             ${{ runner.os }}-target-
 
+      # Generate codegen stubs (bun_core/build.rs reads build/debug/codegen for
+      # all profiles; ensure-codegen.sh defaults to that path).
+      - name: Ensure codegen stubs
+        run: ./scripts/ensure-codegen.sh
+
       # release 构建首次比 debug 更慢(LTO + codegen-units=1 等);--jobs 1 是铁律
       - name: Build bao_bin (--release --jobs 1)
         run: cargo build --release --jobs 1 -p bao_bin

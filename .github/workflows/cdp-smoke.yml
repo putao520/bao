@@ -62,6 +62,9 @@ jobs:
             ${{ runner.os }}-target-cdp-
             ${{ runner.os }}-target-
 
+      - name: Ensure codegen stubs
+        run: ./scripts/ensure-codegen.sh
+
       - name: Build bao_bin (--jobs 1, debug)
         run: cargo build --jobs 1 -p bao_bin
 

@@ -65,6 +65,10 @@ jobs:
             ${{ runner.os }}-target-smoke-
             ${{ runner.os }}-target-
 
+      # Generate codegen stubs (required by bun_core/build.rs before building).
+      - name: Ensure codegen stubs
+        run: ./scripts/ensure-codegen.sh
+
       # 首次构建 bao_bin 极慢(mozjs 编译 SpiderMonkey 20-40 分钟),timeout 已设 90min
       - name: Build bao_bin (--jobs 1, debug)
         run: cargo build --jobs 1 -p bao_bin
