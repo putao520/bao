@@ -64,28 +64,30 @@ Bao 是 monorepo,**不同目录的修改门槛不同**。提交 PR 前请先确�
 
 ## 构建与测试
 
+CI 跑**本地**(`just`):mozjs 从源码编译 SpiderMonkey,hosted CI runner 上太慢,所以权威的"是否通过"判定在本地 justfile。
+
 ```bash
 # 克隆
 git clone https://github.com/putao520/bao.git
 cd bao
 
-# 全量构建(首次会编译 mozjs,慢)
-cargo build
+# 一键(工具链 + 构建 + 环境自检)
+./scripts/bootstrap.sh
 
-# 只构建 CLI 二进制(产物:target/debug/bao)
-cargo build -p bao_bin
+# 本地 CI 全流程(fmt + lint + check + test + bce)— 权威判定
+just ci
 
-# 校验对外公共 package
-cargo check -p bao
-cargo test  -p bao
-
-# 全仓测试
-cargo test
+# 或手动
+cargo build -p bao_bin      # target/debug/bao
+cargo test -p bao           # 公共 package 测试
+just bce                    # BCE 门禁(等价 make bce-check)
 ```
+
+`just`(1.57+)是必需的。所有 cargo recipe 已强制 `--jobs 1`,无需手动加。
 
 ### Rust CI 必须单线程(`--jobs 1`)
 
-**重要**:在 CI 或任何正式验证环境跑 `cargo test` / `clippy` / `build` 时,**必须加 `--jobs 1`**:
+**重要**:在 CI 或任何正式验证环境跑 `cargo test` / `clippy` / `build` 时,**必须加 `--jobs 1`**(justfile 已统一处理):
 
 ```bash
 cargo test   --jobs 1

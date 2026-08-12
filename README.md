@@ -71,6 +71,21 @@ bao doctor                    # check your environment
 bao run -e 'console.log(1 + 1)'          # Node/Bun APIs always available
 ```
 
+### Local CI with `just`
+
+CI runs **locally** — mozjs compiles SpiderMonkey from source, which is too slow
+to be practical on hosted CI runners. The [`justfile`](./justfile) is the
+authoritative "does it pass" entry point (`just` is required; all cargo steps
+force `--jobs 1` per the mozjs EBUSY patch):
+
+```bash
+just ci          # full local CI: fmt + lint + check + test + bce
+just ci-fast     # skip the slow test suite
+just bce         # BCE regression gates (Bug-Class Eradication)
+just smoke       # launch `bao browser` under Xvfb + verify CDP (needs xvfb-run)
+just             # list all recipes
+```
+
 ### 30-second demo
 
 ```js
