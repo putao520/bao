@@ -920,11 +920,14 @@ fn permission_guard_clone_preserves_restrictions() {
 
 #[test]
 fn page_state_all_variants_are_distinct() {
+    // SM PageLifecycle (SPEC 03-PROCESS): 6 states including intermediate Closing.
+    // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state distinct
     let states = [
         PageState::Created,
         PageState::Navigating,
         PageState::Interactive,
         PageState::Idle,
+        PageState::Closing,
         PageState::Closed,
     ];
     for i in 0..states.len() {
@@ -940,6 +943,7 @@ fn page_state_variants_equal_to_themselves() {
     assert_eq!(PageState::Navigating, PageState::Navigating);
     assert_eq!(PageState::Interactive, PageState::Interactive);
     assert_eq!(PageState::Idle, PageState::Idle);
+    assert_eq!(PageState::Closing, PageState::Closing);
     assert_eq!(PageState::Closed, PageState::Closed);
 }
 
@@ -993,14 +997,17 @@ fn page_state_lifecycle_ordering() {
 }
 
 #[test]
-fn page_state_count_is_five() {
+fn page_state_count_is_six() {
+    // SM PageLifecycle (SPEC 03-PROCESS): 6 states (Created/Navigating/Interactive/Idle/Closing/Closed).
+    // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state in enum
     // Ensure no variants are accidentally added/removed
     let all = [
         PageState::Created,
         PageState::Navigating,
         PageState::Interactive,
         PageState::Idle,
+        PageState::Closing,
         PageState::Closed,
     ];
-    assert_eq!(all.len(), 5);
+    assert_eq!(all.len(), 6);
 }

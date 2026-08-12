@@ -252,11 +252,14 @@ use bao_browser::PageState;
 
 #[test]
 fn test_page_state_variants() {
+    // SM PageLifecycle (SPEC 03-PROCESS): 6 states including intermediate Closing.
+    // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state in enum
     let states = [
         PageState::Created,
         PageState::Navigating,
         PageState::Interactive,
         PageState::Idle,
+        PageState::Closing,
         PageState::Closed,
     ];
     let names: Vec<String> = states.iter().map(|s| format!("{:?}", s)).collect();
@@ -264,7 +267,8 @@ fn test_page_state_variants() {
     assert!(names[1].contains("Navigating"));
     assert!(names[2].contains("Interactive"));
     assert!(names[3].contains("Idle"));
-    assert!(names[4].contains("Closed"));
+    assert!(names[4].contains("Closing"));
+    assert!(names[5].contains("Closed"));
 }
 
 #[test]

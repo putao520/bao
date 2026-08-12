@@ -234,7 +234,9 @@ fn test_permission_exact_path_match() {
 #[test]
 fn test_page_state_variants() {
     use bao_browser::PageState;
-    let states = [PageState::Created, PageState::Navigating, PageState::Interactive, PageState::Idle, PageState::Closed];
+    // SM PageLifecycle (SPEC 03-PROCESS): 6 states including intermediate Closing.
+    // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state in enum
+    let states = [PageState::Created, PageState::Navigating, PageState::Interactive, PageState::Idle, PageState::Closing, PageState::Closed];
     // Verify all variants exist and are distinct
     for i in 0..states.len() {
         for j in (i+1)..states.len() {

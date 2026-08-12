@@ -3,9 +3,20 @@
 // Test 2: single page, multi nav (no evaluate between)
 // Test 3: single page, evaluate + nav + evaluate (the original sequence)
 
+// @trace BCE-20260627-004 [criterion:REQ-BRW-004-C18] [nfr:NFR-MEMSAF-001]
+// EBUSY regression anchor: this file exercises the BaoRuntime/Servo lifecycle
+// (create → eval → nav → close) under a single thread. When run with
+// BAO_TEST_NETWORK=1 + DISPLAY, it confirms the mozjs Mutex_posix.cpp EBUSY
+// patch tolerates pthread_mutex_destroy returning EBUSY during libtest
+// thread-pool TLS teardown — the original PagePool chaos SIGSEGV root cause.
+// The dedicated handle-level EBUSY regression lives in bce004_stress_tests.rs
+// (bce20260627_004_nfr_memsaf_001_ebusy_mutex_destroy_regression).
+
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle};
+use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, WorkerHandle};
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 fn wait_for_load(page: &PageHandle, max_ms: u64) {
@@ -135,4 +146,110 @@ fn bce004_iso_create_close_create() {
         let _ = page.close();
     }
     eprintln!("[iso-close-create] PASS — 5 create/eval/close cycles no SIGSEGV");
+}
+
+// ===========================================================================
+// BCE-20260627-004 — handle-level concurrent teardown (no live servo required)
+// ===========================================================================
+//
+// @trace BCE-20260627-004 [criterion:REQ-BRW-004-C18] [nfr:NFR-MEMSAF-001]
+//
+// Companion to bce004_stress_tests.rs. WorkerHandle is Arc<AtomicBool>-backed
+// and fully Send+Sync, so we can exercise the C18 closing-flag consistency
+// invariant without a live BaoRuntime. This test covers the gap that the
+// SIGSEGV-isolating E2E tests above leave when BAO_TEST_NETWORK/DISPLAY are
+// unset — it runs unconditionally.
+
+/// BCE-20260627-004 — concurrent terminate() across cloned WorkerHandles.
+///
+/// @trace BCE-20260627-004 [criterion:REQ-BRW-004-C18]
+///
+/// Spawns N threads, each holding an Arc-clone of the same WorkerHandle, all
+/// calling terminate() + mark_terminated() concurrently. Asserts the closing
+/// and terminated flags are atomically visible to all threads after join.
+#[test]
+fn bce20260627_004_iso_concurrent_terminate_atomic_visibility() {
+    const THREADS: usize = 8;
+
+    let handle = WorkerHandle::new("iso-race-worker.js".to_string());
+    let clones: Vec<WorkerHandle> = (0..THREADS).map(|_| handle.clone()).collect();
+
+    let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+    let mut joins = Vec::with_capacity(THREADS);
+    for c in clones {
+        let b = Arc::clone(&barrier);
+        joins.push(thread::spawn(move || {
+            b.wait();
+            // Idempotent terminate + mark_terminated under concurrency.
+            c.terminate();
+            c.mark_terminated();
+            c.terminate(); // double-terminate must not panic
+        }));
+    }
+    for j in joins {
+        j.join().expect("iso race thread panicked");
+    }
+
+    // Acquire-load must observe the Release-stores from all threads.
+    assert!(
+        handle.is_closing(),
+        "closing flag not visible after 8-thread terminate"
+    );
+    assert!(
+        handle.is_terminated(),
+        "terminated flag not visible after 8-thread mark_terminated"
+    );
+    // Flag is Acquire-stable across repeated reads.
+    for _ in 0..100 {
+        assert!(handle.is_closing(), "closing flag flickered (torn read)");
+        assert!(handle.is_terminated(), "terminated flag flickered (torn read)");
+    }
+    eprintln!(
+        "[bce20260627-004/iso] {}-thread concurrent terminate OK: flags atomically visible",
+        THREADS
+    );
+}
+
+/// BCE-20260627-004 — REALM_PROFILES unregister safety under concurrent teardown.
+///
+/// @trace BCE-20260627-004 [criterion:REQ-BRW-004-C18]
+///
+/// Concurrent unregister_stealth_profile() on the same handle must not panic
+/// or race (the addr slot is a single AtomicU64, the DashMap remove is
+/// internally synchronized). C18 requires "REALM_PROFILES 条目注销" be
+/// crash-safe on all three teardown paths.
+#[test]
+fn bce20260627_004_iso_concurrent_unregister_stealth_profile_safe() {
+    const THREADS: usize = 8;
+    const ITERS: usize = 500;
+
+    let handle = WorkerHandle::new("iso-unreg-worker.js".to_string());
+    handle.set_worker_global_addr(0xBEEF); // non-zero so unregister actually looks up
+
+    let clones: Vec<WorkerHandle> = (0..THREADS).map(|_| handle.clone()).collect();
+    let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+    let mut joins = Vec::with_capacity(THREADS);
+    for c in clones {
+        let b = Arc::clone(&barrier);
+        joins.push(thread::spawn(move || {
+            b.wait();
+            for _ in 0..ITERS {
+                // Concurrent unregister on the same global addr — must be safe.
+                c.unregister_stealth_profile();
+            }
+        }));
+    }
+    for j in joins {
+        j.join().expect("iso unregister race thread panicked");
+    }
+    // Final state: addr still readable, no torn value.
+    assert_eq!(
+        handle.worker_global_addr(),
+        0xBEEF,
+        "global addr slot torn by concurrent unregister"
+    );
+    eprintln!(
+        "[bce20260627-004/iso] concurrent unregister_stealth_profile OK: {} threads x {} iters, zero panic",
+        THREADS, ITERS
+    );
 }

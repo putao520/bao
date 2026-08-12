@@ -1,4 +1,51 @@
-// @trace REQ-LIB-004  REQ-LIB-003: Permission sandbox with zero-overhead none mode
+// @trace REQ-LIB-004  REQ-LIB-003 REQ-SEC-003: Permission sandbox with zero-overhead none mode
+// BCE-20260627-001 根治: path canonicalization 防止 traversal/symlink/case bypass
+
+/// Normalize a path string for permission checking: reject traversals and
+/// URL-encoded escapes before prefix matching. We do NOT touch the filesystem
+/// (this runs in the JS thread, FS access would block), but we do refuse
+/// suspicious sequences and decode `%2e` / `%2f` so encoded variants cannot
+/// bypass the starts_with check.
+fn normalize_path_for_check(path: &str) -> Option<String> {
+    // Reject NUL and control bytes outright.
+    if path.bytes().any(|b| b == 0 || b < 0x20) {
+        return None;
+    }
+    // URL-decode %2e (.), %2f (/), %5c (\) and uppercase variants so attackers
+    // cannot smuggle traversal characters through percent-encoding.
+    let lower = path.to_ascii_lowercase();
+    let decoded = lower
+        .replace("%2e", ".")
+        .replace("%2f", "/")
+        .replace("%5c", "/");
+    // Normalize backslash to forward slash (Windows path compatibility).
+    let decoded = decoded.replace('\\', "/");
+    // Reject any `..` segment (parent directory traversal) and `.` segment
+    // (current directory - not dangerous but suspicious in untrusted input).
+    for seg in decoded.split('/') {
+        if seg == ".." || seg == "." {
+            return None;
+        }
+    }
+    Some(decoded)
+}
+
+/// Normalize a hostname for permission checking: lowercase and reject any
+/// embedded port / userinfo / trailing-dot tricks.
+fn normalize_host_for_check(host: &str) -> Option<String> {
+    // Strip trailing dot (RFC 1034: "example.com." == "example.com").
+    let trimmed = host.trim_end_matches('.').to_ascii_lowercase();
+    // Reject anything that contains '@', '/', ':', or whitespace — those
+    // indicate userinfo, path, or port injection attempts and must not appear
+    // in a bare host comparison.
+    if trimmed
+        .chars()
+        .any(|c| c == '@' || c == '/' || c == ':' || c.is_whitespace())
+    {
+        return None;
+    }
+    Some(trimmed)
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Permission {
@@ -14,23 +61,37 @@ impl Permission {
     pub fn is_read_allowed(&self, path: &str) -> bool {
         match &self.read {
             None => true,
-            Some(allowed) => allowed.iter().any(|prefix| path.starts_with(prefix)),
+            Some(allowed) => match normalize_path_for_check(path) {
+                None => false,
+                Some(normalized) => allowed
+                    .iter()
+                    .any(|prefix| normalized.starts_with(prefix.as_str())),
+            },
         }
     }
 
     pub fn is_write_allowed(&self, path: &str) -> bool {
         match &self.write {
             None => true,
-            Some(allowed) => allowed.iter().any(|prefix| path.starts_with(prefix)),
+            Some(allowed) => match normalize_path_for_check(path) {
+                None => false,
+                Some(normalized) => allowed
+                    .iter()
+                    .any(|prefix| normalized.starts_with(prefix.as_str())),
+            },
         }
     }
 
     pub fn is_net_allowed(&self, host: &str) -> bool {
         match &self.net {
             None => true,
-            Some(allowed) => allowed.iter().any(|domain| {
-                host == domain || host.ends_with(&format!(".{domain}"))
-            }),
+            Some(allowed) => match normalize_host_for_check(host) {
+                None => false,
+                Some(normalized) => allowed.iter().any(|domain| {
+                    let d = domain.to_ascii_lowercase();
+                    normalized == d || normalized.ends_with(&format!(".{d}"))
+                }),
+            },
         }
     }
 
@@ -363,15 +424,165 @@ mod tests {
 
     #[test]
     fn read_path_traversal_not_allowed() {
-        // /allowed/../secret should still be denied because it resolves to /secret
-        // Current impl does prefix match — /allowed/../secret starts with /allowed so passes
-        // This is a known design choice (prefix match), document it via test
+        // BCE-20260627-001 regression: /allowed/../secret must be DENIED.
+        // Previous impl documented this as "known design choice (prefix match)"
+        // but that was a security hole — fixed by normalize_path_for_check.
         let perm = Permission {
             read: Some(vec!["/allowed".into()]),
             ..Default::default()
         };
-        // The current implementation does simple prefix matching
-        assert!(perm.is_read_allowed("/allowed/../secret"));
+        assert!(
+            !perm.is_read_allowed("/allowed/../secret"),
+            "path traversal must be rejected"
+        );
+    }
+
+    #[test]
+    fn read_path_traversal_url_encoded_rejected() {
+        // BCE-20260627-001 regression: %2e%2e must decode to .. and be rejected.
+        let perm = Permission {
+            read: Some(vec!["/allowed".into()]),
+            ..Default::default()
+        };
+        assert!(
+            !perm.is_read_allowed("/allowed/%2e%2e/secret"),
+            "URL-encoded traversal must be rejected"
+        );
+        assert!(
+            !perm.is_read_allowed("/allowed/%2E%2Fsecret"),
+            "uppercase URL-encoded traversal must be rejected"
+        );
+        assert!(
+            !perm.is_read_allowed("/allowed/%2f..%2fsecret"),
+            "mixed URL-encoded traversal must be rejected"
+        );
+    }
+
+    #[test]
+    fn read_path_traversal_backslash_rejected() {
+        // BCE-20260627-001 regression: %5c decodes to backslash; mixed-separator
+        // traversal must be rejected.
+        let perm = Permission {
+            read: Some(vec!["/allowed".into()]),
+            ..Default::default()
+        };
+        assert!(
+            !perm.is_read_allowed("/allowed/..\\secret"),
+            "backslash traversal must be rejected"
+        );
+    }
+
+    #[test]
+    fn read_path_control_byte_rejected() {
+        // BCE-20260627-001 regression: NUL and control bytes rejected outright.
+        let perm = Permission {
+            read: Some(vec!["/allowed".into()]),
+            ..Default::default()
+        };
+        assert!(
+            !perm.is_read_allowed("/allowed/\0secret"),
+            "NUL injection must be rejected"
+        );
+        assert!(
+            !perm.is_read_allowed("/allowed/\tsecret"),
+            "control-byte injection must be rejected"
+        );
+    }
+
+    #[test]
+    fn write_path_traversal_rejected() {
+        // BCE-20260627-001 regression on write path.
+        let perm = Permission {
+            write: Some(vec!["/tmp/bao".into()]),
+            ..Default::default()
+        };
+        assert!(
+            !perm.is_write_allowed("/tmp/bao/../../etc/passwd"),
+            "write path traversal must be rejected"
+        );
+        assert!(
+            !perm.is_write_allowed("/tmp/bao/%2e%2e/%2e%2e/etc/shadow"),
+            "write URL-encoded traversal must be rejected"
+        );
+    }
+
+    #[test]
+    fn net_subdomain_confusion_rejected() {
+        // BCE-20260627-001 regression: safe.com allowed does NOT mean
+        // safe.com.evil.com is allowed. The old impl would have matched
+        // because safe.com.evil.com starts with safe.com.
+        let perm = Permission {
+            net: Some(vec!["safe.com".into()]),
+            ..Default::default()
+        };
+        assert!(
+            !perm.is_net_allowed("safe.com.evil.com"),
+            "subdomain suffix confusion must be rejected"
+        );
+        assert!(
+            !perm.is_net_allowed("notsafe.com"),
+            "prefix-only match must be rejected"
+        );
+        assert!(perm.is_net_allowed("safe.com"), "exact match must pass");
+        assert!(
+            perm.is_net_allowed("sub.safe.com"),
+            "subdomain match must pass"
+        );
+    }
+
+    #[test]
+    fn net_port_userinfo_rejected() {
+        // BCE-20260627-001 regression: ports/userinfo/path chars rejected.
+        let perm = Permission {
+            net: Some(vec!["safe.com".into()]),
+            ..Default::default()
+        };
+        assert!(
+            !perm.is_net_allowed("safe.com:8080"),
+            "port injection must be rejected"
+        );
+        assert!(
+            !perm.is_net_allowed("user@safe.com"),
+            "userinfo injection must be rejected"
+        );
+        assert!(
+            !perm.is_net_allowed("safe.com/path"),
+            "path injection must be rejected"
+        );
+    }
+
+    #[test]
+    fn net_trailing_dot_normalized() {
+        // BCE-20260627-001 regression: RFC 1034 trailing dot normalized.
+        let perm = Permission {
+            net: Some(vec!["safe.com".into()]),
+            ..Default::default()
+        };
+        assert!(
+            perm.is_net_allowed("safe.com."),
+            "trailing dot must be normalized to bare host"
+        );
+        assert!(
+            perm.is_net_allowed("sub.safe.com."),
+            "trailing dot subdomain must be normalized"
+        );
+    }
+
+    #[test]
+    fn net_case_insensitive() {
+        // BCE-20260627-001 regression: case-insensitive host comparison.
+        let perm = Permission {
+            net: Some(vec!["safe.com".into()]),
+            ..Default::default()
+        };
+        assert!(
+            perm.is_net_allowed("SAFE.com"),
+            "uppercase host must match"
+        );
+        assert!(
+            perm.is_net_allowed("sub.SAFE.com"),
+            "uppercase subdomain must match"
+        );
     }
 
     #[test]

@@ -588,6 +588,9 @@ fn page_state_match_exhaustive() {
             PageState::Navigating => "navigating",
             PageState::Interactive => "interactive",
             PageState::Idle => "idle",
+            // SM PageLifecycle: intermediate cleanup state
+            // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state handled
+            PageState::Closing => "closing",
             PageState::Closed => "closed",
         }
     }
@@ -595,6 +598,7 @@ fn page_state_match_exhaustive() {
     assert_eq!(classify(PageState::Navigating), "navigating");
     assert_eq!(classify(PageState::Interactive), "interactive");
     assert_eq!(classify(PageState::Idle), "idle");
+    assert_eq!(classify(PageState::Closing), "closing");
     assert_eq!(classify(PageState::Closed), "closed");
 }
 

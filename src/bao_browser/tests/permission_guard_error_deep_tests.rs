@@ -440,14 +440,17 @@ fn test_browser_error_debug() {
 
 #[test]
 fn test_page_state_variants() {
+    // SM PageLifecycle (SPEC 03-PROCESS): 6 states including intermediate Closing.
+    // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state in enum
     let states = [
         PageState::Created,
         PageState::Navigating,
         PageState::Interactive,
         PageState::Idle,
+        PageState::Closing,
         PageState::Closed,
     ];
-    assert_eq!(states.len(), 5);
+    assert_eq!(states.len(), 6);
 }
 
 #[test]
@@ -456,7 +459,8 @@ fn test_page_state_equality() {
     assert_ne!(PageState::Created, PageState::Navigating);
     assert_ne!(PageState::Navigating, PageState::Interactive);
     assert_ne!(PageState::Interactive, PageState::Idle);
-    assert_ne!(PageState::Idle, PageState::Closed);
+    assert_ne!(PageState::Idle, PageState::Closing);
+    assert_ne!(PageState::Closing, PageState::Closed);
 }
 
 #[test]

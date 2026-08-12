@@ -29,6 +29,11 @@ pub enum PageState {
     Navigating,
     Interactive,
     Idle,
+    /// Intermediate cleanup state (SM PageLifecycle, SPEC 03-PROCESS).
+    /// Entered on: close_during_load / idle_ttl_expired / close.
+    /// Exited on: cleanup_complete → Closed.
+    /// @trace REQ-BRW-001 [sm:PageLifecycle]
+    Closing,
     Closed,
 }
 
@@ -1131,6 +1136,10 @@ impl PageHandle {
     pub fn close(&self) -> Result<(), BrowserError> {
         let mut borrow = self.inner.borrow_mut();
         if let Some(inner) = borrow.take() {
+            // SM PageLifecycle (SPEC 03-PROCESS): transition to Closing FIRST,
+            // before any cleanup. Covers: close_during_load / idle_ttl_expired / close.
+            // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state
+            *inner.state.borrow_mut() = PageState::Closing;
             // @trace REQ-BRW-004 [entity:Worker] [criterion:10]
             // SPEC criterion #10: "页面卸载时自动终止所有 Worker
             // (GlobalScope::track_worker + AutoCloseWorker)".
@@ -1169,6 +1178,8 @@ impl PageHandle {
             if !ng.is_null() {
                 bao_stealth::engine_props::remove_profile_for_global(ng as usize);
             }
+            // SM PageLifecycle: cleanup_complete → Closed
+            // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: cleanup_complete transition
             *inner.state.borrow_mut() = PageState::Closed;
             drop(inner);
         }
@@ -1348,6 +1359,7 @@ mod tests {
         assert_eq!(PageState::Navigating, PageState::Navigating);
         assert_eq!(PageState::Interactive, PageState::Interactive);
         assert_eq!(PageState::Idle, PageState::Idle);
+        assert_eq!(PageState::Closing, PageState::Closing);
         assert_eq!(PageState::Closed, PageState::Closed);
     }
 
@@ -1371,7 +1383,17 @@ mod tests {
         assert!(format!("{:?}", PageState::Navigating).contains("Navigating"));
         assert!(format!("{:?}", PageState::Interactive).contains("Interactive"));
         assert!(format!("{:?}", PageState::Idle).contains("Idle"));
+        assert!(format!("{:?}", PageState::Closing).contains("Closing"));
         assert!(format!("{:?}", PageState::Closed).contains("Closed"));
+    }
+
+    #[test]
+    fn page_state_closing_distinct_from_neighbors() {
+        // SM PageLifecycle: Closing is a distinct intermediate state, not equal
+        // to its entry (Idle/Interactive/Navigating) or exit (Closed) neighbors.
+        assert_ne!(PageState::Closing, PageState::Idle);
+        assert_ne!(PageState::Closing, PageState::Interactive);
+        assert_ne!(PageState::Closing, PageState::Closed);
     }
 
     #[test]

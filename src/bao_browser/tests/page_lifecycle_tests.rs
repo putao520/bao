@@ -9,7 +9,9 @@ use bao_browser::{BrowserError, PageState, Permission, PermissionGuard};
 
 #[test]
 fn test_page_state_variants_distinct() {
-    let states = [PageState::Created, PageState::Navigating, PageState::Interactive, PageState::Idle, PageState::Closed];
+    // SM PageLifecycle (SPEC 03-PROCESS): Closing is a distinct intermediate state.
+    // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state distinct
+    let states = [PageState::Created, PageState::Navigating, PageState::Interactive, PageState::Idle, PageState::Closing, PageState::Closed];
     for i in 0..states.len() {
         for j in (i+1)..states.len() {
             assert_ne!(states[i], states[j], "{:?} should differ from {:?}", states[i], states[j]);
@@ -23,6 +25,7 @@ fn test_page_state_debug() {
     assert!(format!("{:?}", PageState::Navigating).contains("Navigating"));
     assert!(format!("{:?}", PageState::Interactive).contains("Interactive"));
     assert!(format!("{:?}", PageState::Idle).contains("Idle"));
+    assert!(format!("{:?}", PageState::Closing).contains("Closing"));
     assert!(format!("{:?}", PageState::Closed).contains("Closed"));
 }
 
