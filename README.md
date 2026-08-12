@@ -116,7 +116,7 @@ console.log(await page.title());               // backed by Servo, not Chromium
 ## Compatibility Matrix
 
 What works today. **Not everything is green** — partial/experimental is listed
-honestly; that's the point. Measured pass rates live in `compat/` (in progress).
+honestly; that's the point. Measured pass rates live in [`compat/`](./compat).
 
 | Capability | Bao | Status |
 |---|:---:|---|
@@ -125,7 +125,8 @@ honestly; that's the point. Measured pass rates live in `compat/` (in progress).
 | WebRender | ✓ | Servo |
 | JavaScript (SpiderMonkey) | ✓ | mozjs |
 | CommonJS / ESM | ✓ | Bao/Bun |
-| `fs` / `path` / `crypto` / `http` | ✓ | Bao/Bun |
+| Node API (`fs`/`path`/`url`/`events`/`assert`/`util`/`stream`/`http`) | ✓ 98% | [10-module conformance](./compat/node/README.md): 254 checks, 5 gaps |
+| Node `crypto` | Partial ~85% | 5 advanced-primitive gaps (X509/ECDH/hkdf/DH/HMAC-MD5) |
 | `bun:sqlite` / `bun:ffi` | ✓ | Bao/Bun |
 | WebSocket | Partial | — |
 | CDP Page / Runtime / DOM / Network | ✓ | 12 domains |
@@ -134,6 +135,11 @@ honestly; that's the point. Measured pass rates live in `compat/` (in progress).
 | Puppeteer over CDP | Experimental | — |
 | Platform: Linux x86_64 | ✓ | primary |
 | Platform: macOS / Windows | — | event loop not yet proven |
+
+> The 98% Node figure covers the 10 modules with conformance tests
+> ([GAP_REPORT](./src/bao_runtime/tests/node_conformance/GAP_REPORT.md));
+> ~19 more modules have deep tests but are not yet aggregated (`TBD` in
+> `compat/node/`). **No fabricated numbers** — every ✓% is a measured check count.
 
 ---
 

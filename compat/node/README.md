@@ -9,39 +9,55 @@ Bao 在 SpiderMonkey 之上实现 Node.js / Bun 兼容 API。本目录对照 Nod
 
 ## 已覆盖模块(从 `src/bao_runtime/tests/` 与 `tests/` 盘点)
 
-下列模块**已有测试存在**(在 `src/bao_runtime/tests/` 与 `tests/`),但**尚未聚合**为统一通过率报告。
+下表分两类:
+- **Conformance 测量值**(来自 [`node_conformance/GAP_REPORT.md`](../../src/bao_runtime/tests/node_conformance/GAP_REPORT.md),对照 Node.js/Bun 参考行为逐 check 实测)——这些是真实通过率。
+- **仅有 deep_tests、未做 conformance 聚合**的模块——标 `TBD`,诚实保留。
+
+> 数据来源:`src/bao_runtime/tests/node_conformance/GAP_REPORT.md`(TASK-16d 收口)。Conformance % = 通过的 implemented checks / (implemented checks);gap 数 = 已知未实现的 Node-API(TASK-16d 已清零 9 个模块的 API-shape gap,仅 crypto 留 5 个高级原语)。
+
+### Conformance 测量值(10 模块,实测)
+
+| Module | Implemented checks | Node-API gaps | Conformance % | Notes |
+|--------|-------------------:|--------------:|--------------:|-------|
+| `buffer` | 39 | 0 | **100%** | — |
+| `path` | 32 | 0 | **100%** | incl. win32, matchesGlob |
+| `fs` | 23 | 0 | **100%** | incl. watch/cp |
+| `url` | 17 | 0 | **100%** | incl. pathToFileURL/domainTo* |
+| `events` | 26 | 0 | **100%** | incl. defaultMaxListeners/errorMonitor |
+| `assert` | 25 | 0 | **100%** | incl. strict |
+| `util` | 26 | 0 | **100%** | incl. styleText/isDeepStrictEqual/promisify |
+| `stream` | 12 | 0 | **100%** | — |
+| `http` | 15 | 0 | **100%** | — |
+| `crypto` | 29 | 5 | **~85%** | gaps: X509/ECDH/hkdf/DH/HMAC-MD5(高级原语,非 TASK-16d 范围) |
+
+**10 模块 conformance 合计:254 checks / 5 gaps = 98.0%**(按 implemented check 计;5 gap 是 crypto 的高级原语未实现)。
+
+### 仅有 deep_tests、未做 conformance 聚合(TBD)
+
+下列模块**已有 deep_tests 存在**,但未跑 conformance 逐 check 对照,通过率待聚合:
 
 | Module | 测试文件存在 | Pass Rate | Notes |
 |--------|:---:|:---:|-------|
-| `assert` | ✓ `assert_deep_tests.rs`, `node_assert_deep_tests.rs`, `node_assert_util_tests.rs` | TBD | tests exist, not aggregated |
-| `buffer` | ✓ `buffer_deep_tests.rs`, `buffer_module_tests.rs`, `node_buffer_tests.rs`, `test_upstream_buffer.js`, `stream_buffer_assert_tests.rs` | TBD | tests exist, not aggregated |
 | `child_process` | ✓ `child_process_deep_tests.rs`, `child_process_vm_module_tests.rs` | TBD | tests exist, not aggregated |
-| `crypto` | ✓ `crypto_deep_tests.rs`, `node_crypto_tests.rs`, `realworld_crypto_workflow_tests.rs`, `test_crypto_cipher.js` | TBD | tests exist, not aggregated |
 | `dgram` | ✓ `node_dgram_inspector_deep_tests.rs` | TBD | tests exist, not aggregated |
 | `dns` | ✓ `dns_net_deep_tests.rs`, `node_dns_net_tests.rs` | TBD | tests exist, not aggregated |
-| `events` | ✓ `events_deep_tests.rs`, `events_path_deep_tests.rs`, `node_events_tests.rs`, `test_upstream_events.js` | TBD | tests exist, not aggregated |
-| `fs` | ✓ `fs_deep_tests.rs`, `fs_buffer_write_tests.rs`, `node_fs_tests.rs` | TBD | tests exist, not aggregated |
-| `http` / `https` | ✓ `http_https_deep_tests.rs`, `http_client_deep_tests.rs`, `node_http_tests.rs`, `test_http_depth.js` | TBD | tests exist, not aggregated |
 | `net` | ✓ `net_deep_tests.rs`, `node_dns_net_tests.rs` | TBD | tests exist, not aggregated |
 | `os` | ✓ `os_deep_tests.rs`, `node_os_util_tests.rs` | TBD | tests exist, not aggregated |
-| `path` | ✓ `path_deep_tests.rs`, `node_path_tests.rs`, `test_upstream_path.js` | TBD | tests exist, not aggregated |
 | `process` / `env` | ✓ `process_deep_tests.rs`, `node_process_env_deep_tests.rs` | TBD | tests exist, not aggregated |
 | `querystring` | ✓ `querystring_deep_tests.rs`, `node_querystring_deep_tests.rs` | TBD | tests exist, not aggregated |
 | `readline` | ✓ `readline_deep_tests.rs`, `node_readline_deep_tests.rs` | TBD | tests exist, not aggregated |
-| `stream` | ✓ `stream_deep_tests.rs`, `node_stream_qs_tests.rs` | TBD | tests exist, not aggregated |
 | `string_decoder` | ✓ `node_string_decoder_deep_tests.rs`, `strdec_module_deep_tests.rs` | TBD | tests exist, not aggregated |
 | `timers` | ✓ `timers_deep_tests.rs`, `node_timers_tests.rs`, `node_timers_module_deep_tests.rs`, `require_timers_tests.rs`, `timers_https_tls_tests.rs` | TBD | tests exist, not aggregated |
 | `tls` | ✓ `tls_deep_tests.rs` | TBD | tests exist, not aggregated |
 | `tty` | ✓ `node_tty_deep_tests.rs` | TBD | tests exist, not aggregated |
-| `url` | ✓ `url_deep_tests.rs`, `node_url_tests.rs`, `url_util_os_deep_tests.rs`, `test_upstream_url.js` | TBD | tests exist, not aggregated |
-| `util` | ✓ `util_deep_tests.rs`, `test_upstream_util.js` | TBD | tests exist, not aggregated |
 | `vm` | ✓ `vm_deep_tests.rs`, `vm_codegen_tests.rs` | TBD | tests exist, not aggregated |
 | `worker_threads` | ✓ `node_worker_threads_deep_tests.rs` | TBD | tests exist, not aggregated |
 | `zlib` | ✓ `zlib_deep_tests.rs` | TBD | tests exist, not aggregated |
-| `async_hooks` | ✓ `node_async_hooks_deep_tests.rs` | TBD | tests exist, not aggregated |
-| `diagnostics_channel` | ✓ `node_diagnostics_channel_deep_tests.rs` | TBD | tests exist, not aggregated |
+| `async_hooks` | ✓ `node_async_hooks_deep_tests.rs` | TBD | stub module(API shape only) |
+| `diagnostics_channel` | ✓ `node_diagnostics_channel_deep_tests.rs` | TBD | stub module |
 | `perf_hooks` | ✓ `node_perf_hooks_deep_tests.rs` | TBD | tests exist, not aggregated |
 | `module` | ✓ `node_module_deep_tests.rs`, `esm_import_deep_tests.rs`, `require_deep_tests.rs`, `require_system_deep_tests.rs`, `test_module_resolution.js`, `test_node_modules.js`, `npm_project_e2e_tests.rs`, `test_dynamic_import.js` | TBD | tests exist, not aggregated |
+
 
 ## `node_conformance/` 子目录(已有)
 
