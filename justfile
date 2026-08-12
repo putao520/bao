@@ -65,13 +65,13 @@ test-lib: codegen
 
 # ─── 代码质量 ────────────────────────────────────────────────────────────────
 
-# 格式检查(不修改)。不用 --all:会误入 vendor/servo 子 workspace 报错。
-#
-# 现状:仓库有历史格式债(~8000 处,baoo 原创层长期未跑 fmt)。fmt-check 当前会
-# 报大量 diff — 这是已知历史项,不是回归。CI 在历史债清完前暂不卡 fmt;清债
-# 见 docs 或单开一个 commit(`cargo fmt` 全量 + 单独 PR)。
+# 格式检查(只查 Bao 原创层;bun_*/vendor 上游禁改,不入检查)。
+# 历史格式债已清(见 commit e69354de);fmt-check 现在是 blocking 门禁。
 fmt-check:
-    cargo fmt --check
+    cargo fmt -p bao -p bao_engine -p bao_engine_macros -p bao_crypto -p bao_browser \
+        -p bao_cdp -p bao_cdp_client -p bao_stealth -p bao_uloop -p bao_lints \
+        -p bao_boringssl_bridge -p bao_native_stubs -p bao_workflow_host \
+        -p bao_bundler -p bao_cli -p bun_sm -p bun_runtime -p cdp-server -- --check
 
 # 格式化(修改源码)。注意:全量跑会改大量文件(历史债),建议只格式化你改动的文件:
 #   cargo fmt -p <你的crate>   或   cargo fmt -- src/path/to/file.rs
@@ -115,14 +115,13 @@ bootstrap:
 
 # ─── 本地 CI 全流程 ──────────────────────────────────────────────────────────
 
-# 本地 CI:lint + check + test + bce。这是"是否通过"的权威判定。
-# fmt-check 暂未纳入:仓库有 ~8000 处历史格式债(长期未跑 fmt),清债后加回。
-ci: lint check test bce
-    @echo "✓ 本地 CI 全流程通过 (lint + check + test + bce)"
+# 本地 CI:fmt + lint + check + test + bce。这是"是否通过"的权威判定。
+ci: fmt-check lint check test bce
+    @echo "✓ 本地 CI 全流程通过 (fmt + lint + check + test + bce)"
 
 # 快速 CI(跳过慢的 test,适合改完代码快速验证)。
-ci-fast: lint check bce
-    @echo "✓ 快速 CI 通过 (lint + check + bce)"
+ci-fast: fmt-check lint check bce
+    @echo "✓ 快速 CI 通过 (fmt + lint + check + bce)"
 
 # ─── 本地 smoke(需 xvfb + DISPLAY) ──────────────────────────────────────────
 # servo WebRender 需要 DISPLAY,headless 也需要 Xvfb。
