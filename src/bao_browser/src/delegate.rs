@@ -462,58 +462,14 @@ pub struct WorkerDrainResult {
     pub disconnected: bool,
 }
 
-// ─── Structured-Clone Channel Adapters (REQ-BRW-004 criterion #6) ──────
+// ─── Structured-Clone Channel Bridge (REQ-BRW-004 criterion #6) ────────
 // @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
 //
-// Adapter implementations that bridge bao_browser's WorkerChannelBridge
-// types (StructuredClonePayload / WorkerStructuredMessage) to bao_engine's
-// StructuredCloneReceiver / StructuredCloneSender trait objects.
-//
-// This allows WebWorker::new_with_structured_clone to integrate with
-// the channel bridge without bao_engine depending on bao_browser types.
-
-/// Adapter: `Receiver<StructuredClonePayload>` → `StructuredCloneReceiver`.
-///
-/// Extracts the `data` field from `StructuredClonePayload` for the
-/// engine-layer receiver.
-///
-/// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4
-struct BridgeStructuredCloneReceiver {
-    rx: Receiver<StructuredClonePayload>,
-}
-
-impl bao_engine::StructuredCloneReceiver for BridgeStructuredCloneReceiver {
-    fn try_recv_structured(&self) -> Result<Option<Vec<u8>>, ()> {
-        match self.rx.try_recv() {
-            Ok(payload) => Ok(Some(payload.data)),
-            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(()),
-        }
-    }
-}
-
-/// Adapter: `Sender<WorkerStructuredMessage>` → `StructuredCloneSender`.
-///
-/// Wraps the serialized data into a `WorkerStructuredMessage` with
-/// metadata (worker_id, direction, message_id) for CDP observability.
-///
-/// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:6] DF-WK-5
-struct BridgeStructuredCloneSender {
-    tx: Sender<WorkerStructuredMessage>,
-    worker_id: WorkerId,
-}
-
-impl bao_engine::StructuredCloneSender for BridgeStructuredCloneSender {
-    fn send_structured(&self, data: Vec<u8>, transferable_count: u32) -> Result<(), ()> {
-        let msg = WorkerStructuredMessage::with_payload(
-            self.worker_id.clone(),
-            WorkerMessageDirection::WorkerToPage,
-            data,
-            transferable_count,
-        );
-        self.tx.send(msg).map_err(|_| ())
-    }
-}
+// WorkerChannelBridge + WorkerChannelEndpoints carry raw serialized bytes
+// between page and Worker threads. Per DEC-WK-001 (BCE-20260627-008) the
+// bypass bao_engine::WebWorker (and its StructuredCloneReceiver/Sender trait
+// adapters) is removed; the bridge now only feeds CDP observability +
+// message logging, since servo owns the Worker thread and its postMessage.
 
 /// Channel endpoints sent to the Worker thread.
 ///
@@ -1223,26 +1179,27 @@ const WORKER_TEARDOWN_TIMEOUT_MS: u64 = 5000;
 /// It ensures:
 /// 1. The closing flag is set (signals the worker event loop to exit)
 /// 2. The Worker's stealth profile is unregistered from REALM_PROFILES
-/// 3. The Worker thread is joined (with timeout to prevent hanging)
+/// 3. The Worker thread is terminated via servo's native control path
 /// 4. The terminated flag is set (marks the Worker as fully cleaned up)
 ///
 /// # Arguments
 /// * `handle` - The WorkerHandle for the Worker being torn down
 /// * `path` - Which teardown path triggered this (Terminate/SelfClose/PageUnload)
-/// * `web_worker` - Optional WebWorker instance (if held by BaoWebViewState).
-///   When provided, its Drop impl will join the thread. When None, the caller
-///   is responsible for ensuring the thread exits (e.g., servo's DOM Worker).
 ///
 /// # Thread Safety
 /// This function is called on the main thread. It only uses atomic operations
 /// and bao_stealth's DashMap (which is thread-safe). No JSObject references
 /// are accessed.
 ///
+/// Per DEC-WK-001 (BCE-20260627-008), the bypass `bao_engine::WebWorker`
+/// path is removed; termination is dispatched through servo's native
+/// DedicatedWorkerControlMsg path (DF-WK-6).
+///
 /// @trace REQ-BRW-004 [entity:Worker] [criterion:18]
+/// @trace DEC-WK-001 servo-native terminate (DF-WK-6)
 pub fn crash_safe_teardown_worker(
     handle: &WorkerHandle,
     path: WorkerTeardownPath,
-    web_worker: Option<&bao_engine::WebWorker>,
 ) -> WorkerTeardownResult {
     // Step 1: Set the closing flag (idempotent).
     // This signals the worker event loop to exit. The JS interrupt callback
@@ -1251,15 +1208,9 @@ pub fn crash_safe_teardown_worker(
     let was_already_closing = handle.is_closing();
     handle.terminate();
 
-    // If the worker has a WebWorker instance, also call terminate() on it
-    // to send the Terminate message through the channel.
-    if let Some(ww) = web_worker {
-        ww.terminate();
-    }
-
     // Step 2: Unregister the Worker's stealth profile from REALM_PROFILES.
-    // This must happen BEFORE the thread join, because the thread's Drop
-    // will destroy the JSContext, and after that the global address is invalid.
+    // This must happen BEFORE thread teardown, because after the JSContext is
+    // destroyed the global address is invalid.
     // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
     let realm_unregistered = if handle.worker_global_addr() != 0 {
         handle.unregister_stealth_profile();
@@ -1270,34 +1221,14 @@ pub fn crash_safe_teardown_worker(
         false
     };
 
-    // Step 3: Wait for the Worker thread to exit (with timeout).
-    // If we have a WebWorker, its Drop impl will join the thread.
-    // We use a timeout to prevent the main thread from hanging if the
-    // worker thread is stuck in an infinite loop or blocking I/O.
-    //
-    // For servo DOM Workers, the thread join is handled by servo's
-    // Worker::drop, which is called when the page unloads. We don't
-    // need to join here — just set the flags and let servo handle it.
+    // Step 3: Termination is dispatched via servo's native control path
+    // (DedicatedWorkerControlMsg::Exit + interrupt callback, DF-WK-6).
+    // servo's Worker DOM object handles the actual thread join when it is
+    // GC'd or when worker.terminate() is called from page JS.
     //
     // @trace REQ-BRW-004 [criterion:18] 线程 join 无悬挂
-    let thread_joined = if let Some(ww) = web_worker {
-        // WebWorker::Drop joins the thread. We need to wait for it.
-        // Since we can't call Drop directly, we check is_running()
-        // with a timeout. The WebWorker's event loop checks the closing
-        // flag every 50ms, so 5s is generous.
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(WORKER_TEARDOWN_TIMEOUT_MS);
-        while ww.is_running() && std::time::Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        !ww.is_running()
-    } else {
-        // For servo DOM Workers, the thread join is handled by servo.
-        // We consider this "joined" because servo guarantees the thread
-        // will be cleaned up when the Worker DOM object is dropped.
-        // The closing flag ensures the worker loop exits promptly.
-        true
-    };
+    // @trace DEC-WK-001 servo-native terminate (DF-WK-6)
+    let thread_joined = true;
 
     // Step 4: Mark the Worker as terminated.
     // This allows reap_terminated_workers to clean up the tracking state.
@@ -3205,11 +3136,12 @@ pub struct BaoWebViewState {
     /// and lifecycle management (DF-WK-2: script loading pipeline).
     /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
     worker_script_load_states: HashMap<WorkerId, WorkerScriptLoadState>,
-    /// Active bao_engine::WebWorker instances keyed by WorkerId.
-    /// These are Workers created via the bao_browser API (not servo DOM Workers).
-    /// The WebWorker must be kept alive because Drop terminates the Worker thread.
+    /// Active WorkerHandle references keyed by WorkerId (DEC-WK-001).
+    /// These track Workers created via servo's native Worker::Constructor.
+    /// The WorkerHandle holds closing/terminated flags + global_addr for
+    /// REALM_PROFILES cleanup. The actual thread lifecycle is managed by servo.
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:1] [criterion:18]
-    web_workers: HashMap<WorkerId, bao_engine::WebWorker>,
+    web_workers: HashMap<WorkerId, WorkerHandle>,
     /// Active ServiceWorker registrations controlling this webview's page.
     /// A page can be controlled by at most one ServiceWorker at a time.
     /// The ServiceWorker survives page navigation (persistent lifecycle),
@@ -3408,18 +3340,16 @@ impl BaoWebViewState {
         // Step 3: Mark as terminated
         guard.handle().mark_terminated();
 
-        // Step 4: Drop the WebWorker instance (thread join happens in Drop)
+        // Step 4: Drop the WorkerHandle reference (thread join handled by servo).
         // @trace REQ-BRW-004 [criterion:18] 线程 join 无悬挂
         let thread_joined = if self.web_workers.contains_key(worker_id) {
-            // Removing from the HashMap drops the WebWorker, which joins the thread.
-            // We can't easily check if the join succeeded here, but WebWorker::Drop
-            // always calls join() (blocking). If the thread is stuck, this will
-            // block the main thread — but the closing flag ensures the worker loop
-            // exits within ~50ms (the recv_timeout interval).
+            // Removing the WorkerHandle from the map just drops the handle.
+            // The actual Worker thread join is handled by servo's Worker::drop
+            // (DEC-WK-001 native path) when the servo Worker DOM object is GC'd.
             self.web_workers.remove(worker_id);
             true
         } else {
-            // Servo DOM Worker — thread join handled by servo's Worker::drop
+            // Worker was never registered; servo DOM Worker teardown is independent.
             true
         };
 
@@ -3451,21 +3381,22 @@ impl BaoWebViewState {
         self.dedicated_worker_scopes.insert(worker_id, scope);
     }
 
-    /// Register a bao_engine::WebWorker instance for the given WorkerId.
+    /// Register a WorkerHandle reference for the given WorkerId (DEC-WK-001).
     ///
-    /// The WebWorker must be kept alive because its Drop impl terminates the
-    /// Worker thread. Storing it here ensures the Worker stays alive until
-    /// page unload or explicit termination.
+    /// The WorkerHandle tracks the Worker's closing/terminated flags +
+    /// global_addr for REALM_PROFILES cleanup. Storing it here keeps the
+    /// handle alive for CDP observability + page-unload termination tracking.
+    /// The actual Worker thread lifecycle is owned by servo.
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:1] [criterion:18]
-    pub fn register_web_worker(&mut self, worker_id: WorkerId, worker: bao_engine::WebWorker) {
-        self.web_workers.insert(worker_id, worker);
+    pub fn register_web_worker(&mut self, worker_id: WorkerId, handle: WorkerHandle) {
+        self.web_workers.insert(worker_id, handle);
     }
 
-    /// Get a reference to a WebWorker instance.
+    /// Get a reference to a WorkerHandle by WorkerId.
     ///
     /// @trace REQ-BRW-004 [entity:Worker]
-    pub fn web_worker(&self, worker_id: &WorkerId) -> Option<&bao_engine::WebWorker> {
+    pub fn web_worker(&self, worker_id: &WorkerId) -> Option<&WorkerHandle> {
         self.web_workers.get(worker_id)
     }
 
@@ -3693,43 +3624,6 @@ impl BaoWebViewState {
         let (bridge, endpoints) = WorkerChannelBridge::new(worker_id);
         self.worker_channels.insert(bridge.worker_id.clone(), bridge);
         endpoints
-    }
-
-    /// Create and register a channel bridge, returning adapter trait objects
-    /// for integration with bao_engine::WebWorker::new_with_structured_clone.
-    ///
-    /// This is the primary method for creating Workers in browser mode.
-    /// It creates the channel bridge, registers it, and returns boxed
-    /// trait objects that can be passed to WebWorker::new_with_structured_clone
-    /// for bidirectional structured-clone message passing (DF-WK-4 / DF-WK-5).
-    ///
-    /// Returns the (StructuredCloneReceiver, StructuredCloneSender) pair.
-    /// The bridge is registered in self.worker_channels and the remaining
-    /// bridge-side endpoints (page_to_worker_tx, worker_to_page_rx) are
-    /// kept in the bridge for the main thread's use.
-    ///
-    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
-    pub fn create_worker_channel_structured(
-        &mut self,
-        worker_id: WorkerId,
-    ) -> (Box<dyn bao_engine::StructuredCloneReceiver>, Box<dyn bao_engine::StructuredCloneSender>) {
-        let (bridge, endpoints) = WorkerChannelBridge::new(worker_id.clone());
-        self.worker_channels.insert(bridge.worker_id.clone(), bridge);
-
-        // Extract channel endpoints from WorkerChannelEndpoints
-        let page_to_worker_rx = endpoints.page_to_worker_rx
-            .expect("WorkerChannelBridge::new should provide page_to_worker_rx");
-        let worker_to_page_tx = endpoints.worker_to_page_tx
-            .expect("WorkerChannelBridge::new should provide worker_to_page_tx");
-
-        // Wrap in adapter trait objects
-        let sc_rx = Box::new(BridgeStructuredCloneReceiver { rx: page_to_worker_rx });
-        let sc_tx = Box::new(BridgeStructuredCloneSender {
-            tx: worker_to_page_tx,
-            worker_id: worker_id.clone(),
-        });
-
-        (sc_rx, sc_tx)
     }
 
     /// Remove a Worker's channel bridge (e.g., after termination).
@@ -5715,12 +5609,11 @@ mod tests {
 
     #[test]
     fn test_crash_safe_teardown_no_web_worker() {
-        // Test crash-safe teardown for a servo DOM Worker (no WebWorker instance)
+        // Test crash-safe teardown for a servo DOM Worker (DEC-WK-001 native path)
         let handle = WorkerHandle::new("worker.js".to_string());
         let result = crash_safe_teardown_worker(
             &handle,
             WorkerTeardownPath::Terminate,
-            None,
         );
         assert!(result.closing_flag_set);
         assert!(result.thread_joined); // servo DOM Worker — considered joined
@@ -5741,7 +5634,6 @@ mod tests {
         let result = crash_safe_teardown_worker(
             &handle,
             WorkerTeardownPath::SelfClose,
-            None,
         );
         assert!(result.closing_flag_set);
         assert!(result.thread_joined);
@@ -5877,7 +5769,7 @@ mod tests {
 
             let handle = WorkerHandle::new("worker.js".to_string());
             handle.set_worker_global_addr(fake_addr);
-            let result = crash_safe_teardown_worker(&handle, path.clone(), None);
+            let result = crash_safe_teardown_worker(&handle, path.clone());
             assert!(result.closing_flag_set, "closing flag not set for {:?}", path);
             assert!(result.thread_joined, "thread not joined for {:?}", path);
             assert!(result.realm_profile_unregistered, "profile not unregistered for {:?}", path);

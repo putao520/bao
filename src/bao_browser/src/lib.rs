@@ -48,9 +48,7 @@ pub use page_pool::PagePool;
 pub use permission::{Permission, PermissionDenied, PermissionGuard};
 pub use screenshot::{encode_image, ScreenshotFormat};
 pub use runtime_bridge::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, EvaluateResult, RuntimeBridge,
-    WorkerScopeInitFn, create_worker_scope_init,
-    create_worker_with_script_loader, create_worker_with_inline_script,
-    register_worker_scope_callback_native};
+    WorkerScopeInitFn, register_worker_scope_callback_native};
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -65,6 +63,25 @@ use bao_cdp::servo_bridge::bridge_channel;
 use bao_cdp_client::bridge::{translate, ServoEvent};
 use cdp_server::{CdpServer, DomainRegistry, EmptyHandler, EventBroadcaster, EventSender, ServerConfig};
 
+// BAO PATCH (BCE-20260627-009): Process-global servo opts initialization.
+// servo's `opts::initialize_options` uses an `OnceLock<Opts>` that panics on re-init,
+// and `opts::get()` lazily fills it with `Default`. If ANY servo code calls `get()`
+// before our explicit `initialize_options`, the OnceLock locks to Default and bao's
+// config (force_isolate_event_loops=true) can never win.
+//
+// `BAO_SERVO_OPTS_INIT` is a `LazyLock` that runs `initialize_options` with bao's
+// config on first access. `BaoRuntime::new` forces it (`.clone()` triggers init)
+// BEFORE constructing `Servo`, winning the OnceLock race process-wide. Multi-instance
+// safety: subsequent `BaoRuntime::new` calls hit the idempotent path in the patched
+// `initialize_options` (same bao config → no-op).
+static BAO_SERVO_OPTS_INIT: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
+    servo::opts::initialize_options(Opts {
+        force_isolate_event_loops: true,
+        disable_script_debugger: true,
+        ..Opts::default()
+    });
+});
+
 pub struct BaoRuntime {
     servo: Rc<Servo>,
     delegate: Rc<BaoServoDelegate>,
@@ -75,6 +92,21 @@ pub struct BaoRuntime {
 impl BaoRuntime {
     pub fn new(config: BaoConfig) -> Result<Self, BrowserError> {
         config.validate().map_err(BrowserError::Init)?;
+
+        // Force-init servo's process-global OnceLock<Opts> BEFORE any servo code
+        // calls get() (which would lazily lock in Default). This wins the race
+        // against servo's get_or_init(Default::default).
+        std::sync::LazyLock::force(&BAO_SERVO_OPTS_INIT);
+
+        let servo: Rc<Servo> = Rc::new(
+            ServoBuilder::default()
+                .opts(Opts {
+                    force_isolate_event_loops: true,
+                    disable_script_debugger: true,
+                    ..Opts::default()
+                })
+                .build(),
+        );
 
         // BUG-ENG-366: `force_isolate_event_loops` only governs servo's event-loop
         // multiplexing (per-pipeline ScriptThread vs shared). It does NOT control
@@ -88,30 +120,77 @@ impl BaoRuntime {
         // kept `true` here purely to bound servo's resource use (one ScriptThread
         // per page) — disabling it does not regress isolation.
         // @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
+        //
+        // BAO PATCH (BCE-20260627-009): Idempotent servo config init.
+        // servo's `opts::initialize_options` uses a process-global `OnceLock<Opts>`;
+        // re-initializing panics. Each `BaoRuntime::new` → `Servo::new` →
+        // `initialize_options`. Multiple BaoRuntime instances (production
+        // multi-tenant + concurrent integration tests) therefore collide.
+        // Strategy:
+        //   (1) Detect whether servo config is already initialized by reading
+        //       `servo::opts::get()` (returns `&'static Opts`, never panics —
+        //       falls back to `Default` via `get_or_init`).
+        //   (2) `force_isolate_event_loops` is `false` in `Opts::default` but
+        //       `true` in our desired config, so it is a reliable sentinel for
+        //       "already initialized by a prior BaoRuntime".
+        //   (3) On the already-initialized path we skip `.opts(...)` — but
+        //       `Servo::new` still calls `initialize_options` internally, so the
+        //       vendor-side patch (idempotent `initialize_options`) is the real
+        //       guarantee. This bao-layer check just avoids passing conflicting
+        //       opts when we know a prior instance already configured servo.
+        let desired_opts = Opts {
+            force_isolate_event_loops: true,
+            // BAO PATCH (BCE-20260621-002): Skip servo's
+            // `JS::Debugger::addDebuggee` path entirely. Bao embeds
+            // servo but uses `bao_cdp` (its own CDP) and never connects
+            // to servo's devtools server, so the servo Debugger is pure
+            // overhead and a SIGSEGV source: `fire_add_debuggee` marks
+            // every page's Realm as a debuggee
+            // (`Realm::setIsDebuggee`), which toggles
+            // BaselineInterpreter debugger instrumentation. Under bao's
+            // multi-page + navigate + later-`evaluate` workload, a
+            // subsequent JIT OSR dereferences
+            // `cx->activation_->prev()->asInterpreter()` as NULL and
+            // SIGSEGVs deterministically. Setting this flag bypasses
+            // `fire_add_debuggee` (gated upstream in
+            // `script_thread.rs`), so `setIsDebuggee` is never called
+            // and the JIT toggle never happens. Servo's default `false`
+            // keeps devtools working for normal servo embedders.
+            disable_script_debugger: true,
+            ..Opts::default()
+        };
+        // `opts::get()` is `get_or_init(Default::default)`: returns the
+        // process-wide config if already set, otherwise `Default` (where
+        // `force_isolate_event_loops == false`). Our config sets it `true`,
+        // so observing `true` here means a prior BaoRuntime already won.
+        let servo_already_initialized = servo::opts::is_initialized();
         let servo: Rc<Servo> = Rc::new(
-            ServoBuilder::default()
-                .opts(Opts {
-                    force_isolate_event_loops: true,
-                    // BAO PATCH (BCE-20260621-002): Skip servo's
-                    // `JS::Debugger::addDebuggee` path entirely. Bao embeds
-                    // servo but uses `bao_cdp` (its own CDP) and never connects
-                    // to servo's devtools server, so the servo Debugger is pure
-                    // overhead and a SIGSEGV source: `fire_add_debuggee` marks
-                    // every page's Realm as a debuggee
-                    // (`Realm::setIsDebuggee`), which toggles
-                    // BaselineInterpreter debugger instrumentation. Under bao's
-                    // multi-page + navigate + later-`evaluate` workload, a
-                    // subsequent JIT OSR dereferences
-                    // `cx->activation_->prev()->asInterpreter()` as NULL and
-                    // SIGSEGVs deterministically. Setting this flag bypasses
-                    // `fire_add_debuggee` (gated upstream in
-                    // `script_thread.rs`), so `setIsDebuggee` is never called
-                    // and the JIT toggle never happens. Servo's default `false`
-                    // keeps devtools working for normal servo embedders.
-                    disable_script_debugger: true,
-                    ..Opts::default()
-                })
-                .build(),
+            if servo_already_initialized {
+                // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls
+                // `initialize_options(opts.unwrap_or_default())` — if we pass no
+                // `.opts(...)`, it would invoke `initialize_options(Default)`
+                // with (force_isolate_event_loops=false, disable_script_debugger=false),
+                // which DIFFERS from the already-set (true, true) and would trip
+                // the "conflicting bao config" panic in the patched
+                // `initialize_options`. To stay idempotent, we clone the
+                // already-stored opts and re-pass them: `Servo::new`'s internal
+                // `initialize_options(existing.clone())` then sees identical
+                // bao fields and becomes a no-op. This is the only way to keep
+                // `Servo::new`'s unconditional `initialize_options` call safe
+                // across multiple BaoRuntime instances.
+                //
+                // NOTE: we use `is_initialized()` (pure read, no side effect),
+                // NOT `opts::get()`. `opts::get()` uses `get_or_init(Default)`,
+                // which would itself populate the `OnceLock` with defaults on the
+                // very first call — racing against `Servo::new`'s real
+                // `initialize_options((true, true))` and causing a spurious
+                // "conflicting config" panic.
+                ServoBuilder::default()
+                    .opts(servo::opts::get().clone())
+                    .build()
+            } else {
+                ServoBuilder::default().opts(desired_opts).build()
+            },
         );
 
         let delegate = Rc::new(BaoServoDelegate::new());
@@ -151,19 +230,29 @@ impl BaoRuntime {
     /// Create a Dedicated Worker bridged to a page's servo Realm.
     ///
     /// This is the primary entry point for the Worker constructor bridging
-    /// (REQ-BRW-004 / REQ-BRW-4). It:
-    /// 1. Resolves the Worker script via the page's script loading pipeline
-    ///    (DF-WK-2: fetch → MIME check → decode → compile)
-    /// 2. Creates a bao_engine::WebWorker with scope init that installs
-    ///    DedicatedWorkerGlobalScope APIs + stealth properties (criteria #8, #12-17)
-    /// 3. Establishes a WorkerChannelBridge for page↔worker postMessage (criteria #6, DF-WK-4/5)
-    /// 4. Registers the DedicatedWorkerGlobalScope state for CDP observability
-    /// 5. Tracks the Worker with AutoCloseWorker for page-unload termination (criterion #10)
+    /// Create a Dedicated Worker via servo's native Worker::Constructor.
     ///
-    /// In browser mode, servo's DOM Worker::Constructor handles the full
-    /// lifecycle internally — this method is for Workers created via the
-    /// bao_engine::WebWorker API (CLI/test mode, data:/blob:/inline scripts).
+    /// Per DEC-WK-001 (BCE-20260627-008), bao no longer spawns a
+    /// `bao_engine::WebWorker` bypass thread. Instead, this method dispatches
+    /// `new Worker(url)` into the page via servo's DOM binding, and servo
+    /// constructs the Worker thread + DedicatedWorkerGlobalScope internally.
+    /// bao's role is reduced to:
+    ///   1. Steering stealth profile + DedicatedWorkerGlobalScope Web APIs by
+    ///      registering the scope callback via
+    ///      `register_worker_scope_callback_native` (invoked at page-init time,
+    ///      see `inject_all_with_profile`). The callback runs on the Worker
+    ///      thread via the servo vendor patch `drain_worker_scope_callbacks`.
+    ///   2. Tracking the WorkerHandle for CDP observability + page-unload
+    ///      termination (criterion #10, AutoCloseWorker).
+    ///   3. Providing a WorkerChannelBridge for page↔worker postMessage
+    ///      (criterion #6, DF-WK-4/5) so the bao side can still observe
+    ///      structured-clone traffic even though the thread is servo-owned.
     ///
+    /// The `script` argument is treated as a Worker script URL. For inline
+    /// scripts, callers should materialize a `data:`/`blob:` URL and pass it
+    /// here (or call `create_worker_with_url`).
+    ///
+    /// @trace DEC-WK-001 servo-native Worker path (bypass removed)
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:1..10] [criterion:12..18]
     /// @trace REQ-BRW-4 [criterion:C1..C4]
     pub fn create_worker(
@@ -171,56 +260,56 @@ impl BaoRuntime {
         page: &PageHandle,
         script: &str,
     ) -> Result<WorkerHandle, BrowserError> {
+        self.create_worker_with_url(page, script)
+    }
+
+    /// Create a Dedicated Worker with a script URL resolved by servo's native
+    /// script loading pipeline.
+    ///
+    /// Per DEC-WK-001 (BCE-20260627-008) the bypass `bao_engine::WebWorker`
+    /// path is removed. The Worker is constructed by servo's DOM
+    /// `Worker::Constructor` when `new Worker(url)` is evaluated in the page.
+    /// This method:
+    ///   1. Builds the WorkerId + WorkerHandle (closing/terminated flags +
+    ///      REALM_PROFILES global_addr_slot, criterion #18).
+    ///   2. Wires up the WorkerChannelBridge (criterion #6, DF-WK-4/5).
+    ///   3. Registers DedicatedWorkerGlobalScope state for CDP observability
+    ///      (criteria #8, #12-17 stealth consistency).
+    ///   4. Tracks the Worker with AutoCloseWorker (criterion #10).
+    ///   5. Dispatches `new Worker(url)` into the page via servo's DOM binding.
+    ///
+    /// @trace DEC-WK-001 servo-native Worker path (bypass removed)
+    /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
+    /// @trace REQ-BRW-4 [criterion:C1..C4]
+    pub fn create_worker_with_url(
+        &self,
+        page: &PageHandle,
+        url: &str,
+    ) -> Result<WorkerHandle, BrowserError> {
         let webview_state = page.webview_state();
 
-        // Generate a WorkerId from the script URL
-        let worker_id = crate::delegate::WorkerId(script.to_string());
-
-        // Get the page's WorkerScopeConfig — it carries the parent page's
-        // stealth profile and navigator values for worker consistency.
+        // Get the page's WorkerScopeConfig for stealth consistency.
+        // The scope callback (registered at page-init via
+        // register_worker_scope_callback_native) inherits this profile onto
+        // the Worker's DedicatedWorkerGlobalScope.
         // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK
         let scope_config = webview_state.borrow().worker_scope_config.clone();
 
-        // Create a WorkerHandle for lifecycle management.
-        // WorkerHandle tracks the closing/terminated state via Arc<AtomicBool>
-        // and the worker_global_addr for REALM_PROFILES cleanup (criterion #18).
-        // @trace REQ-BRW-004 [entity:Worker] [criterion:18] REALM_PROFILES 条目注销
-        let handle = WorkerHandle::new(script.to_string());
+        // Generate WorkerId
+        let worker_id = crate::delegate::WorkerId(url.to_string());
 
-        // Create the scope initialization callback — installs
-        // DedicatedWorkerGlobalScope APIs + stealth properties on the Worker
-        // thread's global object. Pass the WorkerHandle's global_addr_slot
-        // so the scope_init callback can write the Worker's global address
-        // for later REALM_PROFILES unregistration on teardown.
-        // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
-        // @trace REQ-BRW-004 [criterion:12..17] stealth consistency
+        // Create WorkerHandle — tracks closing/terminated state via
+        // Arc<AtomicBool> and the worker_global_addr for REALM_PROFILES
+        // cleanup (criterion #18). The servo-native scope callback (registered
+        // globally) writes the Worker's global address here on creation.
         // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
-        let global_addr_slot = handle.worker_global_addr_arc();
-        let scope_init = crate::runtime_bridge::create_worker_scope_init(
-            scope_config.clone(),
-            Some(global_addr_slot),
-        );
+        let handle = WorkerHandle::new(url.to_string());
 
-        // Create channel bridge with structured-clone adapter endpoints.
-        // The bridge holds mpsc channels for bidirectional structured-clone
-        // message passing (criterion #6). The adapter trait objects integrate
-        // with WebWorker::new_with_structured_clone.
+        // Create channel bridge (DF-WK-4/5). Even though servo owns the Worker
+        // thread, bao still tracks the bidirectional structured-clone traffic
+        // for CDP observability and message logging.
         // @trace REQ-BRW-004 [criterion:6] DF-WK-4 / DF-WK-5
-        let (sc_rx, sc_tx) = webview_state.borrow_mut()
-            .create_worker_channel_structured(worker_id.clone());
-
-        // Create the WebWorker with structured-clone channel integration.
-        // The worker thread receives page→worker messages via sc_rx and
-        // sends worker→page messages via sc_tx, integrated with the bridge.
-        // @trace REQ-BRW-004 [criterion:6] Structured Clone message serialization
-        // @trace REQ-BRW-004 [criterion:7] Worker thread own Runtime/JSContext
-        // @trace REQ-BRW-004 [criterion:1] new Worker(url) creates worker thread
-        let web_worker = bao_engine::WebWorker::new_with_structured_clone(
-            script,
-            Some(scope_init),
-            sc_rx,
-            sc_tx,
-        ).map_err(|_| BrowserError::Init("Failed to create WebWorker".into()))?;
+        let _endpoints = webview_state.borrow_mut().create_worker_channel(worker_id.clone());
 
         // Register DedicatedWorkerGlobalScope state for CDP observability
         // and stealth consistency verification.
@@ -231,101 +320,36 @@ impl BaoRuntime {
         );
         webview_state.borrow_mut().register_dedicated_worker_scope(worker_id.clone(), scope_state);
 
-        // Store the WebWorker instance — must be kept alive because its Drop
-        // impl terminates the Worker thread. Reaped on page unload or termination.
-        // @trace REQ-BRW-004 [criterion:18] crash-safe teardown
-        webview_state.borrow_mut().register_web_worker(worker_id.clone(), web_worker);
-
-        // Track the Worker with AutoCloseWorker — ensures termination on
+        // Track the WorkerHandle with AutoCloseWorker — ensures termination on
         // page unload (SPEC criterion #10: GlobalScope::track_worker).
         // @trace REQ-BRW-004 [criterion:10] GlobalScope::track_worker + AutoCloseWorker
         webview_state.borrow_mut().track_worker(handle.clone());
 
-        // Store the endpoints and web_worker reference on the WorkerHandle
-        // so the page can post messages and check running state.
-        // The WebWorker itself manages the thread lifecycle — WorkerHandle
-        // just mirrors the closing/terminated flags for cross-thread visibility.
+        // Dispatch `new Worker(url)` into the page via servo's DOM binding.
+        // servo's Worker::Constructor runs the full DF-WK-2 pipeline
+        // (fetch → MIME check → decode → compile) and spawns the Worker thread
+        // internally; bao's scope callback fires on the Worker thread to install
+        // DedicatedWorkerGlobalScope APIs + stealth properties (criteria #8, #12-17).
+        // @trace DEC-WK-001 servo-native Worker path
+        // @trace REQ-BRW-004 [criterion:1] new Worker(url) creates worker thread
+        // @trace REQ-BRW-004 [DF-WK-2] Worker script loading pipeline
+        let new_worker_js = format!(
+            "(function() {{ var w = new Worker({}); return ''; }})();",
+            serde_json::Value::String(url.to_string())
+        );
+        page.evaluate_js_web(&new_worker_js).map_err(|e| {
+            BrowserError::Init(format!(
+                "Failed to dispatch new Worker({:?}) via servo DOM: {}",
+                url, e
+            ))
+        })?;
+
         log::debug!(
-            "[bao] created worker '{}' for page (tracked via AutoCloseWorker)",
-            script
+            "[bao] dispatched new Worker({:?}) via servo DOM (tracked via AutoCloseWorker, DEC-WK-001 native path)",
+            url
         );
 
         Ok(handle)
-    }
-
-    /// Create a Dedicated Worker with a script URL resolved through
-    /// the Worker script loading pipeline.
-    ///
-    /// Uses the WorkerScriptLoader to resolve URL-based scripts
-    /// (DF-WK-2: fetch → MIME check → decode → compile).
-    /// Falls back to bao_engine::WebWorker for inline scripts.
-    ///
-    /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
-    /// @trace REQ-BRW-4 [criterion:C1..C4]
-    pub fn create_worker_with_url(
-        &self,
-        page: &PageHandle,
-        url: &str,
-    ) -> Result<WorkerHandle, BrowserError> {
-        let webview_state = page.webview_state();
-
-        // Get the page's WorkerScopeConfig for stealth consistency
-        // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK
-        let scope_config = webview_state.borrow().worker_scope_config.clone();
-
-        // Build a WorkerScriptLoader from the page's context
-        let loader = crate::delegate::WorkerScriptLoader::url(
-            url.to_string(),
-            crate::delegate::WorkerScriptType::Classic,
-        );
-
-        // Generate WorkerId
-        let worker_id = crate::delegate::WorkerId(url.to_string());
-
-        // Create WorkerHandle early — need global_addr_slot for scope_init
-        // so the worker thread can write its global address for REALM_PROFILES
-        // cleanup on teardown (criterion #18).
-        // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
-        let handle = WorkerHandle::new(url.to_string());
-        let global_addr_slot = handle.worker_global_addr_arc();
-
-        // Try to create via the script loading pipeline
-        // @trace REQ-BRW-004 [DF-WK-2] Worker script loading pipeline
-        let result = crate::runtime_bridge::create_worker_with_script_loader(
-            loader,
-            scope_config.clone(),
-            Some(global_addr_slot),
-        );
-
-        match result {
-            Ok(web_worker) => {
-
-                // Create channel bridge (DF-WK-4/5)
-                let _endpoints = webview_state.borrow_mut().create_worker_channel(worker_id.clone());
-
-                // Register scope state
-                let scope_state = crate::delegate::DedicatedWorkerGlobalScopeState::new(
-                    worker_id.clone(),
-                    &scope_config,
-                );
-                webview_state.borrow_mut().register_dedicated_worker_scope(worker_id.clone(), scope_state);
-
-                // Store the WebWorker instance — must be kept alive for thread lifecycle
-                // @trace REQ-BRW-004 [criterion:18] crash-safe teardown
-                webview_state.borrow_mut().register_web_worker(worker_id.clone(), web_worker);
-
-                // Track with AutoCloseWorker (criterion #10)
-                webview_state.borrow_mut().track_worker(handle.clone());
-
-                log::debug!(
-                    "[bao] created worker from URL '{}' (script loading pipeline, tracked via AutoCloseWorker)",
-                    url
-                );
-
-                Ok(handle)
-            }
-            Err(msg) => Err(BrowserError::Init(msg)),
-        }
     }
 
     pub fn spin_event_loop(&self) {

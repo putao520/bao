@@ -92,3 +92,41 @@ fn bce004_stress_ten_navigations() {
     }
     eprintln!("[stress] PASS — no SIGSEGV across {} sequential navigations", sites.len());
 }
+
+#[test]
+fn bce20260627_004_c18_three_path_teardown_enum_distinct() {
+    use bao_browser::WorkerTeardownPath;
+
+    let terminate = WorkerTeardownPath::Terminate;
+    let self_close = WorkerTeardownPath::SelfClose;
+    let page_unload = WorkerTeardownPath::PageUnload;
+
+    // Each variant equals itself.
+    assert_eq!(terminate, WorkerTeardownPath::Terminate, "Terminate self-eq");
+    assert_eq!(self_close, WorkerTeardownPath::SelfClose, "SelfClose self-eq");
+    assert_eq!(page_unload, WorkerTeardownPath::PageUnload, "PageUnload self-eq");
+
+    // Pairwise distinct — the three paths must be mutually exclusive.
+    assert_ne!(terminate, self_close, "Terminate must differ from SelfClose");
+    assert_ne!(terminate, page_unload, "Terminate must differ from PageUnload");
+    assert_ne!(self_close, page_unload, "SelfClose must differ from PageUnload");
+
+    // Debug formatting must be human-readable for CDP logs / diagnostics.
+    let debugs = [
+        format!("{:?}", terminate),
+        format!("{:?}", self_close),
+        format!("{:?}", page_unload),
+    ];
+    assert_eq!(debugs.iter().filter(|d| d.is_empty()).count(), 0, "no empty Debug");
+    assert_eq!(
+        debugs.iter().collect::<std::collections::HashSet<_>>().len(),
+        3,
+        "Debug representations must be pairwise distinct, got {:?}",
+        debugs
+    );
+
+    eprintln!(
+        "[c18-teardown-enum] PASS — three teardown paths mutually distinct: {:?} / {:?} / {:?}",
+        terminate, self_close, page_unload
+    );
+}

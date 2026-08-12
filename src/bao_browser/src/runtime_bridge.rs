@@ -16,7 +16,8 @@
 
 use crate::page::PageHandle;
 use crate::error::BrowserError;
-use bao_engine::WebWorker;
+// NOTE: bao_engine::WebWorker bypass removed per DEC-WK-001 BCE-20260627-008.
+// Workers now route through servo's native Worker::Constructor.
 use dashmap::DashMap;
 use mozjs::rooted;
 use std::cell::RefCell;
@@ -1194,6 +1195,10 @@ unsafe fn install_all_native(
             wasm_rval.handle_mut(),
             options,
         );
+        // This evaluate_script is a best-effort probe for WebAssembly support.
+        // A failure here is benign (WebAssembly unavailable), so the Err is
+        // intentionally discarded. BCE-20260627-007: not an error swallow — the
+        // probe is informational only, not a functional script.
     }
 }
 
@@ -1287,6 +1292,8 @@ pub fn register_worker_scope_callback_native(profile: Option<bao_stealth::Stealt
                 );
                 return;
             }
+            // TASK-63 DIAG: confirm worker scope callback fired (worker thread alive + scope created)
+            eprintln!("[TASK-63-DIAG] worker scope callback FIRED (worker thread alive, scope created)");
             log::debug!(
                 "[register_worker_scope_callback_native] servo-native Worker \
                  scope created — installing bao stealth + Web APIs (DEC-WK-001 / \
@@ -1302,138 +1309,36 @@ pub fn register_worker_scope_callback_native(profile: Option<bao_stealth::Stealt
 // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
 // @trace REQ-BRW-004 [entity:Worker] [criterion:12..17]
 //
-// Creates a ScopeInitFn callback that installs DedicatedWorkerGlobalScope
-// APIs and stealth properties on a Worker thread's global object. This is
-// the bridge between bao_browser (which has WorkerScopeConfig with stealth
-// profile and navigator values) and bun_sm::WebWorker (which executes the
-// callback on the Worker thread).
-//
-// The callback runs on the Worker's thread with its own JSContext and
-// global object. It installs:
+// worker_scope_init_native runs on the Worker thread with its own JSContext
+// and global object (installed via register_worker_scope_callback_native →
+// servo's drain_worker_scope_callbacks). It installs:
 // 1. Stealth properties (criterion #12-17): PERMANENT engine-layer getters
 //    for navigator/Canvas/WebGL/Audio fingerprints matching the parent page
-// 2. Web APIs (criterion #8): fetch/timers/crypto/performance/structuredClone
-//    and other standard DedicatedWorkerGlobalScope APIs
+// 2. (DELETED BCE-20260627-009) Web APIs like fetch/timers/crypto/performance
+//    were incorrectly installed here. servo's DedicatedWorkerGlobalScope already
+//    provides these via its own resource thread integration. Bao's duplicate
+//    installation caused: (a) two promise execution models to conflict, and
+//    (b) JS_DefineFunction SIGSEGV in js::Atomize because the callback ran
+//    without entering the worker global's Compartment (now fixed in servo vendor).
 
 /// Type alias for the Worker scope initialization callback.
 ///
-/// Matches `bun_sm::ScopeInitFn` / `bao_engine::ScopeInitFn` — a boxed
-/// closure that runs on the Worker thread to install APIs and stealth
-/// properties on the Worker's global object.
+/// A boxed closure that runs on the Worker thread to install APIs and stealth
+/// properties on the Worker's global object (DEC-WK-001 native path).
 ///
 /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
 /// @trace REQ-BRW-004 [criterion:12..17] stealth consistency
 pub type WorkerScopeInitFn = Box<dyn FnOnce(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject) + Send>;
 
-/// Create a scope initialization callback for a Worker thread.
-///
-/// Takes the parent page's `WorkerScopeConfig` and an optional shared
-/// `global_addr_slot` (from `WorkerHandle::worker_global_addr`). When the
-/// Worker's global object is created, the callback writes the global address
-/// into the slot so the main thread can later use it for REALM_PROFILES
-/// unregistration (SPEC criterion #18).
-///
-/// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
-/// @trace REQ-BRW-004 [criterion:12..17] stealth consistency
-/// @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
-pub fn create_worker_scope_init(
-    config: crate::delegate::WorkerScopeConfig,
-    global_addr_slot: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
-) -> WorkerScopeInitFn {
-    Box::new(move |raw_cx: *mut mozjs::jsapi::JSContext, global: *mut mozjs::jsapi::JSObject| {
-        // Write the Worker's global address to the shared slot so the
-        // main thread's WorkerHandle can use it for REALM_PROFILES cleanup.
-        // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
-        if let Some(ref slot) = global_addr_slot {
-            slot.store(global as usize as u64, std::sync::atomic::Ordering::Release);
-        }
-        unsafe { worker_scope_init_native(raw_cx, global, &config); }
-    })
-}
-
-/// Create a WebWorker with script loaded via the Worker script loading pipeline.
-///
-/// This is the primary entry point for creating Workers in browser mode (DF-WK-2).
-/// It resolves the script source (URL-based or inline), then creates a WebWorker
-/// with the resolved script content and scope initialization callback.
-///
-/// For URL-based scripts (https/http), servo's DOM Worker handles the full
-/// fetch pipeline internally. This function is used for Workers created via
-/// bao_engine::WebWorker (CLI/test mode) or for data:/blob:/file: URLs where
-/// bao_browser handles the script resolution.
-///
-/// Returns the WebWorker on success, or an error string on failure.
-///
-/// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
-/// @trace REQ-BRW-004 [criterion:1] new Worker(url) creates worker thread
-/// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope API
-/// @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
-pub fn create_worker_with_script_loader(
-    loader: crate::delegate::WorkerScriptLoader,
-    config: crate::delegate::WorkerScopeConfig,
-    global_addr_slot: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
-) -> Result<WebWorker, String> {
-    use crate::delegate::WorkerScriptLoadError;
-
-    // Run the full DF-WK-2 pipeline: resolve → fetch → MIME check → decode.
-    // @trace REQ-BRW-004 [DF-WK-2] Worker script loading pipeline
-    // @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK: stealth profile for HTTP fetch
-    let load_result = loader.load_simple(&config.stealth_profile).map_err(|e| {
-        match e {
-            WorkerScriptLoadError::NetworkError(msg) => format!("Worker script network error: {}", msg),
-            WorkerScriptLoadError::InvalidMimeType { received, url } => {
-                format!("Worker script MIME type error: got '{}' for URL '{}' (expected JavaScript MIME type)", received, url)
-            }
-            WorkerScriptLoadError::Utf8DecodeError(msg) => format!("Worker script UTF-8 decode error: {}", msg),
-            WorkerScriptLoadError::InvalidUrl(msg) => format!("Worker script URL error: {}", msg),
-            WorkerScriptLoadError::Cancelled => "Worker script loading was cancelled".to_string(),
-        }
-    })?;
-
-    // Create the scope init callback
-    let scope_init = create_worker_scope_init(config, global_addr_slot);
-
-    // Create the WebWorker with the loaded script
-    // @trace REQ-BRW-004 [DF-WK-2] Classic/Module 编译
-    // Module Workers use ES module compilation; Classic Workers use default
-    // script compilation. The WebWorker::new_with_scope_init currently uses
-    // mozjs's CompileOptionsWrapper which defaults to Classic mode.
-    // Module compilation support is a future enhancement.
-    if loader.is_module() {
-        log::warn!(
-            "[create_worker_with_script_loader] Module Worker script '{}' — \
-             ES module compilation not yet supported, treating as Classic",
-            load_result.final_url
-        );
-    }
-
-    WebWorker::new_with_scope_init(&load_result.source, Some(scope_init))
-        .map_err(|_| "Failed to create WebWorker".to_string())
-}
-
-/// Create a WebWorker with inline script content.
-///
-/// Convenience wrapper for creating Workers with inline script content
-/// (data: URLs, blob: URLs, or direct script strings).
-///
-/// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
-/// @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
-pub fn create_worker_with_inline_script(
-    script: &str,
-    config: crate::delegate::WorkerScopeConfig,
-    global_addr_slot: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
-) -> Result<WebWorker, String> {
-    let scope_init = create_worker_scope_init(config, global_addr_slot);
-    WebWorker::new_with_scope_init(script, Some(scope_init))
-        .map_err(|_| "Failed to create WebWorker".to_string())
-}
-
-/// Native implementation: install DedicatedWorkerGlobalScope APIs and
-/// stealth properties on the Worker's global object.
+/// Native implementation: install stealth properties on the Worker's global object.
 ///
 /// Called on the Worker thread with the Worker's JSContext and global.
 /// This is the same pattern as `install_all_native` for the Page Realm,
 /// but scoped to the Worker's DedicatedWorkerGlobalScope.
+///
+/// NOTE: Web APIs (fetch/timers/crypto/performance/etc.) are NOT installed here.
+/// servo's DedicatedWorkerGlobalScope already provides these natively via its
+/// resource thread. Bao does NOT duplicate them (BCE-20260627-009).
 ///
 /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
 /// @trace REQ-BRW-004 [criterion:12..17] stealth consistency
@@ -1467,38 +1372,10 @@ unsafe fn worker_scope_init_native(
         );
     }
 
-    // @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope API
-    // Install the standard Web APIs that DedicatedWorkerGlobalScope requires:
-    // setTimeout/fetch/crypto/performance/location/navigator/queueMicrotask/
-    // structuredClone/atob/btoa/web encodings.
-    //
-    // NOTE: self/close/importScripts are installed by `install_worker_lifecycle_natives`
-    // in bun_sm/src/web_worker.rs, which runs on the worker thread BEFORE this
-    // scope_init callback. This keeps the lifecycle natives (which need the
-    // closing flag) in the engine layer, and the Web APIs (which need
-    // bun_runtime) in the browser layer.
-    let cx_nn = match NonNull::new(raw_cx) {
-        Some(nn) => nn,
-        None => return,
-    };
-    let mut cx = JSContext::from_ptr(cx_nn);
-
-    rooted!(in(raw_cx) let mut rooted_global = global);
-    let global_handle = rooted_global.handle();
-
-    // Web APIs for DedicatedWorkerGlobalScope
-    bun_runtime::fetch_api::install_fetch_global(&mut cx, global_handle);
-    bun_runtime::fetch_api::install_response_constructor(&mut cx, global_handle);
-    bun_runtime::fetch_api::install_headers_constructor(&mut cx, global_handle);
-    bun_runtime::fetch_api::install_request_constructor(&mut cx, global_handle);
-    bun_runtime::timers::install_timer_globals(&mut cx, global_handle);
-    bun_runtime::web_api::install_performance(&mut cx, global_handle);
-    bun_runtime::globals::install_crypto_global(&mut cx, global_handle);
-    bun_runtime::web_api::install_web_encodings(&mut cx, global_handle);
-    bun_runtime::web_api::install_atob_btoa(&mut cx, global_handle);
-    bun_runtime::web_api::install_queue_microtask(&mut cx, global_handle);
-    bun_runtime::globals::install_structured_clone(&mut cx, global_handle);
-    bun_runtime::globals::install_web_api_constructors(&mut cx, global_handle);
+    // BCE-20260627-009: Web APIs (fetch/timers/crypto/performance/etc.) are NOT
+    // installed on Worker global. servo's DedicatedWorkerGlobalScope provides these
+    // natively. Duplicate installation caused SIGSEGV in js::Atomize and promise
+    // execution model conflicts. See vendor patch in dedicatedworkerglobalscope.rs.
 }
 
 // @trace REQ-SEC-003 [entity:WebPolyfills]
@@ -3244,6 +3121,55 @@ mod tests {
         assert!(
             !func_body.contains("globals::install_node_apis("),
             "REQ-SEC-003 REGRESSION: install_all_native must NOT call install_node_apis()"
+        );
+    }
+
+    /// Verify worker_scope_init_native installs ONLY stealth properties, NOT
+    /// any bun_runtime Web APIs (fetch/timers/crypto/performance/etc.).
+    /// BCE-20260627-009: servo's DedicatedWorkerGlobalScope provides Web APIs
+    /// natively via its resource thread; Bao's duplicate installation caused
+    /// SIGSEGV in js::Atomize (Compartment not entered) and promise execution
+    /// model conflicts. stealth getter install (DEC-WK-007) is the only allowed
+    /// installation in worker scope_init.
+    #[test]
+    fn worker_scope_init_native_is_stealth_only() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn worker_scope_init_native")
+            .expect("worker_scope_init_native function not found");
+        // Extract just the function body — bounded to next fn/doc to avoid overflow.
+        let search_end = source[func_start..]
+            .find("\n// @trace REQ-SEC-003 [entity:WebPolyfills]")
+            .or_else(|| source[func_start..].find("\nconst WEB_POLYFILLS"))
+            .unwrap_or(5000)
+            .min(5000);
+        let func_body = &source[func_start..func_start + search_end];
+
+        // stealth getter install MUST be present (DEC-WK-007)
+        assert!(
+            func_body.contains("install_stealth_props"),
+            "BCE-20260627-009 REGRESSION: worker_scope_init_native must install stealth props (DEC-WK-007)"
+        );
+
+        // Web APIs MUST NOT be present — servo DedicatedWorkerGlobalScope provides them natively
+        assert!(
+            !func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
+            "BCE-20260627-009 REGRESSION: worker_scope_init_native must NOT install fetch (servo native)"
+        );
+        assert!(
+            !func_body.contains("bun_runtime::timers::install_timer_globals"),
+            "BCE-20260627-009 REGRESSION: worker_scope_init_native must NOT install timers (servo native)"
+        );
+        assert!(
+            !func_body.contains("bun_runtime::web_api::install_performance"),
+            "BCE-20260627-009 REGRESSION: worker_scope_init_native must NOT install performance (servo native)"
+        );
+        assert!(
+            !func_body.contains("bun_runtime::globals::install_crypto_global"),
+            "BCE-20260627-009 REGRESSION: worker_scope_init_native must NOT install crypto (servo native)"
+        );
+        assert!(
+            !func_body.contains("bun_runtime::globals::install_structured_clone"),
+            "BCE-20260627-009 REGRESSION: worker_scope_init_native must NOT install structuredClone (servo native)"
         );
     }
 

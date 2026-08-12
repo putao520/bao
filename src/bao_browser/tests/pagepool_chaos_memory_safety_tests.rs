@@ -16,6 +16,8 @@
 
 use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool, PageState};
 use bao_stealth::StealthProfile;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -816,4 +818,132 @@ fn pagepool_chaos_memory_safety() {
     let ratio = report.passed as f64 / total_non_skip as f64;
     assert!(ratio >= 1.0,
         "pass ratio {:.1}% < 100% — chaos test gate failed", ratio * 100.0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// BCE-20260627-003 — Chaos test determinism (seeded PRNG replay).
+//
+// @trace TEST-CHAOS-001 [req:REQ-BRW-002,REQ-BRW-003] [nfr:TMG-RESILIENCE]
+// @trace TEST-REPRODUCIBILITY [criterion:seeded_determinism]
+//
+// SPEC: The chaos test uses a seeded xoshiro128** PRNG (defined above as `Rng`)
+// so that any failure is bit-for-bit reproducible. These two tests verify the
+// determinism contract itself:
+//   1. Same seed → identical decision trace (exact replay).
+//   2. Different seeds → distinct decision traces (seed sensitivity).
+//
+// They run with no servo dependency (pure PRNG), so they execute in any CI
+// environment without a display server.
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Capture a fixed-length "decision trace" from a seeded `Rng`.
+///
+/// A decision trace is the sequence of (action-index, page-index, bool) tuples
+/// that the chaos loop would produce. If two traces match bit-for-bit, the chaos
+/// test replays identically.
+fn chaos_decision_trace(seed: u64, rounds: usize) -> Vec<(u64, u64, bool)> {
+    let mut rng = Rng::seed(seed);
+    let mut trace = Vec::with_capacity(rounds);
+    for _ in 0..rounds {
+        let action = rng.next_usize(12) as u64;
+        let page = rng.next_usize(MAX_PAGES) as u64;
+        let flag = rng.next_bool();
+        trace.push((action, page, flag));
+    }
+    trace
+}
+
+/// @trace BCE-20260627-003 [criterion:chaos_replay_deterministic]
+///
+/// Same seed MUST produce the same decision trace. This is the bedrock of chaos
+/// reproducibility: a failure reported at seed X must be replayable at seed X.
+#[test]
+fn bce20260627_003_chaos_decision_trace_is_deterministic() {
+    const SEED: u64 = 0xDEADBEEFCAFEBABEu64;
+    const ROUNDS: usize = 200;
+
+    let trace_a = chaos_decision_trace(SEED, ROUNDS);
+    let trace_b = chaos_decision_trace(SEED, ROUNDS);
+
+    assert_eq!(
+        trace_a.len(),
+        trace_b.len(),
+        "same seed produced traces of different length — PRNG is non-deterministic"
+    );
+    assert_eq!(
+        trace_a, trace_b,
+        "same seed (0x{:X}) produced different decision traces — chaos replay broken",
+        SEED
+    );
+
+    // Sanity: the trace must be non-trivial (not all zeros — that would indicate
+    // a broken seed initialization in `Rng::seed`).
+    let non_zero = trace_a.iter().filter(|(a, p, _)| *a != 0 || *p != 0).count();
+    assert!(
+        non_zero > ROUNDS / 2,
+        "trace suspiciously uniform (only {} non-zero entries in {} rounds) — \
+         PRNG seeding may be degenerate",
+        non_zero,
+        ROUNDS
+    );
+
+    eprintln!(
+        "[chaos-determinism] PASS — seed 0x{:X} replays bit-for-bit ({} rounds, {} non-zero)",
+        SEED, ROUNDS, non_zero
+    );
+}
+
+/// @trace BCE-20260627-003 [criterion:chaos_seed_sensitivity]
+///
+/// Different seeds MUST produce different decision traces. If two distinct seeds
+/// produced the same trace, the PRNG would have degenerate seeding (a collision
+/// in the seed-expansion function), and "replay at seed X" would be ambiguous.
+#[test]
+fn bce20260627_003_chaos_decision_trace_seed_sensitivity() {
+    const ROUNDS: usize = 200;
+    const SEED_A: u64 = 0xDEADBEEFCAFEBABEu64;
+    const SEED_B: u64 = 0x0123456789ABCDEFu64;
+    const SEED_C: u64 = 1u64;
+
+    let trace_a = chaos_decision_trace(SEED_A, ROUNDS);
+    let trace_b = chaos_decision_trace(SEED_B, ROUNDS);
+    let trace_c = chaos_decision_trace(SEED_C, ROUNDS);
+
+    assert_ne!(
+        trace_a, trace_b,
+        "distinct seeds 0x{:X} and 0x{:X} produced identical traces — seed sensitivity broken",
+        SEED_A, SEED_B
+    );
+    assert_ne!(
+        trace_a, trace_c,
+        "distinct seeds 0x{:X} and {} produced identical traces — seed sensitivity broken",
+        SEED_A, SEED_C
+    );
+    assert_ne!(
+        trace_b, trace_c,
+        "distinct seeds 0x{:X} and {} produced identical traces — seed sensitivity broken",
+        SEED_B, SEED_C
+    );
+
+    // Quantify the divergence — at least ~50% of decisions should differ between
+    // any two distinct seeds (otherwise the PRNG mixes poorly).
+    let diff_ab = trace_a
+        .iter()
+        .zip(trace_b.iter())
+        .filter(|(x, y)| x != y)
+        .count();
+    assert!(
+        diff_ab > ROUNDS / 2,
+        "seeds 0x{:X} vs 0x{:X} differ in only {}/{} decisions — PRNG mixing too weak",
+        SEED_A,
+        SEED_B,
+        diff_ab,
+        ROUNDS
+    );
+
+    eprintln!(
+        "[chaos-seed-sensitivity] PASS — 3 distinct seeds produce 3 distinct traces \
+         (seed A vs B differ in {}/{} decisions)",
+        diff_ab, ROUNDS
+    );
 }
