@@ -53,7 +53,7 @@ Bao 是 monorepo,**不同目录的修改门槛不同**。提交 PR 前请先确�
 
 | 依赖 | 版本 / 说明 |
 |------|-------------|
-| **Rust toolchain** | `nightly`(`rust-toolchain.toml` 已锁定,无需手动指定) |
+| **Rust toolchain** | `nightly-2026-07-20`(pinned,见 `rust-toolchain.toml`)。**故意 pin 日期**:mozjs/servo 重型栈需要 known-good 工具chain,浮动 nightly 会 break(见 [#7](https://github.com/putao520/bao/issues/7))。升级需先验证 build |
 | **C/C++ 编译器** | clang / g++ — `mozjs` 从源码编译 SpiderMonkey,必须 |
 | **平台** | 当前主路径是 **Linux x86_64**。macOS / Windows 事件循环尚未全平台验证 |
 | **构建工具** | `make`(BCE 门禁脚本用)、`pkg-config`、`cmake`(部分依赖) |

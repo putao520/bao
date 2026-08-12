@@ -59,7 +59,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang pkg-config libssl-dev
+            build-essential clang pkg-config libssl-dev libdeflate-dev
 
       - name: Cache cargo registry + git
         uses: actions/cache@v4
@@ -116,7 +116,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang pkg-config libssl-dev
+            build-essential clang pkg-config libssl-dev libdeflate-dev
 
       - name: Cache cargo registry + git
         uses: actions/cache@v4
