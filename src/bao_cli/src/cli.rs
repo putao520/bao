@@ -65,6 +65,12 @@ enum Commands {
         #[arg(long)]
         stealth: bool,
     },
+    /// Diagnose the local environment (Rust, clang, SpiderMonkey, DISPLAY, CDP).
+    ///
+    /// Walks the native toolchain Bao depends on and reports what's present
+    /// or missing, so a failed build can be understood without reading the
+    /// whole monorepo. Informational only — never exits non-zero.
+    Doctor,
     #[command(external_subcommand)]
     External(Vec<String>),
 }
@@ -106,6 +112,7 @@ pub fn run() -> ::std::result::Result<(), i32> {
         Some(Commands::Browser { url, cdp_port, headless, stealth }) => {
             run_browser(url, cdp_port, headless, stealth)
         }
+        Some(Commands::Doctor) => crate::doctor::run(),
         Some(Commands::External(args)) => {
             eprintln!("bao: unknown command '{}'", args[0]);
             Err(1)
