@@ -1,0 +1,12 @@
+[package]
+name = "bao-example-03-node-dom"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "bao-example-03-node-dom"
+path = "main.rs"
+
+[dependencies]
+bao = { path = "../../src/bao" }
