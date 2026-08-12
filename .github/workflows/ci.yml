@@ -37,7 +37,6 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-07-20
-        with:
           components: rustfmt
 
       - name: "cargo fmt --check (no --all: --all recurses into vendor/servo)"
@@ -111,7 +110,6 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-07-20
-        with:
           components: clippy
 
       - name: Install C/C++ toolchain + pkg-config
