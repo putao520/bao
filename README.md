@@ -1,11 +1,118 @@
-# Bao (包子) — Bun + SpiderMonkey + Servo 高性能反指纹浏览器运行时
+# Bao
 
-一个 Rust 二进制,把 **SpiderMonkey JS 引擎** + **servo 全功能浏览器** + **Node.js/Bun API** + **Stealth 反指纹** 统一到同一运行时:
+**A Rust-native programmable browser runtime built on Servo and SpiderMonkey.**
 
-- 反指纹浏览器(默认对抗 TLS / HTTP2 / Canvas / Navigator / WebGL / Audio / 行为指纹)
-- Bun 兼容运行时(`require` / `fs` / `http` / `crypto` / `bun:sqlite` 始终在线,与 Web API 同一 JSContext 共存)
-- Headless 多页面库(`PagePool` + `PageHandle` Rust API)
-- CDP 自动化(内置 CDP Server,Playwright/Puppeteer 可直连)
+Run Web APIs, Node/Bun-compatible APIs, and browser automation — all inside one
+Rust runtime. No Chromium, no Node child process, no Playwright-to-Chrome bridge:
+the browser engine *is* the runtime.
+
+> Status: **v0.1.0-alpha** — Linux x86_64 only · APIs may change · not production-ready.
+> See [CHANGELOG](./CHANGELOG.md) · [Compatibility Matrix](#compatibility-matrix)
+
+```
+Servo · SpiderMonkey · Rust · CDP · Playwright · Node/Bun APIs
+```
+
+---
+
+## Why Bao?
+
+Most browser automation stacks are *layers on top of* a browser process:
+
+```
+App → Playwright → CDP/WebSocket → Chrome process → V8
+```
+
+Bao collapses the stack. The browser engine and the JS runtime are one process,
+and that same runtime also speaks Node/Bun APIs:
+
+```
+        Bao
+ ┌──────────────┐
+ │   Servo      │   ← DOM / CSS / Layout / WebRender (real engine)
+ │ SpiderMonkey │   ← per-thread JSContext (the JS runtime)
+ │   Bun APIs   │   ← require / fs / http / crypto / bun:sqlite ...
+ └──────────────┘
+        ↑
+   CDP (ws) ──── Playwright / Puppeteer / Rust `Browser` API
+```
+
+The key difference: **DOM and Node/Bun APIs live in one programmable browser
+runtime.** A page script can call `document.querySelector(...)` while a trusted
+script in the same runtime calls `require('fs')` — coexisting yet isolated via
+the [dual-realm model](#dual-realm-security-model).
+
+That makes Bao useful as:
+
+- an **embeddable browser engine** (drive Servo from Rust, no Chromium),
+- a **server-side render/automation runtime** (Web + Node APIs together),
+- a **CDP target** (point Playwright/Puppeteer at it like Chrome),
+- a **configurable-identity browser** (TLS/HTTP2/Canvas/Navigator profiles).
+
+> [Browser identity & privacy](#browser-identity--privacy) profiles are a
+> capability of Bao, not its whole purpose. The headline is *programmable
+> browser runtime*, not "anti-fingerprint browser".
+
+---
+
+## Quick Start
+
+```bash
+git clone https://github.com/putao520/bao.git && cd bao
+./scripts/bootstrap.sh        # one-shot: toolchain + build + `bao doctor`
+                             # (first build compiles SpiderMonkey — slow)
+```
+
+Or manually:
+
+```bash
+cargo build -p bao_bin        # target/debug/bao
+bao doctor                    # check your environment
+bao run -e 'console.log(1 + 1)'          # Node/Bun APIs always available
+```
+
+### 30-second demo
+
+```js
+// The same runtime runs DOM *and* Node code.
+console.log(document.title);                    // → Web API (DOM)
+console.log(require('fs').readdirSync('.').length);  // → Node API
+```
+
+```js
+// Point Playwright at Bao like it's Chrome.
+const { chromium } = require('playwright');
+const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
+const page = await browser.newPage();
+await page.goto('https://example.com');
+console.log(await page.title());               // backed by Servo, not Chromium
+```
+
+---
+
+## Compatibility Matrix
+
+What works today. **Not everything is green** — partial/experimental is listed
+honestly; that's the point. Measured pass rates live in `compat/` (in progress).
+
+| Capability | Bao | Status |
+|---|:---:|---|
+| HTML DOM | ✓ | Servo |
+| CSS Layout | ✓ | Servo |
+| WebRender | ✓ | Servo |
+| JavaScript (SpiderMonkey) | ✓ | mozjs |
+| CommonJS / ESM | ✓ | Bao/Bun |
+| `fs` / `path` / `crypto` / `http` | ✓ | Bao/Bun |
+| `bun:sqlite` / `bun:ffi` | ✓ | Bao/Bun |
+| WebSocket | Partial | — |
+| CDP Page / Runtime / DOM / Network | ✓ | 12 domains |
+| CDP Debugger | Partial | — |
+| Playwright over CDP | Experimental | connect/eval/screenshot |
+| Puppeteer over CDP | Experimental | — |
+| Platform: Linux x86_64 | ✓ | primary |
+| Platform: macOS / Windows | — | event loop not yet proven |
+
+---
 
 ## 核心特性
 
@@ -14,10 +121,10 @@
 | **SpiderMonkey 引擎** | 替代 JSC(mozjs crate,MPL-2.0)。全局唯一 JSEngine + 每个 ScriptThread 线程局部 JSContext(servo 上游模型) |
 | **servo 全功能浏览器** | DOM + CSS + Layout + webrender 渲染 + 截图,真实渲染引擎而非 headless 模拟 |
 | **Node.js/Bun API 始终在线** | `require` / `fs` / `path` / `crypto` / `http` / `process` / `bun:sqlite` / `bun:ffi` 与 Web API 同一 JSContext 共存,无需切换运行时 |
-| **Stealth 反指纹内置** | TLS JA3/JA4(匹配 Firefox/Chrome) · HTTP/2 AKAMAI fingerprint · Canvas/WebGL/Audio 噪声 · Navigator/Screen override · 行为模拟(贝塞尔鼠标路径 + 拟人点击/打字) |
+| **浏览器身份与隐私**(Browser Identity & Privacy) | 可配置的 TLS JA3/JA4(匹配 Firefox/Chrome) · HTTP/2 AKAMAI fingerprint · Canvas/WebGL/Audio 隐私 · Navigator/Screen profile · 输入行为模拟(贝塞尔鼠标路径 + 拟人点击/打字) |
 | **Headless 多页面库** | `PagePool` 多页面管理 + idle 回收;`PageHandle` 高层 API(navigate / evaluate / screenshot) |
 | **CDP 自动化** | 内置 CDP Server,12 个域(Page/Runtime/DOM/Network/Debugger/Input/Emulation/CSS/Overlay/Log/Fetch/Target),Playwright/Puppeteer 兼容 |
-| **Bun crate 100% 复用** | ~85 个 Bun 纯 Rust crate 零修改复用(HTTP/Resolver/Bundler/DNS/Base64/...) |
+| **Bun crate 100% 复用** | ~76 个 Bun 纯 Rust crate 零修改复用(HTTP/Resolver/Bundler/DNS/Base64/...) |
 
 ## 构建安装
 
@@ -162,7 +269,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-**双层 JS 安全模型**(Node Realm + Page Realm 隔离):
+### Dual-Realm Security Model(双层 JS 隔离)
+
+Node Realm + Page Realm 隔离:
 
 | 方法 | 可用 API | Realm |
 |------|---------|-------|
@@ -241,7 +350,11 @@ assert!(browser.is_websocket());
 
 支持 12 个 CDP 域:Page · Runtime · DOM · Network · Debugger · Input · Emulation · CSS · Overlay · Log · Fetch · Target。
 
-## Stealth 反指纹 API
+## Browser Identity & Privacy
+
+> 原 "Stealth 反指纹" 能力。重新定位为**可配置的浏览器身份与隐私 profile**——它是 Bao 的一项能力,而非全部目的。实现完整(`tls.rs` / `http2.rs` / `behavior.rs` / `canvas.rs` / `webgl_audio.rs` 均为独立大模块),通过 `StealthProfile` 配置驱动。
+
+Stealth 反指纹 API:
 
 ```rust
 use bao::{StealthEngine, StealthProfile};
