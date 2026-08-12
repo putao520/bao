@@ -44,6 +44,13 @@ fn sannysoft_webdriver_flag_hidden_in_hooks_js() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -136,6 +143,13 @@ fn sannysoft_navigator_languages_is_nonempty_array() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
     assert!(

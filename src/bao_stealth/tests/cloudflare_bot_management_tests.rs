@@ -300,6 +300,13 @@ fn cloudflare_js_challenge_navigator_overrides_present() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -345,6 +352,13 @@ fn cloudflare_js_challenge_screen_overrides_present() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -377,6 +391,13 @@ fn cloudflare_js_challenge_webgl_overrides_present() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 

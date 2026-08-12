@@ -229,6 +229,13 @@ fn headless_canvas_todataurl_hook_present() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.canvas_js();
 
@@ -380,6 +387,13 @@ fn headless_webdriver_forced_false_in_hooks() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -440,6 +454,13 @@ fn headless_audio_hook_present() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.audio_js();
 
