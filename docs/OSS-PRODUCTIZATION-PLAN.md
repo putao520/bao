@@ -6,6 +6,27 @@
 >
 > 4 Gate:G1 OSS 合法性 → G2 可使用性 → G3 工程可信度 → G4 生态可信度。G3 即可申请,G4 申请材料漂亮。
 
+## 进度(2026-08-12 更新)
+
+| Gate | 状态 | 交付 |
+|---|---|---|
+| **G1 OSS 合法性** | ✅ 完成 | LICENSE×3 / NOTICE / THIRD_PARTY_LICENSES / CONTRIBUTING / SECURITY / COC / SUPPORT / CHANGELOG / Cargo metadata |
+| **G2 可使用性** | ✅ 完成 | README 重构(新定位) / architecture.md / 4 examples / bootstrap.sh / `bao doctor` |
+| **G3 工程可信度** | ✅ 骨架完成 | CI(ci/browser-smoke/cdp-smoke/release)/ compat suite 骨架 / bench 骨架 / Stealth 重叙事 |
+| **G4 生态可信度** | ✅ 文档完成 | roadmap.md / spec-driven.md / good-first-issues / issue 模板 |
+
+**待办(G2-T6 Release + GitHub 仓库设置)**:
+- 打 tag `v0.1.0-alpha.1` + 发 Release(需本地 `cargo build --release` 产出 binary 或走 CI release.yml)
+- GitHub 仓库设置:开启 Discussions、建 Milestones、从 good-first-issues.md 创建真实 issue(这些是 GitHub UI 操作,非代码)
+
+**未做(需用户决策)**:
+- stash 根治(stash@{1} 确认丢弃;stash@{0} 有独立价值但需三方合并,见下文)
+- CI 实际跑通验证(workflow 写好但未在 GitHub 触发过)
+- WPT 真实通过率(compat 当前全是 TBD 骨架)
+
+---
+
+
 ---
 
 ## Gate 1 — OSS 合法性(最高优先,阻塞一切)
