@@ -188,7 +188,7 @@ pub fn __bun_get_vm_ctx(kind: bun_io::AllocatorType) -> bun_io::EventLoopCtx {
 /// performance hint: spawn a non-blocking resolve when hostname is valid UTF-8.
 /// Failures are ignored (connect path still resolves).
 #[unsafe(no_mangle)]
-pub extern "Rust" fn __bun_dns_prefetch(
+pub unsafe extern "Rust" fn __bun_dns_prefetch(
     _loop_: *mut core::ffi::c_void,
     hostname: *const u8,
     len: usize,

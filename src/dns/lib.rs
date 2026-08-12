@@ -507,7 +507,7 @@ pub mod internal {
         /// `bun_runtime::dns_jsc::internal::prefetch`; lower-tier crates
         /// (`bun_install`) reach it via this link-time extern to avoid a crate
         /// cycle. Defined `#[no_mangle]` in `bun_runtime::dns_jsc`.
-        fn __bun_dns_prefetch(loop_: *mut c_void, hostname: *const u8, len: usize, port: u16);
+        unsafe fn __bun_dns_prefetch(loop_: *mut c_void, hostname: *const u8, len: usize, port: u16);
     }
 
     #[inline]

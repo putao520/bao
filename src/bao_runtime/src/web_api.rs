@@ -258,22 +258,20 @@ impl WsConn {
                 if *closed {
                     return Ok(WsMessage::Close);
                 }
-                let header = loop {
-                    match decoder.decode_frame(stream) {
-                        Ok(Some(h)) => break h,
-                        Ok(None) => return Err("wouldblock".to_string()),
-                        Err(ref e)
-                            if e.kind() == ::std::io::ErrorKind::WouldBlock
-                                || e.kind() == ::std::io::ErrorKind::TimedOut =>
-                        {
-                            return Err("wouldblock".to_string());
-                        }
-                        Err(ref e) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => {
-                            *closed = true;
-                            return Ok(WsMessage::Close);
-                        }
-                        Err(e) => return Err(format!("recv: {}", e)),
+                let header = match decoder.decode_frame(stream) {
+                    Ok(Some(h)) => h,
+                    Ok(None) => return Err("wouldblock".to_string()),
+                    Err(ref e)
+                        if e.kind() == ::std::io::ErrorKind::WouldBlock
+                            || e.kind() == ::std::io::ErrorKind::TimedOut =>
+                    {
+                        return Err("wouldblock".to_string());
                     }
+                    Err(ref e) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => {
+                        *closed = true;
+                        return Ok(WsMessage::Close);
+                    }
+                    Err(e) => return Err(format!("recv: {}", e)),
                 };
                 let mut payload = if header.mask {
                     let mask_key = decoder.take_mask();
