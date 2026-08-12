@@ -1792,3 +1792,210 @@ regressionAssertion:
 - **SPEC criterion 建议**：02-SYSTEM.html DEC-WK-001 追加 criterion"bao_browser::create_worker 必须经 servo Worker::Constructor,bao 层不得存在功能完整的 Worker 旁路实现"。
 - **流程铁律**：S1 设计 SPEC 决策含"废弃 X 路径"时，plan.md 必须有独立 TASK"删除 X 路径 + 重接线业务入口"，不得与"加 vendor hook"合并。
 - **C-E-W.1 联防**：派发 ≥2 写 Agent 前，主会话必须输出 writes 交集判定（有交集 → worker_dispatch/batch-execute，禁止 parallel 直调）。当前仅有铁律无联防，需工具化。
+---
+
+## BCE-20260627-001 — SPEC SM State Missing from Code Enum（PageState::Closing 缺失）
+
+```yaml
+patternId: BCE-20260627-001
+title: SPEC SM State Missing from Code Enum
+layer: 范式缺陷（SPEC-Code alignment）
+status: 已根治（残留=0）
+
+codePattern:
+  - "SPEC State Machine defines state X, but code enum lacks that variant"
+  - "Typically an intermediate state with entry/exit transitions collapsed to a single direct transition in code"
+
+triggerCondition:
+  - "verify(verifyMode='alignment') flags type gap between SPEC SM and code enum"
+  - "SPEC SM state count > code enum variant count"
+
+detectionSignatures:
+  structural:
+    - "SM definition with states: [S1, S2, ..., Sn] and code enum has len < n"
+  literal:
+    - "grep SPEC for state name, grep code enum for same name — count mismatch"
+
+sameClassCriterion:
+  - "Any SM-defined state absent from the corresponding code enum/type"
+
+fixTemplate:
+  - "Add missing enum variant + update all transitions + add unit tests asserting enum length matches SM state count"
+
+regressionAssertion:
+  - "SPEC SM state count == code enum variant count"
+  - "Unit test asserting enum length matches SM (page_state_count_is_six)"
+```
+
+### 归因（阶段1）
+
+- **根因**: SPEC SM PageLifecycle (03-PROCESS) defines 6 states: Created, Navigating, Interactive, Idle, **Closing**, Closed. Code enum `PageState` had only 5 variants — missing the intermediate `Closing` state.
+- **缺陷分层**: 范式缺陷（SPEC-Code alignment — SM 状态空间不完整）。
+- **归因时间**: 2026-06-27。
+- **Evidence**: `verify(verifyMode="alignment")` detected the gap; manual cross-check confirmed `Closing` in SPEC SM (03-PROCESS) but absent in code enum.
+
+### 横扫（阶段3）
+
+- `src/bao_browser/src/page.rs:27` — enum 定义缺 `Closing`（真阳性）
+- `src/bao_browser/src/page.rs:1131-1174` — `close()` 直接跳跃 `Interactive/Idle → Closed`，缺少 `Closing` 中间态（真阳性）
+- 6 个测试文件硬编码 5-state 数组（真阳性，需更新）
+- 2 个 match exhaustive 需补 arm（真阳性，编译期 detect）
+
+### 批量根治（阶段4）
+
+统一策略：
+1. `PageState` enum 新增 `Closing` variant + SPEC trace 注释。
+2. `PageHandle::close()` 在 cleanup 开始时设 `Closing`，cleanup 完成后设 `Closed`。
+3. 6 个测试文件的 5-state 数组统一改为 6-state（含 `Closing`）。
+4. 2 个 match exhaustive 补 `Closing => ...` arm。
+5. 新增 `page_state_closing_distinct_from_neighbors` / `page_state_count_is_six` 回归测试。
+
+### 全量确认报告（阶段5）
+
+```yaml
+confirmReport:
+  patternId: BCE-20260627-001
+  sweepScope: "src/bao_browser/ 全量"
+  layersScanned: [literal, structural, compile-time]
+  instancesFound: 10
+  truePositives: 10
+  falsePositives: 0
+  instancesFixed: 10
+  residual: 0
+  residualEvidence:
+    - "重扫 grep 'PageState::Closing' src/bao_browser/src/：enum + close() + tests 全部含 Closing"
+    - "cargo build -p bao_browser: Finished（0 error）"
+    - "cargo test -p bao_browser --lib: 557 passed / 0 failed"
+    - "cargo test -p bao_browser page_state: 全 pass（6 个 page_state_* unit tests + 11 个 test binary 的 page_state 测试）"
+    - "oracle_gate(REQ-BRW-001/002): canCommit=true（5/5 步骤 pass）"
+    - "spec_govern(health): 0 errors, 1062 warnings（健康）"
+    - "spec_govern maturity: 100%"
+  releaseGateImpact: pass
+```
+
+### 防复发（阶段6）
+
+- 回归测试：`page_state_count_is_six`（断言 enum length == 6）+ `page_state_closing_distinct_from_neighbors`（Closing != Idle/Interactive/Closed）。
+- SPEC trace：`@trace REQ-BRW-001 [sm:PageLifecycle]` 标注在 enum + close() + tests。
+- 知识库：本条目。
+- 📌 未来风险：新增 SM 状态时，必须同步 code enum + 所有 transitions + 所有 match exhaustive + test 数组。Code review checklist：`grep "PageState::" src/` 确认所有 variant 被处理。
+
+### 关键文件
+
+- `src/bao_browser/src/page.rs` — enum + close()
+- `src/bao_browser/tests/page_lifecycle_tests.rs`
+- `src/bao_browser/tests/browser_core_unit_tests.rs`
+- `src/bao_browser/tests/config_boundary_deep_tests.rs`
+- `src/bao_browser/tests/permission_guard_error_deep_tests.rs`
+- `src/bao_browser/tests/config_pool_stats_deep_tests.rs`
+- `src/bao_browser/tests/cross_crate_compat_tests.rs`
+- `src/bao_browser/tests/page_screenshot_deep_tests.rs`
+
+---
+
+## BCE-20260627-002 — 测试代码 thread::sleep magic number 轮询（可复现性缺陷，待根治）
+
+```yaml
+patternId: BCE-20260627-002
+title: 测试代码 thread::sleep magic number 轮询破坏可复现性
+layer: 设计缺陷（测试范式）
+status: 已检测（残留=182，未根治）
+
+codePattern:
+  - "std::thread::sleep(Duration::from_millis(N)) with magic N in polling loops"
+  - "Tests wait for async state changes with fixed sleep instead of condition-based wait_for"
+
+triggerCondition:
+  - "Tests use fixed sleep durations that depend on system load/timing"
+  - "Pass/fail non-deterministic under load variation"
+
+detectionSignatures:
+  literal:
+    - "std::thread::sleep(Duration::from_millis(10|40|50|100))"
+  antipattern:
+    - "magic-number-sleep-polling"
+
+sameClassCriterion:
+  - "Any test using thread::sleep with magic number for polling instead of wait_for_condition(timeout)"
+
+fixTemplate:
+  - "Replace sleep polling with wait_for_condition(timeout) + spin_event_loop"
+  - "Or use page.wait_for_function/wait_for_selector with proper timeout"
+
+regressionAssertion:
+  - "Tests use timeout-based wait_for, not fixed sleep magic numbers"
+```
+
+### 状态
+
+- **检测时间**: 2026-06-27（adversarial/reproducibility verification）
+- **残留**: 182 instances（src/bao_browser/tests/ + src/bao_runtime/tests/ + src/bao_cdp_client/tests/）
+- **未根治原因**: 范围大（182 实例），需系统性重构测试基础设施（统一 wait_for_condition helper）。本 BCE session 聚焦 BCE-001（结构缺陷）根治，BCE-002 标记为后续任务。
+- **风险**: 测试在系统高负载下可能 flaky，但不影响生产代码正确性。
+
+### 关键文件（部分）
+
+- `src/bao_browser/tests/realworld_anti_scraping_e2e_tests.rs:73` — wait_for_load sleep(10ms)
+- `src/bao_browser/tests/bce004_stress_tests.rs:17` — sleep(40ms)
+- `src/bao_browser/tests/thread_safety_concurrency_tests.rs:175,283,458` — sleep(100ms)
+- `src/bao_cdp_client/tests/transport_ws_handshake.rs` — 多处 sleep(50ms/200ms/500ms)
+
+---
+
+## BCE-20260627-003~007 — 对抗性测试覆盖不足（设计缺陷，待根治）
+
+以下模式由 adversarial verification 检测，均为**测试覆盖设计缺陷**（非生产代码 bug），需后续 BCE session 根治：
+
+### BCE-20260627-003: Chaos test 确定性回放验证缺失
+- **Status**: RESOLVED (TASK-E2, 2026-06-27)
+- **Location**: `src/bao_browser/tests/pagepool_chaos_memory_safety_tests.rs`
+- **RootCause**: Chaos test uses fixed seed (0xDEADBEEFCAFEBABE) but doesn't validate deterministic operation sequence replay.
+- **Fix**: 新增 `record_decision_trace(seed, rounds)` 决策序列录制器 + 2 个回归测试:
+  - `bce20260627_003_chaos_decision_trace_is_deterministic`: 同一 seed 两次回放决策序列，assert 字节级一致（捕获首次 diverge index）
+  - `bce20260627_003_chaos_decision_trace_seed_sensitivity`: 同 seed 自复现 + 不同 seed 必发散（防 recorder 退化成常量）
+- **Residual**: 0 (回归断言: `cargo test -p bao_browser --test pagepool_chaos_memory_safety_tests bce20260627_003` 必持续 PASS)
+
+### BCE-20260627-004: REQ-BRW-004 criterion #18 并发竞争验证不足
+- **Status**: RESOLVED (TASK-E2, 2026-06-27)
+- **Location**: `src/bao_browser/tests/bce004_stress_tests.rs`, `src/bao_browser/tests/bce004_isolate_tests.rs`
+- **RootCause**: Arc<WorkerHandle> with 8 threads calling terminate() simultaneously, only checks thread join, not closing flag consistency. Missing EBUSY mutex destroy regression test.
+- **Fix**: 新增 6 个 C18 crash-safe teardown 回归测试:
+  - `bce20260627_004_c18_concurrent_terminate_closing_flag_consistent` (8 线程 × 2000 iters 共享 handle，assert Acquire/Release 无脏读，closing flag 全员可见)
+  - `bce20260627_004_c18_concurrent_create_destroy_zero_crash` (8 线程 × 500 cycles 并发 create-terminate-mark_terminated，assert 零崩溃零泄漏)
+  - `bce20260627_004_nfr_memsaf_001_ebusy_mutex_destroy_regression` (8 线程并发 mutex 保护 Vec push/drop/unregister，模拟 libtest TLS teardown 持锁，assert join 无 panic 无泄漏)
+  - `bce20260627_004_c18_three_path_teardown_enum_distinct` (Terminate/SelfClose/PageUnload 三路径互斥 + AutoCloseWorker 默认 PageUnload)
+  - `bce20260627_004_iso_concurrent_terminate_atomic_visibility` (8 线程并发 terminate + mark_terminated，100 次重读无 flag 抖动)
+  - `bce20260627_004_iso_concurrent_unregister_stealth_profile_safe` (8 线程 × 500 iters 并发 REALM_PROFILES 注销，addr slot 无撕裂)
+- **Residual**: 0 (回归断言: `cargo test -p bao_browser --test bce004_stress_tests bce20260627_004` + `--test bce004_isolate_tests bce20260627_004` 必持续 PASS)
+
+### BCE-20260627-005: REQ-BAO-API-005 criterion #1 stub 响应风险
+- **Location**: `src/bao_browser/tests/bao_api_method_routing_tests.rs`
+- **RootCause**: 52-method test checks is_ok() but not response structure matches SPEC entity fields. Could pass with stub returning empty objects.
+- **Residual**: 1
+
+### BCE-20260627-006: REQ-BAO-API-005 criterion #3 JSON.stringify U+2028/U+2029 缺失
+- **Location**: `src/bao_browser/tests/bao_api_json_stringify_tests.rs`
+- **RootCause**: Test checks payload as JSON literal, doesn't test actual eval execution or LineSeparator/ParagraphSeparator (U+2028/U+2029) edge cases.
+- **Residual**: 1
+
+### BCE-20260627-007: REQ-BRW-004 criterion #9 onerror 超时模式歧义
+- **Location**: `src/bao_browser/tests/worker_tests.rs`
+- **RootCause**: Tests use 3-second timeout, cannot distinguish onerror-fired exit vs crash exit vs normal completion.
+- **Residual**: 1
+
+### 汇总
+
+| PatternId | Status | Layer | Fixed | Residual |
+|-----------|--------|-------|-------|----------|
+| BCE-20260627-001 | RESOLVED | 范式缺陷 | Yes | 0 |
+| BCE-20260627-002 | DETECTED | 设计缺陷 | No | 182 |
+| BCE-20260627-003 | RESOLVED | 设计缺陷 | Yes | 0 |
+| BCE-20260627-004 | RESOLVED | 设计缺陷 | Yes | 0 |
+| BCE-20260627-005 | DETECTED | 设计缺陷 | No | 1 |
+| BCE-20260627-006 | DETECTED | 设计缺陷 | No | 1 |
+| BCE-20260627-007 | DETECTED | 设计缺陷 | No | 1 |
+
+**Total Residual**: 185 instances（BCE-001/003/004 已根治 0 残留；BCE-002 + 005~007 共 185 实例待后续 session 根治）。
+
+**本 BCE session 交付**: BCE-20260627-001 完整根治（PageState::Closing 缺失），残留=0，oracle_gate canCommit=true。其余对抗性发现为测试覆盖设计缺陷，已记录为后续 BCE 任务。
+
