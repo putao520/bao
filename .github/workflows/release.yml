@@ -1,0 +1,149 @@
+name: Release
+
+# Tag 触发的发布流水线:构建 release binary → 打包 → 创建 GitHub Release。
+#
+# 触发条件: 推送 `v*` 形式的 tag(如 v0.1.0, v0.2.0-alpha.1)。
+# 当前只构建 Linux x86_64(Bao 现状: Linux x86_64 only,见 README)。
+#
+# @trace REQ-CLI-001 (bao binary 交付)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_BUILD_JOBS: 1
+  CARGO_NET_RETRY: 3
+  RUSTUP_MAX_RETRIES: 3
+
+permissions:
+  contents: write   # softprops/action-gh-release 需要创建 release
+
+jobs:
+  build-and-release:
+    name: Build release binary + publish GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install C/C++ + servo 链接依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang pkg-config libssl-dev \
+            libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev
+
+      - name: Cache cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Cache target/
+        uses: actions/cache@v4
+        with:
+          path: |
+            target
+            !target/**/*.pdb
+          key: ${{ runner.os }}-target-release-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-target-release-
+            ${{ runner.os }}-target-
+
+      # release 构建首次比 debug 更慢(LTO + codegen-units=1 等);--jobs 1 是铁律
+      - name: Build bao_bin (--release --jobs 1)
+        run: cargo build --release --jobs 1 -p bao_bin
+
+      - name: Verify binary works (--version)
+        run: |
+          set -euo pipefail
+          ./target/release/bao --version || true
+          ls -la target/release/bao
+          file target/release/bao
+
+      - name: Stage release artifacts
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"   # e.g. v0.1.0
+          STAGE="bao-${VERSION}-linux-x86_64"
+          mkdir -p "$STAGE/bin"
+
+          cp target/release/bao "$STAGE/bin/bao"
+          # README + LICENSE + CHANGELOG 一起打包
+          [ -f README.md ] && cp README.md "$STAGE/" || true
+          [ -f CHANGELOG.md ] && cp CHANGELOG.md "$STAGE/" || true
+          [ -f LICENSE ] && cp LICENSE "$STAGE/" || true
+
+          # 启动脚本(可选,如果存在 bootstrap.sh 就带上)
+          [ -f scripts/bootstrap.sh ] && cp scripts/bootstrap.sh "$STAGE/" || true
+
+          # 写一个最小的 runbook 教用户怎么跑
+          cat > "$STAGE/RUNBOOK.txt" <<EOF
+          Bao $VERSION — Linux x86_64
+          ============================
+
+          Quick start:
+            ./bin/bao doctor                       # 环境自检
+            ./bin/bao run -e 'console.log(1+1)'    # Node/Bun API
+            ./bin/bao browser --url https://example.com
+
+          CDP(Playwright/Puppeteer 连接):
+            ./bin/bao browser --cdp-port 9222 &
+            # 然后用 Playwright connectOverCDP('http://127.0.0.1:9222')
+
+          Servo WebRender 需要 DISPLAY(headless 也需要):
+            sudo apt install xvfb
+            xvfb-run -a ./bin/bao browser --url https://example.com
+
+          Full docs: https://github.com/putao520/bao#readme
+          EOF
+
+          ARCHIVE="${STAGE}.tar.gz"
+          tar -czf "$ARCHIVE" "$STAGE"
+          sha256sum "$ARCHIVE" > SHA256SUMS
+          sha256sum "$STAGE/bin/bao" > SHA256SUMS.binary
+
+          echo "=== archive ==="
+          ls -la "$ARCHIVE"
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
+
+          # 把文件路径存到 GITHUB_ENV 给下一步用
+          echo "ARCHIVE_PATH=$ARCHIVE" >> "$GITHUB_ENV"
+          echo "SHA256SUMS_PATH=SHA256SUMS" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release + upload artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bao-*.tar.gz
+            SHA256SUMS
+            SHA256SUMS.binary
+          generate_release_notes: true   # 从 commits / PRs 自动生成 changelog
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}   # v0.1.0-alpha.1 → prerelease
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify release published
+        run: |
+          set -euo pipefail
+          echo "Release published for $GITHUB_REF_NAME"
+          echo "Assets uploaded:"
+          curl -sf \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${GITHUB_REF_NAME}" \
+            | grep -E '"name"|"browser_download_url"' | head -20

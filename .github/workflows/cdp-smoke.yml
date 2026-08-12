@@ -1,0 +1,192 @@
+name: CDP Smoke
+
+# Full CDP integration — Playwright → Bao 端到端验证。
+# 这是最强的 OSS badge:"Playwright/Puppeteer 能连 Bao 像连 Chrome 一样"。
+#
+# 仅手动触发(首次构建太慢),建议每次 release tag 前手动跑一次。
+#
+# @trace REQ-CDP-001 (CDP Server)
+# @trace REQ-CDP-008 (Playwright 连接 / connectOverCDP)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1'   # 每周一 04:00 UTC,与 browser-smoke 错开 30min 由 retry 吸收
+
+env:
+  CARGO_BUILD_JOBS: 1
+  CARGO_NET_RETRY: 3
+  RUSTUP_MAX_RETRIES: 3
+  DISPLAY: :99
+
+jobs:
+  cdp:
+    name: Playwright → Bao CDP integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install C/C++ + servo 渲染依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang pkg-config libssl-dev \
+            libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev \
+            xvfb libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+            libgtk-3-0 libgbm1 libasound2
+
+      - name: Cache cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-cdp-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-cdp-
+            ${{ runner.os }}-cargo-
+
+      - name: Cache target/
+        uses: actions/cache@v4
+        with:
+          path: |
+            target
+            !target/**/*.pdb
+          key: ${{ runner.os }}-target-cdp-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-target-cdp-
+            ${{ runner.os }}-target-
+
+      - name: Build bao_bin (--jobs 1, debug)
+        run: cargo build --jobs 1 -p bao_bin
+
+      - name: Start Xvfb (DISPLAY :99)
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp &
+          sleep 2
+          pgrep -x Xvfb >/dev/null || { echo "::error::Xvfb failed"; exit 1; }
+
+      # 用 playwright-core(不下载自带 chromium,我们用 connectOverCDP 连 Bao)
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install playwright-core
+        run: npm install playwright-core
+
+      - name: Launch bao browser + wait for CDP
+        run: |
+          set -euo pipefail
+          ./target/debug/bao browser --cdp-port 9222 > bao.log 2>&1 &
+          BAO_PID=$!
+          echo "$BAO_PID" > bao.pid
+          echo "bao browser PID=$BAO_PID"
+
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:9222/json/version >/dev/null 2>&1; then
+              echo "CDP Server up after ${i}s"
+              exit 0
+            fi
+            if ! kill -0 "$BAO_PID" 2>/dev/null; then
+              echo "::error::bao browser exited before CDP came up"
+              cat bao.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error::CDP did not come up within 60s"
+          cat bao.log
+          exit 1
+
+      # connectOverCDP → newPage → goto → title → screenshot
+      # 这是 README 宣传的核心集成路径,验证它真能跑
+      - name: Playwright connectOverCDP → navigate → screenshot
+        run: |
+          set -euo pipefail
+          cat > cdp-smoke.mjs <<'EOF'
+          import { chromium } from 'playwright-core';
+
+          const CDP_ENDPOINT = 'http://127.0.0.1:9222';
+          const TARGET_URL = 'https://example.com';
+          const SHOT_PATH = 'cdp-smoke-screenshot.png';
+
+          async function main() {
+            console.log(`[cdp-smoke] connecting to ${CDP_ENDPOINT} ...`);
+            const browser = await chromium.connectOverCDP(CDP_ENDPOINT, { timeout: 30000 });
+            console.log('[cdp-smoke] connected.');
+
+            // Bao 的 CDP Server 暴露已存在的 context(像 Chrome)
+            const context = browser.contexts()[0] || await browser.newContext();
+            const page = await context.newPage();
+
+            console.log(`[cdp-smoke] navigating to ${TARGET_URL} ...`);
+            await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+            const title = await page.title();
+            console.log(`[cdp-smoke] title="${title}"`);
+
+            await page.screenshot({ path: SHOT_PATH });
+            console.log(`[cdp-smoke] screenshot saved: ${SHOT_PATH}`);
+
+            if (!title || title.trim().length === 0) {
+              throw new Error(`[cdp-smoke] FAIL: title is empty`);
+            }
+
+            const fs = await import('node:fs');
+            if (!fs.existsSync(SHOT_PATH) || fs.statSync(SHOT_PATH).size === 0) {
+              throw new Error(`[cdp-smoke] FAIL: screenshot missing or empty`);
+            }
+
+            console.log('[cdp-smoke] PASS: title non-empty + screenshot saved');
+            await browser.close();
+          }
+
+          main().catch((err) => {
+            console.error(err);
+            process.exit(1);
+          });
+          EOF
+          node cdp-smoke.mjs
+
+      - name: Verify screenshot artifact
+        run: |
+          set -euo pipefail
+          ls -la cdp-smoke-screenshot.png
+          file cdp-smoke-screenshot.png
+
+      - name: Cleanup bao browser
+        if: always()
+        run: |
+          if [ -f bao.pid ]; then
+            PID=$(cat bao.pid)
+            kill "$PID" 2>/dev/null || true
+            sleep 1
+            kill -9 "$PID" 2>/dev/null || true
+          fi
+
+      - name: Upload bao.log + screenshot on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bao-cdp-smoke-artifacts
+          path: |
+            bao.log
+            cdp-smoke.mjs
+            cdp-smoke-screenshot.png
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload screenshot on success
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bao-cdp-smoke-screenshot
+          path: cdp-smoke-screenshot.png
+          retention-days: 7
+          if-no-files-found: ignore
