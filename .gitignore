@@ -51,3 +51,9 @@ rust_out
 
 # Claude Code workflow runtime state (not for commit)
 .claude/workflow-state.json
+.claude/mcp-arch.log
+.claude/mcp-*.log
+
+# Tooling runtime state (not source — coord/state, project tracking, AI session logs)
+.grok/
+.gsc/
