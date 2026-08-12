@@ -71,7 +71,12 @@ pub use bun_sm::module_loader::{GlobalSetupFn, PostEvalHook, JobQueueDrainFn, se
 
 // ─── Worker re-exports from bun_sm (REQ-BRW-004) ──────────────────────
 // @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
-pub use bun_sm::web_worker::{WebWorker, ScopeInitFn, StructuredCloneReceiver, StructuredCloneSender, install_worker_lifecycle_natives};
+// NOTE: WebWorker bypass removed per DEC-WK-001 BCE-20260627-008.
+// Workers route through servo's native Worker::Constructor. The bypass's
+// ScopeInitFn / StructuredClone* / install_worker_lifecycle_natives types
+// are no longer needed — servo's DedicatedWorkerGlobalScope binding installs
+// these natively, and the servo-native scope callback (register_worker_scope_callback)
+// is wired directly via worker_scope_init_native in bao_browser/runtime_bridge.rs.
 
 // ─── Modules still owned by bao_engine ───────────────────────────────────
 // @trace REQ-ENG-003 [api:POST /host-fn/call] [entity:JsCallback] — host_fn safe FFI wrapper owned module surface (JS call / type conversion / GC root RAII)

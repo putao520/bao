@@ -105,7 +105,6 @@ pub mod weak;
 pub mod create_utf;
 pub mod work_task;
 pub mod hot_reloader;
-pub mod web_worker;
 pub mod runtime_transpiler_cache;
 pub mod async_module;
 pub mod counters;
@@ -158,11 +157,8 @@ pub use module_loader::{ModuleLoader, ResolverFn, GlobalSetupFn, PostEvalHook, J
 pub use counters::{Counters, create_counters_object};
 pub use bun_cpu_profiler::{BunCpuProfiler, CPUProfilerConfig};
 pub use hot_reloader::{HotReloader, ImportWatcher};
-pub use web_worker::WebWorker;
-// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
-// ScopeInitFn: callback for installing DedicatedWorkerGlobalScope API
-// and stealth properties on Worker global objects.
-pub use web_worker::ScopeInitFn;
+// NOTE: WebWorker re-export removed per DEC-WK-001 BCE-20260627-008.
+// Workers now route through servo's native Worker::Constructor via register_worker_scope_callback.
 pub use runtime_transpiler_cache::{RuntimeTranspilerCache, RuntimeTranspilerStore, IS_DISABLED as TRANSPILER_CACHE_IS_DISABLED, Entry as TranspilerCacheEntry, TranspilerCacheImplKind};
 pub use async_module::{AsyncModule, Queue as AsyncModuleQueue, InitOpts as AsyncModuleInitOpts};
 pub use validation_scope::ValidationScope;
