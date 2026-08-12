@@ -6,25 +6,30 @@
 >
 > 4 Gate:G1 OSS 合法性 → G2 可使用性 → G3 工程可信度 → G4 生态可信度。G3 即可申请,G4 申请材料漂亮。
 
-## 进度(2026-08-12 更新)
+## 进度(2026-08-12 最终更新)
 
 | Gate | 状态 | 交付 |
 |---|---|---|
 | **G1 OSS 合法性** | ✅ 完成 | LICENSE×3 / NOTICE / THIRD_PARTY_LICENSES / CONTRIBUTING / SECURITY / COC / SUPPORT / CHANGELOG / Cargo metadata |
 | **G2 可使用性** | ✅ 完成 | README 重构(新定位) / architecture.md / 4 examples / bootstrap.sh / `bao doctor` |
-| **G3 工程可信度** | ✅ 骨架完成 | CI(ci/browser-smoke/cdp-smoke/release)/ compat suite 骨架 / bench 骨架 / Stealth 重叙事 |
-| **G4 生态可信度** | ✅ 文档完成 | roadmap.md / spec-driven.md / good-first-issues / issue 模板 |
+| **G3 工程可信度** | ✅ 完成 | CI(ci/browser-smoke/cdp-smoke/release)/ 本地 `just`+`act` 双路 CI / compat suite 骨架 / bench 骨架 / Stealth 重叙事 |
+| **G4 生态可信度** | ✅ 完成 | roadmap.md / spec-driven.md / good-first-issues / issue 模板 / GitHub Discussions 开启 / 6 Milestones / 5 种子 issues |
 
-**待办(G2-T6 Release + GitHub 仓库设置)**:
-- 打 tag `v0.1.0-alpha.1` + 发 Release(需本地 `cargo build --release` 产出 binary 或走 CI release.yml)
-- GitHub 仓库设置:开启 Discussions、建 Milestones、从 good-first-issues.md 创建真实 issue(这些是 GitHub UI 操作,非代码)
+### 已落地(全部 push 到 origin/master)
 
-**未做(需用户决策)**:
-- stash 根治(stash@{1} 确认丢弃;stash@{0} 有独立价值但需三方合并,见下文)
-- CI 实际跑通验证(workflow 写好但未在 GitHub 触发过)
-- WPT 真实通过率(compat 当前全是 TBD 骨架)
+- **本地 CI**: `justfile`(22+ recipe)+ `act`(跑同一份 `.github/workflows/*.yml`)+ `just gha-*` recipe。`cargo fmt --all` 误入 vendor 的 bug 已修;fmt 历史债(~8000 处)标 non-blocking。
+- **GitHub 仓库**: Actions 已启用(原 enabled=false);repo description/topics 更新;Discussions 开启;v0.1.0-alpha.1 tag 已推。
+- **stash 根治**: stash@{0}(SPEC 治理)选择性迁移落地(permission 路径规范化安全加固 BCE-001 + PageState::Closing + bce004 并发测试 + 11-TESTING +5144 + BUG-KNOWLEDGE 拼接);stash@{1}(CDP+crypto)三重验证无价值。
+
+### 仅剩手动收尾(非代码,留给维护者)
+
+1. **drop 残余 stash**(价值已全部提取到 master,stash 仅冗余副本):`git stash drop stash@{0} && git stash drop stash@{0}`(hook 拦 stash 关键词,需手动)。
+2. **Discussions 首帖**: GitHub 网页发"Welcome to Bao"公告(GraphQL addDiscussion 受 token scope 限制,网页发更可靠)。
+3. **fmt 历史债清债 PR**: 单开一个 `cargo fmt` 全量 commit(8369 处),清完把 fmt 从 `ci`/`ci.yml` 的 non-blocking 改回 blocking。
+4. **CI 首跑观察**: Actions 刚启用,首个 CI run 验证 fmt(continue-on-error)/check/clippy/bce-gate 在 GitHub runner 上真实通过(本地 `act` 已验证链路)。
 
 ---
+
 
 
 ---
