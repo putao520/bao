@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & Discussions
+    url: https://github.com/putao520/bao/discussions
+    about: Ask a question, propose an idea, or show off what you built — please use Discussions, not issues.
+  - name: Security report
+    url: https://github.com/putao520/bao/security/advisories/new
+    about: Found a security issue? Use a private security advisory, NOT a public issue.
