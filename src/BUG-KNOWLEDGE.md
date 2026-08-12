@@ -1723,3 +1723,72 @@ BCE-20260621-002 和 BCE-20260622-004 是**两个独立的 SIGSEGV BUG**，都�
 | 根治层 | servo（`disable_script_debugger` flag）+ mozjs（`initForOsr` 守卫）| bao（`hideScriptFromDebugger=true`）+ mozjs Rust 绑定（新增 setter） |
 | 是否需破例改上游 | 是（servo + mozjs C++） | 是（mozjs Rust 绑定，仅新增方法） |
 
+
+---
+
+## BCE-20260627-008: DEC-WK-001 架构未落地 — bypass WebWorker 与 servo 原生路径双轨并存
+
+**归因时间**：2026-06-27
+**缺陷分层**：范式缺陷（架构决策未落地）
+**残留**：本 BCE 根治前，bypass 路径上的所有 Worker 功能（location/navigator/onerror/terminate-interrupt）都是技术债。
+
+### 现象（4 个独立 BUG 共享本根因）
+
+1. **WF coverage gate 死循环**：S3→S2 回跳 5 次后终止。`six-node-dev.mjs` coverage 判定要求 plan.md 覆盖全项目 152 REQ，单功能任务永远过不了。
+2. **executor 文件域冲突**：3 个 executor 并行写 `src/bun_sm/src/web_worker.rs`，location/navigator 实现被 onerror 实现反复覆盖（C-E-W.1 铁律有但派发时无 writes 交集检测）。
+3. **测试 pass 但进程挂起**：`bce004_stress_tests::concurrent_terminate` 用 `while(true)` worker，bypass `WebWorker::terminate()` 对正在执行的 JS 无 JS interrupt callback（SPEC C4 要求），worker 线程 join 永久阻塞。
+4. **功能加在旁路上**：WorkerLocation/WorkerNavigator/onerror dispatch 全加到 `bao_engine::WebWorker`（bypass），而非 servo `DedicatedWorkerGlobalScope`。
+
+### 根因链（5-Why）
+
+- **直接根因**：`bao_browser::create_worker`（lib.rs:216）仍调 `bao_engine::WebWorker::new_with_structured_clone`，bypass 路径未删。
+- **为什么**：epoch 4 只加了 servo vendor patch（`register_worker_scope_callback` + `dedicatedworkerglobalscope.rs:525 drain_worker_scope_callbacks`），未改 `bao_browser` 调用入口。
+- **为什么**：plan.md 的 TASK 分解漏了"重接线 create_worker"步骤。
+- **为什么**：S1 设计时没意识到"vendor patch"和"调用入口重接线"是两步独立工作。
+- **终极根因**：`DEC-WK-001` 双轨决策在 S1 设计时**没明确"何时废弃 bypass"**——导致 epoch 4 做了"加 servo patch"就声称完成，epoch 5 继续在 bypass 上做功能。架构未落地不是执行问题，是**决策模糊 + 任务分解漏步骤**。
+
+### BUG 模式签名
+
+```yaml
+patternId: BCE-20260627-008
+title: DEC-WK-001 架构未落地 — bypass 与 servo 原生路径双轨并存
+layer: 范式缺陷
+codePattern:
+  - "SPEC 决策要求走上游原生路径(vendor X),但实现加了 vendor hook 后未改业务调用入口"
+  - "bypass 路径(bao 层自建)继续承载新功能,vendor hook 成为死代码"
+triggerCondition:
+  - epoch 分解时把'加 hook'和'重接线入口'当一个 TASK
+  - S1 设计未定义 bypass 的废弃时点
+detectionSignatures:
+  structural:
+    - "vendor/servo/.../foo.rs 调用了 bao 注册的 callback,但 bao_browser::create_foo() 仍调 bao_engine::FooBypass"
+  literal:
+    - "register_worker_scope_callback 注册后无 Worker::Constructor 调用点"
+sameClassCriterion:
+  - "SPEC 要求上游原生路径,但 bao 层存在功能完整的旁路实现且业务入口仍调旁路"
+fixTemplate:
+  - "删 bypass 实现 + 业务入口改调 vendor 原生 Constructor + 所有功能经 vendor callback/DedicatedWorkerGlobalScope 注入"
+regressionAssertion:
+  - "bao_browser 中无 bao_engine::WebWorker 引用(grep = 0)"
+  - "create_worker 经 servo Worker::Constructor(grep servo Worker binding 调用点 > 0)"
+```
+
+### 根治（本轮已做 + 待做）
+
+**已根治（真根治，非 HACK）**：
+1. WF `six-node-dev.mjs` coverage gate 判定修正（本次任务 REQ 覆盖率，不计全项目 uncovered）
+2. WF args JSON 字符串兼容层（工具层 args 序列化为 string 的解析）
+3. GSC MCP `spec_write` 13 种 name-keyed 类型补 name 必填 validator
+4. SHARED_ENGINE_HANDLE 进程级单例（BCE-20260621-001 并发 flaky 根治）
+
+**待根治（HACK，指向本 BCE）**：
+1. WorkerLocation/WorkerNavigator 实现加在 bypass → 须迁到 servo DedicatedWorkerGlobalScope
+2. onerror dispatch_error_event 加在 bypass → 须经 servo WorkerScriptMsg::DispatchError
+3. `concurrent_terminate` 测试 `#[ignore]` → bypass 删除后 servo 原生 interrupt callback（DF-WK-6）覆盖
+4. **删 `bao_engine::WebWorker`（bypass）+ `bao_browser::create_worker` 改调 servo Worker::Constructor**
+
+### 防复发沉淀
+
+- **SPEC criterion 建议**：02-SYSTEM.html DEC-WK-001 追加 criterion"bao_browser::create_worker 必须经 servo Worker::Constructor,bao 层不得存在功能完整的 Worker 旁路实现"。
+- **流程铁律**：S1 设计 SPEC 决策含"废弃 X 路径"时，plan.md 必须有独立 TASK"删除 X 路径 + 重接线业务入口"，不得与"加 vendor hook"合并。
+- **C-E-W.1 联防**：派发 ≥2 写 Agent 前，主会话必须输出 writes 交集判定（有交集 → worker_dispatch/batch-execute，禁止 parallel 直调）。当前仅有铁律无联防，需工具化。
