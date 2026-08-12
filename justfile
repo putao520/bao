@@ -161,6 +161,42 @@ release version: build-release
     echo "✓ 打包完成: ${STAGE}.tar.gz"
     cat SHA256SUMS
 
+# ─── 本地跑 GitHub Actions workflow(via `act`) ─────────────────────────────
+# `just` 不直接解析 GHA;底层用 `act`(nektos/act,已装)在 Docker 里复现 GHA runner
+# 跑 .github/workflows/*.yml。这样 GitHub Actions 和本地 just 共用同一套 workflow
+# 真源,不重复维护。依赖:act + docker daemon 活着。
+#
+# 注意:首次很慢 — 拉取 act runner 镜像(catthehacker/ubuntu,~2GB)+ 容器内从零
+# 编译 mozjs。workflow 里的 actions/cache 在 act 下也生效(挂到宿主 ~/.cache/act)。
+
+# 列出 act 识别的所有 workflow job(--list,不执行)。
+gha-list:
+    act --list
+
+# 跑 CI workflow(push 等价:fmt + check + clippy + bce-gate)。
+# 用法:just gha-ci [--job check]  (额外参数透传给 act)
+gha-ci *ARGS:
+    act push -W .github/workflows/ci.yml {{ARGS}}
+
+# 跑 browser-smoke workflow(manual/schedule 等价:bao browser + Xvfb + CDP 验证)。
+gha-smoke *ARGS:
+    act workflow_dispatch -W .github/workflows/browser-smoke.yml {{ARGS}}
+
+# 跑 cdp-smoke workflow(Playwright → Bao CDP 端到端)。
+gha-cdp *ARGS:
+    act workflow_dispatch -W .github/workflows/cdp-smoke.yml {{ARGS}}
+
+# 跑 release workflow(本地构建 release binary + 打包,不真正发 GitHub Release)。
+# act 默认无 GITHUB_TOKEN 写权限,所以 softprops/action-gh-release 会失败 —
+# 用 just gha-release 只验证 build + stage 步骤;真正发布走 git tag push 或手动。
+gha-release *ARGS:
+    act workflow_dispatch -W .github/workflows/release.yml \
+        -f tag=v0.1.0-alpha.1 {{ARGS}}
+
+# 跑全部 workflow(push 等价事件)。
+gha-all *ARGS:
+    act push {{ARGS}}
+
 # ─── 清理 ────────────────────────────────────────────────────────────────────
 
 # 清理 cargo 构建产物(注意:会删 mozjs 编译缓存,下次很慢)。

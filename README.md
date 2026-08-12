@@ -75,14 +75,22 @@ bao run -e 'console.log(1 + 1)'          # Node/Bun APIs always available
 
 CI runs **locally** — mozjs compiles SpiderMonkey from source, which is too slow
 to be practical on hosted CI runners. The [`justfile`](./justfile) is the
-authoritative "does it pass" entry point (`just` is required; all cargo steps
-force `--jobs 1` per the mozjs EBUSY patch):
+authoritative "does it pass" entry point (`just` is required).
+
+Two ways to run CI locally — **same result, pick one**:
 
 ```bash
-just ci          # full local CI: fmt + lint + check + test + bce
+# (A) Direct cargo recipes — fast feedback, all force --jobs 1 (mozjs EBUSY patch)
+just ci          # fmt + lint + check + test + bce
 just ci-fast     # skip the slow test suite
 just bce         # BCE regression gates (Bug-Class Eradication)
-just smoke       # launch `bao browser` under Xvfb + verify CDP (needs xvfb-run)
+just smoke       # `bao browser` under Xvfb + verify CDP (needs xvfb-run)
+
+# (B) Reuse the GitHub Actions workflows via `act` (needs docker daemon)
+#     GHA and local share ONE workflow source-of-truth, no duplication.
+just gha-list    # show all workflow jobs act recognizes
+just gha-ci      # run .github/workflows/ci.yml in a local container
+just gha-smoke   # run browser-smoke.yml locally
 just             # list all recipes
 ```
 

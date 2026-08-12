@@ -64,18 +64,15 @@ Bao 是 monorepo,**不同目录的修改门槛不同**。提交 PR 前请先确�
 
 ## 构建与测试
 
-CI 跑**本地**(`just`):mozjs 从源码编译 SpiderMonkey,hosted CI runner 上太慢,所以权威的"是否通过"判定在本地 justfile。
+CI 跑**本地**(`just`):mozjs 从源码编译 SpiderMonkey,hosted CI runner 上太慢,所以权威的"是否通过"判定在本地 justfile。两种方式,任选其一:
 
 ```bash
-# 克隆
-git clone https://github.com/putao520/bao.git
-cd bao
+# (A) 直接 cargo recipe — 快速反馈,所有 cargo 已强制 --jobs 1
+just ci          # fmt + lint + check + test + bce
 
-# 一键(工具链 + 构建 + 环境自检)
-./scripts/bootstrap.sh
-
-# 本地 CI 全流程(fmt + lint + check + test + bce)— 权威判定
-just ci
+# (B) 复用 GitHub Actions workflow via act(Docker)— GHA 与本地同一 workflow 真源
+just gha-list    # 列出 act 识别的 workflow job
+just gha-ci      # 本地容器跑 .github/workflows/ci.yml
 
 # 或手动
 cargo build -p bao_bin      # target/debug/bao
