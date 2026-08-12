@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["vendor/servo", "vendor/mozjs"]
+exclude = ["vendor/servo", "vendor/mozjs", "examples"]
 members = [
     # Public unified library entry (consumers depend on package `bao` only).
     "src/bao",
