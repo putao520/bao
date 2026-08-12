@@ -13,6 +13,10 @@ description.workspace = true
 path = "lib.rs"
 
 [features]
+# When set, install this crate's jemalloc/system as the process #[global_allocator].
+# Leave OFF when embedding Servo/Bao into another binary that already has one
+# (e.g. frog tools → gsc-frog-pager jemalloc).
+install-global-allocator = []
 allocation-tracking = ["backtrace", "dep:rustc-hash", "log"]
 use-system-allocator = ["libc"]
 
