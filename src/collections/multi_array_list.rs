@@ -255,9 +255,11 @@ use crate::const_str_eq;
 /// `TypeId` of `F` without the `'static` bound `TypeId::of` imposes — needed
 /// because reflected `Field::ty` ids are not `'static`-restricted, and column
 /// callers routinely use lifetime-carrying field types (`&'a [u8]`, `Ref<'a>`).
+///
+/// Nightly treats `type_id` as a comptime intrinsic — call only inside `const { }`.
 #[inline(always)]
 const fn type_id_of<F: ?Sized>() -> TypeId {
-    core::intrinsics::type_id::<F>()
+    const { core::intrinsics::type_id::<F>() }
 }
 
 /// Reflected fields of `T` (struct only). Panics at const-eval for non-structs.
