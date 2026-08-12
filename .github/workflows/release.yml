@@ -11,6 +11,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to release (e.g. v0.1.0-alpha.1)'
+        required: true
+        default: 'v0.1.0-alpha.1'
 
 env:
   CARGO_BUILD_JOBS: 1
@@ -73,9 +79,12 @@ jobs:
           file target/release/bao
 
       - name: Stage release artifacts
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME}"   # e.g. v0.1.0
+          # Prefer the explicit workflow_dispatch input; fall back to the tag ref name.
+          if [ -n "$INPUT_TAG" ]; then VERSION="$INPUT_TAG"; else VERSION="${GITHUB_REF_NAME}"; fi   # e.g. v0.1.0
           STAGE="bao-${VERSION}-linux-x86_64"
           mkdir -p "$STAGE/bin"
 

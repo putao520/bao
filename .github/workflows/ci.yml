@@ -14,6 +14,7 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  workflow_dispatch:
 
 env:
   # mozjs 从源码编译 SpiderMonkey,EBUSY patch + 单线程编译避免 race
