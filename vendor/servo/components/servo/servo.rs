@@ -1310,7 +1310,11 @@ pub fn run_content_process(token: String) {
             media_platform::init();
 
             // Start the fetch thread for this content process.
-            let fetch_thread_join_handle = start_fetch_thread();
+            // BAO PATCH (BCE-20260627-009): multiprocess path creates a fresh
+            // per-instance RouterProxy (single-process path uses the Constellation's
+            // router via Constellation::run).
+            let fetch_thread_join_handle =
+                start_fetch_thread(std::sync::Arc::new(ipc_channel::router::RouterProxy::new()));
 
             set_logger(
                 new_event_loop_info

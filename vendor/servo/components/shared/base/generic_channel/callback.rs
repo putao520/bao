@@ -140,7 +140,7 @@ where
             let new_callback = move |msg: Result<T, ipc_channel::SerDeError>| {
                 callback(msg.map_err(|error| error.into()))
             };
-            ROUTER.add_typed_route(ipc_receiver, Box::new(new_callback));
+            crate::ipc_router::router().add_typed_route(ipc_receiver, Box::new(new_callback));
             GenericCallback(GenericCallbackVariants::CrossProcess(ipc_sender))
         } else {
             let callback = Arc::new(Mutex::new(callback));

@@ -239,7 +239,7 @@ impl MediaFrameRenderer {
             return;
         };
 
-        ROUTER.add_typed_route(
+        servo_base::ipc_router::router().add_typed_route(
             image_receiver,
             Box::new(move |message| {
                 let message = message.unwrap();
@@ -2178,7 +2178,7 @@ impl HTMLMediaElement {
             .task_manager()
             .media_element_task_source()
             .to_sendable();
-        ROUTER.add_typed_route(
+        servo_base::ipc_router::router().add_typed_route(
             action_receiver,
             Box::new(move |message| {
                 let event = message.unwrap();

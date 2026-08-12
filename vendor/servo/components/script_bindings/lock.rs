@@ -17,9 +17,27 @@ impl<T> ThreadUnsafeOnceLock<T> {
         Self(OnceLock::new())
     }
 
-    /// Initialize the value inside this lock. Panics if the lock has been previously initialized.
+    /// Initialize the value inside this lock.
+    ///
+    /// BAO PATCH (BCE-20260627-009): Idempotent — if the lock has already been
+    /// initialized, this is a no-op instead of panicking. The original servo
+    /// `assert!(self.0.set(val).is_ok())` panics on any re-init, which breaks
+    /// bao's multi-BaoRuntime model: cargo's default multi-threaded test runner
+    /// creates several `BaoRuntime` instances in the same process (one per test
+    /// thread), each calling `Servo::new`, which triggers servo's codegen statics
+    /// (`CLASS_OPS`, `Class`, `INTERFACE_OBJECT_CLASS`, `*_specs`, etc.) to run
+    /// their `ThreadUnsafeOnceLock::set` initializers again. These statics always
+    /// initialize from identical compile-time-constant data, so a re-init carries
+    /// the same value and is safe to ignore. A panic here would abort the whole
+    /// test binary.
+    ///
+    /// We intentionally do NOT compare old vs new (the type `T` is not required
+    /// to be `PartialEq`, and these are `unsafe` JS-API types that must not be
+    /// read casually). Re-init with the same static initializer data is the only
+    /// legitimate path in bao's embedding model; the process-global `OnceLock`
+    /// guarantees the first value wins and is never overwritten.
     pub fn set(&self, val: T) {
-        assert!(self.0.set(val).is_ok());
+        let _ = self.0.set(val);
     }
 
     /// Get a reference to the value inside this lock. Panics if the lock has not been initialized.

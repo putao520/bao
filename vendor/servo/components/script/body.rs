@@ -143,7 +143,7 @@ impl TransmitBodyConnectHandler {
         let mut body_handler = self.clone();
         body_handler.reset_in_memory_done();
 
-        ROUTER.add_typed_route(
+        servo_base::ipc_router::router().add_typed_route(
             chunk_request_receiver,
             Box::new(move |message| {
                 let request = message.unwrap();
@@ -443,7 +443,7 @@ impl ExtractedBody {
             source,
         );
 
-        ROUTER.add_typed_route(
+        servo_base::ipc_router::router().add_typed_route(
             chunk_request_receiver,
             Box::new(move |message| {
                 match message.unwrap() {

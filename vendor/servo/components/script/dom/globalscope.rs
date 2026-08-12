@@ -1718,7 +1718,7 @@ impl GlobalScope {
                 task_source: self.task_manager().dom_manipulation_task_source().into(),
                 context,
             };
-            ROUTER.add_typed_route(
+            servo_base::ipc_router::router().add_typed_route(
                 broadcast_control_receiver,
                 Box::new(move |message| match message {
                     Ok(msg) => listener.handle(msg),
@@ -2231,7 +2231,7 @@ impl GlobalScope {
             task_source: self.task_manager().file_reading_task_source().into(),
         };
 
-        ROUTER.add_typed_route(
+        servo_base::ipc_router::router().add_typed_route(
             recv.to_ipc_receiver(),
             Box::new(move |msg| {
                 file_listener.handle(msg.expect("Deserialization of file listener msg failed."));
@@ -2258,7 +2258,7 @@ impl GlobalScope {
             task_source: self.task_manager().file_reading_task_source().into(),
         };
 
-        ROUTER.add_typed_route(
+        servo_base::ipc_router::router().add_typed_route(
             recv.to_ipc_receiver(),
             Box::new(move |msg| {
                 file_listener.handle(msg.expect("Deserialization of file listener msg failed."));

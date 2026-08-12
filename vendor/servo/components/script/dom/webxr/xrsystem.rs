@@ -243,7 +243,7 @@ impl XRSystemMethods<crate::DomTypeHolder> for XRSystem {
         let (sender, receiver) = ipc::channel(global.time_profiler_chan().clone()).unwrap();
         let (frame_sender, frame_receiver) = ipc_crate::channel().unwrap();
         let mut frame_receiver = Some(frame_receiver);
-        ROUTER.add_typed_route(
+        servo_base::ipc_router::router().add_typed_route(
             receiver.to_ipc_receiver(),
             Box::new(move |message| {
                 // router doesn't know this is only called once

@@ -1291,7 +1291,7 @@ pub fn create_request_body_with_content(content: &str) -> RequestBody {
     let content_len = content_bytes.len();
 
     let (chunk_request_sender, chunk_request_receiver) = ipc::channel().unwrap();
-    ROUTER.add_typed_route(
+    servo_base::ipc_router::router().add_typed_route(
         chunk_request_receiver,
         Box::new(move |message| {
             let request = message.unwrap();

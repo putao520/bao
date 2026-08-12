@@ -117,7 +117,7 @@ impl AnalyserNode {
             .to_sendable();
         let this = Trusted::new(&*object);
 
-        ROUTER.add_typed_route(
+        servo_base::ipc_router::router().add_typed_route(
             recv,
             Box::new(move |block| {
                 let this = this.clone();

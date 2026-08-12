@@ -580,6 +580,7 @@ impl WorkerGlobalScope {
     /// onComplete algorithm defined inside <https://html.spec.whatwg.org/multipage/#run-a-worker>
     #[expect(unsafe_code)]
     pub(crate) fn on_complete(&self, cx: &mut js::context::JSContext, script: Option<Script>) {
+        // TASK-63 DIAG: track on_complete invocation + whether script is Some/None
         // Step 1. If script is null or if script's error to rethrow is non-null, then:
         let script = match script {
             Some(Script::Classic(script)) if script.record.is_ok() => Script::Classic(script),

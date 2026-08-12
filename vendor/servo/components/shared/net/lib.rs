@@ -5,7 +5,7 @@
 #![deny(unsafe_code)]
 
 use std::fmt::{self, Debug, Display};
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::thread::{self, JoinHandle};
 
 use content_security_policy::{self as csp};
@@ -378,8 +378,7 @@ impl FetchTaskTarget for IpcSender<FetchResponseMsg> {
             .get_network_error()
             .map_or_else(|| Ok(()), |network_error| Err(network_error.clone()));
         let timing = response.get_resource_timing().inner().clone();
-
-        let _ = self.send(FetchResponseMsg::ProcessResponseEOF(
+        let send_result = self.send(FetchResponseMsg::ProcessResponseEOF(
             request.id, result, timing,
         ));
     }
@@ -811,7 +810,7 @@ impl CacheEntryDescriptor {
 
 // FIXME: https://github.com/servo/servo/issues/34591
 #[expect(clippy::large_enum_variant)]
-enum ToFetchThreadMessage {
+pub enum ToFetchThreadMessage {
     Cancel(Vec<RequestId>, CoreResourceThread),
     StartFetch(
         /* request_builder */ RequestBuilder,
@@ -848,7 +847,7 @@ impl FetchThread {
         let (to_fetch_sender, from_fetch_sender) = ipc::channel().unwrap();
 
         let sender_clone = sender.clone();
-        ROUTER.add_typed_route(
+        servo_base::ipc_router::router().add_typed_route(
             from_fetch_sender,
             Box::new(move |message| {
                 let message: FetchResponseMsg = message.unwrap();
@@ -893,7 +892,8 @@ impl FetchThread {
                         ),
                     };
 
-                    core_resource_thread.send(message).unwrap();
+                    let send_result = core_resource_thread.send(message);
+                    send_result.unwrap();
 
                     let preexisting_fetch =
                         self.active_fetches.insert(request_builder_id, callback);
@@ -929,57 +929,167 @@ impl FetchThread {
     }
 }
 
-static FETCH_THREAD: OnceLock<Sender<ToFetchThreadMessage>> = OnceLock::new();
+// BAO PATCH (BCE-20260627-009): Fetch-thread lifecycle for bao's multi-BaoRuntime model.
+//
+// servo is single-instance: one Servo::new → one Constellation → one FetchThread,
+// started in `Constellation::run` (constellation.rs:778) and exited/shut-down at
+// the end of `Constellation::run` (constellation.rs:794-797) via
+// `exit_fetch_thread()` + `join_handle.join()`.
+//
+// bao runs many `BaoRuntime` instances in one process (concurrent integration
+// tests, multi-tenant production). Each `BaoRuntime::new` → `Servo::new` →
+// `Constellation::run` therefore calls `start_fetch_thread` / `exit_fetch_thread`.
+// The original servo code used `OnceLock<Sender>` + `.expect("set only once")`,
+// which panics on the 2nd `BaoRuntime`.
+//
+// Requirements for a correct fix:
+//   R1. No panic on the 2nd..Nth `BaoRuntime` (idempotent start).
+//   R2. The FIRST `Constellation` owns the real FetchThread; its `join_handle`
+//       is the real one. Its `exit_fetch_thread()` MUST send `Exit` so that
+//       `join_handle.join()` (constellation.rs:796) returns — otherwise the
+//       Constellation blocks forever in pthread_join and `Servo::drop` never
+//       completes (THIS WAS THE ROOT CAUSE of the servo constellation startup
+//       futex deadlock: the prior fix made `exit_fetch_thread` a global no-op,
+//       so even the owner never sent Exit → owner's join() hung → test deadlocked
+//       in BaoRuntime teardown).
+//   R3. Non-owner `Constellation`s get a no-op handle (their `join()` returns
+//       instantly); they MUST NOT send Exit (they don't own the real thread).
+//   R4. After the owner's FetchThread exits (owner's join completes), the
+//       sender must be cleared so a later `BaoRuntime` can spawn a fresh
+//       FetchThread. `OnceLock` cannot be cleared, so we use a `Mutex<Option<...>>`.
+//
+// Ownership model: "does THIS Constellation own the real FetchThread?" is a
+// per-thread question — `start_fetch_thread` and `exit_fetch_thread` are always
+// called in pairs on the same Constellation thread (`Constellation::run`).
+// A thread-local flag (`FETCH_THREAD_OWNED_ON_THIS_THREAD`) records whether the
+// caller of `exit_fetch_thread` is the owner.
+//
+// `Mutex` is required here (not `thread_local`) because the sender is a
+// process-global resource shared across Constellation threads: the owner writes
+// it in `start`, and a different thread (a later `BaoRuntime`) must observe it
+// gone after the owner clears it in `exit`. This is a genuine cross-thread
+// share — exactly the "Mutex only for true cross-thread sharing" exception in
+// the去锁化 principle (CLAUDE.md §4).
+static FETCH_THREAD_SENDER: LazyLock<std::sync::Mutex<Option<Sender<ToFetchThreadMessage>>>> =
+    LazyLock::new(|| std::sync::Mutex::new(None));
 
-/// Start the fetch thread,
-/// and returns the join handle to the background thread.
-pub fn start_fetch_thread() -> JoinHandle<()> {
+// BAO PATCH (BCE-20260627-009): Per-thread FetchThread sender. Set by
+// `start_fetch_thread` on the Constellation thread that spawned the real
+// FetchThread; consumed by `exit_fetch_thread` on the same thread. Also set on
+// ScriptThread via Phase 5 (inherited from Constellation). See FETCH_THREAD_SENDER
+// for the cross-thread fallback design rationale.
+thread_local! {
+    static FETCH_THREAD_SENDER_ON_THIS_THREAD: std::cell::RefCell<Option<Sender<ToFetchThreadMessage>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Start the fetch thread, and returns the join handle to the background thread.
+///
+/// BAO PATCH (BCE-20260627-009): Per-instance FetchThread for bao's multi-BaoRuntime model.
+///
+/// Each `Constellation` creates its OWN FetchThread (no process-global sharing).
+/// The FetchThread's response route is registered on the calling thread's
+/// per-instance `RouterProxy` (set via `servo_base::ipc_router::set_thread_router`),
+/// so it is scoped to this BaoRuntime and cleaned up when the Constellation tears down.
+///
+/// The returned `JoinHandle` is the REAL FetchThread handle; the caller's later
+/// `exit_fetch_thread()` + `join()` shuts it down cleanly (the thread exits on `Exit`).
+pub fn start_fetch_thread(router: Arc<ipc_channel::router::RouterProxy>) -> JoinHandle<()> {
+    // Install per-instance router on this thread before spawning FetchThread,
+    // so `FetchThread::spawn()` registers the response route on this router.
+    servo_base::ipc_router::set_thread_router(router);
     let (sender, join_handle) = FetchThread::spawn();
-    FETCH_THREAD
-        .set(sender)
-        .expect("Fetch thread should be set only once on start-up");
+    // Store sender in thread-local for this Constellation's exit_fetch_thread().
+    FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| {
+        *s.borrow_mut() = Some(sender.clone());
+    });
+    // Also publish to process-global so ScriptThreads inheriting via
+    // InitialScriptState can find it via fetch_async fallback.
+    let mut guard = FETCH_THREAD_SENDER.lock().expect("FETCH_THREAD_SENDER poisoned");
+    *guard = Some(sender);
+    drop(guard);
     join_handle
 }
 
-/// Send the exit message to the background thread,
-/// after which the caller can,
-/// and should,
-/// join on the thread.
+/// Send the exit message to the background thread, after which the caller can,
+/// and should, join on the thread.
+///
+/// BAO PATCH (BCE-20260627-009): Per-instance exit. Sends `Exit` on THIS thread's
+/// FetchThread sender (set by `start_fetch_thread`), then clears the thread-local
+/// sender and the process-global sender (if it still points at ours). The caller's
+/// subsequent `join_handle.join()` returns once the FetchThread processes Exit.
 pub fn exit_fetch_thread() {
-    let _ = FETCH_THREAD
-        .get()
-        .expect("Fetch thread should always be initialized on start-up")
-        .send(ToFetchThreadMessage::Exit);
+    let sender = FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| s.borrow_mut().take());
+    if let Some(sender) = sender {
+        let _ = sender.send(ToFetchThreadMessage::Exit);
+        // Clear process-global sender so a later BaoRuntime can spawn a fresh one.
+        let mut guard = FETCH_THREAD_SENDER.lock().expect("FETCH_THREAD_SENDER poisoned");
+        *guard = None;
+        drop(guard);
+    }
+    // If no thread-local sender, this thread is a non-owner: no-op.
 }
 
 /// Instruct the resource thread to make a new fetch request.
+///
+/// BAO PATCH (BCE-20260627-009): Prefer THIS thread's FetchThread sender
+/// (thread-local, set by start_fetch_thread on Constellation and inherited on
+/// ScriptThread). Fall back to process-global FETCH_THREAD_SENDER for legacy
+/// paths. Drop the fetch if no sender is live.
 pub fn fetch_async(
     core_resource_thread: &CoreResourceThread,
     request: RequestBuilder,
     response_init: Option<ResponseInit>,
     callback: BoxedFetchCallback,
 ) {
-    let _ = FETCH_THREAD
-        .get()
-        .expect("Fetch thread should always be initialized on start-up")
-        .send(ToFetchThreadMessage::StartFetch(
-            request,
-            response_init,
-            callback,
-            core_resource_thread.clone(),
-        ));
+    let local_sender = FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| s.borrow().as_ref().cloned());
+    let sender = match local_sender {
+        Some(s) => s,
+        None => match FETCH_THREAD_SENDER.lock().expect("FETCH_THREAD_SENDER poisoned").clone() {
+            Some(s) => s,
+            None => return, // No live FetchThread; drop the fetch (post-teardown).
+        },
+    };
+    let _ = sender.send(ToFetchThreadMessage::StartFetch(
+        request,
+        response_init,
+        callback,
+        core_resource_thread.clone(),
+    ));
 }
 
 /// Instruct the resource thread to cancel an existing request. Does nothing if the
-/// request has already completed or has not been fetched yet.
+/// request has already been completed or has not been fetched yet.
 pub fn cancel_async_fetch(request_ids: Vec<RequestId>, core_resource_thread: &CoreResourceThread) {
-    let _ = FETCH_THREAD
-        .get()
-        .expect("Fetch thread should always be initialized on start-up")
-        .send(ToFetchThreadMessage::Cancel(
-            request_ids,
-            core_resource_thread.clone(),
-        ));
+    let local_sender = FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| s.borrow().as_ref().cloned());
+    let sender = match local_sender {
+        Some(s) => s,
+        None => match FETCH_THREAD_SENDER.lock().expect("FETCH_THREAD_SENDER poisoned").clone() {
+            Some(s) => s,
+            None => return,
+        },
+    };
+    let _ = sender.send(ToFetchThreadMessage::Cancel(request_ids, core_resource_thread.clone()));
+}
+
+/// BAO PATCH (BCE-20260627-009): Inherit a FetchThread sender on THIS thread.
+///
+/// Called by ScriptThreadFactory::create() to install the per-instance FetchThread
+/// sender inherited from the Constellation. After this call, `fetch_async` /
+/// `cancel_async_fetch` on this thread will route to the correct per-instance FetchThread.
+pub fn set_thread_fetch_sender(sender: Sender<ToFetchThreadMessage>) {
+    FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| {
+        *s.borrow_mut() = Some(sender);
+    });
+}
+
+/// BAO PATCH (BCE-20260627-009): Get THIS thread's FetchThread sender, if any.
+///
+/// Used by EventLoop::spawn (on the Constellation thread) to read the FetchThread
+/// sender set by `start_fetch_thread` and pass it to the ScriptThread via
+/// InitialScriptState.
+pub fn get_thread_fetch_sender() -> Option<Sender<ToFetchThreadMessage>> {
+    FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| s.borrow().clone())
 }
 
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]

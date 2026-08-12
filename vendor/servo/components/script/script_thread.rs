@@ -592,6 +592,12 @@ impl ScriptThreadFactory for ScriptThread {
                 thread_state::initialize(ThreadState::SCRIPT);
                 PipelineNamespace::install(state.pipeline_namespace_id);
                 ScriptEventLoopId::install(state.id);
+                // BAO PATCH (BCE-20260627-009): Install per-instance router
+                // inherited from Constellation (if present). This ensures ScriptThread uses
+                // the same per-instance RouterProxy as its owner Constellation.
+                if let Some(ref router) = state.router_proxy {
+                    servo_base::ipc_router::set_thread_router(router.clone());
+                }
                 let memory_profiler_sender = state.memory_profiler_sender.clone();
                 let reporter_name = format!("script-reporter-{script_thread_id:?}");
                 let (script_thread, mut cx) = ScriptThread::new(

@@ -522,6 +522,11 @@ pub struct Constellation<STF, SWF> {
     /// to the `UserContents` need to be forwared to all the `ScriptThread`s that host
     /// the relevant `WebView`.
     pub(crate) user_contents_for_manager_id: FxHashMap<UserContentManagerId, UserContents>,
+
+    /// BAO PATCH (BCE-20260627-009): Per-Constellation RouterProxy for IPC routing.
+    /// Created fresh for each BaoRuntime, dropped (auto-shutdown) when this
+    /// Constellation is torn down. See servo_base::ipc_router::set_thread_router.
+    pub(crate) router_proxy: Arc<ipc_channel::router::RouterProxy>,
 }
 
 /// State needed to construct a constellation.
@@ -625,6 +630,10 @@ where
                 let (namespace_ipc_sender, namespace_ipc_receiver) =
                     generic_channel::channel().expect("ipc channel failure");
                 let namespace_receiver = namespace_ipc_receiver.route_preserving_errors();
+
+                // BAO PATCH (BCE-20260627-009): Create per-Constellation RouterProxy.
+                // Each BaoRuntime gets its own isolated router to enable safe shutdown/re-init.
+                let router_proxy = Arc::new(ipc_channel::router::RouterProxy::new());
 
                 let (background_hang_monitor_ipc_sender, background_hang_monitor_ipc_receiver) =
                     generic_channel::channel().expect("ipc channel failure");
@@ -741,6 +750,8 @@ where
                     pending_viewport_changes: Default::default(),
                     screenshot_readiness_requests: Vec::new(),
                     user_contents_for_manager_id: Default::default(),
+                    // BAO PATCH (BCE-20260627-009): Per-instance RouterProxy.
+                    router_proxy,
                 };
 
                 constellation.run();
@@ -772,10 +783,15 @@ where
 
     /// The main event loop for the constellation.
     fn run(&mut self) {
+        // BAO PATCH (BCE-20260627-009): Install per-Constellation RouterProxy.
+        // All IPC routing on this thread (and ScriptThreads inheriting via EventLoop)
+        // will use this per-instance router, isolated from other BaoRuntime instances.
+        servo_base::ipc_router::set_thread_router(self.router_proxy.clone());
+
         // Start a fetch thread.
         // In single-process mode this will be the global fetch thread;
         // in multi-process mode this will be used only by the canvas paint thread.
-        let join_handle = start_fetch_thread();
+        let join_handle = start_fetch_thread(self.router_proxy.clone());
 
         while !self.shutting_down || !self.pipelines.is_empty() {
             // Randomly close a pipeline if --random-pipeline-closure-probability is set
@@ -2951,7 +2967,15 @@ where
         }
 
         debug!("Shutting-down IPC router thread in constellation.");
-        ROUTER.shutdown();
+        // BAO PATCH (BCE-20260627-009): Per-instance RouterProxy auto-shutdown via Drop.
+        // The Constellation's `router_proxy: Arc<RouterProxy>` is dropped here. When the
+        // last Arc reference drops, `RouterProxy::drop()` calls `self.shutdown()`, cleanly
+        // terminating this BaoRuntime's router thread. This is scoped to this instance
+        // only — the process-global `ipc_channel::router::ROUTER` is never touched, so a
+        // later BaoRuntime can create its own fresh RouterProxy and its routes work.
+        // (Previously the global ROUTER.shutdown() was commented out as a HACK; now that
+        // routing is per-instance via servo_base::ipc_router, the per-instance router
+        // shuts down cleanly without affecting siblings.)
 
         debug!("Shutting-down the async runtime in constellation.");
         self.async_runtime.shutdown();

@@ -813,7 +813,6 @@ impl CoreResourceManager {
         }
 
         spawn_task(async move {
-            // XXXManishearth: Check origin against pipeline id (also ensure that the mode is allowed)
             // todo load context / mimesniff in fetch
             // todo referrer policy?
             // todo service worker stuff

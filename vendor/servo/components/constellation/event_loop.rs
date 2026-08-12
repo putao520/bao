@@ -86,6 +86,9 @@ impl EventLoop {
         };
 
         let event_loop_id = ScriptEventLoopId::new();
+        // BAO PATCH (BCE-20260627-009): Inherit router_proxy
+        // from Constellation so ScriptThread uses the same per-instance router.
+        let router_proxy = Some(constellation.router_proxy.clone());
         let initial_script_state = InitialScriptState {
             id: event_loop_id,
             script_to_constellation_sender: constellation.script_sender.clone(),
@@ -111,6 +114,8 @@ impl EventLoop {
             player_context: WindowGLContext::get(),
             privileged_urls: constellation.privileged_urls.clone(),
             user_contents_for_manager_id: constellation.user_contents_for_manager_id.clone(),
+            // BAO PATCH (BCE-20260627-009): Per-instance router.
+            router_proxy,
         };
 
         let event_loop = if opts::get().multiprocess {

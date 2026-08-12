@@ -294,13 +294,66 @@ impl Default for Opts {
 // opts everywhere it is used, which gets particularly cumbersome
 // when passing through the DOM structures.
 static OPTIONS: OnceLock<Opts> = OnceLock::new();
+// BAO PATCH (BCE-20260627-009): Track explicit init vs lazy Default.
+static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Initialize options.
 ///
 /// Should only be called once at process startup.
 /// Must be called before the first call to [`get`].
+///
+/// BAO PATCH (BCE-20260627-009): Idempotent initialization — supports multiple
+/// BaoRuntime instances (production multi-tenant + concurrent integration tests).
+/// Semantics:
+///   - First explicit `initialize_options(opts)` wins (sets INITIALIZED=true).
+///   - Subsequent calls with same bao config fields → no-op (idempotent).
+///   - Subsequent calls with different bao config fields → panic (real conflict).
+///   - If a lazy `Default` sneaked in via `get()` before any explicit init
+///     (INITIALIZED still false), the first explicit `initialize_options` may
+///     overwrite it (bao's explicit config takes priority over servo's lazy default).
+///
+/// Original servo: `OPTIONS.set(opts).expect("Already initialized")` panics on
+/// ANY re-init, even with identical opts. That breaks bao's multi-BaoRuntime model
+/// (each `BaoRuntime::new` triggers `Servo::new` → `initialize_options`).
 pub fn initialize_options(opts: Opts) {
-    OPTIONS.set(opts).expect("Already initialized");
+    use std::sync::atomic::Ordering;
+    // First-writer-wins via OnceLock. If empty, we set it.
+    if OPTIONS.set(opts).is_ok() {
+        INITIALIZED.store(true, Ordering::Release);
+        return;
+    }
+    // OnceLock full. If not explicitly initialized (lazy Default from get()), bao
+    // lost the race — bail with actionable message. bao must init before any servo get().
+    if !INITIALIZED.load(Ordering::Acquire) {
+        panic!(
+            "servo opts OnceLock holds a lazy Default (get() called before bao init). \
+             bao::BaoRuntime must be created before any servo code triggers opts::get()."
+        );
+    }
+    // Already explicitly initialized — idempotent if bao config fields match.
+    let existing = OPTIONS.get().expect("OPTIONS set");
+    if existing.force_isolate_event_loops && existing.disable_script_debugger {
+        return;
+    }
+    panic!(
+        "Opts already initialized with non-bao config (force_isolate_event_loops={}, \
+         disable_script_debugger={}). Bao requires (true, true).",
+        existing.force_isolate_event_loops, existing.disable_script_debugger
+    );
+}
+
+/// Returns `true` if [`initialize_options`] has been called (i.e. the process-global
+/// `OnceLock` holds an explicitly-initialized value).
+///
+/// Unlike [`get`], this NEVER initializes the `OnceLock` — it is a pure read of the
+/// current state. This is essential for callers (like bao's `BaoRuntime::new`) that
+/// must decide whether to pass opts to `Servo::new` based on whether servo config is
+/// already set, WITHOUT triggering the `get_or_init(Default)` side effect that would
+/// lock in default values and cause a subsequent real `initialize_options` to panic.
+///
+/// BAO PATCH (BCE-20260627-009): companion to the idempotent `initialize_options`.
+pub fn is_initialized() -> bool {
+    OPTIONS.get().is_some()
 }
 
 /// Get the servo options
@@ -310,11 +363,8 @@ pub fn initialize_options(opts: Opts) {
 /// explicitly initialized.
 #[inline]
 pub fn get() -> &'static Opts {
-    // In unit-tests using default options reduces boilerplate.
-    // We can't use `cfg(test)` since that only is enabled when this crate
-    // is compiled in test mode.
-    // We rely on the `expect` in `initialize_options` to inform us if refactoring
-    // causes a `get` call to move before `initialize_options`.
+    // BAO PATCH (BCE-20260627-009): get_or_init with lazy Default unchanged;
+    // the patched initialize_options handles the lazy-default-vs-explicit race.
     OPTIONS.get_or_init(Default::default)
 }
 

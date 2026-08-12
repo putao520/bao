@@ -410,6 +410,14 @@ pub struct InitialScriptState {
     pub privileged_urls: Vec<ServoUrl>,
     /// A copy of constellation's `UserContentManagerId` to `UserContents` map.
     pub user_contents_for_manager_id: FxHashMap<UserContentManagerId, UserContents>,
+
+    /// BAO PATCH (BCE-20260627-009): Per-instance RouterProxy for this ScriptThread.
+    /// Set by EventLoop::spawn from the Constellation's router. Marked `#[serde(skip)]`
+    /// because `Arc<RouterProxy>` is not serializable (bao runs single-process, so
+    /// ScriptThread inherits it directly; the multiprocess path leaves this `None`
+    /// and the thread falls back to the process-global ROUTER).
+    #[serde(skip)]
+    pub router_proxy: Option<std::sync::Arc<ipc_channel::router::RouterProxy>>,
 }
 
 /// Errors from executing a paint worklet

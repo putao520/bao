@@ -12,6 +12,7 @@
 pub mod cross_process_instant;
 pub mod generic_channel;
 pub mod id;
+pub mod ipc_router;
 pub mod print_tree;
 mod rope;
 pub mod text;

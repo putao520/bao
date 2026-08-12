@@ -726,7 +726,7 @@ fn obtain_response_setup_router_callback(
         }
     }
 
-    ROUTER.add_typed_route(
+    servo_base::ipc_router::router().add_typed_route(
         body_port,
         Box::new(move |message| {
             info!("Received message");

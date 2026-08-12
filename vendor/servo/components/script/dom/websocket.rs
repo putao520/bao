@@ -302,7 +302,7 @@ impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
             .send(CoreResourceMsg::Fetch(request, channels));
 
         let task_source = global.task_manager().websocket_task_source().to_sendable();
-        ROUTER.add_typed_route(
+        servo_base::ipc_router::router().add_typed_route(
             dom_event_receiver.to_ipc_receiver(),
             Box::new(move |message| match message.unwrap() {
                 WebSocketNetworkEvent::ReportCSPViolations(violations) => {

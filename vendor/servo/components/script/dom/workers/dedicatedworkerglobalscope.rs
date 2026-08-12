@@ -520,6 +520,13 @@ impl DedicatedWorkerGlobalScope {
                 // Callbacks fire once per Worker scope creation; they are not scoped
                 // to a specific WebView because Workers are created via servo's DOM
                 // Worker::Constructor (https/http URLs only — DEC-WK-003 dual-track).
+                // BAO PATCH (BCE-20260627-009): NOTE — realm entry for embedder
+                // callbacks is handled INSIDE the callback (worker_scope_init_native
+                // enters the realm via JSAutoRealm before calling any JSAPI). Doing
+                // realm entry here in servo vendor would crash on JSAutoRealm::drop
+                // because the worker thread's cx starts in the null realm (oldRealm=0x0)
+                // and LeaveRealm with a freed startingRealm pointer segfaults. The
+                // callback owns its own realm lifecycle.
                 // @trace DEC-WK-001 servo-native Worker path (vendor patch)
                 // @trace REQ-BRW-004 [criterion:1,3,7] Worker thread owns Runtime/JSContext
                 for callback in crate::script_thread::drain_worker_scope_callbacks() {
@@ -582,7 +589,7 @@ impl DedicatedWorkerGlobalScope {
                                 // The worker processing model remains on this step
                                 // until the event loop is destroyed,
                                 // which happens after the closing flag is set to true.
-                                while !scope.is_closing() {
+                while !scope.is_closing() {
                                     run_worker_event_loop(&*global, Some(&worker), cx);
                                 }
                             },
@@ -590,6 +597,22 @@ impl DedicatedWorkerGlobalScope {
                             event_loop_sender,
                             CommonScriptMsg::CollectReports,
                         );
+                }
+
+                // BAO PATCH (BCE-20260627-009): Flush cx realm stack before clear_js_runtime
+                // to prevent JSAutoRealm::drop LeaveRealm on freed Realm (UAF SIGSEGV).
+                // Worker thread teardown: clear_js_runtime frees JSRuntime (which owns all Realms).
+                // If cx.realm stack has JSAutoRealm guards with oldRealm pointers to those Realms,
+                // those guards' drop after clear_js_runtime causes LeaveRealm(freed_ptr) → UAF.
+                // Fix: enter global's realm one more time, so cx.realm becomes globalRealm.
+                // Then any lingering guard's oldRealm will be globalRealm (which is still rooted
+                // at this point). After this block ends, the temporary guard drops cleanly,
+                // and clear_js_runtime frees runtime (globalRealm is part of runtime, but
+                // cx.realm is now null). Subsequent guard drops in closure teardown will
+                // LeaveRealm(oldRealm=null) which is safe.
+                {
+                    let _flush = crate::realms::enter_realm(&*global);
+                    drop(_flush);
                 }
 
                 scope.clear_js_runtime();
