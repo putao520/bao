@@ -1,0 +1,46 @@
+Bao (包子)
+A Rust-native programmable browser runtime built on Servo and SpiderMonkey.
+https://github.com/putao520/bao
+
+Copyright (c) 2025-2026 The Bao Project Authors.
+
+Licensed under the MIT License or the Mozilla Public License 2.0 (your choice).
+See LICENSE, LICENSE-MIT, LICENSE-MPL-2.0 for details.
+
+This product includes vendored third-party software:
+
+  - Servo (https://github.com/servo/servo) — MPL-2.0
+    Path: vendor/servo/
+    13 files carry BAO PATCH modifications (see THIRD_PARTY_LICENSES.md §2.1
+    for the full list and change descriptions, per MPL-2.0 §3.3(b)).
+
+  - mozjs / SpiderMonkey Rust bindings (https://github.com/servo/mozjs) — MPL-2.0
+    Path: vendor/mozjs/
+    2 files carry BAO PATCH modifications (see THIRD_PARTY_LICENSES.md §2.2,
+    per MPL-2.0 §3.3(b)).
+
+  - Bun-derived Rust crates (https://github.com/oven-sh/bun) — MIT
+    Path: src/{crate-name}/ (76 pure-Rust crates, unmodified re-use)
+
+  - BoringSSL (https://boringssl.googlesource.com/boringssl) — Apache-2.0
+    Path: vendor/boringssl/ (unmodified)
+
+  - lsquic (https://github.com/litespeedtech/lsquic) — MIT
+    Path: vendor/lsquic/ (unmodified; parts based on Chromium proto-quic,
+    BSD-3-Clause, see vendor/lsquic/LICENSE.chrome)
+
+  - lshpack (https://github.com/litespeedtech/lshpack) — MIT
+    Path: vendor/lshpack/ (unmodified)
+
+  - lsqpack (https://github.com/litespeedtech/lsqpack) — MIT
+    Path: vendor/lsqpack/ (unmodified)
+
+  - mimalloc (https://github.com/microsoft/mimalloc) — MIT
+    Path: vendor/mimalloc/ (unmodified)
+
+  - ipc-channel (https://github.com/servo/ipc-channel) — MIT OR Apache-2.0
+    Path: vendor/ipc-channel/ (unmodified)
+
+Some Servo and mozjs files carry BAO PATCH modifications (marked inline
+with "BAO PATCH" comments). Per MPL-2.0 §3.3(b), the list of modified
+files and the nature of changes is documented in THIRD_PARTY_LICENSES.md.

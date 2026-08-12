@@ -1,0 +1,16 @@
+Bao is dual-licensed under your choice of:
+
+  - MIT License (LICENSE-MIT)
+  - Mozilla Public License 2.0 (LICENSE-MPL-2.0)
+
+You may use Bao's original code (the `bao_*` crates) under either license.
+
+Third-party code vendored under `vendor/` retains its upstream license:
+see NOTICE and THIRD_PARTY_LICENSES.md for attribution.
+
+  - Servo, mozjs (SpiderMonkey bindings): MPL-2.0
+  - Bun-derived Rust crates (`bun_*`): MIT
+  - BoringSSL: OpenSSL/BoringSSL license
+  - lsquic, lshpack, lsqpack: BSD-style
+  - mimalloc: MIT
+  - ipc-channel: MIT OR Apache-2.0

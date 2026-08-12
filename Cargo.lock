@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "bao_crypto"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bun_boringssl_sys",
  "hex",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "bao_lints"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "proc-macro2",
  "syn",
@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "bun_alloc"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "bun_analytics"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -912,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "bun_api"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -932,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ast"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -958,7 +958,7 @@ dependencies = [
 
 [[package]]
 name = "bun_base64"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "base64",
  "bstr",
@@ -973,7 +973,7 @@ dependencies = [
 
 [[package]]
 name = "bun_boringssl"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "bun_boringssl_sys"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "bun_brotli"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "brotli",
  "bun_core",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bundler"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bunfig"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "bun_cares_sys"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1126,7 +1126,7 @@ dependencies = [
 
 [[package]]
 name = "bun_clap"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "bun_clap_macros"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bun_output_tags",
  "proc-macro2",
@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "bun_collections"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
@@ -1172,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bao_native_stubs",
  "bao_uloop",
@@ -1199,7 +1199,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core_macros"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bun_output_tags",
  "proc-macro2",
@@ -1209,7 +1209,7 @@ dependencies = [
 
 [[package]]
 name = "bun_crash_handler"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "bun_css"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "bun_css_derive"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dispatch"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dns"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1305,7 +1305,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dotenv"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "bun_errno"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "bun_event_loop"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1374,7 +1374,7 @@ dependencies = [
 
 [[package]]
 name = "bun_exe_format"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "bun_glob"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1415,14 +1415,14 @@ dependencies = [
 
 [[package]]
 name = "bun_hash"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "twox-hash",
 ]
 
 [[package]]
 name = "bun_highway"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bstr",
  "memchr",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http_types"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "bun_install"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "bun_install_types"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1569,7 +1569,7 @@ dependencies = [
 
 [[package]]
 name = "bun_io"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1595,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_parser"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_printer"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "bun_jsc_macros"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "bun_libarchive"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "bun_libuv_sys"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "bun_lolhtml_sys"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bun_core",
  "lol_html",
@@ -1726,7 +1726,7 @@ dependencies = [
 
 [[package]]
 name = "bun_md"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bun_alloc",
  "bun_collections",
@@ -1740,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "bun_mimalloc_sys"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1757,11 +1757,11 @@ dependencies = [
 
 [[package]]
 name = "bun_opaque"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "bun_options_types"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1789,18 +1789,18 @@ dependencies = [
 
 [[package]]
 name = "bun_output"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bun_core",
 ]
 
 [[package]]
 name = "bun_output_tags"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "bun_parsers"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "bun_paths"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1844,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "bun_perf"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1862,7 +1862,7 @@ dependencies = [
 
 [[package]]
 name = "bun_picohttp"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "bun_platform"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ptr"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1916,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolve_builtins"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1934,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolver"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1977,7 +1977,7 @@ dependencies = [
 
 [[package]]
 name = "bun_router"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "bun_s3_signing"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "bun_safety"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "bun_semver"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2129,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sha_hmac"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2148,7 +2148,7 @@ dependencies = [
 
 [[package]]
 name = "bun_shell_parser"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2170,7 +2170,7 @@ dependencies = [
 
 [[package]]
 name = "bun_simdutf_sys"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2206,7 +2206,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sourcemap"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "bun_spawn"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "bun_spawn_sys"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sql"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "bun_standalone_graph"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sys"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2363,7 +2363,7 @@ dependencies = [
 
 [[package]]
 name = "bun_threading"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "bun_transpiler"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bun_bundler",
  "swc_common",
@@ -2399,7 +2399,7 @@ dependencies = [
 
 [[package]]
 name = "bun_url"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2419,7 +2419,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2442,7 +2442,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws_sys"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "bun_watcher"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2490,7 +2490,7 @@ dependencies = [
 
 [[package]]
 name = "bun_which"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2508,11 +2508,11 @@ dependencies = [
 
 [[package]]
 name = "bun_windows_sys"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "bun_wyhash"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2527,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "bun_zlib"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "bun_zstd"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bun_core",
  "strum 0.26.3",

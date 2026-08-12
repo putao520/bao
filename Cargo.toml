@@ -85,10 +85,18 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 license = "MIT OR MPL-2.0"
 repository = "https://github.com/putao520/bao"
+homepage = "https://github.com/putao520/bao"
+documentation = "https://github.com/putao520/bao/tree/master/docs"
+description = "A Rust-native programmable browser runtime built on Servo and SpiderMonkey"
+keywords = ["browser", "servo", "spidermonkey", "cdp", "runtime"]
+categories = ["web-programming", "api-bindings", "development-tools"]
+readme = "README.md"
+authors = ["The Bao Project Authors"]
+rust-version = "1.89"
 
 [workspace.dependencies]
 mozjs = { path = "vendor/mozjs/mozjs" }
