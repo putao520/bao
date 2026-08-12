@@ -273,7 +273,7 @@ pub fn create_page(&self, cfg: &PageConfig) -> Result<PageHandle, BrowserError> 
 ## PR 流程
 
 1. **小而聚焦** —— 单个 PR 解决一个问题,控制在可 review 的体量。大改动拆成多个 PR。
-2. **CI 必须绿** —— 本地先跑 `cargo test --jobs 1` + `cargo clippy --jobs 1` + `make bce-check`(CI 建立后以 CI 为准)。
+2. **本地验证必须过** —— 本地先跑 `just ci`(或 `cargo test --jobs 1` + `cargo clippy --jobs 1` + `just bce`)。**Bao 的权威判定是本地** —— 项目重型 native 栈(mozjs 从源码编译 SpiderMonkey + servo)在 hosted CI runner 上跑不动,GitHub Actions 已关闭,不作为合并门禁。
 3. **SPEC 变更单独 PR** —— PRD / SPEC 的改动与代码改动分开提,先合 SPEC 再合代码。
 4. **PR 描述包含**:
    - 改了什么 / 为什么改(关联 Issue 或 REQ)
