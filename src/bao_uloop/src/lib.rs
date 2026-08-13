@@ -587,7 +587,29 @@ unsafe extern "C" {
 pub unsafe extern "C" fn bao_loop_tick(loop_: *mut Loop, timeout: *const Timespec) {
     let loop_ptr: *mut PosixLoop = loop_;
     let pending = unsafe { (*loop_ptr).active };
-    run_epoll(loop_, pending, timeout);
+
+    // Check if this thread has a BaoLoopState for this loop (JS thread does,
+    // HTTPThread does not). If yes → Rust epoll_wait + dispatch. If no →
+    // fall back to C us_loop_run_bun_tick which uses the loop's InternalLoopData.
+    let has_rust_state = BAO_LOOP.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|s| ptr::eq(s.loop_ptr, loop_))
+            .unwrap_or(false)
+    });
+
+    if has_rust_state {
+        run_epoll(loop_, pending, timeout);
+    } else {
+        // HTTPThread or any thread without BaoLoopState: use C tick.
+        // The C version has its own epoll_wait + dispatch for socket events.
+        // BCE-007-R3/R3-ext: callers use tick_without_idle (zero timeout),
+        // so the C epoll_wait won't block indefinitely.
+        unsafe extern "C" {
+            fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec);
+        }
+        unsafe { us_loop_run_bun_tick(loop_, timeout) };
+    }
 }
 
 // ──────────────── us_dispatch_* kind→vtable routing ──────────────────

@@ -102,5 +102,13 @@ fn test_fetch_api_all() {
         "All fetch API tests should pass. Results: {}",
         results
     );
+    // Shutdown the HTTPThread before destroying the JSContext — without this,
+    // process_events (-> !, never returns) keeps the non-daemon HTTPThread
+    // alive and the test process can't exit (hang).
+    bun_http::http_thread::shutdown_for_exit();
     bun_runtime::shutdown_thread_sm();
+    // Force-exit: shutdown_for_exit parks the HTTPThread (safety: avoid
+    // ticking freed sockets), but a parked non-daemon thread still prevents
+    // process exit. std::process::exit terminates immediately.
+    std::process::exit(0);
 }
