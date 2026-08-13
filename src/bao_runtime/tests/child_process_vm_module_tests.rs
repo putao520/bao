@@ -86,10 +86,11 @@ fn test_child_process_vm_module_zlib_deep() {
             r#"
         var cp = require('child_process');
         var child = cp.spawn('echo', ['test']);
-        typeof child.stdout === 'function' && typeof child.stderr === 'function'
+        typeof child.stdout === 'object' && child.stdout !== null &&
+        typeof child.stderr === 'object' && child.stderr !== null
     "#
         ),
-        "spawn child should have stdout/stderr methods"
+        "spawn child should have stdout/stderr stream objects"
     );
 
     // spawn has wait/kill methods

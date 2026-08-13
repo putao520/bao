@@ -368,6 +368,19 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
         NonNull::new_unchecked(filename_val.to_string()),
     );
 
+    // Validate the entry path synchronously, before spawning the worker thread.
+    // Node.js throws ERR_WORKER_PATH / ENOENT from the Worker constructor itself
+    // when the file does not exist or the path is empty; the previous async
+    // (channel-reported) error never surfaced as a JS exception, so
+    // `new Worker('/nonexistent')` did not throw — which several conformance
+    // tests rely on. Do NOT defer this to the worker thread.
+    // Check the raw filename *before* resolve — an empty string would otherwise
+    // resolve to cwd and silently pass.
+    if filename.is_empty() {
+        JS_ReportErrorUTF8(cx, c"Worker: entry file path must not be empty".as_ptr());
+        return false;
+    }
+
     // Resolve filename to absolute path.
     let abs_filename = if ::std::path::Path::new(&filename).is_absolute() {
         filename.clone()
@@ -377,6 +390,13 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
             Err(_) => filename.clone(),
         }
     };
+
+    if !::std::path::Path::new(&abs_filename).exists() {
+        let msg = format!("Worker: entry file not found: {}", abs_filename);
+        let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, c_msg.as_ptr());
+        return false;
+    }
 
     // Parse options (second argument, optional object).
     let mut worker_data_json: Option<String> = None;
