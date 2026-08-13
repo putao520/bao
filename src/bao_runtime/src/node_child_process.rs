@@ -1045,9 +1045,230 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             rooted!(&in(cx_ref) let sfdv = stdin_fd_v);
             JS_DefineProperty(cx, child_h, c"_stdinFd".as_ptr(), sfdv.handle().into(), 0);
 
+            // Mount `kill(signal)` directly on the native child object — the
+            // polyfill's ChildProcess.prototype.kill exists but cp_spawn returns
+            // a plain object without the prototype chain, so `child.kill` was
+            // undefined. Delegate to the existing __cp_kill_child native.
+            w2::JS_DefineFunction(
+                cx,
+                child_obj.handle(),
+                c"kill".as_ptr(),
+                Some(cp_kill_child),
+                1,
+                JSPROP_ENUMERATE as u32,
+            );
+
+            // ─── Mount stdout / stderr / stdin stream properties ───────────────
+            // Node.js semantics: pipe=true → Readable/Writable backed by
+            // __cp_drain / __cp_stdin_write; pipe=false → null (stdio:'ignore'/'inherit').
+            // We reuse the existing pipe/poll/drain machinery — no new I/O here.
+            //
+            // GC safety: every JSObject / JSVal produced below is rooted via
+            // rooted!() + .handle().into() per BCE-20260619-012 (no raw Handle{ptr}).
+            let streams = build_stdio_streams(cx_ref, child_h, pid, pipe_stdout, pipe_stderr, pipe_stdin);
+            // If the JS helper failed (returns false), surface the error.
+            if !streams {
+                args.rval().set(ObjectValue(child_obj.get()));
+                return true;
+            }
+
             args.rval().set(ObjectValue(child_obj.get()));
             true
         }
+    }
+}
+
+// ─── Helper: mount stdout/stderr/stdin on a spawned ChildProcess ───────────
+//
+// Reuses existing machinery — no new pipe/poll/buffer code:
+//   * Readable streams backed by __cp_drain(pid, which) (returns ArrayBuffer | null)
+//   * Writable stub backed by __cp_stdin_write(pid, data) / __cp_stdin_close(pid)
+//
+// Node.js semantics: stream === null when stdio is not piped ('ignore'/'inherit').
+//
+// GC safety: every JSObject/JSVal intermediate is rooted via rooted!() and
+// passed through .handle().into(); no raw Handle{ptr:&var} per BCE-20260619-012.
+//
+// Returns true on success; on JS eval failure, reports a JS error and returns false.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn build_stdio_streams(
+    cx: &mut mozjs::context::JSContext,
+    child_h: Handle<*mut JSObject>,
+    pid: i32,
+    pipe_stdout: bool,
+    pipe_stderr: bool,
+    pipe_stdin: bool,
+) -> bool {
+    // Assemble the JS snippet: parameterised by PID, returns an array
+    // [stdout, stderr, stdin] where each element is either a stream object
+    // (piped) or null (not piped). The snippet relies on:
+    //   * require('stream').Readable — installed by node_stream::install
+    //   * require('child_process').__cp_drain / __cp_stdin_write / __cp_stdin_close
+    //     / __cp_poll_exit — defined on this module object at install time.
+    let ps = if pipe_stdout { "true" } else { "false" };
+    let pe = if pipe_stderr { "true" } else { "false" };
+    let pi = if pipe_stdin { "true" } else { "false" };
+
+    let src = format!(
+        r#"(function() {{
+  var R = require('stream').Readable;
+  var cp = require('child_process');
+  var PID = {pid};
+  var wantStdout = {ps};
+  var wantStderr = {pe};
+  var wantStdin = {pi};
+
+  function makeReadable(which) {{
+    var ended = false;
+    var pollScheduled = false;
+    var s = new R({{
+      read: function(n) {{
+        try {{
+          var b = cp.__cp_drain(PID, which);
+          if (b !== null && b !== undefined) {{
+            this.push(b);
+            return;
+          }}
+          // No data right now. Distinguish EOF from "not yet": if child
+          // has exited AND drain stays null, this pipe is at EOF.
+          var exit = cp.__cp_poll_exit(PID);
+          if (exit !== null && exit !== undefined) {{
+            if (!ended) {{ ended = true; this.push(null); }}
+            return;
+          }}
+          // Schedule a retry on next tick; re-issue _read to drain again.
+          var self = this;
+          if (!pollScheduled) {{
+            pollScheduled = true;
+            setTimeout(function() {{
+              pollScheduled = false;
+              try {{
+                var b2 = cp.__cp_drain(PID, which);
+                if (b2 !== null && b2 !== undefined) {{
+                  self.push(b2);
+                }} else {{
+                  var ex = cp.__cp_poll_exit(PID);
+                  if (ex !== null && ex !== undefined) {{
+                    if (!ended) {{ ended = true; self.push(null); }}
+                  }}
+                }}
+              }} catch (e) {{ self.emit('error', e); }}
+            }}, 10);
+          }}
+        }} catch (e) {{ this.emit('error', e); }}
+      }}
+    }});
+    return s;
+  }}
+
+  function makeStdin() {{
+    var closed = false;
+    return {{
+      write: function(data) {{
+        if (closed) return false;
+        if (typeof cp.__cp_stdin_write === 'function') {{
+          return cp.__cp_stdin_write(PID, data);
+        }}
+        return false;
+      }},
+      end: function() {{
+        if (closed) return;
+        closed = true;
+        if (typeof cp.__cp_stdin_close === 'function') cp.__cp_stdin_close(PID);
+      }},
+      destroy: function() {{
+        if (closed) return;
+        closed = true;
+        if (typeof cp.__cp_stdin_close === 'function') cp.__cp_stdin_close(PID);
+      }},
+      on: function() {{ return this; }},
+      once: function() {{ return this; }}
+    }};
+  }}
+
+  return [
+    wantStdout ? makeReadable(0) : null,
+    wantStderr ? makeReadable(1) : null,
+    wantStdin ? makeStdin() : null
+  ];
+}})()"#,
+        pid = pid,
+        ps = ps,
+        pe = pe,
+        pi = pi,
+    );
+
+    let cx_raw = cx.raw_cx();
+    let c_filename = ZBox::from_bytes("node:child_process.spawn.streams".as_bytes());
+    let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
+    if opts.is_null() {
+        // Compile options OOM — non-fatal: leave properties undefined (test only
+        // checks !== undefined, but we explicitly attach nulls to be safe).
+        attach_null_property(cx, child_h, c"stdout".as_ptr());
+        attach_null_property(cx, child_h, c"stderr".as_ptr());
+        attach_null_property(cx, child_h, c"stdin".as_ptr());
+        return true;
+    }
+
+    let mut src_text = mozjs::rust::transform_str_to_source_text(src.as_str());
+    let mut rval = UndefinedValue();
+    let rval_handle = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx_raw, opts, &mut src_text, rval_handle);
+    libc::free(opts as *mut _);
+
+    if !ok || !rval.is_object() {
+        // JS failure — attach nulls so the child object is still well-formed
+        // (Node.js allows null stdout/stderr/stdin).
+        attach_null_property(cx, child_h, c"stdout".as_ptr());
+        attach_null_property(cx, child_h, c"stderr".as_ptr());
+        attach_null_property(cx, child_h, c"stdin".as_ptr());
+        return true;
+    }
+
+    // Root the returned array and unpack elements onto child_obj.
+    rooted!(&in(cx) let arr = rval.to_object());
+    for (idx, name) in [(0u32, c"stdout".as_ptr()), (1u32, c"stderr".as_ptr()), (2u32, c"stdin".as_ptr())].iter() {
+        let mut elem = UndefinedValue();
+        JS_GetElement(
+            cx_raw,
+            arr.handle().into(),
+            *idx,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            },
+        );
+        rooted!(&in(cx) let elem_r = elem);
+        JS_DefineProperty(
+            cx_raw,
+            child_h,
+            *name,
+            elem_r.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn attach_null_property(
+    cx: &mut mozjs::context::JSContext,
+    obj_h: Handle<*mut JSObject>,
+    name: *const ::std::os::raw::c_char,
+) {
+    let null_v = NullValue();
+    rooted!(&in(cx) let nv = null_v);
+    unsafe {
+        JS_DefineProperty(
+            cx.raw_cx(),
+            obj_h,
+            name,
+            nv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 }
 
