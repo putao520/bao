@@ -46,6 +46,7 @@ use ::std::sync::{Arc, Mutex};
 use bun_core::ZBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 
 use crate::stealth_http::{StealthSyncResult, stealth_http_request};
@@ -769,35 +770,50 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
     rooted!(&in(cx_ref) let promise_obj = promise_val.to_object());
     let promise_h = promise_obj.handle().into();
 
-    match (outcome, kind) {
-        (Ok(resp), ResolveKind::Response) => {
-            let resp_obj = build_response_js(cx, &resp);
-            if !resp_obj.is_null() {
-                rooted!(&in(cx_ref) let resp_val = ObjectValue(resp_obj));
-                JS::ResolvePromise(cx, promise_h, resp_val.handle().into());
-            } else {
-                reject_with_message(cx, promise_h, "http: failed to build Response");
-            }
-        }
-        (Ok(_resp), ResolveKind::TlsSocket { host_idx }) => {
-            let host = HOST_STRINGS
-                .with(|h| h.borrow().get(host_idx).cloned())
-                .unwrap_or_default();
-            let tls_obj = build_tls_socket_js(cx, &host);
-            if !tls_obj.is_null() {
-                rooted!(&in(cx_ref) let tls_val = ObjectValue(tls_obj));
-                JS::ResolvePromise(cx, promise_h, tls_val.handle().into());
-            } else {
-                reject_with_message(cx, promise_h, "tls: failed to build socket object");
-            }
-            HOST_STRINGS.with(|h| {
-                if host_idx < h.borrow().len() {
-                    h.borrow_mut()[host_idx].clear();
+    // BCE-BUG-ENG-370: resolve_tasklet runs from the MiniEventLoop tick
+    // (ConcurrentTask dispatch), OUTSIDE any JS activation — at that point
+    // `cx->realm_` and `cx->zone_` are NULL (leaving the JSAutoRealm of the
+    // eval that called fetch() restored them to nothing). Any SM API that
+    // derives from the current realm (JS_NewPlainObject → cx->global() →
+    // realm()->globalObject()) NULL-derefs — the reject-path SIGSEGV at
+    // PlainObject.cpp:144 (`mov 0x58(%rdx),%rax` with rdx=0, fault addr 0x58
+    // = realm_ + offsetof(globalObject_)). Fix: enter the Promise's realm for
+    // the whole resolve/reject window (standard SM embedding rule: a callback
+    // re-enters the realm of the object it operates on).
+    {
+        let mut realm = AutoRealm::new_from_handle(cx_ref, promise_obj.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+        match (outcome, kind) {
+            (Ok(resp), ResolveKind::Response) => {
+                let resp_obj = build_response_js(cx, &resp);
+                if !resp_obj.is_null() {
+                    rooted!(&in(realm_cx) let resp_val = ObjectValue(resp_obj));
+                    JS::ResolvePromise(cx, promise_h, resp_val.handle().into());
+                } else {
+                    reject_with_message(cx, promise_h, "http: failed to build Response");
                 }
-            });
-        }
-        (Err(msg), _) => {
-            reject_with_message(cx, promise_h, &msg);
+            }
+            (Ok(_resp), ResolveKind::TlsSocket { host_idx }) => {
+                let host = HOST_STRINGS
+                    .with(|h| h.borrow().get(host_idx).cloned())
+                    .unwrap_or_default();
+                let tls_obj = build_tls_socket_js(cx, &host);
+                if !tls_obj.is_null() {
+                    rooted!(&in(realm_cx) let tls_val = ObjectValue(tls_obj));
+                    JS::ResolvePromise(cx, promise_h, tls_val.handle().into());
+                } else {
+                    reject_with_message(cx, promise_h, "tls: failed to build socket object");
+                }
+                HOST_STRINGS.with(|h| {
+                    if host_idx < h.borrow().len() {
+                        h.borrow_mut()[host_idx].clear();
+                    }
+                });
+            }
+            (Err(msg), _) => {
+                reject_with_message(cx, promise_h, &msg);
+            }
         }
     }
 
