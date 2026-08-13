@@ -72,14 +72,17 @@ use crate::request_interceptor::RequestInterceptor;
 use crate::websocket_loader::create_handshake_request;
 
 /// Load a file with CA certificate and produce a RootCertStore with the results.
-fn load_root_cert_store_from_file(file_path: String) -> io::Result<Vec<CertificateDer<'static>>> {
+fn load_root_cert_store_from_file(file_path: String) -> io::Result<Vec<Vec<u8>>> {
     let mut pem = BufReader::new(File::open(file_path)?);
 
+    // Bao vendor patch (REQ-STL-001): the boringssl-backed connector consumes
+    // DER certificate bytes, not rustls CertificateDer wrappers.
     let certs = CertificateDer::pem_reader_iter(&mut pem)
         .filter_map(|cert| {
             cert.inspect_err(|e| log::error!("Could not load certificate ({e}). Ignoring it."))
                 .ok()
         })
+        .map(|cert| cert.to_vec())
         .collect();
     Ok(certs)
 }
@@ -132,7 +135,7 @@ pub fn new_core_resource_thread(
     mem_profiler_chan: MemProfilerChan,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
     config_dir: Option<PathBuf>,
-    ca_certificates: CACertificates<'static>,
+    ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
     protocols: Arc<ProtocolRegistry>,
 ) -> (CoreResourceThread, CoreResourceThread) {
@@ -191,7 +194,7 @@ pub fn new_core_resource_thread(
 struct ResourceChannelManager {
     resource_manager: CoreResourceManager,
     config_dir: Option<PathBuf>,
-    ca_certificates: CACertificates<'static>,
+    ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
     cancellation_listeners: FxHashMap<RequestId, Weak<CancellationListener>>,
     cookie_listeners: FxHashMap<CookieStoreId, GenericCallback<CookieAsyncResponse>>,
@@ -200,7 +203,7 @@ struct ResourceChannelManager {
 /// This returns a tuple HttpState and a private HttpState.
 fn create_http_states(
     config_dir: Option<&Path>,
-    ca_certificates: CACertificates<'static>,
+    ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 ) -> (Arc<HttpState>, Arc<HttpState>) {
@@ -710,7 +713,7 @@ pub struct CoreResourceManager {
     sw_managers: HashMap<ImmutableOrigin, IpcSender<CustomResponseMediator>>,
     filemanager: FileManager,
     request_interceptor: RequestInterceptor,
-    ca_certificates: CACertificates<'static>,
+    ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
     preloaded_resources: SharedPreloadedResources,
     /// <https://fetch.spec.whatwg.org/#concept-fetch-record>
@@ -722,7 +725,7 @@ impl CoreResourceManager {
         devtools_sender: Option<Sender<DevtoolsControlMsg>>,
         _profiler_chan: ProfilerChan,
         embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
-        ca_certificates: CACertificates<'static>,
+        ca_certificates: CACertificates,
         ignore_certificate_errors: bool,
         blob_token_communicator: Arc<Mutex<BlobTokenCommunicator>>,
     ) -> CoreResourceManager {

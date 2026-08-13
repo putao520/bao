@@ -21,6 +21,10 @@ test-util = ["hyper-util/server-graceful", "dep:servo-default-resources", "net_t
 tracing = ["dep:tracing"]
 
 [dependencies]
+# Bao vendor deps: boringssl-backed stealth TLS connector (REQ-STL-001)
+bao_boringssl_bridge = { path = "../../../../src/bao_boringssl_bridge" }
+bun_boringssl = { path = "../../../../src/boringssl" }
+bun_boringssl_sys = { path = "../../../../src/boringssl_sys" }
 async-compression = { workspace = true, features = ["brotli", "gzip", "tokio", "zlib", "zstd"] }
 async-recursion = { workspace = true }
 async-tungstenite = { workspace = true }

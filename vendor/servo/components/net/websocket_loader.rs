@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_tungstenite::WebSocketStream;
-use async_tungstenite::tokio::{ConnectStream, client_async_tls_with_connector_and_config};
 use futures::stream::StreamExt;
 use headers::{
     Authorization, Connection, HeaderMapExt, SecWebsocketKey, SecWebsocketVersion, Upgrade,
@@ -31,7 +30,7 @@ use servo_url::ServoUrl;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-use tokio_rustls::TlsConnector;
+use bao_boringssl_bridge::TlsConnection;
 use tungstenite::error::{Error, ProtocolError, UrlError};
 use tungstenite::handshake::client::Response;
 use tungstenite::protocol::CloseFrame;
@@ -204,6 +203,54 @@ fn setup_dom_listener(
     receiver
 }
 
+/// Unified WebSocket stream that handles both plain and TLS connections.
+///
+/// Bao vendor patch (REQ-STL-001): wraps `WebSocketStream` over either a plain
+/// TCP socket or a BoringSSL TLS stream, dispatching `send`/`close`/`poll_next`
+/// to the appropriate variant.
+enum WsStream {
+    Plain(
+        WebSocketStream<
+            async_tungstenite::tokio::TokioAdapter<tokio::net::TcpStream>,
+        >,
+    ),
+    Tls(
+        WebSocketStream<
+            async_tungstenite::tokio::TokioAdapter<crate::connector::BoringsslTlsStream>,
+        >,
+    ),
+}
+
+impl WsStream {
+    async fn send(&mut self, msg: Message) -> Result<(), tungstenite::Error> {
+        match self {
+            WsStream::Plain(s) => std::pin::Pin::new(s).send(msg).await,
+            WsStream::Tls(s) => std::pin::Pin::new(s).send(msg).await,
+        }
+    }
+
+    async fn close(&mut self, frame: Option<CloseFrame>) -> Result<(), tungstenite::Error> {
+        match self {
+            WsStream::Plain(s) => s.close(frame).await,
+            WsStream::Tls(s) => s.close(frame).await,
+        }
+    }
+}
+
+impl futures::Stream for WsStream {
+    type Item = Result<Message, tungstenite::Error>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match self.get_mut() {
+            WsStream::Plain(s) => std::pin::Pin::new(s).poll_next(cx),
+            WsStream::Tls(s) => std::pin::Pin::new(s).poll_next(cx),
+        }
+    }
+}
+
 /// Listen for WS events from the DOM and the network until one side
 /// closes the connection or an error occurs. Since this is an async
 /// function that uses the select operation, it will run as a task
@@ -211,7 +258,7 @@ fn setup_dom_listener(
 async fn run_ws_loop(
     mut dom_receiver: UnboundedReceiver<DomMsg>,
     resource_event_sender: IpcSender<WebSocketNetworkEvent>,
-    mut stream: WebSocketStream<ConnectStream>,
+    mut stream: WsStream,
 ) {
     loop {
         select! {
@@ -331,7 +378,6 @@ pub(crate) async fn start_websocket(
 
     let try_socket = TcpStream::connect((&*domain.to_string(), port)).await;
     let socket = try_socket.map_err(Error::Io)?;
-    let connector = TlsConnector::from(Arc::new(tls_config));
 
     // TODO(pylbrecht): move request conversion to a separate function
     let mut original_url = client.original_url();
@@ -349,8 +395,33 @@ pub(crate) async fn start_websocket(
         );
     }
 
-    let (stream, response) =
-        client_async_tls_with_connector_and_config(builder, socket, Some(connector), None).await?;
+    let is_secure = url.scheme() == "wss" || url.scheme() == "https";
+    let (stream, response) = if is_secure {
+        // Bao vendor patch (REQ-STL-001): BoringSSL TLS handshake directly, then pass
+        // the established stream to tungstenite for the WebSocket handshake.
+        let host_str = domain.to_string();
+        let tls_conn = TlsConnection::new_client(&tls_config.client, &host_str).map_err(|e| {
+            Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+        })?;
+
+        // Wrap the TCP stream + BoringSSL connection into an async stream
+        let tls_stream = crate::connector::BoringsslTlsStream::new(socket, tls_conn);
+
+        // Perform TLS handshake
+        let mut tls_stream = tls_stream;
+        tls_stream.handshake().await.map_err(Error::Io)?;
+
+        // WS handshake over the established TLS stream
+        let adapter = async_tungstenite::tokio::TokioAdapter::new(tls_stream);
+        let (ws_stream, response) =
+            async_tungstenite::client_async_with_config(builder, adapter, None).await?;
+        (WsStream::Tls(ws_stream), response)
+    } else {
+        // Plain WebSocket - no TLS needed
+        let (ws_stream, response) =
+            async_tungstenite::tokio::client_async_with_config(builder, socket, None).await?;
+        (WsStream::Plain(ws_stream), response)
+    };
 
     let protocol_in_use = process_ws_response(&http_state, &response, &url, protocols)?;
 

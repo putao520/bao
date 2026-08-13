@@ -134,6 +134,19 @@ pub fn register_worker_scope_callback(
     script::register_worker_scope_callback(callback);
 }
 
+/// Set anti-fingerprinting TLS/HTTP2 configuration for servo's network layer
+/// (Bao vendor patch, REQ-STL-001: browser-level JA3/JA4 anti-fingerprinting).
+///
+/// When set, servo's HTTP client (boringssl-backed connector) uses these
+/// values for TLS cipher suite/curves/signature algorithm reordering and ALPN
+/// negotiation, plus HTTP/2 connection parameters (SETTINGS frame, window
+/// sizes). boringssl supports full JA3/JA4 fingerprint configuration.
+pub use net::connector::StealthTlsWireConfig;
+
+pub fn set_stealth_tls_config(config: Option<StealthTlsWireConfig>) {
+    net::connector::set_stealth_tls_config(config);
+}
+
 /// Set anti-fingerprinting canvas noise seed and amplitude (REQ-STL-003).
 /// The noise is applied at the servo rendering layer, undetectable from JS.
 pub fn set_canvas_noise_seed(seed: u64, noise_amplitude: f64) {
