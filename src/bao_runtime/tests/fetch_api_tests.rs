@@ -15,6 +15,10 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 #[test]
 fn test_fetch_api_all() {
     bun_runtime::install_exit_handler();
+    // Initialize Output — HTTPThread's process_events calls Output::flush()
+    // which debug_asserts STDOUT_STREAM_SET is true. Without this, the
+    // HTTPThread panics on first tick → fetch never completes → test hang.
+    bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
