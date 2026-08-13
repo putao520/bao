@@ -28,7 +28,7 @@ use crate::dom::validation::Validatable;
 use crate::dom::validitystate::ValidityState;
 use crate::dom::virtualmethods::VirtualMethods;
 use crate::script_runtime::CanGc;
-use crate::script_thread::ScriptThread;
+use crate::event_loop::script_thread::ScriptThread;
 
 #[dom_struct]
 pub(crate) struct HTMLFieldSetElement {

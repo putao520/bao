@@ -91,7 +91,7 @@ use crate::dom::svg::svgimageelement::SVGImageElement;
 use crate::dom::svg::svgsvgelement::SVGSVGElement;
 use crate::realms::enter_auto_realm;
 use crate::script_runtime::CanGc;
-use crate::script_thread::ScriptThread;
+use crate::event_loop::script_thread::ScriptThread;
 
 fn create_svg_element(
     cx: &mut JSContext,

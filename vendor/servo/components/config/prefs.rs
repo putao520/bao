@@ -344,6 +344,10 @@ pub struct Preferences {
     pub dom_entries_api_enabled: bool,
     /// feature: Web Animations | #36950
     pub dom_web_animations_enabled: bool,
+    /// Canvas message channel buffer size
+    pub dom_canvas_msg_buffer_size: u64,
+    /// Whether to expose servo internals on the global object
+    pub expose_servointernals_globally: bool,
     /// The user-agent to use for Servo. This can also be set via [`UserAgentPlatform`] in
     /// order to set the value to the default value for the given platform.
     pub user_agent: String,
@@ -522,6 +526,8 @@ impl Preferences {
             perf_thread_boost_enabled: true,
             dom_entries_api_enabled: false,
             dom_web_animations_enabled: false,
+            dom_canvas_msg_buffer_size: 16,
+            expose_servointernals_globally: false,
             webgl_testing_context_creation_error: false,
             user_agent: String::new(),
             viewport_meta_enabled: false,

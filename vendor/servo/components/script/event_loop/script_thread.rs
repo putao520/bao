@@ -20,6 +20,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::default::Default;
+use std::ffi::c_void;
 use std::option::Option;
 use std::rc::{Rc, Weak};
 use std::result::Result;
@@ -163,6 +164,90 @@ use crate::svg_font::SvgFontResolver;
 use crate::tasks::task_queue::TaskQueue;
 use crate::webdriver_handlers::jsval_to_webdriver;
 use crate::{devtools, webdriver_handlers};
+
+// ============================================================================
+// Embedder Script Callbacks (Bao vendor patch)
+// ============================================================================
+/// Global callback queue for embedders (e.g., Bao) to register Rust functions
+/// that execute on the script thread with access to JSContext + Window global.
+///
+/// Callbacks are drained by `handle_evaluate_javascript` before executing JS,
+/// so embedders can register host functions that are available to the evaluated
+/// script.
+///
+/// Usage: `register_embedder_callback(webview_id, |cx, global| { ... })` before
+/// calling evaluate.
+type EmbedderScriptCallback = Box<dyn FnOnce(*mut c_void, *mut c_void) + Send>;
+
+static EMBEDDER_SCRIPT_CALLBACKS: std::sync::Mutex<Vec<(WebViewId, EmbedderScriptCallback)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Register a callback to be executed on this ScriptThread the next time
+/// `handle_evaluate_javascript` runs for `webview_id`.
+///
+/// The callback receives `(cx, global)` as `*mut c_void`; it is the embedder's
+/// responsibility to cast these to the correct types.
+pub fn register_embedder_callback(webview_id: WebViewId, callback: EmbedderScriptCallback) {
+    EMBEDDER_SCRIPT_CALLBACKS
+        .lock()
+        .unwrap()
+        .push((webview_id, callback));
+}
+
+fn drain_embedder_callbacks(webview_id: WebViewId) -> Vec<EmbedderScriptCallback> {
+    let mut guard = EMBEDDER_SCRIPT_CALLBACKS.lock().unwrap();
+    let (matching, remaining): (Vec<_>, Vec<_>) =
+        guard.drain(..).partition(|(wid, _)| *wid == webview_id);
+    *guard = remaining;
+    matching.into_iter().map(|(_, cb)| cb).collect()
+}
+
+// ============================================================================
+// Embedder Worker Scope Callbacks (Bao vendor patch - DEC-WK-001 / TASK-1)
+// ============================================================================
+// Mirrors `register_embedder_callback` but for servo-native DOM Worker scope
+// creation. When `DedicatedWorkerGlobalScope::run_worker_scope` finishes
+// building the Worker's global object, it drains these callbacks so the
+// embedder (Bao) can inject stealth profile + lifecycle tracking hooks on the
+// same thread that owns the Worker's JSContext (per BCE-20260621-001:
+// DOM/Node interop must happen on the owning thread).
+//
+// The callback receives `(cx: *mut JSContext, global: *mut JSObject)` which
+// are the Worker thread's JSContext and DedicatedWorkerGlobalScope global.
+// Bao uses this to:
+//   - register a WorkerHandle + WorkerChannelBridge (DF-WK-1)
+//   - install stealth profile inheritance (DEC-WK-007 / CRIT-STL-WK)
+//   - hook self.close()/importScripts natives (criteria #4/#5/#8)
+type EmbedderWorkerScopeCallback = Box<dyn FnOnce(*mut c_void, *mut c_void) + Send>;
+
+static EMBEDDER_WORKER_SCOPE_CALLBACKS: std::sync::Mutex<Vec<EmbedderWorkerScopeCallback>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Register a callback to be executed on the Worker thread the next time a
+/// servo-native `DedicatedWorkerGlobalScope::run_worker_scope` finishes
+/// constructing the Worker global object.
+///
+/// The callback receives `(cx: *mut JSContext, global: *mut JSObject)` which
+/// are actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
+/// It runs on the Worker thread (not the ScriptThread).
+pub fn register_worker_scope_callback(callback: EmbedderWorkerScopeCallback) {
+    EMBEDDER_WORKER_SCOPE_CALLBACKS
+        .lock()
+        .unwrap()
+        .push(callback);
+}
+
+/// Drain all pending Worker scope callbacks.
+///
+/// Called once per Worker scope creation; each callback runs at most once.
+/// This must be invoked from the Worker thread after the Worker's global
+/// object is constructed but before the event loop starts processing
+/// messages - see `DedicatedWorkerGlobalScope::run_worker_scope`.
+pub(crate) fn drain_worker_scope_callbacks() -> Vec<EmbedderWorkerScopeCallback> {
+    let mut guard = EMBEDDER_WORKER_SCOPE_CALLBACKS.lock().unwrap();
+    let drained: Vec<_> = guard.drain(..).collect();
+    drained
+}
 
 thread_local!(static SCRIPT_THREAD_ROOT: Cell<Option<*const ScriptThread>> = const { Cell::new(None) });
 
@@ -493,6 +578,12 @@ impl ScriptThreadFactory for ScriptThread {
                 thread_state::initialize(ThreadState::SCRIPT);
                 PipelineNamespace::install(state.pipeline_namespace_id);
                 ScriptEventLoopId::install(state.id);
+                // BAO PATCH (BCE-20260627-009): Install per-instance router
+                // inherited from Constellation (if present). This ensures ScriptThread uses
+                // the same per-instance RouterProxy as its owner Constellation.
+                if let Some(ref router) = state.router_proxy {
+                    servo_base::ipc_router::set_thread_router(router.clone());
+                }
                 let memory_profiler_sender = state.memory_profiler_sender.clone();
                 let reporter_name = format!("script-reporter-{script_thread_id:?}");
                 let (script_thread, mut cx) = ScriptThread::new(
@@ -3516,7 +3607,18 @@ impl ScriptThread {
             incomplete.embedder_theme,
             self.this.clone(),
         );
-        if self.senders.devtools_server_sender.is_some() {
+        // BAO PATCH (BCE-20260621-002): Skip `fire_add_debuggee` when
+        // `disable_script_debugger` is set. servo's normal devtools users never
+        // set this flag and keep the original behavior. bao (which uses its own
+        // `bao_cdp` and never connects to servo devtools) sets the flag to avoid
+        // `Realm::setIsDebuggee` + BaselineInterpreter debugger-instrumentation
+        // toggle, which deterministically SIGSEGVs under bao's multi-page +
+        // navigate + later-`evaluate` workload
+        // (`initForOsr:153` `cx->activation_->prev()->asInterpreter()` NULL
+        // deref). See `components/config/opts.rs::disable_script_debugger` for
+        // the full root-cause analysis. Authorized servo upstream patch
+        // (2026-06-21 user written authorization, limited to BCE-20260621-002).
+        if self.senders.devtools_server_sender.is_some() && !opts::get().disable_script_debugger {
             self.debugger_global.fire_add_debuggee(
                 cx,
                 window.upcast(),
@@ -4337,6 +4439,20 @@ impl ScriptThread {
         let global_scope = window.as_global_scope();
         let mut realm = enter_auto_realm(cx, global_scope);
         let cx = &mut realm.current_realm();
+
+        // Drain and execute pending embedder callbacks for this WebView.
+        // This allows embedders (e.g., Bao) to register Rust host functions
+        // on the Window global before the evaluated JS runs.
+        for callback in drain_embedder_callbacks(webview_id) {
+            unsafe {
+                callback(
+                    cx.raw_cx_no_gc() as *mut c_void,
+                    script_bindings::reflector::DomObject::reflector(global_scope)
+                        .get_jsobject()
+                        .get() as *mut c_void,
+                );
+            }
+        }
 
         rooted!(&in(cx) let mut return_value = UndefinedValue());
         if let Err(err) = global_scope.evaluate_js_on_global(

@@ -24,9 +24,9 @@ mod animations;
 mod css;
 #[macro_use]
 mod tasks;
-// Bao BCE-patched ScriptThread (old flat module, kept for its multi-instance
-// patches); imports migrated to the upstream module tree in Stage 3.
-pub mod script_thread;
+// Bao embedder-callback API (vendor patch) lives on the upstream ScriptThread
+// in event_loop; re-exported here so `servo` crate / bao embedders can reach it.
+pub use event_loop::script_thread::{register_embedder_callback, register_worker_scope_callback};
 mod body;
 pub(crate) mod conversions;
 mod devtools;

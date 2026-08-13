@@ -688,7 +688,7 @@ pub enum WebSocketNetworkEvent {
 #[derive(Debug, Deserialize, Serialize)]
 /// IPC channels to communicate with the script thread about network or DOM events.
 pub enum FetchChannels {
-    ResponseMsg(IpcSender<FetchResponseMsg>),
+    ResponseMsg(GenericCallback<FetchResponseMsg>),
     WebSocket {
         event_sender: IpcSender<WebSocketNetworkEvent>,
         action_receiver: CallbackSetter<WebSocketDomAction>,
@@ -703,7 +703,11 @@ pub enum CoreResourceMsg {
     Fetch(RequestBuilder, FetchChannels),
     Cancel(Vec<RequestId>),
     /// Initiate a fetch in response to processing a redirection
-    FetchRedirect(RequestBuilder, ResponseInit, IpcSender<FetchResponseMsg>),
+    FetchRedirect(
+        RequestBuilder,
+        ResponseInit,
+        GenericCallback<FetchResponseMsg>,
+    ),
     /// Store a cookie for a given originating URL.
     /// If a sender is provided, the caller will block until the cookie is stored.
     SetCookieForUrl(
@@ -847,24 +851,26 @@ struct FetchThread {
     /// updates from IPC messages to crossbeam messages as well as another sender which
     /// handles requests from clients wanting to do fetches.
     receiver: Receiver<ToFetchThreadMessage>,
-    /// An [`IpcSender`] that's sent with every fetch request and leads back to our
+    /// A [`GenericCallback`] that's sent with every fetch request and leads back to our
     /// router proxy.
-    to_fetch_sender: IpcSender<FetchResponseMsg>,
+    to_fetch_sender: GenericCallback<FetchResponseMsg>,
 }
 
 impl FetchThread {
     fn spawn() -> (Sender<ToFetchThreadMessage>, JoinHandle<()>) {
         let (sender, receiver) = unbounded();
-        let (to_fetch_sender, from_fetch_sender) = ipc::channel().unwrap();
 
         let sender_clone = sender.clone();
-        servo_base::ipc_router::router().add_typed_route(
-            from_fetch_sender,
-            Box::new(move |message| {
-                let message: FetchResponseMsg = message.unwrap();
-                let _ = sender_clone.send(ToFetchThreadMessage::FetchResponse(message));
-            }),
-        );
+        // BAO PATCH (BCE-20260627-009, adapted): upstream's FetchThread::spawn now
+        // builds the response channel as a GenericCallback (in-process direct
+        // callback in single-process mode; global ROUTER in ipc mode), replacing
+        // the old explicit ipc_router route registration. Per-instance routing
+        // for the Constellation remains handled by `start_fetch_thread`.
+        let to_fetch_sender = GenericCallback::new(move |message| {
+            let message: FetchResponseMsg = message.unwrap();
+            let _ = sender_clone.send(ToFetchThreadMessage::FetchResponse(message));
+        })
+        .expect("Couldn't create fetch callback");
         let join_handle = thread::Builder::new()
             .name("FetchThread".to_owned())
             .spawn(move || {
