@@ -232,31 +232,6 @@ unsafe fn set_module_private(raw_cx: *mut JSContext, module: *mut JSObject, url:
     }
 }
 
-/// Retrieve the private value attached to a module via [set_module_private].
-///
-/// Wraps `JS_GetModulePrivate` (mozjs_sys::glue). Returns UndefinedValue on
-/// null module or any error.
-///
-/// # Safety
-/// Caller must ensure `module` is a valid module object.
-unsafe fn get_module_private(raw_cx: *mut JSContext, module: *mut JSObject) -> Value {
-    let _ = raw_cx;
-    if module.is_null() {
-        return UndefinedValue();
-    }
-    let mut out = UndefinedValue();
-    unsafe {
-        mozjs_sys::glue::JS_GetModulePrivate(
-            module,
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut out,
-            },
-        );
-    }
-    out
-}
-
 /// Resolve a specifier against a referencing module's private value (URL).
 ///
 /// If `referencing_private` is a file:// URL string, the base directory is

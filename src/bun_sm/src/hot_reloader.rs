@@ -11,14 +11,12 @@ use ::std::time::SystemTime;
 
 pub struct HotReloader {
     watched: Mutex<HashMap<PathBuf, SystemTime>>,
-    imports: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl HotReloader {
     pub fn new() -> Self {
         HotReloader {
             watched: Mutex::new(HashMap::new()),
-            imports: Mutex::new(HashMap::new()),
         }
     }
 

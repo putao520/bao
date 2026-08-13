@@ -25,14 +25,12 @@ pub enum TranspilerCacheImplKind {
 
 pub struct RuntimeTranspilerCache {
     store: Mutex<HashMap<String, Entry>>,
-    impl_kind: TranspilerCacheImplKind,
 }
 
 impl RuntimeTranspilerCache {
     pub fn new() -> Self {
         RuntimeTranspilerCache {
             store: Mutex::new(HashMap::new()),
-            impl_kind: TranspilerCacheImplKind::InMemory,
         }
     }
 
