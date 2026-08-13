@@ -201,7 +201,7 @@ bun_io::impl_buffered_reader_parent! {
     event_loop      = |this| (*this).state.event_loop;
 }
 
-// CLI residual arms (product path does not compile `src/cli/*` into a crate yet).
+// Arms for handles from the deleted `src/cli` port (canonical parents kept).
 define_parent_type!(FilterRunHandleParent);
 bun_io::impl_buffered_reader_parent! {
     FilterRunHandle for FilterRunHandleParent;

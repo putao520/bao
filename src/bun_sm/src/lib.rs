@@ -52,8 +52,6 @@ pub mod ensure_alive;
 pub mod strong;
 
 // ─── String types ────────────────────────────────────────────────────────
-pub mod bun_string;
-pub mod string_jsc;
 
 // ─── Cell / ArrayBuffer ──────────────────────────────────────────────────
 pub mod array_buffer;
@@ -136,7 +134,6 @@ pub use js_terminated::JsTerminated;
 pub use js_type::JSType;
 pub use js_value::JSValue;
 pub use js_value::RawJSValue;
-pub use string_jsc::{StringJsc, ZigStringJsc};
 pub use strong::{JSPromiseStrong, Strong, StrongOptional};
 pub use value::JsValue;
 pub use value::jsval_to_jsvalue;
