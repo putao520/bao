@@ -1408,7 +1408,14 @@ mod _event_loop_draft {
 
                 let uws_loop = self.uws_loop_mut();
                 uws_loop.inc();
-                uws_loop.tick();
+                // BCE-20260618-007-R3 extension: the HTTPThread's tick used the
+                // NULL-timeout us_loop_run_bun_tick, which makes epoll_pwait2
+                // block indefinitely when no fd is ready. R3 fixed this for the
+                // JS thread (timers.rs) but missed the HTTPThread. Use the
+                // zero-timeout tick_without_idle so the loop returns after
+                // draining ready fds — the HTTPThread's process_events loop
+                // re-enters immediately, no CPU waste (it only does HTTP I/O).
+                uws_loop.tick_without_idle();
                 uws_loop.dec();
 
                 if cfg!(debug_assertions) {
