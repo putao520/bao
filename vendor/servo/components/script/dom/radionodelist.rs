@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use script_bindings::reflector::reflect_dom_object_with_cx;
 use script_bindings::root::DomRoot;
 use stylo_atoms::Atom;
@@ -13,9 +13,9 @@ use crate::dom::bindings::codegen::Bindings::NodeListBinding::NodeListMethods;
 use crate::dom::bindings::codegen::Bindings::RadioNodeListBinding::RadioNodeListMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::str::DOMString;
+use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
+use crate::dom::html::form_controls::input_type::InputType;
 use crate::dom::html::htmlformelement::HTMLFormElement;
-use crate::dom::html::input_element::HTMLInputElement;
-use crate::dom::input_element::input_type::InputType;
 use crate::dom::node::Node;
 use crate::dom::nodelist::{NodeList, NodeListType, RadioList, RadioListMode};
 use crate::dom::window::Window;
@@ -80,14 +80,14 @@ impl RadioNodeList {
 impl RadioNodeListMethods<crate::DomTypeHolder> for RadioNodeList {
     // https://dom.spec.whatwg.org/#dom-nodelist-length
     /// <https://github.com/servo/servo/issues/5875>
-    fn Length(&self) -> u32 {
+    fn Length(&self, _cx: &JSContext) -> u32 {
         self.node_list.Length()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-radionodelist-value>
-    fn Value(&self) -> DOMString {
+    fn Value(&self, no_gc: &NoGC) -> DOMString {
         self.upcast::<NodeList>()
-            .iter()
+            .iter(no_gc)
             .find_map(|node| {
                 // Step 1
                 node.downcast::<HTMLInputElement>().and_then(|input| {
@@ -110,7 +110,12 @@ impl RadioNodeListMethods<crate::DomTypeHolder> for RadioNodeList {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-radionodelist-value>
     fn SetValue(&self, cx: &mut JSContext, value: DOMString) {
-        for node in self.upcast::<NodeList>().iter() {
+        let node_list = self.upcast::<NodeList>();
+        // Inlining `node_list.iter()` so `cx` doesn’t stay borrowed
+        for index in 0..node_list.Length() {
+            let Some(node) = node_list.Item(cx, index) else {
+                continue;
+            };
             // Step 1
             if let Some(input) = node.downcast::<HTMLInputElement>() {
                 match *input.input_type() {
@@ -138,7 +143,7 @@ impl RadioNodeListMethods<crate::DomTypeHolder> for RadioNodeList {
     // https://github.com/servo/servo/issues/5875
     //
     /// <https://dom.spec.whatwg.org/#dom-nodelist-item>
-    fn IndexedGetter(&self, index: u32) -> Option<DomRoot<Node>> {
-        self.node_list.IndexedGetter(index)
+    fn IndexedGetter(&self, cx: &NoGC, index: u32) -> Option<DomRoot<Node>> {
+        self.node_list.IndexedGetter(cx, index)
     }
 }

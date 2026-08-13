@@ -6,7 +6,6 @@ use js::context::JSContext;
 use script_bindings::codegen::GenericBindings::HTMLInputElementBinding::HTMLInputElementMethods;
 use script_bindings::domstring::DOMString;
 use script_bindings::root::DomRoot;
-use script_bindings::script_runtime::CanGc;
 use stylo_atoms::Atom;
 use time::OffsetDateTime;
 
@@ -15,31 +14,74 @@ use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::filelist::FileList;
+use crate::dom::html::form_controls::htmlinputelement::{
+    HTMLInputElement, InputActivationState, ValueMode,
+};
+use crate::dom::html::form_controls::input_type::button_input_type::{
+    ButtonInputActivation, ButtonInputType,
+};
+use crate::dom::html::form_controls::input_type::checkbox_input_type::{
+    CheckboxInputActivation, CheckboxInputType,
+};
+use crate::dom::html::form_controls::input_type::color_input_type::{
+    ColorInputActivation, ColorInputType,
+};
+use crate::dom::html::form_controls::input_type::date_input_type::DateInputType;
+use crate::dom::html::form_controls::input_type::datetime_local_input_type::DatetimeLocalInputType;
+use crate::dom::html::form_controls::input_type::email_input_type::EmailInputType;
+use crate::dom::html::form_controls::input_type::file_input_type::{
+    FileInputActivation, FileInputType,
+};
+use crate::dom::html::form_controls::input_type::hidden_input_type::HiddenInputType;
+use crate::dom::html::form_controls::input_type::image_input_type::{
+    ImageInputActivation, ImageInputType,
+};
+use crate::dom::html::form_controls::input_type::month_input_type::MonthInputType;
+use crate::dom::html::form_controls::input_type::number_input_type::NumberInputType;
+use crate::dom::html::form_controls::input_type::password_input_type::PasswordInputType;
+use crate::dom::html::form_controls::input_type::radio_input_type::{
+    RadioInputActivation, RadioInputType,
+};
+use crate::dom::html::form_controls::input_type::range_input_type::RangeInputType;
+use crate::dom::html::form_controls::input_type::reset_input_type::{
+    ResetInputActivation, ResetInputType,
+};
+use crate::dom::html::form_controls::input_type::search_input_type::SearchInputType;
+use crate::dom::html::form_controls::input_type::submit_input_type::{
+    SubmitInputActivation, SubmitInputType,
+};
+use crate::dom::html::form_controls::input_type::tel_input_type::TelInputType;
+use crate::dom::html::form_controls::input_type::text_input_type::TextInputType;
+use crate::dom::html::form_controls::input_type::time_input_type::TimeInputType;
+use crate::dom::html::form_controls::input_type::url_input_type::UrlInputType;
+use crate::dom::html::form_controls::input_type::week_input_type::WeekInputType;
 use crate::dom::htmlformelement::HTMLFormElement;
-use crate::dom::input_element::button_input_type::ButtonInputType;
-use crate::dom::input_element::checkbox_input_type::CheckboxInputType;
-use crate::dom::input_element::color_input_type::ColorInputType;
-use crate::dom::input_element::date_input_type::DateInputType;
-use crate::dom::input_element::datetime_local_input_type::DatetimeLocalInputType;
-use crate::dom::input_element::email_input_type::EmailInputType;
-use crate::dom::input_element::file_input_type::FileInputType;
-use crate::dom::input_element::hidden_input_type::HiddenInputType;
-use crate::dom::input_element::image_input_type::ImageInputType;
-use crate::dom::input_element::month_input_type::MonthInputType;
-use crate::dom::input_element::number_input_type::NumberInputType;
-use crate::dom::input_element::password_input_type::PasswordInputType;
-use crate::dom::input_element::radio_input_type::RadioInputType;
-use crate::dom::input_element::range_input_type::RangeInputType;
-use crate::dom::input_element::reset_input_type::ResetInputType;
-use crate::dom::input_element::search_input_type::SearchInputType;
-use crate::dom::input_element::submit_input_type::SubmitInputType;
-use crate::dom::input_element::tel_input_type::TelInputType;
-use crate::dom::input_element::text_input_type::TextInputType;
-use crate::dom::input_element::time_input_type::TimeInputType;
-use crate::dom::input_element::url_input_type::UrlInputType;
-use crate::dom::input_element::week_input_type::WeekInputType;
-use crate::dom::input_element::{HTMLInputElement, InputActivationState, ValueMode};
 use crate::dom::node::{BindContext, UnbindContext};
+
+pub(crate) mod button_input_type;
+pub(crate) mod checkbox_input_type;
+pub(crate) mod color_input_type;
+pub(crate) mod date_input_type;
+pub(crate) mod datetime_local_input_type;
+pub(crate) mod email_input_type;
+pub(crate) mod file_input_type;
+pub(crate) mod hidden_input_type;
+pub(crate) mod image_input_type;
+pub(crate) mod month_input_type;
+pub(crate) mod number_input_type;
+pub(crate) mod password_input_type;
+pub(crate) mod radio_input_type;
+pub(crate) mod range_input_type;
+pub(crate) mod reset_input_type;
+pub(crate) mod search_input_type;
+pub(crate) mod submit_input_type;
+pub(crate) mod tel_input_type;
+pub(crate) mod text_input_type;
+pub(crate) mod text_input_widget;
+pub(crate) mod text_value_widget;
+pub(crate) mod time_input_type;
+pub(crate) mod url_input_type;
+pub(crate) mod week_input_type;
 
 /// <https://html.spec.whatwg.org/multipage/#attr-input-type>
 #[derive(JSTraceable, MallocSizeOf, PartialEq)]
@@ -110,6 +152,47 @@ pub(crate) enum InputType {
 
     /// <https://html.spec.whatwg.org/multipage/#week-state-(type=week)>
     Week(WeekInputType),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum InputActivationType {
+    Button(ButtonInputActivation),
+    Checkbox(CheckboxInputActivation),
+    Color(ColorInputActivation),
+    File(FileInputActivation),
+    Image(ImageInputActivation),
+    Radio(RadioInputActivation),
+    Reset(ResetInputActivation),
+    Submit(SubmitInputActivation),
+}
+
+impl InputActivationType {
+    pub(crate) fn new_from_input_type(input_type: &InputType) -> Option<Self> {
+        match input_type {
+            InputType::Button(_) => Some(Self::Button(ButtonInputActivation)),
+            InputType::Checkbox(_) => Some(Self::Checkbox(CheckboxInputActivation)),
+            InputType::Color(_) => Some(Self::Color(ColorInputActivation)),
+            InputType::File(_) => Some(Self::File(FileInputActivation)),
+            InputType::Image(_) => Some(Self::Image(ImageInputActivation)),
+            InputType::Radio(_) => Some(Self::Radio(RadioInputActivation)),
+            InputType::Reset(_) => Some(Self::Reset(ResetInputActivation)),
+            InputType::Submit(_) => Some(Self::Submit(SubmitInputActivation)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_specific(&self) -> &dyn SpecificInputActivationType {
+        match self {
+            Self::Button(input_type) => input_type as &dyn SpecificInputActivationType,
+            Self::Checkbox(input_type) => input_type as &dyn SpecificInputActivationType,
+            Self::Color(input_type) => input_type as &dyn SpecificInputActivationType,
+            Self::File(input_type) => input_type as &dyn SpecificInputActivationType,
+            Self::Image(input_type) => input_type as &dyn SpecificInputActivationType,
+            Self::Radio(input_type) => input_type as &dyn SpecificInputActivationType,
+            Self::Reset(input_type) => input_type as &dyn SpecificInputActivationType,
+            Self::Submit(input_type) => input_type as &dyn SpecificInputActivationType,
+        }
+    }
 }
 
 impl InputType {
@@ -302,15 +385,6 @@ pub(crate) trait SpecificInputType {
     /// <https://html.spec.whatwg.org/multipage/#signal-a-type-change>
     fn signal_type_change(&self, _cx: &mut js::context::JSContext, _input: &HTMLInputElement) {}
 
-    fn activation_behavior(
-        &self,
-        _cx: &mut js::context::JSContext,
-        _input: &HTMLInputElement,
-        _event: &Event,
-        _target: &EventTarget,
-    ) {
-    }
-
     fn legacy_pre_activation_behavior(
         &self,
         _cx: &mut JSContext,
@@ -355,10 +429,21 @@ pub(crate) trait SpecificInputType {
 
     fn unbind_from_tree(
         &self,
+        _cx: &mut JSContext,
         _input: &HTMLInputElement,
         _form_owner: Option<DomRoot<HTMLFormElement>>,
         _context: &UnbindContext,
-        _can_gc: CanGc,
+    ) {
+    }
+}
+
+pub(crate) trait SpecificInputActivationType {
+    fn activation_behavior(
+        &self,
+        _cx: &mut js::context::JSContext,
+        _input: &HTMLInputElement,
+        _event: &Event,
+        _target: &EventTarget,
     ) {
     }
 }

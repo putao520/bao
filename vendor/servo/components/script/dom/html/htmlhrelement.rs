@@ -23,7 +23,7 @@ use crate::dom::element::Element;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::node::Node;
-use crate::dom::virtualmethods::VirtualMethods;
+use crate::dom::node::virtualmethods::VirtualMethods;
 
 #[dom_struct]
 pub(crate) struct HTMLHRElement {
@@ -62,7 +62,7 @@ impl HTMLHRElementMethods<crate::DomTypeHolder> for HTMLHRElement {
     make_getter!(Align, "align");
 
     // https://html.spec.whatwg.org/multipage/#dom-hr-align
-    make_atomic_setter!(cx, SetAlign, "align");
+    make_atomic_setter!(SetAlign, "align");
 
     // https://html.spec.whatwg.org/multipage/#dom-hr-color
     make_getter!(Color, "color");
@@ -74,7 +74,7 @@ impl HTMLHRElementMethods<crate::DomTypeHolder> for HTMLHRElement {
     make_bool_getter!(NoShade, "noshade");
 
     // https://html.spec.whatwg.org/multipage/#dom-hr-noshade
-    make_bool_setter!(cx, SetNoShade, "noshade");
+    make_bool_setter!(SetNoShade, "noshade");
 
     // https://html.spec.whatwg.org/multipage/#dom-hr-size
     make_getter!(Size, "size");

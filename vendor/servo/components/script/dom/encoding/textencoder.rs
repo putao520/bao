@@ -5,6 +5,7 @@
 use std::ptr;
 
 use dom_struct::dom_struct;
+use js::context::{JSContext, NoGC};
 use js::gc::CustomAutoRooterGuard;
 use js::jsapi::JSObject;
 use js::rust::HandleObject;
@@ -21,7 +22,6 @@ use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::globalscope::GlobalScope;
-use crate::script_runtime::{CanGc, JSContext};
 
 /// <https://encoding.spec.whatwg.org/#textencoder>
 #[dom_struct]
@@ -37,27 +37,22 @@ impl TextEncoder {
     }
 
     fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<TextEncoder> {
-        reflect_dom_object_with_proto(
-            Box::new(TextEncoder::new_inherited()),
-            global,
-            proto,
-            can_gc,
-        )
+        reflect_dom_object_with_proto(cx, Box::new(TextEncoder::new_inherited()), global, proto)
     }
 }
 
 impl TextEncoderMethods<crate::DomTypeHolder> for TextEncoder {
     /// <https://encoding.spec.whatwg.org/#dom-textencoder>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<TextEncoder>> {
-        Ok(TextEncoder::new(global, proto, can_gc))
+        Ok(TextEncoder::new(cx, global, proto))
     }
 
     /// <https://encoding.spec.whatwg.org/#dom-textencoder-encoding>
@@ -66,27 +61,24 @@ impl TextEncoderMethods<crate::DomTypeHolder> for TextEncoder {
     }
 
     /// <https://encoding.spec.whatwg.org/#dom-textencoder-encode>
-    fn Encode(
-        &self,
-        cx: JSContext,
-        input: USVString,
-        can_gc: CanGc,
-    ) -> RootedTraceableBox<HeapUint8Array> {
+    fn Encode(&self, cx: &mut JSContext, input: USVString) -> RootedTraceableBox<HeapUint8Array> {
         let encoded = input.0.as_bytes();
 
-        rooted!(in(*cx) let mut js_object = ptr::null_mut::<JSObject>());
-        create_buffer_source(cx, encoded, js_object.handle_mut(), can_gc)
+        rooted!(&in(cx) let mut js_object = ptr::null_mut::<JSObject>());
+        create_buffer_source(cx, encoded, js_object.handle_mut())
             .expect("Converting input to uint8 array should never fail")
     }
 
     /// <https://encoding.spec.whatwg.org/#dom-textencoder-encodeinto>
-    #[expect(unsafe_code)]
     fn EncodeInto(
         &self,
+        no_gc: &NoGC,
         source: USVString,
         mut destination: CustomAutoRooterGuard<typedarray::Uint8Array>,
     ) -> TextEncoderEncodeIntoResult {
-        let available = destination.len();
+        let dest = destination.as_mut_slice_safe(no_gc).unwrap_or(&mut []);
+
+        let available = dest.len();
 
         // Bail out if the destination has no space available.
         if available == 0 {
@@ -98,8 +90,6 @@ impl TextEncoderMethods<crate::DomTypeHolder> for TextEncoder {
 
         let mut read = 0;
         let mut written = 0;
-
-        let dest = unsafe { destination.as_mut_slice() };
 
         // Step 3, 4, 5, 6
         // Turn the source into a queue of scalar values.

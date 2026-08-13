@@ -102,25 +102,14 @@ macro_rules! make_url_getter(
     );
 );
 
-macro_rules! make_url_setter_inner(
-    ( $self:ident, $value:ident, $htmlname:tt, $cx:expr ) => (
-        use $crate::dom::bindings::inheritance::Castable;
-        use $crate::dom::element::Element;
-        let element = $self.upcast::<Element>();
-        element.set_url_attribute($cx, &html5ever::local_name!($htmlname), $value)
-    );
-);
-
 #[macro_export]
 macro_rules! make_url_setter(
     ( $attr:ident, $htmlname:tt ) => (
         fn $attr(&self, cx: &mut js::context::JSContext, value: USVString) {
-            make_url_setter_inner!(self, value, $htmlname, cx);
-        }
-    );
-    ( $cx:ident, $attr:ident, $htmlname:tt ) => (
-        fn $attr(&self, $cx: &mut js::context::JSContext, value: USVString) {
-            make_url_setter_inner!(self, value, $htmlname, $cx);
+            use $crate::dom::bindings::inheritance::Castable;
+            use $crate::dom::element::Element;
+            let element = self.upcast::<Element>();
+            element.set_url_attribute(cx, &html5ever::local_name!($htmlname), value)
         }
     );
 );
@@ -149,13 +138,13 @@ macro_rules! make_form_action_getter(
 #[macro_export]
 macro_rules! make_labels_getter(
     ( $attr:ident, $memo:ident ) => (
-        fn $attr(&self) -> DomRoot<NodeList> {
+        fn $attr(&self, cx: &mut js::context::JSContext) -> DomRoot<NodeList> {
             use $crate::dom::html::htmlelement::HTMLElement;
             use $crate::dom::nodelist::NodeList;
             self.$memo.or_init(|| NodeList::new_labels_list(
+                cx,
                 self.upcast::<Node>().owner_doc().window(),
-                self.upcast::<HTMLElement>(),
-                CanGc::deprecated_note()
+                self.upcast::<HTMLElement>()
                 )
             )
         }
@@ -269,37 +258,17 @@ macro_rules! make_enumerated_getter(
     );
 );
 
-macro_rules! make_setter_inner(
-    ( $self:ident, $value:ident, $htmlname:tt, $cx:expr ) => (
-        use $crate::dom::bindings::inheritance::Castable;
-        use $crate::dom::element::Element;
-        let element = $self.upcast::<Element>();
-        element.set_string_attribute($cx, &html5ever::local_name!($htmlname), $value)
-    );
-);
-
 // concat_idents! doesn't work for function name positions, so
 // we have to specify both the content name and the HTML name here
 #[macro_export]
 macro_rules! make_setter(
     ( $attr:ident, $htmlname:tt ) => (
         fn $attr(&self, cx: &mut js::context::JSContext, value: DOMString) {
-            make_setter_inner!(self, value, $htmlname, cx);
+            use $crate::dom::bindings::inheritance::Castable;
+            use $crate::dom::element::Element;
+            let element = self.upcast::<Element>();
+            element.set_string_attribute(cx, &html5ever::local_name!($htmlname), value)
         }
-    );
-    ( $cx:ident, $attr:ident, $htmlname:tt ) => (
-        fn $attr(&self, $cx: &mut js::context::JSContext, value: DOMString) {
-            make_setter_inner!(self, value, $htmlname, $cx);
-        }
-    );
-);
-
-macro_rules! make_bool_setter_inner(
-    ( $self:ident, $value:ident, $htmlname:tt, $cx:expr ) => (
-        use $crate::dom::bindings::inheritance::Castable;
-        use $crate::dom::element::Element;
-        let element = $self.upcast::<Element>();
-        element.set_bool_attribute($cx, &html5ever::local_name!($htmlname), $value)
     );
 );
 
@@ -307,12 +276,10 @@ macro_rules! make_bool_setter_inner(
 macro_rules! make_bool_setter(
     ( $attr:ident, $htmlname:tt ) => (
         fn $attr(&self, cx: &mut js::context::JSContext, value: bool) {
-            make_bool_setter_inner!(self, value, $htmlname, cx);
-        }
-    );
-    ( $cx:ident, $attr:ident, $htmlname:tt ) => (
-        fn $attr(&self, $cx: &mut js::context::JSContext, value: bool) {
-            make_bool_setter_inner!(self, value, $htmlname, $cx);
+            use $crate::dom::bindings::inheritance::Castable;
+            use $crate::dom::element::Element;
+            let element = self.upcast::<Element>();
+            element.set_bool_attribute(cx, &html5ever::local_name!($htmlname), value)
         }
     );
 );
@@ -378,25 +345,14 @@ macro_rules! make_limited_uint_setter(
     );
 );
 
-macro_rules! make_atomic_setter_inner(
-    ( $self:ident, $value:ident, $htmlname:tt, $cx:expr ) => (
-        use $crate::dom::bindings::inheritance::Castable;
-        use $crate::dom::element::Element;
-        let element = $self.upcast::<Element>();
-        element.set_atomic_attribute($cx, &html5ever::local_name!($htmlname), $value)
-    );
-);
-
 #[macro_export]
 macro_rules! make_atomic_setter(
     ( $attr:ident, $htmlname:tt ) => (
         fn $attr(&self, cx: &mut js::context::JSContext, value: DOMString) {
-            make_atomic_setter_inner!(self, value, $htmlname, cx);
-        }
-    );
-    ( $cx:ident, $attr:ident, $htmlname:tt ) => (
-        fn $attr(&self, $cx: &mut js::context::JSContext, value: DOMString) {
-            make_atomic_setter_inner!(self, value, $htmlname, $cx);
+            use $crate::dom::bindings::inheritance::Castable;
+            use $crate::dom::element::Element;
+            let element = self.upcast::<Element>();
+            element.set_atomic_attribute(cx, &html5ever::local_name!($htmlname), value)
         }
     );
 );
@@ -730,6 +686,10 @@ macro_rules! global_event_handlers(
         event_handler!(suspend, GetOnsuspend, SetOnsuspend);
         event_handler!(timeupdate, GetOntimeupdate, SetOntimeupdate);
         event_handler!(toggle, GetOntoggle, SetOntoggle);
+        event_handler!(touchcancel, GetOntouchcancel, SetOntouchcancel);
+        event_handler!(touchend, GetOntouchend, SetOntouchend);
+        event_handler!(touchmove, GetOntouchmove, SetOntouchmove);
+        event_handler!(touchstart, GetOntouchstart, SetOntouchstart);
         event_handler!(transitioncancel, GetOntransitioncancel, SetOntransitioncancel);
         event_handler!(transitionend, GetOntransitionend, SetOntransitionend);
         event_handler!(transitionstart, GetOntransitionstart, SetOntransitionstart);
@@ -810,63 +770,6 @@ macro_rules! window_event_handlers(
         window_owned_event_handler!(gamepadconnected, GetOngamepadconnected, SetOngamepadconnected);
         #[cfg(feature = "gamepad")]
         window_owned_event_handler!(gamepaddisconnected, GetOngamepaddisconnected, SetOngamepaddisconnected);
-    );
-);
-
-/// DOM struct implementation for simple interfaces inheriting from PerformanceEntry.
-macro_rules! impl_performance_entry_struct(
-    ($binding:ident, $struct:ident, $type:path,
-        { $( $(#[$attr:meta])* $field_name:ident : $field_type:ty, ),* } // Arguments
-    ) => (
-        use servo_base::cross_process_instant::CrossProcessInstant;
-        use time::Duration;
-
-        use script_bindings::reflector::reflect_dom_object;
-        use crate::dom::bindings::root::DomRoot;
-        use crate::dom::bindings::str::DOMString;
-        use crate::dom::globalscope::GlobalScope;
-        use crate::dom::performance::performanceentry::{EntryType, PerformanceEntry};
-        use crate::script_runtime::CanGc;
-        use dom_struct::dom_struct;
-
-        #[dom_struct]
-        pub(crate) struct $struct {
-            entry: PerformanceEntry,
-            $( $(#[$attr])* $field_name: $field_type, )*
-        }
-
-        impl $struct {
-            #[cfg_attr(crown, expect(crown::unrooted_must_root))]
-            fn new_inherited(
-                name: DOMString,
-                start_time: CrossProcessInstant,
-                duration: Duration,
-                $( $field_name: $field_type, )* ) -> $struct {
-                $struct {
-                    entry: PerformanceEntry::new_inherited(name,
-                                                           $type,
-                                                           Some(start_time),
-                                                           duration),
-                    $( $field_name: $field_name, )*
-                }
-            }
-
-            #[cfg_attr(crown, expect(crown::unrooted_must_root))]
-            pub(crate) fn new(global: &GlobalScope,
-                       name: DOMString,
-                       start_time: CrossProcessInstant,
-                       duration: Duration,
-                       $( $field_name: $field_type ),*
-                    ) -> DomRoot<$struct> {
-                let entry = $struct::new_inherited(
-                    name,
-                    start_time,
-                    duration,
-                    $( $field_name, )*
-                );
-                reflect_dom_object(Box::new(entry), global, CanGc::deprecated_note())
-            }
-        }
     );
 );
 

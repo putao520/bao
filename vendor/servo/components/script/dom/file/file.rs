@@ -2,13 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::rc::Rc;
 use std::time::SystemTime;
 
 use dom_struct::dom_struct;
 use embedder_traits::SelectedFile;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
-use script_bindings::reflector::reflect_dom_object_with_proto;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
 use servo_base::id::{FileId, FileIndex};
 use servo_constellation_traits::{BlobImpl, SerializableFile};
 use time::{Duration, OffsetDateTime};
@@ -20,53 +21,76 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::serializable::Serializable;
-use crate::dom::bindings::str::DOMString;
+use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::blob::{Blob, normalize_type_string, process_blob_parts};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct File {
     blob: Blob,
     name: DOMString,
     modified: SystemTime,
+    // TODO: This depends on the `webkitdirectory` from `HTMLInputElement`.
+    // Then need to change `SelectedFile` in embedder,
+    // and filemanager_thread to recursively walk.
+    webkit_relative_path: USVString,
 }
 
 impl File {
-    fn new_inherited(blob_impl: &BlobImpl, name: DOMString, modified: Option<SystemTime>) -> File {
+    fn new_inherited(
+        blob_impl: &BlobImpl,
+        name: DOMString,
+        modified: Option<SystemTime>,
+        webkit_relative_path: USVString,
+    ) -> File {
         File {
             blob: Blob::new_inherited(blob_impl),
             name,
             // https://w3c.github.io/FileAPI/#dfn-lastModified
             modified: modified.unwrap_or_else(SystemTime::now),
+            webkit_relative_path,
         }
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         blob_impl: BlobImpl,
         name: DOMString,
         modified: Option<SystemTime>,
-        can_gc: CanGc,
     ) -> DomRoot<File> {
-        Self::new_with_proto(global, None, blob_impl, name, modified, can_gc)
+        Self::new_with_proto(
+            cx,
+            global,
+            None,
+            blob_impl,
+            name,
+            modified,
+            USVString::default(),
+        )
     }
 
     fn new_with_proto(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         blob_impl: BlobImpl,
         name: DOMString,
         modified: Option<SystemTime>,
-        can_gc: CanGc,
+        webkit_relative_path: USVString,
     ) -> DomRoot<File> {
-        let file = reflect_dom_object_with_proto(
-            Box::new(File::new_inherited(&blob_impl, name, modified)),
+        let file = reflect_weak_referenceable_dom_object_with_proto(
+            cx,
+            Rc::new(File::new_inherited(
+                &blob_impl,
+                name,
+                modified,
+                webkit_relative_path,
+            )),
             global,
             proto,
-            can_gc,
         );
         global.track_file(&file, blob_impl);
         file
@@ -74,9 +98,9 @@ impl File {
 
     // Construct from selected file message from file manager thread
     pub(crate) fn new_from_selected(
+        cx: &mut JSContext,
         window: &Window,
         selected: SelectedFile,
-        can_gc: CanGc,
     ) -> DomRoot<File> {
         let name = DOMString::from(
             selected
@@ -86,6 +110,7 @@ impl File {
         );
 
         File::new(
+            cx,
             window.upcast(),
             BlobImpl::new_from_file(
                 selected.id,
@@ -95,7 +120,6 @@ impl File {
             ),
             name,
             Some(selected.modified),
-            can_gc,
         )
     }
 
@@ -115,12 +139,13 @@ impl File {
         self.modified
     }
 
-    pub(crate) fn serialized_data(&self) -> Result<SerializableFile, ()> {
-        let (_, blob_impl) = self.upcast::<Blob>().serialize()?;
+    pub(crate) fn serialized_data(&self, no_gc: &NoGC) -> Result<SerializableFile, ()> {
+        let (_, blob_impl) = self.upcast::<Blob>().serialize(no_gc)?;
         Ok(SerializableFile {
             blob_impl,
             name: self.name.to_string(),
             modified: self.LastModified(),
+            webkit_relative_path: self.webkit_relative_path.to_string(),
         })
     }
 }
@@ -130,8 +155,8 @@ impl Serializable for File {
     type Data = SerializableFile;
 
     /// <https://html.spec.whatwg.org/multipage/#serialization-steps>
-    fn serialize(&self) -> Result<(FileId, SerializableFile), ()> {
-        Ok((FileId::new(), self.serialized_data()?))
+    fn serialize(&self, no_gc: &NoGC) -> Result<(FileId, SerializableFile), ()> {
+        Ok((FileId::new(), self.serialized_data(no_gc)?))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#deserialization-steps>
@@ -141,12 +166,14 @@ impl Serializable for File {
         serialized: SerializableFile,
     ) -> Result<DomRoot<Self>, ()> {
         let modified = OffsetDateTime::UNIX_EPOCH + Duration::milliseconds(serialized.modified);
-        Ok(File::new(
+        Ok(File::new_with_proto(
+            cx,
             owner,
+            None,
             serialized.blob_impl,
             serialized.name.into(),
             Some(modified.into()),
-            CanGc::from_cx(cx),
+            USVString::from(serialized.webkit_relative_path),
         ))
     }
 
@@ -164,17 +191,18 @@ impl FileMethods<crate::DomTypeHolder> for File {
     // https://w3c.github.io/FileAPI/#file-constructor
     #[expect(non_snake_case)]
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         fileBits: Vec<ArrayBufferOrArrayBufferViewOrBlobOrString>,
         filename: DOMString,
         filePropertyBag: &FileBinding::FilePropertyBag,
     ) -> Fallible<DomRoot<File>> {
-        let bytes: Vec<u8> = match process_blob_parts(fileBits, filePropertyBag.parent.endings) {
-            Ok(bytes) => bytes,
-            Err(_) => return Err(Error::InvalidCharacter(None)),
-        };
+        let bytes: Vec<u8> =
+            match process_blob_parts(cx.no_gc(), fileBits, filePropertyBag.parent.endings) {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(Error::InvalidCharacter(None)),
+            };
 
         let blobPropertyBag = &filePropertyBag.parent;
         let modified = filePropertyBag
@@ -184,18 +212,24 @@ impl FileMethods<crate::DomTypeHolder> for File {
 
         let type_string = normalize_type_string(&blobPropertyBag.type_.str());
         Ok(File::new_with_proto(
+            cx,
             global,
             proto,
             BlobImpl::new_from_bytes(bytes, type_string),
             filename,
             modified,
-            can_gc,
+            USVString::default(),
         ))
     }
 
     /// <https://w3c.github.io/FileAPI/#dfn-name>
     fn Name(&self) -> DOMString {
         self.name.clone()
+    }
+
+    /// <https://wicg.github.io/entries-api/#dom-file-webkitrelativepath>
+    fn WebkitRelativePath(&self) -> USVString {
+        self.webkit_relative_path.clone()
     }
 
     /// <https://w3c.github.io/FileAPI/#dfn-lastModified>

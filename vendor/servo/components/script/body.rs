@@ -11,6 +11,7 @@ use http::HeaderMap;
 use http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
 use ipc_channel::router::ROUTER;
+use js::context::JSContext;
 use js::jsapi::{Heap, JSObject, Value as JSValue};
 use js::jsval::{JSVal, UndefinedValue};
 use js::realm::CurrentRealm;
@@ -26,7 +27,7 @@ use servo_base::generic_channel::GenericSharedMemory;
 use servo_constellation_traits::BlobImpl;
 use url::form_urlencoded;
 
-use crate::dom::bindings::buffer_source::create_buffer_source;
+use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_source_copy};
 use crate::dom::bindings::codegen::Bindings::BlobBinding::Blob_Binding::BlobMethods;
 use crate::dom::bindings::codegen::Bindings::FormDataBinding::FormDataMethods;
 use crate::dom::bindings::codegen::Bindings::XMLHttpRequestBinding::BodyInit;
@@ -38,18 +39,20 @@ use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::blob::{Blob, normalize_type_string};
+use crate::dom::encoding::textdecoderstream::TextDecoderStream;
 use crate::dom::file::File;
 use crate::dom::formdata::FormData;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmlformelement::{encode_multipart_form_data, generate_boundary};
 use crate::dom::promise::Promise;
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
-use crate::dom::readablestream::{ReadableStream, get_read_promise_bytes, get_read_promise_done};
+use crate::dom::readablestream::{
+    ReadableStream, get_read_promise_bytes, get_read_promise_done, pipe_through,
+};
 use crate::dom::urlsearchparams::URLSearchParams;
 use crate::mime_multipart::{Node, read_multipart_body};
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::CanGc;
-use crate::task_source::SendableTaskSource;
+use crate::tasks::task_source::SendableTaskSource;
 
 /// <https://fetch.spec.whatwg.org/#concept-body-clone>
 pub(crate) fn clone_body_stream_for_dom_body(
@@ -143,7 +146,7 @@ impl TransmitBodyConnectHandler {
         let mut body_handler = self.clone();
         body_handler.reset_in_memory_done();
 
-        servo_base::ipc_router::router().add_typed_route(
+        ROUTER.add_typed_route(
             chunk_request_receiver,
             Box::new(move |message| {
                 let request = message.unwrap();
@@ -216,7 +219,7 @@ impl TransmitBodyConnectHandler {
                     // TODO: Step 2, If body is null.
 
                     // Step 3, get a reader for stream.
-                    rooted_stream.acquire_default_reader(CanGc::from_cx(cx))
+                    rooted_stream.acquire_default_reader(cx)
                         .expect("Couldn't acquire a reader for the body stream.");
 
                     // Note: this algorithm continues when the first chunk is requested by `net`.
@@ -292,7 +295,7 @@ impl TransmitBodyConnectHandler {
                 }));
 
                 let handler =
-                    PromiseNativeHandler::new(&global, promise_handler.take().map(|h| Box::new(h) as Box<_>), rejection_handler.take().map(|h| Box::new(h) as Box<_>), CanGc::from_cx(cx));
+                    PromiseNativeHandler::new(cx, &global, promise_handler.take().map(|h| Box::new(h) as Box<_>), rejection_handler.take().map(|h| Box::new(h) as Box<_>));
 
                 let mut realm = enter_auto_realm(cx, &*global);
                 let realm = &mut realm.current_realm();
@@ -350,8 +353,8 @@ impl Callback for TransmitBodyPromiseHandler {
         // TODO: queue a fetch task on request to process request body for request.
         let _ = self
             .bytes_sender
-            .send(BodyChunkResponse::Chunk(GenericSharedMemory::from_bytes(
-                &chunk,
+            .send(BodyChunkResponse::Chunk(GenericSharedMemory::from_vec(
+                chunk,
             )));
     }
 }
@@ -403,7 +406,10 @@ impl ExtractedBody {
     ///
     /// Transmitting a body over fetch, and consuming it in script,
     /// are mutually exclusive operations, since each will lock the stream to a reader.
-    pub(crate) fn into_net_request_body(self) -> (RequestBody, DomRoot<ReadableStream>) {
+    pub(crate) fn into_net_request_body(
+        self,
+        cx: &mut JSContext,
+    ) -> (RequestBody, DomRoot<ReadableStream>) {
         let ExtractedBody {
             stream,
             total_bytes,
@@ -418,11 +424,12 @@ impl ExtractedBody {
         let trusted_stream = Trusted::new(&*stream);
 
         let global = stream.global();
-        let task_source = global.task_manager().networking_task_source();
+        let task_manager = global.task_manager();
+        let task_source = task_manager.networking_task_source();
 
         // In case of the data being in-memory, send everything in one chunk, by-passing SM.
         // Empty extracted bodies are always representable as an in-memory empty payload.
-        let in_memory = stream.get_in_memory_bytes().or_else(|| {
+        let in_memory = stream.get_in_memory_bytes(cx).or_else(|| {
             if total_bytes == Some(0) {
                 Some(GenericSharedMemory::from_bytes(&[]))
             } else {
@@ -443,7 +450,7 @@ impl ExtractedBody {
             source,
         );
 
-        servo_base::ipc_router::router().add_typed_route(
+        ROUTER.add_typed_route(
             chunk_request_receiver,
             Box::new(move |message| {
                 match message.unwrap() {
@@ -492,6 +499,19 @@ pub(crate) trait Extractable {
     ) -> Fallible<ExtractedBody>;
 }
 
+/// Part of <https://fetch.spec.whatwg.org/#concept-bodyinit-extract>
+fn stream_from_body_init_bytes(
+    cx: &mut js::context::JSContext,
+    global: &GlobalScope,
+    bytes: Vec<u8>,
+) -> Fallible<DomRoot<ReadableStream>> {
+    // Step 4: "Otherwise, set stream to a new ReadableStream object, and set up stream with byte reading support."
+    // Step 11: "If source is a byte sequence, then set action to a step that returns source and length to source’s length."
+    // Step 12.1: "Whenever one or more bytes are available and stream is not errored, enqueue the result of creating a Uint8Array from the available bytes into stream."
+    // Step 12.1: "When running action is done, close stream."
+    ReadableStream::new_from_bytes_with_byte_reading_support(cx, global, bytes)
+}
+
 impl Extractable for BodyInit {
     /// <https://fetch.spec.whatwg.org/#concept-bodyinit-extract>
     fn extract(
@@ -506,9 +526,10 @@ impl Extractable for BodyInit {
             BodyInit::Blob(b) => b.extract(cx, global, keep_alive),
             BodyInit::FormData(formdata) => formdata.extract(cx, global, keep_alive),
             BodyInit::ArrayBuffer(typedarray) => {
-                let bytes = typedarray.to_vec();
+                // Set source to a copy of the bytes held by object.
+                let bytes = get_buffer_source_copy(typedarray.into());
                 let total_bytes = bytes.len();
-                let stream = ReadableStream::new_from_bytes(cx, global, bytes)?;
+                let stream = stream_from_body_init_bytes(cx, global, bytes)?;
                 Ok(ExtractedBody {
                     stream,
                     total_bytes: Some(total_bytes),
@@ -517,9 +538,10 @@ impl Extractable for BodyInit {
                 })
             },
             BodyInit::ArrayBufferView(typedarray) => {
-                let bytes = typedarray.to_vec();
+                // Set source to a copy of the bytes held by object.
+                let bytes = get_buffer_source_copy(typedarray.into());
                 let total_bytes = bytes.len();
-                let stream = ReadableStream::new_from_bytes(cx, global, bytes)?;
+                let stream = stream_from_body_init_bytes(cx, global, bytes)?;
                 Ok(ExtractedBody {
                     stream,
                     total_bytes: Some(total_bytes),
@@ -561,7 +583,7 @@ impl Extractable for Vec<u8> {
     ) -> Fallible<ExtractedBody> {
         let bytes = self.clone();
         let total_bytes = self.len();
-        let stream = ReadableStream::new_from_bytes(cx, global, bytes)?;
+        let stream = stream_from_body_init_bytes(cx, global, bytes)?;
         Ok(ExtractedBody {
             stream,
             total_bytes: Some(total_bytes),
@@ -606,7 +628,7 @@ impl Extractable for DOMString {
         let bytes = self.as_bytes().to_owned();
         let total_bytes = bytes.len();
         let content_type = Some(DOMString::from("text/plain;charset=UTF-8"));
-        let stream = ReadableStream::new_from_bytes(cx, global, bytes)?;
+        let stream = stream_from_body_init_bytes(cx, global, bytes)?;
         Ok(ExtractedBody {
             stream,
             total_bytes: Some(total_bytes),
@@ -630,7 +652,7 @@ impl Extractable for FormData {
             "multipart/form-data; boundary={}",
             boundary
         )));
-        let stream = ReadableStream::new_from_bytes(cx, global, bytes)?;
+        let stream = stream_from_body_init_bytes(cx, global, bytes)?;
         Ok(ExtractedBody {
             stream,
             total_bytes: Some(total_bytes),
@@ -652,7 +674,7 @@ impl Extractable for URLSearchParams {
         let content_type = Some(DOMString::from(
             "application/x-www-form-urlencoded;charset=UTF-8",
         ));
-        let stream = ReadableStream::new_from_bytes(cx, global, bytes)?;
+        let stream = stream_from_body_init_bytes(cx, global, bytes)?;
         Ok(ExtractedBody {
             stream,
             total_bytes: Some(total_bytes),
@@ -705,8 +727,8 @@ pub(crate) fn consume_body<T: BodyMixin + DomObject>(
     // If object is unusable, then return a promise rejected with a TypeError.
     if object.is_unusable() {
         promise.reject_error(
+            cx,
             Error::Type(c"The body's stream is disturbed or locked".to_owned()),
-            CanGc::from_cx(cx),
         );
         return promise;
     }
@@ -740,7 +762,7 @@ pub(crate) fn consume_body<T: BodyMixin + DomObject>(
     if stream.is_errored() {
         rooted!(&in(cx) let mut stored_error = UndefinedValue());
         stream.get_stored_error(stored_error.handle_mut());
-        promise.reject(cx.into(), stored_error.handle(), CanGc::from_cx(cx));
+        promise.reject(cx, stored_error.handle());
         return promise;
     }
 
@@ -748,10 +770,10 @@ pub(crate) fn consume_body<T: BodyMixin + DomObject>(
     // Let reader be the result of getting a reader for body’s stream.
     // If that threw an exception,
     // then run errorSteps with that exception and return.
-    let reader = match stream.acquire_default_reader(CanGc::from_cx(cx)) {
+    let reader = match stream.acquire_default_reader(cx) {
         Ok(r) => r,
         Err(e) => {
-            promise.reject_error(e, CanGc::from_cx(cx));
+            promise.reject_error(cx, e);
             return promise;
         },
     };
@@ -781,7 +803,7 @@ pub(crate) fn consume_body<T: BodyMixin + DomObject>(
             );
         }),
         Rc::new(move |cx, v| {
-            error_promise.reject(cx.into(), v, CanGc::from_cx(cx));
+            error_promise.reject(cx, v);
         }),
     );
 
@@ -802,18 +824,16 @@ fn resolve_result_promise(
     match pkg_data_results {
         Ok(results) => {
             match results {
-                FetchedData::Text(s) => promise.resolve_native(&USVString(s), CanGc::from_cx(cx)),
-                FetchedData::Json(j) => promise.resolve_native(&j, CanGc::from_cx(cx)),
-                FetchedData::BlobData(b) => promise.resolve_native(&b, CanGc::from_cx(cx)),
-                FetchedData::FormData(f) => promise.resolve_native(&f, CanGc::from_cx(cx)),
-                FetchedData::Bytes(b) => promise.resolve_native(&b, CanGc::from_cx(cx)),
-                FetchedData::ArrayBuffer(a) => promise.resolve_native(&a, CanGc::from_cx(cx)),
-                FetchedData::JSException(e) => {
-                    promise.reject_native(&e.handle(), CanGc::from_cx(cx))
-                },
+                FetchedData::Text(s) => promise.resolve_native(cx, &USVString(s)),
+                FetchedData::Json(j) => promise.resolve_native(cx, &j),
+                FetchedData::BlobData(b) => promise.resolve_native(cx, &b),
+                FetchedData::FormData(f) => promise.resolve_native(cx, &f),
+                FetchedData::Bytes(b) => promise.resolve_native(cx, &b),
+                FetchedData::ArrayBuffer(a) => promise.resolve_native(cx, &a),
+                FetchedData::JSException(e) => promise.reject_native(cx, &e.handle()),
             };
         },
-        Err(err) => promise.reject_error(err, CanGc::from_cx(cx)),
+        Err(err) => promise.reject_error(cx, err),
     }
 }
 
@@ -827,8 +847,8 @@ fn run_package_data_algorithm(
     mime_type: Vec<u8>,
 ) -> Fallible<FetchedData> {
     let mime = &*mime_type;
-    let realm = CurrentRealm::assert(cx);
-    let global = GlobalScope::from_current_realm(&realm);
+    let mut realm = CurrentRealm::assert(cx);
+    let global = GlobalScope::from_current_realm(&mut realm);
     match body_type {
         BodyType::Text => run_text_data_algorithm(bytes),
         BodyType::Json => run_json_data_algorithm(cx, bytes),
@@ -971,19 +991,19 @@ fn append_form_data_entry_from_part(
         // The type attribute of the File object must have the value of the `Content-Type` header of the part if the part has such header, and `text/plain` (the default defined by [RFC7578] section 4.4) otherwise.
         let content_type = content_type_from_headers(headers)?;
         let file = File::new(
+            cx,
             root,
             BlobImpl::new_from_bytes(body, normalize_type_string(&content_type)),
             DOMString::from(filename),
             None,
-            CanGc::from_cx(cx),
         );
         let blob = file.upcast::<Blob>();
-        formdata.Append_(USVString(name), blob, None);
+        formdata.Append_(cx, USVString(name), blob, None);
     } else {
         // Each part whose `Content-Disposition` header does not contain a `filename` parameter must be parsed into an entry whose value is the UTF-8 decoded without BOM content of the part. This is done regardless of the presence or the value of a `Content-Type` header and regardless of the presence or the value of a `charset` parameter.
 
         let (value, _) = UTF_8.decode_without_bom_handling(&body);
-        formdata.Append(USVString(name), USVString(value.to_string()));
+        formdata.Append(cx, USVString(name), USVString(value.to_string()));
     }
     Ok(())
 }
@@ -1045,7 +1065,7 @@ fn run_form_data_algorithm(
             let closing_boundary = format!("--{}--", boundary.as_str()).into_bytes();
             let trimmed_bytes = bytes.strip_suffix(b"\r\n").unwrap_or(&bytes);
             if trimmed_bytes == closing_boundary {
-                let formdata = FormData::new(None, root, CanGc::from_cx(cx));
+                let formdata = FormData::new(cx, None, root);
                 return Ok(FetchedData::FormData(formdata));
             }
         }
@@ -1058,7 +1078,7 @@ fn run_form_data_algorithm(
         // a more detailed parsing specification is to be written. Volunteers welcome.
 
         // Return a new FormData object, appending each entry, resulting from the parsing operation, to its entry list.
-        let formdata = FormData::new(None, root, CanGc::from_cx(cx));
+        let formdata = FormData::new(cx, None, root);
 
         append_multipart_nodes(cx, root, &formdata, nodes)?;
 
@@ -1071,9 +1091,9 @@ fn run_form_data_algorithm(
         //
         // Return a new FormData object whose entry list is entries.
         let entries = form_urlencoded::parse(&bytes);
-        let formdata = FormData::new(None, root, CanGc::from_cx(cx));
+        let formdata = FormData::new(cx, None, root);
         for (k, e) in entries {
-            formdata.Append(USVString(k.into_owned()), USVString(e.into_owned()));
+            formdata.Append(cx, USVString(k.into_owned()), USVString(e.into_owned()));
         }
         return Ok(FetchedData::FormData(formdata));
     }
@@ -1089,13 +1109,8 @@ fn run_bytes_data_algorithm(
 ) -> Fallible<FetchedData> {
     rooted!(&in(cx) let mut array_buffer_ptr = ptr::null_mut::<JSObject>());
 
-    create_buffer_source::<Uint8>(
-        cx.into(),
-        &bytes,
-        array_buffer_ptr.handle_mut(),
-        CanGc::from_cx(cx),
-    )
-    .map_err(|_| Error::JSFailed)?;
+    create_buffer_source::<Uint8>(cx, &bytes, array_buffer_ptr.handle_mut())
+        .map_err(|_| Error::JSFailed)?;
 
     let rooted_heap = RootedTraceableBox::from_box(Heap::boxed(array_buffer_ptr.get()));
     Ok(FetchedData::Bytes(rooted_heap))
@@ -1108,13 +1123,8 @@ pub(crate) fn run_array_buffer_data_algorithm(
 ) -> Fallible<FetchedData> {
     rooted!(&in(cx) let mut array_buffer_ptr = ptr::null_mut::<JSObject>());
 
-    create_buffer_source::<ArrayBufferU8>(
-        cx.into(),
-        &bytes,
-        array_buffer_ptr.handle_mut(),
-        CanGc::from_cx(cx),
-    )
-    .map_err(|_| Error::JSFailed)?;
+    create_buffer_source::<ArrayBufferU8>(cx, &bytes, array_buffer_ptr.handle_mut())
+        .map_err(|_| Error::JSFailed)?;
 
     let rooted_heap = RootedTraceableBox::from_box(Heap::boxed(array_buffer_ptr.get()));
     Ok(FetchedData::ArrayBuffer(rooted_heap))
@@ -1147,4 +1157,32 @@ pub(crate) trait BodyMixin {
     fn body(&self) -> Option<DomRoot<ReadableStream>>;
     /// <https://fetch.spec.whatwg.org/#concept-body-mime-type>
     fn get_mime_type(&self, cx: &mut js::context::JSContext) -> Vec<u8>;
+}
+
+/// <https://fetch.spec.whatwg.org/#dom-body-textstream>
+pub(crate) fn body_text_stream<T: BodyMixin + DomObject>(
+    cx: &mut js::context::JSContext,
+    object: &T,
+) -> Fallible<DomRoot<ReadableStream>> {
+    // Step 1: If this is unusable, then throw a TypeError.
+    if object.is_unusable() {
+        return Err(Error::Type(
+            c"The body's stream is disturbed or locked".to_owned(),
+        ));
+    }
+
+    // Step 3: Let stream be this’s body’s stream.
+    let Some(stream) = object.body() else {
+        // Step 2: If this's body is null:
+        // set up a ReadableStream emptyStream, close it, and return it.
+        return ReadableStream::new_empty(cx, &object.global());
+    };
+
+    // Step 4: Let decoder be a new TextDecoderStream object in this’s relevant realm.
+    // Step 5: Set up decoder with UTF-8.
+    let decoder =
+        TextDecoderStream::new_with_proto(cx, &object.global(), None, UTF_8, false, false)?;
+
+    // Step 6. Return the result of stream, piped through decoder.
+    Ok(pipe_through(&stream, cx, &object.global(), &decoder))
 }

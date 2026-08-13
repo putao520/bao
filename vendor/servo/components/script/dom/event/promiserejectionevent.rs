@@ -2,13 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::ptr::NonNull;
 use std::rc::Rc;
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
 use js::jsapi::{Heap, JSObject};
 use js::jsval::JSVal;
-use js::rust::{HandleObject, HandleValue, MutableHandleValue};
+use js::rust::{HandleObject, HandleValue, MutableHandleObject, MutableHandleValue};
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use stylo_atoms::Atom;
 
@@ -23,7 +23,6 @@ use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
-use crate::script_runtime::{CanGc, JSContext};
 
 #[dom_struct]
 pub(crate) struct PromiseRejectionEvent {
@@ -44,15 +43,16 @@ impl PromiseRejectionEvent {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         type_: Atom,
         bubbles: EventBubbles,
         cancelable: EventCancelable,
         promise: Rc<Promise>,
         reason: HandleValue,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
         Self::new_with_proto(
+            cx,
             global,
             None,
             type_,
@@ -60,12 +60,12 @@ impl PromiseRejectionEvent {
             cancelable,
             promise.promise_obj(),
             reason,
-            can_gc,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn new_with_proto(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         type_: Atom,
@@ -73,13 +73,12 @@ impl PromiseRejectionEvent {
         cancelable: EventCancelable,
         promise: HandleObject,
         reason: HandleValue,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
         let ev = reflect_dom_object_with_proto(
+            cx,
             Box::new(PromiseRejectionEvent::new_inherited()),
             global,
             proto,
-            can_gc,
         );
         ev.promise.set(promise.get());
 
@@ -96,9 +95,9 @@ impl PromiseRejectionEvent {
 impl PromiseRejectionEventMethods<crate::DomTypeHolder> for PromiseRejectionEvent {
     /// <https://html.spec.whatwg.org/multipage/#promiserejectionevent>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         type_: DOMString,
         init: RootedTraceableBox<PromiseRejectionEventBinding::PromiseRejectionEventInit>,
     ) -> Fallible<DomRoot<Self>> {
@@ -107,6 +106,7 @@ impl PromiseRejectionEventMethods<crate::DomTypeHolder> for PromiseRejectionEven
         let cancelable = EventCancelable::from(init.parent.cancelable);
 
         let event = PromiseRejectionEvent::new_with_proto(
+            cx,
             global,
             proto,
             Atom::from(type_),
@@ -114,18 +114,17 @@ impl PromiseRejectionEventMethods<crate::DomTypeHolder> for PromiseRejectionEven
             cancelable,
             init.promise.handle(),
             reason,
-            can_gc,
         );
         Ok(event)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-promiserejectionevent-promise>
-    fn Promise(&self, _cx: JSContext) -> NonNull<JSObject> {
-        NonNull::new(self.promise.get()).unwrap()
+    fn Promise(&self, mut return_value: MutableHandleObject) {
+        return_value.set(self.promise.get());
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-promiserejectionevent-reason>
-    fn Reason(&self, _cx: JSContext, mut retval: MutableHandleValue) {
+    fn Reason(&self, mut retval: MutableHandleValue) {
         retval.set(self.reason.get())
     }
 

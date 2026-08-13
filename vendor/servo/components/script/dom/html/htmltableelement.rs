@@ -27,8 +27,8 @@ use crate::dom::html::htmltablecaptionelement::HTMLTableCaptionElement;
 use crate::dom::html::htmltablecolelement::HTMLTableColElement;
 use crate::dom::html::htmltablerowelement::HTMLTableRowElement;
 use crate::dom::html::htmltablesectionelement::HTMLTableSectionElement;
+use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{Node, NodeTraits};
-use crate::dom::virtualmethods::VirtualMethods;
 
 #[dom_struct]
 pub(crate) struct HTMLTableElement {
@@ -117,7 +117,9 @@ impl HTMLTableElement {
         if let Some(e) = section &&
             e.upcast::<Element>().local_name() != atom
         {
-            return Err(Error::HierarchyRequest(None));
+            return Err(Error::HierarchyRequest(Some(
+                "Section element must be null or is not a thead nor a tfoot element".into(),
+            )));
         }
 
         self.delete_first_section_of_type(cx, atom);
@@ -347,10 +349,12 @@ impl HTMLTableElementMethods<crate::DomTypeHolder> for HTMLTableElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-table-insertrow>
     fn InsertRow(&self, cx: &mut JSContext, index: i32) -> Fallible<DomRoot<HTMLTableRowElement>> {
         let rows = self.Rows(cx);
-        let number_of_row_elements = rows.Length();
+        let number_of_row_elements = rows.Length(cx);
 
         if index < -1 || index > number_of_row_elements as i32 {
-            return Err(Error::IndexSize(None));
+            return Err(Error::IndexSize(Some(
+                "Index value must be equal to or greater than -1 and less than the number of row elements".into(),
+            )));
         }
 
         let new_row = Element::create(
@@ -391,7 +395,7 @@ impl HTMLTableElementMethods<crate::DomTypeHolder> for HTMLTableElement {
         } else if index == number_of_row_elements as i32 || index == -1 {
             // append new row to parent of last row in table
             let last_row = rows
-                .Item(number_of_row_elements - 1)
+                .Item(cx, number_of_row_elements - 1)
                 .expect("InsertRow failed to find last row in table.");
 
             let last_row_parent = last_row
@@ -406,7 +410,7 @@ impl HTMLTableElementMethods<crate::DomTypeHolder> for HTMLTableElement {
         } else {
             // insert new row before the index-th row in rows using the same parent
             let ith_row = rows
-                .Item(index as u32)
+                .Item(cx, index as u32)
                 .expect("InsertRow failed to find a row in table.");
 
             let ith_row_parent = ith_row
@@ -426,15 +430,17 @@ impl HTMLTableElementMethods<crate::DomTypeHolder> for HTMLTableElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-table-deleterow>
     fn DeleteRow(&self, cx: &mut JSContext, mut index: i32) -> Fallible<()> {
         let rows = self.Rows(cx);
-        let num_rows = rows.Length() as i32;
+        let num_rows = rows.Length(cx) as i32;
 
         // Step 1: If index is less than −1 or greater than or equal to the number of elements
         // in the rows collection, then throw an "IndexSizeError".
         if !(-1..num_rows).contains(&index) {
-            return Err(Error::IndexSize(None));
+            return Err(Error::IndexSize(Some(
+                "Index value must be equal to or greater than -1 and less than the number of row elements".into(),
+            )));
         }
 
-        let num_rows = rows.Length() as i32;
+        let num_rows = rows.Length(cx) as i32;
 
         // Step 2: If index is −1, then remove the last element in the rows collection from its
         // parent, or do nothing if the rows collection is empty.
@@ -447,7 +453,7 @@ impl HTMLTableElementMethods<crate::DomTypeHolder> for HTMLTableElement {
         }
 
         // Step 3: Otherwise, remove the indexth element in the rows collection from its parent.
-        DomRoot::upcast::<Node>(rows.Item(index as u32).unwrap()).remove_self(cx);
+        DomRoot::upcast::<Node>(rows.Item(cx, index as u32).unwrap()).remove_self(cx);
 
         Ok(())
     }
@@ -465,15 +471,15 @@ impl HTMLTableElementMethods<crate::DomTypeHolder> for HTMLTableElement {
     make_nonzero_dimension_setter!(SetWidth, "width");
 
     // <https://html.spec.whatwg.org/multipage/#dom-table-align>
-    make_setter!(cx, SetAlign, "align");
+    make_setter!(SetAlign, "align");
     make_getter!(Align, "align");
 
     // <https://html.spec.whatwg.org/multipage/#dom-table-cellpadding>
-    make_setter!(cx, SetCellPadding, "cellpadding");
+    make_setter!(SetCellPadding, "cellpadding");
     make_getter!(CellPadding, "cellpadding");
 
     // <https://html.spec.whatwg.org/multipage/#dom-table-cellspacing>
-    make_setter!(cx, SetCellSpacing, "cellspacing");
+    make_setter!(SetCellSpacing, "cellspacing");
     make_getter!(CellSpacing, "cellspacing");
 }
 

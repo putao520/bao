@@ -5,7 +5,9 @@
 use std::rc::Rc;
 
 use dom_struct::dom_struct;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use js::context::JSContext;
+use js::realm::CurrentRealm;
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use servo_base::generic_channel::GenericCallback;
 
 use crate::dom::bindings::codegen::Bindings::PermissionStatusBinding::{
@@ -21,9 +23,7 @@ use crate::dom::bindings::root::DomRoot;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::permissions::request_permission_to_use;
 use crate::dom::promise::Promise;
-use crate::realms::InRealm;
-use crate::script_runtime::CanGc;
-use crate::task_source::SendableTaskSource;
+use crate::tasks::task_source::SendableTaskSource;
 
 #[dom_struct]
 pub(crate) struct StorageManager {
@@ -37,8 +37,8 @@ impl StorageManager {
         }
     }
 
-    pub(crate) fn new(global: &GlobalScope, can_gc: CanGc) -> DomRoot<StorageManager> {
-        reflect_dom_object(Box::new(StorageManager::new_inherited()), global, can_gc)
+    pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<StorageManager> {
+        reflect_dom_object_with_cx(Box::new(StorageManager::new_inherited()), global, cx)
     }
 
     fn origin_cannot_obtain_local_storage_shelf(&self) -> bool {
@@ -75,11 +75,8 @@ impl StorageManagerBooleanResponseHandler {
             .queue(task!(storage_manager_boolean_response: move |cx| {
                 let promise = trusted_promise.root();
                 match result {
-                    Ok(value) => promise.resolve_native(&value, CanGc::from_cx(cx)),
-                    Err(message) => promise.reject_error(
-                        StorageManager::type_error_from_string(message),
-                        CanGc::from_cx(cx),
-                    ),
+                    Ok(value) => promise.resolve_native(cx, &value),
+                    Err(message) => promise.reject_error(cx, StorageManager::type_error_from_string(message)),
                 }
             }));
     }
@@ -112,13 +109,10 @@ impl StorageManagerEstimateResponseHandler {
                         let mut estimate = StorageEstimate::empty();
                         estimate.usage = Some(usage);
                         estimate.quota = Some(quota);
-                        promise.resolve_native(&estimate, CanGc::from_cx(cx));
+                        promise.resolve_native(cx, &estimate);
                     },
                     Err(message) => {
-                        promise.reject_error(
-                            StorageManager::type_error_from_string(message),
-                            CanGc::from_cx(cx),
-                        );
+                        promise.reject_error(cx, StorageManager::type_error_from_string(message));
                     },
                 }
             }));
@@ -127,9 +121,9 @@ impl StorageManagerEstimateResponseHandler {
 
 impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
     /// <https://storage.spec.whatwg.org/#dom-storagemanager-persisted>
-    fn Persisted(&self, comp: InRealm, can_gc: CanGc) -> Rc<Promise> {
+    fn Persisted(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
         // Step 1. Let promise be a new promise.
-        let promise = Promise::new_in_current_realm(comp, can_gc);
+        let promise = Promise::new_in_realm(cx);
         // Step 2. Let global be this’s relevant global object.
         let global = self.global();
 
@@ -138,8 +132,8 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
         // Step 4. If shelf is failure, then reject promise with a TypeError.
         if self.origin_cannot_obtain_local_storage_shelf() {
             promise.reject_error(
+                cx,
                 Error::Type(c"Storage is unavailable for opaque origins".to_owned()),
-                can_gc,
             );
             return promise;
         }
@@ -172,9 +166,9 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
     }
 
     /// <https://storage.spec.whatwg.org/#dom-storagemanager-persist>
-    fn Persist(&self, comp: InRealm, can_gc: CanGc) -> Rc<Promise> {
+    fn Persist(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
         // Step 1. Let promise be a new promise.
-        let promise = Promise::new_in_current_realm(comp, can_gc);
+        let promise = Promise::new_in_realm(cx);
         // Step 2. Let global be this’s relevant global object.
         let global = self.global();
 
@@ -183,8 +177,8 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
         // Step 4. If shelf is failure, then reject promise with a TypeError.
         if self.origin_cannot_obtain_local_storage_shelf() {
             promise.reject_error(
+                cx,
                 Error::Type(c"Storage is unavailable for opaque origins".to_owned()),
-                can_gc,
             );
             return promise;
         }
@@ -228,9 +222,9 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
     }
 
     /// <https://storage.spec.whatwg.org/#dom-storagemanager-estimate>
-    fn Estimate(&self, comp: InRealm, can_gc: CanGc) -> Rc<Promise> {
+    fn Estimate(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
         // Step 1. Let promise be a new promise.
-        let promise = Promise::new_in_current_realm(comp, can_gc);
+        let promise = Promise::new_in_realm(cx);
         // Step 2. Let global be this’s relevant global object.
         let global = self.global();
 
@@ -239,8 +233,8 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
         // Step 4. If shelf is failure, then reject promise with a TypeError.
         if self.origin_cannot_obtain_local_storage_shelf() {
             promise.reject_error(
+                cx,
                 Error::Type(c"Storage is unavailable for opaque origins".to_owned()),
-                can_gc,
             );
             return promise;
         }

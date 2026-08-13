@@ -36,9 +36,8 @@ use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element, ElementCreator};
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::medialist::MediaList;
+use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{BindContext, ChildrenMutation, Node, NodeTraits, UnbindContext};
-use crate::dom::virtualmethods::VirtualMethods;
-use crate::script_runtime::CanGc;
 use crate::stylesheet_loader::StylesheetOwner;
 
 #[dom_struct]
@@ -80,7 +79,7 @@ impl HTMLStyleElement {
     }
 
     pub(crate) fn new(
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
@@ -103,7 +102,7 @@ impl HTMLStyleElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-a-style-block>
-    pub(crate) fn update_a_style_block(&self) {
+    pub(crate) fn update_a_style_block(&self, cx: &mut JSContext) {
         // Step 1. Let element be the style element.
         //
         // That's self
@@ -137,6 +136,7 @@ impl HTMLStyleElement {
         if global
             .get_csp_list()
             .should_elements_inline_type_behavior_be_blocked(
+                cx,
                 global,
                 self.upcast(),
                 InlineCheckType::Style,
@@ -243,10 +243,14 @@ impl HTMLStyleElement {
         self.stylesheet.borrow().clone()
     }
 
-    pub(crate) fn get_cssom_stylesheet(&self) -> Option<DomRoot<CSSStyleSheet>> {
+    pub(crate) fn get_cssom_stylesheet(
+        &self,
+        cx: &mut JSContext,
+    ) -> Option<DomRoot<CSSStyleSheet>> {
         self.get_stylesheet().map(|sheet| {
             self.cssom_stylesheet.or_init(|| {
                 CSSStyleSheet::new(
+                    cx,
                     &self.owner_window(),
                     Some(self.upcast::<Element>()),
                     "text/css".into(),
@@ -254,7 +258,6 @@ impl HTMLStyleElement {
                     None, // todo handle title
                     sheet,
                     None, // constructor_document
-                    CanGc::deprecated_note(),
                 )
             })
         })
@@ -324,7 +327,7 @@ impl VirtualMethods for HTMLStyleElement {
         // https://html.spec.whatwg.org/multipage/#update-a-style-block
         // > The element is not on the stack of open elements of an HTML parser or XML parser, and its children changed steps run.
         if !self.in_stack_of_open_elements.get() {
-            self.update_a_style_block();
+            self.update_a_style_block(cx);
         }
     }
 
@@ -334,7 +337,7 @@ impl VirtualMethods for HTMLStyleElement {
         // https://html.spec.whatwg.org/multipage/#update-a-style-block
         // > The element is not on the stack of open elements of an HTML parser or XML parser, and it becomes connected or disconnected.
         if !self.in_stack_of_open_elements.get() {
-            self.update_a_style_block();
+            self.update_a_style_block(cx);
         }
     }
 
@@ -344,7 +347,7 @@ impl VirtualMethods for HTMLStyleElement {
 
         // https://html.spec.whatwg.org/multipage/#update-a-style-block
         // > The element is popped off the stack of open elements of an HTML parser or XML parser.
-        self.update_a_style_block();
+        self.update_a_style_block(cx);
     }
 
     fn unbind_from_tree(&self, cx: &mut js::context::JSContext, context: &UnbindContext) {
@@ -355,7 +358,7 @@ impl VirtualMethods for HTMLStyleElement {
         // https://html.spec.whatwg.org/multipage/#update-a-style-block
         // > The element is not on the stack of open elements of an HTML parser or XML parser, and it becomes connected or disconnected.
         if !self.in_stack_of_open_elements.get() {
-            self.update_a_style_block();
+            self.update_a_style_block(cx);
         }
     }
 
@@ -383,7 +386,7 @@ impl VirtualMethods for HTMLStyleElement {
                 return;
             }
             self.remove_stylesheet();
-            self.update_a_style_block();
+            self.update_a_style_block(cx);
         } else if attr.name() == "media" &&
             let Some(ref stylesheet) = *self.stylesheet.borrow_mut()
         {
@@ -394,7 +397,7 @@ impl VirtualMethods for HTMLStyleElement {
                 AttributeMutation::Set(..) => *media = self.create_media_list(&attr.value()),
                 AttributeMutation::Removed => *media = StyleMediaList::empty(),
             };
-            self.owner_document().invalidate_stylesheets();
+            self.owner_document().invalidate_stylesheets(cx.no_gc());
         }
     }
 }
@@ -438,12 +441,12 @@ impl StylesheetOwner for HTMLStyleElement {
                 .is_some_and(|list| list.Contains("render".into()))
     }
 
-    fn referrer_policy(&self, _cx: &mut js::context::JSContext) -> ReferrerPolicy {
+    fn referrer_policy(&self, _cx: &mut JSContext) -> ReferrerPolicy {
         ReferrerPolicy::EmptyString
     }
 
-    fn set_origin_clean(&self, origin_clean: bool) {
-        if let Some(stylesheet) = self.get_cssom_stylesheet() {
+    fn set_origin_clean(&self, cx: &mut JSContext, origin_clean: bool) {
+        if let Some(stylesheet) = self.get_cssom_stylesheet(cx) {
             stylesheet.set_origin_clean(origin_clean);
         }
     }
@@ -451,20 +454,20 @@ impl StylesheetOwner for HTMLStyleElement {
 
 impl HTMLStyleElementMethods<crate::DomTypeHolder> for HTMLStyleElement {
     /// <https://drafts.csswg.org/cssom/#dom-linkstyle-sheet>
-    fn GetSheet(&self) -> Option<DomRoot<DOMStyleSheet>> {
-        self.get_cssom_stylesheet().map(DomRoot::upcast)
+    fn GetSheet(&self, cx: &mut JSContext) -> Option<DomRoot<DOMStyleSheet>> {
+        self.get_cssom_stylesheet(cx).map(DomRoot::upcast)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-style-disabled>
-    fn Disabled(&self) -> bool {
-        self.get_cssom_stylesheet()
+    fn Disabled(&self, cx: &mut JSContext) -> bool {
+        self.get_cssom_stylesheet(cx)
             .is_some_and(|sheet| sheet.disabled())
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-style-disabled>
-    fn SetDisabled(&self, _cx: &mut js::context::JSContext, value: bool) {
-        if let Some(sheet) = self.get_cssom_stylesheet() {
-            sheet.set_disabled(value);
+    fn SetDisabled(&self, cx: &mut js::context::JSContext, value: bool) {
+        if let Some(sheet) = self.get_cssom_stylesheet(cx) {
+            sheet.set_disabled(cx.no_gc(), value);
         }
     }
 

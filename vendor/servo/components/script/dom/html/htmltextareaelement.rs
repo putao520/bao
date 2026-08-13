@@ -13,11 +13,10 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use layout_api::{ScriptSelection, SharedSelection};
 use script_bindings::cell::DomRefCell;
-use servo_base::text::Utf16CodeUnitLength;
+use servo_base::text::Utf16CodeUnits;
 use style::attr::AttrValue;
 use stylo_dom::ElementState;
 
-use crate::clipboard_provider::EmbedderClipboardProvider;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLFormElementBinding::SelectionMode;
 use crate::dom::bindings::codegen::Bindings::HTMLTextAreaElementBinding::HTMLTextAreaElementMethods;
@@ -25,7 +24,7 @@ use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::error::ErrorResult;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
-use crate::dom::bindings::root::{DomRoot, LayoutDom, MutNullableDom};
+use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::clipboardevent::{ClipboardEvent, ClipboardEventType};
 use crate::dom::compositionevent::CompositionEvent;
@@ -36,23 +35,24 @@ use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::event::Event;
 use crate::dom::event::event::{EventBubbles, EventCancelable, EventComposed};
 use crate::dom::eventtarget::EventTarget;
+use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
+use crate::dom::html::form_controls::input_type::text_input_widget::TextInputWidget;
+use crate::dom::html::form_controls::text_control::{TextControlElement, TextControlSelection};
+use crate::dom::html::form_controls::text_input::{
+    ClipboardEventFlags, EmbedderClipboardProvider, IsComposing, KeyReaction, Lines, TextInput,
+};
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlfieldsetelement::HTMLFieldSetElement;
 use crate::dom::html::htmlformelement::{FormControl, HTMLFormElement};
-use crate::dom::html::input_element::HTMLInputElement;
-use crate::dom::htmlinputelement::text_input_widget::TextInputWidget;
 use crate::dom::keyboardevent::KeyboardEvent;
+use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{
     BindContext, ChildrenMutation, CloneChildrenFlag, Node, NodeDamage, NodeTraits, UnbindContext,
 };
 use crate::dom::nodelist::NodeList;
-use crate::dom::textcontrol::{TextControlElement, TextControlSelection};
 use crate::dom::types::{FocusEvent, MouseEvent};
 use crate::dom::validation::{Validatable, is_barred_by_datalist_ancestor};
 use crate::dom::validitystate::{ValidationFlags, ValidityState};
-use crate::dom::virtualmethods::VirtualMethods;
-use crate::script_runtime::CanGc;
-use crate::textinput::{ClipboardEventFlags, IsComposing, KeyReaction, Lines, TextInput};
 
 #[dom_struct]
 pub(crate) struct HTMLTextAreaElement {
@@ -180,7 +180,7 @@ impl HTMLTextAreaElement {
             self.owner_document()
                 .embedder_controls()
                 .show_embedder_control(
-                    ControlElement::Ime(DomRoot::from_ref(self.upcast())),
+                    ControlElement::Ime(Dom::from_ref(self.upcast())),
                     EmbedderControlRequest::InputMethod(InputMethodRequest {
                         input_method_type: InputMethodType::Text,
                         text: String::from(self.Value()),
@@ -198,8 +198,8 @@ impl HTMLTextAreaElement {
     }
 
     fn handle_text_content_changed(&self, cx: &mut JSContext) {
-        self.validity_state(CanGc::from_cx(cx))
-            .perform_validation_and_update(ValidationFlags::all(), CanGc::from_cx(cx));
+        self.validity_state(cx)
+            .perform_validation_and_update(cx, ValidationFlags::all());
 
         let placeholder_shown =
             self.textinput.borrow().is_empty() && !self.placeholder.borrow().is_empty();
@@ -223,12 +223,7 @@ impl HTMLTextAreaElement {
         if self.textinput.borrow().is_empty() {
             return;
         }
-        let node = self.upcast();
-        if self
-            .textinput
-            .borrow_mut()
-            .handle_mouse_event(node, mouse_event)
-        {
+        if self.textinput.borrow_mut().handle_mouse_event(mouse_event) {
             self.maybe_update_shared_selection();
         }
     }
@@ -253,7 +248,8 @@ impl HTMLTextAreaElement {
                     // Step 1. Set target's has scheduled selectionchange event to false.
                     this.has_scheduled_selectionchange_event.set(false);
                     // Step 2. If target is an element, fire an event named selectionchange, which bubbles and not cancelable, at target.
-                    this.upcast::<EventTarget>().fire_event_with_params(cx,
+                    this.upcast::<EventTarget>().fire_event_with_params(
+                        cx,
                         atom!("selectionchange"),
                         EventBubbles::Bubbles,
                         EventCancelable::NotCancelable,
@@ -474,7 +470,7 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionstart>
     fn SetSelectionStart(&self, _cx: &mut JSContext, start: Option<u32>) -> ErrorResult {
         self.selection()
-            .set_dom_start(start.map(Utf16CodeUnitLength::from))
+            .set_dom_start(start.map(Utf16CodeUnits::from))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionend>
@@ -484,8 +480,7 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionend>
     fn SetSelectionEnd(&self, _cx: &mut JSContext, end: Option<u32>) -> ErrorResult {
-        self.selection()
-            .set_dom_end(end.map(Utf16CodeUnitLength::from))
+        self.selection().set_dom_end(end.map(Utf16CodeUnits::from))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectiondirection>
@@ -505,8 +500,8 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-setselectionrange>
     fn SetSelectionRange(&self, start: u32, end: u32, direction: Option<DOMString>) -> ErrorResult {
         self.selection().set_dom_range(
-            Utf16CodeUnitLength::from(start),
-            Utf16CodeUnitLength::from(end),
+            Utf16CodeUnits::from(start),
+            Utf16CodeUnits::from(end),
             direction,
         )
     }
@@ -527,8 +522,8 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
     ) -> ErrorResult {
         self.selection().set_dom_range_text(
             replacement,
-            Some(Utf16CodeUnitLength::from(start)),
-            Some(Utf16CodeUnitLength::from(end)),
+            Some(Utf16CodeUnits::from(start)),
+            Some(Utf16CodeUnits::from(end)),
             selection_mode,
         )
     }
@@ -539,8 +534,8 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-validity>
-    fn Validity(&self, can_gc: CanGc) -> DomRoot<ValidityState> {
-        self.validity_state(can_gc)
+    fn Validity(&self, cx: &mut JSContext) -> DomRoot<ValidityState> {
+        self.validity_state(cx)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-checkvalidity>
@@ -554,13 +549,13 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-validationmessage>
-    fn ValidationMessage(&self) -> DOMString {
-        self.validation_message()
+    fn ValidationMessage(&self, cx: &mut JSContext) -> DOMString {
+        self.validation_message(cx)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-setcustomvalidity>
-    fn SetCustomValidity(&self, error: DOMString, can_gc: CanGc) {
-        self.validity_state(can_gc).set_custom_error_message(error);
+    fn SetCustomValidity(&self, cx: &mut JSContext, error: DOMString) {
+        self.validity_state(cx).set_custom_error_message(cx, error);
     }
 }
 
@@ -650,7 +645,7 @@ impl VirtualMethods for HTMLTextAreaElement {
                     if value < 0 {
                         textinput.set_max_length(None);
                     } else {
-                        textinput.set_max_length(Some(Utf16CodeUnitLength(value as usize)))
+                        textinput.set_max_length(Some(Utf16CodeUnits(value as usize)))
                     }
                 },
                 _ => panic!("Expected an AttrValue::Int"),
@@ -662,7 +657,7 @@ impl VirtualMethods for HTMLTextAreaElement {
                     if value < 0 {
                         textinput.set_min_length(None);
                     } else {
-                        textinput.set_min_length(Some(Utf16CodeUnitLength(value as usize)))
+                        textinput.set_min_length(Some(Utf16CodeUnits(value as usize)))
                     }
                 },
                 _ => panic!("Expected an AttrValue::Int"),
@@ -694,13 +689,13 @@ impl VirtualMethods for HTMLTextAreaElement {
                 }
             },
             local_name!("form") => {
-                self.form_attribute_mutated(mutation, CanGc::from_cx(cx));
+                self.form_attribute_mutated(cx, mutation);
             },
             _ => {},
         }
 
-        self.validity_state(CanGc::from_cx(cx))
-            .perform_validation_and_update(ValidationFlags::all(), CanGc::from_cx(cx));
+        self.validity_state(cx)
+            .perform_validation_and_update(cx, ValidationFlags::all());
     }
 
     fn bind_to_tree(&self, cx: &mut JSContext, context: &BindContext) {
@@ -732,6 +727,11 @@ impl VirtualMethods for HTMLTextAreaElement {
     }
 
     fn unbind_from_tree(&self, cx: &mut JSContext, context: &UnbindContext) {
+        // Always attempt to hide IME when unbinding input elements from the tree.
+        self.owner_document()
+            .embedder_controls()
+            .hide_embedder_control(self.upcast());
+
         self.super_type().unwrap().unbind_from_tree(cx, context);
 
         let node = self.upcast::<Node>();
@@ -745,8 +745,8 @@ impl VirtualMethods for HTMLTextAreaElement {
             el.check_disabled_attribute();
         }
 
-        self.validity_state(CanGc::from_cx(cx))
-            .perform_validation_and_update(ValidationFlags::all(), CanGc::from_cx(cx));
+        self.validity_state(cx)
+            .perform_validation_and_update(cx, ValidationFlags::all());
     }
 
     // The cloning steps for textarea elements must propagate the raw value
@@ -767,8 +767,8 @@ impl VirtualMethods for HTMLTextAreaElement {
             let mut textinput = el.textinput.borrow_mut();
             textinput.set_content(self.textinput.borrow().get_content());
         }
-        el.validity_state(CanGc::from_cx(cx))
-            .perform_validation_and_update(ValidationFlags::all(), CanGc::from_cx(cx));
+        el.validity_state(cx)
+            .perform_validation_and_update(cx, ValidationFlags::all());
     }
 
     fn children_changed(&self, cx: &mut JSContext, mutation: &ChildrenMutation) {
@@ -803,14 +803,14 @@ impl VirtualMethods for HTMLTextAreaElement {
                         .borrow_mut()
                         .handle_compositionend(compositionevent);
                     self.handle_key_reaction(cx, action, event);
-                    self.upcast::<Node>().dirty(NodeDamage::Other);
+                    self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
                 } else if event.type_() == atom!("compositionupdate") {
                     let action = self
                         .textinput
                         .borrow_mut()
                         .handle_compositionupdate(compositionevent);
                     self.handle_key_reaction(cx, action, event);
-                    self.upcast::<Node>().dirty(NodeDamage::Other);
+                    self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
                 }
                 self.maybe_update_shared_selection();
                 event.mark_as_handled();
@@ -845,8 +845,8 @@ impl VirtualMethods for HTMLTextAreaElement {
             self.handle_focus_event(event);
         }
 
-        self.validity_state(CanGc::from_cx(cx))
-            .perform_validation_and_update(ValidationFlags::all(), CanGc::from_cx(cx));
+        self.validity_state(cx)
+            .perform_validation_and_update(cx, ValidationFlags::all());
 
         if let Some(super_type) = self.super_type() {
             super_type.handle_event(cx, event);
@@ -866,12 +866,12 @@ impl FormControl for HTMLTextAreaElement {
         self.form_owner.get()
     }
 
-    fn set_form_owner(&self, form: Option<&HTMLFormElement>) {
+    fn set_form_owner(&self, _cx: &mut JSContext, form: Option<&HTMLFormElement>) {
         self.form_owner.set(form);
     }
 
-    fn to_element(&self) -> &Element {
-        self.upcast::<Element>()
+    fn to_html_element(&self) -> &HTMLElement {
+        self.upcast::<HTMLElement>()
     }
 }
 
@@ -880,9 +880,9 @@ impl Validatable for HTMLTextAreaElement {
         self.upcast()
     }
 
-    fn validity_state(&self, can_gc: CanGc) -> DomRoot<ValidityState> {
+    fn validity_state(&self, cx: &mut JSContext) -> DomRoot<ValidityState> {
         self.validity_state
-            .or_init(|| ValidityState::new(&self.owner_window(), self.upcast(), can_gc))
+            .or_init(|| ValidityState::new(cx, &self.owner_window(), self.upcast()))
     }
 
     fn is_instance_validatable(&self) -> bool {
@@ -896,13 +896,13 @@ impl Validatable for HTMLTextAreaElement {
 
     fn perform_validation(
         &self,
+        _cx: &mut JSContext,
         validate_flags: ValidationFlags,
-        _can_gc: CanGc,
     ) -> ValidationFlags {
         let mut failed_flags = ValidationFlags::empty();
 
         let textinput = self.textinput.borrow();
-        let Utf16CodeUnitLength(value_len) = textinput.len_utf16();
+        let Utf16CodeUnits(value_len) = textinput.len_utf16();
         let last_edit_by_user = !textinput.was_last_change_by_set_content();
         let value_dirty = self.value_dirty.get();
 

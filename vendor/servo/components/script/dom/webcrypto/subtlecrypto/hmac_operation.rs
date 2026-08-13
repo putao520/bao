@@ -5,8 +5,8 @@
 use aws_lc_rs::constant_time::verify_slices_are_equal;
 use aws_lc_rs::hmac;
 use js::context::JSContext;
-use rand::TryRngCore;
-use rand::rngs::OsRng;
+use rand::TryRng;
+use rand::rngs::SysRng;
 use script_bindings::codegen::GenericBindings::CryptoKeyBinding::CryptoKeyMethods;
 use script_bindings::domstring::DOMString;
 use zeroize::Zeroizing;
@@ -15,7 +15,7 @@ use crate::dom::bindings::codegen::Bindings::CryptoKeyBinding::{KeyType, KeyUsag
 use crate::dom::bindings::codegen::Bindings::SubtleCryptoBinding::{JsonWebKey, KeyFormat};
 use crate::dom::bindings::error::Error;
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::cryptokey::{CryptoKey, Handle};
+use crate::dom::cryptokey::{CryptoKey, Handle, KeyUsageVecHelper};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::subtlecrypto::{
     CryptoAlgorithm, ExportedKey, JsonWebKeyExt, JwkStringField, KeyAlgorithmAndDerivatives,
@@ -128,7 +128,7 @@ pub(crate) fn generate_key(
     // Step 3. Generate a key of length length bits.
     // Step 4. If the key generation step fails, then throw an OperationError.
     let mut key_data = vec![0; length as usize];
-    if OsRng.try_fill_bytes(&mut key_data).is_err() {
+    if SysRng.try_fill_bytes(&mut key_data).is_err() {
         return Err(Error::JSFailed);
     }
 
@@ -149,14 +149,14 @@ pub(crate) fn generate_key(
     // Step 12. Set the [[type]] internal slot of key to "secret".
     // Step 13. Set the [[algorithm]] internal slot of key to algorithm.
     // Step 14. Set the [[extractable]] internal slot of key to be extractable.
-    // Step 15. Set the [[usages]] internal slot of key to be usages.
+    // Step 15. Set the [[usages]] internal slot of key to be the normalized value of usages.
     let key = CryptoKey::new(
         cx,
         global,
         KeyType::Secret,
         extractable,
         KeyAlgorithmAndDerivatives::HmacKeyAlgorithm(algorithm),
-        usages,
+        usages.normalized_value(),
         Handle::Hmac(key_data.into()),
     );
 
@@ -356,7 +356,7 @@ pub(crate) fn import_key(
         KeyType::Secret,
         extractable,
         KeyAlgorithmAndDerivatives::HmacKeyAlgorithm(algorithm),
-        usages,
+        usages.normalized_value(),
         Handle::Hmac(truncated_data.into()),
     );
 
@@ -424,7 +424,7 @@ pub(crate) fn export_key(format: KeyFormat, key: &CryptoKey) -> Result<ExportedK
             jwk.alg = Some(DOMString::from(hash_algorithm));
 
             // Step 4.7. Set the key_ops attribute of jwk to the usages attribute of key.
-            jwk.set_key_ops(key.usages());
+            jwk.set_key_ops(&key.usages());
 
             // Step 4.8. Set the ext attribute of jwk to the [[extractable]] internal slot of key.
             jwk.ext = Some(key.Extractable());

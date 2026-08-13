@@ -3,11 +3,13 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use rustc_hash::FxHashMap;
 use script_bindings::match_domstring_ascii;
-use script_bindings::reflector::{Reflector, reflect_dom_object, reflect_dom_object_with_proto};
+use script_bindings::reflector::{
+    Reflector, reflect_dom_object_with_cx, reflect_dom_object_with_proto,
+};
 use servo_base::id::{DomExceptionId, DomExceptionIndex};
 use servo_constellation_traits::DomException;
 
@@ -20,7 +22,6 @@ use crate::dom::bindings::serializable::Serializable;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::globalscope::GlobalScope;
-use crate::script_runtime::CanGc;
 
 #[repr(u16)]
 #[expect(clippy::enum_variant_names)]
@@ -177,31 +178,31 @@ impl DOMException {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         code: DOMErrorName,
-        can_gc: CanGc,
     ) -> DomRoot<DOMException> {
         let (message, name) = DOMException::get_error_data_by_code(code);
 
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(DOMException::new_inherited(message, name)),
             global,
-            can_gc,
+            cx,
         )
     }
 
     pub(crate) fn new_with_custom_message(
+        cx: &mut JSContext,
         global: &GlobalScope,
         code: DOMErrorName,
         message: String,
-        can_gc: CanGc,
     ) -> DomRoot<DOMException> {
         let (_, name) = DOMException::get_error_data_by_code(code);
 
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(DOMException::new_inherited(DOMString::from(message), name)),
             global,
-            can_gc,
+            cx,
         )
     }
 
@@ -214,17 +215,17 @@ impl DOMException {
 impl DOMExceptionMethods<crate::DomTypeHolder> for DOMException {
     /// <https://webidl.spec.whatwg.org/#dom-domexception-domexception>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         message: DOMString,
         name: DOMString,
     ) -> Result<DomRoot<DOMException>, Error> {
         Ok(reflect_dom_object_with_proto(
+            cx,
             Box::new(DOMException::new_inherited(message, name)),
             global,
             proto,
-            can_gc,
         ))
     }
 
@@ -252,7 +253,7 @@ impl Serializable for DOMException {
     type Data = DomException;
 
     /// <https://webidl.spec.whatwg.org/#idl-DOMException>
-    fn serialize(&self) -> Result<(DomExceptionId, Self::Data), ()> {
+    fn serialize(&self, _no_gc: &NoGC) -> Result<(DomExceptionId, Self::Data), ()> {
         let serialized = DomException {
             message: self.message.to_string(),
             name: self.name.to_string(),
@@ -270,10 +271,10 @@ impl Serializable for DOMException {
         Self: Sized,
     {
         Ok(Self::new_with_custom_message(
+            cx,
             owner,
             DOMErrorName::from(&DOMString::from(serialized.name)).ok_or(())?,
             serialized.message,
-            CanGc::from_cx(cx),
         ))
     }
 

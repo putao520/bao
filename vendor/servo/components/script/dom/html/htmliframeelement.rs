@@ -27,7 +27,6 @@ use servo_url::ServoUrl;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
 use stylo_atoms::Atom;
 
-use crate::document_loader::{LoadBlocker, LoadType};
 use crate::dom::bindings::codegen::Bindings::HTMLIFrameElementBinding::HTMLIFrameElementMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::Window_Binding::WindowMethods;
 use crate::dom::bindings::codegen::UnionTypes::TrustedHTMLOrString;
@@ -44,17 +43,18 @@ use crate::dom::element::{AttributeMutation, Element, reflect_referrer_policy_at
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmlelement::HTMLElement;
+use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{BindContext, Node, NodeDamage, NodeTraits, UnbindContext};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::dom::trustedtypes::trustedhtml::TrustedHTML;
-use crate::dom::virtualmethods::VirtualMethods;
 use crate::dom::windowproxy::WindowProxy;
+use crate::event_loop::document_loader::{LoadBlocker, LoadType};
+use crate::event_loop::script_thread::{ScriptThread, with_script_thread};
+use crate::event_loop::script_window_proxies::ScriptWindowProxies;
 use crate::navigation::{
     determine_creation_sandboxing_flags, determine_iframe_element_referrer_policy,
 };
 use crate::network_listener::ResourceTimingListener;
-use crate::script_thread::{ScriptThread, with_script_thread};
-use crate::script_window_proxies::ScriptWindowProxies;
 
 #[derive(PartialEq)]
 enum PipelineType {
@@ -290,7 +290,7 @@ impl HTMLIFrameElement {
                     load_data: load_data.clone(),
                     old_pipeline_id,
                     viewport_details,
-                    theme: window.theme(),
+                    embedder_theme: window.embedder_theme(),
                 };
                 window
                     .as_global_scope()
@@ -307,7 +307,7 @@ impl HTMLIFrameElement {
                     load_data,
                     viewport_details,
                     user_content_manager_id: None,
-                    theme: window.theme(),
+                    embedder_theme: window.embedder_theme(),
                     target_snapshot_params,
                 };
 
@@ -322,7 +322,7 @@ impl HTMLIFrameElement {
                     load_data,
                     old_pipeline_id,
                     viewport_details,
-                    theme: window.theme(),
+                    embedder_theme: window.embedder_theme(),
                 };
                 window
                     .as_global_scope()
@@ -534,7 +534,7 @@ impl HTMLIFrameElement {
             (None, document.about_base_url())
         };
 
-        let propagate_encoding_to_child_document = url.origin().same_origin(window.origin());
+        let propagate_encoding_to_child_document = url.origin().same_origin(&window.origin());
         let mut load_data = LoadData::new(
             LoadOrigin::Script(document.origin().snapshot()),
             url,
@@ -599,6 +599,7 @@ impl HTMLIFrameElement {
             document.has_trustworthy_ancestor_or_current_origin(),
             self.sandboxing_flag_set(),
         );
+        load_data.is_initial_about_blank = true;
         load_data.destination = Destination::IFrame;
         load_data.policy_container = Some(window.as_global_scope().policy_container());
 
@@ -659,7 +660,7 @@ impl HTMLIFrameElement {
             LoadBlocker::terminate(blocker, cx);
         }
 
-        self.upcast::<Node>().dirty(NodeDamage::Other);
+        self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
         true
     }
 
@@ -805,9 +806,22 @@ impl HTMLIFrameElement {
     pub(crate) fn run_iframe_load_event_steps(&self, cx: &mut JSContext) {
         // TODO 1. Assert: element's content navigable is not null.
 
-        // TODO 2-4 Mark resource timing.
+        // Step 2. Let childDocument be element's content navigable's active document.
+        let child_document = self.GetContentDocument();
 
-        // TODO 5 Set childDocument's iframe load in progress flag.
+        // Step 3. If childDocument has its mute iframe load flag set, then return.
+        // Step 5. Set childDocument's iframe load in progress flag.
+        if let Some(document) = child_document {
+            if document.mute_iframe_load_flag() {
+                let blocker = &self.load_blocker;
+                LoadBlocker::terminate(blocker, cx);
+                return;
+            }
+            document.set_iframe_load_in_progress(true);
+        }
+
+        // Step 4. If element's pending resource-timing start time is not null, then:
+        // TODO
 
         // Step 6. Fire an event named load at element.
         self.upcast::<EventTarget>().fire_event(cx, atom!("load"));
@@ -815,7 +829,10 @@ impl HTMLIFrameElement {
         let blocker = &self.load_blocker;
         LoadBlocker::terminate(blocker, cx);
 
-        // TODO Step 7 - unset child document `mute iframe load` flag
+        // Step 7. Unset childDocument's iframe load in progress flag
+        if let Some(child_document) = self.GetContentDocument() {
+            child_document.set_iframe_load_in_progress(false);
+        }
     }
 
     /// Parse the `sandbox` attribute value given the [`Attr`]. This sets the `sandboxing_flag_set`
@@ -941,7 +958,7 @@ impl HTMLIFrameElementMethods<crate::DomTypeHolder> for HTMLIFrameElement {
     make_url_getter!(Src, "src");
 
     // https://html.spec.whatwg.org/multipage/#dom-iframe-src
-    make_url_setter!(cx, SetSrc, "src");
+    make_url_setter!(SetSrc, "src");
 
     /// <https://html.spec.whatwg.org/multipage/#dom-iframe-srcdoc>
     fn Srcdoc(&self) -> TrustedHTMLOrString {
@@ -1034,12 +1051,12 @@ impl HTMLIFrameElementMethods<crate::DomTypeHolder> for HTMLIFrameElement {
     }
 
     // https://html.spec.whatwg.org/multipage/#attr-iframe-referrerpolicy
-    make_setter!(cx, SetReferrerPolicy, "referrerpolicy");
+    make_setter!(SetReferrerPolicy, "referrerpolicy");
 
     // https://html.spec.whatwg.org/multipage/#attr-iframe-allowfullscreen
     make_bool_getter!(AllowFullscreen, "allowfullscreen");
     // https://html.spec.whatwg.org/multipage/#attr-iframe-allowfullscreen
-    make_bool_setter!(cx, SetAllowFullscreen, "allowfullscreen");
+    make_bool_setter!(SetAllowFullscreen, "allowfullscreen");
 
     // <https://html.spec.whatwg.org/multipage/#dom-dim-width>
     make_getter!(Width, "width");
@@ -1054,12 +1071,12 @@ impl HTMLIFrameElementMethods<crate::DomTypeHolder> for HTMLIFrameElement {
     // https://html.spec.whatwg.org/multipage/#other-elements,-attributes-and-apis:attr-iframe-frameborder
     make_getter!(FrameBorder, "frameborder");
     // https://html.spec.whatwg.org/multipage/#other-elements,-attributes-and-apis:attr-iframe-frameborder
-    make_setter!(cx, SetFrameBorder, "frameborder");
+    make_setter!(SetFrameBorder, "frameborder");
 
     // https://html.spec.whatwg.org/multipage/#dom-iframe-name
     // A child browsing context checks the name of its iframe only at the time
     // it is created; subsequent name sets have no special effect.
-    make_atomic_setter!(cx, SetName, "name");
+    make_atomic_setter!(SetName, "name");
 
     // https://html.spec.whatwg.org/multipage/#dom-iframe-name
     // This is specified as reflecting the name content attribute of the
@@ -1079,13 +1096,13 @@ impl HTMLIFrameElementMethods<crate::DomTypeHolder> for HTMLIFrameElement {
     );
 
     // https://html.spec.whatwg.org/multipage/#attr-iframe-loading
-    make_setter!(cx, SetLoading, "loading");
+    make_setter!(SetLoading, "loading");
 
     // https://html.spec.whatwg.org/multipage/#dom-iframe-longdesc
     make_url_getter!(LongDesc, "longdesc");
 
     // https://html.spec.whatwg.org/multipage/#dom-iframe-longdesc
-    make_url_setter!(cx, SetLongDesc, "longdesc");
+    make_url_setter!(SetLongDesc, "longdesc");
 }
 
 impl VirtualMethods for HTMLIFrameElement {
@@ -1208,32 +1225,36 @@ impl VirtualMethods for HTMLIFrameElement {
 
         debug!("<iframe> running post connection steps");
 
-        // Step 1. Create a new child navigable for insertedNode.
-        self.create_nested_browsing_context(cx);
-
-        // Step 2: If insertedNode has a sandbox attribute, then parse the sandboxing directive
+        // Step 1: If insertedNode has a sandbox attribute, then parse the sandboxing directive
         // given the attribute's value and insertedNode's iframe sandboxing flag set.
         self.parse_sandbox_attribute();
+
+        // Step 2. Create a new child navigable for insertedNode.
+        self.create_nested_browsing_context(cx);
 
         // Step 3. Process the iframe attributes for insertedNode, with initialInsertion set to true.
         self.process_the_iframe_attributes(ProcessingMode::FirstTime, cx);
     }
 
     fn bind_to_tree(&self, cx: &mut JSContext, context: &BindContext) {
-        if let Some(s) = self.super_type() {
-            s.bind_to_tree(cx, context);
+        if let Some(super_type) = self.super_type() {
+            super_type.bind_to_tree(cx, context);
         }
-        self.owner_document().invalidate_iframes_collection();
+
+        self.owner_document().iframes_mut().add(self);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#the-iframe-element:html-element-removing-steps>
     fn unbind_from_tree(&self, cx: &mut JSContext, context: &UnbindContext) {
-        self.super_type().unwrap().unbind_from_tree(cx, context);
+        if let Some(super_type) = self.super_type() {
+            super_type.unbind_from_tree(cx, context);
+        }
 
-        // The iframe HTML element removing steps, given removedNode, are to destroy a child navigable given removedNode
+        // The iframe HTML element removing steps, given removedNode, are to destroy a child
+        // navigable given removedNode
         self.destroy_child_navigable(cx);
 
-        self.owner_document().invalidate_iframes_collection();
+        self.owner_document().iframes_mut().remove(self);
     }
 }
 

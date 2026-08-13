@@ -11,7 +11,8 @@ use crossbeam_channel::{Receiver, Sender, after};
 use devtools_traits::DevtoolScriptControlMsg;
 use dom_struct::dom_struct;
 use fonts::FontContext;
-use js::jsapi::{JS_AddInterruptCallback, JSContext};
+use js::context::{JSContext, RawJSContext};
+use js::jsapi::JS_AddInterruptCallback;
 use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use net_traits::CustomResponseMediator;
@@ -20,13 +21,14 @@ use net_traits::request::{
     CredentialsMode, Destination, InsecureRequestsPolicy, ParserMetadata, Referrer, RequestBuilder,
 };
 use rand::random;
+use script_bindings::interfaces::HasOrigin;
 use servo_base::generic_channel::{GenericReceiver, GenericSend, GenericSender, RoutedReceiver};
 use servo_base::id::{PipelineId, ServiceWorkerId};
 use servo_config::pref;
 use servo_constellation_traits::{
     ScopeThings, ServiceWorkerMsg, WorkerGlobalScopeInit, WorkerScriptLoadOrigin,
 };
-use servo_url::ServoUrl;
+use servo_url::{MutableOrigin, ServoUrl};
 use style::thread_state::{self, ThreadState};
 
 use crate::dom::abstractworker::WorkerScriptMsg;
@@ -35,6 +37,7 @@ use crate::dom::bindings::codegen::Bindings::ClientBinding::FrameType;
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerGlobalScopeBinding;
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerGlobalScopeBinding::ServiceWorkerGlobalScopeMethods;
 use crate::dom::bindings::codegen::Bindings::WorkerBinding::WorkerType;
+use crate::dom::bindings::codegen::UnionTypes::ClientOrServiceWorkerOrMessagePort;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
@@ -48,22 +51,20 @@ use crate::dom::dedicatedworkerglobalscope::AutoWorkerReset;
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::extendableevent::ExtendableEvent;
-use crate::dom::extendablemessageevent::{ExtendableMessageEvent, MessageSource};
-use crate::dom::global_scope_script_execution::{ErrorReporting, RethrowErrors};
+use crate::dom::extendablemessageevent::ExtendableMessageEvent;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::script_execution::{ErrorReporting, RethrowErrors};
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
 use crate::dom::worker::TrustedWorkerAddress;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::fetch::{CspViolationsProcessor, load_whole_resource};
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopSender};
-use crate::realms::{AlreadyInRealm, InRealm, enter_auto_realm};
-use crate::script_module::ScriptFetchOptions;
-use crate::script_runtime::{
-    CanGc, IntroductionType, JSContext as SafeJSContext, Runtime, ThreadSafeJSContext,
-};
-use crate::task_queue::{QueuedTask, QueuedTaskConversion, TaskQueue};
-use crate::task_source::TaskSourceName;
+use crate::modules::script_module::ScriptFetchOptions;
+use crate::realms::enter_auto_realm;
+use crate::script_runtime::{IntroductionType, Runtime, ThreadSafeJSContext};
+use crate::tasks::task_queue::{QueuedTask, QueuedTaskConversion, TaskQueue};
+use crate::tasks::task_source::TaskSourceName;
 
 /// Messages used to control service worker event loop
 pub(crate) enum ServiceWorkerScriptMsg {
@@ -155,7 +156,7 @@ pub(crate) enum MixedMessage {
 struct ServiceWorkerCspProcessor {}
 
 impl CspViolationsProcessor for ServiceWorkerCspProcessor {
-    fn process_csp_violations(&self, _violations: Vec<Violation>) {}
+    fn process_csp_violations(&self, _cx: &mut JSContext, _violations: Vec<Violation>) {}
 }
 
 #[dom_struct]
@@ -199,7 +200,7 @@ impl WorkerEventLoopMethods for ServiceWorkerGlobalScope {
         &self.task_queue
     }
 
-    fn handle_event(&self, event: MixedMessage, cx: &mut js::context::JSContext) -> bool {
+    fn handle_event(&self, event: MixedMessage, cx: &mut JSContext) -> bool {
         self.handle_mixed_message(event, cx)
     }
 
@@ -261,7 +262,8 @@ impl ServiceWorkerGlobalScope {
                 Arc::new(IdentityHub::default()),
                 // FIXME: investigate what environment this value comes from for service workers.
                 InsecureRequestsPolicy::DoNotUpgrade,
-                Some(font_context),
+                font_context,
+                Some(ScriptEventLoopSender::ServiceWorker(own_sender.clone())),
             ),
             task_queue: TaskQueue::new(receiver, own_sender.clone()),
             own_sender,
@@ -289,7 +291,7 @@ impl ServiceWorkerGlobalScope {
         font_context: Arc<FontContext>,
         debugger_global: &DebuggerGlobalScope,
         worker_id: ServiceWorkerId,
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
     ) -> DomRoot<ServiceWorkerGlobalScope> {
         let scope = Box::new(ServiceWorkerGlobalScope::new_inherited(
             init,
@@ -306,7 +308,11 @@ impl ServiceWorkerGlobalScope {
             font_context,
             worker_id,
         ));
-        let scope = ServiceWorkerGlobalScopeBinding::Wrap::<crate::DomTypeHolder>(cx, scope);
+        let scope = ServiceWorkerGlobalScopeBinding::Wrap::<crate::DomTypeHolder>(
+            cx,
+            &scope.origin(),
+            scope,
+        );
         scope
             .upcast::<WorkerGlobalScope>()
             .init_debugger_global(debugger_global, cx);
@@ -384,6 +390,7 @@ impl ServiceWorkerGlobalScope {
                 let devtools_mpsc_port = devtools_receiver.route_preserving_errors();
 
                 let resource_threads_sender = init.resource_threads.sender();
+                let devtools_enabled = init.to_devtools_sender.is_some();
                 let global = ServiceWorkerGlobalScope::new(
                     init,
                     script_url.clone(),
@@ -405,12 +412,14 @@ impl ServiceWorkerGlobalScope {
                 let worker_scope = global.upcast::<WorkerGlobalScope>();
                 let global_scope = global.upcast::<GlobalScope>();
 
-                debugger_global.fire_add_debuggee(
-                    cx,
-                    global_scope,
-                    pipeline_id,
-                    Some(worker_scope.worker_id()),
-                );
+                if devtools_enabled {
+                    debugger_global.fire_add_debuggee(
+                        cx,
+                        global_scope,
+                        pipeline_id,
+                        Some(worker_scope.worker_id()),
+                    );
+                }
 
                 let referrer = referrer_url
                     .map(Referrer::ReferrerUrl)
@@ -427,7 +436,6 @@ impl ServiceWorkerGlobalScope {
                 .use_url_credentials(true)
                 .pipeline_id(Some(pipeline_id))
                 .referrer_policy(referrer_policy)
-                .insecure_requests_policy(worker_scope.insecure_requests_policy())
                 // TODO: Use policy container from ScopeThings
                 .policy_container(global_scope.policy_container())
                 .origin(origin);
@@ -495,7 +503,7 @@ impl ServiceWorkerGlobalScope {
             .expect("Thread spawning failed")
     }
 
-    fn handle_mixed_message(&self, msg: MixedMessage, cx: &mut js::context::JSContext) -> bool {
+    fn handle_mixed_message(&self, msg: MixedMessage, cx: &mut JSContext) -> bool {
         match msg {
             MixedMessage::Devtools(msg) => self
                 .upcast::<WorkerGlobalScope>()
@@ -516,7 +524,7 @@ impl ServiceWorkerGlobalScope {
         false
     }
 
-    fn handle_script_event(&self, msg: ServiceWorkerScriptMsg, cx: &mut js::context::JSContext) {
+    fn handle_script_event(&self, msg: ServiceWorkerScriptMsg, cx: &mut JSContext) {
         use self::ServiceWorkerScriptMsg::*;
 
         match msg {
@@ -529,12 +537,12 @@ impl ServiceWorkerGlobalScope {
 
                 rooted!(&in(cx) let mut message = UndefinedValue());
                 let client = Client::new(
+                    cx,
                     scope.upcast(),
                     self.swmanager_sender.clone(),
                     self.scope_url.clone(),
                     FrameType::None,
                     self.worker_id,
-                    CanGc::from_cx(cx),
                 );
                 if let Ok(ports) =
                     structuredclone::read(cx, scope.upcast(), *msg.data, message.handle_mut())
@@ -544,7 +552,7 @@ impl ServiceWorkerGlobalScope {
                         target,
                         scope.upcast(),
                         message.handle(),
-                        Some(MessageSource::Client(client)),
+                        Some(&ClientOrServiceWorkerOrMessagePort::Client(client)),
                         ports,
                     );
                 } else {
@@ -570,16 +578,19 @@ impl ServiceWorkerGlobalScope {
     }
 
     fn dispatch_activate(&self, cx: &mut CurrentRealm) {
-        let event = ExtendableEvent::new(self, atom!("activate"), false, false, CanGc::from_cx(cx));
+        let event = ExtendableEvent::new(cx, self, atom!("activate"), false, false);
         let event = (*event).upcast::<Event>();
         event.dispatch(cx, self.upcast(), false);
     }
 }
 
 #[expect(unsafe_code)]
-unsafe extern "C" fn interrupt_callback(cx: *mut JSContext) -> bool {
-    let in_realm_proof = AlreadyInRealm::assert_for_cx(unsafe { SafeJSContext::from_ptr(cx) });
-    let global = unsafe { GlobalScope::from_context(cx, InRealm::Already(&in_realm_proof)) };
+unsafe extern "C" fn interrupt_callback(cx: *mut RawJSContext) -> bool {
+    // SAFETY: it is safe to construct a JSContext from engine hook.
+    let mut cx = unsafe { JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
+    let mut realm = CurrentRealm::assert(&mut cx);
+
+    let global = GlobalScope::from_current_realm(&mut realm);
     let worker =
         DomRoot::downcast::<WorkerGlobalScope>(global).expect("global is not a worker scope");
     assert!(worker.is::<ServiceWorkerGlobalScope>());
@@ -594,4 +605,10 @@ impl ServiceWorkerGlobalScopeMethods<crate::DomTypeHolder> for ServiceWorkerGlob
 
     // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-onmessageerror
     event_handler!(messageerror, GetOnmessageerror, SetOnmessageerror);
+}
+
+impl HasOrigin for ServiceWorkerGlobalScope {
+    fn origin(&self) -> MutableOrigin {
+        self.upcast::<WorkerGlobalScope>().origin()
+    }
 }

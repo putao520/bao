@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
@@ -15,7 +16,6 @@ use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::media::mediasession::MediaSession;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct MediaMetadata {
@@ -38,24 +38,24 @@ impl MediaMetadata {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &Window,
         init: &MediaMetadataInit,
-        can_gc: CanGc,
     ) -> DomRoot<MediaMetadata> {
-        Self::new_with_proto(global, None, init, can_gc)
+        Self::new_with_proto(cx, global, None, init)
     }
 
     fn new_with_proto(
+        cx: &mut JSContext,
         global: &Window,
         proto: Option<HandleObject>,
         init: &MediaMetadataInit,
-        can_gc: CanGc,
     ) -> DomRoot<MediaMetadata> {
         reflect_dom_object_with_proto(
+            cx,
             Box::new(MediaMetadata::new_inherited(init)),
             global,
             proto,
-            can_gc,
         )
     }
 
@@ -71,12 +71,12 @@ impl MediaMetadata {
 impl MediaMetadataMethods<crate::DomTypeHolder> for MediaMetadata {
     /// <https://w3c.github.io/mediasession/#dom-mediametadata-mediametadata>
     fn Constructor(
+        cx: &mut JSContext,
         window: &Window,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         init: &MediaMetadataInit,
     ) -> Fallible<DomRoot<MediaMetadata>> {
-        Ok(MediaMetadata::new_with_proto(window, proto, init, can_gc))
+        Ok(MediaMetadata::new_with_proto(cx, window, proto, init))
     }
 
     /// <https://w3c.github.io/mediasession/#dom-mediametadata-title>

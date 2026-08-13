@@ -19,8 +19,8 @@ use crate::dom::bindings::codegen::Bindings::CSSLayerStatementRuleBinding::CSSLa
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::utils::to_frozen_array;
+use crate::dom::types::CSSGroupingRule;
 use crate::dom::window::Window;
-use crate::script_runtime::{CanGc, JSContext as SafeJSContext};
 
 #[dom_struct]
 pub(crate) struct CSSLayerStatementRule {
@@ -32,11 +32,12 @@ pub(crate) struct CSSLayerStatementRule {
 
 impl CSSLayerStatementRule {
     pub(crate) fn new_inherited(
+        parent_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         layerstatementrule: Arc<LayerStatementRule>,
     ) -> CSSLayerStatementRule {
         CSSLayerStatementRule {
-            css_rule: CSSRule::new_inherited(parent_stylesheet),
+            css_rule: CSSRule::new_inherited(parent_rule, parent_stylesheet),
             layer_statement_rule: RefCell::new(layerstatementrule),
         }
     }
@@ -44,11 +45,13 @@ impl CSSLayerStatementRule {
     pub(crate) fn new(
         cx: &mut JSContext,
         window: &Window,
+        parent_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         layerstatementrule: Arc<LayerStatementRule>,
     ) -> DomRoot<CSSLayerStatementRule> {
         reflect_dom_object_with_cx(
             Box::new(CSSLayerStatementRule::new_inherited(
+                parent_rule,
                 parent_stylesheet,
                 layerstatementrule,
             )),
@@ -78,7 +81,7 @@ impl SpecificCSSRule for CSSLayerStatementRule {
 
 impl CSSLayerStatementRuleMethods<crate::DomTypeHolder> for CSSLayerStatementRule {
     /// <https://drafts.csswg.org/css-cascade-5/#dom-csslayerstatementrule-namelist>
-    fn NameList(&self, cx: SafeJSContext, can_gc: CanGc, retval: MutableHandleValue) {
+    fn NameList(&self, cx: &mut JSContext, retval: MutableHandleValue) {
         let names: Vec<DOMString> = self
             .layer_statement_rule
             .borrow()
@@ -86,6 +89,6 @@ impl CSSLayerStatementRuleMethods<crate::DomTypeHolder> for CSSLayerStatementRul
             .iter()
             .map(|name| name.to_css_string().into())
             .collect();
-        to_frozen_array(names.as_slice(), cx, retval, can_gc)
+        to_frozen_array(cx, names.as_slice(), retval)
     }
 }

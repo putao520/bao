@@ -3,8 +3,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::default::Default;
+use std::rc::Rc;
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
 use js::rust::HandleObject;
 use net_traits::CoreResourceMsg;
 use net_traits::blob_url_store::parse_blob_url;
@@ -12,7 +14,7 @@ use net_traits::filemanager_thread::FileManagerThreadMsg;
 use profile_traits::generic_channel;
 use script_bindings::cell::DomRefCell;
 use script_bindings::cformat;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
+use script_bindings::reflector::{Reflector, reflect_weak_referenceable_dom_object_with_proto};
 use servo_base::generic_channel::GenericSend;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use url::Url;
@@ -27,7 +29,6 @@ use crate::dom::blob::Blob;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::url::urlhelper::UrlHelper;
 use crate::dom::url::urlsearchparams::URLSearchParams;
-use crate::script_runtime::CanGc;
 
 /// <https://url.spec.whatwg.org/#url>
 #[dom_struct]
@@ -53,12 +54,17 @@ impl URL {
     }
 
     fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         url: ServoUrl,
-        can_gc: CanGc,
     ) -> DomRoot<URL> {
-        reflect_dom_object_with_proto(Box::new(URL::new_inherited(url)), global, proto, can_gc)
+        reflect_weak_referenceable_dom_object_with_proto(
+            cx,
+            Rc::new(URL::new_inherited(url)),
+            global,
+            proto,
+        )
     }
 
     pub(crate) fn query_pairs(&self) -> Vec<(String, String)> {
@@ -115,9 +121,9 @@ impl URL {
 impl URLMethods<crate::DomTypeHolder> for URL {
     /// <https://url.spec.whatwg.org/#constructors>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         url: USVString,
         base: Option<USVString>,
     ) -> Fallible<DomRoot<URL>> {
@@ -152,7 +158,7 @@ impl URLMethods<crate::DomTypeHolder> for URL {
         // Step 7. Set this’s query object’s URL object to this.
 
         // Step 4. Set this’s URL to parsedURL.
-        Ok(URL::new(global, proto, parsed_url, can_gc))
+        Ok(URL::new(cx, global, proto, parsed_url))
     }
 
     /// <https://url.spec.whatwg.org/#dom-url-canparse>
@@ -167,10 +173,10 @@ impl URLMethods<crate::DomTypeHolder> for URL {
 
     /// <https://url.spec.whatwg.org/#dom-url-parse>
     fn Parse(
+        cx: &mut JSContext,
         global: &GlobalScope,
         url: USVString,
         base: Option<USVString>,
-        can_gc: CanGc,
     ) -> Option<DomRoot<URL>> {
         // Step 1: Let parsedURL be the result of running the API URL parser on url with base,
         // if given.
@@ -182,23 +188,18 @@ impl URLMethods<crate::DomTypeHolder> for URL {
         // Step 5: Return url.
         // Regarding initialization, the same condition should apply here as stated in the comments
         // in Self::Constructor above - construct it on-demand inside `URL::SearchParams`.
-        Some(URL::new(
-            global,
-            None,
-            ServoUrl::from_url(parsed_url),
-            can_gc,
-        ))
+        Some(URL::new(cx, global, None, ServoUrl::from_url(parsed_url)))
     }
 
     /// <https://w3c.github.io/FileAPI/#dfn-createObjectURL>
     fn CreateObjectURL(global: &GlobalScope, blob: &Blob) -> DOMString {
         // XXX: Second field is an unicode-serialized Origin, it is a temporary workaround
         //      and should not be trusted. See issue https://github.com/servo/servo/issues/11722
-        let origin = global.origin().immutable();
+        let origin = global.origin();
 
         let id = blob.get_blob_url_id();
 
-        DOMString::from(URL::unicode_serialization_blob_url(origin, &id))
+        DOMString::from(URL::unicode_serialization_blob_url(origin.immutable(), &id))
     }
 
     /// <https://w3c.github.io/FileAPI/#dfn-revokeObjectURL>
@@ -206,16 +207,15 @@ impl URLMethods<crate::DomTypeHolder> for URL {
         // If the value provided for the url argument is not a Blob URL OR
         // if the value provided for the url argument does not have an entry in the Blob URL Store,
         // this method call does nothing. User agents may display a message on the error console.
-        let origin = global.origin().immutable();
+        let origin = global.origin().immutable().clone();
 
         if let Ok(url) = ServoUrl::parse(&url.str()) &&
             url.fragment().is_none() &&
-            *origin == url.origin() &&
             let Ok((id, _)) = parse_blob_url(&url)
         {
             let resource_threads = global.resource_threads();
             let (tx, rx) = generic_channel::channel(global.time_profiler_chan().clone()).unwrap();
-            let msg = FileManagerThreadMsg::RevokeBlobURL(id, origin.clone(), tx);
+            let msg = FileManagerThreadMsg::RevokeBlobURL(id, origin, tx);
             let _ = resource_threads.send(CoreResourceMsg::ToFileManager(msg));
 
             let _ = rx.recv().unwrap();
@@ -328,9 +328,9 @@ impl URLMethods<crate::DomTypeHolder> for URL {
     }
 
     /// <https://url.spec.whatwg.org/#dom-url-searchparams>
-    fn SearchParams(&self, can_gc: CanGc) -> DomRoot<URLSearchParams> {
+    fn SearchParams(&self, cx: &mut JSContext) -> DomRoot<URLSearchParams> {
         self.search_params
-            .or_init(|| URLSearchParams::new(&self.global(), Some(self), can_gc))
+            .or_init(|| URLSearchParams::new(cx, &self.global(), Some(self)))
     }
 
     /// <https://url.spec.whatwg.org/#dom-url-username>

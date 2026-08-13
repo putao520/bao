@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::Builder;
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
+use js::realm::CurrentRealm;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::reflect_dom_object_with_proto;
@@ -31,8 +33,6 @@ use crate::dom::bindings::root::DomRoot;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::promise::Promise;
 use crate::dom::window::Window;
-use crate::realms::InRealm;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct OfflineAudioContext {
@@ -72,12 +72,12 @@ impl OfflineAudioContext {
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new(
+        cx: &mut JSContext,
         window: &Window,
         proto: Option<HandleObject>,
         channel_count: u32,
         length: u32,
         sample_rate: f32,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
         if channel_count > MAX_CHANNEL_COUNT ||
             channel_count == 0 ||
@@ -90,10 +90,10 @@ impl OfflineAudioContext {
         let context =
             OfflineAudioContext::new_inherited(channel_count, length, sample_rate, pipeline_id)?;
         Ok(reflect_dom_object_with_proto(
+            cx,
             Box::new(context),
             window,
             proto,
-            can_gc,
         ))
     }
 }
@@ -101,38 +101,31 @@ impl OfflineAudioContext {
 impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-offlineaudiocontext>
     fn Constructor(
+        cx: &mut JSContext,
         window: &Window,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         options: &OfflineAudioContextOptions,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
         OfflineAudioContext::new(
+            cx,
             window,
             proto,
             options.numberOfChannels,
             options.length,
             *options.sampleRate,
-            can_gc,
         )
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-offlineaudiocontext-numberofchannels-length-samplerate>
     fn Constructor_(
+        cx: &mut JSContext,
         window: &Window,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         number_of_channels: u32,
         length: u32,
         sample_rate: Finite<f32>,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
-        OfflineAudioContext::new(
-            window,
-            proto,
-            number_of_channels,
-            length,
-            *sample_rate,
-            can_gc,
-        )
+        OfflineAudioContext::new(cx, window, proto, number_of_channels, length, *sample_rate)
     }
 
     // https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-oncomplete
@@ -144,15 +137,15 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-startrendering>
-    fn StartRendering(&self, comp: InRealm, can_gc: CanGc) -> Rc<Promise> {
-        let promise = Promise::new_in_current_realm(comp, can_gc);
+    fn StartRendering(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
+        let promise = Promise::new_in_realm(cx);
         if self.rendering_started.get() {
-            promise.reject_error(Error::InvalidState(None), can_gc);
+            promise.reject_error(cx, Error::InvalidState(None));
             return promise;
         }
         self.rendering_started.set(true);
 
-        *self.pending_rendering_promise.borrow_mut() = Some(promise.clone());
+        *self.pending_rendering_promise.safe_borrow_mut(cx.no_gc()) = Some(promise.clone());
 
         let processed_audio = Arc::new(Mutex::new(Vec::new()));
         let processed_audio_ = processed_audio.clone();
@@ -199,17 +192,21 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                         *this.context.SampleRate(),
                         Some(processed_audio.as_slice()),
                     );
-                    (*this.pending_rendering_promise.borrow_mut())
-                        .take()
-                        .unwrap()
-                        .resolve_native(&buffer, CanGc::from_cx(cx));
+                    let promise = {
+                        (*this
+                            .pending_rendering_promise
+                            .safe_borrow_mut(cx.no_gc()))
+                            .take()
+                            .unwrap()
+                    };
+                    promise.resolve_native(cx, &buffer);
                     let global = &this.global();
                     let window = global.as_window();
-                    let event = OfflineAudioCompletionEvent::new(window,
+                    let event = OfflineAudioCompletionEvent::new(cx, window,
                                                                  atom!("complete"),
                                                                  EventBubbles::DoesNotBubble,
                                                                  EventCancelable::NotCancelable,
-                                                                 &buffer, CanGc::from_cx(cx));
+                                                                 &buffer);
                     event.upcast::<Event>().fire(cx, this.upcast());
                 }));
             })
@@ -224,8 +221,8 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
             .is_none()
         {
             promise.reject_error(
+                cx,
                 Error::Type(c"Could not start offline rendering".to_owned()),
-                can_gc,
             );
         }
 

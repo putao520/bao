@@ -25,17 +25,16 @@ use embedder_traits::{
 };
 use fonts::FontContext;
 use indexmap::IndexSet;
-use ipc_channel::ipc::{self};
 use ipc_channel::router::ROUTER;
-use js::jsapi::{
-    CurrentGlobalOrNull, GetNonCCWObjectGlobal, HandleObject, Heap, JSContext, JSObject, JSScript,
-};
+use js::context::{JSContext, NoGC};
+use js::jsapi::{GetNonCCWObjectGlobal, HandleObject, Heap, JSObject};
 use js::jsval::UndefinedValue;
 use js::panic::maybe_resume_unwind;
 use js::realm::CurrentRealm;
+use js::rust::wrappers2::{Compile1, CurrentGlobalOrNull};
 use js::rust::{
     CustomAutoRooter, CustomAutoRooterGuard, HandleValue, MutableHandleValue, ParentRuntime,
-    Runtime, get_object_class,
+    get_object_class, transform_str_to_source_text,
 };
 use js::{JSCLASS_IS_DOMJSCLASS, JSCLASS_IS_GLOBAL};
 use net_traits::blob_url_store::BlobBuf;
@@ -43,7 +42,7 @@ use net_traits::filemanager_thread::{
     FileManagerResult, FileManagerThreadMsg, ReadFileProgress, RelativePos,
 };
 use net_traits::image_cache::ImageCache;
-use net_traits::policy_container::{PolicyContainer, RequestPolicyContainer};
+use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{
     InsecureRequestsPolicy, Origin as RequestOrigin, Referrer, RequestBuilder, RequestClient,
 };
@@ -55,6 +54,7 @@ use profile_traits::{
     time as profile_time,
 };
 use rustc_hash::{FxBuildHasher, FxHashMap};
+use script_bindings::callback::OwnerWindow;
 use script_bindings::cell::{DomRefCell, RefMut};
 use script_bindings::interfaces::GlobalScopeHelpers;
 use script_bindings::reflector::DomObject;
@@ -63,12 +63,13 @@ use servo_base::generic_channel;
 use servo_base::generic_channel::{GenericCallback, GenericSend};
 use servo_base::id::{
     BlobId, BroadcastChannelRouterId, MessagePortId, MessagePortRouterId, PipelineId,
-    ServiceWorkerId, ServiceWorkerRegistrationId, WebViewId,
+    ServiceWorkerId, ServiceWorkerRegistrationId, TEST_WEBVIEW_ID, WebViewId,
 };
 use servo_config::pref;
 use servo_constellation_traits::{
     BlobData, BlobImpl, BroadcastChannelMsg, ConstellationInterest, FileBlob, MessagePortImpl,
     MessagePortMsg, PortMessageTask, ScriptToConstellationChan, ScriptToConstellationMessage,
+    ScriptToConstellationSender,
 };
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
@@ -78,20 +79,17 @@ use uuid::Uuid;
 #[cfg(feature = "webgpu")]
 use webgpu_traits::{DeviceLostReason, WebGPUDevice};
 
-use super::bindings::codegen::Bindings::MessagePortBinding::StructuredSerializeOptions;
-#[cfg(feature = "webgpu")]
-use super::bindings::codegen::Bindings::WebGPUBinding::GPUDeviceLostReason;
-use super::bindings::trace::{HashMapTracedValues, RootedTraceableBox};
-use super::serviceworkerglobalscope::ServiceWorkerGlobalScope;
-use super::transformstream::CrossRealmTransform;
 use crate::DomTypeHolder;
 use crate::dom::bindings::codegen::Bindings::BroadcastChannelBinding::BroadcastChannelMethods;
 use crate::dom::bindings::codegen::Bindings::EventSourceBinding::EventSource_Binding::EventSourceMethods;
 use crate::dom::bindings::codegen::Bindings::FunctionBinding::Function;
+use crate::dom::bindings::codegen::Bindings::MessagePortBinding::StructuredSerializeOptions;
 use crate::dom::bindings::codegen::Bindings::NotificationBinding::NotificationPermissionCallback;
 use crate::dom::bindings::codegen::Bindings::PermissionStatusBinding::{
     PermissionName, PermissionState,
 };
+#[cfg(feature = "webgpu")]
+use crate::dom::bindings::codegen::Bindings::WebGPUBinding::GPUDeviceLostReason;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::codegen::Bindings::WorkerGlobalScopeBinding::WorkerGlobalScopeMethods;
 use crate::dom::bindings::conversions::{root_from_object, root_from_object_static};
@@ -108,19 +106,22 @@ use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::settings_stack::{entry_global, incumbent_global};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone;
-use crate::dom::bindings::trace::CustomTraceable;
+use crate::dom::bindings::trace::{CustomTraceable, HashMapTracedValues, RootedTraceableBox};
 use crate::dom::bindings::weakref::{DOMTracker, WeakRef};
 use crate::dom::blob::Blob;
-use crate::dom::broadcastchannel::BroadcastChannel;
 use crate::dom::dedicatedworkerglobalscope::{
     DedicatedWorkerControlMsg, DedicatedWorkerGlobalScope,
 };
+use crate::dom::dissimilaroriginwindow::DissimilarOriginWindow;
 use crate::dom::errorevent::ErrorEvent;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventsource::EventSource;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::file::File;
-use crate::dom::global_scope_script_execution::{ErrorReporting, compile_script, evaluate_script};
+use crate::dom::globalscope::broadcastchannel::BroadcastChannel;
+use crate::dom::globalscope::script_execution::{
+    ErrorReporting, evaluate_script, fill_compile_options,
+};
 use crate::dom::idbfactory::IDBFactory;
 use crate::dom::messageport::MessagePort;
 use crate::dom::paintworkletglobalscope::PaintWorkletGlobalScope;
@@ -129,10 +130,12 @@ use crate::dom::performance::performanceentry::EntryType;
 use crate::dom::promise::Promise;
 use crate::dom::readablestream::{CrossRealmTransformReadable, ReadableStream};
 use crate::dom::serviceworker::ServiceWorker;
+use crate::dom::serviceworkerglobalscope::ServiceWorkerGlobalScope;
 use crate::dom::serviceworkerregistration::ServiceWorkerRegistration;
 use crate::dom::sharedworkerglobalscope::SharedWorkerGlobalScope;
 use crate::dom::stream::underlyingsourcecontainer::UnderlyingSourceType;
 use crate::dom::stream::writablestream::CrossRealmTransformWritable;
+use crate::dom::transformstream::CrossRealmTransform;
 use crate::dom::types::{AbortSignal, DebuggerGlobalScope, MessageEvent};
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::gpudevice::GPUDevice;
@@ -141,18 +144,19 @@ use crate::dom::webgpu::identityhub::IdentityHub;
 use crate::dom::window::Window;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::dom::workletglobalscope::WorkletGlobalScope;
+use crate::event_loop::script_thread::{ScriptThread, with_script_thread};
 use crate::fetch::{DeferredFetchRecordId, FetchGroup, QueuedDeferredFetchRecord};
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
-use crate::microtask::Microtask;
-use crate::network_listener::{FetchResponseListener, NetworkListener};
-use crate::realms::{InRealm, enter_auto_realm};
-use crate::script_module::{
-    ImportMap, ModuleRequest, ModuleStatus, ResolvedModule, ScriptFetchOptions,
+use crate::microtask::MicrotaskRunnable;
+use crate::modules::import_map::ImportMap;
+use crate::modules::script_module::{
+    ModuleRequest, ModuleStatus, ModuleTree, ResolvedModule, ScriptFetchOptions,
 };
-use crate::script_runtime::{CanGc, JSContext as SafeJSContext, ThreadSafeJSContext};
-use crate::script_thread::{ScriptThread, with_script_thread};
-use crate::task_manager::TaskManager;
-use crate::task_source::SendableTaskSource;
+use crate::network_listener::{FetchResponseListener, NetworkListener};
+use crate::realms::enter_auto_realm;
+use crate::script_runtime::ThreadSafeJSContext;
+use crate::tasks::task_manager::TaskManager;
+use crate::tasks::task_source::SendableTaskSource;
 use crate::timers::{
     IsInterval, OneshotTimerCallback, OneshotTimerHandle, OneshotTimers, TimerCallback,
     TimerEventId, TimerSource,
@@ -164,11 +168,12 @@ pub(crate) struct AutoCloseWorker {
     /// <https://html.spec.whatwg.org/multipage/#dom-workerglobalscope-closing>
     #[conditional_malloc_size_of]
     closing: Arc<AtomicBool>,
+    #[conditional_malloc_size_of]
+    animation_frame_provider_supported: Arc<AtomicBool>,
     /// A handle to join on the worker thread.
     #[ignore_malloc_size_of = "JoinHandle"]
     join_handle: Option<JoinHandle<()>>,
-    /// A sender of control messages,
-    /// currently only used to signal shutdown.
+    /// A sender of control messages.
     #[no_trace]
     control_sender: Sender<DedicatedWorkerControlMsg>,
     /// The context to request an interrupt on the worker thread.
@@ -180,7 +185,7 @@ pub(crate) struct AutoCloseWorker {
 impl Drop for AutoCloseWorker {
     /// <https://html.spec.whatwg.org/multipage/#terminate-a-worker>
     fn drop(&mut self) {
-        // Step 1.
+        // Step 1. Set the worker's `WorkerGlobalScope` object's closing flag to true.
         self.closing.store(true, Ordering::SeqCst);
 
         if self
@@ -193,8 +198,10 @@ impl Drop for AutoCloseWorker {
 
         self.context.request_interrupt_callback();
 
-        // TODO: step 2 and 3.
-        // Step 4 is unnecessary since we don't use actual ports for dedicated workers.
+        // Step 2. If there are any tasks queued in the `WorkerGlobalScope` object's relevant agent's event loop's task queues, discard them without processing them.
+        // Step 3. Abort the script currently running in the worker.
+        // Step 4. If the worker's WorkerGlobalScope object is actually a DedicatedWorkerGlobalScope object (i.e. the worker is a dedicated worker), then empty the port message queue of the port that the worker's implicit port is entangled with.
+        // TODO Steps 2-4.
         if self
             .join_handle
             .take()
@@ -210,9 +217,6 @@ impl Drop for AutoCloseWorker {
 #[dom_struct]
 pub(crate) struct GlobalScope {
     eventtarget: EventTarget,
-
-    /// A [`TaskManager`] for this [`GlobalScope`].
-    task_manager: OnceCell<TaskManager>,
 
     /// The message-port router id for this global, if it is managing ports.
     message_port_state: DomRefCell<MessagePortState>,
@@ -244,10 +248,6 @@ pub(crate) struct GlobalScope {
     /// <https://w3c.github.io/ServiceWorker/#environment-settings-object-service-worker-object-map>
     worker_map: DomRefCell<HashMapTracedValues<ServiceWorkerId, Dom<ServiceWorker>, FxBuildHasher>>,
 
-    /// Pipeline id associated with this global.
-    #[no_trace]
-    pipeline_id: PipelineId,
-
     /// Timers (milliseconds) used by the Console API.
     console_timers: DomRefCell<HashMap<DOMString, Instant>>,
 
@@ -270,7 +270,7 @@ pub(crate) struct GlobalScope {
 
     /// A handle for communicating messages to the constellation thread.
     #[no_trace]
-    script_to_constellation_chan: ScriptToConstellationChan,
+    script_to_constellation_sender: ScriptToConstellationSender,
 
     /// A handle for communicating messages to the Embedder.
     #[no_trace]
@@ -288,14 +288,6 @@ pub(crate) struct GlobalScope {
     /// including indexeddb thread and storage_thread
     #[no_trace]
     storage_threads: StorageThreads,
-
-    /// The mechanism by which time-outs and intervals are scheduled.
-    /// <https://html.spec.whatwg.org/multipage/#timers>
-    timers: OnceCell<OneshotTimers>,
-
-    /// The origin of the globalscope
-    #[no_trace]
-    origin: MutableOrigin,
 
     /// <https://html.spec.whatwg.org/multipage/#concept-environment-creation-url>
     #[no_trace]
@@ -398,13 +390,6 @@ pub(crate) struct GlobalScope {
 
     /// <https://html.spec.whatwg.org/multipage/#resolved-module-set>
     resolved_module_set: DomRefCell<HashSet<ResolvedModule>>,
-
-    /// The [`FontContext`] for this [`GlobalScope`] if it has one. This is used for
-    /// canvas and layout, so if this [`GlobalScope`] doesn't need to use either, this
-    /// might be `None`.
-    #[conditional_malloc_size_of]
-    #[no_trace]
-    font_context: Option<Arc<FontContext>>,
 
     /// <https://fetch.spec.whatwg.org/#environment-settings-object-fetch-group>
     #[no_trace]
@@ -775,33 +760,32 @@ impl GlobalScope {
         if let Some(window) = self.downcast::<Window>() {
             return Some(window.webview_id());
         }
-        // If this is a worker only DedicatedWorkerGlobalScope will have a WebViewId, the other are
-        // ServiceWorkerGlobalScope, PaintWorklet, or DissimilarOriginWindow.
+        if let Some(worker) = self.downcast::<DedicatedWorkerGlobalScope>() {
+            return Some(worker.webview_id());
+        }
+        if let Some(worker) = self.downcast::<SharedWorkerGlobalScope>() {
+            return Some(worker.webview_id());
+        }
         // TODO: This should only return None for ServiceWorkerGlobalScope.
-        self.downcast::<DedicatedWorkerGlobalScope>()
-            .map(DedicatedWorkerGlobalScope::webview_id)
+        None
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_inherited(
-        pipeline_id: PipelineId,
         devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
         mem_profiler_chan: profile_mem::ProfilerChan,
         time_profiler_chan: profile_time::ProfilerChan,
-        script_to_constellation_chan: ScriptToConstellationChan,
+        script_to_constellation_sender: ScriptToConstellationSender,
         script_to_embedder_chan: ScriptToEmbedderChan,
         resource_threads: ResourceThreads,
         storage_threads: StorageThreads,
-        origin: MutableOrigin,
         creation_url: ServoUrl,
         top_level_creation_url: Option<ServoUrl>,
         #[cfg(feature = "webgpu")] gpu_id_hub: Arc<IdentityHub>,
         inherited_secure_context: Option<bool>,
         unminify_js: bool,
-        font_context: Option<Arc<FontContext>>,
     ) -> Self {
         Self {
-            task_manager: Default::default(),
             message_port_state: DomRefCell::new(MessagePortState::UnManaged),
             broadcast_channel_state: DomRefCell::new(BroadcastChannelState::UnManaged),
             constellation_interest_counts: RefCell::new(HashMap::new()),
@@ -810,20 +794,16 @@ impl GlobalScope {
             registration_map: DomRefCell::new(HashMapTracedValues::new_fx()),
             indexeddb: Default::default(),
             worker_map: DomRefCell::new(HashMapTracedValues::new_fx()),
-            pipeline_id,
-
             console_timers: DomRefCell::new(Default::default()),
             module_map: DomRefCell::new(Default::default()),
             devtools_chan,
             mem_profiler_chan,
             time_profiler_chan,
-            script_to_constellation_chan,
+            script_to_constellation_sender,
             script_to_embedder_chan,
             in_error_reporting_mode: Default::default(),
             resource_threads,
             storage_threads,
-            timers: OnceCell::default(),
-            origin,
             creation_url: DomRefCell::new(creation_url),
             top_level_creation_url,
             permission_state_invocation_results: Default::default(),
@@ -846,7 +826,6 @@ impl GlobalScope {
             notification_permission_request_callback_map: Default::default(),
             import_map: Default::default(),
             resolved_module_set: Default::default(),
-            font_context,
             fetch_group: Default::default(),
         }
     }
@@ -870,41 +849,55 @@ impl GlobalScope {
         false
     }
 
-    fn timers(&self) -> &OneshotTimers {
-        self.timers.get_or_init(|| OneshotTimers::new(self))
+    fn with_timers<T>(&self, f: impl FnOnce(&OneshotTimers) -> T) -> T {
+        if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
+            f(worker.timers())
+        } else if let Some(window) = self.downcast::<Window>() {
+            window.with_timers(f)
+        } else {
+            unreachable!("Unsupported global type retrieving timers")
+        }
     }
 
-    pub(crate) fn font_context(&self) -> Option<&Arc<FontContext>> {
-        self.font_context.as_ref()
+    pub(crate) fn font_context(&self) -> Arc<FontContext> {
+        if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
+            worker.font_context()
+        } else if let Some(window) = self.downcast::<Window>() {
+            window.font_context()
+        } else {
+            unreachable!("Unsupported global type retrieving font context")
+        }
     }
 
     /// <https://w3c.github.io/ServiceWorker/#get-the-service-worker-registration-object>
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn get_serviceworker_registration(
         &self,
+        cx: &mut js::context::JSContext,
         script_url: &ServoUrl,
         scope: &ServoUrl,
         registration_id: ServiceWorkerRegistrationId,
         installing_worker: Option<ServiceWorkerId>,
         _waiting_worker: Option<ServiceWorkerId>,
         _active_worker: Option<ServiceWorkerId>,
-        can_gc: CanGc,
     ) -> DomRoot<ServiceWorkerRegistration> {
         // Step 1
-        let mut registrations = self.registration_map.borrow_mut();
+        {
+            let registrations = self.registration_map.borrow_mut();
 
-        if let Some(registration) = registrations.get(&registration_id) {
-            // Step 3
-            return DomRoot::from_ref(&**registration);
+            if let Some(registration) = registrations.get(&registration_id) {
+                // Step 3
+                return DomRoot::from_ref(&**registration);
+            }
         }
 
         // Step 2.1 -> 2.5
         let new_registration =
-            ServiceWorkerRegistration::new(self, scope.clone(), registration_id, can_gc);
+            ServiceWorkerRegistration::new(cx, self, scope.clone(), registration_id);
 
         // Step 2.6
         if let Some(worker_id) = installing_worker {
-            let worker = self.get_serviceworker(script_url, scope, worker_id, can_gc);
+            let worker = self.get_serviceworker(cx, script_url, scope, worker_id);
             new_registration.set_installing(&worker);
         }
 
@@ -913,7 +906,9 @@ impl GlobalScope {
         // TODO: 2.8 (active worker)
 
         // Step 2.9
-        registrations.insert(registration_id, Dom::from_ref(&*new_registration));
+        self.registration_map
+            .borrow_mut()
+            .insert(registration_id, Dom::from_ref(&*new_registration));
 
         // Step 3
         new_registration
@@ -922,29 +917,32 @@ impl GlobalScope {
     /// <https://w3c.github.io/ServiceWorker/#get-the-service-worker-object>
     pub(crate) fn get_serviceworker(
         &self,
+        cx: &mut js::context::JSContext,
         script_url: &ServoUrl,
         scope: &ServoUrl,
         worker_id: ServiceWorkerId,
-        can_gc: CanGc,
     ) -> DomRoot<ServiceWorker> {
         // Step 1
-        let mut workers = self.worker_map.borrow_mut();
+        {
+            let workers = self.worker_map.borrow_mut();
 
-        if let Some(worker) = workers.get(&worker_id) {
-            // Step 3
-            DomRoot::from_ref(&**worker)
-        } else {
-            // Step 2.1
-            // TODO: step 2.2, worker state.
-            let new_worker =
-                ServiceWorker::new(self, script_url.clone(), scope.clone(), worker_id, can_gc);
-
-            // Step 2.3
-            workers.insert(worker_id, Dom::from_ref(&*new_worker));
-
-            // Step 3
-            new_worker
+            if let Some(worker) = workers.get(&worker_id) {
+                // Step 3
+                return DomRoot::from_ref(&**worker);
+            }
         }
+
+        // Step 2.1
+        // TODO: step 2.2, worker state.
+        let new_worker = ServiceWorker::new(cx, self, script_url.clone(), scope.clone(), worker_id);
+
+        // Step 2.3
+        self.worker_map
+            .borrow_mut()
+            .insert(worker_id, Dom::from_ref(&*new_worker));
+
+        // Step 3
+        new_worker
     }
 
     /// Complete the transfer of a message-port.
@@ -1126,7 +1124,7 @@ impl GlobalScope {
             dom_port.upcast().fire_event(cx, atom!("close"));
         }
 
-        let chan = self.script_to_constellation_chan().clone();
+        let chan = self.script_to_constellation_chan();
         let initiator_port = *initiator_port;
         self.task_manager()
             .port_message_queue()
@@ -1531,7 +1529,7 @@ impl GlobalScope {
             // Note: this is necessary, on top of entering the realm above,
             // for the call to `GlobalScope::incumbent`,
             // in `MessagePort::post_message_impl` to succeed.
-            run_a_script::<DomTypeHolder, _>(self, || {
+            run_a_script::<DomTypeHolder, _, _>(cx, self, |cx| {
                 // Let deserializeRecord be StructuredDeserializeWithTransfer(serializeWithTransferResult, targetRealm).
                 // Let newPorts be a new frozen array
                 // consisting of all MessagePort objects in deserializeRecord.[[TransferredValues]],
@@ -1710,27 +1708,22 @@ impl GlobalScope {
         let mut current_state = self.broadcast_channel_state.borrow_mut();
 
         if let BroadcastChannelState::UnManaged = &*current_state {
-            // Setup a route for IPC, for broadcasts from the constellation to our channels.
-            let (broadcast_control_sender, broadcast_control_receiver) =
-                ipc::channel().expect("ipc channel failure");
             let context = Trusted::new(self);
             let listener = BroadcastListener {
                 task_source: self.task_manager().dom_manipulation_task_source().into(),
                 context,
             };
-            servo_base::ipc_router::router().add_typed_route(
-                broadcast_control_receiver,
-                Box::new(move |message| match message {
-                    Ok(msg) => listener.handle(msg),
-                    Err(err) => warn!("Error receiving a BroadcastChannelMsg: {:?}", err),
-                }),
-            );
+            let broadcast_control_callback = GenericCallback::new(move |message| match message {
+                Ok(msg) => listener.handle(msg),
+                Err(err) => warn!("Error receiving a BroadcastChannelMsg: {:?}", err),
+            })
+            .expect("Could not generate callback");
             let router_id = BroadcastChannelRouterId::new();
             *current_state = BroadcastChannelState::Managed(router_id, HashMap::new());
             let _ = self.script_to_constellation_chan().send(
                 ScriptToConstellationMessage::NewBroadcastChannelRouter(
                     router_id,
-                    broadcast_control_sender,
+                    broadcast_control_callback,
                     self.origin().immutable().clone(),
                 ),
             );
@@ -1915,11 +1908,11 @@ impl GlobalScope {
     }
 
     fn decrement_file_ref(&self, id: Uuid) {
-        let origin = self.origin().immutable();
+        let origin = self.origin().immutable().clone();
 
         let (tx, rx) = profile_generic_channel::channel(self.time_profiler_chan().clone()).unwrap();
 
-        let msg = FileManagerThreadMsg::DecRef(id, origin.clone(), tx);
+        let msg = FileManagerThreadMsg::DecRef(id, origin, tx);
         self.send_to_file_manager(msg);
         let _ = rx.recv();
     }
@@ -2110,11 +2103,10 @@ impl GlobalScope {
         rel_pos: &RelativePos,
         parent_len: u64,
     ) -> Uuid {
-        let origin = self.origin().immutable();
+        let origin = self.origin().immutable().clone();
 
         let (tx, rx) = profile_generic_channel::channel(self.time_profiler_chan().clone()).unwrap();
-        let msg =
-            FileManagerThreadMsg::AddSlicedURLEntry(*parent_file_id, *rel_pos, tx, origin.clone());
+        let msg = FileManagerThreadMsg::AddSlicedURLEntry(*parent_file_id, *rel_pos, tx, origin);
         self.send_to_file_manager(msg);
         match rx.recv().expect("File manager thread is down.") {
             Ok(new_id) => {
@@ -2135,6 +2127,28 @@ impl GlobalScope {
         }
     }
 
+    /// Send a PromoteMemory message to register a new blob URL entry
+    /// with the file manager for the given byte data.
+    /// Return the generated UUID.
+    fn promote_memory_entry(
+        &self,
+        blob_info: &BlobInfo,
+        blob_bytes: &[u8],
+        set_valid: bool,
+    ) -> Uuid {
+        let origin = self.origin().immutable().clone();
+        let blob_buf = BlobBuf {
+            filename: None,
+            type_string: blob_info.blob_impl.type_string(),
+            size: blob_bytes.len() as u64,
+            bytes: blob_bytes.to_vec(),
+        };
+        let id = Uuid::new_v4();
+        let msg = FileManagerThreadMsg::PromoteMemory(id, blob_buf, set_valid, origin);
+        self.send_to_file_manager(msg);
+        id
+    }
+
     /// Promote non-Slice blob:
     /// 1. Memory-based: The bytes in data slice will be transferred to file manager thread.
     /// 2. File-based: If set_valid, then activate the FileID so it can serve as URL
@@ -2149,10 +2163,16 @@ impl GlobalScope {
             },
             BlobData::File(f) => {
                 if set_valid {
-                    let origin = self.origin().immutable();
+                    // File blobs with cached byte data (converted from Memory)
+                    // need a unique UUID per URL.createObjectURL call.
+                    if let Some(cached_bytes) = f.get_cache() {
+                        return self.promote_memory_entry(blob_info, &cached_bytes, true);
+                    }
+
+                    let origin = self.origin().immutable().clone();
                     let (tx, rx) = profile_ipc::channel(self.time_profiler_chan().clone()).unwrap();
 
-                    let msg = FileManagerThreadMsg::ActivateBlobURL(f.get_id(), tx, origin.clone());
+                    let msg = FileManagerThreadMsg::ActivateBlobURL(f.get_id(), tx, origin);
                     self.send_to_file_manager(msg);
 
                     match rx.recv().unwrap() {
@@ -2168,18 +2188,7 @@ impl GlobalScope {
             BlobData::Memory(bytes_in) => mem::swap(bytes_in, &mut bytes),
         };
 
-        let origin = self.origin().immutable();
-
-        let blob_buf = BlobBuf {
-            filename: None,
-            type_string: blob_info.blob_impl.type_string(),
-            size: bytes.len() as u64,
-            bytes: bytes.to_vec(),
-        };
-
-        let id = Uuid::new_v4();
-        let msg = FileManagerThreadMsg::PromoteMemory(id, blob_buf, set_valid, origin.clone());
-        self.send_to_file_manager(msg);
+        let id = self.promote_memory_entry(blob_info, &bytes, set_valid);
 
         *blob_info.blob_impl.blob_data_mut() = BlobData::File(FileBlob::new(
             id,
@@ -2231,7 +2240,7 @@ impl GlobalScope {
             task_source: self.task_manager().file_reading_task_source().into(),
         };
 
-        servo_base::ipc_router::router().add_typed_route(
+        ROUTER.add_typed_route(
             recv.to_ipc_receiver(),
             Box::new(move |msg| {
                 file_listener.handle(msg.expect("Deserialization of file listener msg failed."));
@@ -2258,7 +2267,7 @@ impl GlobalScope {
             task_source: self.task_manager().file_reading_task_source().into(),
         };
 
-        servo_base::ipc_router::router().add_typed_route(
+        ROUTER.add_typed_route(
             recv.to_ipc_receiver(),
             Box::new(move |msg| {
                 file_listener.handle(msg.expect("Deserialization of file listener msg failed."));
@@ -2269,8 +2278,8 @@ impl GlobalScope {
     fn send_msg(&self, id: Uuid) -> profile_ipc::IpcReceiver<FileManagerResult<ReadFileProgress>> {
         let resource_threads = self.resource_threads();
         let (chan, recv) = profile_ipc::channel(self.time_profiler_chan().clone()).unwrap();
-        let origin = self.origin().immutable();
-        let msg = FileManagerThreadMsg::ReadFile(chan, id, origin.clone());
+        let origin = self.origin().immutable().clone();
+        let msg = FileManagerThreadMsg::ReadFile(chan, id, origin);
         let _ = resource_threads.send(CoreResourceMsg::ToFileManager(msg));
         recv
     }
@@ -2305,6 +2314,7 @@ impl GlobalScope {
     pub(crate) fn track_worker(
         &self,
         closing: Arc<AtomicBool>,
+        animation_frame_provider_supported: Arc<AtomicBool>,
         join_handle: JoinHandle<()>,
         control_sender: Sender<DedicatedWorkerControlMsg>,
         context: ThreadSafeJSContext,
@@ -2313,10 +2323,22 @@ impl GlobalScope {
             .borrow_mut()
             .push(AutoCloseWorker {
                 closing,
+                animation_frame_provider_supported,
                 join_handle: Some(join_handle),
                 control_sender,
                 context,
             });
+    }
+
+    pub(crate) fn disable_owned_worker_animation_frame_providers(&self) {
+        for worker in &*self.list_auto_close_worker.borrow() {
+            worker
+                .animation_frame_provider_supported
+                .store(false, Ordering::SeqCst);
+            let _ = worker
+                .control_sender
+                .send(DedicatedWorkerControlMsg::AnimationFrameProviderUnsupported);
+        }
     }
 
     pub(crate) fn track_event_source(&self, event_source: &EventSource) {
@@ -2341,7 +2363,7 @@ impl GlobalScope {
     /// Returns the global scope of the realm that the given DOM object's reflector
     /// was created in.
     #[expect(unsafe_code)]
-    pub(crate) fn from_reflector<T: DomObject>(reflector: &T, _realm: InRealm) -> DomRoot<Self> {
+    pub(crate) fn from_reflector<T: DomObject>(reflector: &T) -> DomRoot<Self> {
         unsafe { GlobalScope::from_object(*reflector.reflector().get_jsobject()) }
     }
 
@@ -2353,27 +2375,13 @@ impl GlobalScope {
         unsafe { global_scope_from_global_static(global) }
     }
 
-    /// Returns the global scope for the given JSContext
-    #[expect(unsafe_code)]
-    pub(crate) unsafe fn from_context(cx: *mut JSContext, _realm: InRealm) -> DomRoot<Self> {
-        let global = unsafe { CurrentGlobalOrNull(cx) };
-        assert!(!global.is_null());
-        unsafe { global_scope_from_global(global, cx) }
-    }
-
     /// Return global scope asociated with current realm
     ///
     /// Eventually we could return Handle here as global is already rooted by realm.
     #[expect(unsafe_code)]
-    pub(crate) fn from_current_realm(realm: &'_ CurrentRealm) -> DomRoot<Self> {
-        let global = realm.global();
-        unsafe { global_scope_from_global(global.get(), realm.raw_cx_no_gc()) }
-    }
-
-    /// Returns the global scope for the given SafeJSContext
-    #[expect(unsafe_code)]
-    pub(crate) fn from_safe_context(cx: SafeJSContext, realm: InRealm) -> DomRoot<Self> {
-        unsafe { Self::from_context(*cx, realm) }
+    pub(crate) fn from_current_realm(realm: &'_ mut CurrentRealm) -> DomRoot<Self> {
+        let global = realm.global().get();
+        unsafe { global_scope_from_global(realm, global) }
     }
 
     pub(crate) fn add_uncaught_rejection(&self, rejection: HandleObject) {
@@ -2425,20 +2433,25 @@ impl GlobalScope {
         &self.consumed_rejections
     }
 
-    pub(crate) fn set_module_map(&self, request: ModuleRequest, module: ModuleStatus) {
-        self.module_map.borrow_mut().insert(request, module);
+    pub(crate) fn module_map(
+        &self,
+    ) -> &DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>> {
+        &self.module_map
     }
 
-    pub(crate) fn get_module_map_entry(&self, request: &ModuleRequest) -> Option<ModuleStatus> {
-        self.module_map.borrow().get(request).cloned()
-    }
-
-    #[expect(unsafe_code)]
-    pub(crate) fn get_cx() -> SafeJSContext {
-        let cx = Runtime::get()
-            .expect("Can't obtain context after runtime shutdown")
-            .as_ptr();
-        unsafe { SafeJSContext::from_ptr(cx) }
+    /// Return the [`ModuleTree`] for a given [`ModuleRequest`] or `None` if there is no
+    /// tree for the request or if that tree is still being fetched.
+    pub(crate) fn module_tree_for_request_if_loaded(
+        &self,
+        request: &ModuleRequest,
+    ) -> Option<Rc<ModuleTree>> {
+        self.module_map
+            .borrow()
+            .get(request)
+            .and_then(|status| match status {
+                ModuleStatus::Fetching(_) => None,
+                ModuleStatus::Loaded(module_tree) => Some(module_tree.clone()),
+            })
     }
 
     pub(crate) fn time(&self, label: DOMString) -> Result<(), ()> {
@@ -2495,8 +2508,12 @@ impl GlobalScope {
     }
 
     /// Get a sender to the constellation thread.
-    pub(crate) fn script_to_constellation_chan(&self) -> &ScriptToConstellationChan {
-        &self.script_to_constellation_chan
+    pub(crate) fn script_to_constellation_chan(&self) -> ScriptToConstellationChan {
+        ScriptToConstellationChan {
+            sender: self.script_to_constellation_sender.clone(),
+            webview_id: self.webview_id().unwrap_or(TEST_WEBVIEW_ID),
+            pipeline_id: self.pipeline_id(),
+        }
     }
 
     pub(crate) fn script_to_embedder_chan(&self) -> &ScriptToEmbedderChan {
@@ -2509,7 +2526,19 @@ impl GlobalScope {
 
     /// Get the `PipelineId` for this global scope.
     pub(crate) fn pipeline_id(&self) -> PipelineId {
-        self.pipeline_id
+        if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
+            worker.pipeline_id()
+        } else if let Some(window) = self.downcast::<Window>() {
+            window.pipeline_id()
+        } else if let Some(debugger) = self.downcast::<DebuggerGlobalScope>() {
+            debugger.pipeline_id()
+        } else if let Some(worklet) = self.downcast::<WorkletGlobalScope>() {
+            worklet.pipeline_id()
+        } else if let Some(dissimilar) = self.downcast::<DissimilarOriginWindow>() {
+            dissimilar.pipeline_id()
+        } else {
+            unreachable!("Unsupported global type for pipeline id")
+        }
     }
 
     /// Register interest in a notification category. Sends a `RegisterInterest`
@@ -2541,8 +2570,20 @@ impl GlobalScope {
     }
 
     /// Get the origin for this global scope
-    pub(crate) fn origin(&self) -> &MutableOrigin {
-        &self.origin
+    pub(crate) fn origin(&self) -> MutableOrigin {
+        if let Some(window) = self.downcast::<Window>() {
+            window.origin()
+        } else if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
+            worker.origin()
+        } else if let Some(worklet) = self.downcast::<WorkletGlobalScope>() {
+            worklet.origin()
+        } else if let Some(dissimilar_window) = self.downcast::<DissimilarOriginWindow>() {
+            dissimilar_window.origin()
+        } else if let Some(debugger) = self.downcast::<DebuggerGlobalScope>() {
+            debugger.origin()
+        } else {
+            unreachable!("Unexpected origin check against global")
+        }
     }
 
     /// Get the creation_url for this global scope
@@ -2564,6 +2605,9 @@ impl GlobalScope {
             return window.image_cache();
         }
         if let Some(worker) = self.downcast::<DedicatedWorkerGlobalScope>() {
+            return worker.image_cache();
+        }
+        if let Some(worker) = self.downcast::<SharedWorkerGlobalScope>() {
             return worker.image_cache();
         }
         if let Some(worker) = self.downcast::<PaintWorkletGlobalScope>() {
@@ -2609,20 +2653,17 @@ impl GlobalScope {
     }
 
     /// Part of <https://fetch.spec.whatwg.org/#populate-request-from-client>
-    pub(crate) fn request_client(&self) -> RequestClient {
-        // Step 1.2.2. If global is a Window object and global’s navigable is not null,
-        // then set request’s traversable for user prompts to global’s navigable’s traversable navigable.
-        let window = self.downcast::<Window>();
-        let preloaded_resources = window
-            .map(|window: &Window| window.Document().preloaded_resources().clone())
-            .unwrap_or_default();
-        let is_nested_browsing_context = window.is_some_and(|window| !window.is_top_level());
+    pub(crate) fn request_client(&self, no_gc: Option<&NoGC>) -> RequestClient {
+        if let Some(window) = self.downcast::<Window>() {
+            return window.request_client(no_gc);
+        }
         RequestClient {
-            preloaded_resources,
-            policy_container: RequestPolicyContainer::PolicyContainer(self.policy_container()),
+            preloaded_resources: Default::default(),
+            policy_container: self.policy_container(),
             origin: RequestOrigin::Origin(self.origin().immutable().clone()),
-            is_nested_browsing_context,
+            is_nested_browsing_context: false,
             insecure_requests_policy: self.insecure_requests_policy(),
+            has_trustworthy_ancestor_origin: false,
         }
     }
 
@@ -2753,32 +2794,18 @@ impl GlobalScope {
             .is_some_and(|window| window.Document().has_trustworthy_ancestor_origin())
     }
 
-    // Whether this document has a trustworthy origin or has trustowrthy ancestor navigables
-    pub(crate) fn has_trustworthy_ancestor_or_current_origin(&self) -> bool {
-        self.downcast::<Window>().is_some_and(|window| {
-            window
-                .Document()
-                .has_trustworthy_ancestor_or_current_origin()
-        })
-    }
-
     /// <https://html.spec.whatwg.org/multipage/#report-an-exception>
     pub(crate) fn report_an_exception(&self, cx: &mut js::context::JSContext, error: HandleValue) {
-        // Step 1. Let notHandled be true.
-        //
-        // Handled in `report_an_error`
-
         // Step 2. Let errorInfo be the result of extracting error information from exception.
+        let error_info = ErrorInfo::from_value(cx, error);
+
         // Step 3. Let script be a script found in an implementation-defined way, or null.
         // This should usually be the running script (most notably during run a classic script).
-        // Step 4. If script is a classic script and script's muted errors is true, then set errorInfo[error] to null,
-        // errorInfo[message] to "Script error.", errorInfo[filename] to the empty string,
-        // errorInfo[lineno] to 0, and errorInfo[colno] to 0.
-        let error_info = crate::dom::bindings::error::ErrorInfo::from_value(
-            error,
-            cx.into(),
-            CanGc::from_cx(cx),
-        );
+        // Step 4. If script is a classic script and script's muted errors is true, then set
+        // errorInfo[error] to null, errorInfo[message] to "Script error.", errorInfo[filename]
+        // to the empty string, errorInfo[lineno] to 0, and errorInfo[colno] to 0.
+        // Note: This is handled in 'run_a_classic_script'.
+
         // Step 5. If omitError is true, then set errorInfo[error] to null.
         //
         // `omitError` defaults to `false`
@@ -2813,38 +2840,37 @@ impl GlobalScope {
             }
         });
 
-        // Step 6. Early return if global is in error reporting mode,
-        if self.in_error_reporting_mode.get() {
-            return;
+        // Step 1. Let notHandled be true.
+        let mut not_handled = true;
+
+        // Step 6. If global is not in error reporting mode:
+        if !self.in_error_reporting_mode.get() {
+            // Step 6.1. Set global's in error reporting mode to true.
+            self.in_error_reporting_mode.set(true);
+
+            // Step 6.2 If global implements EventTarget, then set notHandled to the result of
+            // firing an event named error at global, using ErrorEvent, with the cancelable
+            // attribute initialized to true, and additional attributes initialized according to
+            // errorInfo.
+            let event = ErrorEvent::new(
+                cx,
+                self,
+                atom!("error"),
+                EventBubbles::DoesNotBubble,
+                EventCancelable::Cancelable,
+                error_info.message.as_str().into(),
+                error_info.filename.as_str().into(),
+                error_info.lineno,
+                error_info.column,
+                value,
+            );
+            not_handled = event
+                .upcast::<Event>()
+                .fire(cx, self.upcast::<EventTarget>());
+
+            // Step 6.3. Set global's in error reporting mode to false.
+            self.in_error_reporting_mode.set(false);
         }
-
-        // Step 6.1. Set global's in error reporting mode to true.
-        self.in_error_reporting_mode.set(true);
-
-        // Step 6.2. Set notHandled to the result of firing an event named error at global,
-        // using ErrorEvent, with the cancelable attribute initialized to true,
-        // and additional attributes initialized according to errorInfo.
-
-        // FIXME(#13195): muted errors.
-        let event = ErrorEvent::new(
-            self,
-            atom!("error"),
-            EventBubbles::DoesNotBubble,
-            EventCancelable::Cancelable,
-            error_info.message.as_str().into(),
-            error_info.filename.as_str().into(),
-            error_info.lineno,
-            error_info.column,
-            value,
-            CanGc::from_cx(cx),
-        );
-
-        let not_handled = event
-            .upcast::<Event>()
-            .fire(cx, self.upcast::<EventTarget>());
-
-        // Step 6.3. Set global's in error reporting mode to false.
-        self.in_error_reporting_mode.set(false);
 
         // Step 7. If notHandled is true, then:
         if not_handled {
@@ -2859,7 +2885,7 @@ impl GlobalScope {
                 // Step 7.3. Otherwise, the user agent may report exception to a developer console.
                 if let Some(ref chan) = self.devtools_chan {
                     let _ = chan.send(ScriptToDevtoolsControlMsg::ReportPageError(
-                        self.pipeline_id,
+                        self.pipeline_id(),
                         PageError {
                             error_message: error_info.message.clone(),
                             source_name: error_info.filename.clone(),
@@ -2909,20 +2935,20 @@ impl GlobalScope {
     }
 
     /// A reference to the [`TaskManager`] used to schedule tasks for this [`GlobalScope`].
-    pub(crate) fn task_manager(&self) -> &TaskManager {
-        let shared_canceller = self
-            .downcast::<WorkerGlobalScope>()
-            .map(WorkerGlobalScope::shared_task_canceller);
-        self.task_manager.get_or_init(|| {
-            TaskManager::new(
-                self.event_loop_sender(),
-                self.pipeline_id(),
-                shared_canceller,
-            )
-        })
+    pub(crate) fn task_manager(&self) -> Rc<TaskManager> {
+        if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
+            worker.task_manager()
+        } else if let Some(window) = self.downcast::<Window>() {
+            window.task_manager()
+        } else if let Some(worklet) = self.downcast::<WorkletGlobalScope>() {
+            worklet.task_manager()
+        } else {
+            unreachable!("Attempted to use task manager with unsupported global");
+        }
     }
 
     /// Evaluate JS code on this global scope.
+    #[expect(unsafe_code)]
     pub(crate) fn evaluate_js_on_global(
         &self,
         cx: &mut CurrentRealm,
@@ -2931,22 +2957,23 @@ impl GlobalScope {
         introduction_type: Option<&'static CStr>,
         rval: Option<MutableHandleValue>,
     ) -> Result<(), JavaScriptEvaluationError> {
-        run_a_script::<DomTypeHolder, _>(self, || {
+        assert!(self.can_run_script());
+
+        run_a_script::<DomTypeHolder, _, _>(cx, self, |cx| {
             let url = self.api_base_url();
             let fetch_options = ScriptFetchOptions::default_classic_script();
 
-            let no_script_rval = rval.is_none();
-
-            rooted!(&in(cx) let mut compiled_script = std::ptr::null_mut::<JSScript>());
-            compiled_script.set(compile_script(
+            let options = fill_compile_options(
                 cx,
-                &code,
                 filename,
-                1,
                 introduction_type,
                 ErrorReporting::Unmuted,
-                no_script_rval,
-            ));
+                rval.is_none(), // noScriptRval
+                1,              // lineno
+            );
+
+            let mut source = transform_str_to_source_text(&code);
+            rooted!(&in(cx) let compiled_script = unsafe { Compile1(cx, options.ptr, &mut source) });
 
             let Some(script) = NonNull::new(*compiled_script) else {
                 debug!("error compiling Dom string");
@@ -2973,12 +3000,11 @@ impl GlobalScope {
         callback: OneshotTimerCallback,
         duration: Duration,
     ) -> OneshotTimerHandle {
-        self.timers()
-            .schedule_callback(callback, duration, self.timer_source())
+        self.with_timers(|timers| timers.schedule_callback(callback, duration, self.timer_source()))
     }
 
     pub(crate) fn unschedule_callback(&self, handle: OneshotTimerHandle) {
-        self.timers().unschedule_callback(handle);
+        self.with_timers(|timers| timers.unschedule_callback(handle));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#timer-initialisation-steps>
@@ -2990,39 +3016,41 @@ impl GlobalScope {
         timeout: Duration,
         is_interval: IsInterval,
     ) -> Fallible<i32> {
-        self.timers().set_timeout_or_interval(
-            cx,
-            self,
-            callback,
-            arguments,
-            timeout,
-            is_interval,
-            self.timer_source(),
-        )
+        self.with_timers(|timers| {
+            timers.set_timeout_or_interval(
+                cx,
+                self,
+                callback,
+                arguments,
+                timeout,
+                is_interval,
+                self.timer_source(),
+            )
+        })
     }
 
     pub(crate) fn clear_timeout_or_interval(&self, handle: i32) {
-        self.timers().clear_timeout_or_interval(self, handle);
+        self.with_timers(|timers| timers.clear_timeout_or_interval(self, handle));
     }
 
     pub(crate) fn fire_timer(&self, handle: TimerEventId, cx: &mut js::context::JSContext) {
-        self.timers().fire_timer(handle, self, cx);
+        self.with_timers(|timers| timers.fire_timer(handle, cx));
     }
 
     pub(crate) fn resume(&self) {
-        self.timers().resume();
+        self.with_timers(|timers| timers.resume());
     }
 
     pub(crate) fn suspend(&self) {
-        self.timers().suspend();
+        self.with_timers(|timers| timers.suspend());
     }
 
     pub(crate) fn slow_down_timers(&self) {
-        self.timers().slow_down();
+        self.with_timers(|timers| timers.slow_down());
     }
 
     pub(crate) fn speed_up_timers(&self) {
-        self.timers().speed_up();
+        self.with_timers(|timers| timers.speed_up());
     }
 
     fn timer_source(&self) -> TimerSource {
@@ -3049,13 +3077,16 @@ impl GlobalScope {
         true
     }
 
-    /// Returns the idb factory for this global.
-    pub(crate) fn get_indexeddb(&self) -> DomRoot<IDBFactory> {
-        self.indexeddb
-            .or_init(|| IDBFactory::new(self, CanGc::deprecated_note()))
+    /// Potentially instantiate and return this [`GlobalScope`]'s [`IDBFactory`].
+    pub(crate) fn ensure_indexeddb_factory(
+        &self,
+        cx: &mut js::context::JSContext,
+    ) -> DomRoot<IDBFactory> {
+        self.indexeddb.or_init(|| IDBFactory::new(cx, self))
     }
 
-    pub(crate) fn get_existing_indexeddb(&self) -> Option<DomRoot<IDBFactory>> {
+    /// Return this [`GlobalScope`]'s [`IDBFactory`] if it has previously been instantiated.
+    pub(crate) fn indexeddb_factory(&self) -> Option<DomRoot<IDBFactory>> {
         self.indexeddb.get()
     }
 
@@ -3065,15 +3096,21 @@ impl GlobalScope {
             window.perform_a_microtask_checkpoint(cx);
         } else if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
             worker.perform_a_microtask_checkpoint(cx);
+        } else if let Some(worklet) = self.downcast::<WorkletGlobalScope>() {
+            worklet.perform_a_microtask_checkpoint(cx);
         }
     }
 
     /// Enqueue a microtask for subsequent execution.
-    pub(crate) fn enqueue_microtask(&self, job: Microtask) {
+    pub(crate) fn enqueue_microtask(
+        &self,
+        cx: &js::context::JSContext,
+        job: Box<dyn MicrotaskRunnable>,
+    ) {
         if self.is::<Window>() {
-            ScriptThread::enqueue_microtask(job);
+            ScriptThread::enqueue_microtask(cx, job);
         } else if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
-            worker.enqueue_microtask(job);
+            worker.enqueue_microtask(cx, job);
         }
     }
 
@@ -3122,13 +3159,13 @@ impl GlobalScope {
     /// ["current"]: https://html.spec.whatwg.org/multipage/#current
     #[expect(unsafe_code)]
     pub(crate) fn current() -> Option<DomRoot<Self>> {
-        let cx = Runtime::get()?;
+        let mut cx = unsafe { JSContext::get_from_thread()? };
         unsafe {
-            let global = CurrentGlobalOrNull(cx.as_ptr());
+            let global = CurrentGlobalOrNull(&cx);
             if global.is_null() {
                 None
             } else {
-                Some(global_scope_from_global(global, cx.as_ptr()))
+                Some(global_scope_from_global(&mut cx, global))
             }
         }
     }
@@ -3147,12 +3184,12 @@ impl GlobalScope {
         incumbent_global()
     }
 
-    pub(crate) fn performance(&self) -> DomRoot<Performance> {
+    pub(crate) fn performance(&self, cx: &mut JSContext) -> DomRoot<Performance> {
         if let Some(window) = self.downcast::<Window>() {
-            return window.Performance();
+            return window.Performance(cx);
         }
         if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
-            return worker.Performance();
+            return worker.Performance(cx);
         }
         unreachable!();
     }
@@ -3160,20 +3197,18 @@ impl GlobalScope {
     /// <https://w3c.github.io/performance-timeline/#supportedentrytypes-attribute>
     pub(crate) fn supported_performance_entry_types(
         &self,
-        cx: SafeJSContext,
+        cx: &mut js::context::JSContext,
         retval: MutableHandleValue,
-        can_gc: CanGc,
     ) {
         self.frozen_supported_performance_entry_types.get_or_init(
+            cx,
             || {
                 EntryType::VARIANTS
                     .iter()
                     .map(|t| DOMString::from(t.as_str()))
                     .collect()
             },
-            cx,
             retval,
-            can_gc,
         );
     }
 
@@ -3195,14 +3230,11 @@ impl GlobalScope {
         match self.top_level_creation_url() {
             None => {
                 // Workers and worklets don't have a top-level creation URL
-                assert!(
-                    self.downcast::<WorkerGlobalScope>().is_some() ||
-                        self.downcast::<WorkletGlobalScope>().is_some()
-                );
+                assert!(self.is::<WorkerGlobalScope>() || self.is::<WorkletGlobalScope>());
                 true
             },
             Some(top_level_creation_url) => {
-                assert!(self.downcast::<Window>().is_some());
+                assert!(self.is::<Window>());
                 // Step 2. If the result of Is url potentially trustworthy?
                 // given environment's top-level creation URL is "Potentially Trustworthy", then return true.
                 // Step 3. Return false.
@@ -3218,7 +3250,7 @@ impl GlobalScope {
 
     /// <https://www.w3.org/TR/CSP/#get-csp-of-object>
     pub(crate) fn get_csp_list(&self) -> Option<CspList> {
-        if self.downcast::<Window>().is_some() || self.downcast::<WorkerGlobalScope>().is_some() {
+        if self.is::<Window>() || self.is::<WorkerGlobalScope>() {
             return self.policy_container().csp_list;
         }
         // TODO: Worklet global scopes.
@@ -3265,7 +3297,6 @@ impl GlobalScope {
             DeviceLostReason::Unknown => GPUDeviceLostReason::Unknown,
             DeviceLostReason::Destroyed => GPUDeviceLostReason::Destroyed,
         };
-        let _ac = crate::realms::enter_realm(self);
         if let Some(device) = self
             .gpu_devices
             .borrow_mut()
@@ -3520,32 +3551,34 @@ impl GlobalScope {
     where
         F: 'static + FnOnce(&mut js::context::JSContext, &GlobalScope),
     {
-        let timers = self.timers();
-
-        // Step 1. Let timerKey be a new unique internal value.
-        let timer_key = timers.fresh_runsteps_key();
-
-        // Step 2. Let startTime be the current high resolution time given global.
-        let start_time = timers.now_for_runsteps();
-
-        // Step 3. Set global's map of active timers[timerKey] to startTime plus milliseconds.
         let ms = milliseconds.max(0) as u64;
         let delay = std::time::Duration::from_millis(ms);
-        let deadline = start_time + delay;
-        timers.runsteps_set_active(timer_key, deadline);
 
-        // Step 4. Run the following steps in parallel:
-        //   (We schedule a oneshot that will enforce the sub-steps when it fires.)
-        let callback = crate::timers::OneshotTimerCallback::RunStepsAfterTimeout {
-            // Step 1. timerKey
-            timer_key,
-            // Step 4. orderingIdentifier
-            ordering_id: ordering_identifier,
-            // Spec: milliseconds
-            milliseconds: ms,
-            // Step 4.4 Perform completionSteps.
-            completion: Box::new(completion_steps),
-        };
+        let (callback, timer_key) = self.with_timers(|timers| {
+            // Step 1. Let timerKey be a new unique internal value.
+            let timer_key = timers.fresh_runsteps_key();
+
+            // Step 2. Let startTime be the current high resolution time given global.
+            let start_time = timers.now_for_runsteps();
+
+            // Step 3. Set global's map of active timers[timerKey] to startTime plus milliseconds.
+            let deadline = start_time + delay;
+            timers.runsteps_set_active(timer_key, deadline);
+
+            // Step 4. Run the following steps in parallel:
+            //   (We schedule a oneshot that will enforce the sub-steps when it fires.)
+            let callback = crate::timers::OneshotTimerCallback::RunStepsAfterTimeout {
+                // Step 1. timerKey
+                timer_key,
+                // Step 4. orderingIdentifier
+                ordering_id: ordering_identifier,
+                // Spec: milliseconds
+                milliseconds: ms,
+                // Step 4.4 Perform completionSteps.
+                completion: Box::new(completion_steps),
+            };
+            (callback, timer_key)
+        });
         let _ = self.schedule_callback(callback, delay);
 
         // Step 5. Return timerKey.
@@ -3556,8 +3589,8 @@ impl GlobalScope {
 /// Returns the Rust global scope from a JS global object.
 #[expect(unsafe_code)]
 unsafe fn global_scope_from_global(
+    cx: &mut js::context::JSContext,
     global: *mut JSObject,
-    cx: *mut JSContext,
 ) -> DomRoot<GlobalScope> {
     unsafe {
         assert!(!global.is_null());
@@ -3566,7 +3599,7 @@ unsafe fn global_scope_from_global(
             ((*clasp).flags & (JSCLASS_IS_DOMJSCLASS | JSCLASS_IS_GLOBAL)),
             0
         );
-        root_from_object(global, cx).unwrap()
+        root_from_object(cx, global).unwrap()
     }
 }
 
@@ -3588,27 +3621,19 @@ unsafe fn global_scope_from_global_static(global: *mut JSObject) -> DomRoot<Glob
 
 #[expect(unsafe_code)]
 impl GlobalScopeHelpers<crate::DomTypeHolder> for GlobalScope {
-    unsafe fn from_context(cx: *mut JSContext, realm: InRealm) -> DomRoot<Self> {
-        unsafe { GlobalScope::from_context(cx, realm) }
-    }
-
-    fn from_current_realm(realm: &'_ CurrentRealm) -> DomRoot<Self> {
+    fn from_current_realm(realm: &'_ mut CurrentRealm) -> DomRoot<Self> {
         GlobalScope::from_current_realm(realm)
-    }
-
-    fn get_cx() -> SafeJSContext {
-        GlobalScope::get_cx()
     }
 
     unsafe fn from_object(obj: *mut JSObject) -> DomRoot<Self> {
         unsafe { GlobalScope::from_object(obj) }
     }
 
-    fn from_reflector(reflector: &impl DomObject, realm: InRealm) -> DomRoot<Self> {
-        GlobalScope::from_reflector(reflector, realm)
+    fn from_reflector(reflector: &impl DomObject) -> DomRoot<Self> {
+        GlobalScope::from_reflector(reflector)
     }
 
-    fn origin(&self) -> &MutableOrigin {
+    fn origin(&self) -> MutableOrigin {
         GlobalScope::origin(self)
     }
 
@@ -3627,4 +3652,10 @@ impl GlobalScopeHelpers<crate::DomTypeHolder> for GlobalScope {
     fn is_secure_context(&self) -> bool {
         self.is_secure_context()
     }
+
+    fn pipeline_id(&self) -> PipelineId {
+        self.pipeline_id()
+    }
 }
+
+impl OwnerWindow<DomTypeHolder> for GlobalScope {}

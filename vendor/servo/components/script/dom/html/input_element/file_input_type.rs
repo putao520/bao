@@ -18,7 +18,6 @@ use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
 use script_bindings::domstring::DOMString;
 use script_bindings::inheritance::Castable;
 use script_bindings::root::Dom;
-use script_bindings::script_runtime::CanGc;
 use style::selector_parser::PseudoElement;
 use style::str::split_commas;
 
@@ -29,10 +28,10 @@ use crate::dom::event::{Event, EventBubbles, EventCancelable, EventComposed};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::file::File;
 use crate::dom::filelist::FileList;
+use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
+use crate::dom::html::form_controls::input_type::{SpecificInputActivationType, SpecificInputType};
 use crate::dom::htmlbuttonelement::HTMLButtonElement;
 use crate::dom::htmlelement::HTMLElement;
-use crate::dom::input_element::HTMLInputElement;
-use crate::dom::input_element::input_type::SpecificInputType;
 use crate::dom::node::{Node, NodeTraits};
 
 const DEFAULT_FILE_INPUT_VALUE: &str = "No file chosen";
@@ -46,6 +45,9 @@ pub(crate) struct FileInputType {
     filelist: MutNullableDom<FileList>,
     shadow_tree: DomRefCell<Option<FileInputShadowTree>>,
 }
+
+#[derive(Clone, Copy)]
+pub(crate) struct FileInputActivation;
 
 impl FileInputType {
     /// Get the shadow tree for this [`HTMLInputElement`], if it is created and valid, otherwise
@@ -80,9 +82,7 @@ impl FileInputType {
     ) {
         let mut files = Vec::new();
 
-        if let Some(pending_webdriver_reponse) =
-            input.pending_webdriver_response.borrow_mut().take()
-        {
+        if let Some(pending_webdriver_reponse) = input.take_pending_webdriver_response() {
             // From: <https://w3c.github.io/webdriver/#dfn-dispatch-actions-for-a-string>
             // "Complete implementation specific steps equivalent to setting the selected
             // files on the input element. If multiple is true files are be appended to
@@ -107,7 +107,7 @@ impl FileInputType {
         files.extend(
             response_files
                 .into_iter()
-                .map(|file| File::new_from_selected(&window, file, CanGc::from_cx(cx))),
+                .map(|file| File::new_from_selected(cx, &window, file)),
         );
 
         // Only use the last file if this isn't a multi-select file input. This could
@@ -119,8 +119,7 @@ impl FileInputType {
                 .unwrap_or_default();
         }
 
-        self.set_files(&FileList::new(&window, files, CanGc::from_cx(cx)));
-
+        self.set_files(&FileList::new(cx, &window, files));
         let target = input.upcast::<EventTarget>();
         target.fire_event_with_params(
             cx,
@@ -160,17 +159,6 @@ impl SpecificInputType for FileInputType {
         first_item.name().clone()
     }
 
-    /// <https://html.spec.whatwg.org/multipage/#file-upload-state-(type=file):input-activation-behavior>
-    fn activation_behavior(
-        &self,
-        _cx: &mut js::context::JSContext,
-        input: &HTMLInputElement,
-        _event: &Event,
-        _target: &EventTarget,
-    ) {
-        input.show_the_picker_if_applicable();
-    }
-
     fn show_the_picker_if_applicable(&self, input: &HTMLInputElement) {
         self.select_files(input, None)
     }
@@ -194,7 +182,7 @@ impl SpecificInputType for FileInputType {
             .owner_document()
             .embedder_controls()
             .show_embedder_control(
-                ControlElement::FileInput(DomRoot::from_ref(input)),
+                ControlElement::FileInput(Dom::from_ref(input)),
                 EmbedderControlRequest::FilePicker(FilePickerRequest {
                     origin: input.owner_window().origin().immutable().clone(),
                     current_paths,
@@ -220,6 +208,19 @@ impl SpecificInputType for FileInputType {
             self.value_for_shadow_dom(input),
             input.Multiple(),
         )
+    }
+}
+
+impl SpecificInputActivationType for FileInputActivation {
+    /// <https://html.spec.whatwg.org/multipage/#file-upload-state-(type=file):input-activation-behavior>
+    fn activation_behavior(
+        &self,
+        _cx: &mut js::context::JSContext,
+        input: &HTMLInputElement,
+        _event: &Event,
+        _target: &EventTarget,
+    ) {
+        input.show_the_picker_if_applicable();
     }
 }
 

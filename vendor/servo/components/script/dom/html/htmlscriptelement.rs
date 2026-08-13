@@ -13,7 +13,8 @@ use dom_struct::dom_struct;
 use encoding_rs::Encoding;
 use html5ever::{LocalName, Prefix, local_name};
 use js::context::JSContext;
-use js::rust::{HandleObject, Stencil};
+use js::rust::HandleObject;
+use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::http_status::HttpStatus;
 use net_traits::request::{
     CorsSettings, Destination, ParserMetadata, Referrer, RequestBuilder, RequestId,
@@ -25,9 +26,7 @@ use servo_url::ServoUrl;
 use style::attr::AttrValue;
 use style::str::{HTML_SPACE_CHARACTERS, StaticStringVec};
 use stylo_atoms::Atom;
-use uuid::Uuid;
 
-use crate::document_loader::{LoadBlocker, LoadType};
 use crate::dom::bindings::codegen::Bindings::DOMTokenListBinding::DOMTokenListMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLScriptElementBinding::HTMLScriptElementMethods;
@@ -35,7 +34,7 @@ use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::UnionTypes::{
     TrustedScriptOrString, TrustedScriptURLOrUSVString,
 };
-use crate::dom::bindings::error::{Error, Fallible};
+use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
@@ -51,26 +50,24 @@ use crate::dom::element::{
     reflect_cross_origin_attribute, reflect_referrer_policy_attribute, set_cross_origin_attribute,
 };
 use crate::dom::event::eventtarget::EventTarget;
-use crate::dom::global_scope_script_execution::{ClassicScript, ErrorReporting, RethrowErrors};
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::script_execution::{ClassicScript, ErrorReporting, RethrowErrors};
 use crate::dom::html::htmlelement::HTMLElement;
+use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{ChildrenMutation, CloneChildrenFlag, Node, NodeTraits, UnbindContext};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::dom::trustedtypes::trustedscript::TrustedScript;
 use crate::dom::trustedtypes::trustedscripturl::TrustedScriptURL;
-use crate::dom::virtualmethods::VirtualMethods;
 use crate::dom::window::Window;
-use crate::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
-use crate::network_listener::{self, FetchResponseListener, ResourceTimingListener};
-use crate::script_module::{
-    ImportMap, ModuleTree, ScriptFetchOptions, fetch_an_external_module_script,
-    fetch_inline_module_script, parse_an_import_map_string, register_import_map,
+use crate::event_loop::document_loader::{LoadBlocker, LoadType};
+use crate::fetch::{RequestWithGlobalScope, create_a_potential_cors_request_with_claim};
+use crate::modules::import_map::{ImportMap, parse_an_import_map_string, register_import_map};
+use crate::modules::script_module::{
+    ModuleTree, ScriptFetchOptions, fetch_an_external_module_script, fetch_inline_module_script,
 };
+use crate::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::script_runtime::IntroductionType;
-
-/// An unique id for script element.
-#[derive(Clone, Copy, Debug, Eq, Hash, JSTraceable, PartialEq, MallocSizeOf)]
-pub(crate) struct ScriptId(#[no_trace] Uuid);
+use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 #[dom_struct]
 pub(crate) struct HTMLScriptElement {
@@ -101,10 +98,6 @@ pub(crate) struct HTMLScriptElement {
     /// Track line line_number
     line_number: u64,
 
-    /// Unique id for each script element
-    #[ignore_malloc_size_of = "Defined in uuid"]
-    id: ScriptId,
-
     /// <https://w3c.github.io/trusted-types/dist/spec/#htmlscriptelement-script-text>
     script_text: DomRefCell<DOMString>,
 
@@ -130,7 +123,6 @@ impl HTMLScriptElement {
         creator: ElementCreator,
     ) -> HTMLScriptElement {
         HTMLScriptElement {
-            id: ScriptId(Uuid::new_v4()),
             htmlelement: HTMLElement::new_inherited(local_name, prefix, document),
             already_started: Cell::new(false),
             delaying_the_load_event: Default::default(),
@@ -163,10 +155,6 @@ impl HTMLScriptElement {
             document,
             proto,
         )
-    }
-
-    pub(crate) fn get_script_id(&self) -> ScriptId {
-        self.id
     }
 
     /// Marks that element as delaying the load event or not.
@@ -240,78 +228,6 @@ pub(crate) enum ScriptType {
     ImportMap,
 }
 
-#[derive(JSTraceable, MallocSizeOf)]
-pub(crate) struct CompiledSourceCode {
-    #[ignore_malloc_size_of = "SM handles JS values"]
-    pub(crate) source_code: Stencil,
-    #[conditional_malloc_size_of = "Rc is hard"]
-    pub(crate) original_text: Rc<DOMString>,
-}
-
-#[derive(JSTraceable, MallocSizeOf)]
-pub(crate) enum SourceCode {
-    Text(#[conditional_malloc_size_of] Rc<DOMString>),
-    Compiled(CompiledSourceCode),
-}
-
-#[derive(JSTraceable, MallocSizeOf)]
-pub(crate) struct ScriptOrigin {
-    pub code: SourceCode,
-    #[no_trace]
-    pub url: ServoUrl,
-    external: bool,
-    pub fetch_options: ScriptFetchOptions,
-    type_: ScriptType,
-    unminified_dir: Option<String>,
-    import_map: Fallible<ImportMap>,
-}
-
-impl ScriptOrigin {
-    pub(crate) fn internal(
-        text: Rc<DOMString>,
-        url: ServoUrl,
-        fetch_options: ScriptFetchOptions,
-        type_: ScriptType,
-        unminified_dir: Option<String>,
-        import_map: Fallible<ImportMap>,
-    ) -> ScriptOrigin {
-        ScriptOrigin {
-            code: SourceCode::Text(text),
-            url,
-            external: false,
-            fetch_options,
-            type_,
-            unminified_dir,
-            import_map,
-        }
-    }
-
-    pub(crate) fn external(
-        text: Rc<DOMString>,
-        url: ServoUrl,
-        fetch_options: ScriptFetchOptions,
-        type_: ScriptType,
-        unminified_dir: Option<String>,
-    ) -> ScriptOrigin {
-        ScriptOrigin {
-            code: SourceCode::Text(text),
-            url,
-            external: true,
-            fetch_options,
-            type_,
-            unminified_dir,
-            import_map: Err(Error::NotFound(None)),
-        }
-    }
-
-    pub(crate) fn text(&self) -> Rc<DOMString> {
-        match &self.code {
-            SourceCode::Text(text) => Rc::clone(text),
-            SourceCode::Compiled(compiled_script) => Rc::clone(&compiled_script.original_text),
-        }
-    }
-}
-
 /// <https://html.spec.whatwg.org/multipage/#steps-to-run-when-the-result-is-ready>
 fn finish_fetching_a_script(
     elem: &HTMLScriptElement,
@@ -348,11 +264,10 @@ pub(crate) type ScriptResult = Result<Script, ()>;
 
 // TODO merge classic and module scripts
 #[derive(JSTraceable, MallocSizeOf)]
-#[expect(clippy::large_enum_variant)]
 pub(crate) enum Script {
     Classic(ClassicScript),
     Module(#[conditional_malloc_size_of] Rc<ModuleTree>),
-    ImportMap(ScriptOrigin),
+    ImportMap(Fallible<ImportMap>),
 }
 
 /// The context required for asynchronously loading an external script source.
@@ -369,7 +284,7 @@ struct ClassicContext {
     /// The response metadata received to date.
     metadata: Option<Metadata>,
     /// The initial URL requested.
-    url: ServoUrl,
+    url: UrlWithBlobClaim,
     /// Indicates whether the request failed, and why
     status: Result<(), NetworkError>,
     /// The fetch options of the script
@@ -445,7 +360,10 @@ impl FetchResponseListener for ClassicContext {
 
         match (response.as_ref(), self.status.as_ref()) {
             (Err(error), _) | (_, Err(error)) => {
-                error!("Fetching classic script failed {:?} ({})", error, self.url);
+                error!(
+                    "Fetching classic script failed {:?} ({:?})",
+                    error, self.url
+                );
                 // Step 6, response is an error.
                 *elem.result.borrow_mut() = Some(Err(()));
                 finish_fetching_a_script(&elem, self.kind, cx);
@@ -469,8 +387,10 @@ impl FetchResponseListener for ClassicContext {
 
         let global = elem.global();
 
-        if let Some(window) = global.downcast::<Window>() {
-            substitute_with_local_script(window, &mut source_text, final_url.clone());
+        if let Some(window) = global.downcast::<Window>() &&
+            let Some(script_source) = window.local_script_source()
+        {
+            substitute_with_local_script(script_source, &mut source_text, final_url.clone());
         }
 
         // Step 5.6. Let mutedErrors be true if response was CORS-cross-origin, and false otherwise.
@@ -524,10 +444,19 @@ impl FetchResponseListener for ClassicContext {
         // }
     }
 
-    fn process_csp_violations(&mut self, _request_id: RequestId, violations: Vec<Violation>) {
+    fn process_csp_violations(
+        &mut self,
+        cx: &mut js::context::JSContext,
+        _request_id: RequestId,
+        violations: Vec<Violation>,
+    ) {
         let global = &self.resource_timing_global();
         let elem = self.elem.root();
-        global.report_csp_violations(violations, Some(elem.upcast()), None);
+        global.report_csp_violations(cx, violations, Some(elem.upcast()), None);
+    }
+
+    fn process_content_length(&mut self, _request_id: RequestId, size: usize) {
+        self.data.reserve(size - self.data.len());
     }
 }
 
@@ -540,7 +469,7 @@ impl ResourceTimingListener for ClassicContext {
                 .local_name()
                 .to_string(),
         );
-        (initiator_type, self.url.clone())
+        (initiator_type, self.url.url())
     }
 
     fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
@@ -553,14 +482,14 @@ impl ResourceTimingListener for ClassicContext {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn script_fetch_request(
     webview_id: WebViewId,
-    url: ServoUrl,
+    url: UrlWithBlobClaim,
     cors_setting: Option<CorsSettings>,
     options: ScriptFetchOptions,
     referrer: Referrer,
 ) -> RequestBuilder {
     // We intentionally ignore options' credentials_mode member for classic scripts.
     // The mode is initialized by create_a_potential_cors_request.
-    create_a_potential_cors_request(
+    create_a_potential_cors_request_with_claim(
         Some(webview_id),
         url,
         Destination::Script,
@@ -578,7 +507,7 @@ pub(crate) fn script_fetch_request(
 fn fetch_a_classic_script(
     script: &HTMLScriptElement,
     kind: ExternalScriptKind,
-    url: ServoUrl,
+    url: UrlWithBlobClaim,
     cors_setting: Option<CorsSettings>,
     options: ScriptFetchOptions,
     character_encoding: &'static Encoding,
@@ -623,7 +552,7 @@ impl HTMLScriptElement {
         // Step 1. If script’s script text value is not equal to its child text content,
         // set script’s script text to the result of executing
         // Get Trusted Type compliant string, with the following arguments:
-        if self.script_text.borrow().clone() != self.text() {
+        if *self.script_text.borrow() != self.text() {
             *self.script_text.borrow_mut() = TrustedScript::get_trusted_type_compliant_string(
                 cx,
                 &self.owner_global(),
@@ -696,7 +625,7 @@ impl HTMLScriptElement {
             return;
         }
         // Step 5a. Let source text be el’s script text value.
-        let text = self.script_text.borrow().clone();
+        let text: Cow<'_, str> = Cow::Owned(String::from(self.script_text.borrow().str()));
         // Step 6. If el has no src attribute, and source text is the empty string, then return.
         if text.is_empty() && !element.has_attribute(&local_name!("src")) {
             return;
@@ -754,10 +683,11 @@ impl HTMLScriptElement {
             global
                 .get_csp_list()
                 .should_elements_inline_type_behavior_be_blocked(
+                    cx,
                     global,
                     element,
                     InlineCheckType::Script,
-                    &text.str(),
+                    &text,
                     self.line_number as u32,
                 )
         {
@@ -875,6 +805,7 @@ impl HTMLScriptElement {
                     return;
                 },
             };
+            let url = ensure_blob_referenced_by_url_is_kept_alive(global, url);
 
             // Step 31.7. If el is potentially render-blocking, then block rendering on el.
             if self.potentially_render_blocking() && doc.allows_adding_render_blocking_elements() {
@@ -883,7 +814,7 @@ impl HTMLScriptElement {
             }
 
             // Step 31.8. Set el's delaying the load event to true.
-            self.delay_load_event(&delayed_document, url.clone());
+            self.delay_load_event(&delayed_document, url.url());
 
             // Step 31.9. If el is currently render-blocking, then set options's render-blocking to true.
             if self.marked_as_render_blocking.get() {
@@ -902,7 +833,7 @@ impl HTMLScriptElement {
                     if integrity_val_is_none {
                         options.integrity_metadata = global
                             .import_map()
-                            .resolve_a_module_integrity_metadata(&url);
+                            .resolve_a_module_integrity_metadata(&url.url());
                     }
 
                     let script = DomRoot::from_ref(self);
@@ -928,8 +859,6 @@ impl HTMLScriptElement {
 
             assert!(!text.is_empty());
 
-            let text_rc = Rc::new(text.clone());
-
             // Step 32.2: Switch on el's type:
             match script_type {
                 ScriptType::Classic => {
@@ -937,7 +866,7 @@ impl HTMLScriptElement {
                     // using source text, settings object, base URL, and options.
                     let script = self.global().create_a_classic_script(
                         cx,
-                        std::borrow::Cow::Borrowed(&text.str()),
+                        text,
                         base_url,
                         options,
                         ErrorReporting::Unmuted,
@@ -950,7 +879,7 @@ impl HTMLScriptElement {
                     if was_parser_inserted &&
                         doc.get_current_parser()
                             .is_some_and(|parser| parser.script_nesting_level() <= 1) &&
-                        doc.get_script_blocking_stylesheets_count() > 0
+                        doc.has_a_stylesheet_that_is_blocking_scripts()
                     {
                         // Step 34.2: classic, has no src, was parser-inserted, is blocked on stylesheet.
                         doc.set_pending_parsing_blocking_script(self, Some(result));
@@ -982,7 +911,7 @@ impl HTMLScriptElement {
                     fetch_inline_module_script(
                         cx,
                         global,
-                        text_rc,
+                        text,
                         base_url,
                         options,
                         self.line_number as u32,
@@ -1008,16 +937,8 @@ impl HTMLScriptElement {
                 ScriptType::ImportMap => {
                     // Step 32.1 Let result be the result of creating an import map
                     // parse result given source text and base URL.
-                    let import_map_result =
-                        parse_an_import_map_string(global, Rc::clone(&text_rc), base_url.clone());
-                    let script = Script::ImportMap(ScriptOrigin::internal(
-                        text_rc,
-                        base_url,
-                        options,
-                        script_type,
-                        self.global().unminified_js_dir(),
-                        import_map_result,
-                    ));
+                    let import_map_result = parse_an_import_map_string(cx, global, &text, base_url);
+                    let script = Script::ImportMap(import_map_result);
 
                     // Step 34.3
                     self.execute(cx, Ok(script));
@@ -1106,9 +1027,9 @@ impl HTMLScriptElement {
                 self.owner_global()
                     .run_a_module_script(cx, module_tree, false);
             },
-            Script::ImportMap(script) => {
+            Script::ImportMap(import_map) => {
                 // Step 6."importmap".1. Register an import map given el's relevant global object and el's result.
-                register_import_map(cx, &self.owner_global(), script.import_map);
+                register_import_map(cx, &self.owner_global(), import_map);
             },
         }
 
@@ -1187,16 +1108,8 @@ impl HTMLScriptElement {
         self.parser_inserted.set(parser_inserted);
     }
 
-    pub(crate) fn get_parser_inserted(&self) -> bool {
-        self.parser_inserted.get()
-    }
-
     pub(crate) fn set_already_started(&self, already_started: bool) {
         self.already_started.set(already_started);
-    }
-
-    pub(crate) fn get_non_blocking(&self) -> bool {
-        self.non_blocking.get()
     }
 
     fn text(&self) -> DOMString {
@@ -1480,16 +1393,9 @@ impl HTMLScriptElementMethods<crate::DomTypeHolder> for HTMLScriptElement {
     }
 }
 
-pub(crate) fn substitute_with_local_script(
-    window: &Window,
-    script: &mut Cow<'_, str>,
-    url: ServoUrl,
-) {
-    if window.local_script_source().is_none() {
-        return;
-    }
-    let mut path = PathBuf::from(window.local_script_source().clone().unwrap());
-    path = path.join(&url[url::Position::BeforeHost..]);
+pub fn substitute_with_local_script(script_source: &str, script: &mut Cow<'_, str>, url: ServoUrl) {
+    let mut path = PathBuf::from(script_source);
+    path = path.join(&url[url::Position::BeforeHost..url::Position::AfterPath]);
     debug!("Attempting to read script stored at: {:?}", path);
     match read_to_string(path.clone()) {
         Ok(local_script) => {

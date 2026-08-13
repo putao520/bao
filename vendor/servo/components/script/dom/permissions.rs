@@ -5,16 +5,17 @@
 use std::rc::Rc;
 
 use dom_struct::dom_struct;
-use embedder_traits::{self, AllowOrDeny, EmbedderMsg, PermissionFeature};
+use embedder_traits::{self, AllowOrDeny, EmbedderMsg, PermissionFeature, WakeLockType};
+use js::context::JSContext;
 use js::conversions::ConversionResult;
 use js::jsapi::JSObject;
 use js::jsval::{ObjectValue, UndefinedValue};
+use js::realm::CurrentRealm;
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use servo_base::generic_channel;
 use servo_config::pref;
 
-use super::window::Window;
 use crate::conversions::Convert;
 use crate::dom::bindings::codegen::Bindings::PermissionStatusBinding::{
     PermissionDescriptor, PermissionName, PermissionState, PermissionStatusMethods,
@@ -31,34 +32,29 @@ use crate::dom::bluetoothpermissionresult::BluetoothPermissionResult;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::permissionstatus::PermissionStatus;
 use crate::dom::promise::Promise;
-use crate::realms::{AlreadyInRealm, InRealm};
-use crate::script_runtime::CanGc;
+use crate::dom::window::Window;
 
 pub(crate) trait PermissionAlgorithm {
     type Descriptor;
     #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
     type Status;
     fn create_descriptor(
-        cx: &mut js::context::JSContext,
-        permission_descriptor_obj: *mut JSObject,
+        cx: &mut JSContext,
+        permission_descriptor_obj: js::gc::HandleValue,
     ) -> Result<Self::Descriptor, Error>;
     fn permission_query(
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         promise: &Rc<Promise>,
         descriptor: &Self::Descriptor,
         status: &Self::Status,
     );
     fn permission_request(
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         promise: &Rc<Promise>,
         descriptor: &Self::Descriptor,
         status: &Self::Status,
     );
-    fn permission_revoke(
-        cx: &mut js::context::JSContext,
-        descriptor: &Self::Descriptor,
-        status: &Self::Status,
-    );
+    fn permission_revoke(cx: &mut JSContext, descriptor: &Self::Descriptor, status: &Self::Status);
 }
 
 enum Operation {
@@ -80,53 +76,55 @@ impl Permissions {
         }
     }
 
-    pub(crate) fn new(global: &GlobalScope, can_gc: CanGc) -> DomRoot<Permissions> {
-        reflect_dom_object(Box::new(Permissions::new_inherited()), global, can_gc)
+    pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<Permissions> {
+        reflect_dom_object_with_cx(Box::new(Permissions::new_inherited()), global, cx)
     }
 
     // https://w3c.github.io/permissions/#dom-permissions-query
     // https://w3c.github.io/permissions/#dom-permissions-request
     // https://w3c.github.io/permissions/#dom-permissions-revoke
-    #[expect(non_snake_case)]
     fn manipulate(
         &self,
-        cx: &mut js::context::JSContext,
+        cx: &mut CurrentRealm,
         op: Operation,
-        permissionDesc: *mut JSObject,
+        permission_desc: *mut JSObject,
         promise: Option<Rc<Promise>>,
     ) -> Rc<Promise> {
+        rooted!(&in(cx) let mut permission_desc_value = UndefinedValue());
+        permission_desc_value
+            .handle_mut()
+            .set(ObjectValue(permission_desc));
+
         // (Query, Request) Step 3.
         let p = match promise {
             Some(promise) => promise,
-            None => {
-                let in_realm_proof = AlreadyInRealm::assert::<crate::DomTypeHolder>();
-                Promise::new_in_current_realm(InRealm::Already(&in_realm_proof), CanGc::from_cx(cx))
-            },
+            None => Promise::new_in_realm(cx),
         };
 
         // (Query, Request, Revoke) Step 1.
-        let root_desc = match Permissions::create_descriptor(cx, permissionDesc) {
+        let root_desc = match Permissions::create_descriptor(cx, permission_desc_value.handle()) {
             Ok(descriptor) => descriptor,
             Err(error) => {
-                p.reject_error(error, CanGc::from_cx(cx));
+                p.reject_error(cx, error);
                 return p;
             },
         };
 
         // (Query, Request) Step 5.
-        let status = PermissionStatus::new(&self.global(), &root_desc, CanGc::from_cx(cx));
+        let status = PermissionStatus::new(cx, &self.global(), &root_desc);
 
         // (Query, Request, Revoke) Step 2.
         match root_desc.name {
             #[cfg(feature = "bluetooth")]
             PermissionName::Bluetooth => {
-                let bluetooth_desc = match Bluetooth::create_descriptor(cx, permissionDesc) {
-                    Ok(descriptor) => descriptor,
-                    Err(error) => {
-                        p.reject_error(error, CanGc::from_cx(cx));
-                        return p;
-                    },
-                };
+                let bluetooth_desc =
+                    match Bluetooth::create_descriptor(cx, permission_desc_value.handle()) {
+                        Ok(descriptor) => descriptor,
+                        Err(error) => {
+                            p.reject_error(cx, error);
+                            return p;
+                        },
+                    };
 
                 // (Query, Request) Step 5.
                 let result = BluetoothPermissionResult::new(cx, &self.global(), &status);
@@ -164,14 +162,14 @@ impl Permissions {
                         // (Request) Step 7. The default algorithm always resolve
 
                         // (Request) Step 8.
-                        p.resolve_native(&status, CanGc::from_cx(cx));
+                        p.resolve_native(cx, &status);
                     },
                     Operation::Query => {
                         // (Query) Step 6.
                         Permissions::permission_query(cx, &p, &root_desc, &status);
 
                         // (Query) Step 7.
-                        p.resolve_native(&status, CanGc::from_cx(cx));
+                        p.resolve_native(cx, &status);
                     },
 
                     Operation::Revoke => {
@@ -190,7 +188,7 @@ impl Permissions {
         };
         match op {
             // (Revoke) Step 5.
-            Operation::Revoke => self.manipulate(cx, Operation::Query, permissionDesc, Some(p)),
+            Operation::Revoke => self.manipulate(cx, Operation::Query, permission_desc, Some(p)),
 
             // (Query, Request) Step 4.
             _ => p,
@@ -198,29 +196,21 @@ impl Permissions {
     }
 }
 
-#[expect(non_snake_case)]
+// Currently these methods use Raw *mut JSObject which is potentially dangerous. We root this object immediately in `self.manipulate`.
 impl PermissionsMethods<crate::DomTypeHolder> for Permissions {
     /// <https://w3c.github.io/permissions/#dom-permissions-query>
-    fn Query(&self, cx: &mut js::context::JSContext, permissionDesc: *mut JSObject) -> Rc<Promise> {
-        self.manipulate(cx, Operation::Query, permissionDesc, None)
+    fn Query(&self, cx: &mut CurrentRealm, permission_desc: *mut JSObject) -> Rc<Promise> {
+        self.manipulate(cx, Operation::Query, permission_desc, None)
     }
 
     /// <https://w3c.github.io/permissions/#dom-permissions-request>
-    fn Request(
-        &self,
-        cx: &mut js::context::JSContext,
-        permissionDesc: *mut JSObject,
-    ) -> Rc<Promise> {
-        self.manipulate(cx, Operation::Request, permissionDesc, None)
+    fn Request(&self, cx: &mut CurrentRealm, permission_desc: *mut JSObject) -> Rc<Promise> {
+        self.manipulate(cx, Operation::Request, permission_desc, None)
     }
 
     /// <https://w3c.github.io/permissions/#dom-permissions-revoke>
-    fn Revoke(
-        &self,
-        cx: &mut js::context::JSContext,
-        permissionDesc: *mut JSObject,
-    ) -> Rc<Promise> {
-        self.manipulate(cx, Operation::Revoke, permissionDesc, None)
+    fn Revoke(&self, cx: &mut CurrentRealm, permission_desc: *mut JSObject) -> Rc<Promise> {
+        self.manipulate(cx, Operation::Revoke, permission_desc, None)
     }
 }
 
@@ -229,14 +219,10 @@ impl PermissionAlgorithm for Permissions {
     type Status = PermissionStatus;
 
     fn create_descriptor(
-        cx: &mut js::context::JSContext,
-        permission_descriptor_obj: *mut JSObject,
+        cx: &mut JSContext,
+        property: js::gc::HandleValue,
     ) -> Result<PermissionDescriptor, Error> {
-        rooted!(&in(cx) let mut property = UndefinedValue());
-        property
-            .handle_mut()
-            .set(ObjectValue(permission_descriptor_obj));
-        match PermissionDescriptor::new(cx, property.handle()) {
+        match PermissionDescriptor::new(cx, property) {
             Ok(ConversionResult::Success(descriptor)) => Ok(descriptor),
             Ok(ConversionResult::Failure(error)) => Err(Error::Type(error.into_owned())),
             Err(_) => Err(Error::JSFailed),
@@ -248,25 +234,25 @@ impl PermissionAlgorithm for Permissions {
     /// > permission query algorithm:
     /// > Takes an instance of the permission descriptor type and a new or existing instance of
     /// > the permission result type, and updates the permission result type instance with the
-    /// > query result. Used by Permissions' query(permissionDesc) method and the
+    /// > query result. Used by Permissions' query(permission_desc) method and the
     /// > PermissionStatus update steps. If unspecified, this defaults to the default permission
     /// > query algorithm.
     ///
     /// > The default permission query algorithm, given a PermissionDescriptor
-    /// > permissionDesc and a PermissionStatus status, runs the following steps:
+    /// > permission_desc and a PermissionStatus status, runs the following steps:
     fn permission_query(
-        _cx: &mut js::context::JSContext,
+        _cx: &mut JSContext,
         _promise: &Rc<Promise>,
         _descriptor: &PermissionDescriptor,
         status: &PermissionStatus,
     ) {
-        // Step 1. Set status's state to permissionDesc's permission state.
+        // Step 1. Set status's state to permission_desc's permission state.
         status.set_state(descriptor_permission_state(status.get_query(), None));
     }
 
     /// <https://w3c.github.io/permissions/#boolean-permission-request-algorithm>
     fn permission_request(
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         promise: &Rc<Promise>,
         descriptor: &PermissionDescriptor,
         status: &PermissionStatus,
@@ -291,7 +277,7 @@ impl PermissionAlgorithm for Permissions {
     }
 
     fn permission_revoke(
-        _cx: &mut js::context::JSContext,
+        _cx: &mut JSContext,
         _descriptor: &PermissionDescriptor,
         _status: &PermissionStatus,
     ) {
@@ -407,7 +393,10 @@ impl Convert<PermissionFeature> for PermissionName {
             PermissionName::Background_sync => PermissionFeature::BackgroundSync,
             PermissionName::Bluetooth => PermissionFeature::Bluetooth,
             PermissionName::Persistent_storage => PermissionFeature::PersistentStorage,
-            PermissionName::Screen_wake_lock => PermissionFeature::ScreenWakeLock,
+            PermissionName::Screen_wake_lock => {
+                PermissionFeature::ScreenWakeLock(WakeLockType::Screen)
+            },
+            PermissionName::Gamepad => PermissionFeature::Gamepad,
         }
     }
 }

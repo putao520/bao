@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
@@ -17,7 +18,6 @@ use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::bindings::weakref::MutableWeakRef;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::url::URL;
-use crate::script_runtime::CanGc;
 
 /// <https://url.spec.whatwg.org/#interface-urlsearchparams>
 #[dom_struct]
@@ -39,24 +39,24 @@ impl URLSearchParams {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         url: Option<&URL>,
-        can_gc: CanGc,
     ) -> DomRoot<URLSearchParams> {
-        Self::new_with_proto(global, None, url, can_gc)
+        Self::new_with_proto(cx, global, None, url)
     }
 
     pub(crate) fn new_with_proto(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         url: Option<&URL>,
-        can_gc: CanGc,
     ) -> DomRoot<URLSearchParams> {
         reflect_dom_object_with_proto(
+            cx,
             Box::new(URLSearchParams::new_inherited(url)),
             global,
             proto,
-            can_gc,
         )
     }
 
@@ -68,13 +68,13 @@ impl URLSearchParams {
 impl URLSearchParamsMethods<crate::DomTypeHolder> for URLSearchParams {
     /// <https://url.spec.whatwg.org/#dom-urlsearchparams-urlsearchparams>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         init: USVStringSequenceSequenceOrUSVStringUSVStringRecordOrUSVString,
     ) -> Fallible<DomRoot<URLSearchParams>> {
         // Step 1.
-        let query = URLSearchParams::new_with_proto(global, proto, None, can_gc);
+        let query = URLSearchParams::new_with_proto(cx, global, proto, None);
         match init {
             USVStringSequenceSequenceOrUSVStringUSVStringRecordOrUSVString::USVStringSequenceSequence(init) => {
                 // Step 2.
@@ -234,17 +234,17 @@ impl Iterable for URLSearchParams {
     type Key = USVString;
     type Value = USVString;
 
-    fn get_iterable_length(&self) -> u32 {
+    fn get_iterable_length(&self, _cx: &mut JSContext) -> u32 {
         self.list.borrow().len() as u32
     }
 
-    fn get_value_at_index(&self, n: u32) -> USVString {
-        let value = self.list.borrow()[n as usize].1.clone();
+    fn get_value_at_index(&self, _cx: &mut JSContext, index: u32) -> USVString {
+        let value = self.list.borrow()[index as usize].1.clone();
         USVString(value)
     }
 
-    fn get_key_at_index(&self, n: u32) -> USVString {
-        let key = self.list.borrow()[n as usize].0.clone();
+    fn get_key_at_index(&self, _cx: &mut JSContext, index: u32) -> USVString {
+        let key = self.list.borrow()[index as usize].0.clone();
         USVString(key)
     }
 }

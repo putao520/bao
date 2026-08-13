@@ -3,12 +3,13 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
+use js::context::{JSContext, NoGC};
 use js::jsapi::{Heap, JSObject, Type};
 use js::rust::CustomAutoRooterGuard;
 use js::typedarray::{ArrayBufferView, ArrayBufferViewU8, HeapArrayBufferView, TypedArray};
-use rand::TryRngCore;
-use rand::rngs::OsRng;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use rand::TryRng;
+use rand::rngs::SysRng;
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use script_bindings::trace::RootedTraceableBox;
 use uuid::Uuid;
 
@@ -19,7 +20,6 @@ use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::subtlecrypto::SubtleCrypto;
-use crate::script_runtime::{CanGc, JSContext};
 
 // https://developer.mozilla.org/en-US/docs/Web/API/Crypto
 #[dom_struct]
@@ -36,8 +36,8 @@ impl Crypto {
         }
     }
 
-    pub(crate) fn new(global: &GlobalScope, can_gc: CanGc) -> DomRoot<Crypto> {
-        reflect_dom_object(Box::new(Crypto::new_inherited()), global, can_gc)
+    pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<Crypto> {
+        reflect_dom_object_with_cx(Box::new(Crypto::new_inherited()), global, cx)
     }
 }
 
@@ -52,7 +52,7 @@ impl CryptoMethods<crate::DomTypeHolder> for Crypto {
     /// <https://w3c.github.io/webcrypto/#Crypto-method-getRandomValues>
     fn GetRandomValues(
         &self,
-        _cx: JSContext,
+        no_gc: &NoGC,
         mut input: CustomAutoRooterGuard<ArrayBufferView>,
     ) -> Fallible<RootedTraceableBox<HeapArrayBufferView>> {
         let array_type = input.get_array_type();
@@ -60,7 +60,7 @@ impl CryptoMethods<crate::DomTypeHolder> for Crypto {
         if !is_integer_buffer(array_type) {
             Err(Error::TypeMismatch(None))
         } else {
-            let data = unsafe { input.as_mut_slice() };
+            let data = input.as_mut_slice_safe(no_gc).unwrap_or(&mut []);
             if data.len() > 65536 {
                 return Err(Error::QuotaExceeded {
                     quota: None,
@@ -68,7 +68,7 @@ impl CryptoMethods<crate::DomTypeHolder> for Crypto {
                 });
             }
 
-            if OsRng.try_fill_bytes(data).is_err() {
+            if SysRng.try_fill_bytes(data).is_err() {
                 return Err(Error::Operation(Some(
                     "Failed to generate random values".into(),
                 )));

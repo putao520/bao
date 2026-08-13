@@ -6,8 +6,8 @@ use std::cmp::Ordering;
 
 use dom_struct::dom_struct;
 use html5ever::{QualName, local_name, ns};
-use js::context::JSContext;
-use script_bindings::reflector::reflect_dom_object;
+use js::context::{JSContext, NoGC};
+use script_bindings::reflector::reflect_dom_object_with_cx;
 
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLCollectionBinding::HTMLCollectionMethods;
@@ -27,7 +27,6 @@ use crate::dom::html::htmloptionelement::HTMLOptionElement;
 use crate::dom::html::htmlselectelement::HTMLSelectElement;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct HTMLOptionsCollection {
@@ -45,15 +44,15 @@ impl HTMLOptionsCollection {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         window: &Window,
         select: &HTMLSelectElement,
         filter: Box<dyn CollectionFilter + 'static>,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLOptionsCollection> {
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(HTMLOptionsCollection::new_inherited(select, filter)),
             window,
-            can_gc,
+            cx,
         )
     }
 
@@ -84,13 +83,13 @@ impl HTMLOptionsCollectionMethods<crate::DomTypeHolder> for HTMLOptionsCollectio
     // https://github.com/servo/servo/issues/5875
     //
     /// <https://dom.spec.whatwg.org/#dom-htmlcollection-nameditem>
-    fn NamedGetter(&self, name: DOMString) -> Option<DomRoot<Element>> {
-        self.upcast().NamedItem(name)
+    fn NamedGetter(&self, cx: &JSContext, name: DOMString) -> Option<DomRoot<Element>> {
+        self.upcast().NamedItem(cx, name)
     }
 
     /// <https://heycam.github.io/webidl/#dfn-supported-property-names>
-    fn SupportedPropertyNames(&self) -> Vec<DOMString> {
-        self.upcast().SupportedPropertyNames()
+    fn SupportedPropertyNames(&self, no_gc: &NoGC) -> Vec<DOMString> {
+        self.upcast().SupportedPropertyNames(no_gc)
     }
 
     // FIXME: This shouldn't need to be implemented here since HTMLCollection (the parent of
@@ -98,8 +97,8 @@ impl HTMLOptionsCollectionMethods<crate::DomTypeHolder> for HTMLOptionsCollectio
     // https://github.com/servo/servo/issues/5875
     //
     /// <https://dom.spec.whatwg.org/#dom-htmlcollection-item>
-    fn IndexedGetter(&self, index: u32) -> Option<DomRoot<Element>> {
-        self.upcast().IndexedGetter(index)
+    fn IndexedGetter(&self, cx: &JSContext, index: u32) -> Option<DomRoot<Element>> {
+        self.upcast().IndexedGetter(cx, index)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-htmloptionscollection-setter>
@@ -111,7 +110,7 @@ impl HTMLOptionsCollectionMethods<crate::DomTypeHolder> for HTMLOptionsCollectio
     ) -> ErrorResult {
         if let Some(value) = value {
             // Step 2
-            let length = self.upcast().Length();
+            let length = self.upcast().Length(cx);
 
             // Step 3
             let n = index as i32 - length as i32;
@@ -127,7 +126,7 @@ impl HTMLOptionsCollectionMethods<crate::DomTypeHolder> for HTMLOptionsCollectio
             if n >= 0 {
                 Node::pre_insert(cx, node, &root, None).map(|_| ())
             } else {
-                let child = self.upcast().IndexedGetter(index).unwrap();
+                let child = self.upcast().IndexedGetter(cx, index).unwrap();
                 let child_node = child.upcast::<Node>();
 
                 root.ReplaceChild(cx, node, child_node).map(|_| ())
@@ -140,14 +139,14 @@ impl HTMLOptionsCollectionMethods<crate::DomTypeHolder> for HTMLOptionsCollectio
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-htmloptionscollection-length>
-    fn Length(&self) -> u32 {
-        self.upcast().Length()
+    fn Length(&self, cx: &JSContext) -> u32 {
+        self.upcast().Length(cx)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-htmloptionscollection-length>
     fn SetLength(&self, cx: &mut JSContext, length: u32) {
         // Step 1. Let current be the number of nodes represented by the collection.
-        let current = self.upcast().Length();
+        let current = self.upcast().Length(cx);
 
         match length.cmp(&current) {
             // Step 2. If the given value is greater than current, then:
@@ -198,7 +197,7 @@ impl HTMLOptionsCollectionMethods<crate::DomTypeHolder> for HTMLOptionsCollectio
         // HTMLOptionsCollection is rooted, then throw a "HierarchyRequestError"
         // DOMException.
         if node.is_ancestor_of(&root) {
-            return Err(Error::HierarchyRequest(None));
+            return Err(Error::HierarchyRequest(Some("Cannot add option or opt group element to options collection as it is an ancestor of the rooted node".into())));
         }
 
         if let Some(HTMLElementOrLong::HTMLElement(ref before_element)) = before {
@@ -207,7 +206,9 @@ impl HTMLOptionsCollectionMethods<crate::DomTypeHolder> for HTMLOptionsCollectio
             // then throw a "NotFoundError" DOMException.
             let before_node = before_element.upcast::<Node>();
             if !root.is_ancestor_of(before_node) {
-                return Err(Error::NotFound(None));
+                return Err(Error::NotFound(Some(
+                    "Could not find previous element to element that is to be added".into(),
+                )));
             }
 
             // Step 3: If element and before are the same element, then return.
@@ -223,7 +224,7 @@ impl HTMLOptionsCollectionMethods<crate::DomTypeHolder> for HTMLOptionsCollectio
             HTMLElementOrLong::HTMLElement(element) => Some(DomRoot::upcast::<Node>(element)),
             HTMLElementOrLong::Long(index) => self
                 .upcast()
-                .IndexedGetter(index as u32)
+                .IndexedGetter(cx, index as u32)
                 .map(DomRoot::upcast::<Node>),
         });
 
@@ -242,18 +243,18 @@ impl HTMLOptionsCollectionMethods<crate::DomTypeHolder> for HTMLOptionsCollectio
 
     /// <https://html.spec.whatwg.org/multipage/#dom-htmloptionscollection-remove>
     fn Remove(&self, cx: &mut JSContext, index: i32) {
-        if let Some(element) = self.upcast().IndexedGetter(index as u32) {
+        if let Some(element) = self.upcast().IndexedGetter(cx, index as u32) {
             element.Remove(cx);
         }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-htmloptionscollection-selectedindex>
-    fn SelectedIndex(&self) -> i32 {
+    fn SelectedIndex(&self, cx: &JSContext) -> i32 {
         self.upcast()
             .root_node()
             .downcast::<HTMLSelectElement>()
             .expect("HTMLOptionsCollection not rooted on a HTMLSelectElement")
-            .SelectedIndex()
+            .SelectedIndex(cx)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-htmloptionscollection-selectedindex>

@@ -8,15 +8,17 @@ use std::default::Default;
 use std::ops::Range;
 
 use bitflags::bitflags;
+use embedder_traits::{EmbedderMsg, ScriptToEmbedderChan};
 use keyboard_types::{Key, KeyState, Modifiers, NamedKey, ShortcutMatcher};
 use script_bindings::codegen::GenericBindings::MouseEventBinding::MouseEventMethods;
 use script_bindings::codegen::GenericBindings::UIEventBinding::UIEventMethods;
 use script_bindings::match_domstring_ascii;
 use script_bindings::trace::CustomTraceable;
-use servo_base::text::{Utf8CodeUnitLength, Utf16CodeUnitLength};
+use servo_base::generic_channel::GenericCallback;
+use servo_base::id::WebViewId;
+use servo_base::text::{Utf8CodeUnits, Utf16CodeUnits};
 use servo_base::{Rope, RopeIndex, RopeMovement, RopeSlice};
 
-use crate::clipboard_provider::ClipboardProvider;
 use crate::dom::bindings::codegen::Bindings::EventBinding::Event_Binding::EventMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
@@ -28,10 +30,38 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::inputevent::InputEvent;
 use crate::dom::keyboardevent::KeyboardEvent;
 use crate::dom::mouseevent::MouseEvent;
-use crate::dom::node::{Node, NodeTraits};
 use crate::dom::types::{ClipboardEvent, UIEvent};
 use crate::drag_data_store::Kind;
-use crate::script_runtime::CanGc;
+
+/// A trait which abstracts access to the embedder's clipboard in order to allow unit
+/// testing clipboard-dependent parts of `script`.
+pub trait ClipboardProvider {
+    /// Get the text content of the clipboard.
+    fn get_text(&mut self) -> Result<String, String>;
+    /// Set the text content of the clipboard.
+    fn set_text(&mut self, _: String);
+}
+
+#[derive(MallocSizeOf)]
+pub(crate) struct EmbedderClipboardProvider {
+    pub embedder_sender: ScriptToEmbedderChan,
+    pub webview_id: WebViewId,
+}
+
+impl ClipboardProvider for EmbedderClipboardProvider {
+    fn get_text(&mut self) -> Result<String, String> {
+        let (callback, rx) = GenericCallback::new_blocking().unwrap();
+        self.embedder_sender
+            .send(EmbedderMsg::GetClipboardText(self.webview_id, callback))
+            .unwrap();
+        rx.recv().unwrap()
+    }
+    fn set_text(&mut self, s: String) {
+        self.embedder_sender
+            .send(EmbedderMsg::SetClipboardText(self.webview_id, s))
+            .unwrap();
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Selection {
@@ -123,8 +153,8 @@ pub struct TextInput<T: ClipboardProvider> {
     /// The maximum number of UTF-16 code units this text input is allowed to hold.
     ///
     /// <https://html.spec.whatwg.org/multipage/#attr-fe-maxlength>
-    max_length: Option<Utf16CodeUnitLength>,
-    min_length: Option<Utf16CodeUnitLength>,
+    max_length: Option<Utf16CodeUnits>,
+    min_length: Option<Utf16CodeUnits>,
 
     /// Was last change made by set_content?
     was_last_change_by_set_content: bool,
@@ -240,15 +270,15 @@ pub(crate) const CMD_OR_CONTROL: Modifiers = Modifiers::CONTROL;
 /// The length in bytes of the first n code units in a string when encoded in UTF-16.
 ///
 /// If the string is fewer than n code units, returns the length of the whole string.
-fn len_of_first_n_code_units(text: &DOMString, n: Utf16CodeUnitLength) -> Utf8CodeUnitLength {
-    let mut utf8_len = Utf8CodeUnitLength::zero();
-    let mut utf16_len = Utf16CodeUnitLength::zero();
+fn len_of_first_n_code_units(text: &DOMString, n: Utf16CodeUnits) -> Utf8CodeUnits {
+    let mut utf8_len = Utf8CodeUnits::zero();
+    let mut utf16_len = Utf16CodeUnits::zero();
     for c in text.str().chars() {
-        utf16_len += Utf16CodeUnitLength(c.len_utf16());
+        utf16_len += Utf16CodeUnits(c.len_utf16());
         if utf16_len > n {
             break;
         }
-        utf8_len += Utf8CodeUnitLength(c.len_utf8());
+        utf8_len += Utf8CodeUnits(c.len_utf8());
     }
     utf8_len
 }
@@ -288,11 +318,11 @@ impl<T: ClipboardProvider> TextInput<T> {
         self.selection_direction
     }
 
-    pub fn set_max_length(&mut self, length: Option<Utf16CodeUnitLength>) {
+    pub fn set_max_length(&mut self, length: Option<Utf16CodeUnits>) {
         self.max_length = length;
     }
 
-    pub fn set_min_length(&mut self, length: Option<Utf16CodeUnitLength>) {
+    pub fn set_min_length(&mut self, length: Option<Utf16CodeUnits>) {
         self.min_length = length;
     }
 
@@ -346,12 +376,12 @@ impl<T: ClipboardProvider> TextInput<T> {
         }
     }
 
-    pub(crate) fn selection_start_utf16(&self) -> Utf16CodeUnitLength {
+    pub(crate) fn selection_start_utf16(&self) -> Utf16CodeUnits {
         self.rope.index_to_utf16_offset(self.selection_start())
     }
 
     /// The byte offset of the selection_start()
-    fn selection_start_offset(&self) -> Utf8CodeUnitLength {
+    fn selection_start_offset(&self) -> Utf8CodeUnits {
         self.rope.index_to_utf8_offset(self.selection_start())
     }
 
@@ -364,12 +394,12 @@ impl<T: ClipboardProvider> TextInput<T> {
         }
     }
 
-    pub(crate) fn selection_end_utf16(&self) -> Utf16CodeUnitLength {
+    pub(crate) fn selection_end_utf16(&self) -> Utf16CodeUnits {
         self.rope.index_to_utf16_offset(self.selection_end())
     }
 
     /// The byte offset of the selection_end()
-    pub fn selection_end_offset(&self) -> Utf8CodeUnitLength {
+    pub fn selection_end_offset(&self) -> Utf8CodeUnits {
         self.rope.index_to_utf8_offset(self.selection_end())
     }
 
@@ -384,7 +414,7 @@ impl<T: ClipboardProvider> TextInput<T> {
     /// Return the selection range as byte offsets from the start of the content.
     ///
     /// If there is no selection, returns an empty range at the edit point.
-    pub(crate) fn sorted_selection_offsets_range(&self) -> Range<Utf8CodeUnitLength> {
+    pub(crate) fn sorted_selection_offsets_range(&self) -> Range<Utf8CodeUnits> {
         self.selection_start_offset()..self.selection_end_offset()
     }
 
@@ -441,8 +471,8 @@ impl<T: ClipboardProvider> TextInput<T> {
     }
 
     /// The length of the selected text in UTF-16 code units.
-    fn selection_utf16_len(&self) -> Utf16CodeUnitLength {
-        Utf16CodeUnitLength(
+    fn selection_utf16_len(&self) -> Utf16CodeUnits {
+        Utf16CodeUnits(
             self.selection_slice()
                 .chars()
                 .map(char::len_utf16)
@@ -459,7 +489,7 @@ impl<T: ClipboardProvider> TextInput<T> {
                 self.len_utf16().saturating_sub(self.selection_utf16_len());
             let utf16_length_that_can_be_inserted =
                 max_length.saturating_sub(utf16_length_without_selection);
-            let Utf8CodeUnitLength(last_char_index) =
+            let Utf8CodeUnits(last_char_index) =
                 len_of_first_n_code_units(insert, utf16_length_that_can_be_inserted);
             &insert.str()[..last_char_index]
         } else {
@@ -860,14 +890,14 @@ impl<T: ClipboardProvider> TextInput<T> {
         )
     }
 
-    fn edit_point_for_mouse_event(&self, node: &Node, event: &MouseEvent) -> RopeIndex {
-        node.owner_window()
-            .text_index_query_on_node_for_event(node, event)
-            .map(|grapheme_index| {
+    fn edit_point_for_mouse_event(&self, event: &MouseEvent) -> RopeIndex {
+        event
+            .dom_offset_for_selection()
+            .map(|character_offset| {
                 self.rope.move_by(
                     Default::default(),
                     RopeMovement::Character,
-                    grapheme_index as isize,
+                    character_offset.0 as isize,
                 )
             })
             .unwrap_or_else(|| self.rope.last_index())
@@ -875,7 +905,7 @@ impl<T: ClipboardProvider> TextInput<T> {
 
     /// Handle a mouse even that has happened in this [`TextInput`]. Returns `true` if the selection
     /// in the input may have changed and `false` otherwise.
-    pub(crate) fn handle_mouse_event(&mut self, node: &Node, mouse_event: &MouseEvent) -> bool {
+    pub(crate) fn handle_mouse_event(&mut self, mouse_event: &MouseEvent) -> bool {
         // Cancel any ongoing drags if we see a mouseup of any kind or notice
         // that a button other than the primary button is pressed.
         let event_type = mouse_event.upcast::<Event>().type_();
@@ -884,11 +914,11 @@ impl<T: ClipboardProvider> TextInput<T> {
         }
 
         if event_type == atom!("mousedown") {
-            return self.handle_mousedown(node, mouse_event);
+            return self.handle_mousedown(mouse_event);
         }
 
         if event_type == atom!("mousemove") && self.currently_dragging {
-            self.edit_point = self.edit_point_for_mouse_event(node, mouse_event);
+            self.edit_point = self.edit_point_for_mouse_event(mouse_event);
             self.update_selection_direction();
             return true;
         }
@@ -900,7 +930,7 @@ impl<T: ClipboardProvider> TextInput<T> {
     /// given [`Node`].
     ///
     /// Returns `true` if the [`TextInput`] changed at all or `false` otherwise.
-    fn handle_mousedown(&mut self, node: &Node, mouse_event: &MouseEvent) -> bool {
+    fn handle_mousedown(&mut self, mouse_event: &MouseEvent) -> bool {
         assert_eq!(mouse_event.upcast::<Event>().type_(), atom!("mousedown"));
 
         // Only update the cursor in text fields when the primary buton is pressed.
@@ -931,7 +961,7 @@ impl<T: ClipboardProvider> TextInput<T> {
             },
             1 => {
                 self.clear_selection();
-                self.edit_point = self.edit_point_for_mouse_event(node, mouse_event);
+                self.edit_point = self.edit_point_for_mouse_event(mouse_event);
                 self.selection_origin = Some(self.edit_point);
                 self.update_selection_direction();
                 true
@@ -951,7 +981,7 @@ impl<T: ClipboardProvider> TextInput<T> {
     }
 
     /// The total number of code units required to encode the content in utf16.
-    pub(crate) fn len_utf16(&self) -> Utf16CodeUnitLength {
+    pub(crate) fn len_utf16(&self) -> Utf16CodeUnits {
         self.rope.len_utf16()
     }
 
@@ -984,8 +1014,8 @@ impl<T: ClipboardProvider> TextInput<T> {
 
     pub fn set_selection_range_utf16(
         &mut self,
-        start: Utf16CodeUnitLength,
-        end: Utf16CodeUnitLength,
+        start: Utf16CodeUnits,
+        end: Utf16CodeUnits,
         direction: SelectionDirection,
     ) {
         self.set_selection_range_utf8(
@@ -997,8 +1027,8 @@ impl<T: ClipboardProvider> TextInput<T> {
 
     pub fn set_selection_range_utf8(
         &mut self,
-        mut start: Utf8CodeUnitLength,
-        mut end: Utf8CodeUnitLength,
+        mut start: Utf8CodeUnits,
+        mut end: Utf8CodeUnits,
         direction: SelectionDirection,
     ) {
         let text_end = self.get_content().len_utf8();
@@ -1146,6 +1176,7 @@ impl<T: ClipboardProvider> TextInput<T> {
                 let global = target.global();
                 let window = global.as_window();
                 let event = InputEvent::new(
+                    cx,
                     window,
                     None,
                     atom!("input"),
@@ -1156,7 +1187,6 @@ impl<T: ClipboardProvider> TextInput<T> {
                     data.map(DOMString::from),
                     is_composing.into(),
                     input_type.as_str().into(),
-                    CanGc::from_cx(cx),
                 );
                 let event = event.upcast::<Event>();
                 event.set_composed(true);

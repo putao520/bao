@@ -2,10 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use aes::cipher::crypto_common::Key;
+use aes::cipher::common::{Generate, Key};
 use aes::{Aes128, Aes192, Aes256};
 use js::context::JSContext;
-use pkcs8::rand_core::{OsRng, RngCore};
 use zeroize::Zeroizing;
 
 use crate::dom::bindings::codegen::Bindings::CryptoKeyBinding::{
@@ -15,7 +14,7 @@ use crate::dom::bindings::codegen::Bindings::SubtleCryptoBinding::{JsonWebKey, K
 use crate::dom::bindings::error::Error;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
-use crate::dom::cryptokey::{CryptoKey, Handle};
+use crate::dom::cryptokey::{CryptoKey, Handle, KeyUsageVecHelper};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::subtlecrypto::{
     CryptoAlgorithm, ExportedKey, JsonWebKeyExt, JwkStringField, KeyAlgorithmAndDerivatives,
@@ -88,21 +87,21 @@ pub(crate) fn generate_key(
     // Step 4. If the key generation step fails, then throw an OperationError.
     let handle =
         match normalized_algorithm.length {
-            128 => {
-                let mut key_bytes = vec![0; 16];
-                OsRng.fill_bytes(&mut key_bytes);
-                Handle::Aes128Key(Key::<Aes128>::clone_from_slice(&key_bytes))
-            },
-            192 => {
-                let mut key_bytes = vec![0; 24];
-                OsRng.fill_bytes(&mut key_bytes);
-                Handle::Aes192Key(Key::<Aes192>::clone_from_slice(&key_bytes))
-            },
-            256 => {
-                let mut key_bytes = vec![0; 32];
-                OsRng.fill_bytes(&mut key_bytes);
-                Handle::Aes256Key(Key::<Aes256>::clone_from_slice(&key_bytes))
-            },
+            128 => Handle::Aes128Key(Key::<Aes128>::try_generate().map_err(|_| {
+                Error::Operation(Some(
+                    "Failed to generate AES key with length 128 bits".into(),
+                ))
+            })?),
+            192 => Handle::Aes192Key(Key::<Aes192>::try_generate().map_err(|_| {
+                Error::Operation(Some(
+                    "Failed to generate AES key with length 192 bits".into(),
+                ))
+            })?),
+            256 => Handle::Aes256Key(Key::<Aes256>::try_generate().map_err(|_| {
+                Error::Operation(Some(
+                    "Failed to generate AES key with length 256 bits".into(),
+                ))
+            })?),
             _ => return Err(Error::Operation(Some(
                 "The length member of normalizedAlgorithm is not equal to one of 128, 192 or 256"
                     .to_string(),
@@ -116,7 +115,7 @@ pub(crate) fn generate_key(
     // Step 9. Set the [[type]] internal slot of key to "secret".
     // Step 10. Set the [[algorithm]] internal slot of key to algorithm.
     // Step 11. Set the [[extractable]] internal slot of key to be extractable.
-    // Step 12. Set the [[usages]] internal slot of key to be usages.
+    // Step 12. Set the [[usages]] internal slot of key to be the normalized value of usages.
     let algorithm_name = match aes_algorithm {
         AesAlgorithm::AesCtr => {
             // Step 7. Set the name attribute of algorithm to "AES-CTR".
@@ -149,7 +148,7 @@ pub(crate) fn generate_key(
         KeyType::Secret,
         extractable,
         KeyAlgorithmAndDerivatives::AesKeyAlgorithm(algorithm),
-        usages,
+        usages.normalized_value(),
         handle,
     );
 
@@ -463,9 +462,18 @@ pub(crate) fn import_key(
     // Step 7. Set the length attribute of algorithm to the length, in bits, of data.
     // Step 8. Set the [[algorithm]] internal slot of key to algorithm.
     let handle = match data.len() {
-        16 => Handle::Aes128Key(Key::<Aes128>::clone_from_slice(&data)),
-        24 => Handle::Aes192Key(Key::<Aes192>::clone_from_slice(&data)),
-        32 => Handle::Aes256Key(Key::<Aes256>::clone_from_slice(&data)),
+        16 => Handle::Aes128Key(
+            Key::<Aes128>::try_from(data.as_slice())
+                .map_err(|_| Error::Operation(Some("Invalid AES-128 key".into())))?,
+        ),
+        24 => Handle::Aes192Key(
+            Key::<Aes192>::try_from(data.as_slice())
+                .map_err(|_| Error::Operation(Some("Invalid AES-192 key".into())))?,
+        ),
+        32 => Handle::Aes256Key(
+            Key::<Aes256>::try_from(data.as_slice())
+                .map_err(|_| Error::Operation(Some("Invalid AES-256 key".into())))?,
+        ),
         _ => {
             return Err(Error::Data(Some(
                 "The length in bits of data is not 128, 192 or 256".to_string(),
@@ -503,7 +511,7 @@ pub(crate) fn import_key(
         KeyType::Secret,
         extractable,
         KeyAlgorithmAndDerivatives::AesKeyAlgorithm(algorithm),
-        usages,
+        usages.normalized_value(),
         handle,
     );
 
@@ -722,7 +730,7 @@ pub(crate) fn export_key(
             }
 
             // Step 2.5. Set the key_ops attribute of jwk to equal the usages attribute of key.
-            jwk.set_key_ops(key.usages());
+            jwk.set_key_ops(&key.usages());
 
             // Step 2.6. Set the ext attribute of jwk to equal the [[extractable]] internal slot of
             // key.

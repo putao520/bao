@@ -7,6 +7,7 @@ use std::cell::Cell;
 
 use dom_struct::dom_struct;
 use encoding_rs::Encoding;
+use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 
@@ -20,7 +21,6 @@ use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::encoding::textdecodercommon::TextDecoderCommon;
 use crate::dom::globalscope::GlobalScope;
-use crate::script_runtime::CanGc;
 
 /// <https://encoding.spec.whatwg.org/#textdecoder>
 #[dom_struct]
@@ -34,10 +34,9 @@ pub(crate) struct TextDecoder {
     do_not_flush: Cell<bool>,
 }
 
-#[expect(non_snake_case)]
 impl TextDecoder {
-    fn new_inherited(encoding: &'static Encoding, fatal: bool, ignoreBOM: bool) -> TextDecoder {
-        let decoder = TextDecoderCommon::new_inherited(encoding, fatal, ignoreBOM);
+    fn new_inherited(encoding: &'static Encoding, fatal: bool, ignore_bom: bool) -> TextDecoder {
+        let decoder = TextDecoderCommon::new_inherited(encoding, fatal, ignore_bom);
         TextDecoder {
             reflector_: Reflector::new(),
             decoder,
@@ -52,18 +51,18 @@ impl TextDecoder {
     }
 
     fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         encoding: &'static Encoding,
         fatal: bool,
-        ignoreBOM: bool,
-        can_gc: CanGc,
+        ignore_bom: bool,
     ) -> DomRoot<TextDecoder> {
         reflect_dom_object_with_proto(
-            Box::new(TextDecoder::new_inherited(encoding, fatal, ignoreBOM)),
+            cx,
+            Box::new(TextDecoder::new_inherited(encoding, fatal, ignore_bom)),
             global,
             proto,
-            can_gc,
         )
     }
 }
@@ -71,9 +70,9 @@ impl TextDecoder {
 impl TextDecoderMethods<crate::DomTypeHolder> for TextDecoder {
     /// <https://encoding.spec.whatwg.org/#dom-textdecoder>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         label: DOMString,
         options: &TextDecoderBinding::TextDecoderOptions,
     ) -> Fallible<DomRoot<TextDecoder>> {
@@ -82,12 +81,12 @@ impl TextDecoderMethods<crate::DomTypeHolder> for TextDecoder {
             Some(enc) => enc,
         };
         Ok(TextDecoder::new(
+            cx,
             global,
             proto,
             encoding,
             options.fatal,
             options.ignoreBOM,
-            can_gc,
         ))
     }
 
@@ -109,6 +108,7 @@ impl TextDecoderMethods<crate::DomTypeHolder> for TextDecoder {
     /// <https://encoding.spec.whatwg.org/#dom-textdecoder-decode>
     fn Decode(
         &self,
+        cx: &mut JSContext,
         input: Option<ArrayBufferViewOrArrayBuffer>,
         options: &TextDecodeOptions,
     ) -> Fallible<USVString> {
@@ -143,7 +143,7 @@ impl TextDecoderMethods<crate::DomTypeHolder> for TextDecoder {
         // Step 5.3.2 If result is finished, then return the result of running serialize I/O
         //      queue with this and output.
         self.decoder
-            .decode(input.as_ref(), !options.stream)
+            .decode(cx.no_gc(), input.as_ref(), !options.stream)
             .map(USVString)
     }
 }
