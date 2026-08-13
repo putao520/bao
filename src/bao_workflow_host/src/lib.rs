@@ -30,7 +30,7 @@ use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainO
 pub unsafe fn js_to_rust_string(cx: *mut JSContext, val: JSVal) -> String {
     let ptr = val.to_string();
     match ::std::ptr::NonNull::new(ptr) {
-        Some(nn) => mozjs::conversions::jsstr_to_string(cx, nn),
+        Some(nn) => mozjs::conversions::unsafe_jsstr_to_string(cx, nn),
         None => String::new(),
     }
 }

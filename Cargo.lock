@@ -7746,6 +7746,7 @@ dependencies = [
  "serde",
  "servo-background-hang-monitor",
  "servo-base",
+ "servo-canvas",
  "servo-canvas-traits",
  "servo-config",
  "servo-constellation",

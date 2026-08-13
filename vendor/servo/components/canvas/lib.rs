@@ -7,6 +7,8 @@
 
 mod backend;
 pub mod canvas_data;
+// Bao vendor module: anti-fingerprinting canvas noise (REQ-STL-003).
+pub mod canvas_noise;
 pub mod canvas_paint_thread;
 mod peniko_conversions;
 #[cfg(feature = "vello")]

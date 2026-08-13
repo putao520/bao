@@ -26,6 +26,7 @@ use rand::Rng as RngCore;
 use request::RequestId;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use rustls_pki_types::CertificateDer;
 use servo_base::generic_channel::{
     self, CallbackSetter, GenericCallback, GenericOneshotSender, GenericSend, GenericSender,
     SendResult,
@@ -359,7 +360,7 @@ impl FetchMetadata {
     }
 }
 
-impl FetchTaskTarget for IpcSender<FetchResponseMsg> {
+impl FetchTaskTarget for GenericCallback<FetchResponseMsg> {
     fn process_request_body(&mut self, request: &Request) {
         let _ = self.send(FetchResponseMsg::ProcessRequestBody(request.id));
     }
@@ -779,7 +780,6 @@ pub enum CoreResourceMsg {
     NetworkMediator(IpcSender<CustomResponseMediator>, ImmutableOrigin),
     /// Message forwarded to file manager's handler
     ToFileManager(FileManagerThreadMsg),
-    StorePreloadedResponse(PreloadId, Response),
     TotalSizeOfInFlightKeepAliveRecords(PipelineId, GenericSender<u64>),
     /// Break the load handler loop, send a reply when done cleaning up local resources
     /// and exit
@@ -1368,7 +1368,7 @@ impl NetworkError {
         )
     }
 
-    pub fn from_hyper_error(error: &HyperError, certificate: Option<Vec<u8>>) -> Self {
+    pub fn from_hyper_error(error: &HyperError, certificate: Option<CertificateDer>) -> Self {
         let error_string = error.to_string();
         match certificate {
             Some(certificate) => NetworkError::SslValidation(error_string, certificate.to_vec()),

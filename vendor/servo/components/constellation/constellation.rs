@@ -96,13 +96,13 @@ use std::thread::JoinHandle;
 use std::{process, thread};
 
 use background_hang_monitor_api::{
-    BackgroundHangMonitorControlMsg, BackgroundHangMonitorRegister, HangMonitorAlert,
+    BackgroundHangMonitorControlMsg, BackgroundHangMonitorRegister, HangAlert,
 };
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use crossbeam_channel::{Receiver, Select, Sender, unbounded};
 use devtools_traits::{
     ChromeToDevtoolsControlMsg, DevtoolsControlMsg, DevtoolsPageInfo, NavigationState,
-    ScriptToDevtoolsControlMsg,
+    ScriptToDevtoolsControlMsg, WorkerId,
 };
 use embedder_traits::resources::{self, Resource};
 use embedder_traits::user_contents::{UserContentManagerId, UserContents};
@@ -134,7 +134,7 @@ use profile_traits::mem::ProfilerMsg;
 use profile_traits::{mem, time};
 use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng, make_rng};
 use rustc_hash::{FxHashMap, FxHashSet};
 use script_traits::{
     ConstellationInputEvent, DiscardBrowsingContext, DocumentActivity, NewPipelineInfo,
@@ -150,6 +150,7 @@ use servo_base::id::{
     PainterId, PipelineId, PipelineNamespace, PipelineNamespaceId, PipelineNamespaceRequest,
     ScriptEventLoopId, WebViewId,
 };
+use servo_base::threadboost::{BoostAffinity, ThreadPriority};
 use servo_base::{Epoch, generic_channel};
 #[cfg(feature = "bluetooth")]
 use servo_bluetooth_traits::BluetoothRequest;
@@ -166,10 +167,11 @@ use servo_constellation_traits::{
     ScreenshotReadinessResponse, ScriptToConstellationMessage, ScrollStateUpdate,
     ServiceWorkerAlgorithm, ServiceWorkerManagerFactory, ServiceWorkerMsg,
     StructuredSerializedData, TargetSnapshotParams, TraversalDirection, UserContentManagerAction,
-    WindowSizeType,
+    WindowSizeType, WorkerAnimationFrameTick,
 };
 use servo_url::{Host, ImmutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
+use storage_traits::cache_storage::CacheStorageThreadMessage;
 use storage_traits::client_storage::ClientStorageThreadMessage;
 use storage_traits::indexeddb::{IndexedDBThreadMsg, SyncOperation};
 use storage_traits::webstorage_thread::{WebStorageThreadMsg, WebStorageType};
@@ -265,6 +267,13 @@ struct BrowsingContextGroup {
     webgpus: HashMap<Host, WebGPU>,
 }
 
+struct WorkerAnimationFrameProvider {
+    webview_id: WebViewId,
+    pipeline_id: PipelineId,
+    sender: GenericSender<WorkerAnimationFrameTick>,
+    tick_pending: bool,
+}
+
 /// The `Constellation` itself. In the servo browser, there is one
 /// constellation, which maintains all of the browser global data.
 /// In embedded applications, there may be more than one constellation,
@@ -312,11 +321,11 @@ pub struct Constellation<STF, SWF> {
 
     /// A channel for the background hang monitor to send messages
     /// to the constellation.
-    pub(crate) background_hang_monitor_sender: GenericSender<HangMonitorAlert>,
+    pub(crate) background_hang_monitor_sender: GenericSender<HangAlert>,
 
     /// A channel for the constellation to receiver messages
     /// from the background hang monitor.
-    background_hang_monitor_receiver: RoutedReceiver<HangMonitorAlert>,
+    background_hang_monitor_receiver: RoutedReceiver<HangAlert>,
 
     /// A factory for creating layouts. This allows customizing the kind
     /// of layout created for a [`Constellation`] and prevents a circular crate
@@ -410,6 +419,8 @@ pub struct Constellation<STF, SWF> {
     /// The set of all the pipelines in the browser.  (See the `pipeline` module
     /// for more details.)
     pipelines: FxHashMap<PipelineId, Pipeline>,
+
+    worker_animation_frame_providers: FxHashMap<WorkerId, WorkerAnimationFrameProvider>,
 
     /// The set of all the browsing contexts in the browser.
     browsing_contexts: FxHashMap<BrowsingContextId, BrowsingContext>,
@@ -623,6 +634,7 @@ where
         thread::Builder::new()
             .name("Constellation".to_owned())
             .spawn(move || {
+                servo_base::threadboost::boost_thread(ThreadPriority::Elevated, BoostAffinity::Boost);
                 let (script_ipc_sender, script_ipc_receiver) =
                     generic_channel::channel().expect("ipc channel failure");
                 let script_receiver = script_ipc_receiver.route_preserving_errors();
@@ -710,6 +722,7 @@ where
                     broadcast_channels: Default::default(),
                     pipeline_interests: Default::default(),
                     pipelines: Default::default(),
+                    worker_animation_frame_providers: Default::default(),
                     browsing_contexts: Default::default(),
                     pending_changes: vec![],
                     next_pipeline_namespace_id: Cell::new(FIRST_CONTENT_PIPELINE_NAMESPACE_ID),
@@ -725,7 +738,7 @@ where
                     random_pipeline_closure: random_pipeline_closure_probability.map(|probability| {
                         let rng = random_pipeline_closure_seed
                             .map(|seed| SmallRng::seed_from_u64(seed as u64))
-                            .unwrap_or_else(SmallRng::from_os_rng);
+                            .unwrap_or_else(make_rng);
                         warn!("Randomly closing pipelines using seed {random_pipeline_closure_seed:?}.");
                         (rng, probability)
                     }),
@@ -788,8 +801,8 @@ where
         // will use this per-instance router, isolated from other BaoRuntime instances.
         servo_base::ipc_router::set_thread_router(self.router_proxy.clone());
 
-        // Start a fetch thread.
-        // In single-process mode this will be the global fetch thread;
+        // Start a fetch thread scoped to this Constellation's router.
+        // In single-process mode this will be the per-instance fetch thread;
         // in multi-process mode this will be used only by the canvas paint thread.
         let join_handle = start_fetch_thread(self.router_proxy.clone());
 
@@ -806,7 +819,8 @@ where
             StyleThreadPool::shutdown();
         }
 
-        // Shut down the fetch thread started above.
+        // BAO PATCH (BCE-20260627-009): Shut down the per-instance fetch thread
+        // started above (sender stored thread-locally by start_fetch_thread).
         exit_fetch_thread();
         join_handle
             .join()
@@ -947,12 +961,6 @@ where
         parent_pipeline_id: Option<PipelineId>,
         registered_domain_name: &Option<Host>,
     ) -> Option<Rc<EventLoop>> {
-        // Bao: force per-pipeline EventLoop isolation. Each TAB gets its own
-        // ScriptThread + JSContext, enabling per-TAB fingerprint isolation.
-        if opts::get().force_isolate_event_loops {
-            return None;
-        }
-
         // Never reuse an existing EventLoop when requesting a sandboxed origin.
         if load_data
             .creation_sandboxing_flag_set
@@ -1084,7 +1092,7 @@ where
             load_data,
             viewport_details: initial_viewport_details,
             user_content_manager_id,
-            theme,
+            embedder_theme: theme,
             target_snapshot_params,
         };
         let pipeline = match Pipeline::spawn(new_pipeline_info, event_loop, self, throttled) {
@@ -1249,7 +1257,7 @@ where
         enum Request {
             PipelineNamespace(PipelineNamespaceRequest),
             Script((WebViewId, PipelineId, ScriptToConstellationMessage)),
-            BackgroundHangMonitor(HangMonitorAlert),
+            BackgroundHangMonitor(HangAlert),
             Embedder(EmbedderToConstellationMessage),
             RemoveProcess(usize),
         }
@@ -1332,17 +1340,10 @@ where
     }
 
     #[servo_tracing::instrument(skip_all)]
-    fn handle_request_from_background_hang_monitor(&self, message: HangMonitorAlert) {
-        match message {
-            HangMonitorAlert::Profile(bytes) => self
-                .constellation_to_embedder_proxy
-                .send(ConstellationToEmbedderMsg::ReportProfile(bytes)),
-            HangMonitorAlert::Hang(hang) => {
-                // TODO: In case of a permanent hang being reported, add a "kill script" workflow,
-                // via the embedder?
-                warn!("Component hang alert: {:?}", hang);
-            },
-        }
+    fn handle_request_from_background_hang_monitor(&self, message: HangAlert) {
+        // TODO: In case of a permanent hang being reported, add a "kill script" workflow,
+        // via the embedder?
+        warn!("Component hang alert: {:?}", message);
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -1352,57 +1353,8 @@ where
             EmbedderToConstellationMessage::Exit => {
                 self.handle_exit();
             },
-            // Perform a navigation previously requested by script, if approved by the embedder.
-            // If there is already a pending page (self.pending_changes), it will not be overridden;
-            // However, if the id is not encompassed by another change, it will be.
             EmbedderToConstellationMessage::AllowNavigationResponse(pipeline_id, allowed) => {
-                let pending = self.pending_approval_navigations.remove(&pipeline_id);
-
-                let webview_id = match self.pipelines.get(&pipeline_id) {
-                    Some(pipeline) => pipeline.webview_id,
-                    None => return warn!("{}: Attempted to navigate after closure", pipeline_id),
-                };
-
-                match pending {
-                    Some(pending) => {
-                        if allowed {
-                            self.load_url(
-                                webview_id,
-                                pipeline_id,
-                                pending.load_data,
-                                pending.history_behaviour,
-                                pending.target_snapshot_params,
-                            );
-                        } else {
-                            if let Some((sender, id)) = &self.webdriver_load_status_sender &&
-                                pipeline_id == *id
-                            {
-                                let _ = sender.send(WebDriverLoadStatus::NavigationStop);
-                            }
-
-                            let pipeline_is_top_level_pipeline = self
-                                .browsing_contexts
-                                .get(&BrowsingContextId::from(webview_id))
-                                .is_some_and(|ctx| ctx.pipeline_id == pipeline_id);
-                            // If the navigation is refused, and this concerns an iframe,
-                            // we need to take it out of it's "delaying-load-events-mode".
-                            // https://html.spec.whatwg.org/multipage/#delaying-load-events-mode
-                            if !pipeline_is_top_level_pipeline {
-                                self.send_message_to_pipeline(
-                                    pipeline_id,
-                                    ScriptThreadMessage::StopDelayingLoadEventsMode(pipeline_id),
-                                    "Attempted to navigate after closure",
-                                );
-                            }
-                        }
-                    },
-                    None => {
-                        warn!(
-                            "{}: AllowNavigationResponse for unknown request",
-                            pipeline_id
-                        )
-                    },
-                }
+                self.handle_allow_navigation_response(pipeline_id, allowed);
             },
             // Load a new page from a typed url
             // If there is already a pending page (self.pending_changes), it will not be overridden;
@@ -1439,14 +1391,6 @@ where
             // Close a top level browsing context.
             EmbedderToConstellationMessage::CloseWebView(webview_id) => {
                 self.handle_close_top_level_browsing_context(webview_id);
-            },
-            // Panic a top level browsing context.
-            EmbedderToConstellationMessage::SendError(webview_id, error) => {
-                warn!("Constellation got a SendError message from WebView {webview_id:?}: {error}");
-                let Some(webview_id) = webview_id else {
-                    return;
-                };
-                self.handle_panic_in_webview(webview_id, &error, &None);
             },
             EmbedderToConstellationMessage::FocusWebView(webview_id) => {
                 self.handle_focus_web_view(webview_id);
@@ -1500,11 +1444,6 @@ where
             },
             EmbedderToConstellationMessage::RefreshCursor(pipeline_id) => {
                 self.handle_refresh_cursor(pipeline_id)
-            },
-            EmbedderToConstellationMessage::ToggleProfiler(rate, max_duration) => {
-                self.send_message_to_all_background_hang_monitors(
-                    BackgroundHangMonitorControlMsg::ToggleSampler(rate, max_duration),
-                );
             },
             EmbedderToConstellationMessage::ExitFullScreen(webview_id) => {
                 self.handle_exit_fullscreen_msg(webview_id);
@@ -1839,6 +1778,26 @@ where
             ScriptToConstellationMessage::ChangeRunningAnimationsState(animation_state) => {
                 self.handle_change_running_animations_state(source_pipeline_id, animation_state)
             },
+            ScriptToConstellationMessage::RegisterWorkerAnimationFrameProvider(
+                worker_id,
+                sender,
+            ) => self.handle_register_worker_animation_frame_provider(
+                webview_id,
+                source_pipeline_id,
+                worker_id,
+                sender,
+            ),
+            ScriptToConstellationMessage::UnregisterWorkerAnimationFrameProvider(worker_id) => {
+                self.handle_unregister_worker_animation_frame_provider(worker_id)
+            },
+            ScriptToConstellationMessage::ChangeWorkerAnimationFrameProviderState(
+                worker_id,
+                active,
+            ) => self.handle_change_worker_animation_frame_provider_state(
+                source_pipeline_id,
+                worker_id,
+                active,
+            ),
             // Ask the embedder for permission to load a new page.
             ScriptToConstellationMessage::LoadUrl(
                 load_data,
@@ -2803,6 +2762,10 @@ where
             generic_channel::channel().expect("Failed to create generic channel!");
         let (private_client_storage_generic_sender, private_client_storage_generic_receiver) =
             generic_channel::channel().expect("Failed to create generic channel!");
+        let (private_cache_storage_generic_sender, private_cache_storage_generic_receiver) =
+            generic_channel::channel().expect("Failed to create generic channel!");
+        let (public_cache_storage_generic_sender, public_cache_storage_generic_receiver) =
+            generic_channel::channel().expect("Failed to create generic channel!");
         let (public_indexeddb_ipc_sender, public_indexeddb_ipc_receiver) =
             generic_channel::channel().expect("Failed to create generic channel!");
         let (private_indexeddb_ipc_sender, private_indexeddb_ipc_receiver) =
@@ -2841,6 +2804,21 @@ where
             ClientStorageThreadMessage::Exit(private_client_storage_generic_sender),
         ) {
             warn!("Exit private client storage thread failed ({})", e);
+        }
+
+        debug!("Exiting public cache storage thread.");
+        if let Err(e) = generic_channel::GenericSend::send(
+            &self.public_storage_threads,
+            CacheStorageThreadMessage::Exit(public_cache_storage_generic_sender),
+        ) {
+            warn!("Exit public cache storage thread failed ({})", e);
+        }
+        debug!("Exiting private cache storage thread.");
+        if let Err(e) = generic_channel::GenericSend::send(
+            &self.private_storage_threads,
+            CacheStorageThreadMessage::Exit(private_cache_storage_generic_sender),
+        ) {
+            warn!("Exit private cache storage thread failed ({})", e);
         }
 
         debug!("Exiting public indexeddb resource threads.");
@@ -2953,6 +2931,12 @@ where
         if let Err(e) = private_client_storage_generic_receiver.recv() {
             warn!("Exit private client storage thread failed ({:?})", e);
         }
+        if let Err(e) = private_cache_storage_generic_receiver.recv() {
+            warn!("Exit private cache storage thread failed ({:?})", e);
+        }
+        if let Err(e) = public_cache_storage_generic_receiver.recv() {
+            warn!("Exit public cache storage thread failed ({:?})", e);
+        }
         if let Err(e) = public_indexeddb_ipc_receiver.recv() {
             warn!("Exit public indexeddb thread failed ({:?})", e);
         }
@@ -2971,11 +2955,8 @@ where
         // The Constellation's `router_proxy: Arc<RouterProxy>` is dropped here. When the
         // last Arc reference drops, `RouterProxy::drop()` calls `self.shutdown()`, cleanly
         // terminating this BaoRuntime's router thread. This is scoped to this instance
-        // only — the process-global `ipc_channel::router::ROUTER` is never touched, so a
+        // only - the process-global `ipc_channel::router::ROUTER` is never touched, so a
         // later BaoRuntime can create its own fresh RouterProxy and its routes work.
-        // (Previously the global ROUTER.shutdown() was commented out as a HACK; now that
-        // routing is per-instance via servo_base::ipc_router, the per-instance router
-        // shuts down cleanly without affecting siblings.)
 
         debug!("Shutting-down the async runtime in constellation.");
         self.async_runtime.shutdown();
@@ -2983,6 +2964,8 @@ where
 
     fn handle_pipeline_exited(&mut self, pipeline_id: PipelineId) {
         debug!("{}: Exited", pipeline_id);
+        self.remove_worker_animation_frame_providers_for_pipeline(pipeline_id);
+
         let Some(pipeline) = self.pipelines.remove(&pipeline_id) else {
             return;
         };
@@ -3759,22 +3742,221 @@ where
         pipeline_id: PipelineId,
         animation_state: AnimationState,
     ) {
-        if let Some(pipeline) = self.pipelines.get_mut(&pipeline_id) &&
-            pipeline.animation_state != animation_state
-        {
-            pipeline.animation_state = animation_state;
-            self.paint_proxy
-                .send(PaintMessage::ChangeRunningAnimationsState(
-                    pipeline.webview_id,
-                    pipeline_id,
-                    animation_state,
-                ))
+        match animation_state {
+            AnimationState::AnimationCallbacksPresent => {
+                self.handle_change_document_animation_frame_provider_state(pipeline_id, true);
+            },
+            AnimationState::AnimationCallbacksAbsent => {
+                self.handle_change_document_animation_frame_provider_state(pipeline_id, false);
+            },
+            AnimationState::AnimationsPresent | AnimationState::NoAnimationsPresent => {
+                if let Some(pipeline) = self.pipelines.get_mut(&pipeline_id) &&
+                    pipeline.animation_state != animation_state
+                {
+                    pipeline.animation_state = animation_state;
+                    self.paint_proxy
+                        .send(PaintMessage::ChangeRunningAnimationsState(
+                            pipeline.webview_id,
+                            pipeline_id,
+                            animation_state,
+                        ))
+                }
+            },
         }
     }
 
+    fn send_animation_frame_callbacks_state_if_changed(&mut self, pipeline_id: PipelineId) {
+        let Some(pipeline) = self.pipelines.get_mut(&pipeline_id) else {
+            return;
+        };
+
+        // Paint only tracks per-pipeline callback state.
+        let callbacks_active =
+            pipeline.document_callbacks_active || !pipeline.worker_callbacks_active.is_empty();
+        if pipeline.last_callbacks_active_sent_to_paint == callbacks_active {
+            return;
+        }
+
+        pipeline.last_callbacks_active_sent_to_paint = callbacks_active;
+        let animation_state = if callbacks_active {
+            AnimationState::AnimationCallbacksPresent
+        } else {
+            AnimationState::AnimationCallbacksAbsent
+        };
+
+        self.paint_proxy
+            .send(PaintMessage::ChangeRunningAnimationsState(
+                pipeline.webview_id,
+                pipeline_id,
+                animation_state,
+            ));
+    }
+
+    fn handle_change_document_animation_frame_provider_state(
+        &mut self,
+        pipeline_id: PipelineId,
+        active: bool,
+    ) {
+        let Some(pipeline) = self.pipelines.get_mut(&pipeline_id) else {
+            return;
+        };
+
+        if pipeline.document_callbacks_active == active {
+            return;
+        }
+
+        pipeline.document_callbacks_active = active;
+        self.send_animation_frame_callbacks_state_if_changed(pipeline_id);
+    }
+
+    fn handle_register_worker_animation_frame_provider(
+        &mut self,
+        webview_id: WebViewId,
+        pipeline_id: PipelineId,
+        worker_id: WorkerId,
+        sender: GenericSender<WorkerAnimationFrameTick>,
+    ) {
+        if !self.pipelines.contains_key(&pipeline_id) {
+            debug!(
+                "Ignoring worker animation frame provider for closed pipeline: worker={worker_id:?}, pipeline={pipeline_id:?} ---->",
+            );
+            return;
+        }
+
+        debug!(
+            "Registering worker animation frame provider: worker={worker_id:?}, pipeline={pipeline_id:?}---->",
+        );
+        self.worker_animation_frame_providers.insert(
+            worker_id,
+            WorkerAnimationFrameProvider {
+                webview_id,
+                pipeline_id,
+                sender,
+                tick_pending: false,
+            },
+        );
+    }
+
+    fn handle_unregister_worker_animation_frame_provider(&mut self, worker_id: WorkerId) {
+        let Some(provider) = self.worker_animation_frame_providers.remove(&worker_id) else {
+            return;
+        };
+
+        debug!(
+            "Unregistering worker animation frame provider: worker={worker_id:?}, pipeline={:?}",
+            provider.pipeline_id,
+        );
+        if let Some(pipeline) = self.pipelines.get_mut(&provider.pipeline_id) {
+            pipeline.worker_callbacks_active.remove(&worker_id);
+        }
+        self.send_animation_frame_callbacks_state_if_changed(provider.pipeline_id);
+    }
+
+    fn remove_worker_animation_frame_providers_for_pipeline(&mut self, pipeline_id: PipelineId) {
+        let worker_ids = self
+            .worker_animation_frame_providers
+            .iter()
+            .filter_map(|(worker_id, provider)| {
+                (provider.pipeline_id == pipeline_id).then_some(*worker_id)
+            })
+            .collect::<Vec<_>>();
+
+        if worker_ids.is_empty() {
+            return;
+        }
+
+        for worker_id in &worker_ids {
+            self.worker_animation_frame_providers.remove(worker_id);
+        }
+
+        if let Some(pipeline) = self.pipelines.get_mut(&pipeline_id) {
+            let mut changed = false;
+            for worker_id in &worker_ids {
+                changed |= pipeline.worker_callbacks_active.remove(worker_id);
+            }
+            if changed {
+                self.send_animation_frame_callbacks_state_if_changed(pipeline_id);
+            }
+        }
+    }
+
+    fn handle_change_worker_animation_frame_provider_state(
+        &mut self,
+        pipeline_id: PipelineId,
+        worker_id: WorkerId,
+        active: bool,
+    ) {
+        let Some(provider) = self.worker_animation_frame_providers.get_mut(&worker_id) else {
+            return;
+        };
+        let provider_pipeline_id = provider.pipeline_id;
+        let provider_webview_id = provider.webview_id;
+        if provider_pipeline_id != pipeline_id {
+            warn!("Worker animation frame state arrived for an unexpected pipeline --->");
+            return;
+        }
+        let tick_was_pending = std::mem::take(&mut provider.tick_pending);
+
+        if !self.pipelines.contains_key(&pipeline_id) {
+            debug!(
+                "Removing worker animation frame provider for closed pipeline: worker={worker_id:?}, pipeline={pipeline_id:?}",
+            );
+            self.worker_animation_frame_providers.remove(&worker_id);
+            return;
+        }
+
+        let Some(pipeline) = self.pipelines.get_mut(&pipeline_id) else {
+            return;
+        };
+
+        let changed = if active {
+            pipeline.worker_callbacks_active.insert(worker_id)
+        } else {
+            pipeline.worker_callbacks_active.remove(&worker_id)
+        };
+        debug!(
+            "Worker animation frame provider state: worker={worker_id:?}, pipeline={pipeline_id:?}, active={active}, changed={changed}",
+        );
+        if changed {
+            self.send_animation_frame_callbacks_state_if_changed(pipeline_id);
+        } else if active && tick_was_pending {
+            // Worker only rAF may not produce a display list so request a frame
+            // for the next refresh-driver tick.
+            self.paint_proxy
+                .send(PaintMessage::GenerateFrame(vec![PainterId::from(
+                    provider_webview_id,
+                )]));
+        }
+    }
+
+    fn deliver_rendering_opportunity_to_worker(&mut self, worker_id: WorkerId) {
+        let mut send_failed = false;
+        {
+            let Some(provider) = self.worker_animation_frame_providers.get_mut(&worker_id) else {
+                return;
+            };
+            if provider.tick_pending {
+                debug!("Skipping pending rendering opportunity: worker={worker_id:?}");
+                return;
+            }
+            if provider.sender.send(WorkerAnimationFrameTick).is_err() {
+                send_failed = true;
+            } else {
+                debug!("Delivered rendering opportunity: worker={worker_id:?}");
+                provider.tick_pending = true;
+            }
+        }
+
+        if send_failed {
+            self.handle_unregister_worker_animation_frame_provider(worker_id);
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#rendering-opportunity>
     #[servo_tracing::instrument(skip_all)]
     fn handle_tick_animation(&mut self, webview_ids: Vec<WebViewId>) {
         let mut animating_event_loops = HashSet::new();
+        let mut animating_workers = FxHashSet::default();
 
         for webview_id in webview_ids.iter() {
             for browsing_context in self.fully_active_browsing_contexts_iter(*webview_id) {
@@ -3782,6 +3964,9 @@ where
                     continue;
                 };
 
+                animating_workers.extend(pipeline.worker_callbacks_active.iter().copied());
+
+                // Window rAF still follows the existing script-thread path.
                 let event_loop = &pipeline.event_loop;
                 if !animating_event_loops.contains(&event_loop.id()) {
                     // No error handling here. It's unclear what to do when this fails as the error isn't associated
@@ -3792,6 +3977,25 @@ where
                         .send(ScriptThreadMessage::TickAllAnimations(webview_ids.clone()));
                     animating_event_loops.insert(event_loop.id());
                 }
+            }
+        }
+
+        // Step 6.1.2 runs on the worker event loop; constellation only sends
+        // tick messages for workers active on this refresh tick.
+        for worker_id in animating_workers {
+            let Some(provider) = self.worker_animation_frame_providers.get(&worker_id) else {
+                error!(
+                    "No animation frame provider found for active worker: worker={worker_id:?}, webviews={webview_ids:?}",
+                );
+                continue;
+            };
+            if webview_ids.contains(&provider.webview_id) {
+                self.deliver_rendering_opportunity_to_worker(worker_id);
+            } else {
+                error!(
+                    "Worker animation frame provider's WebView is not part of the current refresh tick: worker={worker_id:?}, provider_webview={:?}, webviews={webview_ids:?}",
+                    provider.webview_id,
+                );
             }
         }
     }
@@ -3837,14 +4041,75 @@ where
                 });
             },
         };
-        // Allow the embedder to handle the url itself
-        self.constellation_to_embedder_proxy.send(
-            ConstellationToEmbedderMsg::AllowNavigationRequest(
-                webview_id,
-                source_id,
-                load_data.url,
-            ),
-        );
+
+        if load_data.is_initial_about_blank {
+            assert_eq!(load_data.url.as_str(), "about:blank");
+            // The initial about:blank is not a navigation; the embedder only
+            // cares about a navigation that follows it.
+            self.handle_allow_navigation_response(source_id, true);
+        } else {
+            // Allow the embedder to handle the url itself
+            self.constellation_to_embedder_proxy.send(
+                ConstellationToEmbedderMsg::AllowNavigationRequest(
+                    webview_id,
+                    source_id,
+                    load_data.url,
+                ),
+            );
+        }
+    }
+
+    /// Perform a navigation previously requested by script, if approved by the embedder.
+    /// If there is already a pending page (self.pending_changes), it will not be overridden;
+    /// However, if the id is not encompassed by another change, it will be.
+    fn handle_allow_navigation_response(&mut self, pipeline_id: PipelineId, allowed: bool) {
+        let pending = self.pending_approval_navigations.remove(&pipeline_id);
+
+        let webview_id = match self.pipelines.get(&pipeline_id) {
+            Some(pipeline) => pipeline.webview_id,
+            None => return warn!("{}: Attempted to navigate after closure", pipeline_id),
+        };
+
+        match pending {
+            Some(pending) => {
+                if allowed {
+                    self.load_url(
+                        webview_id,
+                        pipeline_id,
+                        pending.load_data,
+                        pending.history_behaviour,
+                        pending.target_snapshot_params,
+                    );
+                } else {
+                    if let Some((sender, id)) = &self.webdriver_load_status_sender &&
+                        pipeline_id == *id
+                    {
+                        let _ = sender.send(WebDriverLoadStatus::NavigationStop);
+                    }
+
+                    let pipeline_is_top_level_pipeline = self
+                        .browsing_contexts
+                        .get(&BrowsingContextId::from(webview_id))
+                        .is_some_and(|ctx| ctx.pipeline_id == pipeline_id);
+                    // If the navigation is refused, and this concerns an iframe,
+                    // we need to take it out of it's "delaying-load-events-mode".
+                    // https://html.spec.whatwg.org/multipage/#delaying-load-events-mode
+                    if !pipeline_is_top_level_pipeline {
+                        self.send_message_to_pipeline(
+                            pipeline_id,
+                            ScriptThreadMessage::StopDelayingLoadEventsMode(pipeline_id),
+                            "Attempted to navigate after closure",
+                        );
+                    }
+                }
+            },
+            None => {
+                warn!(
+                    "{}: AllowNavigationResponse for unknown request",
+                    pipeline_id
+                )
+            },
+        }
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -4231,11 +4496,17 @@ where
     ) {
         let new_pipeline_id = match new_reloader {
             NeedsToReload::No(pipeline_id) => pipeline_id,
-            NeedsToReload::Yes(pipeline_id, load_data) => {
+            NeedsToReload::Yes(pipeline_id, mut load_data) => {
                 debug!(
                     "{}: Reloading document {}",
                     browsing_context_id, pipeline_id,
                 );
+
+                // <https://html.spec.whatwg.org/multipage/#process-a-navigate-fetch>
+                // Step 7. If entry's document state's reload pending is true, then set request's reload-navigation flag.
+                // Step 8. Otherwise, if entry's document state's ever populated is true, then set request's history-navigation flag.
+                load_data.history_navigation = true;
+                load_data.reload_navigation = false;
 
                 let (
                     webview_id,
@@ -4350,6 +4621,10 @@ where
         history_state_id: Option<HistoryStateId>,
         url: ServoUrl,
     ) {
+        if let Some(pipeline) = self.pipelines.get_mut(&pipeline_id) {
+            pipeline.history_state_id = history_state_id;
+            pipeline.url = url.clone();
+        }
         let msg = ScriptThreadMessage::UpdateHistoryState(pipeline_id, history_state_id, url);
         self.send_message_to_pipeline(pipeline_id, msg, "History state updated after closure");
     }
@@ -4924,6 +5199,10 @@ where
                         Some(previous_url.clone())
                     }
                 },
+                SessionHistoryDiff::Hash { ref new_url, .. } => {
+                    *previous_url = new_url.clone();
+                    Some(new_url.clone())
+                },
                 _ => Some(previous_url.clone()),
             };
 
@@ -4947,6 +5226,10 @@ where
                 } else {
                     Some(previous_url.clone())
                 }
+            },
+            SessionHistoryDiff::Hash { ref old_url, .. } => {
+                *previous_url = old_url.clone();
+                Some(old_url.clone())
             },
             _ => Some(previous_url.clone()),
         };
@@ -5936,8 +6219,8 @@ where
                 metric_value,
                 first_reflow,
             ),
-            PaintMetricEvent::LargestContentfulPaint(metric_value, area, url) => (
-                ProgressiveWebMetricType::LargestContentfulPaint { area, url },
+            PaintMetricEvent::LargestContentfulPaint(metric_value, area, url, id) => (
+                ProgressiveWebMetricType::LargestContentfulPaint { area, url, id },
                 metric_value,
                 false, // LCP doesn't care about first reflow
             ),
@@ -5955,7 +6238,10 @@ where
     fn create_canvas_paint_thread(
         &self,
     ) -> (Sender<ConstellationCanvasMsg>, GenericSender<CanvasMsg>) {
-        CanvasPaintThread::start(self.paint_proxy.cross_process_paint_api.clone())
+        CanvasPaintThread::start(
+            self.paint_proxy.cross_process_paint_api.clone(),
+            self.mem_profiler_chan.clone(),
+        )
     }
 
     fn handle_embedder_control_response(

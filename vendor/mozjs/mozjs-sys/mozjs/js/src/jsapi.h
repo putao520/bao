@@ -555,6 +555,15 @@ extern JS_PUBLIC_API JSFunction* JS_NewFunction(JSContext* cx, JSNative call,
 
 namespace JS {
 
+// Bao extension: callable NativeObject whose typeof is "undefined" because the
+// underlying JSClass carries JSCLASS_EMULATES_UNDEFINED. Used by Bao to mirror
+// Bun's `Buffer.transcode` stub (present but typeof === "undefined", throws
+// "Not implemented" on call). Returned object exposes |name| and |length|
+// properties mirroring JSFunction.
+extern JS_PUBLIC_API JSObject* JS_NewEmulatesUndefinedFunction(
+    JSContext* cx, JSNative native, unsigned nargs, const char* name);
+
+
 extern JS_PUBLIC_API JSFunction* GetSelfHostedFunction(
     JSContext* cx, const char* selfHostedName, HandleId id, unsigned nargs);
 

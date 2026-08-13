@@ -4641,6 +4641,7 @@ impl ServoDelegate for BaoServoDelegate {
             ConsoleLogLevel::Warn => "warning",
             ConsoleLogLevel::Error => "error",
             ConsoleLogLevel::Trace => "verbose",
+            ConsoleLogLevel::Dir => "info",
         };
         log::trace!("[servo] {message}");
 
@@ -4657,6 +4658,7 @@ impl ServoDelegate for BaoServoDelegate {
                 ConsoleLogLevel::Warn => ConsoleLevel::Warning,
                 ConsoleLogLevel::Error => ConsoleLevel::Error,
                 ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
+                ConsoleLogLevel::Dir => ConsoleLevel::Info,
             };
             let _ = tx.send(ServoEvent::Console {
                 target_id: "0".to_string(),
@@ -4832,6 +4834,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
             ConsoleLogLevel::Warn => "warning",
             ConsoleLogLevel::Error => "error",
             ConsoleLogLevel::Trace => "verbose",
+            ConsoleLogLevel::Dir => "info",
         };
         log::trace!("[webview] {message}");
 
@@ -4847,6 +4850,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 ConsoleLogLevel::Warn => ConsoleLevel::Warning,
                 ConsoleLogLevel::Error => ConsoleLevel::Error,
                 ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
+                ConsoleLogLevel::Dir => ConsoleLevel::Info,
             };
             let _ = tx.send(ServoEvent::Console {
                 target_id: "0".to_string(),
@@ -5295,6 +5299,7 @@ mod tests {
                 ConsoleLogLevel::Warn => ConsoleLevel::Warning,
                 ConsoleLogLevel::Error => ConsoleLevel::Error,
                 ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
+                ConsoleLogLevel::Dir => ConsoleLevel::Info,
             };
             assert_eq!(
                 mapped, expected,

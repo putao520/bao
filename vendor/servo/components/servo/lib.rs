@@ -102,6 +102,44 @@ pub use webrender_api::units::{
     DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, DeviceVector2D,
 };
 
+/// Register a callback to be executed on this WebView's ScriptThread the next
+/// time `handle_evaluate_javascript` runs, before the evaluated JS executes.
+///
+/// The callback receives `(cx, global)` as `(*mut c_void, *mut c_void)` which
+/// are actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
+/// Cast them to the correct types in your callback.
+///
+/// This enables embedders (e.g., Bao) to register Rust host functions on
+/// servo's Window global object, making them available to page JavaScript.
+pub fn register_script_thread_callback(
+    webview_id: WebViewId,
+    callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send>,
+) {
+    script::register_embedder_callback(webview_id, callback);
+}
+
+/// Register a callback to be executed on the Worker thread the next time a
+/// servo-native `DedicatedWorkerGlobalScope::run_worker_scope` finishes
+/// constructing the Worker global object.
+///
+/// The callback receives `(cx: *mut c_void, global: *mut c_void)` which are
+/// actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
+///
+/// Bao vendor patch (DEC-WK-001 / TASK-1: servo-native Worker path): inject
+/// stealth profile inheritance, WorkerHandle lifecycle tracking, and
+/// self.close()/importScripts native hooks.
+pub fn register_worker_scope_callback(
+    callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send>,
+) {
+    script::register_worker_scope_callback(callback);
+}
+
+/// Set anti-fingerprinting canvas noise seed and amplitude (REQ-STL-003).
+/// The noise is applied at the servo rendering layer, undetectable from JS.
+pub fn set_canvas_noise_seed(seed: u64, noise_amplitude: f64) {
+    servo_canvas::canvas_noise::set_global_canvas_noise(seed, noise_amplitude);
+}
+
 pub use crate::clipboard_delegate::{ClipboardDelegate, StringRequest};
 #[cfg(feature = "gamepad")]
 pub use crate::gamepad_delegate::{

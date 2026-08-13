@@ -348,6 +348,18 @@ pub struct Preferences {
     pub dom_canvas_msg_buffer_size: u64,
     /// Whether to expose servo internals on the global object
     pub expose_servointernals_globally: bool,
+    /// Path for the HTTP disk cache (empty = disabled)
+    pub network_http_disk_cache: String,
+    /// Maximum size of the HTTP disk cache in bytes
+    pub network_http_disk_cache_size: u64,
+    /// Maximum accepted content length for network responses
+    pub network_max_content_length: u64,
+    /// Number of workers for the canvas thread pool
+    pub thread_pool_canvas_workers: u64,
+    /// Minimum number of layout jobs to use parallel layout
+    pub layout_parallelism_job_count_minimum: u64,
+    /// Minimum size of layout jobs to use parallel layout
+    pub layout_parallelism_job_size_minimum: u64,
     /// The user-agent to use for Servo. This can also be set via [`UserAgentPlatform`] in
     /// order to set the value to the default value for the given platform.
     pub user_agent: String,
@@ -528,6 +540,12 @@ impl Preferences {
             dom_web_animations_enabled: false,
             dom_canvas_msg_buffer_size: 16,
             expose_servointernals_globally: false,
+            network_http_disk_cache: String::new(),
+            network_http_disk_cache_size: 1024 * 1024 * 100,
+            network_max_content_length: 5 * 1024 * 1024,
+            thread_pool_canvas_workers: 3,
+            layout_parallelism_job_count_minimum: 4,
+            layout_parallelism_job_size_minimum: 16,
             webgl_testing_context_creation_error: false,
             user_agent: String::new(),
             viewport_meta_enabled: false,

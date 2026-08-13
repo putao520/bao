@@ -2278,6 +2278,93 @@ JS_PUBLIC_API JSFunction* JS_NewFunction(JSContext* cx, JSNative native,
              : NewNativeFunction(cx, native, nargs, atom);
 }
 
+namespace {
+
+// Bao: callable object that masquerades as undefined under |typeof|.
+//
+// JSC supports a `masqueradesAsUndefined` flag on InternalFunction so that
+// `typeof Buffer.transcode === "undefined"` while the value is still callable
+// (and calling it throws "Not implemented"). SpiderMonkey has no equivalent on
+// JSFunction, but its |TypeOfObject| checks |JSCLASS_EMULATES_UNDEFINED|
+// before |isCallable()|, so a plain NativeObject whose JSClass carries that
+// flag AND a non-null `call` hook is simultaneously
+//   * typeof -> "undefined"   (EmulatesUndefined short-circuits TypeOfObject)
+//   * callable                (callHook() != nullptr => isCallable())
+//
+// This class wires a JSNative through JSClassOps::call so the object can be
+// invoked like a function. buffer.test.js's "transcode" assertion relies on
+// this exact behaviour. The JSNative pointer is stored in reserved slot 0 as
+// a private GC-thing-free value so multiple instances with different natives
+// can coexist (no runtime-global mutable state).
+constexpr size_t kBaoUndefinedNativeSlot = 0;
+
+static bool BaoEmulatesUndefinedCall(JSContext* cx, unsigned argc,
+                                     JS::Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  JSNative native = reinterpret_cast<JSNative>(
+      args.callee().as<JSObject>().as<NativeObject>().getReservedSlot(
+          kBaoUndefinedNativeSlot).toPrivate());
+  return native(cx, argc, vp);
+}
+
+static const JSClassOps BaoEmulatesUndefinedClassOps = {
+    nullptr,                       // addProperty
+    nullptr,                       // delProperty
+    nullptr,                       // enumerate
+    nullptr,                       // newEnumerate
+    nullptr,                       // resolve
+    nullptr,                       // mayResolve
+    nullptr,                       // finalize
+    BaoEmulatesUndefinedCall,      // call
+    nullptr,                       // construct
+    nullptr,                       // trace
+};
+
+static const JSClass BaoEmulatesUndefinedClass = {
+    "Function",
+    JSCLASS_EMULATES_UNDEFINED |
+        JSCLASS_HAS_RESERVED_SLOTS(1),
+    &BaoEmulatesUndefinedClassOps,
+};
+
+}  // namespace
+
+JS_PUBLIC_API JSObject* JS_NewEmulatesUndefinedFunction(JSContext* cx,
+                                                        JSNative native,
+                                                        unsigned nargs,
+                                                        const char* name) {
+  MOZ_ASSERT(!cx->zone()->isAtomsZone());
+  AssertHeapIsIdle();
+  CHECK_THREAD(cx);
+
+  Rooted<JSObject*> obj(cx,
+                        NewBuiltinClassInstance(cx, &BaoEmulatesUndefinedClass));
+  if (!obj) {
+    return nullptr;
+  }
+  obj->as<NativeObject>().setReservedSlot(
+      kBaoUndefinedNativeSlot, PrivateValue(reinterpret_cast<void*>(native)));
+
+  // Mirror JSFunction: expose `name` and `length` so debug/print paths that
+  // walk the property chain still see a function-like object.
+  if (name) {
+    Rooted<JSString*> str(cx, JS_NewStringCopyZ(cx, name));
+    if (!str) {
+      return nullptr;
+    }
+    if (!JS_DefineProperty(cx, obj, "name", str,
+                           JSPROP_READONLY | JSPROP_ENUMERATE)) {
+      return nullptr;
+    }
+  }
+  if (!JS_DefineProperty(cx, obj, "length", int32_t(nargs),
+                         JSPROP_READONLY | JSPROP_ENUMERATE)) {
+    return nullptr;
+  }
+
+  return obj;
+}
+
 JS_PUBLIC_API JSFunction* JS::GetSelfHostedFunction(JSContext* cx,
                                                     const char* selfHostedName,
                                                     HandleId id,

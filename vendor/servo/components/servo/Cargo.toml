@@ -132,6 +132,8 @@ servo-base = { workspace = true }
 servo-bluetooth = { workspace = true, optional = true }
 servo-bluetooth-traits = { workspace = true, optional = true }
 servo-canvas-traits = { workspace = true }
+# Bao vendor dep: canvas noise (REQ-STL-003) re-exported via set_canvas_noise_seed
+servo-canvas = { workspace = true }
 servo-config = { workspace = true }
 servo-constellation = { workspace = true }
 servo-constellation-traits = { workspace = true }
