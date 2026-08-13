@@ -3427,16 +3427,258 @@ fn string_to_equivalent_number_value(str: &[u8]) -> f64 {
     if !bun_core::is_all_ascii(str) {
         return f64::NAN;
     }
-    // TODO(port): move to *_sys
-    unsafe extern "C" {
-        // NOT `safe fn`: callee dereferences `ptr` for `len` bytes — caller must
-        // guarantee the (ptr,len) pair is a valid readable range.
-        fn JSC__jsToNumber(ptr: *const u8, len: usize) -> f64;
+    js_string_to_number(str)
+}
+
+/// ASCII JS whitespace per ECMA-262 (`StrWhiteSpaceChar`: WhiteSpace ∪
+/// LineTerminator, ASCII subset — the non-ASCII members are unreachable here
+/// because the caller gates non-ASCII input to NaN, matching the previous
+/// Latin-1 FFI contract of JSC's `jsToNumber`).
+const JS_ASCII_WHITESPACE: [u8; 6] = [b'\t', b'\n', b'\x0b', b'\x0c', b'\r', b' '];
+
+/// ECMA-262 `StringToNumber` (https://262.ecma-international.org/14.0/#sec-stringtonumber,
+/// grammar `StringNumericLiteral`) over ASCII input — pure-Rust replacement for
+/// JSC's `jsToNumber` FFI (upstream `src/jsc/bindings/DoubleFormatter.cpp`,
+/// which delegates to `JSC::jsToNumber`).
+///
+/// Accepts: optional JS whitespace, then a signed `StrDecimalLiteral` or
+/// `Infinity`, or a sign-less `0x`/`0o`/`0b` `NonDecimalIntegerLiteral`, then
+/// optional whitespace. Anything else (including a partial numeric prefix) is
+/// NaN. The decimal path reuses `bun_core::fmt::parse_double_raw`
+/// (the `WTF.parseDouble` port, correctly rounded via Rust std) under a
+/// full-match check; the radix path is exact below 2^128 and correctly
+/// rounded (guard/sticky, round-to-nearest-even) above it.
+fn js_string_to_number(bytes: &[u8]) -> f64 {
+    let mut s = bytes;
+    while let [first, rest @ ..] = s {
+        if JS_ASCII_WHITESPACE.contains(first) {
+            s = rest;
+        } else {
+            break;
+        }
     }
-    // SAFETY: `str` is a live `&[u8]`, so `as_ptr()` is non-null and readable for
-    // exactly `str.len()` bytes for the duration of this call; the C++ side reads
-    // only (no mutation, no retention past return).
-    unsafe { JSC__jsToNumber(str.as_ptr(), str.len()) }
+    while let [rest @ .., last] = s {
+        if JS_ASCII_WHITESPACE.contains(last) {
+            s = rest;
+        } else {
+            break;
+        }
+    }
+    if s.is_empty() {
+        return 0.0;
+    }
+
+    let (signed, neg, body) = match s[0] {
+        b'+' => (true, false, &s[1..]),
+        b'-' => (true, true, &s[1..]),
+        _ => (false, false, s),
+    };
+
+    // StrDecimalLiteral allows a sign; Infinity is a StrDecimalLiteral.
+    if body == b"Infinity" {
+        return if neg { f64::NEG_INFINITY } else { f64::INFINITY };
+    }
+
+    // NonDecimalIntegerLiteral (0x/0o/0b) forbids any sign, `+` included.
+    if !signed {
+        if let Some(v) = non_decimal_integer_literal(body) {
+            return v;
+        }
+    }
+
+    // StrDecimalLiteral: full-match decimal via the WTF.parseDouble port.
+    let mut consumed = 0usize;
+    let v = bun_core::fmt::parse_double_raw(s, &mut consumed);
+    if consumed == s.len() {
+        v
+    } else {
+        f64::NAN
+    }
+}
+
+/// ECMA-262 `NonDecimalIntegerLiteral` — `0x`/`0X`, `0o`/`0O`, or `0b`/`0B`
+/// followed by one or more valid digits (no sign).
+///
+/// Returns `Some(value)` when the radix prefix matched (`Some(NaN)` for
+/// matched prefix with missing/invalid digits), `None` when `body` carries no
+/// radix prefix.
+fn non_decimal_integer_literal(body: &[u8]) -> Option<f64> {
+    let (radix, shift): (u32, u32) = match (body.first(), body.get(1)) {
+        (Some(b'0'), Some(b'x' | b'X')) => (16, 4),
+        (Some(b'0'), Some(b'o' | b'O')) => (8, 3),
+        (Some(b'0'), Some(b'b' | b'B')) => (2, 1),
+        _ => return None,
+    };
+    let digits = &body[2..];
+    if digits.is_empty() {
+        return Some(f64::NAN);
+    }
+
+    // Value = mant·2^scale + tail, mant held exactly in u128. Once `mant`
+    // can no longer absorb a digit (shifting would overflow 128 bits), each
+    // further digit slides the window: scale += shift and the digit folds
+    // into `tail_nonzero`. `mant >= 2^(128-shift)` from then on, so the final
+    // 53-bit rounding always drops strictly more bits than the tail.
+    let mut mant: u128 = 0;
+    let mut scale: u32 = 0;
+    let mut tail_nonzero = false;
+    for &d in digits {
+        let v = match d {
+            b'0'..=b'9' => u32::from(d - b'0'),
+            b'a'..=b'f' if radix == 16 => u32::from(d - b'a') + 10,
+            b'A'..=b'F' if radix == 16 => u32::from(d - b'A') + 10,
+            _ => return Some(f64::NAN),
+        };
+        if v >= radix {
+            return Some(f64::NAN);
+        }
+        if mant >> (128 - shift) == 0 {
+            mant = (mant << shift) | u128::from(v);
+        } else {
+            scale += shift;
+            tail_nonzero |= v != 0;
+        }
+    }
+
+    if mant == 0 {
+        return Some(0.0);
+    }
+    if scale == 0 {
+        // Exact in u128; `as f64` rounds to nearest-even when > 53 bits.
+        return Some(mant as f64);
+    }
+
+    // Round mant·2^scale (+tail) to f64, round-to-nearest-even: keep the top
+    // 53 bits, use the next bit as guard and everything below (mant remainder
+    // OR nonzero tail) as sticky.
+    let bitlen = 128 - mant.leading_zeros();
+    let k = bitlen - 53; // >= 72: saturation implies bitlen >= 125
+    let dropped = mant & ((1u128 << k) - 1);
+    let guard = (dropped >> (k - 1)) & 1 == 1;
+    let sticky = dropped & ((1u128 << (k - 1)) - 1) != 0 || tail_nonzero;
+    let mut m = (mant >> k) as u64;
+    if guard && (sticky || m & 1 == 1) {
+        m += 1; // m <= 2^53 — still exact as f64
+    }
+    let exp = i64::from(k + scale);
+    if exp > 1023 {
+        return Some(f64::INFINITY);
+    }
+    // m·2^exp: exact while in range; IEEE mul rounds to inf on overflow.
+    let p = f64::from_bits(((exp + 1023) as u64) << 52);
+    Some(m as f64 * p)
+}
+
+#[cfg(test)]
+mod js_to_number_tests {
+    use super::*;
+
+    fn num(s: &str) -> f64 {
+        string_to_equivalent_number_value(s.as_bytes())
+    }
+
+    #[test]
+    fn decimal_grammar() {
+        assert_eq!(num(""), 0.0);
+        assert_eq!(num("1"), 1.0);
+        assert_eq!(num(" 1 "), 1.0);
+        assert_eq!(num("\t\n\x0b\x0c\r 42 "), 42.0);
+        assert_eq!(num("+1"), 1.0);
+        assert_eq!(num("-1"), -1.0);
+        assert_eq!(num(".5"), 0.5);
+        assert_eq!(num("5."), 5.0);
+        assert_eq!(num("1e2"), 100.0);
+        assert_eq!(num("1E+2"), 100.0);
+        assert_eq!(num("1e-2"), 0.01);
+        assert_eq!(num("-1.25e2"), -125.0);
+        assert_eq!(num("0"), 0.0);
+        // "010" is decimal 10 — legacy octal is NOT in StringNumericLiteral.
+        assert_eq!(num("010"), 10.0);
+        // Overflow/underflow of the decimal exponent.
+        assert_eq!(num("1e400"), f64::INFINITY);
+        assert_eq!(num("1e-400"), 0.0);
+    }
+
+    #[test]
+    fn negative_zero_is_preserved() {
+        let v = num("-0");
+        assert_eq!(v, 0.0);
+        assert!(v.is_sign_negative());
+        assert_eq!(num("0"), 0.0);
+        assert!(num("0").is_sign_positive());
+    }
+
+    #[test]
+    fn infinity_literal() {
+        assert_eq!(num("Infinity"), f64::INFINITY);
+        assert_eq!(num("+Infinity"), f64::INFINITY);
+        assert_eq!(num("-Infinity"), f64::NEG_INFINITY);
+        assert_eq!(num(" Infinity "), f64::INFINITY);
+        // Exact spelling only.
+        assert!(num("infinity").is_nan());
+        assert!(num("INFINITY").is_nan());
+        assert!(num("InfinityX").is_nan());
+    }
+
+    #[test]
+    fn radix_literals() {
+        assert_eq!(num("0x10"), 16.0);
+        assert_eq!(num("0X1F"), 31.0);
+        assert_eq!(num("0b101"), 5.0);
+        assert_eq!(num("0B1"), 1.0);
+        assert_eq!(num("0o17"), 15.0);
+        assert_eq!(num("0O7"), 7.0);
+        assert_eq!(num(" 0x1f "), 31.0);
+        assert_eq!(num("0x000001"), 1.0);
+        // Sign is not part of NonDecimalIntegerLiteral.
+        assert!(num("+0x1").is_nan());
+        assert!(num("-0x1").is_nan());
+        // Missing/invalid digits.
+        assert!(num("0x").is_nan());
+        assert!(num("0b2").is_nan());
+        assert!(num("0o8").is_nan());
+        assert!(num("0xg").is_nan());
+    }
+
+    #[test]
+    fn radix_wide_digits_round_correctly() {
+        // 33 hex digits: exercises the guard/sticky path beyond u128.
+        // 0x1 followed by 32 zeros = 2^128 exactly representable.
+        assert_eq!(num("0x100000000000000000000000000000000"), 2f64.powi(128));
+        // 2^128 + 1 rounds back down to 2^128 (1 << half-ulp).
+        assert_eq!(num("0x100000000000000000000000000000001"), 2f64.powi(128));
+        // 0xFFF…FF (35 digits) = 2^140 - 1 rounds up to 2^140.
+        assert_eq!(num("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"), 2f64.powi(140));
+        // Binary with > 128 significant bits: 0b1 followed by 200 zeros = 2^200.
+        assert_eq!(num(&format!("0b1{}", "0".repeat(200))), 2f64.powi(200));
+        // Absurd magnitude overflows to infinity.
+        let huge = format!("0x1{}", "0".repeat(1000));
+        assert_eq!(num(&huge), f64::INFINITY);
+    }
+
+    #[test]
+    fn invalid_inputs_are_nan() {
+        assert!(num("abc").is_nan());
+        assert!(num("1a").is_nan());
+        assert!(num("1.2.3").is_nan());
+        assert!(num("1e").is_nan());
+        assert!(num("1e+").is_nan());
+        assert!(num("1_0").is_nan());
+        assert!(num("++1").is_nan());
+        assert!(num("+").is_nan());
+        assert!(num("-").is_nan());
+        assert!(num("e1").is_nan());
+        assert!(num(".5.").is_nan());
+        assert!(num("0x1 1").is_nan()); // interior whitespace is not trimmed
+    }
+
+    #[test]
+    fn non_ascii_is_nan() {
+        // Pre-existing Latin-1 FFI contract kept: non-ASCII input → NaN
+        // (NBSP is JS whitespace in full ToNumber, but the caller gate predates
+        // this port and is unchanged).
+        assert!(string_to_equivalent_number_value(&[0x20, 0x31, 0xc2, 0xa0]).is_nan());
+    }
 }
 
 // ported from: src/js_parser/ast/Expr.zig

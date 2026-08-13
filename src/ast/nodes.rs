@@ -1333,17 +1333,124 @@ pub mod math {
     /// `Number.MIN_SAFE_INTEGER` (-(2^53 - 1))
     pub const MIN_SAFE_INTEGER: f64 = -9007199254740991.0;
 
-    unsafe extern "C" {
-        // Zig: `extern "c" fn Bun__JSC__operationMathPow(f64, f64) f64;`
-        // Pure FFI (value-type args, no pointers, no errno) → no caller preconditions.
-        safe fn Bun__JSC__operationMathPow(x: f64, y: f64) -> f64;
+    /// WebKit `maxExponentForIntegerMathPow` (`Source/JavaScriptCore/runtime/
+    /// MathCommon.h`) — exponent ceiling for the exact integer fast path.
+    const MAX_EXPONENT_FOR_INTEGER_MATH_POW: i32 = 1000;
+
+    /// JSC-compatible `Math.pow`: port of WebKit `operationMathPow`
+    /// (`Source/JavaScriptCore/runtime/MathCommon.cpp`, oven-sh/WebKit @
+    /// 7a0b13626e5db69aa5a32d037431d381df5dfb61), previously reached through
+    /// the Math.pow FFI in upstream `src/jsc/bindings/bindings.cpp`.
+    ///
+    /// Diverges from plain `powf` on: NaN exponent, |base| == 1 with infinite
+    /// exponent (NaN), ±0.5 exponents (sqrt path), and small non-negative
+    /// integer exponents (exact exponentiation-by-squaring).
+    pub fn pow(x: f64, y: f64) -> f64 {
+        if y.is_nan() {
+            return f64::NAN;
+        }
+        let absolute_base = x.abs();
+        if absolute_base == 1.0 && y.is_infinite() {
+            return f64::NAN;
+        }
+
+        if y == 0.5 {
+            if absolute_base == 0.0 {
+                return 0.0;
+            }
+            if absolute_base == f64::INFINITY {
+                return f64::INFINITY;
+            }
+            return x.sqrt();
+        }
+
+        if y == -0.5 {
+            if absolute_base == 0.0 {
+                return f64::INFINITY;
+            }
+            if absolute_base == f64::INFINITY {
+                return 0.0;
+            }
+            return 1.0 / x.sqrt();
+        }
+
+        // `as i32` saturates (out-of-range → i32::MIN/MAX sentinel), failing the
+        // round-trip below exactly like C++'s hardware cvttsd2si conversion.
+        let mut y_as_int = y as i32;
+        if f64::from(y_as_int) == y
+            && (0..=MAX_EXPONENT_FOR_INTEGER_MATH_POW).contains(&y_as_int)
+        {
+            // If the exponent is a small positive int32 integer, we do a fast exponentiation
+            let mut result = 1.0;
+            let mut xd = x;
+            while y_as_int != 0 {
+                if y_as_int & 1 != 0 {
+                    result *= xd;
+                }
+                xd *= xd;
+                y_as_int >>= 1;
+            }
+            return result;
+        }
+        // WebKit `mathPowInternal` is libm `pow` on every non-Darwin-ARM target.
+        x.powf(y)
     }
 
-    /// JSC-compatible `Math.pow` (matches WebKit's `operationMathPow` corner-case
-    /// handling for NaN/±∞/±0 — `std::powf` differs on a handful of inputs).
-    #[inline]
-    pub fn pow(x: f64, y: f64) -> f64 {
-        Bun__JSC__operationMathPow(x, y)
+    #[cfg(test)]
+    mod pow_tests {
+        use super::*;
+
+        #[test]
+        fn exponent_zero_and_zero_base() {
+            // 0**0, ±0**±0 → 1 (integer fast path, y == 0).
+            assert_eq!(pow(0.0, 0.0), 1.0);
+            assert_eq!(pow(-0.0, 0.0), 1.0);
+            assert_eq!(pow(0.0, -0.0), 1.0);
+            assert_eq!(pow(-0.0, -0.0), 1.0);
+            // NaN base with zero exponent still folds to 1 (exponent checked first).
+            assert_eq!(pow(f64::NAN, 0.0), 1.0);
+        }
+
+        #[test]
+        fn integer_exponentiation_by_squaring() {
+            assert_eq!(pow(2.0, 10.0), 1024.0);
+            assert_eq!(pow(-2.0, 3.0), -8.0);
+            assert_eq!(pow(-2.0, 2.0), 4.0);
+            assert_eq!(pow(-8.0, 3.0), -512.0);
+            assert_eq!(pow(1.5, 4.0), 5.0625);
+            assert_eq!(pow(-1.5, 3.0), -3.375);
+            assert_eq!(pow(7.0, 5.0), 16807.0);
+            // Boundary of the fast path: 2^1000 exact, 2^1001 via powf.
+            assert_eq!(pow(2.0, 1000.0), 2f64.powi(1000));
+            assert_eq!(pow(2.0, 1001.0), 2f64.powi(1001));
+            // Negative integer exponents fall through to libm pow.
+            assert_eq!(pow(2.0, -2.0), 0.25);
+        }
+
+        #[test]
+        fn nan_and_infinity_propagation() {
+            assert!(pow(f64::NAN, 1.0).is_nan());
+            assert!(pow(1.0, f64::NAN).is_nan());
+            // |base| == 1 with ±∞ exponent → NaN (ECMA-262 Math.pow).
+            assert!(pow(1.0, f64::INFINITY).is_nan());
+            assert!(pow(-1.0, f64::INFINITY).is_nan());
+            assert!(pow(1.0, f64::NEG_INFINITY).is_nan());
+            assert_eq!(pow(f64::INFINITY, 2.0), f64::INFINITY);
+            assert_eq!(pow(2.0, f64::INFINITY), f64::INFINITY);
+        }
+
+        #[test]
+        fn half_exponent_sqrt_paths() {
+            assert_eq!(pow(4.0, 0.5), 2.0);
+            assert_eq!(pow(2.0, 0.5), 2f64.sqrt());
+            assert_eq!(pow(0.0, 0.5), 0.0);
+            assert_eq!(pow(f64::INFINITY, 0.5), f64::INFINITY);
+            assert_eq!(pow(4.0, -0.5), 0.5);
+            assert_eq!(pow(0.0, -0.5), f64::INFINITY);
+            assert_eq!(pow(f64::INFINITY, -0.5), 0.0);
+            // Negative base with 0.5 → sqrt(Negative) → NaN.
+            assert!(pow(-4.0, 0.5).is_nan());
+        }
     }
 }
 // ─── from bun_bundler::v2::MangledProps (src/bundler/bundle_v2.zig) ─────────
