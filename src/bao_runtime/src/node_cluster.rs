@@ -524,13 +524,56 @@ unsafe extern "C" fn cluster_fork(
         script_path.as_bytes().to_vec().into_boxed_slice(),
     ];
 
+    // ─── IPC channel for cluster fd passing ────────────────────────────────
+    //
+    // Create a socketpair upfront so we can pass BAO_CLUSTER_IPC_FD=<n> to the
+    // worker. The worker (running under `bao run`) reads this env var on boot
+    // and wraps the fd into an IpcChannel for `process.on('message')`. The
+    // primary registers its end in CP_IPC_CHANNELS[pid] so worker.send(msg)
+    // and the cluster round-robin server handle handoff can reach it.
+    //
+    // We intentionally keep both ends in the parent here, then dup the child
+    // end into the spawn via env (the child reads BAO_CLUSTER_IPC_FD, dups it
+    // to fd 3 itself, registers process.send/process.on('message')). This is
+    // simpler than teaching spawn_sync about extra_fds and matches the
+    // Node.js `NODE_CHANNEL_FD` environment-variable contract.
+    let ipc_pair = crate::ipc_channel::create_ipc_pair();
+    let (parent_sock, child_sock) = match ipc_pair {
+        Ok(pair) => pair,
+        Err(e) => {
+            let msg = format!("cluster.fork: socketpair failed: {}", e);
+            let c_msg = bun_core::ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+    };
+    let child_fd_num = ::std::os::unix::io::AsRawFd::as_raw_fd(&child_sock);
+
+    // Inject BAO_CLUSTER_IPC_FD into env. (The child_sock stays open in the
+    // parent until spawn completes — once the child execs it inherits the fd
+    // via the env var; we close the parent's dup of child_sock after spawn.)
+    let cluster_env_ipc = format!("BAO_CLUSTER_IPC_FD={}", child_fd_num);
+    {
+        let key_bytes = b"BAO_CLUSTER_IPC_FD";
+        envp_vec.retain(|e| {
+            let eq_pos = e.iter().position(|&b| b == b'=');
+            match eq_pos {
+                Some(pos) => &e[..pos] != key_bytes,
+                None => true,
+            }
+        });
+        envp_vec.push(cluster_env_ipc.as_bytes().to_vec().into_boxed_slice());
+    }
+
     // Use child_process.spawn via the native cp_spawn function.
     // We'll call it directly by building the spawn args.
     // Actually, it's simpler to use bun_spawn directly here.
 
     use bun_spawn::sync::{self as spawn_sync, Stdio as SyncStdio};
 
-    // Build envp C string array.
+    // Build envp C string array. MUST be rebuilt after we injected
+    // BAO_CLUSTER_IPC_FD into envp_vec above (else the ptrs point at stale
+    // buffer addresses after the Vec::push).
     let mut envp_c_ptrs: Vec<*const ::std::ffi::c_char> = Vec::with_capacity(envp_vec.len() + 1);
     for entry in &envp_vec {
         envp_c_ptrs.push(entry.as_ptr() as *const ::std::ffi::c_char);
@@ -569,6 +612,26 @@ unsafe extern "C" fn cluster_fork(
 
     let pid = spawn_result.pid;
     let exit_code = super::node_child_process::status_to_exit_code(&spawn_result.status);
+
+    // ─── Register parent IPC channel + close child-side dup ─────────────────
+    //
+    // Wrap parent_sock into an IpcChannel keyed by pid in CP_IPC_CHANNELS so
+    // worker.send(msg) / round-robin fd handoff can reach it. We then close
+    // the child_sock (the child has already dup'd it via BAO_CLUSTER_IPC_FD).
+    //
+    // SAFETY: parent_sock owns its fd via UnixStream; IpcChannel::new takes
+    // ownership. child_sock drop closes the parent's redundant dup of the
+    // child end (the child kept its own fd via the env var).
+    {
+        let channel = crate::ipc_channel::IpcChannel::new(parent_sock);
+        if let Ok(mut registry) = super::node_child_process::CP_IPC_CHANNELS.lock() {
+            registry.insert(
+                pid as i32,
+                ::std::sync::Arc::new(::std::sync::Mutex::new(channel)),
+            );
+        }
+    }
+    drop(child_sock);
 
     // Build a Worker JS object.
     let worker_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
@@ -660,6 +723,34 @@ unsafe extern "C" fn cluster_fork(
     // _pid (for native kill)
     rooted!(&in(cx_ref) let npid_v = Int32Value(pid as i32));
     JS_DefineProperty(cx, worker_h, c"_pid".as_ptr(), npid_v.handle().into(), 0);
+
+    // ─── Mount `send(msg[, sendHandle])` on the worker ─────────────────────
+    //
+    // Delegates to the parent IPC channel registered in CP_IPC_CHANNELS[pid]
+    // by cluster_fork. Uses the same wire format as child.send in
+    // node_child_process (newline-delimited JSON, optional SCM_RIGHTS fd).
+    w2::JS_DefineFunction(
+        cx_ref,
+        worker_r.handle(),
+        c"send".as_ptr(),
+        Some(cluster_worker_send),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    // `disconnect()` — close the IPC channel and remove from registry.
+    w2::JS_DefineFunction(
+        cx_ref,
+        worker_r.handle(),
+        c"disconnect".as_ptr(),
+        Some(cluster_worker_disconnect),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    // `_ipcFd` — child-side fd number that the worker reads from
+    // BAO_CLUSTER_IPC_FD (set by parent before spawn). Surfaced for the JS
+    // shim's process.send bridge in the worker boot path.
+    rooted!(&in(cx_ref) let ipcfd_v = Int32Value(child_fd_num));
+    JS_DefineProperty(cx, worker_h, c"_ipcFd".as_ptr(), ipcfd_v.handle().into(), 0);
 
     // Register worker in cluster.workers
     {
@@ -792,7 +883,174 @@ unsafe extern "C" fn cluster_setup_primary(
     true
 }
 
-// ─── JS shim for Worker EventEmitter + process.send bridge ─────────────────
+// ─── Native: worker.send(msg[, sendHandle]) ────────────────────────────────
+//
+// Send a JSON message on the cluster worker's IPC channel. If a numeric fd is
+// passed as the second argument, the message is sent via SCM_RIGHTS ancillary
+// data (fd handoff — used by master round-robin server handle passing).
+//
+// The worker's IPC channel is keyed by pid in CP_IPC_CHANNELS (populated by
+// cluster_fork). Args from JS:
+//   args[0] = msg   (string — caller already JSON.stringify'd)
+//   args[1] = fd    (optional i32 — if present, use SCM_RIGHTS path)
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cluster_worker_send(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    // The `this` value is the Worker JS object — read its `_pid`.
+    let this_v = *args.thisv().ptr;
+    let this_obj = if this_v.is_object() {
+        this_v.to_object()
+    } else {
+        ::std::ptr::null_mut::<JSObject>()
+    };
+
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let this_r = this_obj);
+    let mut pid_v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        this_r.handle().into(),
+        c"_pid".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut pid_v,
+        },
+    );
+    let pid = if pid_v.is_int32() {
+        pid_v.to_int32()
+    } else {
+        0
+    };
+    if pid == 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+
+    let json_str = if argc > 0 {
+        let v = *args.get(0).ptr;
+        if v.is_string() {
+            crate::js_to_rust_string(cx, v)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    let fd_opt: Option<i32> = if argc > 1 {
+        let v = *args.get(1).ptr;
+        if v.is_int32() {
+            let n = v.to_int32();
+            if n >= 0 {
+                Some(n)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Look up channel by pid, send under short-lived lock. No `?` operator
+    // since we are in an `extern "C" fn` returning bool — chain with
+    // `.map_err().and_then()` instead.
+    let outcome: ::std::result::Result<(), String> =
+        super::node_child_process::CP_IPC_CHANNELS
+            .lock()
+            .map_err(|e| format!("registry lock poisoned: {}", e))
+            .and_then(|registry| {
+                registry
+                    .get(&pid)
+                    .cloned()
+                    .ok_or_else(|| format!("no ipc channel for worker pid {}", pid))
+                    .and_then(|chan_mtx| {
+                        chan_mtx
+                            .lock()
+                            .map_err(|e| format!("channel lock poisoned: {}", e))
+                            .and_then(|mut chan| {
+                                if let Some(fd) = fd_opt {
+                                    chan.send_handle(&json_str, fd)
+                                        .map_err(|e| format!("send_handle: {}", e))
+                                } else {
+                                    chan.send_json(&json_str)
+                                        .map_err(|e| format!("send_json: {}", e))
+                                }
+                            })
+                    })
+            });
+
+    match outcome {
+        Ok(()) => {
+            args.rval().set(BooleanValue(true));
+            true
+        }
+        Err(msg) => {
+            let c_msg = bun_core::ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            args.rval().set(BooleanValue(false));
+            false
+        }
+    }
+}
+
+// ─── Native: worker.disconnect() ───────────────────────────────────────────
+//
+// Close the IPC channel from the primary side. Removes the channel from
+// CP_IPC_CHANNELS so subsequent send/recv calls return errors cleanly.
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cluster_worker_disconnect(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+
+    // Read pid from `this`.
+    let this_v = *args.thisv().ptr;
+    let this_obj = if this_v.is_object() {
+        this_v.to_object()
+    } else {
+        ::std::ptr::null_mut::<JSObject>()
+    };
+
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_r = this_obj);
+    let mut pid_v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        this_r.handle().into(),
+        c"_pid".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut pid_v,
+        },
+    );
+    let pid = if pid_v.is_int32() {
+        pid_v.to_int32()
+    } else {
+        0
+    };
+    if pid != 0 {
+        if let Ok(mut registry) = super::node_child_process::CP_IPC_CHANNELS.lock() {
+            registry.remove(&pid);
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
 
 const CLUSTER_JS: &str = r#"
 (function() {

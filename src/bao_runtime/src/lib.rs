@@ -16,6 +16,8 @@ pub mod bun_sqlite;
 pub mod bun_test;
 pub mod dispatch;
 pub mod fetch_api;
+// @trace REQ-ENG-006 [entity:IpcChannel] — child_process IPC + cluster fd passing (SCM_RIGHTS)
+pub mod ipc_channel;
 pub mod workflow_host_global;
 // @trace REQ-ENG-010 [entity:FetchTasklet] — async HTTP integration helper
 // (BCE-20260618-007). Shared by node_http/node_https/node_tls JS-native entries.

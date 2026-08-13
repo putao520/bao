@@ -334,6 +334,16 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             2,
             0,
         );
+        // Internal: IPC channel poll — non-blocking recv of next JSON message.
+        // Used by the JS shim's child.on('message') pump.
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__cp_ipc_recv".as_ptr(),
+            Some(cp_ipc_recv),
+            1,
+            0,
+        );
 
         w2::JS_DefineProperty3(
             cx,
@@ -479,6 +489,93 @@ unsafe fn js_stdio_wants_pipe(
     }
 }
 
+/// Detect whether the JS options request an IPC channel. Node.js semantics:
+///   * `options.stdio` is an array containing `'ipc'` (e.g. `stdio: ['pipe','pipe','pipe','ipc']`)
+///   * OR `options.serialization` is set (implies IPC channel requested)
+///   * OR `options.stdin|stdout|stderr === 'ipc'` (legacy shorthand)
+///
+/// Returns true if we should create a socketpair at child fd 3 and store the
+/// parent endpoint as an `IpcChannel` keyed by pid in `CP_IPC_CHANNELS`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn js_wants_ipc(cx: *mut JSContext, obj_h: Handle<*mut JSObject>) -> bool {
+    unsafe {
+        // 1) options.serialization set (any truthy string / non-null value).
+        let mut ser_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj_h,
+            c"serialization".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ser_val,
+            },
+        );
+        if !(ser_val.is_undefined() || ser_val.is_null()) {
+            return true;
+        }
+
+        // 2) options.stdio is an array — scan for any element equal to "ipc".
+        let mut stdio_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj_h,
+            c"stdio".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut stdio_val,
+            },
+        );
+        if stdio_val.is_object() {
+            let arr_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let arr = stdio_val.to_object();
+            rooted!(&in(arr_cx) let arr_r = arr);
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                arr_r.handle().into(),
+                c"length".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut len_val,
+                },
+            );
+            let len = if len_val.is_int32() {
+                len_val.to_int32() as u32
+            } else {
+                0
+            };
+            for i in 0..len {
+                let mut elem = UndefinedValue();
+                JS_GetElement(
+                    cx,
+                    arr_r.handle().into(),
+                    i,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut elem,
+                    },
+                );
+                if elem.is_string() {
+                    let s = crate::js_to_rust_string(cx, elem);
+                    if s == "ipc" {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // 3) Legacy shorthand: stdin/stdout/stderr === "ipc".
+        for slot in [c"stdin".as_ptr(), c"stdout".as_ptr(), c"stderr".as_ptr()].iter() {
+            if let Some(s) = js_str_prop(cx, obj_h, *slot) {
+                if s == "ipc" {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 /// Build bun_spawn::sync::Options from JS opts object.
 #[allow(dead_code)]
 unsafe fn build_sync_opts_from_js(
@@ -615,13 +712,16 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     rooted!(&in(cx_ref) let opts_obj_r = opts_obj.unwrap_or_else(|| ::std::ptr::null_mut::<JSObject>()));
 
     // Parse command and args from JS arguments.
-    let (cmd, cmd_args, cwd, pipe_stdout, pipe_stderr, pipe_stdin) = if let Some(ref cmd) = cmd_str
+    let (cmd, cmd_args, cwd, pipe_stdout, pipe_stderr, pipe_stdin, wants_ipc) = if let Some(
+        ref cmd,
+    ) = cmd_str
     {
         let mut a: Vec<String> = Vec::new();
         let mut c = None;
         let mut ps = true;
         let mut pe = true;
         let mut pi = false;
+        let mut ipc = false;
         if second_obj.is_some() && !second_obj_r.get().is_null() {
             let obj_h = second_obj_r.handle();
             let cargs = js_str_array_prop(cx, obj_h.into(), c"args".as_ptr());
@@ -630,8 +730,9 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             ps = js_stdio_wants_pipe(cx, obj_h.into(), c"stdout".as_ptr());
             pe = js_stdio_wants_pipe(cx, obj_h.into(), c"stderr".as_ptr());
             pi = js_stdio_wants_pipe(cx, obj_h.into(), c"stdin".as_ptr());
+            ipc = js_wants_ipc(cx, obj_h.into());
         }
-        (cmd.clone(), a, c, ps, pe, pi)
+        (cmd.clone(), a, c, ps, pe, pi, ipc)
     } else if opts_obj.is_some() && !opts_obj_r.get().is_null() {
         let obj_h = opts_obj_r.handle();
         let cmd = match js_str_prop(cx, obj_h.into(), c"command".as_ptr())
@@ -648,7 +749,8 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         let ps = js_stdio_wants_pipe(cx, obj_h.into(), c"stdout".as_ptr());
         let pe = js_stdio_wants_pipe(cx, obj_h.into(), c"stderr".as_ptr());
         let pi = js_stdio_wants_pipe(cx, obj_h.into(), c"stdin".as_ptr());
-        (cmd, cmd_args, cwd, ps, pe, pi)
+        let ipc = js_wants_ipc(cx, obj_h.into());
+        (cmd, cmd_args, cwd, ps, pe, pi, ipc)
     } else {
         JS_ReportErrorUTF8(cx, c"child_process.spawn requires arguments".as_ptr());
         return false;
@@ -735,6 +837,19 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     }
 
     // Build PosixSpawnOptions with Pipe() variants.
+    //
+    // IPC: when `wants_ipc` is true, push `PosixStdio::Ipc` into extra_fds.
+    // spawn_process_posix creates a socketpair internally and dups one end
+    // into the child's fd 3 (Node.js IPC convention), returning the parent
+    // end via `posix_result.extra_pipes[0]` as `ExtraPipe::OwnedFd(parent_fd)`.
+    // We then wrap that fd into an `IpcChannel` and register it for
+    // `__cp_ipc_send` / `__cp_ipc_recv` lookups by pid.
+    let extra_fds: Box<[PosixStdio]> = if wants_ipc {
+        Box::new([PosixStdio::Ipc])
+    } else {
+        Box::new([])
+    };
+
     let spawn_opts = PosixSpawnOptions {
         stdin: if pipe_stdin {
             PosixStdio::Pipe(bun_sys::Fd::from_native(stdin_pipe[0]))
@@ -752,7 +867,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             PosixStdio::Inherit
         },
         ipc: None,
-        extra_fds: Box::new([]),
+        extra_fds,
         cwd: cwd_bytes,
         detached: false,
         windows: (),
@@ -878,13 +993,62 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             false
         }
-        Ok(Ok(posix_result)) => {
+        Ok(Ok(mut posix_result)) => {
             let pid = posix_result.pid;
+
+            // If an IPC channel was requested, extract the parent-side fd from
+            // extra_pipes BEFORE the PosixSpawnResult drops (its Drop closes
+            // OwnedFd entries). We then wrap the fd in an IpcChannel keyed by
+            // pid in CP_IPC_CHANNELS for __cp_ipc_send / __cp_ipc_recv.
+            //
+            // The child's fd-3 socketpair end was already dup'd by
+            // spawn_process_posix via PosixStdio::Ipc; the parent's end is in
+            // extra_pipes[0] as ExtraPipe::OwnedFd(parent_fd). We take ownership
+            // before the implicit drop closes it.
+            let parent_ipc_fd: Option<c_int> = if wants_ipc {
+                if let Some(first) = posix_result.extra_pipes.first() {
+                    use bun_spawn::ExtraPipe;
+                    match first {
+                        ExtraPipe::OwnedFd(fd) | ExtraPipe::UnownedFd(fd) => {
+                            // `.native()` returns the raw i32 fd on POSIX.
+                            let raw = (*fd).native();
+                            // Mark as Unavailable so the即将 PosixSpawnResult
+                            // Drop does NOT close the fd — the IpcChannel owns
+                            // it now. In-place overwrite preserves vec length.
+                            if matches!(first, ExtraPipe::OwnedFd(_)) {
+                                posix_result.extra_pipes[0] = ExtraPipe::Unavailable;
+                            }
+                            Some(raw)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             // Close the spawned stdio fds returned by spawn_process_posix.
             // These are the parent-side socketpair/memfd fds, not our pipe fds.
             // (When using Pipe(fd), spawn_process_posix does not create extra fds.)
             drop(posix_result);
+
+            // Wrap the parent IPC fd in a UnixStream and register an IpcChannel.
+            // SAFETY: parent_ipc_fd is a valid open Unix-domain socket fd just
+            // returned from spawn_process_posix (PosixStdio::Ipc path). We take
+            // sole ownership here — the result's Drop was neutralised above.
+            if let Some(raw) = parent_ipc_fd {
+                if raw >= 0 {
+                    let sock = unsafe {
+                        <::std::os::unix::net::UnixStream as ::std::os::unix::io::FromRawFd>::from_raw_fd(raw)
+                    };
+                    let channel = crate::ipc_channel::IpcChannel::new(sock);
+                    if let Ok(mut registry) = CP_IPC_CHANNELS.lock() {
+                        registry.insert(pid, ::std::sync::Arc::new(::std::sync::Mutex::new(channel)));
+                    }
+                }
+            }
 
             // Set non-blocking on the parent-side read fds.
             if stdout_pipe[0] >= 0 {
@@ -1050,13 +1214,57 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             // a plain object without the prototype chain, so `child.kill` was
             // undefined. Delegate to the existing __cp_kill_child native.
             w2::JS_DefineFunction(
-                cx,
+                cx_ref,
                 child_obj.handle(),
                 c"kill".as_ptr(),
                 Some(cp_kill_child),
                 1,
                 JSPROP_ENUMERATE as u32,
             );
+
+            // ─── IPC: mount `_ipcFd` + `send(msg[, fd])` on the child ───────────
+            //
+            // When `wants_ipc` was set we created an IPC socketpair (child gets
+            // fd 3) and stored the parent's IpcChannel in CP_IPC_CHANNELS[pid].
+            // Here we expose:
+            //   * `child._ipcFd` — child-side fd number (3) for the JS shim to
+            //     stamp onto `process.channel`/`process.send` in the child env.
+            //   * `child.send(msg[, sendHandle])` — wraps __cp_ipc_send native.
+            //
+            // The native `__cp_ipc_recv(pid)` (registered at module install)
+            // lets the JS shim poll for inbound messages and emit 'message'.
+            if wants_ipc {
+                // `_ipcFd` = 3 (Node.js convention: IPC channel at fd 3).
+                let ipc_fd_v = Int32Value(3);
+                rooted!(&in(cx_ref) let ifdv = ipc_fd_v);
+                JS_DefineProperty(
+                    cx,
+                    child_h,
+                    c"_ipcFd".as_ptr(),
+                    ifdv.handle().into(),
+                    0,
+                );
+
+                // `send(msg[, sendHandle])` → native __cp_ipc_send(pid, msg, fd?).
+                w2::JS_DefineFunction(
+                    cx_ref,
+                    child_obj.handle(),
+                    c"send".as_ptr(),
+                    Some(cp_ipc_send),
+                    2,
+                    JSPROP_ENUMERATE as u32,
+                );
+
+                // `disconnect()` → closes the IPC channel.
+                w2::JS_DefineFunction(
+                    cx_ref,
+                    child_obj.handle(),
+                    c"disconnect".as_ptr(),
+                    Some(cp_ipc_disconnect),
+                    0,
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
 
             // ─── Mount stdout / stderr / stdin stream properties ───────────────
             // Node.js semantics: pipe=true → Readable/Writable backed by
@@ -1277,6 +1485,21 @@ unsafe fn attach_null_property(
 thread_local! {
     static CP_STDIN_FDS: RefCell<HashMap<i32, c_int>> = RefCell::new(HashMap::new());
 }
+
+// ─── IPC channel registry ──────────────────────────────────────────────────
+//
+// Parent-side registry of IPC channels created when `stdio: [..., 'ipc']` or
+// `options.serialization` was set on spawn. Keyed by child pid so that the JS
+// helpers `child.send(msg)` / `__cp_ipc_recv(pid)` can reach the right socket
+// pair endpoint from any thread.
+//
+// Each entry is a `Mutex<IpcChannel>` because the JS-side poll thread and the
+// main JS thread may both touch the same channel. We keep the lock scope
+// minimal (per-send / per-recv) so we never block the JS thread for long.
+
+pub static CP_IPC_CHANNELS: LazyLock<
+    Mutex<HashMap<i32, ::std::sync::Arc<::std::sync::Mutex<crate::ipc_channel::IpcChannel>>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ─── Native: __cp_drain(pid, which) ────────────────────────────────────────
 // which: 0 = stdout, 1 = stderr. Returns ArrayBuffer or null.
@@ -1551,6 +1774,272 @@ unsafe extern "C" fn cp_kill_child(_cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let ret = unsafe { libc::kill(pid, signal) };
     args.rval().set(BooleanValue(ret == 0));
     true
+}
+
+// ─── Native: __cp_ipc_send(pid, json[, fd]) ────────────────────────────────
+//
+// Sends a JSON message on the child's IPC channel. If a numeric fd is passed
+// as the third argument, the message is sent via SCM_RIGHTS ancillary data
+// (fd handoff — used by cluster round-robin server handle passing).
+//
+// Registered as `child.send` directly on the spawn-returned object (not on
+// the module). Args from JS:
+//   args[0] = pid   (i32)
+//   args[1] = json  (string — caller already JSON.stringify'd)
+//   args[2] = fd    (optional i32 — if present, use SCM_RIGHTS path)
+//
+// Returns true on success, false on any I/O or registry-miss error.
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cp_ipc_send(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let pid = if argc > 0 {
+        (*args.get(0).ptr).to_int32()
+    } else {
+        0
+    };
+    if pid == 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    let json_str = if argc > 1 {
+        let v = *args.get(1).ptr;
+        if v.is_string() {
+            crate::js_to_rust_string(cx, v)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    let fd_opt: Option<c_int> = if argc > 2 {
+        let v = *args.get(2).ptr;
+        if v.is_int32() {
+            let n = v.to_int32();
+            if n >= 0 {
+                Some(n)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Look up channel, send under short-lived lock.
+    let outcome: ::std::result::Result<(), String> = CP_IPC_CHANNELS
+        .lock()
+        .map_err(|e| format!("registry lock poisoned: {}", e))
+        .and_then(|registry| {
+            registry
+                .get(&pid)
+                .cloned()
+                .ok_or_else(|| format!("no ipc channel for pid {}", pid))
+                .and_then(|chan_mtx| {
+                    chan_mtx
+                        .lock()
+                        .map_err(|e| format!("channel lock poisoned: {}", e))
+                        .and_then(|mut chan| {
+                            if let Some(fd) = fd_opt {
+                                chan.send_handle(&json_str, fd)
+                                    .map_err(|e| format!("send_handle: {}", e))
+                            } else {
+                                chan.send_json(&json_str)
+                                    .map_err(|e| format!("send_json: {}", e))
+                            }
+                        })
+                })
+        });
+
+    match outcome {
+        Ok(()) => {
+            args.rval().set(BooleanValue(true));
+            true
+        }
+        Err(msg) => {
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            args.rval().set(BooleanValue(false));
+            false
+        }
+    }
+}
+
+// ─── Native: __cp_ipc_recv(pid) ────────────────────────────────────────────
+//
+// Non-blocking receive: drains whatever is buffered in the channel. If a
+// complete JSON line is available, returns a JS object `{ json: <string>, fd:
+// <number|null> }`. If no message is ready (peer has not written yet, or
+// partial line), returns `null`. If the peer closed the channel, returns
+// `{ closed: true }` so the JS shim can emit 'disconnect' / 'exit'.
+//
+// The underlying IpcChannel::recv_msg blocks on a blocking UnixStream; we
+// toggle the socket non-blocking for the probe read and restore afterwards.
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cp_ipc_recv(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let pid = if argc > 0 {
+        (*args.get(0).ptr).to_int32()
+    } else {
+        0
+    };
+    if pid == 0 {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    // Look up channel; toggle non-blocking; attempt one recv_msg.
+    let outcome: ::std::result::Result<Option<(String, Option<c_int>)>, &'static str> =
+        CP_IPC_CHANNELS
+            .lock()
+            .map_err(|_| "registry lock poisoned")
+            .and_then(|registry| {
+                registry
+                    .get(&pid)
+                    .cloned()
+                    .ok_or("no ipc channel for pid")
+                    .and_then(|chan_mtx| {
+                        let mut chan = chan_mtx
+                            .lock()
+                            .map_err(|_| "channel lock poisoned")?;
+                        let raw = chan.raw_fd();
+                        let _ = unsafe { set_nonblock(raw, true) };
+                        let res = chan.recv_msg();
+                        let _ = unsafe { set_nonblock(raw, false) };
+                        match res {
+                            Ok((json, fd_opt)) => Ok(Some((json, fd_opt))),
+                            Err(e) if e.kind() == ::std::io::ErrorKind::WouldBlock => Ok(None),
+                            Err(e) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => {
+                                // Peer closed: signal via the closed sentinel below.
+                                Ok(Some((String::new(), None)))
+                            }
+                            Err(_) => Ok(None),
+                        }
+                    })
+            });
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    match outcome {
+        Ok(Some((json, fd_opt))) => {
+            let is_closed = json.is_empty();
+            let obj = w2::JS_NewPlainObject(cx_ref);
+            if obj.is_null() {
+                args.rval().set(NullValue());
+                return true;
+            }
+            rooted!(&in(cx_ref) let obj_r = obj);
+            let obj_h = obj_r.handle().into();
+
+            if is_closed {
+                rooted!(&in(cx_ref) let tv = BooleanValue(true));
+                JS_DefineProperty(
+                    cx,
+                    obj_h,
+                    c"closed".as_ptr(),
+                    tv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            } else {
+                let c_json = ZBox::from_bytes(json.as_bytes());
+                let js_str = JS_NewStringCopyZ(cx, c_json.as_ptr());
+                if !js_str.is_null() {
+                    let v = StringValue(&*js_str);
+                    rooted!(&in(cx_ref) let jv = v);
+                    JS_DefineProperty(
+                        cx,
+                        obj_h,
+                        c"json".as_ptr(),
+                        jv.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+                let fd_v = match fd_opt {
+                    Some(fd) => Int32Value(fd),
+                    None => NullValue(),
+                };
+                rooted!(&in(cx_ref) let fv = fd_v);
+                JS_DefineProperty(
+                    cx,
+                    obj_h,
+                    c"fd".as_ptr(),
+                    fv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            args.rval().set(ObjectValue(obj_r.get()));
+            true
+        }
+        Ok(None) => {
+            args.rval().set(NullValue());
+            true
+        }
+        Err(msg) => {
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            args.rval().set(NullValue());
+            false
+        }
+    }
+}
+
+// ─── Native: __cp_ipc_disconnect(pid) ──────────────────────────────────────
+//
+// Close the IPC channel from the parent side. Removes the channel from the
+// registry so subsequent send/recv calls return errors cleanly.
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cp_ipc_disconnect(
+    _cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let pid = if argc > 0 {
+        (*args.get(0).ptr).to_int32()
+    } else {
+        0
+    };
+    if pid != 0 {
+        if let Ok(mut registry) = CP_IPC_CHANNELS.lock() {
+            registry.remove(&pid);
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// Toggle O_NONBLOCK on a fd (helper for non-blocking IPC probe reads).
+///
+/// # Safety
+/// Caller ensures `fd` is a valid open file descriptor.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn set_nonblock(fd: c_int, on: bool) -> ::std::io::Result<()> {
+    let cur = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if cur < 0 {
+        return Err(::std::io::Error::last_os_error());
+    }
+    let new = if on {
+        cur | libc::O_NONBLOCK
+    } else {
+        cur & !libc::O_NONBLOCK
+    };
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, new) } < 0 {
+        return Err(::std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 // ─── cp_exec — ASYNC exec (shell command, callback-based) ──────────────────
