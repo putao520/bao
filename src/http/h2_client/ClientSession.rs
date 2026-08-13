@@ -39,6 +39,15 @@ pub struct ClientSession {
     /// the keep-alive pool while parked (1). Hand-offs between socket and
     /// pool transfer a ref rather than touching the count.
     pub ref_count: Cell<u32>,
+    /// Set when a `&mut self` body has torn the session down (`fail_streams`,
+    /// or `maybe_release` closing an unpoolable socket) and the socket-ext ref
+    /// is therefore due to be released. The body cannot release it itself: at
+    /// that point it is normally the last ref, and freeing the session while a
+    /// `&mut self` argument to it is live is undefined behaviour even if the
+    /// reference is never used again. The [`SessionPtr`] entry point that ran
+    /// the body takes the flag and releases the ref once the borrow has ended
+    /// (see [`ClientSession::enter`]).
+    pub socket_ref_owed: Cell<bool>,
 
     pub hpack: lshpack::HpackHandle, // RAII owner; Deref/DerefMut to lshpack::HPACK
     pub socket: Socket,
@@ -121,8 +130,17 @@ pub struct ClientSession {
     pub registry_index: Cell<u32>,
 }
 
-/// RAII guard alias — bumps on construction, derefs on Drop.
-type SessionRefGuard = bun_ptr::ScopedRef<ClientSession>;
+/// A live session as its holders point at it: the socket ext slot, the
+/// context's registry, the keep-alive pool, or the pointer `create` returned.
+///
+/// Every `pub` entry point that can leave the session released (socket events,
+/// the registry / pool hand-offs in `HTTPContext::connect`, the per-request
+/// wakeups from `HTTPThread`) takes one of these instead of `&mut self` and
+/// goes through [`ClientSession::enter`], so the releases happen through the
+/// holder's pointer after the body's `&mut` borrow has ended. Callers that need
+/// the session alive across two entry points hold a
+/// [`bun_ptr::ThisPtr::ref_guard`] of their own across both.
+pub type SessionPtr = bun_ptr::ThisPtr<ClientSession>;
 
 /// Upgrade a `*mut Stream` from `self.streams` to `&mut Stream`.
 ///
@@ -187,18 +205,94 @@ fn drop_stream(stream: *mut Stream) {
 }
 
 impl ClientSession {
-    /// Bump the refcount and return a guard that releases it on Drop, so
-    /// reentrant callbacks (delivering bodies, failing clients) cannot free
-    /// `*self` mid-call. Zig: `this.ref(); defer this.deref();`.
+    /// Wrap a holder's pointer as a [`SessionPtr`].
     ///
-    /// Captures a raw pointer (not a borrow) so the guard does not borrow the
-    /// session — the guarded scope may freely take fresh `&mut self`, and the
-    /// pointer (derived from `&mut self`) carries write provenance for the
-    /// final `heap::take` in `deref`.
+    /// INVARIANT: `session` is a session the caller holds a ref on (a socket
+    /// ext slot's tag, a registry or pool entry, or the pointer `create`
+    /// returned), so it is live for as long as the caller uses the handle.
+    /// HTTP-thread-only.
     #[inline]
-    fn ref_scope(&mut self) -> SessionRefGuard {
-        // SAFETY: `self` is a live heap-allocated ClientSession.
-        unsafe { SessionRefGuard::new(self) }
+    pub fn this_ptr(session: NonNull<ClientSession>) -> SessionPtr {
+        // SAFETY: see INVARIANT above.
+        unsafe { SessionPtr::new(session.as_ptr()) }
+    }
+
+    /// Run a `&mut self` body on the session behind `this`, then perform the
+    /// releases it asked for.
+    ///
+    /// The guard keeps the session alive while the body re-enters clients
+    /// (delivering bodies, failing requests) and releases the registry ref, so
+    /// no release inside the body is ever the last one. `body` receives a
+    /// reborrow that ends when it returns; only then is the socket-ext ref it
+    /// may have given up (`socket_ref_owed`) released, followed by the guard's
+    /// own ref, both through `this`. When the body tore the session down that
+    /// second release frees it, with no reference to it live anywhere.
+    fn enter(this: SessionPtr, body: impl FnOnce(&mut ClientSession)) {
+        let _keep_alive = this.ref_guard();
+        // SAFETY: `this` is live (see `this_ptr`; the guard above holds it for
+        // the rest of this call) and HTTP-thread-only, so this is the only
+        // borrow of the session for the duration of `body`.
+        body(unsafe { &mut *this.as_ptr() });
+        if this.socket_ref_owed.take() {
+            // SAFETY: the body gave up the socket ext's ref; `_keep_alive`
+            // still holds one, so the session is live and this release is not
+            // the last. No borrow of the session is live: the body's ended.
+            unsafe { ClientSession::deref(this.as_ptr()) };
+        }
+    }
+
+    /// Socket onData entry point; see [`Self::handle_data`].
+    pub fn on_data(this: SessionPtr, incoming: &[u8]) {
+        Self::enter(this, |s| s.handle_data(incoming));
+    }
+
+    /// Socket onWritable entry point; see [`Self::handle_writable`].
+    pub fn on_writable(this: SessionPtr) {
+        Self::enter(this, |s| s.handle_writable());
+    }
+
+    /// Socket onClose / onTimeout entry point. The socket is already gone, so
+    /// every stream fails and the socket ext's ref is released; unless a caller
+    /// holds its own guard, the session is freed before this returns.
+    pub fn on_close(this: SessionPtr, err: Error) {
+        Self::enter(this, |s| s.fail_streams(err));
+    }
+
+    /// Multiplex `client` onto an established (registered or pool-resumed)
+    /// session; see [`Self::adopt_client`].
+    pub fn adopt(this: SessionPtr, client: &mut HTTPClient) {
+        Self::enter(this, |s| s.adopt_client(client));
+    }
+
+    /// Open the first stream on a session `create` just returned, for the
+    /// client whose connect negotiated h2. Unlike [`Self::adopt`] this does not
+    /// wait for the server's SETTINGS: the leader's stream carries the preface.
+    pub fn attach_leader(this: SessionPtr, client: &mut HTTPClient) {
+        Self::enter(this, |s| s.attach(client));
+    }
+
+    /// Called from the HTTP thread's shutdown queue when a fetch on this
+    /// session is aborted; see [`Self::abort_request`].
+    pub fn abort_by_http_id(this: SessionPtr, async_http_id: u32) {
+        Self::enter(this, |s| s.abort_request(async_http_id));
+    }
+
+    /// HTTP-thread wake-up from `scheduleRequestWrite`; see
+    /// [`Self::stream_request_body`].
+    pub fn stream_body_by_http_id(this: SessionPtr, async_http_id: u32, ended: bool) {
+        Self::enter(this, |s| s.stream_request_body(async_http_id, ended));
+    }
+
+    /// HTTP-thread wake-up from `scheduleResponseBodyDrain`; see
+    /// [`Self::drain_response_body`].
+    pub fn drain_response_body_by_http_id(this: SessionPtr, async_http_id: u32) {
+        Self::enter(this, |s| s.drain_response_body(async_http_id));
+    }
+
+    /// Park a request that was coalesced onto this session's connect until the
+    /// server's SETTINGS arrive; see [`Self::park`].
+    pub fn enqueue(this: SessionPtr, client: &mut HTTPClient<'_>) {
+        Self::enter(this, |s| s.park(client));
     }
 
     #[inline]
@@ -225,13 +319,18 @@ impl ClientSession {
         self.write_frame(wire::FrameType::HTTP_FRAME_RST_STREAM, 0, stream.id, &value);
     }
 
+    /// Allocate a session for a socket whose ALPN just selected h2 and list it
+    /// in the context's registry. The returned handle carries the socket ext's
+    /// ref: the caller tags the socket with it (`tag_as_h2`) and then opens the
+    /// leader's stream with [`Self::attach_leader`].
     pub fn create(
         ctx: *mut NewHTTPContext<true>,
         socket: Socket,
         client: &HTTPClient,
-    ) -> *mut ClientSession {
+    ) -> SessionPtr {
         let this = bun_core::heap::into_raw(Box::new(ClientSession {
             ref_count: Cell::new(1),
+            socket_ref_owed: Cell::new(false),
             hpack: lshpack::HpackHandle::new(4096),
             socket,
             ctx,
@@ -270,7 +369,7 @@ impl ClientSession {
         // HTTP-thread-only, no ancestor `&mut HTTPContext` on this path) —
         // route through the centralised [`HTTPClient::ssl_ctx_mut`] accessor.
         HTTPClient::ssl_ctx_mut(ctx).h2_register(this);
-        this
+        Self::this_ptr(NonNull::new(this).expect("heap::into_raw is non-null"))
     }
 
     pub fn has_headroom(&self) -> bool {
@@ -298,7 +397,7 @@ impl ClientSession {
             && strings::eql_long(&self.hostname, hostname, true)
     }
 
-    pub fn adopt(&mut self, client: &mut HTTPClient) {
+    fn adopt_client(&mut self, client: &mut HTTPClient) {
         client.h2_register_abort_tracker(self.socket);
         // Park instead of attaching when (a) we're inside onData's deliver
         // loop — attach() mustn't mutate `streams` under iteration — or (b)
@@ -331,7 +430,7 @@ impl ClientSession {
 
     /// Park a coalesced request until the server's SETTINGS arrive. Abort
     /// is routed via the session socket so `abortByHttpId` can find it.
-    pub fn enqueue(&mut self, client: &mut HTTPClient<'_>) {
+    fn park(&mut self, client: &mut HTTPClient<'_>) {
         client.h2_register_abort_tracker(self.socket);
         self.pending_attach.push(client.as_erased_ptr().as_ptr());
         self.rearm_timeout();
@@ -396,7 +495,7 @@ impl ClientSession {
 
     /// Allocate a stream for `client`, serialise its request as HEADERS +
     /// DATA, and flush.
-    pub fn attach(&mut self, client: &mut HTTPClient) {
+    fn attach(&mut self, client: &mut HTTPClient) {
         debug_assert!(self.has_headroom());
 
         let send_window = i32::try_from(self.remote_initial_window_size.min(wire::MAX_WINDOW_SIZE))
@@ -532,11 +631,9 @@ impl ClientSession {
         });
     }
 
-    /// HTTP-thread wake-up from `scheduleResponseBodyDrain`: JS just enabled
-    /// `response_body_streaming`, so flush any body bytes that arrived between
-    /// metadata delivery and `getReader()`.
-    pub fn drain_response_body_by_http_id(&mut self, async_http_id: u32) {
-        let _guard = self.ref_scope();
+    /// JS just enabled `response_body_streaming` on the request, so flush any
+    /// body bytes that arrived between metadata delivery and `getReader()`.
+    fn drain_response_body(&mut self, async_http_id: u32) {
         for &stream in self.streams.values() {
             let Some(client) = stream_mut(stream).client_mut() else {
                 continue;
@@ -549,10 +646,9 @@ impl ClientSession {
         }
     }
 
-    /// HTTP-thread wake-up from `scheduleRequestWrite`: new body bytes (or
-    /// end-of-body) are available in the ThreadSafeStreamBuffer.
-    pub fn stream_body_by_http_id(&mut self, async_http_id: u32, ended: bool) {
-        let _guard = self.ref_scope();
+    /// New request body bytes (or end-of-body) are available in the request's
+    /// ThreadSafeStreamBuffer.
+    fn stream_request_body(&mut self, async_http_id: u32, ended: bool) {
         // PORT NOTE: reshaped for borrowck — collect target stream ptr before mutating self.
         let mut target: Option<*mut Stream> = None;
         for &stream in self.streams.values() {
@@ -647,12 +743,10 @@ impl ClientSession {
         Ok(true)
     }
 
-    /// Socket onData entry point. Parse frames into per-stream state, deliver
-    /// each ready stream to its client, then pool or close if no streams
-    /// remain. Structured "parse all → deliver all" because delivering may
-    /// free the client.
-    pub fn on_data(&mut self, incoming: &[u8]) {
-        let _guard = self.ref_scope();
+    /// Parse frames into per-stream state, deliver each ready stream to its
+    /// client, then pool or close if no streams remain. Structured "parse all
+    /// → deliver all" because delivering may free the client.
+    fn handle_data(&mut self, incoming: &[u8]) {
         self.stream_progressed = false;
         if self.read_buffer.is_empty() {
             let consumed = dispatch::parse_frames(self, incoming);
@@ -742,9 +836,7 @@ impl ClientSession {
         self.maybe_release();
     }
 
-    /// Socket onWritable entry point.
-    pub fn on_writable(&mut self) {
-        let _guard = self.ref_scope();
+    fn handle_writable(&mut self) {
         if let Err(err) = self.flush() {
             return self.fail_all(err);
         }
@@ -775,16 +867,19 @@ impl ClientSession {
         }
     }
 
-    /// Socket onClose / onTimeout entry point. The socket is already gone, so
-    /// streams just fail and the session is destroyed.
-    pub fn on_close(&mut self, err: Error) {
-        let _guard = self.ref_scope();
-        // SAFETY: ctx back-ref is valid for the session's lifetime. on_close is
+    /// Tear the session down once its socket is gone (or, via `fail_all`,
+    /// about to be closed): leave the registry, fail every parked and attached
+    /// request, and hand the socket-ext ref to the enclosing entry point for
+    /// release. Runs exactly once per session: the socket is dead afterwards,
+    /// so no further socket event reaches it, and every `fail_all` caller
+    /// returns straight away.
+    fn fail_streams(&mut self, err: Error) {
+        // SAFETY: ctx back-ref is valid for the session's lifetime. This is
         // reachable synchronously from connect() → adopt() → attach() flush
         // failure → fail_all() while connect() still holds `&mut HTTPContext`,
         // so route through the raw-ptr helper instead of forming a second
         // aliased `&mut NewHTTPContext` via autoref.
-        unsafe { NewHTTPContext::<true>::unregister_h2_raw(self.ctx, std::ptr::from_ref(self)) };
+        unsafe { NewHTTPContext::<true>::unregister_h2_raw(self.ctx, self) };
         for client in core::mem::take(&mut self.pending_attach) {
             pending_client_mut(client).h2_fail(err);
         }
@@ -799,8 +894,14 @@ impl ClientSession {
             }
         }
         self.streams.clear_retaining_capacity();
-        // SAFETY: `self: &mut Self` carries write provenance to the Box alloc.
-        unsafe { ClientSession::deref(self) };
+        self.give_up_socket_ref();
+    }
+
+    /// The socket-ext ref is no longer wanted; `enter` releases it once this
+    /// body has returned. See `socket_ref_owed`.
+    fn give_up_socket_ref(&self) {
+        debug_assert!(!self.socket_ref_owed.get(), "h2 session torn down twice");
+        self.socket_ref_owed.set(true);
     }
 
     fn fail_all(&mut self, err: Error) {
@@ -817,13 +918,13 @@ impl ClientSession {
             let _ = self.flush();
         }
         NewHTTPContext::<true>::mark_socket_as_dead(sock);
-        self.on_close(err);
+        self.fail_streams(err);
         sock.close(bun_uws::CloseKind::Failure);
     }
 
-    /// Called from the HTTP thread's shutdown queue when a fetch on this
-    /// session is aborted. RST_STREAMs that one request; siblings continue.
-    pub fn abort_by_http_id(&mut self, async_http_id: u32) {
+    /// RST_STREAMs (or unparks and fails) the one aborted request; siblings
+    /// continue.
+    fn abort_request(&mut self, async_http_id: u32) {
         // PORT NOTE: reshaped for borrowck — find index via raw-ptr field read
         // first, then swap_remove, so no `&mut HTTPClient` is held across the
         // Vec mutation and no `&mut` is materialised during iteration.
@@ -921,8 +1022,7 @@ impl ClientSession {
             );
         } else {
             NewHTTPContext::<true>::close_socket(self.socket);
-            // SAFETY: `self: &mut Self` carries write provenance to the Box alloc.
-            unsafe { ClientSession::deref(self) };
+            self.give_up_socket_ref();
         }
     }
 

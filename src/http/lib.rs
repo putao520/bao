@@ -1032,9 +1032,10 @@ fn get_tls_hostname<'c>(client: &'c HTTPClient<'_>, allow_proxy_url: bool) -> &'
 }
 
 // ── support types ───────────────────────────────────────────────────────
-enum PendingH2Resolution<'a> {
+#[derive(Clone, Copy)]
+enum PendingH2Resolution {
     /// ALPN selected h2; waiters attach onto this session.
-    H2(&'a mut h2::ClientSession),
+    H2(h2::SessionPtr),
     /// Handshake completed and ALPN selected http/1.1. Waiters can be pinned
     /// to h1 (and force_http2 waiters failed) since the server has spoken.
     H1,
@@ -1353,25 +1354,24 @@ impl<'a> HTTPClient<'a> {
         body_out::opt_mut(self.state.body_out_str).map(|b| &*b)
     }
     #[inline]
-    fn proxy_tunnel_mut(&mut self) -> Option<&mut ProxyTunnel> {
-        let raw = self.proxy_tunnel.as_ref().map(|p| p.as_ptr())?;
-        Some(proxy_tunnel::raw_as_mut(raw))
+    /// The tunnel handle's pointer, for the entry points that may release the
+    /// handle while they run (`ProxyTunnel::on_writable` / `receive`).
+    fn proxy_tunnel_ptr(&self) -> Option<NonNull<ProxyTunnel>> {
+        self.proxy_tunnel.as_ref().map(|p| p.data)
     }
-    /// Detach and release the proxy tunnel if one is attached. Replaces the
-    /// open-coded `take → as_mut → shutdown → detach_and_deref` sequence.
+    /// Detach the proxy tunnel, if one is attached, and release this client's
+    /// ref on it through the handle that holds it.
     #[inline]
     fn close_proxy_tunnel(&mut self, shutdown: bool) {
         if let Some(t) = self.proxy_tunnel.take() {
-            // `detach_socket` (formerly the first half of `detach_and_deref`)
-            // must run before the strong ref is released so a refcount>1
-            // tunnel keeps no dangling socket.
+            // `detach_socket` must run before the strong ref is released so a
+            // refcount>1 tunnel keeps no dangling socket.
             let tunnel = proxy_tunnel::raw_as_mut(t.as_ptr());
             if shutdown {
                 tunnel.shutdown();
             }
             tunnel.detach_socket();
-            // Release the strong ref this client held (formerly the `deref`
-            // half of `detach_and_deref`).
+            // Release the strong ref this client held, through the handle.
             t.deref();
         }
     }
@@ -1784,13 +1784,13 @@ impl<'a> HTTPClient<'a> {
                 // Rust the const-generic isn't unified, so rebuild from the InternalSocket.
                 let tls_socket = uws::SocketTLS::from_any(socket.socket);
                 let ctx = self.get_ssl_ctx::<true>();
-                // SAFETY: `create` returns a freshly-boxed session with refcount 1,
-                // owned by the socket ext-data via `tag_as_h2`. The `&mut` is
-                // unique here — no other access until `attach` returns.
-                let session = unsafe { &mut *h2::ClientSession::create(ctx, tls_socket, self) };
-                GenHttpContext::<true>::tag_as_h2(tls_socket, session);
+                // `create` hands back the ref the socket ext owns from here on;
+                // `attach_leader` may release it (a failed first flush tears the
+                // session down), so `session` is not used after that call.
+                let session = h2::ClientSession::create(ctx, tls_socket, self);
+                GenHttpContext::<true>::tag_as_h2(tls_socket, session.as_ptr());
                 self.resolve_pending_h2(PendingH2Resolution::H2(session));
-                session.attach(self);
+                h2::ClientSession::attach_leader(session, self);
                 return;
             }
             self.flags.protocol = Protocol::Http1_1;
@@ -2863,8 +2863,8 @@ impl<'a> HTTPClient<'a> {
             }
         }
 
-        if let Some(proxy) = self.proxy_tunnel_mut() {
-            proxy.on_writable::<IS_SSL>(socket);
+        if let Some(proxy) = self.proxy_tunnel_ptr() {
+            ProxyTunnel::on_writable::<IS_SSL>(proxy, socket);
         }
 
         // Parked until the JS `checkServerIdentity` callback approves the peer
@@ -3321,6 +3321,17 @@ impl<'a> HTTPClient<'a> {
         }
 
         if should_continue == ShouldContinue::Finished {
+            // A bodyless response (HEAD, 204/304, Content-Length: 0, or a
+            // redirect being followed) terminates at the header block. If the
+            // current packet carries bytes past that boundary, the connection
+            // has no trustworthy message boundary (RFC 9112 §6.3): pooling it
+            // would let the trailing bytes be parsed as the next response.
+            // Clear allow_keepalive before the redirect check so do_redirect
+            // (which routes through is_keep_alive_possible) closes too.
+            // Upstream: bun 2a3b9c552 (#37438).
+            if !to_read!().is_empty() {
+                self.state.flags.allow_keepalive = false;
+            }
             if self.state.flags.is_redirect_pending {
                 self.do_redirect::<IS_SSL>(ctx, socket);
                 return;
@@ -3401,10 +3412,10 @@ impl<'a> HTTPClient<'a> {
             return;
         }
 
-        if self.proxy_tunnel.is_some() {
+        if let Some(proxy) = self.proxy_tunnel_ptr() {
             // if we have a tunnel we dont care about the other stages, we will just tunnel the data
             self.set_timeout(&socket);
-            self.proxy_tunnel_mut().unwrap().receive(incoming_data);
+            ProxyTunnel::receive(proxy, incoming_data);
             return;
         }
 
@@ -3479,7 +3490,7 @@ impl<'a> HTTPClient<'a> {
 
     /// The leader of a coalesced cold connect has learned the ALPN outcome (or
     /// failed). Dispatch every waiter accordingly.
-    fn resolve_pending_h2(&mut self, mut resolution: PendingH2Resolution<'_>) {
+    fn resolve_pending_h2(&mut self, resolution: PendingH2Resolution) {
         let Some(pc_ptr) = self.pending_h2.take() else {
             return;
         };
@@ -3500,8 +3511,8 @@ impl<'a> HTTPClient<'a> {
                 waiter.fail(err!(Aborted));
                 continue;
             }
-            match &mut resolution {
-                PendingH2Resolution::H2(s) => s.enqueue(waiter),
+            match resolution {
+                PendingH2Resolution::H2(session) => h2::ClientSession::enqueue(session, waiter),
                 PendingH2Resolution::H1 => {
                     // ALPN selected http/1.1 on the leader's handshake; a
                     // force_http2 waiter would just open a fresh TLS connection

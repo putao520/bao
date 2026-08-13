@@ -242,17 +242,22 @@ impl<P: StaticPipeWriterProcess> StaticPipeWriter<P> {
         );
         let len = self.buffer.len();
         self.buffer = RawSlice::new(&self.buffer.slice()[amount.min(len)..]);
-        if status == WriteStatus::EndOfFile || self.buffer.is_empty() {
-            #[cfg(not(windows))]
-            let release_start_ref = self.started && status != WriteStatus::EndOfFile;
-            #[cfg(not(windows))]
-            if release_start_ref {
-                self.started = false;
+        if status == WriteStatus::EndOfFile {
+            // The buffered writer closes itself (-> `on_close`) after this
+            // returns, so don't close here.
+            if core::mem::replace(&mut self.started, false) {
+                // SAFETY: token taken above; not the final ref, the owner's slot
+                // still holds one until that `on_close`.
+                unsafe { RefCount::<Self>::deref(std::ptr::from_mut::<Self>(self)) };
             }
+            return;
+        }
+        if self.buffer.is_empty() {
+            // Token taken before `close()` so start()'s ref outlives the owner's.
+            let release_start_ref = core::mem::replace(&mut self.started, false);
             self.writer.close();
-            #[cfg(not(windows))]
             if release_start_ref {
-                // SAFETY: start()'s +1 was still outstanding; `started` cleared above so no other site re-derefs.
+                // SAFETY: token taken above; may be the final ref, last use of `self`.
                 unsafe { RefCount::<Self>::deref(std::ptr::from_mut::<Self>(self)) };
             }
         }
@@ -265,14 +270,11 @@ impl<P: StaticPipeWriterProcess> StaticPipeWriter<P> {
             std::ptr::from_ref(self) as usize,
             err
         );
-        // Clear the buffer before detaching: `buffer` aliases `self.source`'s
-        // storage, and `detach()` frees it. `drain_buffered_data` calls
-        // on_error() then Parent::on_write(), which would otherwise re-slice
-        // the freed allocation.
+        // `buffer` aliases `self.source`'s storage, which `detach()` frees.
+        // start()'s ref is released by the `on_close` the writer pairs with
+        // every error.
         self.buffer = RawSlice::EMPTY;
         self.source.detach();
-        // Can't release start()'s +1 here: `drain_buffered_data` calls on_error() then
-        // Parent::on_write(); freeing here would UAF.
     }
 
     pub fn on_close(&mut self) {
@@ -281,6 +283,10 @@ impl<P: StaticPipeWriterProcess> StaticPipeWriter<P> {
             "StaticPipeWriter(0x{:x}) onClose()",
             std::ptr::from_ref(self) as usize
         );
+        // Still set only after a failed write (every other path takes the token
+        // before closing). Must be taken before `on_close_io` empties the slot:
+        // nothing can reach this writer afterwards.
+        let release_start_ref = core::mem::replace(&mut self.started, false);
         // `buffer` aliases `self.source`'s storage; clear it before detach()
         // frees that storage so no dangling slice survives the close.
         self.buffer = RawSlice::EMPTY;
@@ -288,6 +294,12 @@ impl<P: StaticPipeWriterProcess> StaticPipeWriter<P> {
         // SAFETY: `process` is a backref to the owning process, guaranteed alive
         // for the lifetime of this writer (the process owns/outlives its stdio writers).
         unsafe { P::on_close_io(self.process, StdioKind::Stdin) };
+        if release_start_ref {
+            // SAFETY: token taken above. On POSIX this frees `self`: it is the
+            // last use here, and the writer's `close()` frames below do nothing
+            // after this callback. On Windows the in-flight write's ref outlives it.
+            unsafe { RefCount::<Self>::deref(std::ptr::from_mut::<Self>(self)) };
+        }
     }
 
     pub fn memory_cost(&self) -> usize {
