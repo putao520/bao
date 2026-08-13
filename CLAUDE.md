@@ -228,8 +228,8 @@ make bce-check
 |------|------|---------|
 | Bun | `~/code/rust/bun/src/` | ~85 个纯 Rust crate(零修改复用);`jsc/` 是 JSC→SM 迁移目标;`runtime/` 是 Bun API 实现来源 |
 | Bun SPEC | `~/code/rust/bun/CLAUDE.md` | 构建命令、测试规范、crate 组织 |
-| Servo | `~/code/rust/servo/components/servo/` | `libservo` 嵌入入口;`script/` DOM(每 ScriptThread 一个 thread-local SM JSContext);`script_bindings/` SM↔DOM 桥接 |
-| mozjs | `~/code/rust/mozjs/` | SM FFI 绑定源码 |
+| Servo | `~/code/tools/servo/`(vendor 快照见 `vendor/servo/`,2026-05-29 基线) | `libservo` 嵌入入口;`script/` DOM(每 ScriptThread 一个 thread-local SM JSContext);`script_bindings/` SM↔DOM 桥接 |
+| mozjs | `vendor/mozjs/`(vendor 进本仓库;含 EBUSY patch) | SM FFI 绑定源码 |
 | blitz | `~/code/rust/blitz/` | DioxusLabs 模块化浏览器参考架构 |
 
 Bun / Servo SPEC 测绘成果:`.spec/02-SYSTEM.html` §2(Bun Crate DAG)+ §3(Servo 36 组件分层)。
