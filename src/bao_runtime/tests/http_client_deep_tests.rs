@@ -22,6 +22,7 @@ fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
 #[test]
 fn test_http_client_deep() {
     bun_runtime::install_exit_handler();
+    bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
@@ -244,5 +245,7 @@ fn test_http_client_deep() {
         "fetch should be a function with at least 1 parameter"
     );
 
+    bun_http::http_thread::shutdown_for_exit();
     bun_runtime::shutdown_thread_sm();
+    std::process::exit(0);
 }
