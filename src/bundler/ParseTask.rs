@@ -417,7 +417,7 @@ export var __require = /* @__PURE__ */ (x =>
 });
 ";
 
-// JavaScriptCore supports `using` / `await using` natively (see
+// Bun's JS engine supports `using` / `await using` natively (see
 // `lower_using = !target.isBun()` below), so these helpers are unused
 // when bundling for Bun and will be tree-shaken. They are still defined
 // here so the runtime module exports a consistent shape across targets.
@@ -2546,8 +2546,8 @@ pub mod parse_worker {
             .bundler_feature_flags
             .as_deref()
             .map(|s| Box::new(bun_core::handle_oom(s.clone())));
-        // JavaScriptCore implements `using` / `await using` natively, so when
-        // targeting Bun there is no need to lower them.
+        // Bun's JS engine implements `using` / `await using` natively, so
+        // when targeting Bun there is no need to lower them.
         opts.features.lower_using = !target.is_bun();
         opts.features.hot_module_reloading =
             output_format == options::Format::InternalBakeDev && !task.source_index.is_runtime();

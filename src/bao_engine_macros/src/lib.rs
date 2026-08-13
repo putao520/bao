@@ -468,32 +468,6 @@ fn camel_to_snake(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// jsc_abi! — JSC-compatible ABI shim macro
-// ---------------------------------------------------------------------------
-
-/// `jsc_abi!` macro: generates `#[no_mangle] extern "C"` shims that match
-/// the JSC calling convention but delegate to SpiderMonkey implementations.
-///
-/// This allows Bun's codegen (which emits `jsc_abi_extern!` references) to
-/// resolve against SpiderMonkey-backed symbols.
-#[proc_macro]
-pub fn jsc_abi(input: TokenStream) -> TokenStream {
-    let funcs = parse_macro_input!(input as syn::ItemFn);
-    let fn_name = &funcs.sig.ident;
-    let body = &funcs.block;
-    let inputs = &funcs.sig.inputs;
-    let output = &funcs.sig.output;
-
-    quote! {
-        #[no_mangle]
-        pub unsafe extern "C" fn #fn_name(#inputs) #output {
-            #body
-        }
-    }
-    .into()
-}
-
-// ---------------------------------------------------------------------------
 // #[JsClass] — proc-macro for JS class boilerplate generation
 // ---------------------------------------------------------------------------
 

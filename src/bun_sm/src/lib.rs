@@ -45,7 +45,6 @@ pub mod js_promise;
 // ─── Host function ABI ──────────────────────────────────────────────────
 pub mod host_fn;
 pub mod js_class;
-pub mod jsc_abi;
 
 // ─── GC rooting ──────────────────────────────────────────────────────────
 pub mod arguments;
@@ -91,16 +90,13 @@ pub mod debugger;
 pub mod fetch_headers;
 pub mod format_tag;
 pub mod global_ref;
-pub mod headers_jsc;
 pub mod host_call;
 pub mod hot_reloader;
 pub mod initialize;
 pub mod ipc;
 pub mod js_object;
-pub mod method_jsc;
 pub mod module_loader;
 pub mod node_path;
-pub mod options_jsc;
 pub mod rare_data;
 pub mod regular_expression;
 pub mod resolved_source;
@@ -167,10 +163,7 @@ pub use code_coverage::CodeCoverage;
 pub use create_utf::create_utf;
 pub use format_tag::FormatTag;
 pub use global_ref::{GlobalData, GlobalRef};
-pub use headers_jsc::HeadersJsc;
 pub use initialize::{eval_and_print, initialize};
-pub use method_jsc::MethodJsc;
-pub use options_jsc::{OptionsJsc, VMOptions};
 pub use resolved_source::{OwnedResolvedSource, ResolvedSource, Tag as ResolvedSourceTag};
 pub use runtime_transpiler_cache::{
     Entry as TranspilerCacheEntry, IS_DISABLED as TRANSPILER_CACHE_IS_DISABLED,

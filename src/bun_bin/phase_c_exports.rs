@@ -1,10 +1,11 @@
 //! PHASE-C link bridge — **transient**, not a permanent grab-bag.
 //!
 //! Every symbol that used to be stubbed here now has a real home (the `.rs`
-//! sibling of the Zig `export fn`) inside `bun_jsc` / `bun_runtime` /
-//! `bun_http_jsc` / `bun_bundler_jsc`. As of this revision `bun_runtime` (and
-//! transitively `bun_jsc`) is a real dependency of this binary crate, so any
-//! `#[no_mangle]` definition that compiles in either of those crates is now
+//! sibling of the Zig `export fn`). The `bun_jsc` / `bun_http_jsc` /
+//! `bun_bundler_jsc` names below are upstream Bun Zig crate names — in this
+//! tree their role is carried by `bun_sm` / `bao_engine` / `bao_bundler`, and
+//! `bun_runtime` (src/bao_runtime) is a real dependency of this binary crate,
+//! so any `#[no_mangle]` definition that compiles in those crates is now
 //! visible to the linker — the corresponding stub has been deleted.
 //!
 //! What remains is the small set of symbols that are either (a) defined here
@@ -39,7 +40,7 @@ type VirtualMachine = c_void;
 // Exported variables (Zig: `export var` / `@export(&var, …)`)
 // ════════════════════════════════════════════════════════════════════════════
 
-// REAL: now provided by bun_jsc (src/jsc/VirtualMachine.rs).
+// REAL: upstream Zig home src/jsc/VirtualMachine.rs (Bun bun_jsc; Bao layer: bun_sm/bao_engine).
 // isBunTest
 // Bun__stringSyntheticAllocationLimit
 // Bun__defaultRemainingRunsUntilSkipReleaseAccess
@@ -74,17 +75,18 @@ pub(crate) extern "C" fn Bun__panic(msg: *const u8, len: usize) -> ! {
     bun_core::output::panic(format_args!("{}", String::from_utf8_lossy(bytes)));
 }
 
-// REAL: now provided by bun_jsc (src/jsc/array_buffer.rs).
+// REAL: upstream Zig home src/jsc/array_buffer.rs (Bao layer: bun_sm/src/array_buffer.rs).
 // MarkedArrayBuffer_deallocator
 
-// REAL: now provided by bun_jsc (src/jsc/ZigString.rs).
+// REAL: upstream Zig home src/jsc/ZigString.rs (Bao layer: bun_core/string + bun_sm/bun_string.rs).
 // ZigString__freeGlobal
 
 // REAL: now provided by bun_runtime (src/runtime/node/node_process.rs).
 // Bun__NODE_NO_WARNINGS
 
 // REAL: `Bun__getTLSRejectUnauthorizedValue` / `Bun__isNoProxy` now exported
-// directly from `bun_jsc::virtual_machine_exports` (un-gated in phase-d).
+// directly from the VM-exports module (upstream: bun_jsc
+// `virtual_machine_exports`; here: bao_runtime product native symbols).
 
 // REAL: now provided by bun_runtime (src/runtime/napi/napi_body.rs).
 // napi_internal_suppress_crash_on_abort_if_desired
@@ -93,9 +95,11 @@ pub(crate) extern "C" fn Bun__panic(msg: *const u8, len: usize) -> ! {
 // bun_ssl_ctx_cache_on_free
 
 // ════════════════════════════════════════════════════════════════════════════
-// Resolved stubs — real `#[no_mangle]` bodies live in bun_jsc / bun_runtime /
-// bun_http_jsc / bun_bundler_jsc. Stub deleted; linker resolves to the crate
-// definition (or flags it if the upstream gate hasn't been lifted yet).
+// Resolved stubs — real `#[no_mangle]` bodies live in the jsc/runtime layer
+// crates (upstream: bun_jsc / bun_runtime / bun_http_jsc / bun_bundler_jsc;
+// here: bun_sm / bao_engine / bun_runtime / bao_bundler). Stub deleted; the
+// linker resolves to the crate definition (or flags it if the upstream gate
+// hasn't been lifted yet).
 // ════════════════════════════════════════════════════════════════════════════
 
 // ── VM bridge ───────────────────────────────────────────────────────────────
@@ -128,7 +132,7 @@ pub(crate) extern "C" fn Bun__panic(msg: *const u8, len: usize) -> ! {
 // REAL: src/jsc/ConsoleObject.rs
 // Bun__ConsoleObject__messageWithTypeAndLevel
 
-// REAL: now provided by bun_jsc (src/jsc/VirtualMachine.rs).
+// REAL: upstream Zig home src/jsc/VirtualMachine.rs (Bun bun_jsc; Bao layer: bun_sm/bao_engine).
 // Bun__VM__allowRejectionHandledWarning
 
 #[unsafe(no_mangle)]
@@ -137,7 +141,7 @@ pub(crate) extern "C" fn Bun__VM__scriptExecutionStatus(_vm: *const VirtualMachi
     0
 }
 
-// REAL: now provided by bun_jsc (src/jsc/VirtualMachine.rs).
+// REAL: upstream Zig home src/jsc/VirtualMachine.rs (Bun bun_jsc; Bao layer: bun_sm/bao_engine).
 // Bun__VM__useIsolationSourceProviderCache
 
 // ── Host fns: `(global, callframe) -> JSValue` ──────────────────────────────
@@ -266,7 +270,7 @@ pub(crate) extern "C" fn JSC__JSValue__parseJSON(
     )
 }
 
-// Imported by bun_jsc/bun_sys_jsc as extern but no provider in C++ or Zig.
+// Imported by upstream bun_jsc/bun_sys_jsc (Zig) as extern but no provider in C++ or Zig.
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn BunString__toErrorInstance(
     _this: *const c_void,

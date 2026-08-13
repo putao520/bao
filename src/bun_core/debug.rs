@@ -328,7 +328,7 @@ pub(crate) fn capture_current(first_address: Option<usize>, out: &mut [usize]) -
 /// signal handler's own frames (on the altstack) are never in the chain.
 ///
 /// Windows: `rbp` is not a reliable frame pointer across all linked code (the
-/// prebuilt JavaScriptCore and LLInt assembly do not maintain it), so an
+/// SpiderMonkey static library does not uniformly maintain it), so an
 /// fp-walk derails at the C++ boundary. Use the native `.pdata`-based
 /// `RtlCaptureStackBackTrace` instead — it works with or without unwind tables
 /// since `.pdata` is always emitted — and trim the handler's own frames by

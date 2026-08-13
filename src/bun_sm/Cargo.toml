@@ -27,6 +27,4 @@ bun_runtime = { path = "../bao_runtime" }
 tempfile = "3"
 
 [lints.rust]
-# Stub types have unused fields/imports during development — allow temporarily
-dead_code = "allow"
 unused_imports = "allow"

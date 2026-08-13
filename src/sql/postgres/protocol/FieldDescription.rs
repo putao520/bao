@@ -4,7 +4,7 @@ use crate::postgres::protocol::new_reader::NewReader;
 use crate::shared::column_identifier::ColumnIdentifier;
 
 pub struct FieldDescription {
-    /// JavaScriptCore treats numeric property names differently than string property names.
+    /// JS engines treat numeric property names differently than string property names.
     /// so we do the work to figure out if the property name is a number ahead of time.
     pub name_or_index: ColumnIdentifier,
     pub table_oid: Int4,

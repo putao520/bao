@@ -3560,7 +3560,7 @@ unsafe extern "C" fn buffer_alloc(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     // per-byte JS properties.
     if size > MAX_BUFFER_SIZE {
         let msg = format!(
-            "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
+            "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
             MAX_BUFFER_SIZE
         );
         let c_msg = ::std::ffi::CString::new(msg)
@@ -3771,7 +3771,7 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             // total crosses the ceiling rather than waiting for OOM.
             if cur_len > MAX_BUFFER_SIZE || total.saturating_add(cur_len) > MAX_BUFFER_SIZE {
                 let msg = format!(
-                    "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
+                    "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
                     MAX_BUFFER_SIZE
                 );
                 let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
@@ -3811,7 +3811,7 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             };
             if b_len > MAX_BUFFER_SIZE || total.saturating_add(b_len) > MAX_BUFFER_SIZE {
                 let msg = format!(
-                    "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
+                    "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
                     MAX_BUFFER_SIZE
                 );
                 let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
@@ -3867,7 +3867,7 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         }
         if target_total > MAX_BUFFER_SIZE {
             let msg = format!(
-                "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
+                "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
                 MAX_BUFFER_SIZE
             );
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
