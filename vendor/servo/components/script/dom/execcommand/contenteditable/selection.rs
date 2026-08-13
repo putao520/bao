@@ -40,6 +40,7 @@ pub(crate) enum SelectionDeletionBlockMerging {
 pub(crate) enum SelectionDeletionStripWrappers {
     #[default]
     Strip,
+    NoStrip,
 }
 
 #[derive(Default, PartialEq)]
@@ -176,14 +177,16 @@ impl Selection {
         };
 
         // Step 2. Canonicalize whitespace at the active range's start.
-        active_range
-            .start_container()
-            .canonicalize_whitespace(active_range.start_offset(), true);
+        active_range.start_container().canonicalize_whitespace(
+            cx,
+            active_range.start_offset(),
+            true,
+        );
 
         // Step 3. Canonicalize whitespace at the active range's end.
         active_range
             .end_container()
-            .canonicalize_whitespace(active_range.end_offset(), true);
+            .canonicalize_whitespace(cx, active_range.end_offset(), true);
 
         // Step 4. Let (start node, start offset) be the last equivalent point for the active range's start.
         let (mut start_node, mut start_offset) =
@@ -194,8 +197,7 @@ impl Selection {
             (active_range.end_container(), active_range.end_offset()).first_equivalent_point();
 
         // Step 6. If (end node, end offset) is not after (start node, start offset):
-        if bp_position(&end_node, end_offset, &start_node, start_offset) != Some(Ordering::Greater)
-        {
+        if bp_position(&end_node, end_offset, &start_node, start_offset) != Ordering::Greater {
             // Step 6.1. If direction is "forward", call collapseToStart() on the context object's selection.
             if direction == SelectionDeleteDirection::Forward {
                 self.collapse_current_range(
@@ -318,13 +320,13 @@ impl Selection {
             // Step 21.1. Call deleteData(start offset, end offset − start offset) on start node.
             if start_text
                 .upcast::<CharacterData>()
-                .DeleteData(start_offset, end_offset - start_offset)
+                .DeleteData(cx, start_offset, end_offset - start_offset)
                 .is_err()
             {
                 unreachable!("Must always be able to delete");
             }
             // Step 21.2. Canonicalize whitespace at (start node, start offset), with fix collapsed space false.
-            start_node.canonicalize_whitespace(start_offset, false);
+            start_node.canonicalize_whitespace(cx, start_offset, false);
             // Step 21.3. If direction is "forward", call collapseToStart() on the context object's selection.
             if direction == SelectionDeleteDirection::Forward {
                 self.collapse_current_range(
@@ -351,7 +353,7 @@ impl Selection {
             let Some(start_text) = start_node.downcast::<Text>() &&
             start_text
                 .upcast::<CharacterData>()
-                .DeleteData(start_offset, start_node.len() - start_offset)
+                .DeleteData(cx, start_offset, start_node.len() - start_offset)
                 .is_err()
         {
             unreachable!("Must always be able to delete");
@@ -400,7 +402,7 @@ impl Selection {
             if parent.block_node_of().is_some_and(|block_node| {
                 block_node
                     .children_unrooted(cx.no_gc())
-                    .all(|child| child.is_invisible())
+                    .all(|child| child.is_invisible(cx.no_gc()))
             }) && parent.is_editable_or_editing_host()
             {
                 let br = context_object.create_element(cx, "br");
@@ -434,21 +436,23 @@ impl Selection {
             let Some(end_text) = end_node.downcast::<Text>() &&
             end_text
                 .upcast::<CharacterData>()
-                .DeleteData(0, end_offset)
+                .DeleteData(cx, 0, end_offset)
                 .is_err()
         {
             unreachable!("Must always be able to delete");
         }
 
         // Step 27. Canonicalize whitespace at the active range's start, with fix collapsed space false.
-        active_range
-            .start_container()
-            .canonicalize_whitespace(active_range.start_offset(), false);
+        active_range.start_container().canonicalize_whitespace(
+            cx,
+            active_range.start_offset(),
+            false,
+        );
 
         // Step 28. Canonicalize whitespace at the active range's end, with fix collapsed space false.
         active_range
             .end_container()
-            .canonicalize_whitespace(active_range.end_offset(), false);
+            .canonicalize_whitespace(cx, active_range.end_offset(), false);
 
         // Step 29.
         //
@@ -490,7 +494,7 @@ impl Selection {
             let Some(child) = start_block.children().nth(0) else {
                 unreachable!("Must always have a single child");
             };
-            if child.is_collapsed_block_prop() {
+            if child.is_collapsed_block_prop(cx.no_gc()) {
                 assert!(child.has_parent());
                 child.remove_self(cx);
             }
@@ -504,7 +508,7 @@ impl Selection {
             loop {
                 if start_block
                     .children_unrooted(cx.no_gc())
-                    .all(|child| child != &reference_node)
+                    .all(|child| **child != *reference_node)
                 {
                     reference_node = reference_node
                         .GetParentNode()
@@ -784,7 +788,10 @@ impl Selection {
         // Passed as argument
 
         // Step 2. If there is no formattable node effectively contained in the active range:
-        if active_range.first_formattable_contained_node().is_none() {
+        if active_range
+            .first_formattable_contained_node(cx.no_gc())
+            .is_none()
+        {
             // Step 2.1. If command has inline command activated values, set the state override to true if new value is among them and false if it's not.
             let inline_command_activated_values = command.inline_command_activated_values();
             if !inline_command_activated_values.is_empty() {

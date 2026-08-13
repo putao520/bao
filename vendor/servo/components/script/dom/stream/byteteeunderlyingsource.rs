@@ -11,7 +11,7 @@ use js::jsapi::{HandleValueArray, Heap, NewArrayObject, Value};
 use js::jsval::ObjectValue;
 use js::rust::HandleValue as SafeHandleValue;
 use js::typedarray::ArrayBufferViewU8;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 
 use super::byteteereadintorequest::ByteTeeReadIntoRequest;
 use super::readablestream::ReaderType;
@@ -25,7 +25,6 @@ use crate::dom::promise::Promise;
 use crate::dom::stream::byteteereadrequest::ByteTeeReadRequest;
 use crate::dom::stream::readablestreamdefaultreader::ReadRequest;
 use crate::dom::types::ReadableStream;
-use crate::script_runtime::CanGc;
 
 #[derive(JSTraceable, MallocSizeOf)]
 pub(crate) enum ByteTeeCancelAlgorithm {
@@ -74,6 +73,7 @@ impl ByteTeeUnderlyingSource {
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new(
+        cx: &mut JSContext,
         reader: Rc<RefCell<ReaderType>>,
         stream: &ReadableStream,
         reading: Rc<Cell<bool>>,
@@ -87,9 +87,8 @@ impl ByteTeeUnderlyingSource {
         reader_version: Rc<Cell<u64>>,
         tee_cancel_algorithm: ByteTeeCancelAlgorithm,
         byte_tee_pull_algorithm: ByteTeePullAlgorithm,
-        can_gc: CanGc,
     ) -> DomRoot<ByteTeeUnderlyingSource> {
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(ByteTeeUnderlyingSource {
                 reflector_: Reflector::new(),
                 reader,
@@ -109,7 +108,7 @@ impl ByteTeeUnderlyingSource {
                 byte_tee_pull_algorithm,
             }),
             &*stream.global(),
-            can_gc,
+            cx,
         )
     }
 
@@ -127,7 +126,7 @@ impl ByteTeeUnderlyingSource {
         cx: &mut JSContext,
         this_reader: Rc<RefCell<ReaderType>>,
     ) {
-        let this_reader = this_reader.borrow_mut();
+        let this_reader = this_reader.borrow();
         match &*this_reader {
             ReaderType::Default(reader) => {
                 let expected_version = self.reader_version.get();
@@ -167,66 +166,75 @@ impl ByteTeeUnderlyingSource {
     }
 
     fn pull_with_default_reader(&self, cx: &mut JSContext, global: &GlobalScope) -> Fallible<()> {
-        let mut reader = self.reader.borrow_mut();
-        match &*reader {
-            ReaderType::BYOB(byte_reader) => {
-                // Assert: readIntoRequests is empty.
-                assert!(
+        rooted!(&in(cx) let mut reader_to_set = None);
+        {
+            let reader = self.reader.borrow();
+            match &*reader {
+                ReaderType::BYOB(byte_reader) => {
+                    // Assert: readIntoRequests is empty.
+                    assert!(
+                        byte_reader
+                            .get()
+                            .expect("Reader should be set.")
+                            .get_num_read_into_requests() ==
+                            0
+                    );
+
+                    // Release BYOB reader.
                     byte_reader
                         .get()
                         .expect("Reader should be set.")
-                        .get_num_read_into_requests() ==
-                        0
-                );
+                        .release(cx)?;
 
-                // Release BYOB reader.
-                byte_reader
-                    .get()
-                    .expect("Reader should be set.")
-                    .release(CanGc::from_cx(cx))?;
+                    // Acquire default reader.
+                    let default_reader = self
+                        .stream
+                        .acquire_default_reader(cx)
+                        .expect("AcquireReadableStreamDefaultReader should not fail");
 
-                // Acquire default reader.
-                let default_reader = self
-                    .stream
-                    .acquire_default_reader(CanGc::from_cx(cx))
-                    .expect("AcquireReadableStreamDefaultReader should not fail");
+                    reader_to_set.set(Some(ReaderType::Default(MutNullableDom::new(Some(
+                        &default_reader,
+                    )))));
+                    // We continue after the reader is set, after this match.
+                },
+                ReaderType::Default(reader) => {
+                    let byte_tee_read_request = ByteTeeReadRequest::new(
+                        cx,
+                        &self.branch_1.get().expect("Branch 1 should be set."),
+                        &self.branch_2.get().expect("Branch 2 should be set."),
+                        &self.stream,
+                        self.read_again_for_branch_1.clone(),
+                        self.read_again_for_branch_2.clone(),
+                        self.reading.clone(),
+                        self.canceled_1.clone(),
+                        self.canceled_2.clone(),
+                        self.cancel_promise.clone(),
+                        self,
+                        global,
+                    );
 
-                *reader = ReaderType::Default(MutNullableDom::new(Some(&default_reader)));
-                self.reader_version
-                    .set(self.reader_version.get().wrapping_add(1));
-                drop(reader);
+                    let read_request = ReadRequest::ByteTee {
+                        byte_tee_read_request: Dom::from_ref(&byte_tee_read_request),
+                    };
 
-                // Attach error forwarding for the new reader.
-                self.forward_reader_error(cx, self.reader.clone());
+                    reader
+                        .get()
+                        .expect("Reader should be set.")
+                        .read(cx, &read_request);
+                },
+            }
+        }
 
-                // IMPORTANT: now actually perform the pull we were asked to do.
-                return self.pull_with_default_reader(cx, global);
-            },
-            ReaderType::Default(reader) => {
-                let byte_tee_read_request = ByteTeeReadRequest::new(
-                    &self.branch_1.get().expect("Branch 1 should be set."),
-                    &self.branch_2.get().expect("Branch 2 should be set."),
-                    &self.stream,
-                    self.read_again_for_branch_1.clone(),
-                    self.read_again_for_branch_2.clone(),
-                    self.reading.clone(),
-                    self.canceled_1.clone(),
-                    self.canceled_2.clone(),
-                    self.cancel_promise.clone(),
-                    self,
-                    global,
-                    CanGc::from_cx(cx),
-                );
+        if reader_to_set.is_some() {
+            *self.reader.borrow_mut() = reader_to_set.take().unwrap();
+            self.reader_version
+                .set(self.reader_version.get().wrapping_add(1));
 
-                let read_request = ReadRequest::ByteTee {
-                    byte_tee_read_request: Dom::from_ref(&byte_tee_read_request),
-                };
+            // Attach error forwarding for the new reader.
+            self.forward_reader_error(cx, self.reader.clone());
 
-                reader
-                    .get()
-                    .expect("Reader should be set.")
-                    .read(cx, &read_request);
-            },
+            // IMPORTANT: now actually perform the pull we were asked to do.
+            return self.pull_with_default_reader(cx, global);
         }
 
         Ok(())
@@ -239,86 +247,96 @@ impl ByteTeeUnderlyingSource {
         for_branch2: bool,
         global: &GlobalScope,
     ) {
-        let mut reader = self.reader.borrow_mut();
-        match &*reader {
-            ReaderType::BYOB(reader) => {
-                // Let byobBranch be branch2 if forBranch2 is true, and branch1 otherwise.
-                let byob_branch = if for_branch2 {
-                    self.branch_2.get().expect("Branch 2 should be set.")
-                } else {
-                    self.branch_1.get().expect("Branch 1 should be set.")
-                };
+        rooted!(&in(cx) let mut reader_to_set = None);
+        {
+            let reader = self.reader.borrow();
+            match &*reader {
+                ReaderType::BYOB(reader) => {
+                    // Let byobBranch be branch2 if forBranch2 is true, and branch1 otherwise.
+                    let byob_branch = if for_branch2 {
+                        self.branch_2.get().expect("Branch 2 should be set.")
+                    } else {
+                        self.branch_1.get().expect("Branch 1 should be set.")
+                    };
 
-                // let otherBranch be branch2 if forBranch2 is false, and branch1 otherwise.
-                let other_branch = if for_branch2 {
-                    self.branch_1.get().expect("Branch 1 should be set.")
-                } else {
-                    self.branch_2.get().expect("Branch 2 should be set.")
-                };
+                    // let otherBranch be branch2 if forBranch2 is false, and branch1 otherwise.
+                    let other_branch = if for_branch2 {
+                        self.branch_1.get().expect("Branch 1 should be set.")
+                    } else {
+                        self.branch_2.get().expect("Branch 2 should be set.")
+                    };
 
-                // Let readIntoRequest be a read-into request with the following items:
-                let byte_tee_read_into_request = ByteTeeReadIntoRequest::new(
-                    for_branch2,
-                    &byob_branch,
-                    &other_branch,
-                    &self.stream,
-                    self.read_again_for_branch_1.clone(),
-                    self.read_again_for_branch_2.clone(),
-                    self.reading.clone(),
-                    self.canceled_1.clone(),
-                    self.canceled_2.clone(),
-                    self.cancel_promise.clone(),
-                    self,
-                    global,
-                    CanGc::from_cx(cx),
-                );
+                    // Let readIntoRequest be a read-into request with the following items:
+                    let byte_tee_read_into_request = ByteTeeReadIntoRequest::new(
+                        cx,
+                        for_branch2,
+                        &byob_branch,
+                        &other_branch,
+                        &self.stream,
+                        self.read_again_for_branch_1.clone(),
+                        self.read_again_for_branch_2.clone(),
+                        self.reading.clone(),
+                        self.canceled_1.clone(),
+                        self.canceled_2.clone(),
+                        self.cancel_promise.clone(),
+                        self,
+                        global,
+                    );
 
-                let read_into_request = ReadIntoRequest::ByteTee {
-                    byte_tee_read_into_request: Dom::from_ref(&byte_tee_read_into_request),
-                };
+                    let read_into_request = ReadIntoRequest::ByteTee {
+                        byte_tee_read_into_request: Dom::from_ref(&byte_tee_read_into_request),
+                    };
 
-                // Perform ! ReadableStreamBYOBReaderRead(reader, view, 1, readIntoRequest).
-                reader
-                    .get()
-                    .expect("Reader should be set.")
-                    .read(cx, view, 1, &read_into_request);
-            },
-            ReaderType::Default(default_reader) => {
-                // If reader implements ReadableStreamDefaultReader,
-                // Assert: reader.[[readRequests]] is empty.
-                assert!(
+                    // Perform ! ReadableStreamBYOBReaderRead(reader, view, 1, readIntoRequest).
+                    reader.get().expect("Reader should be set.").read(
+                        cx,
+                        view,
+                        1,
+                        &read_into_request,
+                    );
+                },
+                ReaderType::Default(default_reader) => {
+                    // If reader implements ReadableStreamDefaultReader,
+                    // Assert: reader.[[readRequests]] is empty.
+                    assert!(
+                        default_reader
+                            .get()
+                            .expect("Reader should be set.")
+                            .get_num_read_requests() ==
+                            0
+                    );
+
+                    // Perform ! ReadableStreamDefaultReaderRelease(reader).
                     default_reader
                         .get()
                         .expect("Reader should be set.")
-                        .get_num_read_requests() ==
-                        0
-                );
+                        .release(cx)
+                        .expect("Release should be successful.");
 
-                // Perform ! ReadableStreamDefaultReaderRelease(reader).
-                default_reader
-                    .get()
-                    .expect("Reader should be set.")
-                    .release(cx)
-                    .expect("Release should be successful.");
+                    // Set reader to ! AcquireReadableStreamBYOBReader(stream).
+                    let byob_reader = self
+                        .stream
+                        .acquire_byob_reader(cx)
+                        .expect("Reader should be set.");
 
-                // Set reader to ! AcquireReadableStreamBYOBReader(stream).
-                let byob_reader = self
-                    .stream
-                    .acquire_byob_reader(CanGc::from_cx(cx))
-                    .expect("Reader should be set.");
+                    reader_to_set.set(Some(ReaderType::BYOB(MutNullableDom::new(Some(
+                        &byob_reader,
+                    )))));
+                    // This execution path continues after we set the reader.
+                },
+            }
+        }
 
-                *reader = ReaderType::BYOB(MutNullableDom::new(Some(&byob_reader)));
-                self.reader_version
-                    .set(self.reader_version.get().wrapping_add(1));
+        if reader_to_set.is_some() {
+            *self.reader.borrow_mut() = reader_to_set.take().unwrap();
+            self.reader_version
+                .set(self.reader_version.get().wrapping_add(1));
 
-                drop(reader);
+            // Perform forwardReaderError, given reader.
+            self.forward_reader_error(cx, self.reader.clone());
 
-                // Perform forwardReaderError, given reader.
-                self.forward_reader_error(cx, self.reader.clone());
-
-                // Retry the pull using the BYOB reader we just acquired.
-                self.pull_with_byob_reader(cx, view, for_branch2, global);
-            },
+            // Retry the pull using the BYOB reader we just acquired.
+            self.pull_with_byob_reader(cx, view, for_branch2, global);
         }
     }
 
@@ -338,12 +356,7 @@ impl ByteTeeUnderlyingSource {
                     // Set readAgainForBranch1 to true.
                     self.read_again_for_branch_1.set(true);
                     // Return a promise resolved with undefined.
-                    return Promise::new_resolved(
-                        &self.stream.global(),
-                        cx.into(),
-                        (),
-                        CanGc::from_cx(cx),
-                    );
+                    return Promise::new_resolved(cx, &self.stream.global(), ());
                 }
 
                 // Set reading to true.
@@ -374,7 +387,7 @@ impl ByteTeeUnderlyingSource {
                 }
 
                 // Return a promise resolved with undefined.
-                Promise::new_resolved(&self.stream.global(), cx.into(), (), CanGc::from_cx(cx))
+                Promise::new_resolved(cx, &self.stream.global(), ())
             },
             ByteTeePullAlgorithm::Pull2Algorithm => {
                 // If reading is true,
@@ -383,12 +396,7 @@ impl ByteTeeUnderlyingSource {
                     self.read_again_for_branch_2.set(true);
 
                     // Return a promise resolved with undefined.
-                    return Promise::new_resolved(
-                        &self.stream.global(),
-                        cx.into(),
-                        (),
-                        CanGc::from_cx(cx),
-                    );
+                    return Promise::new_resolved(cx, &self.stream.global(), ());
                 }
 
                 // Set reading to true.
@@ -418,7 +426,7 @@ impl ByteTeeUnderlyingSource {
                 }
 
                 // Return a promise resolved with undefined.
-                Promise::new_resolved(&self.stream.global(), cx.into(), (), CanGc::from_cx(cx))
+                Promise::new_resolved(cx, &self.stream.global(), ())
             },
         }
     }
@@ -482,7 +490,6 @@ impl ByteTeeUnderlyingSource {
             .cancel(cx, &self.stream.global(), reasons_value.handle());
 
         // Resolve cancelPromise with cancelResult.
-        self.cancel_promise
-            .resolve_native(&cancel_result, CanGc::from_cx(cx));
+        self.cancel_promise.resolve_native(cx, &cancel_result);
     }
 }

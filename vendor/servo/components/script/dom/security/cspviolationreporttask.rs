@@ -4,6 +4,7 @@
 
 use content_security_policy as csp;
 use headers::{ContentType, HeaderMap, HeaderMapExt};
+use js::context::JSContext;
 use net_traits::request::{
     CredentialsMode, Destination, RequestBody, RequestId, create_request_body_with_content,
 };
@@ -27,8 +28,7 @@ use crate::dom::securitypolicyviolationevent::SecurityPolicyViolationEvent;
 use crate::dom::types::GlobalScope;
 use crate::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
 use crate::network_listener::{FetchResponseListener, ResourceTimingListener, submit_timing};
-use crate::script_runtime::CanGc;
-use crate::task::TaskOnce;
+use crate::tasks::task::TaskOnce;
 
 pub(crate) struct CSPViolationReportTask {
     global: Trusted<GlobalScope>,
@@ -52,15 +52,15 @@ impl CSPViolationReportTask {
         }
     }
 
-    fn fire_violation_event(&self, cx: &mut js::context::JSContext) {
+    fn fire_violation_event(&self, cx: &mut JSContext) {
         let event = SecurityPolicyViolationEvent::new(
+            cx,
             &self.global.root(),
             Atom::from("securitypolicyviolation"),
             EventBubbles::Bubbles,
             EventCancelable::NotCancelable,
             EventComposed::Composed,
             &self.violation_report.clone().convert(),
-            CanGc::from_cx(cx),
         );
 
         event.upcast::<Event>().fire(cx, &self.event_target.root());
@@ -74,7 +74,7 @@ impl CSPViolationReportTask {
         };
         // Step 4. Return the result of serialize an infra value to JSON bytes given «[ "csp-report" → body ]».
         Some(create_request_body_with_content(
-            &serde_json::to_string(&report_body).unwrap_or("".to_owned()),
+            serde_json::to_string(&report_body).unwrap_or_default(),
         ))
     }
 
@@ -136,7 +136,7 @@ impl CSPViolationReportTask {
 /// <https://w3c.github.io/webappsec-csp/#report-violation>
 /// > Queue a task to run the following steps:
 impl TaskOnce for CSPViolationReportTask {
-    fn run_once(self, cx: &mut js::context::JSContext) {
+    fn run_once(self, cx: &mut JSContext) {
         // > If target implements EventTarget, fire an event named securitypolicyviolation
         // > that uses the SecurityPolicyViolationEvent interface
         // > at target with its attributes initialized as follows:
@@ -183,25 +183,20 @@ impl FetchResponseListener for CSPReportUriFetchListener {
 
     fn process_response(
         &mut self,
-        _: &mut js::context::JSContext,
+        _: &mut JSContext,
         _: RequestId,
         fetch_metadata: Result<FetchMetadata, NetworkError>,
     ) {
         _ = fetch_metadata;
     }
 
-    fn process_response_chunk(
-        &mut self,
-        _: &mut js::context::JSContext,
-        _: RequestId,
-        chunk: Vec<u8>,
-    ) {
+    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, chunk: Vec<u8>) {
         _ = chunk;
     }
 
     fn process_response_eof(
         self,
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         _: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -209,7 +204,13 @@ impl FetchResponseListener for CSPReportUriFetchListener {
         submit_timing(cx, &self, &response, &timing)
     }
 
-    fn process_csp_violations(&mut self, _request_id: RequestId, _violations: Vec<Violation>) {}
+    fn process_csp_violations(
+        &mut self,
+        _cx: &mut JSContext,
+        _request_id: RequestId,
+        _violations: Vec<Violation>,
+    ) {
+    }
 }
 
 impl ResourceTimingListener for CSPReportUriFetchListener {

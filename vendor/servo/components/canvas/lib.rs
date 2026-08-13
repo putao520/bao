@@ -7,7 +7,6 @@
 
 mod backend;
 pub mod canvas_data;
-pub mod canvas_noise;
 pub mod canvas_paint_thread;
 mod peniko_conversions;
 #[cfg(feature = "vello")]

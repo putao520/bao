@@ -2,27 +2,29 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Liberally derived from the [Firefox JS implementation](http://mxr.mozilla.org/mozilla-central/source/toolkit/devtools/server/actors/webconsole.js).
+//! Liberally derived from the [Firefox JS implementation](https://searchfox.org/firefox-main/source/devtools/server/actors/webconsole.js).
 //! Mediates interaction between the remote web console and equivalent functionality (object
 //! inspection, JS evaluation, autocompletion) in Servo.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use atomic_refcell::AtomicRefCell;
 use devtools_traits::{
-    ConsoleMessage, ConsoleMessageFields, DevtoolScriptControlMsg, PageError, StackFrame,
-    get_time_stamp,
+    ConsoleMessage, ConsoleMessageFields, DevtoolScriptControlMsg, GetEnvironmentRequest,
+    PageError, StackFrame, get_time_stamp,
 };
 use malloc_size_of_derive::MallocSizeOf;
 use serde::Serialize;
 use serde_json::{self, Map, Value};
-use servo_base::generic_channel::{self, GenericSender};
-use servo_base::id::TEST_PIPELINE_ID;
+use servo_base::generic_channel::{self, GenericSender, channel};
+use servo_base::id::{PipelineId, TEST_PIPELINE_ID};
 use uuid::Uuid;
 
 use crate::actor::{Actor, ActorError, ActorRegistry};
 use crate::actors::browsing_context::BrowsingContextActor;
+use crate::actors::environment::EnvironmentActor;
 use crate::actors::worker::WorkerTargetActor;
 use crate::protocol::{ClientRequest, DevtoolsConnection, JsonPacketStream};
 use crate::resource::{ResourceArrayType, ResourceAvailable};
@@ -129,6 +131,7 @@ struct AutocompleteReply {
     from: String,
     matches: Vec<String>,
     match_prop: String,
+    is_element_access: bool,
 }
 
 #[derive(Serialize)]
@@ -139,7 +142,7 @@ struct EvaluateJSReply {
     result: Value,
     timestamp: u64,
     exception: Value,
-    exception_message: Value,
+    exception_message: Option<String>,
     has_exception: bool,
     helper_result: Value,
 }
@@ -156,7 +159,7 @@ struct EvaluateJSEvent {
     #[serde(rename = "resultID")]
     result_id: String,
     exception: Value,
-    exception_message: Value,
+    exception_message: Option<String>,
     has_exception: bool,
     helper_result: Value,
 }
@@ -194,15 +197,14 @@ pub(crate) struct ConsoleActor {
 }
 
 impl ConsoleActor {
-    pub fn register(registry: &ActorRegistry, name: String, root: Root) -> String {
+    pub fn register(registry: &ActorRegistry, name: String, root: Root) -> Arc<Self> {
         let actor = Self {
-            name: name.clone(),
+            name,
             root,
             cached_events: Default::default(),
             client_ready_to_receive_messages: false.into(),
         };
-        registry.register(actor);
-        name
+        registry.register::<Self>(actor)
     }
 
     fn script_chan(&self, registry: &ActorRegistry) -> GenericSender<DevtoolScriptControlMsg> {
@@ -230,6 +232,14 @@ impl ConsoleActor {
         }
     }
 
+    fn pipeline_id(&self, registry: &ActorRegistry) -> PipelineId {
+        // FIXME: Redesign messages so we don't have to fake pipeline ids when communicating with workers.
+        match self.current_unique_id(registry) {
+            UniqueId::Pipeline(p) => p,
+            UniqueId::Worker(_) => TEST_PIPELINE_ID,
+        }
+    }
+
     fn evaluate_js(
         &self,
         registry: &ActorRegistry,
@@ -241,15 +251,10 @@ impl ConsoleActor {
             .and_then(|v| v.as_str())
             .map(String::from);
         let (chan, port) = generic_channel::channel().unwrap();
-        // FIXME: Redesign messages so we don't have to fake pipeline ids when communicating with workers.
-        let pipeline = match self.current_unique_id(registry) {
-            UniqueId::Pipeline(p) => p,
-            UniqueId::Worker(_) => TEST_PIPELINE_ID,
-        };
         self.script_chan(registry)
             .send(DevtoolScriptControlMsg::Eval(
                 input.clone(),
-                pipeline,
+                self.pipeline_id(registry),
                 frame_actor_id,
                 chan,
             ))
@@ -257,14 +262,24 @@ impl ConsoleActor {
 
         let eval_result = port.recv().map_err(|_| ())?;
         let has_exception = eval_result.has_exception;
-
+        let (result, exception) = if has_exception {
+            (
+                Value::Null,
+                debugger_value_to_json(registry, eval_result.value),
+            )
+        } else {
+            (
+                debugger_value_to_json(registry, eval_result.value),
+                Value::Null,
+            )
+        };
         let reply = EvaluateJSReply {
-            from: self.name(),
+            from: self.name().into(),
             input,
-            result: debugger_value_to_json(registry, eval_result.value),
+            result,
             timestamp: get_time_stamp(),
-            exception: Value::Null,
-            exception_message: Value::Null,
+            exception,
+            exception_message: eval_result.exception_message,
             has_exception,
             helper_result: Value::Null,
         };
@@ -347,11 +362,24 @@ impl ConsoleActor {
         self.client_ready_to_receive_messages
             .store(true, Ordering::Relaxed);
     }
+
+    /// Matching function with conditional case-sensitivity as per:
+    /// <https://searchfox.org/firefox-main/rev/7fa9b602777418732e08b26d1ef6c9945c4bbd72/devtools/shared/webconsole/js-property-provider.js#617-622>
+    pub(crate) fn autocomplete_match(prefix: &str, identifier: &str) -> bool {
+        let is_insensitive = prefix.chars().next().is_some_and(|c| c.is_lowercase());
+        if is_insensitive {
+            identifier
+                .to_lowercase()
+                .starts_with(&prefix.to_lowercase())
+        } else {
+            identifier.starts_with(prefix)
+        }
+    }
 }
 
 impl Actor for ConsoleActor {
-    fn name(&self) -> String {
-        self.name.clone()
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn handle_message(
@@ -367,17 +395,61 @@ impl Actor for ConsoleActor {
                 self.cached_events
                     .borrow_mut()
                     .remove(&self.current_unique_id(registry));
-                let msg = EmptyReplyMsg { from: self.name() };
+                let msg = EmptyReplyMsg {
+                    from: self.name().into(),
+                };
                 request.reply_final(&msg)?
             },
 
-            // TODO: implement autocompletion like onAutocomplete in
-            //      http://mxr.mozilla.org/mozilla-central/source/toolkit/devtools/server/actors/webconsole.js
             "autocomplete" => {
-                let msg = AutocompleteReply {
-                    from: self.name(),
-                    matches: vec![],
-                    match_prop: "".to_owned(),
+                let Some((tx, rx)) = channel() else {
+                    return Err(ActorError::Internal);
+                };
+
+                let env_request = if let Some(frame_actor) = msg
+                    .get("frameActor")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                {
+                    GetEnvironmentRequest::Frame(frame_actor)
+                } else {
+                    GetEnvironmentRequest::Global(self.pipeline_id(registry))
+                };
+
+                self.script_chan(registry)
+                    .send(DevtoolScriptControlMsg::GetEnvironment(env_request, tx))
+                    .map_err(|_| ActorError::Internal)?;
+
+                let environment_name = rx.recv().map_err(|_| ActorError::Internal)?;
+                let environment_actor = registry.find::<EnvironmentActor>(&environment_name);
+
+                let prompt = msg
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .ok_or(ActorError::Internal)?;
+
+                let identifiers = environment_actor.search_identifiers_recursive(registry, &prompt);
+
+                let matches: Vec<String> = identifiers
+                    .into_iter()
+                    .filter(|name| ConsoleActor::autocomplete_match(&prompt, name))
+                    .collect();
+
+                let msg = if matches.is_empty() {
+                    AutocompleteReply {
+                        from: self.name().into(),
+                        matches: vec![],
+                        match_prop: "".to_owned(),
+                        is_element_access: false,
+                    }
+                } else {
+                    AutocompleteReply {
+                        from: self.name().into(),
+                        matches,
+                        match_prop: prompt,
+                        is_element_access: false,
+                    }
                 };
                 request.reply_final(&msg)?
             },
@@ -390,7 +462,7 @@ impl Actor for ConsoleActor {
             "evaluateJSAsync" => {
                 let result_id = Uuid::new_v4().to_string();
                 let early_reply = EvaluateJSAsyncReply {
-                    from: self.name(),
+                    from: self.name().into(),
                     result_id: result_id.clone(),
                 };
                 // Emit an eager reply so that the client starts listening
@@ -405,7 +477,7 @@ impl Actor for ConsoleActor {
 
                 let reply = self.evaluate_js(registry, msg).unwrap();
                 let msg = EvaluateJSEvent {
-                    from: self.name(),
+                    from: self.name().into(),
                     type_: "evaluationResult".to_owned(),
                     input: reply.input,
                     result: reply.result,
@@ -422,7 +494,7 @@ impl Actor for ConsoleActor {
 
             "setPreferences" => {
                 let msg = SetPreferencesReply {
-                    from: self.name(),
+                    from: self.name().into(),
                     updated: vec![],
                 };
                 request.reply_final(&msg)?

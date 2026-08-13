@@ -8,6 +8,7 @@
 mod cookie;
 mod cookie_http_state;
 mod data_loader;
+mod decoder;
 mod fetch;
 
 fn fetch(request: Request, dc: Option<Sender<DevtoolsControlMsg>>) -> Response {
@@ -106,8 +107,7 @@ fn receive_credential_prompt_msgs(
 }
 
 fn create_http_state(fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>) -> HttpState {
-    // Initialize BoringSSL (replaces rustls crypto provider initialization)
-    bun_boringssl::load();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let override_manager = net::connector::CertificateErrorOverrideManager::new();
     HttpState {
@@ -115,7 +115,7 @@ fn create_http_state(fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>) -> Http
         cookie_jar: RwLock::new(net::cookie_storage::CookieStorage::new(150)),
         auth_cache: RwLock::new(net::resource_thread::AuthCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
-        http_cache: net::http_cache::HttpCache::default(),
+        http_cache: net::http_cache::HttpCache::new(net::http_cache::HttpCacheAssignment::Public),
         client: create_http_client(create_tls_config(
             net::connector::CACertificates::Default,
             false, /* ignore_certificate_errors */
@@ -158,6 +158,8 @@ impl FetchTaskTarget for FetchResponseCollector {
         let _ = self.sender.take().unwrap().send(response.clone());
     }
     fn process_csp_violations(&mut self, _: &Request, _: Vec<csp::Violation>) {}
+
+    fn process_response_length_hint(&mut self, _: &Request, _: usize) {}
 }
 
 fn fetch_with_context(request: Request, mut context: &mut FetchContext) -> Response {

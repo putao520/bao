@@ -7,7 +7,7 @@ use std::mem;
 
 use cssparser::{Parser as CssParser, ParserInput as CssParserInput, ToCss};
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use script_bindings::reflector::reflect_dom_object_with_cx;
 use selectors::parser::{ParseRelative, SelectorList};
 use servo_arc::Arc;
@@ -15,7 +15,6 @@ use style::selector_parser::SelectorParser;
 use style::shared_lock::{Locked, SharedRwLockReadGuard, ToCssWithGuard};
 use style::stylesheets::{CssRuleType, CssRules, Origin, StyleRule, StylesheetInDocument};
 
-use super::cssgroupingrule::CSSGroupingRule;
 use super::cssrule::SpecificCSSRule;
 use super::cssstyledeclaration::{CSSModificationAccess, CSSStyleDeclaration, CSSStyleOwner};
 use super::cssstylesheet::CSSStyleSheet;
@@ -24,8 +23,9 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::cssgroupingrule::CSSGroupingRule;
+use crate::dom::types::CSSRule;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct CSSStyleRule {
@@ -38,11 +38,12 @@ pub(crate) struct CSSStyleRule {
 
 impl CSSStyleRule {
     fn new_inherited(
+        parent_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         stylerule: Arc<Locked<StyleRule>>,
     ) -> CSSStyleRule {
         CSSStyleRule {
-            css_grouping_rule: CSSGroupingRule::new_inherited(parent_stylesheet),
+            css_grouping_rule: CSSGroupingRule::new_inherited(parent_rule, parent_stylesheet),
             style_rule: RefCell::new(stylerule),
             style_declaration: Default::default(),
         }
@@ -51,11 +52,16 @@ impl CSSStyleRule {
     pub(crate) fn new(
         cx: &mut JSContext,
         window: &Window,
+        parent_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         stylerule: Arc<Locked<StyleRule>>,
     ) -> DomRoot<CSSStyleRule> {
         reflect_dom_object_with_cx(
-            Box::new(CSSStyleRule::new_inherited(parent_stylesheet, stylerule)),
+            Box::new(CSSStyleRule::new_inherited(
+                parent_rule,
+                parent_stylesheet,
+                stylerule,
+            )),
             window,
             cx,
         )
@@ -120,6 +126,7 @@ impl CSSStyleRuleMethods<crate::DomTypeHolder> for CSSStyleRule {
         self.style_declaration.or_init(|| {
             let guard = self.css_grouping_rule.shared_lock().read();
             CSSStyleDeclaration::new(
+                cx,
                 self.global().as_window(),
                 CSSStyleOwner::CSSRule(
                     Dom::from_ref(self.upcast()),
@@ -127,7 +134,6 @@ impl CSSStyleRuleMethods<crate::DomTypeHolder> for CSSStyleRule {
                 ),
                 None,
                 CSSModificationAccess::ReadWrite,
-                CanGc::from_cx(cx),
             )
         })
     }
@@ -144,7 +150,7 @@ impl CSSStyleRuleMethods<crate::DomTypeHolder> for CSSStyleRule {
     }
 
     /// <https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext>
-    fn SetSelectorText(&self, value: DOMString) {
+    fn SetSelectorText(&self, no_gc: &NoGC, value: DOMString) {
         let value = value.str();
         let Ok(mut selector) = ({
             let guard = self.css_grouping_rule.shared_lock().read();
@@ -163,9 +169,17 @@ impl CSSStyleRuleMethods<crate::DomTypeHolder> for CSSStyleRule {
             };
             let mut css_parser = CssParserInput::new(&value);
             let mut css_parser = CssParser::new(&mut css_parser);
-            // TODO: Maybe allow setting relative selectors from the OM, if we're in a nested style
-            // rule?
-            SelectorList::parse(&parser, &mut css_parser, ParseRelative::No)
+
+            let parse_relative = match self
+                .upcast::<CSSRule>()
+                .parent_rule()
+                .map(|parent| parent.upcast::<CSSRule>().rule_type())
+            {
+                Some(CssRuleType::Style) => ParseRelative::ForNesting,
+                Some(CssRuleType::Scope) => ParseRelative::ForScope,
+                _ => ParseRelative::No,
+            };
+            SelectorList::parse(&parser, &mut css_parser, parse_relative)
         }) else {
             return;
         };
@@ -178,6 +192,6 @@ impl CSSStyleRuleMethods<crate::DomTypeHolder> for CSSStyleRule {
         );
         self.css_grouping_rule
             .parent_stylesheet()
-            .notify_invalidations();
+            .notify_invalidations(no_gc);
     }
 }

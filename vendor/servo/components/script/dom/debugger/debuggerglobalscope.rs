@@ -5,8 +5,8 @@
 use std::cell::RefCell;
 
 use devtools_traits::{
-    BlackboxCoverage, DevtoolScriptControlMsg, EvaluateJSReply, ScriptToDevtoolsControlMsg,
-    SourceInfo, WorkerId,
+    BlackboxCoverage, DebuggerValue, DevtoolScriptControlMsg, EvaluateJSReply,
+    GetEnvironmentRequest, ScriptToDevtoolsControlMsg, SourceInfo, WorkerId,
 };
 use dom_struct::dom_struct;
 use embedder_traits::ScriptToEmbedderChan;
@@ -15,25 +15,20 @@ use js::context::JSContext;
 use js::rust::wrappers2::JS_DefineDebuggerObject;
 use net_traits::ResourceThreads;
 use profile_traits::{mem, time};
+use script_bindings::interfaces::HasOrigin;
 use script_bindings::reflector::DomObject;
 use servo_base::generic_channel::{GenericCallback, GenericSender, channel};
 use servo_base::id::{Index, PipelineId, PipelineNamespaceId};
-use servo_constellation_traits::ScriptToConstellationChan;
+use servo_constellation_traits::ScriptToConstellationSender;
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
 
-use crate::dom::bindings::codegen::Bindings::DebuggerEvalEventBinding::DebuggerValue;
-use crate::dom::bindings::codegen::Bindings::DebuggerEvalEventBinding::GenericBindings::ObjectPreview;
-use crate::dom::bindings::codegen::Bindings::DebuggerGetEnvironmentEventBinding::{
-    EnvironmentInfo, EnvironmentVariable,
-};
-use crate::dom::bindings::codegen::Bindings::DebuggerGlobalScopeBinding::{self};
+use crate::dom::bindings::codegen::Bindings::DebuggerGetEnvironmentEventBinding::EnvironmentInfo;
+use crate::dom::bindings::codegen::Bindings::DebuggerGlobalScopeBinding;
 use crate::dom::bindings::codegen::Bindings::DebuggerInterruptEventBinding::{
     FrameInfo, FrameOffset, PauseReason,
 };
-use crate::dom::bindings::codegen::GenericBindings::DebuggerEvalEventBinding::{
-    EvalResult, PropertyDescriptor,
-};
+use crate::dom::bindings::codegen::GenericBindings::DebuggerEvalEventBinding::EvalResult;
 use crate::dom::bindings::codegen::GenericBindings::DebuggerGetPossibleBreakpointsEventBinding::RecommendedBreakpointLocation;
 use crate::dom::bindings::codegen::GenericBindings::DebuggerGlobalScopeBinding::{
     DebuggerGlobalScopeMethods, NotifyNewSource, PipelineIdInit,
@@ -56,9 +51,9 @@ use crate::dom::types::{
 };
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
-use crate::realms::{enter_auto_realm, enter_realm};
-use crate::script_runtime::{CanGc, IntroductionType};
-use crate::script_thread::with_script_thread;
+use crate::event_loop::script_thread::with_script_thread;
+use crate::realms::enter_auto_realm;
+use crate::script_runtime::IntroductionType;
 
 #[dom_struct]
 /// Global scope for interacting with the devtools Debugger API.
@@ -77,6 +72,10 @@ pub(crate) struct DebuggerGlobalScope {
     get_list_frame_result_sender: RefCell<Option<GenericSender<Vec<String>>>>,
     #[no_trace]
     get_environment_result_sender: RefCell<Option<GenericSender<String>>>,
+    #[no_trace]
+    pipeline_id: PipelineId,
+    #[no_trace]
+    origin: MutableOrigin,
 }
 
 impl DebuggerGlobalScope {
@@ -94,7 +93,7 @@ impl DebuggerGlobalScope {
         devtools_to_script_sender: GenericSender<DevtoolScriptControlMsg>,
         mem_profiler_chan: mem::ProfilerChan,
         time_profiler_chan: time::ProfilerChan,
-        script_to_constellation_chan: ScriptToConstellationChan,
+        script_to_constellation_sender: ScriptToConstellationSender,
         script_to_embedder_chan: ScriptToEmbedderChan,
         resource_threads: ResourceThreads,
         storage_threads: StorageThreads,
@@ -103,15 +102,13 @@ impl DebuggerGlobalScope {
     ) -> DomRoot<Self> {
         let global = Box::new(Self {
             global_scope: GlobalScope::new_inherited(
-                debugger_pipeline_id,
                 script_to_devtools_sender,
                 mem_profiler_chan,
                 time_profiler_chan,
-                script_to_constellation_chan,
+                script_to_constellation_sender,
                 script_to_embedder_chan,
                 resource_threads,
                 storage_threads,
-                MutableOrigin::new(ImmutableOrigin::new_opaque()),
                 ServoUrl::parse_with_base(None, "about:internal/debugger")
                     .expect("Guaranteed by argument"),
                 None,
@@ -119,15 +116,17 @@ impl DebuggerGlobalScope {
                 gpu_id_hub,
                 None,
                 false,
-                None, // font_context
             ),
             devtools_to_script_sender,
             get_possible_breakpoints_result_sender: RefCell::new(None),
             get_list_frame_result_sender: RefCell::new(None),
             get_environment_result_sender: RefCell::new(None),
             eval_result_sender: RefCell::new(None),
+            pipeline_id: debugger_pipeline_id,
+            origin: MutableOrigin::new(ImmutableOrigin::new_opaque()),
         });
-        let global = DebuggerGlobalScopeBinding::Wrap::<crate::DomTypeHolder>(cx, global);
+        let global =
+            DebuggerGlobalScopeBinding::Wrap::<crate::DomTypeHolder>(cx, &global.origin(), global);
 
         let mut realm = enter_auto_realm(cx, &*global);
         let mut realm = realm.current_realm();
@@ -138,6 +137,10 @@ impl DebuggerGlobalScope {
         });
 
         global
+    }
+
+    pub(crate) fn origin(&self) -> MutableOrigin {
+        self.origin.clone()
     }
 
     pub(crate) fn as_global_scope(&self) -> &GlobalScope {
@@ -166,17 +169,14 @@ impl DebuggerGlobalScope {
     ) {
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm;
-        let debuggee_pipeline_id = crate::dom::pipelineid::PipelineId::new(
-            self.upcast(),
-            debuggee_pipeline_id,
-            CanGc::from_cx(cx),
-        );
+        let debuggee_pipeline_id =
+            crate::dom::pipelineid::PipelineId::new(cx, self.upcast(), debuggee_pipeline_id);
         let event = DomRoot::upcast::<Event>(DebuggerAddDebuggeeEvent::new(
+            cx,
             self.upcast(),
             debuggee_global,
             &debuggee_pipeline_id,
             debuggee_worker_id.map(|id| id.to_string().into()),
-            CanGc::from_cx(cx),
         ));
         assert!(
             event.fire(cx, self.upcast()),
@@ -200,18 +200,15 @@ impl DebuggerGlobalScope {
         );
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm;
-        let debuggee_pipeline_id = crate::dom::pipelineid::PipelineId::new(
-            self.upcast(),
-            debuggee_pipeline_id,
-            CanGc::from_cx(cx),
-        );
+        let debuggee_pipeline_id =
+            crate::dom::pipelineid::PipelineId::new(cx, self.upcast(), debuggee_pipeline_id);
         let event = DomRoot::upcast::<Event>(DebuggerEvalEvent::new(
+            cx,
             self.upcast(),
             code,
             &debuggee_pipeline_id,
             debuggee_worker_id.map(|id| id.to_string().into()),
             frame_actor_id.map(|id| id.into()),
-            CanGc::from_cx(cx),
         ));
         assert!(
             event.fire(cx, self.upcast()),
@@ -230,11 +227,12 @@ impl DebuggerGlobalScope {
                 .replace(Some(result_sender))
                 .is_none()
         );
-        let _realm = enter_realm(self);
+        let mut realm = enter_auto_realm(cx, self);
+        let cx = &mut realm.current_realm();
         let event = DomRoot::upcast::<Event>(DebuggerGetPossibleBreakpointsEvent::new(
+            cx,
             self.upcast(),
             spidermonkey_id,
-            CanGc::from_cx(cx),
         ));
         assert!(
             event.fire(cx, self.upcast()),
@@ -250,11 +248,11 @@ impl DebuggerGlobalScope {
         offset: u32,
     ) {
         let event = DomRoot::upcast::<Event>(DebuggerSetBreakpointEvent::new(
+            cx,
             self.upcast(),
             spidermonkey_id,
             script_id,
             offset,
-            CanGc::from_cx(cx),
         ));
         assert!(
             event.fire(cx, self.upcast()),
@@ -263,10 +261,7 @@ impl DebuggerGlobalScope {
     }
 
     pub(crate) fn fire_interrupt(&self, cx: &mut js::context::JSContext) {
-        let event = DomRoot::upcast::<Event>(DebuggerInterruptEvent::new(
-            self.upcast(),
-            CanGc::from_cx(cx),
-        ));
+        let event = DomRoot::upcast::<Event>(DebuggerInterruptEvent::new(cx, self.upcast()));
         assert!(
             event.fire(cx, self.upcast()),
             "Guaranteed by DebuggerInterruptEvent::new"
@@ -286,15 +281,15 @@ impl DebuggerGlobalScope {
                 .replace(Some(result_sender))
                 .is_none()
         );
-        let _realm = enter_realm(self);
-        let pipeline_id =
-            crate::dom::pipelineid::PipelineId::new(self.upcast(), pipeline_id, CanGc::from_cx(cx));
+        let mut realm = enter_auto_realm(cx, self);
+        let cx = &mut realm.current_realm();
+        let pipeline_id = crate::dom::pipelineid::PipelineId::new(cx, self.upcast(), pipeline_id);
         let event = DomRoot::upcast::<Event>(DebuggerFrameEvent::new(
+            cx,
             self.upcast(),
             &pipeline_id,
             start,
             count,
-            CanGc::from_cx(cx),
         ));
         assert!(
             event.fire(cx, self.upcast()),
@@ -305,7 +300,7 @@ impl DebuggerGlobalScope {
     pub(crate) fn fire_get_environment(
         &self,
         cx: &mut JSContext,
-        frame_actor_id: String,
+        request: GetEnvironmentRequest,
         result_sender: GenericSender<String>,
     ) {
         assert!(
@@ -313,12 +308,10 @@ impl DebuggerGlobalScope {
                 .replace(Some(result_sender))
                 .is_none()
         );
-        let _realm = enter_realm(self);
-        let event = DomRoot::upcast::<Event>(DebuggerGetEnvironmentEvent::new(
-            self.upcast(),
-            frame_actor_id.into(),
-            CanGc::from_cx(cx),
-        ));
+        let mut realm = enter_auto_realm(cx, self);
+        let cx = &mut realm.current_realm();
+
+        let event = DomRoot::upcast::<Event>(DebuggerGetEnvironmentEvent::new(cx, self, request));
         assert!(
             event.fire(cx, self.upcast()),
             "Guaranteed by DebuggerGetEnvironmentEvent::new"
@@ -332,10 +325,10 @@ impl DebuggerGlobalScope {
         frame_actor_id: Option<String>,
     ) {
         let event = DomRoot::upcast::<Event>(DebuggerResumeEvent::new(
+            cx,
             self.upcast(),
             resume_limit_type.map(DOMString::from),
             frame_actor_id.map(DOMString::from),
-            CanGc::from_cx(cx),
         ));
         assert!(
             event.fire(cx, self.upcast()),
@@ -351,11 +344,11 @@ impl DebuggerGlobalScope {
         offset: u32,
     ) {
         let event = DomRoot::upcast::<Event>(DebuggerClearBreakpointEvent::new(
+            cx,
             self.upcast(),
             spidermonkey_id,
             script_id,
             offset,
-            CanGc::from_cx(cx),
         ));
         assert!(
             event.fire(cx, self.upcast()),
@@ -370,10 +363,10 @@ impl DebuggerGlobalScope {
         coverage: BlackboxCoverage,
     ) {
         let event = DomRoot::upcast::<Event>(DebuggerBlackboxEvent::new(
+            cx,
             self.upcast(),
             spidermonkey_id,
             coverage,
-            CanGc::from_cx(cx),
         ));
         assert!(
             event.fire(cx, self.upcast()),
@@ -388,15 +381,19 @@ impl DebuggerGlobalScope {
         coverage: BlackboxCoverage,
     ) {
         let event = DomRoot::upcast::<Event>(DebuggerUnblackboxEvent::new(
+            cx,
             self.upcast(),
             spidermonkey_id,
             coverage,
-            CanGc::from_cx(cx),
         ));
         assert!(
             event.fire(cx, self.upcast()),
             "Guaranteed by DebuggerUnblackboxEvent::new"
         );
+    }
+
+    pub(crate) fn pipeline_id(&self) -> PipelineId {
+        self.pipeline_id
     }
 }
 
@@ -530,12 +527,50 @@ impl DebuggerGlobalScopeMethods<crate::DomTypeHolder> for DebuggerGlobalScope {
             .take()
             .expect("Guaranteed by Self::fire_eval()");
 
+        let has_exception = result.hasException.unwrap_or(false);
+        let value = match serde_json::from_str::<devtools_traits::DebuggerValue>(
+            &result.serializedValue.str(),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                warn!("Failed to parse serialized debugger eval value: {error}");
+                devtools_traits::DebuggerValue::StringValue(
+                    "failed to parse eval result".to_string(),
+                )
+            },
+        };
+
+        let exception_message = result
+            .exceptionMessage
+            .as_ref()
+            .map(|message| message.str().to_string());
+
         let reply = EvaluateJSReply {
-            value: parse_debugger_value(&result.value, result.preview.as_ref()),
-            has_exception: result.hasException.unwrap_or(false),
+            value,
+            exception_message,
+            has_exception,
         };
 
         let _ = sender.send(reply);
+    }
+
+    fn RegisterObjectActor(&self, serialized_value: DOMString) -> Option<DOMString> {
+        let chan = self.upcast::<GlobalScope>().devtools_chan()?;
+        let (tx, rx) = channel::<String>().unwrap();
+
+        let value =
+            match serde_json::from_str::<devtools_traits::DebuggerValue>(&serialized_value.str()) {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!("Failed to parse serialized debugger object value: {error}");
+                    return None;
+                },
+            };
+
+        let msg = ScriptToDevtoolsControlMsg::CreateObjectActor(tx, value);
+        let _ = chan.send(msg);
+
+        rx.recv().ok().map(DOMString::from)
     }
 
     fn PauseAndRespond(
@@ -584,10 +619,21 @@ impl DebuggerGlobalScopeMethods<crate::DomTypeHolder> for DebuggerGlobalScope {
         let chan = self.upcast::<GlobalScope>().devtools_chan()?;
         let (tx, rx) = channel::<String>().unwrap();
 
+        let this_value = match serde_json::from_str::<devtools_traits::DebuggerValue>(
+            &result.serializedThis.str(),
+        ) {
+            Ok(this_value) => this_value,
+            Err(error) => {
+                warn!("Failed to parse serialized debugger frame this value: {error}");
+                return None;
+            },
+        };
+
         let frame = devtools_traits::FrameInfo {
-            display_name: result.displayName.clone().into(),
+            display_name: result.displayName.clone().map(String::from),
             on_stack: result.onStack,
             oldest: result.oldest,
+            this_value,
             terminated: result.terminated,
             type_: result.type_.clone().into(),
             url: result.url.clone().into(),
@@ -617,19 +663,33 @@ impl DebuggerGlobalScopeMethods<crate::DomTypeHolder> for DebuggerGlobalScope {
         let chan = self.upcast::<GlobalScope>().devtools_chan()?;
         let (tx, rx) = channel::<String>().unwrap();
 
+        let binding_variables = match serde_json::from_str::<Vec<devtools_traits::PropertyDescriptor>>(
+            &environment.serializedBindings.str(),
+        ) {
+            Ok(binding_variables) => binding_variables,
+            Err(error) => {
+                warn!("Failed to parse serialized debugger environment bindings: {error}");
+                return None;
+            },
+        };
+        let object = match environment.serializedObject.as_ref() {
+            Some(serialized_object) => {
+                match serde_json::from_str::<DebuggerValue>(&serialized_object.str()) {
+                    Ok(object) => Some(object),
+                    Err(error) => {
+                        warn!("Failed to parse serialized debugger environment object: {error}");
+                        return None;
+                    },
+                }
+            },
+            None => None,
+        };
         let environment = devtools_traits::EnvironmentInfo {
             type_: environment.type_.clone().map(String::from),
             scope_kind: environment.scopeKind.clone().map(String::from),
             function_display_name: environment.functionDisplayName.clone().map(String::from),
-            binding_variables: environment
-                .bindingVariables
-                .as_deref()
-                .into_iter()
-                .flatten()
-                .map(|EnvironmentVariable { property, preview }| {
-                    parse_property_descriptor(property, preview.as_ref())
-                })
-                .collect(),
+            object,
+            binding_variables,
         };
 
         let msg = ScriptToDevtoolsControlMsg::CreateEnvironmentActor(
@@ -653,92 +713,8 @@ impl DebuggerGlobalScopeMethods<crate::DomTypeHolder> for DebuggerGlobalScope {
     }
 }
 
-fn parse_property_descriptor(
-    property: &PropertyDescriptor,
-    preview: Option<&ObjectPreview>,
-) -> devtools_traits::PropertyDescriptor {
-    devtools_traits::PropertyDescriptor {
-        name: property.name.to_string(),
-        value: parse_debugger_value(&property.value, preview),
-        configurable: property.configurable,
-        enumerable: property.enumerable,
-        writable: property.writable,
-        is_accessor: property.isAccessor,
-    }
-}
-
-fn parse_object_preview(preview: &ObjectPreview) -> devtools_traits::ObjectPreview {
-    devtools_traits::ObjectPreview {
-        kind: preview.kind.clone().into(),
-        own_properties: preview.ownProperties.as_ref().map(|properties| {
-            properties
-                .iter()
-                .map(|property| parse_property_descriptor(property, None))
-                .collect()
-        }),
-        own_properties_length: preview.ownPropertiesLength,
-        function: preview
-            .function
-            .as_ref()
-            .map(|fields| devtools_traits::FunctionPreview {
-                name: fields.name.as_ref().map(|s| s.to_string()),
-                display_name: fields.displayName.as_ref().map(|s| s.to_string()),
-                parameter_names: fields
-                    .parameterNames
-                    .iter()
-                    .map(|p| p.to_string())
-                    .collect(),
-                is_async: fields.isAsync,
-                is_generator: fields.isGenerator,
-            }),
-        array_length: preview.arrayLength,
-        items: preview.items.as_ref().map(|items| {
-            items
-                .iter()
-                .map(|item| parse_debugger_value(item, None))
-                .collect()
-        }),
-    }
-}
-
-fn parse_debugger_value(
-    value: &DebuggerValue,
-    preview: Option<&ObjectPreview>,
-) -> devtools_traits::DebuggerValue {
-    use devtools_traits::DebuggerValue::*;
-    match &*value.valueType.str() {
-        "undefined" => VoidValue,
-        "null" => NullValue,
-        "boolean" => BooleanValue(value.booleanValue.unwrap_or(false)),
-        "Infinity" => NumberValue(f64::INFINITY),
-        "-Infinity" => NumberValue(f64::NEG_INFINITY),
-        "NaN" => NumberValue(f64::NAN),
-        "-0" => NumberValue(-0.0),
-        "number" => {
-            let num = value.numberValue.map(|f| *f).unwrap_or(0.0);
-            NumberValue(num)
-        },
-        "string" => StringValue(
-            value
-                .stringValue
-                .as_ref()
-                .map(|s| s.to_string())
-                .unwrap_or_default(),
-        ),
-        "object" => {
-            let class = value
-                .objectClass
-                .as_ref()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "Object".to_string());
-
-            ObjectValue {
-                uuid: uuid::Uuid::new_v4().to_string(),
-                class,
-                own_property_length: value.ownPropertyLength,
-                preview: preview.map(parse_object_preview),
-            }
-        },
-        _ => unreachable!(),
+impl HasOrigin for DebuggerGlobalScope {
+    fn origin(&self) -> MutableOrigin {
+        DebuggerGlobalScope::origin(self)
     }
 }

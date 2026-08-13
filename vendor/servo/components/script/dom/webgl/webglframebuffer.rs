@@ -8,8 +8,9 @@ use std::cell::Cell;
 use dom_struct::dom_struct;
 #[cfg(feature = "webxr")]
 use euclid::Size2D;
+use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object;
+use script_bindings::reflector::reflect_dom_object_with_cx;
 use script_bindings::weakref::WeakRef;
 use servo_canvas_traits::webgl::{
     WebGLCommand, WebGLError, WebGLFramebufferBindingRequest, WebGLFramebufferId,
@@ -30,7 +31,6 @@ use crate::dom::webgl::webglrenderingcontext::{Operation, WebGLRenderingContext}
 use crate::dom::webgl::webgltexture::WebGLTexture;
 #[cfg(feature = "webxr")]
 use crate::dom::xrsession::XRSession;
-use crate::script_runtime::CanGc;
 
 pub(crate) enum CompleteForRendering {
     Complete,
@@ -158,7 +158,7 @@ pub(crate) struct WebGLFramebuffer {
     depth: DomRefCell<Option<WebGLFramebufferAttachment>>,
     stencil: DomRefCell<Option<WebGLFramebufferAttachment>>,
     depthstencil: DomRefCell<Option<WebGLFramebufferAttachment>>,
-    color_read_buffer: DomRefCell<u32>,
+    color_read_buffer: Cell<u32>,
     color_draw_buffers: DomRefCell<Vec<u32>>,
     is_initialized: Cell<bool>,
     // Framebuffers for XR keep a reference to the XR session.
@@ -180,7 +180,7 @@ impl WebGLFramebuffer {
             depth: DomRefCell::new(None),
             stencil: DomRefCell::new(None),
             depthstencil: DomRefCell::new(None),
-            color_read_buffer: DomRefCell::new(constants::COLOR_ATTACHMENT0),
+            color_read_buffer: Cell::new(constants::COLOR_ATTACHMENT0),
             color_draw_buffers: DomRefCell::new(vec![constants::COLOR_ATTACHMENT0]),
             is_initialized: Cell::new(false),
             #[cfg(feature = "webxr")]
@@ -190,13 +190,13 @@ impl WebGLFramebuffer {
     }
 
     pub(crate) fn maybe_new(
+        cx: &mut JSContext,
         context: &WebGLRenderingContext,
-        can_gc: CanGc,
     ) -> Option<DomRoot<Self>> {
         let (sender, receiver) = webgl_channel().unwrap();
         context.send_command(WebGLCommand::CreateFramebuffer(sender));
         let id = receiver.recv().unwrap()?;
-        let framebuffer = WebGLFramebuffer::new(context, id, can_gc);
+        let framebuffer = WebGLFramebuffer::new(cx, context, id);
         Some(framebuffer)
     }
 
@@ -204,12 +204,12 @@ impl WebGLFramebuffer {
     // https://github.com/servo/servo/issues/24498
     #[cfg(feature = "webxr")]
     pub(crate) fn maybe_new_webxr(
+        cx: &mut JSContext,
         session: &XRSession,
         context: &WebGLRenderingContext,
         size: Size2D<i32, Viewport>,
-        can_gc: CanGc,
     ) -> Option<DomRoot<Self>> {
-        let framebuffer = Self::maybe_new(context, can_gc)?;
+        let framebuffer = Self::maybe_new(cx, context)?;
         framebuffer.size.set(Some((size.width, size.height)));
         framebuffer.status.set(constants::FRAMEBUFFER_COMPLETE);
         framebuffer.xr_session.set(Some(session));
@@ -217,14 +217,14 @@ impl WebGLFramebuffer {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         context: &WebGLRenderingContext,
         id: WebGLFramebufferId,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(WebGLFramebuffer::new_inherited(context, id)),
             &*context.global(),
-            can_gc,
+            cx,
         )
     }
 }
@@ -1029,7 +1029,7 @@ impl WebGLFramebuffer {
             _ => return Err(WebGLError::InvalidOperation),
         };
 
-        *self.color_read_buffer.borrow_mut() = buffer;
+        self.color_read_buffer.set(buffer);
         context.send_command(WebGLCommand::ReadBuffer(buffer));
         Ok(())
     }
@@ -1063,7 +1063,7 @@ impl WebGLFramebuffer {
     }
 
     pub(crate) fn read_buffer(&self) -> u32 {
-        *self.color_read_buffer.borrow()
+        self.color_read_buffer.get()
     }
 
     pub(crate) fn draw_buffer_i(&self, index: usize) -> u32 {

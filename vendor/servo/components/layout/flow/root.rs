@@ -179,7 +179,7 @@ impl BoxTree {
             .style_context
             .stylist
             .device()
-            .default_computed_values();
+            .default_computed_values_arc();
 
         // FIXME: use the document’s mode:
         // https://drafts.csswg.org/css-writing-modes/#principal-flow
@@ -198,6 +198,8 @@ impl BoxTree {
             layout_context,
             &mut positioning_context,
             &(&initial_containing_block).into(),
+            &initial_containing_block.size.block.into(),
+            None,
         );
 
         let mut root_fragments = independent_layout.fragments;

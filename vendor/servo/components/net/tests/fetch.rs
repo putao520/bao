@@ -174,13 +174,15 @@ fn test_fetch_blob() {
             let _ = self.sender.send(response.clone());
         }
         fn process_csp_violations(&mut self, _: &Request, _: Vec<csp::Violation>) {}
+
+        fn process_response_length_hint(&mut self, _: &Request, _: usize) {}
     }
 
     let context = new_fetch_context(None, None);
 
     let bytes = b"content";
     let blob_buf = BlobBuf {
-        filename: Some("test.txt".into()),
+        filename: Some("test .txt".into()),
         type_string: "text/plain".into(),
         size: bytes.len() as u64,
         bytes: bytes.to_vec(),

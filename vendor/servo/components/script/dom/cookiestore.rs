@@ -16,8 +16,7 @@ use net_traits::CookieSource::NonHTTP;
 use net_traits::{CookieAsyncResponse, CookieData, CoreResourceMsg};
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::CookieStoreBinding::CookieSameSite;
-use script_bindings::reflector::reflect_dom_object;
-use script_bindings::script_runtime::CanGc;
+use script_bindings::reflector::reflect_dom_object_with_cx;
 use servo_base::generic_channel::{GenericCallback, GenericSend, GenericSender};
 use servo_base::id::CookieStoreId;
 use servo_url::ServoUrl;
@@ -36,7 +35,7 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
 use crate::dom::window::Window;
-use crate::task_source::SendableTaskSource;
+use crate::tasks::task_source::SendableTaskSource;
 
 #[derive(JSTraceable, MallocSizeOf)]
 struct DroppableCookieStore {
@@ -79,8 +78,8 @@ struct CookieListener {
 impl CookieListener {
     pub(crate) fn handle(&self, message: CookieAsyncResponse) {
         let context = self.context.clone();
-        self.task_source.queue(task!(cookie_message: move || {
-            let Some(promise) = context.root().in_flight.borrow_mut().pop_front() else {
+        self.task_source.queue(task!(cookie_message: move |cx| {
+            let Some(promise) = context.root().in_flight.safe_borrow_mut(cx.no_gc()).pop_front() else {
                 warn!("No promise exists for cookie store response");
                 return;
             };
@@ -90,23 +89,22 @@ impl CookieListener {
                     // (There is currently no way for list to result in failure)
                     if let Some(cookie) = cookie {
                         // Otherwise, resolve p with the first item of list.
-                        promise.resolve_native(&cookie_to_list_item(cookie.into_inner()), CanGc::deprecated_note());
+                        promise.resolve_native(cx, &cookie_to_list_item(cookie.into_inner()));
                     } else {
                         // If list is empty, then resolve p with null.
-                        promise.resolve_native(&NullValue(), CanGc::deprecated_note());
+                        promise.resolve_native(cx, &NullValue());
                     }
                 },
                 CookieData::GetAll(cookies) => {
                     // If list is failure, then reject p with a TypeError and abort these steps.
-                    promise.resolve_native(
+                    promise.resolve_native(cx,
                         &cookies
                         .into_iter()
                         .map(|cookie| cookie_to_list_item(cookie.0))
-                        .collect_vec(),
-                    CanGc::deprecated_note());
+                        .collect_vec(),);
                 },
                 CookieData::Delete(_) | CookieData::Change(_) | CookieData::Set(_) => {
-                    promise.resolve_native(&(), CanGc::deprecated_note());
+                    promise.resolve_native(cx, &());
                 }
             }
         }));
@@ -125,13 +123,13 @@ impl CookieStore {
         }
     }
 
-    pub(crate) fn new(global: &GlobalScope, can_gc: CanGc) -> DomRoot<CookieStore> {
-        let store = reflect_dom_object(
+    pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<CookieStore> {
+        let store = reflect_dom_object_with_cx(
             Box::new(CookieStore::new_inherited(
                 global.resource_threads().core_thread.clone(),
             )),
             global,
-            can_gc,
+            cx,
         );
         store.setup_route();
         store
@@ -191,11 +189,11 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         let origin = global.origin();
 
         // 5. Let p be a new promise.
-        let p = Promise::new(&global, CanGc::from_cx(cx));
+        let p = Promise::new(cx, &global);
 
         // 3. If origin is an opaque origin, then return a promise rejected with a "SecurityError" DOMException.
         if !origin.is_tuple() {
-            p.reject_error(Error::Security(None), CanGc::from_cx(cx));
+            p.reject_error(cx, Error::Security(None));
             return p;
         }
 
@@ -216,7 +214,9 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         if res.is_err() {
             error!("Failed to send cookiestore message to resource threads");
         } else {
-            self.in_flight.borrow_mut().push_back(p.clone());
+            self.in_flight
+                .safe_borrow_mut(cx.no_gc())
+                .push_back(p.clone());
         }
 
         // 7. Return p.
@@ -232,11 +232,11 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         let origin = global.origin();
 
         // 7. Let p be a new promise.
-        let p = Promise::new(&global, CanGc::from_cx(cx));
+        let p = Promise::new(cx, &global);
 
         // 3. If origin is an opaque origin, then return a promise rejected with a "SecurityError" DOMException.
         if !origin.is_tuple() {
-            p.reject_error(Error::Security(None), CanGc::from_cx(cx));
+            p.reject_error(cx, Error::Security(None));
             return p;
         }
 
@@ -246,10 +246,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         // 5. If options is empty, then return a promise rejected with a TypeError.
         // "is empty" is not strictly defined anywhere in the spec but the only value we require here is "url"
         if options.url.is_none() && options.name.is_none() {
-            p.reject_error(
-                Error::Type(c"Options cannot be empty".to_owned()),
-                CanGc::from_cx(cx),
-            );
+            p.reject_error(cx, Error::Type(c"Options cannot be empty".to_owned()));
             return p;
         }
 
@@ -267,10 +264,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
                     .as_ref()
                     .is_ok_and(|parsed| !parsed.is_equal_excluding_fragments(&creation_url))
             {
-                p.reject_error(
-                    Error::Type(c"URL does not match context".to_owned()),
-                    CanGc::from_cx(cx),
-                );
+                p.reject_error(cx, Error::Type(c"URL does not match context".to_owned()));
                 return p;
             }
 
@@ -280,10 +274,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
                 .as_ref()
                 .is_ok_and(|parsed| creation_url.origin() != parsed.origin())
             {
-                p.reject_error(
-                    Error::Type(c"Not same origin".to_owned()),
-                    CanGc::from_cx(cx),
-                );
+                p.reject_error(cx, Error::Type(c"Not same origin".to_owned()));
                 return p;
             }
 
@@ -305,7 +296,9 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         if res.is_err() {
             error!("Failed to send cookiestore message to resource threads");
         } else {
-            self.in_flight.borrow_mut().push_back(p.clone());
+            self.in_flight
+                .safe_borrow_mut(cx.no_gc())
+                .push_back(p.clone());
         }
 
         p
@@ -320,11 +313,11 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         let origin = global.origin();
 
         // 5. Let p be a new promise.
-        let p = Promise::new(&global, CanGc::from_cx(cx));
+        let p = Promise::new(cx, &global);
 
         // 3. If origin is an opaque origin, then return a promise rejected with a "SecurityError" DOMException.
         if !origin.is_tuple() {
-            p.reject_error(Error::Security(None), CanGc::from_cx(cx));
+            p.reject_error(cx, Error::Security(None));
             return p;
         }
         // 4. Let url be settings’s creation URL.
@@ -345,7 +338,9 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         if res.is_err() {
             error!("Failed to send cookiestore message to resource threads");
         } else {
-            self.in_flight.borrow_mut().push_back(p.clone());
+            self.in_flight
+                .safe_borrow_mut(cx.no_gc())
+                .push_back(p.clone());
         }
 
         // 7. Return p.
@@ -361,11 +356,11 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         let origin = global.origin();
 
         // 6. Let p be a new promise.
-        let p = Promise::new(&global, CanGc::from_cx(cx));
+        let p = Promise::new(cx, &global);
 
         // 3. If origin is an opaque origin, then return a promise rejected with a "SecurityError" DOMException.
         if !origin.is_tuple() {
-            p.reject_error(Error::Security(None), CanGc::from_cx(cx));
+            p.reject_error(cx, Error::Security(None));
             return p;
         }
 
@@ -386,10 +381,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
                     .as_ref()
                     .is_ok_and(|parsed| !parsed.is_equal_excluding_fragments(&creation_url))
             {
-                p.reject_error(
-                    Error::Type(c"URL does not match context".to_owned()),
-                    CanGc::from_cx(cx),
-                );
+                p.reject_error(cx, Error::Type(c"URL does not match context".to_owned()));
                 return p;
             }
 
@@ -399,10 +391,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
                 .as_ref()
                 .is_ok_and(|parsed| creation_url.origin() != parsed.origin())
             {
-                p.reject_error(
-                    Error::Type(c"Not same origin".to_owned()),
-                    CanGc::from_cx(cx),
-                );
+                p.reject_error(cx, Error::Type(c"Not same origin".to_owned()));
                 return p;
             }
 
@@ -424,7 +413,9 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         if res.is_err() {
             error!("Failed to send cookiestore message to resource threads");
         } else {
-            self.in_flight.borrow_mut().push_back(p.clone());
+            self.in_flight
+                .safe_borrow_mut(cx.no_gc())
+                .push_back(p.clone());
         }
 
         // 8. Return p
@@ -440,11 +431,11 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         let origin = global.origin();
 
         // 9. Let p be a new promise.
-        let p = Promise::new(&global, CanGc::from_cx(cx));
+        let p = Promise::new(cx, &global);
 
         // 3. If origin is an opaque origin, then return a promise rejected with a "SecurityError" DOMException.
         if !origin.is_tuple() {
-            p.reject_error(Error::Security(None), CanGc::from_cx(cx));
+            p.reject_error(cx, Error::Security(None));
             return p;
         }
 
@@ -461,10 +452,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         let creation_url = global.creation_url();
         let Some(cookie) = CookieStore::set_a_cookie(&creation_url, &properties) else {
             // If r is failure, then reject p with a TypeError and abort these steps.
-            p.reject_error(
-                Error::Type(c"Invalid cookie".to_owned()),
-                CanGc::from_cx(cx),
-            );
+            p.reject_error(cx, Error::Type(c"Invalid cookie".to_owned()));
             return p;
         };
 
@@ -481,7 +469,9 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         if res.is_err() {
             error!("Failed to send cookiestore message to resource threads");
         } else {
-            self.in_flight.borrow_mut().push_back(p.clone());
+            self.in_flight
+                .safe_borrow_mut(cx.no_gc())
+                .push_back(p.clone());
         }
 
         // 7. Return p.
@@ -497,11 +487,11 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         let origin = global.origin();
 
         // 5. Let p be a new promise.
-        let p = Promise::new(&global, CanGc::from_cx(cx));
+        let p = Promise::new(cx, &global);
 
         // 3. If origin is an opaque origin, then return a promise rejected with a "SecurityError" DOMException.
         if !origin.is_tuple() {
-            p.reject_error(Error::Security(None), CanGc::from_cx(cx));
+            p.reject_error(cx, Error::Security(None));
             return p;
         }
 
@@ -511,10 +501,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         // 6.1. Let r be the result of running set a cookie with url, options["name"], options["value"],
         // options["expires"], options["domain"], options["path"], options["sameSite"], and options["partitioned"].
         let Some(cookie) = CookieStore::set_a_cookie(&creation_url, options) else {
-            p.reject_error(
-                Error::Type(c"Invalid cookie".to_owned()),
-                CanGc::from_cx(cx),
-            );
+            p.reject_error(cx, Error::Type(c"Invalid cookie".to_owned()));
             return p;
         };
 
@@ -531,7 +518,9 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         if res.is_err() {
             error!("Failed to send cookiestore message to resource threads");
         } else {
-            self.in_flight.borrow_mut().push_back(p.clone());
+            self.in_flight
+                .safe_borrow_mut(cx.no_gc())
+                .push_back(p.clone());
         }
 
         // 7. Return p
@@ -547,11 +536,11 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         let origin = global.origin();
 
         // 5. Let p be a new promise.
-        let p = Promise::new(&global, CanGc::from_cx(cx));
+        let p = Promise::new(cx, &global);
 
         // 3. If origin is an opaque origin, then return a promise rejected with a "SecurityError" DOMException.
         if !origin.is_tuple() {
-            p.reject_error(Error::Security(None), CanGc::from_cx(cx));
+            p.reject_error(cx, Error::Security(None));
             return p;
         }
 
@@ -567,7 +556,9 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         if res.is_err() {
             error!("Failed to send cookiestore message to resource threads");
         } else {
-            self.in_flight.borrow_mut().push_back(p.clone());
+            self.in_flight
+                .safe_borrow_mut(cx.no_gc())
+                .push_back(p.clone());
         }
 
         // 7. Return p.
@@ -583,11 +574,11 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         let origin = global.origin();
 
         // 5. Let p be a new promise.
-        let p = Promise::new(&global, CanGc::from_cx(cx));
+        let p = Promise::new(cx, &global);
 
         // 3. If origin is an opaque origin, then return a promise rejected with a "SecurityError" DOMException.
         if !origin.is_tuple() {
-            p.reject_error(Error::Security(None), CanGc::from_cx(cx));
+            p.reject_error(cx, Error::Security(None));
             return p;
         }
 
@@ -603,7 +594,9 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         if res.is_err() {
             error!("Failed to send cookiestore message to resource threads");
         } else {
-            self.in_flight.borrow_mut().push_back(p.clone());
+            self.in_flight
+                .safe_borrow_mut(cx.no_gc())
+                .push_back(p.clone());
         }
 
         // 7. Return p.
@@ -679,10 +672,7 @@ impl CookieStore {
         // 12. If domain is non-null
         if let Some(domain) = &properties.domain {
             // 10. Let host be url's host.
-            let host = match url.host() {
-                Some(host) => host.to_owned(),
-                None => return None,
-            };
+            let host = url.host()?.to_owned();
             // 12.1 If domain starts with U+002E (.), then return failure
             if domain.starts_with('.') {
                 return None;

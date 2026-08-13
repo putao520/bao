@@ -5,15 +5,16 @@
 use std::cell::Cell;
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
 use log::warn;
 use script_bindings::codegen::InheritTypes::{
     AudioNodeTypeId, AudioScheduledSourceNodeTypeId, EventTargetTypeId,
 };
-use servo_media::audio::graph::NodeId;
-use servo_media::audio::node::{
+use servo_media::audio::audio_node::{
     AudioNodeInit, AudioNodeMessage, ChannelCountMode as ServoMediaChannelCountMode, ChannelInfo,
     ChannelInterpretation as ServoMediaChannelInterpretation,
 };
+use servo_media::audio::graph::NodeId;
 
 use crate::conversions::Convert;
 use crate::dom::audio::audioparam::AudioParam;
@@ -48,6 +49,7 @@ pub(crate) struct AudioNode {
 
 impl AudioNode {
     pub(crate) fn new_inherited(
+        cx: &mut JSContext,
         node_type: AudioNodeInit,
         context: &BaseAudioContext,
         options: UnwrappedAudioNodeOptions,
@@ -74,7 +76,7 @@ impl AudioNode {
             const MESSAGE: &str =
                 "Failed to create an AudioNode backend. The constructed AudioNode will be inert.";
             warn!("{MESSAGE}");
-            Console::internal_warn(&context.global(), MESSAGE.to_string());
+            Console::internal_warn(cx, &context.global(), MESSAGE.to_string());
         }
 
         Ok(AudioNode::new_inherited_for_id(

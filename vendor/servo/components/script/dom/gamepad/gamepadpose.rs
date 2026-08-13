@@ -4,14 +4,13 @@
 
 use dom_struct::dom_struct;
 use js::typedarray::{Float32, HeapFloat32Array};
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use script_bindings::trace::RootedTraceableBox;
 
 use crate::dom::bindings::buffer_source::HeapBufferSource;
 use crate::dom::bindings::codegen::Bindings::GamepadPoseBinding::GamepadPoseMethods;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::globalscope::GlobalScope;
-use crate::script_runtime::{CanGc, JSContext};
 
 #[dom_struct]
 pub(crate) struct GamepadPose {
@@ -45,14 +44,17 @@ impl GamepadPose {
         }
     }
 
-    pub(crate) fn new(global: &GlobalScope, can_gc: CanGc) -> DomRoot<GamepadPose> {
-        reflect_dom_object(Box::new(GamepadPose::new_inherited()), global, can_gc)
+    pub(crate) fn new(
+        cx: &mut js::context::JSContext,
+        global: &GlobalScope,
+    ) -> DomRoot<GamepadPose> {
+        reflect_dom_object_with_cx(Box::new(GamepadPose::new_inherited()), global, cx)
     }
 }
 
 impl GamepadPoseMethods<crate::DomTypeHolder> for GamepadPose {
     /// <https://w3c.github.io/gamepad/extensions.html#dom-gamepadpose-position>
-    fn GetPosition(&self, _cx: JSContext) -> Option<RootedTraceableBox<HeapFloat32Array>> {
+    fn GetPosition(&self) -> Option<RootedTraceableBox<HeapFloat32Array>> {
         self.position.typed_array_to_option()
     }
 
@@ -62,20 +64,17 @@ impl GamepadPoseMethods<crate::DomTypeHolder> for GamepadPose {
     }
 
     /// <https://w3c.github.io/gamepad/extensions.html#dom-gamepadpose-linearvelocity>
-    fn GetLinearVelocity(&self, _cx: JSContext) -> Option<RootedTraceableBox<HeapFloat32Array>> {
+    fn GetLinearVelocity(&self) -> Option<RootedTraceableBox<HeapFloat32Array>> {
         self.linear_vel.typed_array_to_option()
     }
 
     /// <https://w3c.github.io/gamepad/extensions.html#dom-gamepadpose-linearacceleration>
-    fn GetLinearAcceleration(
-        &self,
-        _cx: JSContext,
-    ) -> Option<RootedTraceableBox<HeapFloat32Array>> {
+    fn GetLinearAcceleration(&self) -> Option<RootedTraceableBox<HeapFloat32Array>> {
         self.linear_acc.typed_array_to_option()
     }
 
     /// <https://w3c.github.io/gamepad/extensions.html#dom-gamepadpose-orientation>
-    fn GetOrientation(&self, _cx: JSContext) -> Option<RootedTraceableBox<HeapFloat32Array>> {
+    fn GetOrientation(&self) -> Option<RootedTraceableBox<HeapFloat32Array>> {
         self.orientation.typed_array_to_option()
     }
 
@@ -85,15 +84,12 @@ impl GamepadPoseMethods<crate::DomTypeHolder> for GamepadPose {
     }
 
     /// <https://w3c.github.io/gamepad/extensions.html#dom-gamepadpose-angularvelocity>
-    fn GetAngularVelocity(&self, _cx: JSContext) -> Option<RootedTraceableBox<HeapFloat32Array>> {
+    fn GetAngularVelocity(&self) -> Option<RootedTraceableBox<HeapFloat32Array>> {
         self.angular_vel.typed_array_to_option()
     }
 
     /// <https://w3c.github.io/gamepad/extensions.html#dom-gamepadpose-angularacceleration>
-    fn GetAngularAcceleration(
-        &self,
-        _cx: JSContext,
-    ) -> Option<RootedTraceableBox<HeapFloat32Array>> {
+    fn GetAngularAcceleration(&self) -> Option<RootedTraceableBox<HeapFloat32Array>> {
         self.angular_acc.typed_array_to_option()
     }
 }

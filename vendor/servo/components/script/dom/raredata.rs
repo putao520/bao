@@ -9,6 +9,7 @@ use style::selector_parser::PseudoElement;
 use style_traits::CSSPixel;
 use stylo_atoms::Atom;
 
+use crate::dom::UniqueId;
 use crate::dom::bindings::root::{Dom, MutNullableDom};
 use crate::dom::customelementregistry::{
     CustomElementDefinition, CustomElementReaction, CustomElementRegistry, CustomElementState,
@@ -18,10 +19,10 @@ use crate::dom::elementinternals::ElementInternals;
 use crate::dom::html::htmlslotelement::SlottableData;
 use crate::dom::intersectionobserver::IntersectionObserverRegistration;
 use crate::dom::mutationobserver::RegisteredObserver;
-use crate::dom::node::UniqueId;
 use crate::dom::nodelist::NodeList;
 use crate::dom::range::{Range, WeakRangeVec};
 use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::types::Element;
 use crate::dom::window::LayoutValue;
 
 // XXX(ferjm) Ideally merge NodeRareData and ElementRareData so they share
@@ -45,7 +46,7 @@ pub(crate) struct NodeRareData {
     /// or end containers are this node. No range should ever be found
     /// twice in this vector, even if both the start and end containers
     /// are this node.
-    pub(crate) ranges: WeakRangeVec,
+    pub(crate) weak_ranges: WeakRangeVec,
 
     /// The live list of children return by .childNodes.
     pub(crate) child_list: MutNullableDom<NodeList>,
@@ -103,4 +104,7 @@ pub(crate) struct ElementRareData {
     /// Whether this element had duplicate attributes during tokenization.
     /// Used for CSP nonce validation (step 3 of "is element nonceable").
     pub(crate) had_duplicate_attributes: bool,
+
+    /// <https://html.spec.whatwg.org/multipage/#previously-focused-element>
+    pub(crate) previously_focused_element: MutNullableDom<Element>,
 }

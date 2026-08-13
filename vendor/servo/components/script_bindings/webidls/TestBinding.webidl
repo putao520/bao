@@ -246,6 +246,7 @@ interface TestBinding {
   (unsigned long or boolean)? receiveNullableUnion5();
   (ByteString or long)? receiveNullableUnion6();
   sequence<long>? receiveNullableSequence();
+  sequence<object> receiveObjectSequence();
   TestDictionary receiveTestDictionaryWithSuccessOnKeyword();
   boolean dictMatchesPassedValues(TestDictionary arg);
 
@@ -627,6 +628,7 @@ callback callbackWithOnlyOneOptionalArg = Promise<undefined> (optional any reaso
 namespace TestNS {
     const unsigned long ONE   = 1;
     const unsigned long TWO   = 0x2;
+    [SameObject] readonly attribute TestBinding testAttribute;
 };
 
 typedef Promise<undefined> PromiseUndefined;

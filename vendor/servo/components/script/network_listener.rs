@@ -20,7 +20,7 @@ use crate::dom::performance::performanceentry::PerformanceEntry;
 use crate::dom::performance::performanceresourcetiming::{
     InitiatorType, PerformanceResourceTiming,
 };
-use crate::task_source::SendableTaskSource;
+use crate::tasks::task_source::SendableTaskSource;
 
 pub(crate) trait ResourceTimingListener {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl);
@@ -86,9 +86,9 @@ pub(crate) fn submit_timing_data(
     resource_timing: &ResourceFetchTiming,
 ) {
     let performance_entry =
-        PerformanceResourceTiming::new(cx, global, url, initiator_type, None, resource_timing);
+        PerformanceResourceTiming::new(cx, global, url, initiator_type, resource_timing);
     global
-        .performance()
+        .performance(cx)
         .queue_entry(performance_entry.upcast::<PerformanceEntry>());
 }
 
@@ -115,7 +115,14 @@ pub(crate) trait FetchResponseListener: Send + 'static {
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     );
-    fn process_csp_violations(&mut self, request_id: RequestId, violations: Vec<Violation>);
+    fn process_csp_violations(
+        &mut self,
+        cx: &mut js::context::JSContext,
+        request_id: RequestId,
+        violations: Vec<Violation>,
+    );
+
+    fn process_content_length(&mut self, _request_id: RequestId, _size: usize) {}
 }
 
 /// An off-thread sink for async network event tasks. All such events are forwarded to
@@ -162,8 +169,9 @@ impl<Listener: FetchResponseListener> NetworkListener<Listener> {
                         };
                     },
                     FetchResponseMsg::ProcessCspViolations(request_id, violations) => {
-                        fetch_listener.process_csp_violations(request_id, violations)
+                        fetch_listener.process_csp_violations(cx, request_id, violations)
                     },
+                    FetchResponseMsg::ProcessContentLength(request_id, size) => { fetch_listener.process_content_length(request_id, size) },
                 }
             }));
     }

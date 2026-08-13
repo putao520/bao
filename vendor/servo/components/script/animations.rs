@@ -8,6 +8,7 @@ use std::cell::Cell;
 
 use cssparser::ToCss;
 use embedder_traits::{AnimationState as AnimationsPresentState, UntrustedNodeAddress};
+use js::context::NoGC;
 use libc::c_void;
 use rustc_hash::{FxHashMap, FxHashSet};
 use script_bindings::cell::DomRefCell;
@@ -34,7 +35,6 @@ use crate::dom::event::Event;
 use crate::dom::node::{Node, NodeDamage, NodeTraits, from_untrusted_node_address};
 use crate::dom::transitionevent::TransitionEvent;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 /// The set of animations for a document.
 #[derive(Default, JSTraceable, MallocSizeOf)]
@@ -79,7 +79,11 @@ impl Animations {
     // Mark all animations dirty, if they haven't been marked dirty since the
     // specified `current_timeline_value`. Returns true if animations were marked
     // dirty or false otherwise.
-    pub(crate) fn mark_animating_nodes_as_dirty(&self, current_timeline_value: f64) -> bool {
+    pub(crate) fn mark_animating_nodes_as_dirty(
+        &self,
+        no_gc: &NoGC,
+        current_timeline_value: f64,
+    ) -> bool {
         if current_timeline_value <= self.timeline_value_at_last_dirty.get() {
             return false;
         }
@@ -92,7 +96,7 @@ impl Animations {
             .keys()
             .filter_map(|key| rooted_nodes.get(&NoTrace(key.node)))
         {
-            node.dirty(NodeDamage::Style);
+            node.dirty(no_gc, NodeDamage::Style);
         }
 
         true
@@ -193,7 +197,7 @@ impl Animations {
         let has_running_animations = self.has_running_animations.get();
         let has_pending_events = !self.pending_events.borrow().is_empty();
 
-        // Do not send the NoAnimationCallbacksPresent state until all pending
+        // Do not send the AnimationCallbacksAbsent state until all pending
         // animation events are delivered.
         let state = match has_running_animations || has_pending_events {
             true => AnimationsPresentState::AnimationsPresent,
@@ -481,7 +485,7 @@ impl Animations {
         //
         // Take all of the events here, in case sending one of these events
         // triggers adding new events by forcing a layout.
-        let events = std::mem::take(&mut *self.pending_events.borrow_mut());
+        let events = std::mem::take(&mut *self.pending_events.safe_borrow_mut(cx.no_gc()));
         if events.is_empty() {
             return;
         }
@@ -542,7 +546,7 @@ impl Animations {
                     elapsedTime: elapsed_time,
                     pseudoElement: pseudo_element,
                 };
-                TransitionEvent::new(&window, event_atom, &event_init, CanGc::from_cx(cx))
+                TransitionEvent::new(cx, &window, event_atom, &event_init)
                     .upcast::<Event>()
                     .fire(cx, node.upcast());
             } else {
@@ -552,7 +556,7 @@ impl Animations {
                     elapsedTime: elapsed_time,
                     pseudoElement: pseudo_element,
                 };
-                AnimationEvent::new(&window, event_atom, &event_init, CanGc::from_cx(cx))
+                AnimationEvent::new(cx, &window, event_atom, &event_init)
                     .upcast::<Event>()
                     .fire(cx, node.upcast());
             }

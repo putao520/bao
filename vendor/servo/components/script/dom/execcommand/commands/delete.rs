@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use html5ever::local_name;
+use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::inheritance::Castable;
 
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
@@ -44,7 +45,7 @@ pub(crate) fn execute_delete_command(
     // Step 2. Canonicalize whitespace at the active range's start.
     active_range
         .start_container()
-        .canonicalize_whitespace(active_range.start_offset(), true);
+        .canonicalize_whitespace(cx, active_range.start_offset(), true);
 
     // Step 3. Let node and offset be the active range's start node and offset.
     let mut node = active_range.start_container();
@@ -57,7 +58,7 @@ pub(crate) fn execute_delete_command(
         if offset == 0 &&
             let Some(sibling) = node.GetPreviousSibling() &&
             sibling.is_editable() &&
-            sibling.is_invisible()
+            sibling.is_invisible(cx.no_gc())
         {
             sibling.remove_self(cx);
             continue;
@@ -71,7 +72,7 @@ pub(crate) fn execute_delete_command(
                 .map(|node| node.as_rooted());
             if let Some(child) = child &&
                 child.is_editable() &&
-                child.is_invisible()
+                child.is_invisible(cx.no_gc())
             {
                 child.remove_self(cx);
                 offset -= 1;
@@ -80,7 +81,7 @@ pub(crate) fn execute_delete_command(
         }
         // Step 4.3. Otherwise, if offset is zero and node is an inline node, or if node is an invisible node,
         // set offset to the index of node, then set node to its parent.
-        if (offset == 0 && node.is_inline_node()) || node.is_invisible() {
+        if (offset == 0 && node.is_inline_node()) || node.is_invisible(cx.no_gc()) {
             offset = node.index();
             node = node.GetParentNode().expect("Must always have a parent");
             continue;
@@ -154,7 +155,7 @@ pub(crate) fn execute_delete_command(
     ) && node
         .GetParentNode()
         .and_then(|parent| parent.children_unrooted(cx.no_gc()).next())
-        .is_some_and(|first| first == &node) &&
+        .is_some_and(|first| **first == *node) &&
         offset == 0
     {
         // Step 7.1. Let items be a list of all lis that are ancestors of node.
@@ -217,7 +218,7 @@ pub(crate) fn execute_delete_command(
             .map(|node| node.as_rooted());
         if let Some(child) = child &&
             child.is_editable() &&
-            child.is_invisible()
+            child.is_invisible(cx.no_gc())
         {
             child.remove_self(cx);
             start_offset -= 1;
@@ -240,7 +241,20 @@ pub(crate) fn execute_delete_command(
     }
 
     // Step 12. If start node has a child with index start offset − 1, and that child is a table:
-    // TODO
+    if start_node
+        .children_unrooted(cx.no_gc())
+        .nth((start_offset - 1) as usize)
+        .is_some_and(|child| child.is::<HTMLTableElement>())
+    {
+        // Step 12.1. Call collapse(start node, start offset − 1) on the context object's selection.
+        let _ = selection.Collapse(cx, Some(&start_node), start_offset - 1);
+
+        // Step 12.2. Call extend(start node, start offset) on the context object's selection.
+        let _ = selection.Extend(cx, &start_node, start_offset);
+
+        // Step 12.3. Return true.
+        return true;
+    }
 
     // Step 13. If offset is zero; and either the child of start node with index start offset
     // minus one is an hr, or the child is a br whose previousSibling is either a br or not an inline node:
@@ -297,7 +311,7 @@ pub(crate) fn execute_delete_command(
         };
         // Step 16.1. If start node's child with index start offset minus one
         // is editable and invisible, remove it from start node, then subtract one from start offset.
-        if child.is_editable() && child.is_invisible() {
+        if child.is_editable() && child.is_invisible(cx.no_gc()) {
             child.remove_self(cx);
             start_offset -= 1;
         } else {

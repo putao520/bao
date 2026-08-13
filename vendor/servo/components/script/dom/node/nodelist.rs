@@ -5,18 +5,20 @@
 use std::cell::RefCell;
 
 use dom_struct::dom_struct;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use js::context::{JSContext, NoGC};
+use script_bindings::dom::UnrootedDom;
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use stylo_atoms::Atom;
 
+use crate::dom::ChildrenMutation;
 use crate::dom::bindings::codegen::Bindings::NodeListBinding::NodeListMethods;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::document::Document;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlformelement::HTMLFormElement;
-use crate::dom::node::{ChildrenMutation, Node};
+use crate::dom::node::Node;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
@@ -46,71 +48,71 @@ impl NodeList {
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new(
+        cx: &mut JSContext,
         window: &Window,
         list_type: NodeListType,
-        can_gc: CanGc,
     ) -> DomRoot<NodeList> {
-        reflect_dom_object(Box::new(NodeList::new_inherited(list_type)), window, can_gc)
+        reflect_dom_object_with_cx(Box::new(NodeList::new_inherited(list_type)), window, cx)
     }
 
-    pub(crate) fn new_simple_list<T>(window: &Window, iter: T, can_gc: CanGc) -> DomRoot<NodeList>
+    pub(crate) fn new_simple_list<T>(
+        cx: &mut JSContext,
+        window: &Window,
+        iter: T,
+    ) -> DomRoot<NodeList>
     where
         T: Iterator<Item = DomRoot<Node>>,
     {
         NodeList::new(
+            cx,
             window,
             NodeListType::Simple(iter.map(|r| Dom::from_ref(&*r)).collect()),
-            can_gc,
         )
     }
 
     pub(crate) fn new_simple_list_slice(
+        cx: &mut JSContext,
         window: &Window,
         slice: &[&Node],
-        can_gc: CanGc,
     ) -> DomRoot<NodeList> {
         NodeList::new(
+            cx,
             window,
             NodeListType::Simple(slice.iter().map(|r| Dom::from_ref(*r)).collect()),
-            can_gc,
         )
     }
 
-    pub(crate) fn new_child_list(window: &Window, node: &Node, can_gc: CanGc) -> DomRoot<NodeList> {
-        NodeList::new(
-            window,
-            NodeListType::Children(ChildrenList::new(node)),
-            can_gc,
-        )
+    pub(crate) fn new_child_list(
+        cx: &mut JSContext,
+        window: &Window,
+        node: &Node,
+    ) -> DomRoot<NodeList> {
+        NodeList::new(cx, window, NodeListType::Children(ChildrenList::new(node)))
     }
 
     pub(crate) fn new_labels_list(
+        cx: &mut JSContext,
         window: &Window,
         element: &HTMLElement,
-        can_gc: CanGc,
     ) -> DomRoot<NodeList> {
-        NodeList::new(
-            window,
-            NodeListType::Labels(LabelsList::new(element)),
-            can_gc,
-        )
+        NodeList::new(cx, window, NodeListType::Labels(LabelsList::new(element)))
     }
 
     pub(crate) fn new_elements_by_name_list(
+        cx: &mut JSContext,
         window: &Window,
         document: &Document,
         name: DOMString,
-        can_gc: CanGc,
     ) -> DomRoot<NodeList> {
         NodeList::new(
+            cx,
             window,
             NodeListType::ElementsByName(ElementsByNameList::new(document, name)),
-            can_gc,
         )
     }
 
-    pub(crate) fn empty(window: &Window, can_gc: CanGc) -> DomRoot<NodeList> {
-        NodeList::new(window, NodeListType::Simple(vec![]), can_gc)
+    pub(crate) fn empty(cx: &mut JSContext, window: &Window) -> DomRoot<NodeList> {
+        NodeList::new(cx, window, NodeListType::Simple(vec![]))
     }
 }
 
@@ -127,21 +129,14 @@ impl NodeListMethods<crate::DomTypeHolder> for NodeList {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-nodelist-item>
-    fn Item(&self, index: u32) -> Option<DomRoot<Node>> {
-        match self.list_type {
-            NodeListType::Simple(ref elems) => elems
-                .get(index as usize)
-                .map(|node| DomRoot::from_ref(&**node)),
-            NodeListType::Children(ref list) => list.item(index),
-            NodeListType::Labels(ref list) => list.item(index),
-            NodeListType::Radio(ref list) => list.item(index),
-            NodeListType::ElementsByName(ref list) => list.item(index),
-        }
+    fn Item(&self, no_gc: &NoGC, index: u32) -> Option<DomRoot<Node>> {
+        self.item_unrooted(no_gc, index)
+            .map(|item| item.as_rooted())
     }
 
     /// <https://dom.spec.whatwg.org/#dom-nodelist-item>
-    fn IndexedGetter(&self, index: u32) -> Option<DomRoot<Node>> {
-        self.Item(index)
+    fn IndexedGetter(&self, no_gc: &NoGC, index: u32) -> Option<DomRoot<Node>> {
+        self.Item(no_gc, index)
     }
 }
 
@@ -154,19 +149,30 @@ impl NodeList {
         }
     }
 
-    pub(crate) fn as_radio_list(&self) -> &RadioList {
-        if let NodeListType::Radio(ref list) = self.list_type {
-            list
-        } else {
-            panic!("called as_radio_list() on a non-radio node list")
+    pub(crate) fn item_unrooted<'a>(
+        &self,
+        no_gc: &'a NoGC,
+        index: u32,
+    ) -> Option<UnrootedDom<'a, Node>> {
+        match self.list_type {
+            NodeListType::Simple(ref elems) => elems
+                .get(index as usize)
+                .map(|node| UnrootedDom::from_dom(node.clone(), no_gc)),
+            NodeListType::Children(ref list) => list.item(no_gc, index),
+            NodeListType::Labels(ref list) => list.item(no_gc, index),
+            NodeListType::Radio(ref list) => list.item(no_gc, index),
+            NodeListType::ElementsByName(ref list) => list.item(no_gc, index),
         }
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = DomRoot<Node>> + '_ {
+    pub(crate) fn iter<'a>(
+        &'a self,
+        no_gc: &'a NoGC,
+    ) -> impl Iterator<Item = UnrootedDom<'a, Node>> {
         let len = self.Length();
         // There is room for optimization here in non-simple cases,
         // as calling Item repeatedly on a live list can involve redundant work.
-        (0..len).flat_map(move |i| self.Item(i))
+        (0..len).flat_map(move |i| self.item_unrooted(no_gc, i))
     }
 }
 
@@ -189,17 +195,17 @@ impl ChildrenList {
         self.node.children_count()
     }
 
-    pub(crate) fn item(&self, index: u32) -> Option<DomRoot<Node>> {
+    pub(crate) fn item<'a>(&self, no_gc: &'a NoGC, index: u32) -> Option<UnrootedDom<'a, Node>> {
         self.cached_children
             .borrow_mut()
             .get_or_insert_with(|| {
                 self.node
-                    .children()
-                    .map(|child| Dom::from_ref(&*child))
+                    .children_unrooted(no_gc)
+                    .map(|child| (*child).clone())
                     .collect()
             })
             .get(index as usize)
-            .map(|child| DomRoot::from_ref(&**child))
+            .map(|child| UnrootedDom::from_dom(child.clone(), no_gc))
     }
 
     pub(crate) fn children_changed(&self, mutation: &ChildrenMutation) {
@@ -239,8 +245,8 @@ impl LabelsList {
         self.element.labels_count()
     }
 
-    pub(crate) fn item(&self, index: u32) -> Option<DomRoot<Node>> {
-        self.element.label_at(index)
+    pub(crate) fn item<'a>(&self, no_gc: &'a NoGC, index: u32) -> Option<UnrootedDom<'a, Node>> {
+        self.element.label_at(no_gc, index)
     }
 }
 
@@ -277,8 +283,9 @@ impl RadioList {
         self.form.count_for_radio_list(self.mode, &self.name)
     }
 
-    pub(crate) fn item(&self, index: u32) -> Option<DomRoot<Node>> {
-        self.form.nth_for_radio_list(index, self.mode, &self.name)
+    pub(crate) fn item<'a>(&self, no_gc: &'a NoGC, index: u32) -> Option<UnrootedDom<'a, Node>> {
+        self.form
+            .nth_for_radio_list(no_gc, index, self.mode, &self.name)
     }
 }
 
@@ -301,9 +308,7 @@ impl ElementsByNameList {
         self.document.elements_by_name_count(&self.name)
     }
 
-    pub(crate) fn item(&self, index: u32) -> Option<DomRoot<Node>> {
-        self.document
-            .nth_element_by_name(index, &self.name)
-            .map(|n| DomRoot::from_ref(&*n))
+    pub(crate) fn item<'a>(&self, no_gc: &'a NoGC, index: u32) -> Option<UnrootedDom<'a, Node>> {
+        self.document.nth_element_by_name(no_gc, index, &self.name)
     }
 }

@@ -17,7 +17,7 @@ mozjs.workspace = true
 mozjs_sys.workspace = true
 log = "0.4"
 libc = "0.2"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
 libffi = "3"
 serde_json = "1"
 dashmap.workspace = true

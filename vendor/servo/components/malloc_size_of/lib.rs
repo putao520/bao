@@ -50,7 +50,7 @@ use std::cell::OnceCell;
 use std::collections::BinaryHeap;
 use std::ffi::CString;
 use std::hash::{BuildHasher, Hash};
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
@@ -457,6 +457,12 @@ impl<T: MallocSizeOf> MallocSizeOf for Range<T> {
     }
 }
 
+impl<T: MallocSizeOf> MallocSizeOf for RangeInclusive<T> {
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.start().size_of(ops) + self.end().size_of(ops)
+    }
+}
+
 macro_rules! malloc_size_of_hash_set {
     ($ty:ty) => {
         impl<T, S> MallocShallowSizeOf for $ty
@@ -735,9 +741,27 @@ impl<T: MallocSizeOf> MallocSizeOf for std::sync::Mutex<T> {
     }
 }
 
+impl<T: MallocSizeOf> MallocSizeOf for std::sync::RwLock<T> {
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        (*self.read().unwrap()).size_of(ops)
+    }
+}
+
 impl<T: MallocSizeOf> MallocSizeOf for parking_lot::Mutex<T> {
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         (*self.lock()).size_of(ops)
+    }
+}
+
+impl<T: MallocSizeOf> MallocSizeOf for tokio::sync::Mutex<T> {
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.blocking_lock().size_of(ops)
+    }
+}
+
+impl<T: MallocSizeOf> MallocSizeOf for tokio::sync::RwLock<T> {
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.blocking_read().size_of(ops)
     }
 }
 
@@ -1059,6 +1083,16 @@ impl MallocSizeOf for usvg::ClipPath {
     }
 }
 
+impl<'a> MallocSizeOf for usvg::Options<'a> {
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.font_family.size_of(ops) +
+            self.languages.size_of(ops) +
+            self.style_sheet.size_of(ops) +
+            self.fontdb.conditional_shallow_size_of(ops) +
+            self.resources_dir.size_of(ops)
+    }
+}
+
 // Placeholder for unique case where internals of Sender cannot be measured.
 // malloc size of is 0 macro complains about type supplied!
 impl<T> MallocSizeOf for crossbeam_channel::Sender<T> {
@@ -1100,6 +1134,17 @@ impl<T> MallocSizeOf for ipc_channel::ipc::IpcReceiver<T> {
 impl MallocSizeOf for ipc_channel::ipc::IpcSharedMemory {
     fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
         self.len()
+    }
+}
+
+impl MallocSizeOf for vello_cpu::Pixmap {
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        let data = self.data();
+        if data.is_empty() {
+            0
+        } else {
+            unsafe { ops.malloc_size_of(data.as_ptr()) }
+        }
     }
 }
 
@@ -1300,6 +1345,27 @@ impl<T: MallocSizeOf> MallocSizeOf for atomic_refcell::AtomicRefCell<T> {
     }
 }
 
+impl<T: stylo_malloc_size_of::MallocSizeOf, const FRACTION_BITS: u16> MallocSizeOf
+    for style::values::computed::font::FixedPoint<T, FRACTION_BITS>
+{
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        <Self as stylo_malloc_size_of::MallocSizeOf>::size_of(self, ops)
+    }
+}
+
+impl<Integer, Number, LinearStops> MallocSizeOf
+    for style::values::generics::easing::TimingFunction<Integer, Number, LinearStops>
+where
+    Integer: stylo_malloc_size_of::MallocSizeOf,
+    Number: stylo_malloc_size_of::MallocSizeOf,
+    LinearStops: stylo_malloc_size_of::MallocSizeOf,
+{
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        <Self as stylo_malloc_size_of::MallocSizeOf>::size_of(self, ops)
+    }
+}
+
+malloc_size_of_is_stylo_malloc_size_of!(style::properties::PropertyId);
 malloc_size_of_is_stylo_malloc_size_of!(style::animation::DocumentAnimationSet);
 malloc_size_of_is_stylo_malloc_size_of!(style::attr::AttrIdentifier);
 malloc_size_of_is_stylo_malloc_size_of!(style::attr::AttrValue);
@@ -1307,11 +1373,17 @@ malloc_size_of_is_stylo_malloc_size_of!(style::color::AbsoluteColor);
 malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::font_variant_caps::T);
 malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::font_variant_position::T);
 malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::text_decoration_style::T);
+malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::text_decoration_thickness::T);
 malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::text_rendering::T);
 malloc_size_of_is_stylo_malloc_size_of!(style::dom::OpaqueNode);
+malloc_size_of_is_stylo_malloc_size_of!(style::font_face::ComputedFontStretchRange);
+malloc_size_of_is_stylo_malloc_size_of!(style::font_face::ComputedFontStyleRange);
+malloc_size_of_is_stylo_malloc_size_of!(style::font_face::ComputedFontWeightRange);
+malloc_size_of_is_stylo_malloc_size_of!(style::font_face::Source);
 malloc_size_of_is_stylo_malloc_size_of!(style::invalidation::element::restyle_hints::RestyleHint);
 malloc_size_of_is_stylo_malloc_size_of!(style::logical_geometry::WritingMode);
 malloc_size_of_is_stylo_malloc_size_of!(style::media_queries::MediaList);
+malloc_size_of_is_stylo_malloc_size_of!(style::properties::generated::font_face::Descriptors);
 malloc_size_of_is_stylo_malloc_size_of!(
     style::properties::longhands::align_items::computed_value::T
 );
@@ -1325,6 +1397,7 @@ malloc_size_of_is_stylo_malloc_size_of!(style::selector_parser::RestyleDamage);
 malloc_size_of_is_stylo_malloc_size_of!(style::selector_parser::Snapshot);
 malloc_size_of_is_stylo_malloc_size_of!(style::shared_lock::SharedRwLock);
 malloc_size_of_is_stylo_malloc_size_of!(style::stylesheets::DocumentStyleSheet);
+malloc_size_of_is_stylo_malloc_size_of!(style::stylesheets::Origin);
 malloc_size_of_is_stylo_malloc_size_of!(style::stylist::Stylist);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::BorderStyle);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::ContentDistribution);
@@ -1332,6 +1405,7 @@ malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontFeatureSett
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontStretch);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontStyle);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontWeight);
+malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontVariantAlternates);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontVariantLigatures);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontVariantNumeric);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontVariantEastAsian);
@@ -1344,6 +1418,12 @@ malloc_size_of_is_stylo_malloc_size_of!(style::values::specified::TextDecoration
 malloc_size_of_is_stylo_malloc_size_of!(stylo_dom::ElementState);
 malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::font_optical_sizing::T);
 malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::font_kerning::T);
+malloc_size_of_is_stylo_malloc_size_of!(style::stylesheets::font_feature_values_rule::SingleValue);
+malloc_size_of_is_stylo_malloc_size_of!(style::stylesheets::font_feature_values_rule::PairValues);
+malloc_size_of_is_stylo_malloc_size_of!(style::stylesheets::font_feature_values_rule::VectorValues);
+malloc_size_of_is_stylo_malloc_size_of!(
+    style::stylesheets::font_feature_values_rule::FontFeatureValuesRule
+);
 
 impl<T> MallocSizeOf for GenericLengthPercentageOrAuto<T>
 where
@@ -1379,5 +1459,18 @@ impl MallocSizeOf for resvg::usvg::fontdb::FaceInfo {
 impl MallocSizeOf for resvg::usvg::fontdb::Database {
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         self.faces().map(|face| face.size_of(ops)).sum()
+    }
+}
+
+impl<T> MallocSizeOf for once_cell::race::OnceBox<T>
+where
+    T: MallocSizeOf,
+{
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        if let Some(value) = self.get() {
+            (unsafe { ops.malloc_size_of::<T>(value) }) + value.size_of(ops)
+        } else {
+            0
+        }
     }
 }

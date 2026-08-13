@@ -3,13 +3,18 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crossbeam_channel::Sender;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
-use servo_base::id::{PipelineId, WebViewId};
-use servo_url::ServoUrl;
+use script_bindings::inheritance::Castable;
+use script_bindings::interfaces::HasOrigin;
+use servo_base::id::PipelineId;
+use servo_url::{MutableOrigin, ServoUrl};
 
 use crate::dom::bindings::codegen::Bindings::TestWorkletGlobalScopeBinding;
 use crate::dom::bindings::codegen::Bindings::TestWorkletGlobalScopeBinding::TestWorkletGlobalScopeMethods;
@@ -17,6 +22,7 @@ use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::worklet::WorkletExecutor;
 use crate::dom::workletglobalscope::{WorkletGlobalScope, WorkletGlobalScopeInit};
+use crate::microtask::MicrotaskQueue;
 
 // check-tidy: no specs after this line
 
@@ -29,31 +35,35 @@ pub(crate) struct TestWorkletGlobalScope {
 }
 
 impl TestWorkletGlobalScope {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        webview_id: WebViewId,
         pipeline_id: PipelineId,
         base_url: ServoUrl,
         inherited_secure_context: Option<bool>,
         executor: WorkletExecutor,
         init: &WorkletGlobalScopeInit,
         cx: &mut JSContext,
+        closing: Arc<AtomicBool>,
+        microtask_queue: Rc<MicrotaskQueue>,
     ) -> DomRoot<TestWorkletGlobalScope> {
         debug!(
             "Creating test worklet global scope for pipeline {}.",
             pipeline_id
         );
+
         let global = Box::new(TestWorkletGlobalScope {
             worklet_global: WorkletGlobalScope::new_inherited(
-                webview_id,
                 pipeline_id,
                 base_url,
                 inherited_secure_context,
                 executor,
                 init,
+                closing,
+                microtask_queue,
             ),
             lookup_table: Default::default(),
         });
-        TestWorkletGlobalScopeBinding::Wrap::<crate::DomTypeHolder>(cx, global)
+        TestWorkletGlobalScopeBinding::Wrap::<crate::DomTypeHolder>(cx, &global.origin(), global)
     }
 
     pub(crate) fn perform_a_worklet_task(&self, task: TestWorkletTask) {
@@ -79,4 +89,10 @@ impl TestWorkletGlobalScopeMethods<crate::DomTypeHolder> for TestWorkletGlobalSc
 /// Tasks which can be performed by test worklets.
 pub(crate) enum TestWorkletTask {
     Lookup(String, Sender<Option<String>>),
+}
+
+impl HasOrigin for TestWorkletGlobalScope {
+    fn origin(&self) -> MutableOrigin {
+        self.upcast::<WorkletGlobalScope>().origin()
+    }
 }

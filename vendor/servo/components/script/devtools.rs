@@ -8,8 +8,8 @@ use std::str;
 
 use devtools_traits::{
     AncestorData, AttrModification, AutoMargins, ComputedNodeLayout, CssDatabaseProperty,
-    EventListenerInfo, MatchedRule, NodeInfo, NodeStyle, RuleModification, StyleSheetInfo,
-    TimelineMarker, TimelineMarkerType,
+    EventListenerInfo, GetHTMLType, MatchedRule, NodeInfo, NodeStyle, RuleModification,
+    StyleSheetInfo, TimelineMarker, TimelineMarkerType,
 };
 use js::context::JSContext;
 use markup5ever::{LocalName, ns};
@@ -23,7 +23,7 @@ use servo_config::pref;
 use style::attr::AttrValue;
 use style::stylesheets::Origin;
 
-use crate::document_collection::DocumentCollection;
+use crate::conversions::Convert;
 use crate::dom::bindings::codegen::Bindings::CSSGroupingRuleBinding::CSSGroupingRuleMethods;
 use crate::dom::bindings::codegen::Bindings::CSSLayerBlockRuleBinding::CSSLayerBlockRuleMethods;
 use crate::dom::bindings::codegen::Bindings::CSSRuleListBinding::CSSRuleListMethods;
@@ -46,9 +46,11 @@ use crate::dom::document::AnimationFrameCallback;
 use crate::dom::element::Element;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::{Node, NodeTraits};
-use crate::dom::types::{CSSGroupingRule, CSSLayerBlockRule, EventTarget, HTMLElement};
-use crate::realms::enter_realm;
-use crate::script_runtime::CanGc;
+use crate::dom::types::{
+    CSSGroupingRule, CSSLayerBlockRule, EventTarget, HTMLElement, TrustedHTML,
+};
+use crate::event_loop::document_collection::DocumentCollection;
+use crate::realms::enter_auto_realm;
 
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 #[derive(JSTraceable)]
@@ -231,6 +233,7 @@ pub(crate) fn handle_get_document_element(
 }
 
 pub(crate) fn handle_get_stylesheets(
+    cx: &mut JSContext,
     documents: &DocumentCollection,
     pipeline: PipelineId,
     reply: GenericSender<Vec<StyleSheetInfo>>,
@@ -239,7 +242,7 @@ pub(crate) fn handle_get_stylesheets(
     if let Some(document) = documents.find_document(pipeline) {
         let node = document.upcast::<Node>();
         for i in 0..node.stylesheet_list_owner().stylesheet_count() {
-            if let Some(s) = node.stylesheet_list_owner().stylesheet_at(i) {
+            if let Some(s) = node.stylesheet_list_owner().stylesheet_at(cx, i) {
                 stylesheets.push(StyleSheetInfo {
                     href: s.href().map(String::from),
                     disabled: s.disabled(),
@@ -266,7 +269,7 @@ pub(crate) fn handle_get_stylesheet_text(
         let stylesheet = document
             .upcast::<Node>()
             .stylesheet_list_owner()
-            .stylesheet_at(index as usize)?;
+            .stylesheet_at(cx, index as usize)?;
 
         // For inline, Prefer the original "authored" source from the owner node (e.g., <style> tag).
         if let Some(node) = stylesheet.owner_node() {
@@ -308,13 +311,13 @@ pub(crate) fn handle_get_children(
     let mut pipeline_state = state.mut_pipeline_state_for(pipeline).unwrap();
 
     let inline: Vec<_> = parent
-        .children_unrooted(cx.no_gc())
+        .children()
         .map(|child| {
             let window = child.owner_window();
             let Some(elem) = child.downcast::<Element>() else {
                 return false;
             };
-            let computed_style = window.GetComputedStyle(elem, None);
+            let computed_style = window.GetComputedStyle(cx, elem, None);
             let display = computed_style.Display();
             display == "inline"
         })
@@ -364,7 +367,7 @@ pub(crate) fn handle_get_attribute_style(
         reply.send(None).unwrap();
         return;
     };
-    let style = elem.Style(CanGc::from_cx(cx));
+    let style = elem.Style(cx);
 
     let msg = (0..style.Length())
         .map(|i| {
@@ -468,12 +471,13 @@ pub(crate) fn handle_get_selectors(
         let node = state.find_node_by_unique_id(pipeline, node_id)?;
         let elem = node.downcast::<Element>()?;
         let document = documents.find_document(pipeline)?;
-        let _realm = enter_realm(document.window());
+        let mut realm = enter_auto_realm(cx, document.window());
+        let cx = &mut realm.current_realm();
         let owner = node.stylesheet_list_owner();
 
         let mut decl_map = HashMap::new();
         for i in 0..owner.stylesheet_count() {
-            let Some(stylesheet) = owner.stylesheet_at(i) else {
+            let Some(stylesheet) = owner.stylesheet_at(cx, i) else {
                 continue;
             };
             let Ok(list) = stylesheet.GetCssRules(cx) else {
@@ -517,10 +521,11 @@ pub(crate) fn handle_get_stylesheet_style(
     let msg = (|| {
         let node = state.find_node_by_unique_id(pipeline, node_id)?;
         let document = documents.find_document(pipeline)?;
-        let _realm = enter_realm(document.window());
+        let mut realm = enter_auto_realm(cx, document.window());
+        let cx = &mut realm.current_realm();
         let owner = node.stylesheet_list_owner();
 
-        let stylesheet = owner.stylesheet_at(matched_rule.stylesheet_index)?;
+        let stylesheet = owner.stylesheet_at(cx, matched_rule.stylesheet_index)?;
         let list = stylesheet.GetCssRules(cx).ok()?;
 
         let style_rule = find_rule_by_block_id(cx, &list, matched_rule.block_id)?;
@@ -544,6 +549,7 @@ pub(crate) fn handle_get_stylesheet_style(
 }
 
 pub(crate) fn handle_get_computed_style(
+    cx: &mut JSContext,
     state: &DevtoolsState,
     pipeline: PipelineId,
     node_id: &str,
@@ -558,7 +564,7 @@ pub(crate) fn handle_get_computed_style(
     let elem = node
         .downcast::<Element>()
         .expect("This should be an element");
-    let computed_style = window.GetComputedStyle(elem, None);
+    let computed_style = window.GetComputedStyle(cx, elem, None);
 
     let msg = (0..computed_style.Length())
         .map(|i| {
@@ -595,7 +601,7 @@ pub(crate) fn handle_get_layout(
     let height = rect.Height() as f32;
 
     let window = node.owner_window();
-    let computed_style = window.GetComputedStyle(element, None);
+    let computed_style = window.GetComputedStyle(cx, element, None);
     let computed_layout = ComputedNodeLayout {
         display: computed_style.Display().into(),
         position: computed_style.Position().into(),
@@ -680,6 +686,46 @@ pub(crate) fn handle_get_xpath(
     reply.send(selector).unwrap();
 }
 
+pub(crate) fn handle_get_inner_or_outer_html(
+    cx: &mut JSContext,
+    state: &DevtoolsState,
+    pipeline_id: PipelineId,
+    node_id: &str,
+    reply: GenericSender<Option<String>>,
+    html_type: GetHTMLType,
+) {
+    let node = state.find_node_by_unique_id(pipeline_id, node_id);
+
+    let selector = node.and_then(|node| {
+        let element = node.downcast::<Element>();
+
+        if let Some(element) = element {
+            let inner_or_outer_html = match html_type {
+                GetHTMLType::InnerHTML => element.GetInnerHTML(cx),
+                GetHTMLType::OuterHTML => element.GetOuterHTML(cx),
+            };
+
+            if let Ok(trusted_html) = inner_or_outer_html {
+                let trusted_html_or_string = trusted_html.convert();
+
+                let Ok(html_dom_string) = TrustedHTML::get_trusted_type_compliant_string(
+                    cx,
+                    &element.owner_global(),
+                    trusted_html_or_string,
+                    "Devtools GetInnerOrOuterHTML",
+                ) else {
+                    return None;
+                };
+
+                return Some(html_dom_string.to_string());
+            };
+        }
+        Some("".to_owned())
+    });
+
+    reply.send(selector).unwrap();
+}
+
 pub(crate) fn handle_modify_attribute(
     cx: &mut JSContext,
     state: &DevtoolsState,
@@ -689,15 +735,16 @@ pub(crate) fn handle_modify_attribute(
     modifications: Vec<AttrModification>,
 ) {
     let Some(document) = documents.find_document(pipeline) else {
-        return warn!("document for pipeline id {} is not found", &pipeline);
+        return warn!("document for pipeline id {} is not found", pipeline);
     };
-    let _realm = enter_realm(document.window());
+    let mut realm = enter_auto_realm(cx, document.window());
+    let cx = &mut realm.current_realm();
 
     let node = match state.find_node_by_unique_id(pipeline, node_id) {
         None => {
             return warn!(
                 "node id {} for pipeline id {} is not found",
-                &node_id, &pipeline
+                node_id, pipeline
             );
         },
         Some(found_node) => found_node,
@@ -730,21 +777,22 @@ pub(crate) fn handle_modify_rule(
     modifications: Vec<RuleModification>,
 ) {
     let Some(document) = documents.find_document(pipeline) else {
-        return warn!("Document for pipeline id {} is not found", &pipeline);
+        return warn!("Document for pipeline id {} is not found", pipeline);
     };
-    let _realm = enter_realm(document.window());
+    let mut realm = enter_auto_realm(cx, document.window());
+    let cx = &mut realm.current_realm();
 
     let Some(node) = state.find_node_by_unique_id(pipeline, node_id) else {
         return warn!(
             "Node id {} for pipeline id {} is not found",
-            &node_id, &pipeline
+            node_id, pipeline
         );
     };
 
     let elem = node
         .downcast::<HTMLElement>()
         .expect("This should be an HTMLElement");
-    let style = elem.Style(CanGc::from_cx(cx));
+    let style = elem.Style(cx);
 
     for modification in modifications {
         let _ = style.SetProperty(

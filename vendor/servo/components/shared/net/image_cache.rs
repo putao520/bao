@@ -10,9 +10,11 @@ use malloc_size_of_derive::MallocSizeOf;
 use paint_api::CrossProcessPaintApi;
 use pixels::{CorsStatus, ImageMetadata, RasterImage};
 use profile_traits::mem::Report;
+use resvg::usvg::{Font, fontdb};
 use serde::{Deserialize, Serialize};
 use servo_base::id::{PipelineId, WebViewId};
 use servo_url::{ImmutableOrigin, ServoUrl};
+use uuid::Uuid;
 use webrender_api::ImageKey;
 use webrender_api::units::DeviceIntSize;
 
@@ -22,6 +24,21 @@ use crate::request::CorsSettings;
 // ======================================================================
 // Aux structs and enums.
 // ======================================================================
+
+/// An interface for resolving font families and styles for SVG images.
+pub trait FontResolver: Sync + Send {
+    /// Attempt to resolve a font reference using the provided database of fonts.
+    /// Adding new fonts to the database is allowed. Return an index into the database
+    /// if the font resolves to an entry, otherwise return None.
+    fn resolve(&self, font: &Font, database: &mut Arc<fontdb::Database>) -> Option<fontdb::ID>;
+    /// Backup resolve. Find a font that can represent `char` and is not in `excluded`.
+    fn resolve_fallback(
+        &self,
+        char: char,
+        excluded: &[fontdb::ID],
+        database: &mut Arc<fontdb::Database>,
+    ) -> Option<fontdb::ID>;
+}
 
 pub type VectorImageId = PendingImageId;
 
@@ -37,7 +54,7 @@ pub enum Image {
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub struct VectorImage {
     pub id: VectorImageId,
-    pub svg_id: Option<String>,
+    pub svg_id: Option<Uuid>,
     pub metadata: ImageMetadata,
     pub cors_status: CorsStatus,
 }
@@ -166,6 +183,7 @@ pub trait ImageCacheFactory: Sync + Send {
         webview_id: WebViewId,
         pipeline_id: PipelineId,
         paint_api: &CrossProcessPaintApi,
+        font_resolver: Arc<dyn FontResolver>,
     ) -> Arc<dyn ImageCache>;
 }
 
@@ -173,6 +191,10 @@ pub trait ImageCacheFactory: Sync + Send {
 /// `Document` and all of its associated `Worker`s.
 pub trait ImageCache: Sync + Send {
     fn memory_reports(&self, prefix: &str, ops: &mut MallocSizeOfOps) -> Vec<Report>;
+
+    #[cfg(feature = "test-util")]
+    /// Returns the number of rasterization tasks
+    fn number_of_rasterize_tasks(&self) -> usize;
 
     /// Get an [`ImageKey`] to be used for external WebRender image management for
     /// things like canvas rendering. Returns `None` when an [`ImageKey`] cannot
@@ -187,6 +209,7 @@ pub trait ImageCache: Sync + Send {
         cors_setting: Option<CorsSettings>,
     ) -> Option<Image>;
 
+    /// Returns if the Image is already in the cache or not. If the Image is not yet completely decoded, we return [`ImageCacheResult::Pending`] or [`ImageCacheResult::Available`].
     fn get_cached_image_status(
         &self,
         url: ServoUrl,
@@ -202,7 +225,7 @@ pub trait ImageCache: Sync + Send {
         &self,
         image_id: VectorImageId,
         size: DeviceIntSize,
-        svg_id: Option<String>,
+        svg_id: Option<Uuid>,
     ) -> Option<RasterImage>;
 
     /// Adds a new listener to be notified once the given `image_id` has been rasterized at
@@ -218,7 +241,7 @@ pub trait ImageCache: Sync + Send {
     );
 
     /// Removes the rasterized image from the image_cache, identified by the id of the SVG
-    fn evict_rasterized_image(&self, svg_id: &str);
+    fn evict_rasterized_image(&self, svg_id: &Uuid);
 
     /// Removes the completed image from the image_cache, identified by url, origin, and cors
     fn evict_completed_image(
@@ -240,5 +263,8 @@ pub trait ImageCache: Sync + Send {
     fn notify_pending_response(&self, id: PendingImageId, action: FetchResponseMsg);
 
     /// Fills the image cache with a batch of keys.
-    fn fill_key_cache_with_batch_of_keys(&self, image_keys: Vec<ImageKey>);
+    fn dispatch_fill_key_cache_with_batch_of_keys(&self, image_keys: Vec<ImageKey>);
+
+    /// Clear the image cache.
+    fn clear(&self);
 }

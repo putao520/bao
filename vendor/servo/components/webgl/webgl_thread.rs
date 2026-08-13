@@ -8,6 +8,7 @@ use std::collections::hash_map::Entry;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::{slice, thread};
 
 use bitflags::bitflags;
@@ -298,14 +299,14 @@ impl WebGLThread {
 
     /// Perform all initialization required to run an instance of WebGLThread
     /// in parallel on its own dedicated thread.
-    pub(crate) fn run_on_own_thread(init: WebGLThreadInit) {
+    pub(crate) fn run_on_own_thread(init: WebGLThreadInit) -> JoinHandle<()> {
         thread::Builder::new()
             .name("WebGL".to_owned())
             .spawn(move || {
                 let mut data = WebGLThread::new(init);
                 data.process();
             })
-            .expect("Thread spawning failed");
+            .expect("Thread spawning failed")
     }
 
     fn process(&mut self) {
@@ -315,6 +316,33 @@ impl WebGLThread {
             if exit {
                 break;
             }
+        }
+    }
+
+    /// Enable GL_POINT_SPRITE and GL_PROGRAM_POINT_SIZE on desktop OpenGL.
+    ///
+    /// FIXME(nox): Should probably be done by surfman.
+    /// FIXME(sagudev): Do we even need to do this?
+    fn ensure_point_sprite_and_program_point_size_enabled(gl_context_data: &GLContextData) {
+        // Points sprites are enabled by default in OpenGL 3.2 core
+        // and in GLES.
+        if gl_context_data.gl.version().is_embedded {
+            return;
+        }
+
+        // Rather than doing version detection, it does not hurt to enable GL_POINT_SPRITE and
+        // PROGRAM_POINT_SIZE always.
+        const GL_POINT_SPRITE: u32 = 0x8861;
+        unsafe { gl_context_data.gl.enable(GL_POINT_SPRITE) };
+        let error = unsafe { gl_context_data.gl.get_error() };
+        if error != 0 {
+            warn!("Error enabling GL point sprites: {error}");
+        }
+
+        unsafe { gl_context_data.gl.enable(gl::PROGRAM_POINT_SIZE) };
+        let error = unsafe { gl_context_data.gl.get_error() };
+        if error != 0 {
+            warn!("Error enabling GL program point size: {error}");
         }
     }
 
@@ -330,35 +358,15 @@ impl WebGLThread {
                         let data = self
                             .make_current_if_needed(id)
                             .expect("WebGLContext not found");
+
+                        Self::ensure_point_sprite_and_program_point_size_enabled(data);
+
                         let glsl_version = Self::get_glsl_version(&data.gl);
                         let api_type = if data.gl.version().is_embedded {
                             GlType::Gles
                         } else {
                             GlType::Gl
                         };
-
-                        // FIXME(nox): Should probably be done by surfman.
-                        if api_type != GlType::Gles {
-                            // Points sprites are enabled by default in OpenGL 3.2 core
-                            // and in GLES. Rather than doing version detection, it does
-                            // not hurt to enable them anyways.
-
-                            unsafe {
-                                // XXX: Do we even need to this?
-                                const GL_POINT_SPRITE: u32 = 0x8861;
-                                data.gl.enable(GL_POINT_SPRITE);
-                                let err = data.gl.get_error();
-                                if err != 0 {
-                                    warn!("Error enabling GL point sprites: {}", err);
-                                }
-
-                                data.gl.enable(gl::PROGRAM_POINT_SIZE);
-                                let err = data.gl.get_error();
-                                if err != 0 {
-                                    warn!("Error enabling GL program point size: {}", err);
-                                }
-                            }
-                        }
 
                         WebGLCreateContextResult {
                             sender: WebGLMsgSender::new(id, webgl_chan.clone()),
@@ -391,15 +399,17 @@ impl WebGLThread {
             WebGLMsg::FinishedRenderingToContext(context_id) => {
                 self.handle_finished_rendering_to_context(context_id);
             },
-            WebGLMsg::Exit(sender) => {
+            WebGLMsg::ClearPainterResources(painter_id, sender) => {
+                self.device_map.remove(&painter_id);
+                if let Err(error) = sender.send(()) {
+                    warn!("Failed to send response to WebGLMsg::ClearPainterResources ({error})");
+                }
+            },
+            WebGLMsg::Exit => {
                 // Call remove_context functions in order to correctly delete WebRender image keys.
                 let context_ids: Vec<WebGLContextId> = self.contexts.keys().copied().collect();
                 for id in context_ids {
                     self.remove_webgl_context(id);
-                }
-
-                if let Err(e) = sender.send(()) {
-                    warn!("Failed to send response to WebGLMsg::Exit ({e})");
                 }
                 return true;
             },
@@ -408,22 +418,30 @@ impl WebGLThread {
         false
     }
 
-    fn get_or_create_device_for_painter(&mut self, painter_id: PainterId) -> Rc<Device> {
-        self.device_map
-            .entry(painter_id)
-            .or_insert_with(|| {
-                let surfman_details = self
-                    .painter_surfman_details_map
-                    .get(painter_id)
-                    .expect("no surfman details found for painter");
-                let device = surfman_details
-                    .connection
-                    .create_device(&surfman_details.adapter)
-                    .expect("Couldn't open WebGL device!");
+    fn get_or_create_device_for_painter(
+        &mut self,
+        painter_id: PainterId,
+    ) -> Result<Rc<Device>, String> {
+        let entry = self.device_map.entry(painter_id);
+        if let Entry::Occupied(entry) = entry {
+            return Ok(entry.get().clone());
+        }
 
-                Rc::new(device)
-            })
-            .clone()
+        // This can happen if the Webview was dropped while one of its ScriptThreads
+        // is still issuing asynchronous commands to the WebGL thread.
+        let Some(surfman_details) = self.painter_surfman_details_map.get(painter_id) else {
+            return Err(format!("No PainterSurfmanDetails found for {painter_id:?}"));
+        };
+
+        // Gracefully handle failure to create a device.
+        let Ok(device) = surfman_details
+            .connection
+            .create_device(&surfman_details.adapter)
+        else {
+            return Err("Could not open WebGL device".into());
+        };
+
+        Ok(entry.or_insert(Rc::new(device)).clone())
     }
 
     #[cfg(feature = "webxr")]
@@ -519,10 +537,15 @@ impl WebGLThread {
         // Creating a new GLContext may make the current bound context_id dirty.
         // Clear it to ensure that  make_current() is called in subsequent commands.
         self.bound_context_id = None;
-        let painter_surfman_details = self
-            .painter_surfman_details_map
-            .get(painter_id)
-            .expect("PainterSurfmanDetails not found for PainterId");
+
+        // This can happen if the Webview was dropped while one of its ScriptThreads
+        // is still issuing asynchronous commands to the WebGL thread.
+        let Some(painter_surfman_details) = self.painter_surfman_details_map.get(painter_id) else {
+            return Err(format!(
+                "PainterSurfmanDetails not found for {painter_id:?}"
+            ));
+        };
+
         let api_type = match painter_surfman_details.connection.gl_api() {
             surfman::GLApi::GL => GlType::Gl,
             surfman::GLApi::GLES => GlType::Gles,
@@ -544,7 +567,7 @@ impl WebGLThread {
             flags,
         };
 
-        let device = self.get_or_create_device_for_painter(painter_id);
+        let device = self.get_or_create_device_for_painter(painter_id)?;
         let context_descriptor = device
             .create_context_descriptor(context_attributes)
             .map_err(|err| format!("Failed to create context descriptor: {:?}", err))?;
@@ -582,10 +605,9 @@ impl WebGLThread {
             .create_attached_swap_chain(context_id, &*device, &mut ctx, surface_access)
             .map_err(|err| format!("Failed to create swap chain: {:?}", err))?;
 
-        let swap_chain = self
-            .webrender_swap_chains
-            .get(context_id)
-            .expect("Failed to get the swap chain");
+        let Some(swap_chain) = self.webrender_swap_chains.get(context_id) else {
+            return Err("Failed to get the swap chain".into());
+        };
 
         debug!(
             "Created webgl context {:?}/{:?}",
@@ -607,6 +629,8 @@ impl WebGLThread {
         let limits = GLLimits::detect(&gl, webgl_version);
 
         let size = clamp_viewport(&gl, requested_size);
+        debug_assert_eq!(unsafe { gl.get_error() }, gl::NO_ERROR);
+
         if safe_size != size {
             debug!("Resizing swap chain from {:?} to {:?}", safe_size, size);
             swap_chain
@@ -639,11 +663,12 @@ impl WebGLThread {
         }
 
         let default_vao = if let Some(vao) = WebGLImpl::create_vertex_array(&gl) {
-            WebGLImpl::bind_vertex_array(&gl, Some(vao.glow()));
+            unsafe { gl.bind_vertex_array(Some(vao.glow())) }
             Some(vao.glow())
         } else {
             None
         };
+        debug_assert_eq!(unsafe { gl.get_error() }, gl::NO_ERROR);
 
         let state = GLState {
             _gl_version: gl_version,
@@ -687,15 +712,14 @@ impl WebGLThread {
         context_id: WebGLContextId,
         requested_size: Size2D<u32>,
     ) -> Result<(), String> {
-        self.make_current_if_needed(context_id)
-            .expect("Missing WebGL context!");
+        self.make_current_if_needed(context_id);
 
-        let data = self
-            .contexts
-            .get_mut(&context_id)
-            .expect("Missing WebGL context!");
+        let Some(data) = self.contexts.get_mut(&context_id) else {
+            return Err("Missing WebGL context!".into());
+        };
 
         let size = clamp_viewport(&data.gl, requested_size);
+        debug_assert_eq!(unsafe { data.gl.get_error() }, gl::NO_ERROR);
 
         // Check to see if any of the current framebuffer bindings are the surface we're about to
         // throw out. If so, we'll have to reset them after destroying the surface.
@@ -1260,7 +1284,7 @@ impl WebGLImpl {
                     (false, _) => SnapshotAlphaMode::Opaque,
                 };
                 sender
-                    .send((GenericSharedMemory::from_bytes(&pixels), alpha_mode))
+                    .send((GenericSharedMemory::from_vec(pixels), alpha_mode))
                     .unwrap();
             },
             WebGLCommand::ReadPixelsPP(rect, format, pixel_type, offset) => unsafe {
@@ -1857,11 +1881,11 @@ impl WebGLImpl {
                 let _ = chan.send(id);
             },
             WebGLCommand::DeleteVertexArray(id) => {
-                Self::delete_vertex_array(gl, id);
+                unsafe { gl.delete_vertex_array(id.glow()) };
             },
             WebGLCommand::BindVertexArray(id) => {
                 let id = id.map(WebGLVertexArrayId::glow).or(state.default_vao);
-                Self::bind_vertex_array(gl, id);
+                unsafe { gl.bind_vertex_array(id) }
             },
             WebGLCommand::GetParameterBool(param, ref sender) => {
                 let value = match param {
@@ -2756,16 +2780,6 @@ impl WebGLImpl {
         vao
     }
 
-    fn bind_vertex_array(gl: &Gl, vao: Option<NativeVertexArray>) {
-        unsafe { gl.bind_vertex_array(vao) }
-        debug_assert_eq!(unsafe { gl.get_error() }, gl::NO_ERROR);
-    }
-
-    fn delete_vertex_array(gl: &Gl, vao: WebGLVertexArrayId) {
-        unsafe { gl.delete_vertex_array(vao.glow()) };
-        debug_assert_eq!(unsafe { gl.get_error() }, gl::NO_ERROR);
-    }
-
     #[inline]
     fn bind_framebuffer(
         gl: &Gl,
@@ -3193,7 +3207,6 @@ fn clamp_viewport(gl: &Gl, size: Size2D<u32>) -> Size2D<u32> {
     unsafe {
         gl.get_parameter_i32_slice(gl::MAX_VIEWPORT_DIMS, &mut max_viewport);
         gl.get_parameter_i32_slice(gl::MAX_RENDERBUFFER_SIZE, &mut max_renderbuffer);
-        debug_assert_eq!(gl.get_error(), gl::NO_ERROR);
     }
     Size2D::new(
         size.width

@@ -7,7 +7,8 @@ use std::cmp::Ordering;
 
 use bitflags::bitflags;
 use embedder_traits::FocusSequenceNumber;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
+use js::gc::RootedGuard;
 use keyboard_types::Modifiers;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::HTMLIFrameElementBinding::HTMLIFrameElementMethods;
@@ -15,7 +16,6 @@ use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMeth
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::inheritance::Castable;
 use script_bindings::root::{Dom, DomRoot};
-use script_bindings::script_runtime::CanGc;
 use servo_base::id::BrowsingContextId;
 use servo_constellation_traits::{
     RemoteFocusOperation, ScriptToConstellationMessage, SequentialFocusDirection,
@@ -28,7 +28,7 @@ use crate::dom::types::{
     Element, EventTarget, FocusEvent, HTMLElement, HTMLIFrameElement, KeyboardEvent, Window,
 };
 use crate::dom::{Document, Event, EventBubbles, EventCancelable, Node, NodeTraits};
-use crate::realms::enter_realm;
+use crate::realms::enter_auto_realm;
 
 /// The kind of focusable area a [`FocusableArea`] is. A [`FocusableArea`] may be click focusable,
 /// sequentially focusable, or both.
@@ -54,20 +54,23 @@ bitflags! {
 
 /// <https://html.spec.whatwg.org/multipage/#focusable-area>
 #[derive(Clone, Default, JSTraceable, MallocSizeOf, PartialEq)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) enum FocusableArea {
     Node {
-        node: DomRoot<Node>,
+        node: Dom<Node>,
         kind: FocusableAreaKind,
     },
     /// The viewport of an `<iframe>` element in its containing `Document`. `<iframe>`s
     /// are focusable areas, but have special behavior when focusing.
     IFrameViewport {
-        iframe_element: DomRoot<HTMLIFrameElement>,
+        iframe_element: Dom<HTMLIFrameElement>,
         kind: FocusableAreaKind,
     },
     #[default]
     Viewport,
 }
+
+impl js::gc::Rootable for FocusableArea {}
 
 impl std::fmt::Debug for FocusableArea {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -115,7 +118,7 @@ impl FocusableArea {
     /// <https://html.spec.whatwg.org/multipage/#dom-anchor>
     pub(crate) fn dom_anchor(&self, document: &Document) -> DomRoot<Node> {
         match self {
-            Self::Node { node, .. } => node.clone(),
+            Self::Node { node, .. } => node.as_rooted(),
             Self::IFrameViewport { iframe_element, .. } => {
                 DomRoot::from_ref(iframe_element.upcast())
             },
@@ -184,6 +187,7 @@ impl DocumentFocusHandler {
     /// set element (if any) and the new one, as well as the new one. This will not do anything if
     /// the new element is the same as the previous one. Note that this *will not* fire any focus
     /// events. If that is necessary the [`DocumentFocusHandler::focus`] should be used.
+    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn set_focused_area(&self, new_focusable_area: FocusableArea) {
         if new_focusable_area == *self.focused_area.borrow() {
             return;
@@ -256,10 +260,11 @@ impl DocumentFocusHandler {
 
     /// Reassign the focus context to the element that last requested focus during this
     /// transaction, or the document if no elements requested it.
-    pub(crate) fn focus(&self, cx: &mut JSContext, new_focus_target: FocusableArea) {
-        let old_focus_chain = self.current_focus_chain();
-        let new_focus_chain = new_focus_target.focus_chain();
-        self.focus_update_steps(cx, new_focus_chain, old_focus_chain, &new_focus_target);
+    pub(crate) fn focus(&self, cx: &mut JSContext, new_focus_target: &FocusableArea) {
+        rooted!(&in(cx) let new_focus_chain = new_focus_target.focus_chain());
+        rooted!(&in(cx) let old_focus_chain = self.current_focus_chain());
+
+        self.focus_update_steps(cx, new_focus_chain, old_focus_chain, new_focus_target);
 
         // Advertise the change in the focus chain.
         // <https://html.spec.whatwg.org/multipage/#focus-chain>
@@ -308,8 +313,8 @@ impl DocumentFocusHandler {
     pub(crate) fn focus_update_steps(
         &self,
         cx: &mut JSContext,
-        mut new_focus_chain: Vec<FocusableArea>,
-        mut old_focus_chain: Vec<FocusableArea>,
+        mut new_focus_chain: RootedGuard<'_, Vec<FocusableArea>>,
+        mut old_focus_chain: RootedGuard<'_, Vec<FocusableArea>>,
         new_focus_target: &FocusableArea,
     ) {
         let new_focus_chain_was_empty = new_focus_chain.is_empty();
@@ -323,8 +328,8 @@ impl DocumentFocusHandler {
             (new_focus_chain.last(), old_focus_chain.last())
         {
             if last_new == last_old {
-                new_focus_chain.pop();
-                old_focus_chain.pop();
+                new_focus_chain.as_mut_ref(cx.no_gc()).pop();
+                old_focus_chain.as_mut_ref(cx.no_gc()).pop();
             } else {
                 break;
             }
@@ -393,9 +398,18 @@ impl DocumentFocusHandler {
             // Step 2.4: If blur event target is not null, fire a focus event named blur at
             // blur event target, with related blur target as the related target.
             if let Some(blur_event_target) = blur_event_target {
+                // <https://w3c.github.io/uievents/#focusout>
+                // "blur" must be fired before "focusout".
                 self.fire_focus_event(
                     cx,
                     FocusEventType::Blur,
+                    blur_event_target,
+                    related_blur_target,
+                );
+
+                self.fire_focus_event(
+                    cx,
+                    FocusEventType::FocusOut,
                     blur_event_target,
                     related_blur_target,
                 );
@@ -470,9 +484,18 @@ impl DocumentFocusHandler {
             // Step 4.4: If focus event target is not null, fire a focus event named focus at
             // focus event target, with related focus target as the related target.
             if let Some(focus_event_target) = focus_event_target {
+                // <https://w3c.github.io/uievents/#focusin>
+                // "focus" must be fired before "focusIn".
                 self.fire_focus_event(
                     cx,
                     FocusEventType::Focus,
+                    focus_event_target,
+                    related_focus_target,
+                );
+
+                self.fire_focus_event(
+                    cx,
+                    FocusEventType::FocusIn,
                     focus_event_target,
                     related_focus_target,
                 );
@@ -491,20 +514,28 @@ impl DocumentFocusHandler {
         let event_name = match focus_event_type {
             FocusEventType::Focus => "focus".into(),
             FocusEventType::Blur => "blur".into(),
+            FocusEventType::FocusIn => "focusin".into(),
+            FocusEventType::FocusOut => "focusout".into(),
+        };
+
+        let event_bubbles = match focus_event_type {
+            FocusEventType::Focus | FocusEventType::Blur => EventBubbles::DoesNotBubble,
+            FocusEventType::FocusIn | FocusEventType::FocusOut => EventBubbles::Bubbles,
         };
 
         let event = FocusEvent::new(
+            cx,
             &self.window,
             event_name,
-            EventBubbles::DoesNotBubble,
+            event_bubbles,
             EventCancelable::NotCancelable,
             Some(&self.window),
             0i32,
             related_target,
-            CanGc::from_cx(cx),
         );
         let event = event.upcast::<Event>();
         event.set_trusted(true);
+        event.set_composed(true);
         event.fire(cx, event_target);
     }
 
@@ -519,11 +550,11 @@ impl DocumentFocusHandler {
             .focused_area
             .borrow()
             .element()
-            .is_none_or(|focused| focused.is_focusable_area())
+            .is_none_or(|focused| focused.is_focusable_area(cx.no_gc()))
         {
             return;
         }
-        self.focus(cx, FocusableArea::Viewport);
+        self.focus(cx, &FocusableArea::Viewport);
     }
 
     pub(crate) fn set_sequential_focus_navigation_starting_point(&self, node: &Node) {
@@ -613,7 +644,7 @@ impl DocumentFocusHandler {
         let selection_mechanism = starting_point
             .as_ref()
             .and_then(|node| node.downcast::<Element>())
-            .filter(|element| element.is_sequentially_focusable())
+            .filter(|element| element.is_sequentially_focusable(cx.no_gc()))
             .map(|element| {
                 SequentialFocusNavigationMechanism::Sequential(
                     element.explicitly_set_tab_index().unwrap_or_default(),
@@ -638,7 +669,7 @@ impl DocumentFocusHandler {
             selection_mechanism,
             starting_point,
         )
-        .search();
+        .search(cx.no_gc());
 
         // > 6. If candidate is not null, then run the focusing steps for candidate and return.
         if let Some(candidate) = candidate {
@@ -667,7 +698,7 @@ impl DocumentFocusHandler {
         // a child `<iframe>` and within a Document. If no suitable focusable area can be found
         // when moving into an `<iframe>`, we want to focus the `<iframe>`'s viewport itself.
         if allow_focusing_viewport {
-            self.focus(cx, FocusableArea::Viewport);
+            self.focus(cx, &FocusableArea::Viewport);
             return;
         }
 
@@ -748,7 +779,8 @@ impl DocumentFocusHandler {
         browsing_context_id: Option<BrowsingContextId>,
         direction: SequentialFocusDirection,
     ) {
-        let _realm = enter_realm(&*self.window);
+        let mut realm = enter_auto_realm(cx, &*self.window);
+        let cx = &mut realm.current_realm();
         let starting_point = browsing_context_id.and_then(|browsing_context_id| {
             self.window
                 .Document()
@@ -862,9 +894,9 @@ impl SequentialFocusNavigationSearch {
         }
     }
 
-    pub(crate) fn search(mut self) -> Option<DomRoot<Element>> {
+    pub(crate) fn search(mut self, no_gc: &NoGC) -> Option<DomRoot<Element>> {
         for node in self.focus_navigation_scope_owner.iterator() {
-            if self.process_node(&node) == Continue::No {
+            if self.process_node(no_gc, &node) == Continue::No {
                 break;
             }
         }
@@ -876,13 +908,16 @@ impl SequentialFocusNavigationSearch {
         // If searching a nested focus navigation scope, never try to search the containing
         // scope, as that will lead to an endless cycle.
         if self.search_context != SequentialFocusNavigationSearchContext::Nested {
-            return self.maybe_search_in_containing_focus_navigation_scope();
+            return self.maybe_search_in_containing_focus_navigation_scope(no_gc);
         }
 
         None
     }
 
-    fn maybe_search_in_containing_focus_navigation_scope(&self) -> Option<DomRoot<Element>> {
+    fn maybe_search_in_containing_focus_navigation_scope(
+        &self,
+        no_gc: &NoGC,
+    ) -> Option<DomRoot<Element>> {
         let containing_node = self.focus_navigation_scope_owner.node();
         let containing_focus_navigation_scope_owner =
             containing_node.containing_focus_navigation_scope_owner()?;
@@ -907,7 +942,7 @@ impl SequentialFocusNavigationSearch {
 
         if self.direction == SequentialFocusDirection::Backward &&
             let Some(containing_element) = containing_node.downcast::<Element>() &&
-            containing_element.is_sequentially_focusable()
+            containing_element.is_sequentially_focusable(no_gc)
         {
             return Some(DomRoot::from_ref(containing_element));
         }
@@ -921,26 +956,30 @@ impl SequentialFocusNavigationSearch {
             passed_starting_point: false,
             search_context: SequentialFocusNavigationSearchContext::Containing,
         }
-        .search()
+        .search(no_gc)
     }
 
-    fn process_node(&mut self, node: &Node) -> Continue {
+    fn process_node(&mut self, no_gc: &NoGC, node: &Node) -> Continue {
         if Some(node) == self.starting_point.as_deref() {
             self.passed_starting_point = true;
-        } else if self.process_node_as_sequentially_focusable_node(node) == Continue::No {
+        } else if self.process_node_as_sequentially_focusable_node(no_gc, node) == Continue::No {
             return Continue::No;
         }
 
-        self.process_node_as_focus_scope_owner(node)
+        self.process_node_as_focus_scope_owner(no_gc, node)
     }
 
     /// If this node is sequentially focusable, consider whether or not to accept it
     /// as the new winner.
-    fn process_node_as_sequentially_focusable_node(&mut self, node: &Node) -> Continue {
+    fn process_node_as_sequentially_focusable_node(
+        &mut self,
+        no_gc: &NoGC,
+        node: &Node,
+    ) -> Continue {
         let Some(element) = node.downcast::<Element>() else {
             return Continue::Yes;
         };
-        if !element.is_sequentially_focusable() {
+        if !element.is_sequentially_focusable(no_gc) {
             return Continue::Yes;
         }
 
@@ -954,7 +993,7 @@ impl SequentialFocusNavigationSearch {
 
     /// If this node itself forms a nested sequential focus scope, decide whether or
     /// not to descend and consider its contained focusable areas as candidates.
-    fn process_node_as_focus_scope_owner(&mut self, node: &Node) -> Continue {
+    fn process_node_as_focus_scope_owner(&mut self, no_gc: &NoGC, node: &Node) -> Continue {
         // Never try to recurse into the same focus scope that we are in. This path
         // might be reached if we are in the root focus scope where the document is
         // one of the nodes processed.
@@ -1005,7 +1044,7 @@ impl SequentialFocusNavigationSearch {
             passed_starting_point: self.passed_starting_point,
             search_context: SequentialFocusNavigationSearchContext::Nested,
         }
-        .search();
+        .search(no_gc);
 
         let Some(element) = element else {
             return Continue::Yes;

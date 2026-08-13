@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs::create_dir_all;
 use std::rc::Rc;
+use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bitflags::bitflags;
@@ -18,7 +19,6 @@ use embedder_traits::{
 };
 use euclid::{Scale, Size2D};
 use image::RgbaImage;
-use ipc_channel::ipc::{self};
 use log::{debug, warn};
 use paint_api::rendering_context::RenderingContext;
 use paint_api::{
@@ -46,6 +46,8 @@ use webgpu::canvas_context::WebGpuExternalImageMap;
 use webrender::{CaptureBits, MemoryReport};
 use webrender_api::units::{DevicePixel, DevicePoint};
 use webrender_api::{FontInstanceKey, FontKey, ImageKey};
+#[cfg(feature = "webxr")]
+use webxr::WebXrRegistry;
 
 use crate::InitialPaintState;
 use crate::painter::Painter;
@@ -118,6 +120,9 @@ pub struct Paint {
     /// The [`WebGLThreads`] for this renderer.
     webgl_threads: WebGLThreads,
 
+    /// A [`JoinHandle`] for joining the WebGL thread once the exit message is sent.
+    webgl_join_handle: Cell<Option<JoinHandle<()>>>,
+
     /// The shared [`SwapChains`] used by [`WebGLThreads`] for this renderer.
     pub(crate) swap_chains: SwapChains<WebGLContextId, Device>,
 
@@ -174,6 +179,7 @@ impl Paint {
             busy_webgl_context_map,
             #[cfg(feature = "webxr")]
             webxr_layer_grand_manager,
+            join_handle: webgl_join_handle,
         } = WebGLComm::new(
             state.paint_proxy.cross_process_paint_api.clone(),
             webrender_external_image_id_manager.clone(),
@@ -182,19 +188,11 @@ impl Paint {
 
         // Create the WebXR main thread
         #[cfg(feature = "webxr")]
-        let webxr_main_thread = {
-            use servo_config::pref;
-
-            let mut webxr_main_thread = webxr::MainThreadRegistry::new(
-                state.event_loop_waker.clone(),
-                webxr_layer_grand_manager,
-            )
-            .expect("Failed to create WebXR device registry");
-            if pref!(dom_webxr_enabled) {
-                state.webxr_registry.register(&mut webxr_main_thread);
-            }
-            webxr_main_thread
-        };
+        let webxr_main_thread = webxr::MainThreadRegistry::new(
+            state.event_loop_waker.clone(),
+            webxr_layer_grand_manager,
+        )
+        .expect("Failed to create WebXR device registry");
 
         Rc::new(RefCell::new(Paint {
             painters: Default::default(),
@@ -205,6 +203,7 @@ impl Paint {
             embedder_to_constellation_sender: state.embedder_to_constellation_sender.clone(),
             webrender_external_image_id_manager,
             webgl_threads,
+            webgl_join_handle: Cell::new(Some(webgl_join_handle)),
             swap_chains,
             time_profiler_chan: state.time_profiler_chan,
             _mem_profiler_registration: registration,
@@ -215,6 +214,12 @@ impl Paint {
             #[cfg(feature = "webgpu")]
             webgpu_image_map: Default::default(),
         }))
+    }
+
+    #[cfg(feature = "webxr")]
+    pub fn register_webxr_registry(&self, registry: Box<dyn WebXrRegistry>) {
+        let mut webxr_main_thread = self.webxr_main_thread.borrow_mut();
+        registry.register(&mut webxr_main_thread)
     }
 
     pub fn register_rendering_context(
@@ -253,9 +258,17 @@ impl Paint {
     }
 
     fn remove_painter(&mut self, painter_id: PainterId) {
+        // The shared details map must be removed first in order to avoid the creation of new
+        // devices after `clear_painter_resources` is called.
+        self.painter_surfman_details_map.remove(painter_id);
+
+        if !self.webgl_threads.clear_painter_resources(painter_id) {
+            warn!("Could not clear {painter_id:?} resources in WebGLThread");
+        }
+
+        // This is called last so that the surfman `Device` is dropped on this thread.
         self.painters
             .retain(|painter| painter.borrow().painter_id != painter_id);
-        self.painter_surfman_details_map.remove(painter_id);
     }
 
     pub(crate) fn maybe_painter<'a>(&'a self, painter_id: PainterId) -> Option<Ref<'a, Painter>> {
@@ -334,18 +347,15 @@ impl Paint {
         // another thread from finishing (i.e. SetFrameTree).
         while self.paint_receiver.try_recv().is_ok() {}
 
-        let (webgl_exit_sender, webgl_exit_receiver) =
-            generic_channel::channel().expect("Failed to create IPC channel!");
-        if !self
-            .webgl_threads
-            .exit(webgl_exit_sender)
-            .is_ok_and(|_| webgl_exit_receiver.recv().is_ok())
+        self.webgl_threads.exit();
+        if let Some(webgl_join_handle) = self.webgl_join_handle.take() &&
+            webgl_join_handle.join().is_err()
         {
-            warn!("Could not exit WebGLThread.");
+            warn!("Could not join WebGLThread.");
         }
 
         // Tell the profiler, memory profiler, and scrolling timer to shut down.
-        if let Ok((sender, receiver)) = ipc::channel() {
+        if let Some((sender, receiver)) = generic_channel::channel() {
             self.time_profiler_chan
                 .send(profile_time::ProfilerMsg::Exit(sender));
             let _ = receiver.recv();
@@ -677,6 +687,14 @@ impl Paint {
         }
         self.painter_mut(webview_id.into())
             .resize_rendering_context(new_size);
+    }
+
+    pub fn set_screen_size(&self, webview_id: WebViewId, new_size: Size2D<f32, DevicePixel>) {
+        if self.shutdown_state() != ShutdownState::NotShuttingDown {
+            return;
+        }
+        self.painter_mut(webview_id.into())
+            .set_screen_size(webview_id, new_size);
     }
 
     pub fn set_page_zoom(&self, webview_id: WebViewId, new_zoom: f32) {

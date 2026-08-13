@@ -9,17 +9,20 @@ use std::sync::Arc;
 use euclid::default::{Point2D, Rect, Size2D, Transform2D};
 use fonts::FontIdentifier;
 use kurbo::Shape;
+use malloc_size_of::MallocSizeOf;
 use paint_api::SerializableImageData;
 use pixels::{Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
+use profile_traits::mem::ReportKind;
 use servo_base::generic_channel::GenericSharedMemory;
 use servo_canvas_traits::canvas::{
     CompositionOptions, CompositionOrBlending, CompositionStyle, FillOrStrokeStyle, FillRule,
     LineOptions, Path, ShadowOptions, TextRun,
 };
-use vello_cpu::{kurbo, peniko};
+use servo_config::pref;
+use vello_cpu::{RenderSettings, kurbo, peniko};
 use webrender_api::{ImageDescriptor, ImageDescriptorFlags};
 
-use crate::backend::{Convert, GenericDrawTarget};
+use crate::backend::{CanvasStoreSizesPerType, Convert, GenericDrawTarget};
 use crate::canvas_data::Filter;
 
 thread_local! {
@@ -47,6 +50,7 @@ pub(crate) struct VelloCPUDrawTarget {
     /// This is because paint_transform is rarely set,
     /// so it's cheaper to always reset it after use.
     ctx: vello_cpu::RenderContext,
+    resources: vello_cpu::Resources,
     pixmap: vello_cpu::Pixmap,
     clips: Vec<(Path, kurbo::Affine)>,
     state: State,
@@ -111,7 +115,7 @@ impl VelloCPUDrawTarget {
         if self.state == State::Drawing {
             self.ignore_clips(|self_| {
                 self_.ctx.flush();
-                self_.ctx.render_to_pixmap(&mut self_.pixmap);
+                self_.ctx.render(&mut self_.pixmap, &mut self_.resources);
                 self_.ctx.reset();
                 self_.state = State::Rendered;
             });
@@ -143,17 +147,47 @@ impl VelloCPUDrawTarget {
     }
 }
 
+fn worker_thread_count(size: &Size2D<u16>) -> u16 {
+    // TODO: Somewhat arbitrary chosen, should be based on a benchmark,
+    // measuring where we start to benefit from multithreading
+    const SMALL_CANVAS_SIZE: u32 = 512 * 512;
+    // For small sizes single-threaded is better.
+    if u32::from(size.width) * u32::from(size.height) < SMALL_CANVAS_SIZE {
+        0
+    } else {
+        // The fallback `3` is the default value from `prefs.rs`
+        pref!(thread_pool_canvas_workers).try_into().unwrap_or(3)
+    }
+}
+
 impl GenericDrawTarget for VelloCPUDrawTarget {
     type SourceSurface = Arc<vello_cpu::Pixmap>;
 
     fn new(size: Size2D<u32>) -> Self {
         let size = size.cast();
+        let settings = RenderSettings {
+            num_threads: worker_thread_count(&size),
+            ..Default::default()
+        };
+        let ctx = vello_cpu::RenderContext::new_with(size.width, size.height, settings);
         Self {
-            ctx: vello_cpu::RenderContext::new(size.width, size.height),
+            ctx,
+            resources: vello_cpu::Resources::new(),
             pixmap: vello_cpu::Pixmap::new(size.width, size.height),
             clips: Vec::new(),
             state: State::Rendered,
         }
+    }
+
+    fn canvas_store_sizes(
+        &self,
+        ops: &mut malloc_size_of::MallocSizeOfOps,
+    ) -> Option<Vec<CanvasStoreSizesPerType>> {
+        Some(vec![CanvasStoreSizesPerType {
+            name: "backing-buffer",
+            size: self.pixmap.size_of(ops),
+            kind: ReportKind::ExplicitJemallocHeapSize,
+        }])
     }
 
     fn clear_rect(&mut self, rect: &Rect<f32>, transform: Transform2D<f64>) {
@@ -173,6 +207,7 @@ impl GenericDrawTarget for VelloCPUDrawTarget {
         self.ctx.push_layer(
             Some(&clip_path.to_path(0.1)),
             Some(blend_mode.into()),
+            None,
             None,
             None,
         );
@@ -318,7 +353,7 @@ impl GenericDrawTarget for VelloCPUDrawTarget {
                     };
                     self_
                         .ctx
-                        .glyph_run(font)
+                        .glyph_run(&mut self_.resources, font)
                         .font_size(text_run.pt_size)
                         .fill_glyphs(text_run.glyphs_and_positions.iter().map(
                             |glyph_and_position| vello_cpu::Glyph {
@@ -425,7 +460,7 @@ impl GenericDrawTarget for VelloCPUDrawTarget {
                     };
                     self_
                         .ctx
-                        .glyph_run(font)
+                        .glyph_run(&mut self_.resources, font)
                         .font_size(text_run.pt_size)
                         .stroke_glyphs(text_run.glyphs_and_positions.iter().map(
                             |glyph_and_position| vello_cpu::Glyph {
@@ -577,7 +612,7 @@ fn paint(style: FillOrStrokeStyle, alpha: f64) -> vello_cpu::PaintType {
                     vello_cpu::ImageSource::Pixmap(pixmap) => Arc::get_mut(pixmap)
                         .expect("pixmap should not be shared with anyone at this point")
                         .multiply_alpha((alpha * 255.0) as u8),
-                    vello_cpu::ImageSource::OpaqueId(_) => unimplemented!(),
+                    vello_cpu::ImageSource::OpaqueId { .. } => unimplemented!(),
                 };
                 vello_cpu::PaintType::Image(image)
             },

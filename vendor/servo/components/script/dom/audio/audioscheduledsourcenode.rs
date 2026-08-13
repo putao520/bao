@@ -5,7 +5,8 @@
 use std::cell::Cell;
 
 use dom_struct::dom_struct;
-use servo_media::audio::node::{
+use js::context::JSContext;
+use servo_media::audio::audio_node::{
     AudioNodeInit, AudioNodeMessage, AudioScheduledSourceNodeMessage, OnEndedCallback,
 };
 
@@ -28,6 +29,7 @@ pub(crate) struct AudioScheduledSourceNode {
 impl AudioScheduledSourceNode {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new_inherited(
+        cx: &mut JSContext,
         node_type: AudioNodeInit,
         context: &BaseAudioContext,
         options: UnwrappedAudioNodeOptions,
@@ -36,6 +38,7 @@ impl AudioScheduledSourceNode {
     ) -> Fallible<AudioScheduledSourceNode> {
         Ok(AudioScheduledSourceNode {
             node: AudioNode::new_inherited(
+                cx,
                 node_type,
                 context,
                 options,

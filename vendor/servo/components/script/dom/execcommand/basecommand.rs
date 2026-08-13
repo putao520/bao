@@ -28,8 +28,12 @@ use crate::dom::execcommand::commands::fontsize::{
     execute_fontsize_command, font_size_loosely_equivalent, value_for_fontsize_command,
 };
 use crate::dom::execcommand::commands::forecolor::execute_forecolor_command;
+use crate::dom::execcommand::commands::forwarddelete::execute_forward_delete_command;
 use crate::dom::execcommand::commands::hilitecolor::execute_hilitecolor_command;
+use crate::dom::execcommand::commands::inserthorizontalrule::execute_insert_horizontal_rule_command;
+use crate::dom::execcommand::commands::insertimage::execute_insert_image_command;
 use crate::dom::execcommand::commands::insertparagraph::execute_insert_paragraph_command;
+use crate::dom::execcommand::commands::inserttext::execute_insert_text_command;
 use crate::dom::execcommand::commands::italic::execute_italic_command;
 use crate::dom::execcommand::commands::removeformat::execute_removeformat_command;
 use crate::dom::execcommand::commands::strikethrough::execute_strikethrough_command;
@@ -42,8 +46,8 @@ use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlfontelement::HTMLFontElement;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::{Node, NodeTraits};
+use crate::dom::range::Range;
 use crate::dom::selection::Selection;
-use crate::script_runtime::CanGc;
 
 #[derive(Default, Clone, Copy, MallocSizeOf)]
 pub(crate) enum DefaultSingleLineContainerName {
@@ -300,15 +304,13 @@ impl CssPropertyName {
         element: &HTMLElement,
         new_value: DOMString,
     ) {
-        let style = element.Style(CanGc::from_cx(cx));
+        let style = element.Style(cx);
 
         let _ = style.SetProperty(cx, self.property_name(), new_value, "".into());
     }
 
     pub(crate) fn remove_from_element(&self, cx: &mut JSContext, element: &HTMLElement) {
-        let _ = element
-            .Style(CanGc::from_cx(cx))
-            .RemoveProperty(cx, self.property_name());
+        let _ = element.Style(cx).RemoveProperty(cx, self.property_name());
     }
 }
 
@@ -375,7 +377,7 @@ impl CommandName {
         let mut at_least_two_different_effective_values = false;
         let mut previous_effective_value: Option<DOMString> = None;
         active_range.for_each_effectively_contained_child(|node| {
-            if at_least_two_different_effective_values || !node.is_formattable() {
+            if at_least_two_different_effective_values || !node.is_formattable(cx.no_gc()) {
                 return;
             }
             if let Some(effective_command_value) = node.effective_command_value(self) {
@@ -424,7 +426,7 @@ impl CommandName {
                 let mut at_least_one_child_is_formattable = false;
                 let mut all_children_have_matching_command_values = true;
                 active_range.for_each_effectively_contained_child(|node| {
-                    if !node.is_formattable() {
+                    if !node.is_formattable(cx.no_gc()) {
                         return;
                     }
                     at_least_one_child_is_formattable = true;
@@ -471,7 +473,7 @@ impl CommandName {
                 let active_range = selection.active_range()?;
 
                 active_range
-                    .first_formattable_contained_node()
+                    .first_formattable_contained_node(cx.no_gc())
                     .unwrap_or_else(|| active_range.start_container())
                     .effective_command_value(self)
                     .unwrap_or_default()
@@ -552,7 +554,7 @@ impl CommandName {
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#record-current-overrides>
-    fn record_current_overrides(document: &Document) -> Vec<RecordedStateOfCommand> {
+    pub(crate) fn record_current_overrides(document: &Document) -> Vec<RecordedStateOfCommand> {
         // Step 1. Let overrides be a list of (string, string or boolean) ordered pairs, initially empty.
         let mut overrides = vec![];
         // Step 2. If there is a value override for "createLink",
@@ -631,6 +633,46 @@ impl CommandName {
         )
     }
 
+    pub(crate) fn is_enabled(&self, cx: &JSContext, range: &Range, editing_host: &Node) -> bool {
+        match self {
+            // The delete command is not enabled in the situation that the cursor is inside the
+            // editing host at the start, where a backspace would do nothing. However, if the
+            // editing host itself is selected then it is enabled.
+            //
+            // Therefore, start at the start_container and traverse its ancestors up to editing
+            // host. If the index remains 0, then there is no effective character to delete and
+            // the command is disabled.
+            CommandName::Delete => {
+                if !range.collapsed() {
+                    return true;
+                }
+                let start_container = range.start_container();
+                if *start_container == *editing_host {
+                    // TODO: This should return true. However, that crashes deletes at the start
+                    // of the editing host. There currently is no way to distinguish between a
+                    // range that is collapsed to a full node and set to before a node. Chromium
+                    // tracks this with a concept of "anchor position before/after node":
+                    // https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/core/editing/position.h;l=39;drc=a5c6d7b223bfc6028ecae4b1f17d711374238c0d
+                    return false;
+                }
+                let mut current_offset = range.start_offset();
+                for current_ancestor in
+                    start_container.inclusive_ancestors_unrooted(cx, ShadowIncluding::Yes)
+                {
+                    if current_offset != 0 {
+                        return true;
+                    }
+                    if *current_ancestor == editing_host {
+                        return false;
+                    }
+                    current_offset = current_ancestor.index();
+                }
+                false
+            },
+            _ => true,
+        }
+    }
+
     pub(crate) fn is_enabled_in_plaintext_only_state(&self) -> bool {
         matches!(
             self,
@@ -702,10 +744,18 @@ impl CommandName {
             CommandName::FontName => execute_fontname_command(cx, document, selection, value),
             CommandName::FontSize => execute_fontsize_command(cx, document, selection, value),
             CommandName::ForeColor => execute_forecolor_command(cx, document, selection, value),
+            CommandName::ForwardDelete => execute_forward_delete_command(cx, document, selection),
             CommandName::HiliteColor => execute_hilitecolor_command(cx, document, selection, value),
+            CommandName::InsertHorizontalRule => {
+                execute_insert_horizontal_rule_command(cx, document, selection)
+            },
+            CommandName::InsertImage => {
+                execute_insert_image_command(cx, document, selection, value)
+            },
             CommandName::InsertParagraph => {
                 execute_insert_paragraph_command(cx, document, selection)
             },
+            CommandName::InsertText => execute_insert_text_command(cx, document, selection, value),
             CommandName::Italic => execute_italic_command(cx, document, selection),
             CommandName::RemoveFormat => execute_removeformat_command(cx, document, selection),
             CommandName::Strikethrough => execute_strikethrough_command(cx, document, selection),

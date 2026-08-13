@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use content_security_policy as csp;
 use cookie::Cookie as CookiePair;
@@ -659,7 +659,7 @@ fn test_load_doesnt_send_request_body_on_any_redirect() {
     let (pre_server, pre_url) = make_server(pre_handler);
 
     let content = "Body on POST!";
-    let request_body = create_request_body_with_content(content);
+    let request_body = create_request_body_with_content(content.to_string());
 
     let request = RequestBuilder::new(None, pre_url.clone(), Referrer::NoReferrer)
         .body(Some(request_body))
@@ -976,7 +976,7 @@ fn test_load_sets_content_length_to_length_of_request_body() {
         };
     let (server, url) = make_server(handler);
 
-    let request_body = create_request_body_with_content(content);
+    let request_body = create_request_body_with_content(content.to_string());
 
     let request = RequestBuilder::new(None, url.clone(), Referrer::NoReferrer)
         .method(Method::POST)
@@ -1616,6 +1616,8 @@ fn test_fetch_compressed_response_update_count() {
             let _ = self.sender.take().unwrap().send(self.update_count);
         }
         fn process_csp_violations(&mut self, _: &Request, _: Vec<csp::Violation>) {}
+
+        fn process_response_length_hint(&mut self, _: &Request, _: usize) {}
     }
 
     let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -2111,4 +2113,54 @@ fn test_no_security_info_for_http_connection() {
             "HTTP connection should not have TLS security info"
         );
     }
+}
+
+#[test]
+fn test_stale_while_revalidate_serves_cached_and_revalidates_in_background() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let request_count_clone = request_count.clone();
+    let handler =
+        move |_: HyperRequest<Incoming>,
+              response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
+            request_count_clone.fetch_add(1, Ordering::SeqCst);
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("max-age=0, stale-while-revalidate=30"),
+            );
+            *response.body_mut() = make_body(b"content".to_vec());
+        };
+    let (server, url) = make_server(handler);
+
+    let mut context = new_fetch_context(None, None);
+
+    let build_request = || {
+        RequestBuilder::new(None, url.clone(), Referrer::NoReferrer)
+            .method(Method::GET)
+            .destination(Destination::Document)
+            .origin(url.clone().origin())
+            .pipeline_id(Some(TEST_PIPELINE_ID))
+            .policy_container(Default::default())
+            .build()
+    };
+
+    let response = fetch_with_context(build_request(), &mut context);
+    assert!(response.actual_response().status.code().is_success());
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+    // the stored response is stale but within the stale-while-revalidate window, so
+    // it is served from cache immediately and a background revalidation is spawned.
+    let response = fetch_with_context(build_request(), &mut context);
+    assert!(response.actual_response().status.code().is_success());
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while request_count.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        2,
+        "exactly one background revalidation should have hit the server"
+    );
+
+    let _ = server.close();
 }

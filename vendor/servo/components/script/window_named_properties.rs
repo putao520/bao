@@ -7,30 +7,29 @@ use std::ptr::NonNull;
 use std::sync::LazyLock;
 
 use js::conversions::jsstr_to_string;
-use js::glue::{AppendToIdVector, CreateProxyHandler, NewProxyObject, ProxyTraps};
+use js::glue::{AppendToIdVector, CreateProxyHandler, ProxyTraps};
 use js::jsapi::{
-    Handle, HandleId, HandleObject, JS_SetImmutablePrototype, JSCLASS_DELAY_METADATA_BUILDER,
-    JSCLASS_IS_PROXY, JSCLASS_RESERVED_SLOTS_MASK, JSCLASS_RESERVED_SLOTS_SHIFT, JSClass,
-    JSClass_NON_NATIVE, JSContext, JSErrNum, JSPROP_READONLY, MutableHandle, MutableHandleIdVector,
+    Handle, HandleId, HandleObject, JSCLASS_DELAY_METADATA_BUILDER, JSCLASS_IS_PROXY,
+    JSCLASS_RESERVED_SLOTS_MASK, JSCLASS_RESERVED_SLOTS_SHIFT, JSClass, JSClass_NON_NATIVE,
+    JSContext, JSErrNum, JSPROP_READONLY, MutableHandle, MutableHandleIdVector,
     MutableHandleObject, ObjectOpResult, PropertyDescriptor, ProxyClassExtension, ProxyClassOps,
     ProxyObjectOps, SymbolCode, UndefinedHandleValue,
 };
 use js::jsid::SymbolId;
 use js::jsval::UndefinedValue;
-use js::rust::wrappers2::GetWellKnownSymbol;
+use js::rust::wrappers2::{GetWellKnownSymbol, JS_SetImmutablePrototype, NewProxyObject};
 use js::rust::{
-    Handle as RustHandle, HandleObject as RustHandleObject, IntoHandle,
-    MutableHandle as RustMutableHandle, MutableHandleObject as RustMutableHandleObject,
+    Handle as RustHandle, HandleObject as RustHandleObject, MutableHandle as RustMutableHandle,
+    MutableHandleObject as RustMutableHandleObject,
 };
+use script_bindings::proxyhandler::set_property_descriptor;
 
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
-use crate::dom::bindings::proxyhandler::set_property_descriptor;
 use crate::dom::bindings::root::Root;
 use crate::dom::bindings::utils::has_property_on_prototype;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
 use crate::js::conversions::ToJSValConvertible;
-use crate::script_runtime::JSContext as SafeJSContext;
 
 struct SyncWrapper(*const libc::c_void);
 #[expect(unsafe_code)]
@@ -106,14 +105,12 @@ unsafe extern "C" fn get_own_property_descriptor(
     }
 
     let mut found = false;
-    let lookup_succeeded = unsafe {
-        has_property_on_prototype(
-            cx.raw_cx(),
-            RustHandle::from_raw(proxy),
-            RustHandle::from_raw(id),
-            &mut found,
-        )
-    };
+    let lookup_succeeded = has_property_on_prototype(
+        &mut cx,
+        unsafe { RustHandle::from_raw(proxy) },
+        unsafe { RustHandle::from_raw(id) },
+        &mut found,
+    );
     if !lookup_succeeded {
         return false;
     }
@@ -122,7 +119,7 @@ unsafe extern "C" fn get_own_property_descriptor(
     }
 
     let s = if id.is_string() {
-        unsafe { jsstr_to_string(cx.raw_cx_no_gc(), NonNull::new(id.to_string()).unwrap()) }
+        unsafe { jsstr_to_string(&cx, NonNull::new(id.to_string()).unwrap()) }
     } else if id.is_int() {
         // If the property key is an integer index, convert it to a String too.
         // For indexed access on the window object, which may shadow this, see
@@ -255,26 +252,28 @@ static CLASS: JSClass = JSClass {
 
 #[expect(unsafe_code)]
 pub(crate) fn create(
-    cx: SafeJSContext,
+    cx: &mut js::context::JSContext,
     proto: RustHandleObject,
     mut properties_obj: RustMutableHandleObject,
 ) {
     unsafe {
         properties_obj.set(NewProxyObject(
-            *cx,
+            cx,
             HANDLER.0,
-            UndefinedHandleValue,
+            RustHandle::from_raw(UndefinedHandleValue),
             proto.get(),
             &CLASS,
             false,
         ));
-        assert!(!properties_obj.get().is_null());
-        let mut succeeded = false;
+    }
+    assert!(!properties_obj.get().is_null());
+    let mut succeeded = false;
+    unsafe {
         assert!(JS_SetImmutablePrototype(
-            *cx,
-            properties_obj.handle().into_handle(),
+            cx,
+            properties_obj.handle(),
             &mut succeeded
         ));
-        assert!(succeeded);
     }
+    assert!(succeeded);
 }

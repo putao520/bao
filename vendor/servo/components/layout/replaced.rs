@@ -19,12 +19,14 @@ use servo_url::ServoUrl;
 use style::Zero;
 use style::attr::AttrValue;
 use style::computed_values::object_fit::T as ObjectFit;
+use style::context::TreeCountingCaches;
+use style::dom::DummyElementContext;
 use style::logical_geometry::{Direction, WritingMode};
 use style::properties::{ComputedValues, StyleBuilder};
 use style::rule_cache::RuleCacheConditions;
 use style::rule_tree::RuleCascadeFlags;
-use style::servo::url::ComputedUrl;
 use style::stylesheets::container_rule::ContainerSizeQuery;
+use style::url::ComputedUrl;
 use style::values::CSSFloat;
 use style::values::computed::image::Image as ComputedImage;
 use style::values::computed::{Content, Context, ToComputedValue};
@@ -49,6 +51,9 @@ use crate::{ConstraintSpace, ContainingBlock};
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct ReplacedContents {
     pub kind: ReplacedContentKind,
+    /// Whether or not this [`ReplacedContents`] is due to content replacement, i.e.
+    /// `content: <image>` in style.
+    pub is_content_replacement: bool,
     natural_size: NaturalSizes,
     base_fragment_info: BaseFragmentInfo,
 }
@@ -135,6 +140,7 @@ pub(crate) struct ImageInfo {
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct VideoInfo {
     pub image_key: Option<ImageKey>,
+    pub poster_url: Option<ServoUrl>,
 }
 
 #[derive(Debug, MallocSizeOf)]
@@ -214,6 +220,7 @@ impl ReplacedContents {
 
         Some(Self {
             kind,
+            is_content_replacement: false,
             natural_size,
             base_fragment_info: node.into(),
         })
@@ -225,6 +232,7 @@ impl ReplacedContents {
         node: ServoLayoutNode<'_>,
     ) -> (ReplacedContentKind, NaturalSizes) {
         let rule_cache_conditions = &mut RuleCacheConditions::default();
+        let mut tree_counting_caches = TreeCountingCaches::default();
 
         let parent_style = node.style(&context.style_context);
         let style_builder = StyleBuilder::new(
@@ -236,12 +244,19 @@ impl ReplacedContents {
             false,
         );
 
+        // TODO: use the correct element context in order to properly resolve
+        // `sibling-index()`, like Blink. Or maybe do it like Gecko, and only
+        // accept literals, see https://github.com/w3c/csswg-drafts/issues/14117
+        let element_context = &DummyElementContext;
+
         let to_computed_context = Context::new(
             style_builder,
             context.style_context.quirks_mode(),
             rule_cache_conditions,
             ContainerSizeQuery::none(),
             RuleCascadeFlags::empty(),
+            element_context,
+            &mut tree_counting_caches,
         );
 
         let attr_to_computed = |attr_val: &AttrValue| {
@@ -320,10 +335,12 @@ impl ReplacedContents {
             let [GenericContentItem::Image(image)] = items.as_slice()
         {
             // Invalid images are treated as zero-sized.
-            return Some(
-                Self::from_image(node, context, image)
-                    .unwrap_or_else(|| Self::zero_sized_invalid_image(node)),
-            );
+            let mut replaced_contents = Self::from_image(node, context, image)
+                .unwrap_or_else(|| Self::zero_sized_invalid_image(node));
+
+            replaced_contents.is_content_replacement = true;
+            node.clear_fragments_and_dirty_fragment_caches_of_descendants();
+            return Some(replaced_contents);
         }
         None
     }
@@ -364,6 +381,7 @@ impl ReplacedContents {
                 showing_broken_image_icon: false,
                 url: Some(image_url.clone().into()),
             }),
+            is_content_replacement: false,
             natural_size: NaturalSizes::from_width_and_height(width, height),
             base_fragment_info: node.into(),
         })
@@ -387,6 +405,7 @@ impl ReplacedContents {
                 showing_broken_image_icon: false,
                 url: None,
             }),
+            is_content_replacement: false,
             natural_size: NaturalSizes::from_width_and_height(0., 0.),
             base_fragment_info: node.into(),
         }
@@ -488,7 +507,7 @@ impl ReplacedContents {
         let (object_fit_size, rect) = self.calculate_fragment_rect(style, size);
         let clip = PhysicalRect::new(PhysicalPoint::origin(), size);
 
-        let base = BaseFragment::new(self.base_fragment_info, style.clone().into(), rect);
+        let base = BaseFragment::new(self.base_fragment_info, rect);
         match &self.kind {
             ReplacedContentKind::Image(image_info) => image_info
                 .image
@@ -507,7 +526,7 @@ impl ReplacedContents {
                                 vector_image.id,
                                 size,
                                 tag.node,
-                                vector_image.svg_id.clone(),
+                                vector_image.svg_id,
                             )
                             .and_then(|i| i.id)
                     },
@@ -515,10 +534,13 @@ impl ReplacedContents {
                 .map(|image_key| {
                     Fragment::Image(Arc::new(ImageFragment {
                         base,
+                        style: style.clone().into(),
                         clip,
                         image_key: Some(image_key),
                         showing_broken_image_icon: image_info.showing_broken_image_icon,
                         url: image_info.url.clone(),
+                        natural_width: self.natural_size.width,
+                        natural_height: self.natural_size.height,
                     }))
                 })
                 .into_iter()
@@ -526,10 +548,13 @@ impl ReplacedContents {
             ReplacedContentKind::Video(video_info) => {
                 vec![Fragment::Image(Arc::new(ImageFragment {
                     base,
+                    style: style.clone().into(),
                     clip,
                     image_key: video_info.image_key,
                     showing_broken_image_icon: false,
-                    url: None,
+                    url: video_info.poster_url.clone(),
+                    natural_width: self.natural_size.width,
+                    natural_height: self.natural_size.height,
                 }))]
             },
             ReplacedContentKind::IFrame(iframe) => {
@@ -544,11 +569,13 @@ impl ReplacedContents {
                         viewport_details: ViewportDetails {
                             size,
                             hidpi_scale_factor: Scale::new(hidpi_scale_factor.0),
+                            device_size: layout_context.device_size.cast_unit(),
                         },
                     },
                 );
                 vec![Fragment::IFrame(Arc::new(IFrameFragment {
                     base,
+                    style: style.clone().into(),
                     pipeline_id: iframe.pipeline_id,
                 }))]
             },
@@ -565,10 +592,13 @@ impl ReplacedContents {
 
                 vec![Fragment::Image(Arc::new(ImageFragment {
                     base,
+                    style: style.clone().into(),
                     clip,
                     image_key: Some(image_key),
                     showing_broken_image_icon: false,
                     url: None,
+                    natural_width: self.natural_size.width,
+                    natural_height: self.natural_size.height,
                 }))]
             },
             ReplacedContentKind::SVGElement {
@@ -611,16 +641,19 @@ impl ReplacedContents {
                         vector_image.id,
                         raster_size,
                         tag.node,
-                        vector_image.svg_id.clone(),
+                        vector_image.svg_id,
                     )
                     .and_then(|image| image.id)
                     .map(|image_key| {
                         Fragment::Image(Arc::new(ImageFragment {
                             base,
+                            style: style.clone().into(),
                             clip,
                             image_key: Some(image_key),
                             showing_broken_image_icon: false,
                             url: None,
+                            natural_width: self.natural_size.width,
+                            natural_height: self.natural_size.height,
                         }))
                     })
                     .into_iter()

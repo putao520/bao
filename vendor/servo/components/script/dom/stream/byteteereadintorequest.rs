@@ -9,7 +9,7 @@ use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsval::UndefinedValue;
 use js::typedarray::ArrayBufferViewU8;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use script_bindings::trace::RootedTraceableBox;
 
 use super::byteteeunderlyingsource::ByteTeePullAlgorithm;
@@ -22,8 +22,7 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
 use crate::dom::stream::byteteeunderlyingsource::ByteTeeUnderlyingSource;
 use crate::dom::stream::readablestream::ReadableStream;
-use crate::microtask::Microtask;
-use crate::script_runtime::CanGc;
+use crate::microtask::MicrotaskRunnable;
 
 #[derive(JSTraceable, MallocSizeOf)]
 pub(crate) struct ByteTeeReadIntoRequestMicrotask {
@@ -32,8 +31,8 @@ pub(crate) struct ByteTeeReadIntoRequestMicrotask {
     tee_read_request: Trusted<ByteTeeReadIntoRequest>,
 }
 
-impl ByteTeeReadIntoRequestMicrotask {
-    pub(crate) fn microtask_chunk_steps(&self, cx: &mut JSContext) {
+impl MicrotaskRunnable for ByteTeeReadIntoRequestMicrotask {
+    fn handler(&self, cx: &mut JSContext) {
         self.tee_read_request
             .root()
             .chunk_steps(&self.chunk, cx)
@@ -65,6 +64,7 @@ pub(crate) struct ByteTeeReadIntoRequest {
 impl ByteTeeReadIntoRequest {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        cx: &mut JSContext,
         for_branch2: bool,
         byob_branch: &ReadableStream,
         other_branch: &ReadableStream,
@@ -77,9 +77,8 @@ impl ByteTeeReadIntoRequest {
         cancel_promise: Rc<Promise>,
         tee_underlying_source: &ByteTeeUnderlyingSource,
         global: &GlobalScope,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(ByteTeeReadIntoRequest {
                 reflector_: Reflector::new(),
                 for_branch2,
@@ -95,12 +94,13 @@ impl ByteTeeReadIntoRequest {
                 tee_underlying_source: Dom::from_ref(tee_underlying_source),
             }),
             global,
-            can_gc,
+            cx,
         )
     }
 
     pub(crate) fn enqueue_chunk_steps(
         &self,
+        cx: &mut JSContext,
         chunk: RootedTraceableBox<HeapBufferSource<ArrayBufferViewU8>>,
     ) {
         // Queue a microtask to perform the following steps:
@@ -110,9 +110,7 @@ impl ByteTeeReadIntoRequest {
         };
 
         self.global()
-            .enqueue_microtask(Microtask::ReadableStreamByteTeeReadIntoRequest(
-                byte_tee_read_request_chunk,
-            ));
+            .enqueue_microtask(cx, Box::new(byte_tee_read_request_chunk));
     }
 
     /// <https://streams.spec.whatwg.org/#ref-for-read-into-request-chunk-steps%E2%91%A0>
@@ -150,12 +148,7 @@ impl ByteTeeReadIntoRequest {
             // If cloneResult is an abrupt completion,
             if let Err(error) = clone_result {
                 rooted!(&in(cx) let mut error_value = UndefinedValue());
-                error.to_jsval(
-                    cx.into(),
-                    &self.global(),
-                    error_value.handle_mut(),
-                    CanGc::from_cx(cx),
-                );
+                error.to_jsval(cx, &self.global(), error_value.handle_mut());
 
                 // Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]]).
                 let byob_branch_controller = self.byob_branch.get_byte_controller();
@@ -169,8 +162,7 @@ impl ByteTeeReadIntoRequest {
                 let cancel_result =
                     self.stream
                         .cancel(cx, &self.stream.global(), error_value.handle());
-                self.cancel_promise
-                    .resolve_native(&cancel_result, CanGc::from_cx(cx));
+                self.cancel_promise.resolve_native(cx, &cancel_result);
 
                 // Return.
                 return Ok(());
@@ -276,7 +268,7 @@ impl ByteTeeReadIntoRequest {
 
         // If byobCanceled is false or otherCanceled is false, resolve cancelPromise with undefined.
         if !byob_canceled || !other_canceled {
-            self.cancel_promise.resolve_native(&(), CanGc::from_cx(cx));
+            self.cancel_promise.resolve_native(cx, &());
         }
 
         Ok(())

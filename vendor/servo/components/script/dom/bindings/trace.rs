@@ -45,12 +45,12 @@ use script_bindings::reflector::DomObject;
 pub(crate) use script_bindings::trace::*;
 
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
-use crate::dom::html::htmlimageelement::SourceSet;
 use crate::dom::html::htmlmediaelement::HTMLMediaElementFetchContext;
+use crate::dom::srcset::SourceSet;
 use crate::dom::windowproxy::WindowProxyHandler;
+use crate::event_loop::script_thread::IncompleteParserContexts;
 use crate::script_runtime::StreamConsumer;
-use crate::script_thread::IncompleteParserContexts;
-use crate::task::TaskBox;
+use crate::tasks::task::TaskBox;
 
 /// Wrapper type for nop traceble
 ///
@@ -123,6 +123,11 @@ impl<K, V, S> HashMapTracedValues<K, V, S> {
     }
 
     #[inline]
+    pub(crate) fn iter_mut(&mut self) -> std::collections::hash_map::IterMut<'_, K, V> {
+        self.0.iter_mut()
+    }
+
+    #[inline]
     pub(crate) fn drain(&mut self) -> std::collections::hash_map::Drain<'_, K, V> {
         self.0.drain()
     }
@@ -130,6 +135,11 @@ impl<K, V, S> HashMapTracedValues<K, V, S> {
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    #[inline]
+    pub(crate) fn values(&self) -> std::collections::hash_map::Values<'_, K, V> {
+        self.0.values()
     }
 }
 

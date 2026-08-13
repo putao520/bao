@@ -10,12 +10,27 @@ pub(crate) use harfbuzz::Shaper;
 use read_fonts::types::Tag;
 use rustc_hash::FxHashMap;
 use style::computed_values::font_variant_position::T as FontVariantPosition;
+use style::properties::generated::font_face::Descriptors as FontFaceRuleDescriptors;
 use style::values::computed::{FontVariantEastAsian, FontVariantLigatures, FontVariantNumeric};
 
 use crate::{
-    AFRC, CALT, CLIG, DLIG, FRAC, FWID, GlyphId, HLIG, JP04, JP78, JP83, JP90, KERN, LIGA, LNUM,
-    ONUM, ORDN, PNUM, PWID, RUBY, SMPL, SUBS, SUPS, ShapingFlags, ShapingOptions, TNUM, TRAD, ZERO,
+    AFRC, CALT, CLIG, CWSH, DLIG, FRAC, FWID, GlyphId, HIST, HLIG, JP04, JP78, JP83, JP90, KERN,
+    LIGA, LNUM, NALT, ONUM, ORDN, ORNM, PNUM, PWID, RUBY, SALT, SMPL, SUBS, SUPS, SWSH,
+    ShapingFlags, ShapingOptions, TNUM, TRAD, ZERO,
 };
+
+/// The highest acceptable value for `styleset` values in `font-variant-alternates`.
+///
+/// <https://drafts.csswg.org/css-fonts/#font-variant-alternates-prop>:
+/// > OpenType currently defines ss01 through ss20
+const HIGHEST_DEFINED_STYLESET_INDEX: u32 = 20;
+
+/// The highest acceptable value for `character-variant` values in
+/// `font-variant-alternates`.
+///
+/// <https://drafts.csswg.org/css-fonts/#font-variant-alternates-prop>:
+/// > OpenType currently defines cv01 through cv99
+const HIGHEST_DEFINED_CHARACTER_VARIANT_INDEX: u32 = 99;
 
 /// Utility function to convert a `unicode_script::Script` enum into the corresponding `c_uint` tag that
 /// harfbuzz uses to represent unicode scipts.
@@ -56,17 +71,45 @@ pub(crate) trait GlyphShapingResult {
     fn iter(&self) -> impl Iterator<Item = ShapedGlyph>;
 }
 
-fn compute_used_font_features(options: &ShapingOptions) -> impl Iterator<Item = (Tag, u32)> {
+/// Determine which OpenType features are applied for the font.
+///
+/// The order of precedence for resolving font-specific font feature properties is specified in
+/// <https://drafts.csswg.org/css-fonts-4/#apply-font-matching-variations>.
+pub(crate) fn compute_used_font_features(
+    options: &ShapingOptions,
+    font_face_rule: Option<&FontFaceRuleDescriptors>,
+) -> impl Iterator<Item = (Tag, u32)> {
     let mut features = FxHashMap::default();
 
     let mut add_feature = |tag, value| {
         features.entry(tag).insert_entry(value);
     };
 
-    if options.ligatures == FontVariantLigatures::NORMAL {
-        add_feature(LIGA, 1);
-        add_feature(CLIG, 1);
-    } else if options.ligatures == FontVariantLigatures::NONE {
+    // Step 1. Font features enabled by default are applied, including features required
+    // for a given script. See § 7.1 Default features for a description of these.
+    add_feature(LIGA, 1);
+    add_feature(CLIG, 1);
+
+    // Step 7. If the font is defined via an @font-face rule, the font features implied
+    // by the font-feature-settings descriptor in the @font-face rule are applied.
+    if let Some(font_feature_settings) =
+        font_face_rule.and_then(|rule| rule.font_feature_settings.as_ref())
+    {
+        for feature_setting in font_feature_settings.0.iter() {
+            add_feature(
+                Tag::from_u32(feature_setting.tag.0),
+                feature_setting.value.resolve().expect(
+                    "The value is enforced to be resolvable at parse time \
+                    (see FontFeatureSettings::parse_for_font_face_rule).",
+                ) as u32,
+            )
+        }
+    }
+
+    // Step 10. Font features implied by the value of the font-variant property,
+    // the related font-variant subproperties and any other CSS property that uses
+    // OpenType features (e.g. the font-kerning property) are applied.
+    if options.ligatures == FontVariantLigatures::NONE {
         add_feature(LIGA, 0);
         add_feature(CLIG, 0);
         add_feature(DLIG, 0);
@@ -198,6 +241,55 @@ fn compute_used_font_features(options: &ShapingOptions) -> impl Iterator<Item = 
         FontVariantPosition::Super => add_feature(SUPS, 1),
     }
 
+    if options.alternates.historical_forms {
+        add_feature(HIST, 1);
+    }
+
+    if let Some(stylistic) = &options.alternates.stylistic {
+        add_feature(SALT, stylistic.0);
+    }
+
+    for styleset in &options.alternates.styleset {
+        if *styleset > HIGHEST_DEFINED_STYLESET_INDEX {
+            continue;
+        }
+
+        let tag = Tag::new(&[
+            b's',
+            b's',
+            b'0' + (*styleset / 10) as u8,
+            b'0' + (*styleset % 10) as u8,
+        ]);
+        add_feature(tag, 1);
+    }
+
+    for character_variant in &options.alternates.character_variant {
+        if character_variant.0 > HIGHEST_DEFINED_CHARACTER_VARIANT_INDEX {
+            continue;
+        }
+
+        let tag = Tag::new(&[
+            b'c',
+            b'v',
+            b'0' + (character_variant.0 / 10) as u8,
+            b'0' + (character_variant.0 % 10) as u8,
+        ]);
+        add_feature(tag, character_variant.1.unwrap_or(1));
+    }
+
+    if let Some(swash) = &options.alternates.swash {
+        add_feature(SWSH, swash.0);
+        add_feature(CWSH, swash.0);
+    }
+
+    if let Some(ornaments) = &options.alternates.ornaments {
+        add_feature(ORNM, ornaments.0);
+    }
+
+    if let Some(annotation) = &options.alternates.annotation {
+        add_feature(NALT, annotation.0);
+    }
+
     if options
         .flags
         .contains(ShapingFlags::DISABLE_KERNING_SHAPING_FLAG)
@@ -205,6 +297,7 @@ fn compute_used_font_features(options: &ShapingOptions) -> impl Iterator<Item = 
         add_feature(KERN, 0);
     }
 
+    // Step 13. Font features implied by the value of font-feature-settings property are applied.
     for feature_setting in options.feature_settings.0.iter() {
         add_feature(
             Tag::from_u32(feature_setting.tag.0),

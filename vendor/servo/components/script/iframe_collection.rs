@@ -5,20 +5,20 @@
 use std::default::Default;
 
 use embedder_traits::ViewportDetails;
+use js::context::JSContext;
 use layout_api::IFrameSizes;
 use paint_api::PinchZoomInfos;
-use rustc_hash::FxHashMap;
-use script_bindings::script_runtime::CanGc;
 use servo_base::id::BrowsingContextId;
 use servo_constellation_traits::{IFrameSizeMsg, ScriptToConstellationMessage, WindowSizeType};
 
+use crate::dom::NodeTraits;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::Node;
-use crate::dom::types::{Document, Window};
-use crate::script_thread::with_script_thread;
+use crate::dom::types::Window;
+use crate::event_loop::script_thread::with_script_thread;
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
@@ -31,59 +31,57 @@ pub(crate) struct IFrame {
 #[derive(Default, JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct IFrameCollection {
-    /// The `<iframe>`s in the collection.
+    /// The `<iframe>`s in the collection. These are kept in DOM tree order to ensure that
+    /// requestAnimationFrame callbacks respect that order.
     iframes: Vec<IFrame>,
-    /// When true, the collection will need to be rebuilt.
-    invalid: bool,
 }
 
 impl IFrameCollection {
     pub(crate) fn new() -> Self {
         Self {
-            iframes: vec![],
-            invalid: true,
+            iframes: Default::default(),
         }
     }
 
-    pub(crate) fn invalidate(&mut self) {
-        self.invalid = true;
-    }
+    pub(crate) fn add(&mut self, iframe_element: &HTMLIFrameElement) {
+        let iframe_node = iframe_element.upcast::<Node>();
 
-    /// Validate that the collection is up-to-date with the given [`Document`]. If it isn't up-to-date
-    /// rebuild it.
-    pub(crate) fn validate(&mut self, document: &Document) {
-        if !self.invalid {
-            return;
-        }
-        let document_node = DomRoot::from_ref(document.upcast::<Node>());
+        // During `moveBefore`, nodes are attached to the tree again without detaching
+        // them in order to preserve state. Here we remove any pre-existing entry for
+        // this iframe element from the collection and preserve its old size.
+        let size = self.remove(iframe_element);
 
-        // Preserve any old sizes, but only for `<iframe>`s that already have a
-        // BrowsingContextId and a set size.
-        let mut old_sizes: FxHashMap<_, _> = self
-            .iframes
-            .iter()
-            .filter_map(
-                |iframe| match (iframe.element.browsing_context_id(), iframe.size) {
-                    (Some(browsing_context_id), Some(size)) => Some((browsing_context_id, size)),
-                    _ => None,
-                },
+        // Look forward for the next `<iframe>` in the document in order to find the new
+        // insertion point in the DOM-ordered list of frames. This optimizes for the parser
+        // case where the `<iframe>` is likely being inserted at the end of the DOM and there
+        // are very few subsequent nodes.
+        let insertion_index = iframe_node
+            .following_nodes(
+                iframe_element.owner_document().upcast::<Node>(),
+                ShadowIncluding::Yes,
             )
-            .collect();
-
-        self.iframes = document_node
-            .traverse_preorder(ShadowIncluding::Yes)
-            .filter_map(DomRoot::downcast::<HTMLIFrameElement>)
-            .map(|element| {
-                let size = element
-                    .browsing_context_id()
-                    .and_then(|browsing_context_id| old_sizes.remove(&browsing_context_id));
-                IFrame {
-                    element: element.as_traced(),
-                    size,
-                }
+            .find_map(DomRoot::downcast::<HTMLIFrameElement>)
+            .and_then(|following_iframe| {
+                self.iframes
+                    .iter()
+                    .position(|iframe| *iframe.element == *following_iframe)
             })
-            .collect();
-        self.invalid = false;
+            .unwrap_or(self.iframes.len());
+
+        self.iframes.insert(
+            insertion_index,
+            IFrame {
+                element: Dom::from_ref(iframe_element),
+                size,
+            },
+        );
+    }
+
+    pub(crate) fn remove(&mut self, iframe_element: &HTMLIFrameElement) -> Option<ViewportDetails> {
+        self.iframes
+            .iter()
+            .position(|iframe| &*iframe.element == iframe_element)
+            .and_then(|index| self.iframes.remove(index).size)
     }
 
     pub(crate) fn get(&self, browsing_context_id: BrowsingContextId) -> Option<&IFrame> {
@@ -103,15 +101,15 @@ impl IFrameCollection {
 
     /// Set the size of an `<iframe>` in the collection given its `BrowsingContextId` and
     /// the new size. Returns the old size.
-    pub(crate) fn set_viewport_details(
+    fn set_viewport_details(
         &mut self,
         browsing_context_id: BrowsingContextId,
         new_size: ViewportDetails,
     ) -> Option<ViewportDetails> {
+        // Top-level document destruction can destroy an entire tree of frames, which
+        // means that the the `<iframe>` we are targeting at this moment might not exist.
         self.get_mut(browsing_context_id)
-            .expect("Tried to set a size for an unknown <iframe>")
-            .size
-            .replace(new_size)
+            .and_then(|iframe| iframe.size.replace(new_size))
     }
 
     /// Update the recorded iframe sizes of the contents of layout. Return a
@@ -119,6 +117,7 @@ impl IFrameCollection {
     /// message is only sent when the size actually changes.
     pub(crate) fn handle_new_iframe_sizes_after_layout(
         &mut self,
+        cx: &mut JSContext,
         window: &Window,
         new_iframe_sizes: IFrameSizes,
     ) {
@@ -139,15 +138,14 @@ impl IFrameCollection {
                         viewport_details,
                         WindowSizeType::Resize,
                     );
+
                     // Additionally, update the `VisualViewport` of the `Iframe`. This allows us
                     // to process the resize for `VisualViewport` in the corrent timing. Note that
                     // `VisualViewport` for iframes would practically follow layout viewport.
                     script_thread.handle_update_pinch_zoom_infos(
+                        cx,
                         iframe_size.pipeline_id,
                         PinchZoomInfos::new_from_viewport_size(viewport_details.size),
-                        // Theoritically it wouldn't do GC since it is impossible to initialize
-                        // the `VisualViewport` interface here.
-                        CanGc::deprecated_note(),
                     )
                 });
 

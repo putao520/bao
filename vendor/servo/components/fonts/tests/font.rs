@@ -35,7 +35,7 @@ fn make_font(path: PathBuf) -> Font {
     let platform_font =
         PlatformFont::new_from_data(identifier.clone(), &data, None, &[], false).unwrap();
 
-    let template = FontTemplate::new(identifier, platform_font.descriptor(), None, None);
+    let template = FontTemplate::new(identifier, platform_font.descriptor(), None);
     let descriptor = FontDescriptor {
         weight: FontWeight::normal(),
         stretch: FontStretch::hundred(),
@@ -89,6 +89,7 @@ fn test_font_can_do_fast_shaping() {
         east_asian: FontVariantEastAsian::NORMAL,
         feature_settings: FontFeatureSettings::normal(),
         position: FontVariantPosition::Normal,
+        alternates: Default::default(),
     };
     assert!(!dejavu_sans.can_do_fast_shaping("WAVE", &shaping_options));
     assert!(dejavu_sans_fast_shapeable.can_do_fast_shaping("WAVE", &shaping_options));
@@ -105,6 +106,7 @@ fn test_font_can_do_fast_shaping() {
         east_asian: FontVariantEastAsian::NORMAL,
         feature_settings: FontFeatureSettings::normal(),
         position: FontVariantPosition::Normal,
+        alternates: Default::default(),
     };
     assert!(!dejavu_sans.can_do_fast_shaping("WAVE", &shaping_options));
     assert!(!dejavu_sans_fast_shapeable.can_do_fast_shaping("WAVE", &shaping_options));
@@ -121,6 +123,7 @@ fn test_font_can_do_fast_shaping() {
         east_asian: FontVariantEastAsian::NORMAL,
         feature_settings: FontFeatureSettings::normal(),
         position: FontVariantPosition::Normal,
+        alternates: Default::default(),
     };
     assert!(!dejavu_sans.can_do_fast_shaping("WAVE", &shaping_options));
     assert!(!dejavu_sans_fast_shapeable.can_do_fast_shaping("WAVE", &shaping_options));

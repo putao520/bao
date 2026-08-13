@@ -13,12 +13,15 @@ description.workspace = true
 path = "lib.rs"
 
 [features]
-# When set, install this crate's jemalloc/system as the process #[global_allocator].
-# Leave OFF when embedding Servo/Bao into another binary that already has one
-# (e.g. frog tools → gsc-frog-pager jemalloc).
+# BAO PATCH (embed): only install `#[global_allocator]` when this feature is
+# enabled. Library embeds (frog tools path-dep on package `bao`) already
+# provide their own process allocator; dual `#[global_allocator]` fails link.
+# BAO PATCH (allocator): default to jemalloc on unix (upstream only enables it
+# from servoshell, which bao does not use).
+default = ["use-jemalloc"]
 install-global-allocator = []
 allocation-tracking = ["backtrace", "dep:rustc-hash", "log"]
-use-system-allocator = ["libc"]
+use-jemalloc = ["dep:tikv-jemalloc-sys", "dep:tikv-jemallocator"]
 
 [dependencies]
 backtrace = { workspace = true, optional = true }
@@ -26,9 +29,9 @@ log = { workspace = true, optional = true }
 rustc-hash = { workspace = true, optional = true }
 
 [target.'cfg(not(any(windows, target_env = "ohos")))'.dependencies]
-libc = { workspace = true, optional = true }
-tikv-jemalloc-sys = { workspace = true }
-tikv-jemallocator = { workspace = true }
+libc = { workspace = true }
+tikv-jemalloc-sys = { workspace = true, optional = true, features = ["stats"] }
+tikv-jemallocator = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Memory"] }

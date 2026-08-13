@@ -2,33 +2,42 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::sync::Arc;
+
 use app_units::Au;
 use embedder_traits::Cursor;
-use euclid::{Box2D, Vector2D};
+use euclid::{Box2D, Point2D, Vector2D};
 use kurbo::{Ellipse, Shape};
-use layout_api::{ElementsFromPointFlags, ElementsFromPointResult};
+use layout_api::{HitTestFlags, HitTestResult, HitTestResultItem};
 use rustc_hash::FxHashMap;
 use servo_base::id::ScrollTreeNodeId;
+use servo_base::text::Utf32CodeUnits;
 use servo_geometry::FastLayoutTransform;
 use style::computed_values::backface_visibility::T as BackfaceVisibility;
 use style::computed_values::pointer_events::T as PointerEvents;
 use style::computed_values::visibility::T as Visibility;
+use style::dom::OpaqueNode;
 use style::properties::ComputedValues;
 use style::values::computed::ui::CursorKind;
+use style_traits::CSSPixel;
 use webrender_api::BorderRadius;
 use webrender_api::units::{LayoutPoint, LayoutRect, LayoutSize, RectExt};
 
 use crate::display_list::clip::{Clip, ClipId};
-use crate::display_list::stacking_context::StackingContextSection;
-use crate::display_list::{
-    StackingContext, StackingContextContent, StackingContextTree, ToWebRender,
-};
-use crate::fragment_tree::{Fragment, FragmentFlags};
+use crate::display_list::paint_traversal::{PaintTraversal, PaintTraversalHandler};
+use crate::display_list::{StackingContext, StackingContextTree, ToWebRender, TraversalState};
+use crate::fragment_tree::{BoxFragmentWithStyle, Fragment, FragmentFlags, TextFragment};
 use crate::geom::PhysicalRect;
 
+struct DomPositionCandidate {
+    fragment: Fragment,
+    node: OpaqueNode,
+    point_in_target: Point2D<f32, CSSPixel>,
+}
+
 pub(crate) struct HitTest<'a> {
-    /// The flags which describe how to perform this [`HitTest`].
-    flags: ElementsFromPointFlags,
+    /// The flags which describe how to perform this [`HitTest`]
+    flags: HitTestFlags,
     /// The point to test for this hit test, relative to the page.
     point_to_test: LayoutPoint,
     /// A cached version of [`Self::point_to_test`] projected to a spatial node, to avoid
@@ -37,34 +46,156 @@ pub(crate) struct HitTest<'a> {
     /// The stacking context tree against which to perform the hit test.
     stacking_context_tree: &'a StackingContextTree,
     /// The resulting [`HitTestResultItems`] for this hit test.
-    results: Vec<ElementsFromPointResult>,
+    items: Vec<HitTestResultItem>,
+    /// Candidate for `HitTestResult::dom_position_for_selection`
+    dom_position_candidate: Option<DomPositionCandidate>,
     /// A cache of hit test results for shared clip nodes.
     clip_hit_test_results: FxHashMap<ClipId, bool>,
+    /// Collected reference frame clips. For painting, reference frame clips are handled
+    /// by enclosing reference frames in stacking contexts, but we don't have that option
+    /// here, so we must handle them manually.
+    collected_reference_frame_clips: Vec<ClipId>,
 }
 
 impl<'a> HitTest<'a> {
     pub(crate) fn run(
+        flags: HitTestFlags,
         stacking_context_tree: &'a StackingContextTree,
         point_to_test: LayoutPoint,
-        flags: ElementsFromPointFlags,
-    ) -> Vec<ElementsFromPointResult> {
+    ) -> HitTestResult {
         let mut hit_test = Self {
             flags,
             point_to_test,
             projected_point_to_test: None,
             stacking_context_tree,
-            results: Vec::new(),
+            items: Vec::new(),
+            dom_position_candidate: None,
             clip_hit_test_results: FxHashMap::default(),
+            collected_reference_frame_clips: Default::default(),
         };
-        stacking_context_tree
-            .root_stacking_context
-            .hit_test(&mut hit_test);
-        hit_test.results
+
+        PaintTraversal::traverse(&stacking_context_tree.root_stacking_context, &mut hit_test);
+
+        // PaintTraversal::traverse walks forward through all fragments via the stacking
+        // context tree, so results will be in back-to-front order. We want results to be
+        // front-to-back order, so reverse them.
+        //
+        // TODO: Eventually PaintTraversal should support walking backward through
+        // fragments.
+        hit_test.items.reverse();
+
+        HitTestResult {
+            dom_position_for_selection: hit_test.dom_position(),
+            items: hit_test.items,
+        }
     }
 
-    /// Perform a hit test against a the clip node for the given [`ClipId`], returning
+    fn dom_position(&self) -> Option<(OpaqueNode, Utf32CodeUnits)> {
+        let hit = self.dom_position_candidate.as_ref()?;
+        if let Fragment::Text(text_fragment) = &hit.fragment {
+            let character_offset =
+                text_fragment.character_offset(hit.point_in_target.map(Au::from_f32_px))?;
+            return Some((hit.node, character_offset));
+        }
+
+        struct ClosestFragment {
+            fragment: Arc<TextFragment>,
+            node: OpaqueNode,
+            point_in_fragment: Point2D<Au, CSSPixel>,
+            distance: Au,
+            point_in_vertical_bounds: bool,
+        }
+
+        impl ClosestFragment {
+            fn should_replace(&self, new_distance: Au, point_in_vertical_bounds: bool) -> bool {
+                if point_in_vertical_bounds && !self.point_in_vertical_bounds {
+                    return true;
+                }
+                if self.point_in_vertical_bounds && !point_in_vertical_bounds {
+                    return false;
+                }
+                new_distance <= self.distance
+            }
+        }
+
+        fn maybe_update_closest(
+            fragment: &Fragment,
+            point_in_fragment: Point2D<Au, CSSPixel>,
+            closest_fragment: &mut Option<ClosestFragment>,
+        ) {
+            let Fragment::Text(text_fragment) = fragment else {
+                return;
+            };
+
+            let (distance, point_in_vertical_bounds) = {
+                (
+                    text_fragment.distance_to_point_for_glyph_offset(point_in_fragment),
+                    text_fragment.point_is_within_vertical_boundaries(point_in_fragment),
+                )
+            };
+
+            if let Some(tag) = text_fragment.base.tag.as_ref() &&
+                closest_fragment.as_ref().is_none_or(|closest_fragment| {
+                    closest_fragment.should_replace(distance, point_in_vertical_bounds)
+                })
+            {
+                *closest_fragment = Some(ClosestFragment {
+                    fragment: text_fragment.clone(),
+                    node: tag.node,
+                    point_in_fragment,
+                    distance,
+                    point_in_vertical_bounds,
+                });
+            }
+        }
+
+        fn collect_relevant_children(
+            fragment: &Fragment,
+            point_in_viewport: Point2D<Au, CSSPixel>,
+            closest_fragment: &mut Option<ClosestFragment>,
+        ) {
+            maybe_update_closest(fragment, point_in_viewport, closest_fragment);
+
+            if let Some(children) = fragment.children() {
+                for child in children.iter() {
+                    let offset = child
+                        .base()
+                        .map(|base| base.rect().origin)
+                        .unwrap_or_default();
+                    let point = point_in_viewport - offset.to_vector();
+                    collect_relevant_children(child, point, closest_fragment);
+                }
+            }
+        }
+
+        let mut closest_fragment = None;
+        if let Some(point_in_fragment) = self.stacking_context_tree.offset_in_fragment(
+            &hit.fragment,
+            self.point_to_test.map(Au::from_f32_px).cast_unit(),
+        ) {
+            collect_relevant_children(&hit.fragment, point_in_fragment, &mut closest_fragment);
+        }
+
+        let closest_fragment = closest_fragment?;
+        let character_offset = closest_fragment
+            .fragment
+            .character_offset(closest_fragment.point_in_fragment)?;
+        Some((closest_fragment.node, character_offset))
+    }
+
+    /// Perform a hit test against the clip node for the given [`ClipId`], returning
     /// true if it is not clipped out or false if is clipped out.
     fn hit_test_clip_id(&mut self, clip_id: ClipId) -> bool {
+        // Using the index here is necessary to avoid a double borrow of `self`.
+        for index in 0..self.collected_reference_frame_clips.len() {
+            if !self.hit_test_individual_clip_id(self.collected_reference_frame_clips[index]) {
+                return false;
+            }
+        }
+        self.hit_test_individual_clip_id(clip_id)
+    }
+
+    fn hit_test_individual_clip_id(&mut self, clip_id: ClipId) -> bool {
         if clip_id == ClipId::INVALID {
             return true;
         }
@@ -77,7 +208,7 @@ impl<'a> HitTest<'a> {
         let result = self
             .location_in_spatial_node(clip.parent_scroll_node_id)
             .is_some_and(|(point, _)| {
-                clip.contains(point) && self.hit_test_clip_id(clip.parent_clip_id)
+                clip.contains(point) && self.hit_test_individual_clip_id(clip.parent_clip_id)
             });
         self.clip_hit_test_results.insert(clip_id, result);
         result
@@ -112,127 +243,62 @@ impl<'a> HitTest<'a> {
     }
 }
 
+impl PaintTraversalHandler for HitTest<'_> {
+    /// `true` if we pushed a reference frame clip and `false` otherwise.
+    type StackingContextState = bool;
+
+    fn visit_stacking_context(
+        &mut self,
+        stacking_context: &StackingContext,
+    ) -> Self::StackingContextState {
+        if let Some(reference_frame_info) = stacking_context.reference_frame_info.as_ref() &&
+            reference_frame_info.captured_clip_id != ClipId::INVALID
+        {
+            self.collected_reference_frame_clips
+                .push(reference_frame_info.captured_clip_id);
+            return true;
+        }
+        false
+    }
+
+    fn leave_stacking_context(
+        &mut self,
+        _: &TraversalState,
+        pushed_reference_frame_clip: Self::StackingContextState,
+    ) {
+        if pushed_reference_frame_clip {
+            self.collected_reference_frame_clips.pop();
+        }
+    }
+
+    fn visit_box(&mut self, state: &TraversalState, fragment: &BoxFragmentWithStyle<'_>) {
+        Fragment::Box(fragment.box_fragment.clone()).hit_test(state, self);
+    }
+
+    fn visit_text(
+        &mut self,
+        state: &TraversalState,
+        _: PhysicalRect<Au>,
+        fragment: &Arc<TextFragment>,
+    ) {
+        Fragment::Text(fragment.clone()).hit_test(state, self);
+    }
+}
+
 impl Clip {
     fn contains(&self, point: LayoutPoint) -> bool {
         rounded_rect_contains_point(self.rect, &self.radii, point)
     }
 }
 
-impl StackingContext {
-    /// Perform a hit test against a [`StackingContext`]. Note that this is the reverse
-    /// of the stacking context walk algorithm in `stacking_context.rs`. Any changes made
-    /// here should be reflected in the forward version in that file.
-    fn hit_test(&self, hit_test: &mut HitTest) -> bool {
-        let mut contents = self.contents.iter().rev().peekable();
-
-        // Step 10: Outlines
-        // We only use `StackingContextSection::Outline` as an override when building the
-        // display list. So we shouldn't encounter it here.
-        assert!(
-            contents
-                .peek()
-                .is_none_or(|child| child.section() != StackingContextSection::Outline)
-        );
-
-        // Steps 8 and 9: Stacking contexts with non-negative ‘z-index’, and
-        // positioned stacking containers (where ‘z-index’ is auto)
-        let mut real_stacking_contexts_and_positioned_stacking_containers = self
-            .real_stacking_contexts_and_positioned_stacking_containers
-            .iter()
-            .rev()
-            .peekable();
-        while real_stacking_contexts_and_positioned_stacking_containers
-            .peek()
-            .is_some_and(|child| child.z_index() >= 0)
-        {
-            let child = real_stacking_contexts_and_positioned_stacking_containers
-                .next()
-                .unwrap();
-            if child.hit_test(hit_test) {
-                return true;
-            }
-        }
-
-        // Steps 7 and 8: Fragments and inline stacking containers
-        while contents
-            .peek()
-            .is_some_and(|child| child.section() == StackingContextSection::Foreground)
-        {
-            let child = contents.next().unwrap();
-            if self.hit_test_content(child, hit_test) {
-                return true;
-            }
-        }
-
-        // Step 6: Float stacking containers
-        for child in self.float_stacking_containers.iter().rev() {
-            if child.hit_test(hit_test) {
-                return true;
-            }
-        }
-
-        // Step 5: Block backgrounds and borders
-        while contents.peek().is_some_and(|child| {
-            child.section() == StackingContextSection::DescendantBackgroundsAndBorders
-        }) {
-            let child = contents.next().unwrap();
-            if self.hit_test_content(child, hit_test) {
-                return true;
-            }
-        }
-
-        // Step 4: Stacking contexts with negative ‘z-index’
-        for child in real_stacking_contexts_and_positioned_stacking_containers {
-            if child.hit_test(hit_test) {
-                return true;
-            }
-        }
-
-        // Steps 2 and 3: Borders and background for the root
-        while contents.peek().is_some_and(|child| {
-            child.section() == StackingContextSection::OwnBackgroundsAndBorders
-        }) {
-            let child = contents.next().unwrap();
-            if self.hit_test_content(child, hit_test) {
-                return true;
-            }
-        }
-        false
-    }
-
-    pub(crate) fn hit_test_content(
-        &self,
-        content: &StackingContextContent,
-        hit_test: &mut HitTest<'_>,
-    ) -> bool {
-        match content {
-            StackingContextContent::Fragment {
-                scroll_node_id,
-                clip_id,
-                containing_block,
-                fragment,
-                ..
-            } => {
-                hit_test.hit_test_clip_id(*clip_id) &&
-                    fragment.hit_test(hit_test, *scroll_node_id, containing_block)
-            },
-            StackingContextContent::AtomicInlineStackingContainer { index } => {
-                self.atomic_inline_stacking_containers[*index].hit_test(hit_test)
-            },
-        }
-    }
-}
-
 impl Fragment {
-    pub(crate) fn hit_test(
-        &self,
-        hit_test: &mut HitTest,
-        spatial_node_id: ScrollTreeNodeId,
-        containing_block: &PhysicalRect<Au>,
-    ) -> bool {
+    pub(crate) fn hit_test(&self, state: &TraversalState, hit_test: &mut HitTest) -> bool {
         let Some(tag) = self.tag() else {
             return false;
         };
+        if !hit_test.hit_test_clip_id(state.clip_id) {
+            return false;
+        }
 
         let mut hit_test_fragment_inner =
             |style: &ComputedValues,
@@ -252,7 +318,7 @@ impl Fragment {
                 }
 
                 let (point_in_spatial_node, transform) =
-                    match hit_test.location_in_spatial_node(spatial_node_id) {
+                    match hit_test.location_in_spatial_node(state.spatial_id) {
                         Some(point) => point,
                         None => return false,
                     };
@@ -264,7 +330,7 @@ impl Fragment {
                     return false;
                 }
 
-                let fragment_rect = fragment_rect.translate(containing_block.origin.to_vector());
+                let fragment_rect = fragment_rect.translate(state.origin.to_vector());
                 if is_root_element {
                     let viewport_size = hit_test
                         .stacking_context_tree
@@ -292,15 +358,32 @@ impl Fragment {
                         fragment_rect.origin.y.to_f32_px(),
                     );
 
-                hit_test.results.push(ElementsFromPointResult {
+                hit_test.items.push(HitTestResultItem {
                     node: tag.node,
                     point_in_target,
                     cursor: cursor(style.get_inherited_ui().cursor.keyword, auto_cursor),
                 });
-                !hit_test.flags.contains(ElementsFromPointFlags::FindAll)
+
+                if hit_test.flags.intersects(HitTestFlags::IncludeDomPosition) {
+                    hit_test.dom_position_candidate = Some(DomPositionCandidate {
+                        fragment: self.clone(),
+                        node: tag.node,
+                        point_in_target,
+                    });
+                }
+
+                // Since there is no reverse PaintTraversal, hit testing always searches
+                // the entire fragment tree (in stacking context order), which is why this
+                // is always returning `false` (keep looking). Once PaintTraversal can
+                // walk backward through fragments, this can return `true` if FindAll
+                // isn't specified.
+                false
             };
 
         match self {
+            Fragment::LayoutRoot(layout_root_fragment) => {
+                layout_root_fragment.inner().hit_test(state, hit_test)
+            },
             Fragment::Box(box_fragment) | Fragment::Float(box_fragment) => hit_test_fragment_inner(
                 &box_fragment.style(),
                 box_fragment.border_rect(),
@@ -309,7 +392,7 @@ impl Fragment {
                 Cursor::Default,
             ),
             Fragment::Text(text) => hit_test_fragment_inner(
-                &text.base.style(),
+                &text.style(),
                 text.base.rect(),
                 BorderRadius::zero(),
                 FragmentFlags::empty(),

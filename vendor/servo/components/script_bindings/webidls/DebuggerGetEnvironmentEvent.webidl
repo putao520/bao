@@ -6,7 +6,8 @@
 // web pages.
 [Exposed=DebuggerGlobalScope]
 interface DebuggerGetEnvironmentEvent : Event {
-    readonly attribute DOMString frameActorId;
+    readonly attribute DOMString? frameActorId;
+    readonly attribute PipelineId? pipelineId;
 };
 
 partial interface DebuggerGlobalScope {
@@ -20,14 +21,10 @@ partial interface DebuggerGlobalScope {
     );
 };
 
-dictionary EnvironmentVariable {
-    required PropertyDescriptor property;
-    ObjectPreview preview;
-};
-
 dictionary EnvironmentInfo {
     DOMString type_;
     DOMString scopeKind;
     DOMString functionDisplayName;
-    sequence<EnvironmentVariable> bindingVariables;
+    required DOMString serializedBindings;
+    DOMString serializedObject;
 };

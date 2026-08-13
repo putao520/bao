@@ -146,6 +146,7 @@ pub struct SerializableFile {
     pub blob_impl: BlobImpl,
     pub name: String,
     pub modified: i64,
+    pub webkit_relative_path: String,
 }
 
 impl BroadcastClone for SerializableFile {
@@ -165,6 +166,7 @@ impl BroadcastClone for SerializableFile {
             blob_impl,
             name: self.name.clone(),
             modified: self.modified,
+            webkit_relative_path: self.webkit_relative_path.clone(),
         })
     }
 }
@@ -583,6 +585,15 @@ pub struct SerializableTurboShakeParams {
     pub domain_separation: Option<u8>,
 }
 
+/// A serializable version of the `KangarooTwelvelParams` dictionary, used by the `SubtleCrypto`
+/// interface.
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
+pub struct SerializableKangarooTwelveParams {
+    pub name: String,
+    pub output_length: u32,
+    pub customization: Option<Vec<u8>>,
+}
+
 /// A serializable version of the `DigestAlgorithm` type, used the `SubtleCrypto` interface.
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub enum SerializableDigestAlgorithm {
@@ -590,6 +601,7 @@ pub enum SerializableDigestAlgorithm {
     Sha3(SerializableAlgorithm),
     CShake(SerializableCShakeParams),
     TurboShake(SerializableTurboShakeParams),
+    KangarooTwelve(SerializableKangarooTwelveParams),
 }
 
 /// A serializable version of the `KeyAlgorithm` dictionary, used the `SubtleCrypto` interface.
@@ -630,6 +642,13 @@ pub struct SerializableHmacKeyAlgorithm {
     pub length: u32,
 }
 
+/// A serializable version of the `KmacKeyAlgorithm` dictionary, used the `SubtleCrypto` interface.
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
+pub struct SerializableKmacKeyAlgorithm {
+    pub name: String,
+    pub length: u32,
+}
+
 /// A serializable version of the `KeyAlgorithmAndDerivatives` type, used by the `SubtleCrypto`
 /// interface.
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
@@ -639,6 +658,7 @@ pub enum SerializableKeyAlgorithmAndDerivatives {
     EcKeyAlgorithm(SerializableEcKeyAlgorithm),
     AesKeyAlgorithm(SerializableAesKeyAlgorithm),
     HmacKeyAlgorithm(SerializableHmacKeyAlgorithm),
+    KmacKeyAlgorithm(SerializableKmacKeyAlgorithm),
 }
 
 /// A serializable version of the `Handle` type, used by the `CryptoKey` interface.
@@ -652,19 +672,23 @@ pub enum SerializableCryptoKeyHandle {
     P256PublicKey(Vec<u8>),
     P384PublicKey(Vec<u8>),
     P521PublicKey(Vec<u8>),
-    Ed25519PrivateKey(Vec<u8>),
-    Ed25519PublicKey(Vec<u8>),
+    Ed25519PrivateKey([u8; 32]),
+    Ed25519PublicKey([u8; 32]),
     X25519PrivateKey([u8; 32]),
     X25519PublicKey([u8; 32]),
+    Ed448PrivateKey(Vec<u8>),
+    Ed448PublicKey(Vec<u8>),
+    X448PrivateKey(Vec<u8>),
+    X448PublicKey(Vec<u8>),
     Aes128Key(Vec<u8>),
     Aes192Key(Vec<u8>),
     Aes256Key(Vec<u8>),
     HkdfSecret(Vec<u8>),
     Pbkdf2(Vec<u8>),
     Hmac(Vec<u8>),
-    MlKem512PrivateKey((Vec<u8>, Vec<u8>)),
-    MlKem768PrivateKey((Vec<u8>, Vec<u8>)),
-    MlKem1024PrivateKey((Vec<u8>, Vec<u8>)),
+    MlKem512PrivateKey(Vec<u8>),
+    MlKem768PrivateKey(Vec<u8>),
+    MlKem1024PrivateKey(Vec<u8>),
     MlKem512PublicKey(Vec<u8>),
     MlKem768PublicKey(Vec<u8>),
     MlKem1024PublicKey(Vec<u8>),
@@ -675,6 +699,7 @@ pub enum SerializableCryptoKeyHandle {
     MlDsa65PublicKey(Vec<u8>),
     MlDsa87PublicKey(Vec<u8>),
     ChaCha20Poly1305Key(Vec<u8>),
+    KmacKey(Vec<u8>),
     Argon2Password(Vec<u8>),
 }
 

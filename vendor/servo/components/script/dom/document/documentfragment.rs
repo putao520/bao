@@ -3,10 +3,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
-use rustc_hash::FxBuildHasher;
-use script_bindings::cell::DomRefCell;
+use script_bindings::dom::UnrootedDom;
 use stylo_atoms::Atom;
 
 use crate::dom::bindings::codegen::Bindings::DocumentFragmentBinding::DocumentFragmentMethods;
@@ -14,24 +13,24 @@ use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::codegen::UnionTypes::NodeOrString;
 use crate::dom::bindings::error::{ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom};
+use crate::dom::bindings::root::{DomRoot, LayoutDom, MutNullableDom, ToLayoutOptional};
 use crate::dom::bindings::str::DOMString;
-use crate::dom::bindings::trace::HashMapTracedValues;
 use crate::dom::document::Document;
+use crate::dom::document::tree_ordered_index_map::TreeOrderedIndexMap;
 use crate::dom::element::Element;
 use crate::dom::html::htmlcollection::HTMLCollection;
+use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::nodelist::NodeList;
-use crate::dom::virtualmethods::VirtualMethods;
 use crate::dom::window::Window;
 
-// https://dom.spec.whatwg.org/#documentfragment
+/// <https://dom.spec.whatwg.org/#documentfragment>
 #[dom_struct]
 pub(crate) struct DocumentFragment {
+    /// The [`Node`] that this [`DocumentFragment`] inherits from.
     node: Node,
-    /// Caches for the getElement methods
-    id_map: DomRefCell<HashMapTracedValues<Atom, Vec<Dom<Element>>, FxBuildHasher>>,
-
+    /// The [`TreeOrderedIndexMap`] that maps `id` attribute values to [`Element`]s.
+    id_map: TreeOrderedIndexMap,
     /// <https://dom.spec.whatwg.org/#concept-documentfragment-host>
     host: MutNullableDom<Element>,
 }
@@ -41,7 +40,7 @@ impl DocumentFragment {
     pub(crate) fn new_inherited(document: &Document, host: Option<&Element>) -> DocumentFragment {
         DocumentFragment {
             node: Node::new_inherited(document),
-            id_map: DomRefCell::new(HashMapTracedValues::new_fx()),
+            id_map: TreeOrderedIndexMap::id(),
             host: MutNullableDom::new(host),
         }
     }
@@ -66,14 +65,16 @@ impl DocumentFragment {
         )
     }
 
-    pub(crate) fn id_map(
-        &self,
-    ) -> &DomRefCell<HashMapTracedValues<Atom, Vec<Dom<Element>>, FxBuildHasher>> {
+    pub(crate) fn id_map(&self) -> &TreeOrderedIndexMap {
         &self.id_map
     }
 
     pub(crate) fn host(&self) -> Option<DomRoot<Element>> {
         self.host.get()
+    }
+
+    pub(crate) fn host_unrooted<'a>(&self, no_gc: &'a NoGC) -> Option<UnrootedDom<'a, Element>> {
+        self.host.get_unrooted(no_gc)
     }
 
     pub(crate) fn set_host(&self, host: &Element) {
@@ -90,7 +91,7 @@ impl<'dom> LayoutDom<'dom, DocumentFragment> {
             // > Shadow roots’s associated host is never null.
             self.unsafe_get()
                 .host
-                .get_inner_as_layout()
+                .to_layout()
                 .expect("Shadow roots's associated host is never null")
         }
     }
@@ -115,12 +116,8 @@ impl DocumentFragmentMethods<crate::DomTypeHolder> for DocumentFragment {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid>
-    fn GetElementById(&self, id: DOMString) -> Option<DomRoot<Element>> {
-        let id = Atom::from(id);
-        self.id_map
-            .borrow()
-            .get(&id)
-            .map(|elements| DomRoot::from_ref(&*elements[0]))
+    fn GetElementById(&self, cx: &JSContext, id: DOMString) -> Option<DomRoot<Element>> {
+        self.id_map.get(cx, self.upcast(), &Atom::from(id))
     }
 
     /// <https://dom.spec.whatwg.org/#dom-parentnode-firstelementchild>
@@ -136,8 +133,8 @@ impl DocumentFragmentMethods<crate::DomTypeHolder> for DocumentFragment {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-parentnode-childelementcount>
-    fn ChildElementCount(&self) -> u32 {
-        self.upcast::<Node>().child_elements().count() as u32
+    fn ChildElementCount(&self, no_gc: &NoGC) -> u32 {
+        self.upcast::<Node>().child_elements_unrooted(no_gc).count() as u32
     }
 
     /// <https://dom.spec.whatwg.org/#dom-parentnode-prepend>
@@ -161,13 +158,21 @@ impl DocumentFragmentMethods<crate::DomTypeHolder> for DocumentFragment {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-parentnode-queryselector>
-    fn QuerySelector(&self, selectors: DOMString) -> Fallible<Option<DomRoot<Element>>> {
-        self.upcast::<Node>().query_selector(selectors)
+    fn QuerySelector(
+        &self,
+        cx: &mut JSContext,
+        selectors: DOMString,
+    ) -> Fallible<Option<DomRoot<Element>>> {
+        self.upcast::<Node>().query_selector(cx.no_gc(), selectors)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-parentnode-queryselectorall>
-    fn QuerySelectorAll(&self, selectors: DOMString) -> Fallible<DomRoot<NodeList>> {
-        self.upcast::<Node>().query_selector_all(selectors)
+    fn QuerySelectorAll(
+        &self,
+        cx: &mut JSContext,
+        selectors: DOMString,
+    ) -> Fallible<DomRoot<NodeList>> {
+        self.upcast::<Node>().query_selector_all(cx, selectors)
     }
 }
 

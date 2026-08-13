@@ -5,12 +5,13 @@
 use std::borrow::Cow;
 
 use dom_struct::dom_struct;
+use js::context::{JSContext, NoGC};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
-use webgpu_traits::{WebGPU, WebGPURenderBundle, WebGPURequest};
-use wgpu_core::command::{
-    RenderBundleEncoder, RenderBundleEncoderDescriptor, bundle_ffi as wgpu_bundle,
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use webgpu_traits::{
+    RenderBundleCommand, WebGPU, WebGPURenderBundle, WebGPURenderBundleEncoder, WebGPURequest,
 };
+use wgpu_core::command::RenderBundleEncoderDescriptor;
 
 use crate::conversions::Convert;
 use crate::dom::bindings::codegen::Bindings::WebGPUBinding::{
@@ -27,53 +28,71 @@ use crate::dom::webgpu::gpubuffer::GPUBuffer;
 use crate::dom::webgpu::gpudevice::GPUDevice;
 use crate::dom::webgpu::gpurenderbundle::GPURenderBundle;
 use crate::dom::webgpu::gpurenderpipeline::GPURenderPipeline;
-use crate::script_runtime::CanGc;
+
+#[derive(JSTraceable, MallocSizeOf)]
+struct DroppableGPURenderBundleEncoder {
+    #[no_trace]
+    channel: WebGPU,
+    #[no_trace]
+    render_bundle_encoder: WebGPURenderBundleEncoder,
+}
+
+impl Drop for DroppableGPURenderBundleEncoder {
+    fn drop(&mut self) {
+        if let Err(error) = self.channel.0.send(WebGPURequest::DropRenderBundleEncoder(
+            self.render_bundle_encoder.0,
+        )) {
+            warn!(
+                "Failed to send WebGPURequest::DropRenderBundleEncoder({:?}) ({error})",
+                self.render_bundle_encoder.0
+            );
+        }
+    }
+}
 
 #[dom_struct]
 pub(crate) struct GPURenderBundleEncoder {
     reflector_: Reflector,
-    #[no_trace]
-    channel: WebGPU,
     device: Dom<GPUDevice>,
-    #[ignore_malloc_size_of = "defined in wgpu-core"]
-    #[no_trace]
-    render_bundle_encoder: DomRefCell<Option<RenderBundleEncoder>>,
     label: DomRefCell<USVString>,
+    droppable: DroppableGPURenderBundleEncoder,
 }
 
 impl GPURenderBundleEncoder {
     fn new_inherited(
-        render_bundle_encoder: RenderBundleEncoder,
         device: &GPUDevice,
         channel: WebGPU,
         label: USVString,
+        render_bundle_encoder: WebGPURenderBundleEncoder,
     ) -> Self {
         Self {
             reflector_: Reflector::new(),
-            render_bundle_encoder: DomRefCell::new(Some(render_bundle_encoder)),
             device: Dom::from_ref(device),
-            channel,
+            droppable: DroppableGPURenderBundleEncoder {
+                channel,
+                render_bundle_encoder,
+            },
             label: DomRefCell::new(label),
         }
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
-        render_bundle_encoder: RenderBundleEncoder,
+        render_bundle_encoder: WebGPURenderBundleEncoder,
         device: &GPUDevice,
         channel: WebGPU,
         label: USVString,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(GPURenderBundleEncoder::new_inherited(
-                render_bundle_encoder,
                 device,
                 channel,
                 label,
+                render_bundle_encoder,
             )),
             global,
-            can_gc,
+            cx,
         )
     }
 }
@@ -81,9 +100,9 @@ impl GPURenderBundleEncoder {
 impl GPURenderBundleEncoder {
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-createrenderbundleencoder>
     pub(crate) fn create(
+        cx: &mut JSContext,
         device: &GPUDevice,
         descriptor: &GPURenderBundleEncoderDescriptor,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<GPURenderBundleEncoder>> {
         let desc = RenderBundleEncoderDescriptor {
             label: (&descriptor.parent.parent).convert(),
@@ -116,17 +135,37 @@ impl GPURenderBundleEncoder {
             multiview: None,
         };
 
-        // Handle error gracefully
-        let render_bundle_encoder = RenderBundleEncoder::new(&desc, device.id().0).unwrap();
+        let id = device
+            .global()
+            .wgpu_id_hub()
+            .create_render_bundle_encoder_id();
+        let render_bundle_encoder = WebGPURenderBundleEncoder(id);
+
+        let channel = device.channel();
+
+        if let Err(error) = channel.0.send(WebGPURequest::CreateRenderBundleEncoder {
+            device_id: device.id().0,
+            desc,
+            render_bundle_encoder_id: render_bundle_encoder.0,
+        }) {
+            warn!(
+                "Failed to send WebGPURequest::CreateRenderBundleEncoder({:?}) ({error})",
+                render_bundle_encoder.0
+            );
+        }
 
         Ok(GPURenderBundleEncoder::new(
+            cx,
             &device.global(),
             render_bundle_encoder,
             device,
             device.channel(),
             descriptor.parent.parent.label.clone(),
-            can_gc,
         ))
+    }
+
+    pub(crate) fn id(&self) -> WebGPURenderBundleEncoder {
+        self.droppable.render_bundle_encoder
     }
 }
 
@@ -137,30 +176,49 @@ impl GPURenderBundleEncoderMethods<crate::DomTypeHolder> for GPURenderBundleEnco
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label>
-    fn SetLabel(&self, value: USVString) {
-        *self.label.borrow_mut() = value;
+    fn SetLabel(&self, no_gc: &NoGC, value: USVString) {
+        *self.label.safe_borrow_mut(no_gc) = value;
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpuprogrammablepassencoder-setbindgroup>
-    #[expect(unsafe_code)]
     fn SetBindGroup(&self, index: u32, bind_group: &GPUBindGroup, dynamic_offsets: Vec<u32>) {
-        if let Some(encoder) = self.render_bundle_encoder.borrow_mut().as_mut() {
-            unsafe {
-                wgpu_bundle::wgpu_render_bundle_set_bind_group(
-                    encoder,
-                    index,
-                    Some(bind_group.id().0),
-                    dynamic_offsets.as_ptr(),
-                    dynamic_offsets.len(),
-                )
-            };
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::SetBindGroup {
+                        index,
+                        bind_group_id: bind_group.id().0,
+                        offsets: dynamic_offsets,
+                    },
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderSetBindGroup({:?}) ({error})",
+                self.droppable.render_bundle_encoder.0
+            );
         }
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpurenderencoderbase-setpipeline>
     fn SetPipeline(&self, pipeline: &GPURenderPipeline) {
-        if let Some(encoder) = self.render_bundle_encoder.borrow_mut().as_mut() {
-            wgpu_bundle::wgpu_render_bundle_set_pipeline(encoder, pipeline.id().0);
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::SetPipeline(pipeline.id().0),
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderSetPipeline({:?}) ({error})",
+                self.droppable.render_bundle_encoder.0
+            );
         }
     }
 
@@ -172,42 +230,72 @@ impl GPURenderBundleEncoderMethods<crate::DomTypeHolder> for GPURenderBundleEnco
         offset: u64,
         size: u64,
     ) {
-        if let Some(encoder) = self.render_bundle_encoder.borrow_mut().as_mut() {
-            wgpu_bundle::wgpu_render_bundle_set_index_buffer(
-                encoder,
-                buffer.id().0,
-                match index_format {
-                    GPUIndexFormat::Uint16 => wgpu_types::IndexFormat::Uint16,
-                    GPUIndexFormat::Uint32 => wgpu_types::IndexFormat::Uint32,
-                },
-                offset,
-                wgpu_types::BufferSize::new(size),
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::SetIndexBuffer {
+                        buffer_id: buffer.id().0,
+                        index_format: index_format.convert(),
+                        offset,
+                        size: wgpu_types::BufferSize::new(size),
+                    },
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderSetIndexBuffer({:?}) ({error})",
+                self.droppable.render_bundle_encoder.0
             );
         }
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpurenderencoderbase-setvertexbuffer>
-    fn SetVertexBuffer(&self, slot: u32, buffer: &GPUBuffer, offset: u64, size: u64) {
-        if let Some(encoder) = self.render_bundle_encoder.borrow_mut().as_mut() {
-            wgpu_bundle::wgpu_render_bundle_set_vertex_buffer(
-                encoder,
-                slot,
-                buffer.id().0,
-                offset,
-                wgpu_types::BufferSize::new(size),
+    fn SetVertexBuffer(&self, slot: u32, buffer: Option<&GPUBuffer>, offset: u64, size: u64) {
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::SetVertexBuffer {
+                        slot,
+                        buffer_id: buffer.map(|b| b.id().0),
+                        offset,
+                        size: wgpu_types::BufferSize::new(size),
+                    },
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderSetVertexBuffer({:?}) ({error})",
+                self.droppable.render_bundle_encoder.0
             );
         }
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpurenderencoderbase-draw>
     fn Draw(&self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
-        if let Some(encoder) = self.render_bundle_encoder.borrow_mut().as_mut() {
-            wgpu_bundle::wgpu_render_bundle_draw(
-                encoder,
-                vertex_count,
-                instance_count,
-                first_vertex,
-                first_instance,
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::Draw {
+                        vertex_count,
+                        instance_count,
+                        first_vertex,
+                        first_instance,
+                    },
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderDraw({:?}) ({error})",
+                self.droppable.render_bundle_encoder.0
             );
         }
     }
@@ -221,66 +309,168 @@ impl GPURenderBundleEncoderMethods<crate::DomTypeHolder> for GPURenderBundleEnco
         base_vertex: i32,
         first_instance: u32,
     ) {
-        if let Some(encoder) = self.render_bundle_encoder.borrow_mut().as_mut() {
-            wgpu_bundle::wgpu_render_bundle_draw_indexed(
-                encoder,
-                index_count,
-                instance_count,
-                first_index,
-                base_vertex,
-                first_instance,
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::DrawIndexed {
+                        index_count,
+                        instance_count,
+                        first_index,
+                        base_vertex,
+                        first_instance,
+                    },
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderDrawIndexed({:?}) ({error})",
+                self.droppable.render_bundle_encoder.0
             );
         }
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpurenderencoderbase-drawindirect>
     fn DrawIndirect(&self, indirect_buffer: &GPUBuffer, indirect_offset: u64) {
-        if let Some(encoder) = self.render_bundle_encoder.borrow_mut().as_mut() {
-            wgpu_bundle::wgpu_render_bundle_draw_indirect(
-                encoder,
-                indirect_buffer.id().0,
-                indirect_offset,
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::DrawIndirect {
+                        buffer_id: indirect_buffer.id().0,
+                        offset: indirect_offset,
+                    },
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderDrawIndirect({:?}) ({error})",
+                self.droppable.render_bundle_encoder.0
             );
         }
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpurenderencoderbase-drawindexedindirect>
     fn DrawIndexedIndirect(&self, indirect_buffer: &GPUBuffer, indirect_offset: u64) {
-        if let Some(encoder) = self.render_bundle_encoder.borrow_mut().as_mut() {
-            wgpu_bundle::wgpu_render_bundle_draw_indexed_indirect(
-                encoder,
-                indirect_buffer.id().0,
-                indirect_offset,
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::DrawIndexedIndirect {
+                        buffer_id: indirect_buffer.id().0,
+                        offset: indirect_offset,
+                    },
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderDrawIndexedIndirect({:?}) ({error})",
+                self.droppable.render_bundle_encoder.0
+            );
+        }
+    }
+
+    /// <https://gpuweb.github.io/gpuweb/#dom-gpudebugcommandsmixin-pushdebuggroup>
+    fn PushDebugGroup(&self, group_label: USVString) {
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::PushDebugGroup(group_label.to_string()),
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderPushDebugGroup({:?}) ({error})",
+                self.droppable.render_bundle_encoder.0
+            );
+        }
+    }
+
+    /// <https://gpuweb.github.io/gpuweb/#dom-gpudebugcommandsmixin-popdebuggroup>
+    fn PopDebugGroup(&self) {
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::PopDebugGroup,
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderPopDebugGroup({:?}) ({error})",
+                self.id()
+            );
+        }
+    }
+
+    /// <https://gpuweb.github.io/gpuweb/#dom-gpudebugcommandsmixin-insertdebugmarker>
+    fn InsertDebugMarker(&self, marker_label: USVString) {
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderCommand {
+                    render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
+                    render_command: RenderBundleCommand::InsertDebugMarker(
+                        marker_label.to_string(),
+                    ),
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderInsertDebugMarker({:?}) ({error})",
+                self.id()
             );
         }
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpurenderbundleencoder-finish>
-    fn Finish(&self, descriptor: &GPURenderBundleDescriptor) -> DomRoot<GPURenderBundle> {
+    fn Finish(
+        &self,
+        cx: &mut JSContext,
+        descriptor: &GPURenderBundleDescriptor,
+    ) -> DomRoot<GPURenderBundle> {
         let desc = wgpu_types::RenderBundleDescriptor {
             label: (&descriptor.parent).convert(),
         };
-        let encoder = self.render_bundle_encoder.borrow_mut().take().unwrap();
         let render_bundle_id = self.global().wgpu_id_hub().create_render_bundle_id();
 
-        self.channel
-            .0
-            .send(WebGPURequest::RenderBundleEncoderFinish {
-                render_bundle_encoder: encoder,
-                descriptor: desc,
-                render_bundle_id,
-                device_id: self.device.id().0,
-            })
-            .expect("Failed to send RenderBundleEncoderFinish");
+        if let Err(error) =
+            self.droppable
+                .channel
+                .0
+                .send(WebGPURequest::RenderBundleEncoderFinish {
+                    render_bundle_encoder_id: self.id().0,
+                    descriptor: desc,
+                    render_bundle_id,
+                    device_id: self.device.id().0,
+                })
+        {
+            warn!(
+                "Failed to send WebGPURequest::RenderBundleEncoderFinish({:?}) ({error})",
+                self.id()
+            );
+        }
 
         let render_bundle = WebGPURenderBundle(render_bundle_id);
         GPURenderBundle::new(
+            cx,
             &self.global(),
             render_bundle,
             self.device.id(),
-            self.channel.clone(),
+            self.droppable.channel.clone(),
             descriptor.parent.label.clone(),
-            CanGc::deprecated_note(),
         )
     }
 }

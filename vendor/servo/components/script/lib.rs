@@ -22,24 +22,37 @@ extern crate stylo_atoms;
 
 mod animations;
 mod css;
-mod script_window_proxies;
 #[macro_use]
+mod tasks;
+// Bao legacy flat modules: kept (in addition to upstream's event_loop/ and
+// tasks/ trees) because the BCE-patched script_thread.rs / script_runtime.rs /
+// dedicatedworkerglobalscope.rs reference these old crate paths.
+mod clipboard_provider;
+mod document_collection;
+mod document_loader;
+mod module_loading;
+mod script_module;
+mod script_mutation_observers;
+mod script_window_proxies;
 mod task;
+mod task_manager;
+mod task_queue;
+mod task_source;
+pub mod textinput;
+pub mod script_thread;
 mod body;
-pub(crate) mod clipboard_provider;
 pub(crate) mod conversions;
 mod devtools;
-pub(crate) mod document_loader;
 #[macro_use]
 mod dom;
 pub(crate) use dom::canvas_context;
+mod event_loop;
 pub(crate) mod fetch;
 pub(crate) mod indexeddb;
 mod init;
 mod layout_image;
 mod url;
 
-pub(crate) mod document_collection;
 pub(crate) mod iframe_collection;
 pub(crate) mod image_animation;
 pub mod layout_dom;
@@ -47,24 +60,17 @@ pub(crate) mod messaging;
 mod microtask;
 pub(crate) mod mime;
 mod mime_multipart;
-mod module_loading;
+pub(crate) mod modules;
 mod navigation;
 mod network_listener;
 mod realms;
 mod routed_promise;
-mod script_module;
-mod script_mutation_observers;
 pub(crate) mod script_runtime;
-#[expect(unsafe_code)]
-pub mod script_thread;
 pub(crate) mod serviceworker_manager;
 mod stylesheet_loader;
 mod stylesheet_set;
-mod task_manager;
-mod task_queue;
-mod task_source;
+mod svg_font;
 pub mod test;
-pub mod textinput;
 mod timers;
 mod webdriver_handlers;
 mod window_named_properties;
@@ -75,11 +81,11 @@ mod unminify;
 mod drag_data_store;
 mod links;
 
+pub use event_loop::script_thread::ScriptThread;
 pub use init::init;
 pub(crate) use script_bindings::DomTypes;
 pub(crate) use script_bindings::reflector::{AssociatedMemory, DomObject, MutDomObject, Reflector};
 pub use script_runtime::JSEngineSetup;
-pub use script_thread::ScriptThread;
 pub use serviceworker_manager::ServiceWorkerManager;
 
 pub(crate) use crate::dom::bindings::codegen::DomTypeHolder::DomTypeHolder;

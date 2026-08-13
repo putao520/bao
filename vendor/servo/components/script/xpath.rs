@@ -120,11 +120,11 @@ impl xpath::Node for XPathWrapper<DomRoot<Node>> {
         let owner_document = self.0.owner_document();
         let next_non_descendant_node = self
             .0
-            .following_nodes(owner_document.upcast())
+            .following_nodes(owner_document.upcast(), ShadowIncluding::No)
             .next_skipping_children();
         let following_nodes = next_non_descendant_node
             .clone()
-            .map(|node| node.following_nodes(owner_document.upcast()))
+            .map(|node| node.following_nodes(owner_document.upcast(), ShadowIncluding::No))
             .into_iter()
             .flatten();
         next_non_descendant_node
@@ -180,6 +180,7 @@ impl xpath::Document for XPathWrapper<DomRoot<Document>> {
 
     fn get_elements_with_id(
         &self,
+        cx: &mut JSContext,
         id: &str,
     ) -> impl Iterator<Item = XPathWrapper<DomRoot<Element>>> {
         struct ElementIterator<'a> {
@@ -198,7 +199,7 @@ impl xpath::Document for XPathWrapper<DomRoot<Document>> {
         }
 
         ElementIterator {
-            elements: self.0.get_elements_with_id(&Atom::from(id)),
+            elements: self.0.get_elements_with_id(cx, &Atom::from(id)),
             position: 0,
         }
     }
@@ -300,12 +301,6 @@ impl xpath::ProcessingInstruction for XPathWrapper<DomRoot<ProcessingInstruction
 impl<T> From<T> for XPathWrapper<T> {
     fn from(value: T) -> Self {
         Self(value)
-    }
-}
-
-impl<T> XPathWrapper<T> {
-    pub(crate) fn into_inner(self) -> T {
-        self.0
     }
 }
 

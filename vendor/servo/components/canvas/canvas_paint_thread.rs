@@ -10,6 +10,9 @@ use euclid::default::{Rect, Size2D, Transform2D};
 use log::warn;
 use paint_api::CrossProcessPaintApi;
 use pixels::Snapshot;
+use profile_traits::mem::{
+    ProcessReports, ProfilerChan, Report, ReportsChan, perform_memory_report,
+};
 use rustc_hash::FxHashMap;
 use servo_base::generic_channel::GenericSender;
 use servo_base::{Epoch, generic_channel};
@@ -18,14 +21,11 @@ use servo_canvas_traits::canvas::*;
 use webrender_api::ImageKey;
 
 use crate::canvas_data::*;
-use crate::canvas_noise::CanvasNoiseConfig;
 
 pub struct CanvasPaintThread {
     canvases: FxHashMap<CanvasId, Canvas>,
     next_canvas_id: CanvasId,
     paint_api: CrossProcessPaintApi,
-    /// Default canvas noise config for new canvases, set via SetCanvasNoiseSeed
-    default_noise_config: CanvasNoiseConfig,
 }
 
 impl CanvasPaintThread {
@@ -34,8 +34,6 @@ impl CanvasPaintThread {
             canvases: FxHashMap::default(),
             next_canvas_id: CanvasId(0),
             paint_api,
-            default_noise_config: crate::canvas_noise::get_global_canvas_noise()
-                .map_or_else(CanvasNoiseConfig::disabled, |(seed, amp)| CanvasNoiseConfig::new(seed, amp)),
         }
     }
 
@@ -43,27 +41,28 @@ impl CanvasPaintThread {
     /// communicate with it.
     pub fn start(
         paint_api: CrossProcessPaintApi,
+        mem_profiler_chan: ProfilerChan,
     ) -> (Sender<ConstellationCanvasMsg>, GenericSender<CanvasMsg>) {
         let (ipc_sender, ipc_receiver) = generic_channel::channel::<CanvasMsg>().unwrap();
         let msg_receiver = ipc_receiver.route_preserving_errors();
         let (create_sender, create_receiver) = unbounded();
+        let registration = mem_profiler_chan.prepare_memory_reporting(
+            "canvas".into(),
+            create_sender.clone(),
+            ConstellationCanvasMsg::CollectMemoryReport,
+        );
         thread::Builder::new()
             .name("Canvas".to_owned())
             .spawn(move || {
+                let _registration = registration;
                 let mut canvas_paint_thread = CanvasPaintThread::new(
                     paint_api);
                 loop {
                     select! {
                         recv(msg_receiver) -> msg => {
                             match msg {
-                                Ok(Ok(CanvasMsg::Canvas2d(message, canvas_id))) => {
-                                    canvas_paint_thread.process_canvas_2d_message(message, canvas_id);
-                                },
-                                Ok(Ok(CanvasMsg::Close(canvas_id))) => {
-                                    canvas_paint_thread.canvases.remove(&canvas_id);
-                                },
-                                Ok(Ok(CanvasMsg::Recreate(size, canvas_id))) => {
-                                    canvas_paint_thread.canvas(canvas_id).recreate(size);
+                                Ok(Ok((canvas_id, command))) => {
+                                    canvas_paint_thread.process_command(command, canvas_id);
                                 },
                                 Ok(Err(e)) => {
                                     warn!("CanvasPaintThread message deserialization error: {e:?}");
@@ -77,7 +76,12 @@ impl CanvasPaintThread {
                         recv(create_receiver) -> msg => {
                             match msg {
                                 Ok(ConstellationCanvasMsg::Create { sender: creator, size }) => {
-                                    creator.send(canvas_paint_thread.create_canvas(size)).unwrap();
+                                    if let Err(error) = creator.send(canvas_paint_thread.create_canvas(size)) {
+                                        warn!("Create canvas response failed ({error})");
+                                    }
+                                },
+                                Ok(ConstellationCanvasMsg::CollectMemoryReport(sender)) => {
+                                    canvas_paint_thread.collect_memory_reports(sender);
                                 },
                                 Ok(ConstellationCanvasMsg::Exit(exit_sender)) => {
                                     let _ = exit_sender.send(());
@@ -102,23 +106,37 @@ impl CanvasPaintThread {
         let canvas_id = self.next_canvas_id;
         self.next_canvas_id.0 += 1;
 
-        let mut canvas = Canvas::new(size, self.paint_api.clone())?;
-        canvas.set_noise_config(self.default_noise_config.clone());
+        let canvas = Canvas::new(size, self.paint_api.clone())?;
         self.canvases.insert(canvas_id, canvas);
 
         Some(canvas_id)
+    }
+
+    fn collect_memory_reports(&self, sender: ReportsChan) {
+        perform_memory_report(|ops| {
+            let reports = self
+                .canvases
+                .iter()
+                .flat_map(|(canvas_id, canvas)| canvas.collect_memory_report(*canvas_id, ops))
+                .collect();
+            sender.send(ProcessReports::new(reports));
+        });
     }
 
     #[servo_tracing::instrument(
         skip_all,
         fields(message = message.to_string())
     )]
-    fn process_canvas_2d_message(&mut self, message: Canvas2dMsg, canvas_id: CanvasId) {
+    fn process_command(&mut self, message: CanvasCommand, canvas_id: CanvasId) {
         match message {
-            Canvas2dMsg::SetImageKey(image_key) => {
+            CanvasCommand::Recreate(size) => self.canvas(canvas_id).recreate(size),
+            CanvasCommand::Destroy => {
+                self.canvases.remove(&canvas_id);
+            },
+            CanvasCommand::SetImageKey(image_key) => {
                 self.canvas(canvas_id).set_image_key(image_key);
             },
-            Canvas2dMsg::FillText(
+            CanvasCommand::FillText(
                 text_bounds,
                 text_runs,
                 fill_or_stroke_style,
@@ -135,7 +153,7 @@ impl CanvasPaintThread {
                     transform,
                 );
             },
-            Canvas2dMsg::StrokeText(
+            CanvasCommand::StrokeText(
                 text_bounds,
                 text_runs,
                 fill_or_stroke_style,
@@ -154,7 +172,13 @@ impl CanvasPaintThread {
                     transform,
                 );
             },
-            Canvas2dMsg::FillRect(rect, style, shadow_options, composition_options, transform) => {
+            CanvasCommand::FillRect(
+                rect,
+                style,
+                shadow_options,
+                composition_options,
+                transform,
+            ) => {
                 self.canvas(canvas_id).fill_rect(
                     &rect,
                     style,
@@ -163,7 +187,7 @@ impl CanvasPaintThread {
                     transform,
                 );
             },
-            Canvas2dMsg::StrokeRect(
+            CanvasCommand::StrokeRect(
                 rect,
                 style,
                 line_options,
@@ -180,10 +204,10 @@ impl CanvasPaintThread {
                     transform,
                 );
             },
-            Canvas2dMsg::ClearRect(ref rect, transform) => {
+            CanvasCommand::ClearRect(ref rect, transform) => {
                 self.canvas(canvas_id).clear_rect(rect, transform)
             },
-            Canvas2dMsg::FillPath(
+            CanvasCommand::FillPath(
                 style,
                 path,
                 fill_rule,
@@ -200,7 +224,7 @@ impl CanvasPaintThread {
                     transform,
                 );
             },
-            Canvas2dMsg::StrokePath(
+            CanvasCommand::StrokePath(
                 path,
                 style,
                 line_options,
@@ -217,11 +241,11 @@ impl CanvasPaintThread {
                     transform,
                 );
             },
-            Canvas2dMsg::ClipPath(path, fill_rule, transform) => {
+            CanvasCommand::ClipPath(path, fill_rule, transform) => {
                 self.canvas(canvas_id)
                     .clip_path(&path, fill_rule, transform);
             },
-            Canvas2dMsg::DrawImage(
+            CanvasCommand::DrawImage(
                 snapshot,
                 dest_rect,
                 source_rect,
@@ -238,7 +262,7 @@ impl CanvasPaintThread {
                 composition_options,
                 transform,
             ),
-            Canvas2dMsg::DrawEmptyImage(
+            CanvasCommand::DrawEmptyImage(
                 image_size,
                 dest_rect,
                 source_rect,
@@ -254,7 +278,7 @@ impl CanvasPaintThread {
                 composition_options,
                 transform,
             ),
-            Canvas2dMsg::DrawImageInOther(
+            CanvasCommand::DrawImageInOther(
                 other_canvas_id,
                 dest_rect,
                 source_rect,
@@ -265,7 +289,7 @@ impl CanvasPaintThread {
             ) => {
                 let snapshot = self
                     .canvas(canvas_id)
-                    .read_pixels(Some(source_rect.to_u32()), false);
+                    .read_pixels(Some(source_rect.to_u32()));
                 self.canvas(other_canvas_id).draw_image(
                     snapshot,
                     dest_rect,
@@ -276,18 +300,25 @@ impl CanvasPaintThread {
                     transform,
                 );
             },
-            Canvas2dMsg::GetImageData(dest_rect, sender) => {
-                let snapshot = self.canvas(canvas_id).read_pixels(dest_rect, true);
-                sender.send(snapshot.to_shared()).unwrap();
+            CanvasCommand::GetImageData(dest_rect, sender) => {
+                let snapshot = self.canvas(canvas_id).read_pixels(dest_rect);
+                if let Err(error) = sender.send(snapshot.to_shared()) {
+                    warn!("GetImageData response failed ({error})");
+                }
             },
-            Canvas2dMsg::PutImageData(rect, snapshot) => {
+            CanvasCommand::PutImageData(rect, snapshot) => {
                 self.canvas(canvas_id)
                     .put_image_data(snapshot.to_owned(), rect);
             },
-            Canvas2dMsg::UpdateImage(canvas_epoch) => {
+            CanvasCommand::UpdateImage(canvas_epoch) => {
                 self.canvas(canvas_id).update_image_rendering(canvas_epoch);
             },
-            Canvas2dMsg::PopClips(clips) => self.canvas(canvas_id).pop_clips(clips),
+            CanvasCommand::PopClips(clips) => self.canvas(canvas_id).pop_clips(clips),
+            CanvasCommand::ProcessBatchMessages(messages) => {
+                for message in messages {
+                    self.process_command(message, canvas_id);
+                }
+            },
         }
     }
 
@@ -296,6 +327,13 @@ impl CanvasPaintThread {
     }
 }
 
+#[cfg_attr(
+    feature = "vello",
+    expect(
+        clippy::large_enum_variant,
+        reason = "Current consensus is on keeping enum instead of boxing it. https://github.com/servo/servo/pull/46863"
+    )
+)]
 enum Canvas {
     #[cfg(feature = "vello")]
     Vello(CanvasData<crate::vello_backend::VelloDrawTarget>),
@@ -311,6 +349,18 @@ impl Canvas {
             #[cfg(feature = "vello")]
             "vello" => Some(Self::Vello(CanvasData::new(size, paint_api))),
             _ => Some(Self::VelloCPU(CanvasData::new(size, paint_api))),
+        }
+    }
+
+    fn collect_memory_report(
+        &self,
+        canvas_id: CanvasId,
+        ops: &mut malloc_size_of::MallocSizeOfOps,
+    ) -> Vec<Report> {
+        match self {
+            #[cfg(feature = "vello")]
+            Canvas::Vello(canvas_data) => canvas_data.collect_memory_report(canvas_id, ops),
+            Canvas::VelloCPU(canvas_data) => canvas_data.collect_memory_report(canvas_id, ops),
         }
     }
 
@@ -544,19 +594,11 @@ impl Canvas {
         }
     }
 
-    fn read_pixels(&mut self, read_rect: Option<Rect<u32>>, apply_noise: bool) -> Snapshot {
+    fn read_pixels(&mut self, read_rect: Option<Rect<u32>>) -> Snapshot {
         match self {
             #[cfg(feature = "vello")]
-            Canvas::Vello(canvas_data) => canvas_data.read_pixels(read_rect, apply_noise),
-            Canvas::VelloCPU(canvas_data) => canvas_data.read_pixels(read_rect, apply_noise),
-        }
-    }
-
-    fn set_noise_config(&mut self, config: CanvasNoiseConfig) {
-        match self {
-            #[cfg(feature = "vello")]
-            Canvas::Vello(canvas_data) => canvas_data.set_noise_config(config),
-            Canvas::VelloCPU(canvas_data) => canvas_data.set_noise_config(config),
+            Canvas::Vello(canvas_data) => canvas_data.read_pixels(read_rect),
+            Canvas::VelloCPU(canvas_data) => canvas_data.read_pixels(read_rect),
         }
     }
 

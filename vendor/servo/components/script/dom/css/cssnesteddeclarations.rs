@@ -19,8 +19,8 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::cssgroupingrule::CSSGroupingRule;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct CSSNestedDeclarations {
@@ -33,11 +33,12 @@ pub(crate) struct CSSNestedDeclarations {
 
 impl CSSNestedDeclarations {
     pub(crate) fn new_inherited(
+        parent_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         nesteddeclarationsrule: Arc<Locked<NestedDeclarationsRule>>,
     ) -> Self {
         Self {
-            css_rule: CSSRule::new_inherited(parent_stylesheet),
+            css_rule: CSSRule::new_inherited(parent_rule, parent_stylesheet),
             nesteddeclarationsrule: RefCell::new(nesteddeclarationsrule),
             style_declaration: Default::default(),
         }
@@ -46,11 +47,13 @@ impl CSSNestedDeclarations {
     pub(crate) fn new(
         cx: &mut JSContext,
         window: &Window,
+        parent_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         nesteddeclarationsrule: Arc<Locked<NestedDeclarationsRule>>,
     ) -> DomRoot<Self> {
         reflect_dom_object_with_cx(
             Box::new(Self::new_inherited(
+                parent_rule,
                 parent_stylesheet,
                 nesteddeclarationsrule,
             )),
@@ -93,6 +96,7 @@ impl CSSNestedDeclarationsMethods<crate::DomTypeHolder> for CSSNestedDeclaration
         self.style_declaration.or_init(|| {
             let guard = self.css_rule.shared_lock().read();
             CSSStyleDeclaration::new(
+                cx,
                 self.global().as_window(),
                 CSSStyleOwner::CSSRule(
                     Dom::from_ref(self.upcast()),
@@ -106,7 +110,6 @@ impl CSSNestedDeclarationsMethods<crate::DomTypeHolder> for CSSNestedDeclaration
                 ),
                 None,
                 CSSModificationAccess::ReadWrite,
-                CanGc::from_cx(cx),
             )
         })
     }

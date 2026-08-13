@@ -7,7 +7,6 @@ use js::rust::HandleObject;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use script_traits::DocumentActivity;
 
-use crate::document_loader::DocumentLoader;
 use crate::dom::bindings::codegen::Bindings::DOMParserBinding;
 use crate::dom::bindings::codegen::Bindings::DOMParserBinding::DOMParserMethods;
 use crate::dom::bindings::codegen::Bindings::DOMParserBinding::SupportedType::{
@@ -22,7 +21,7 @@ use crate::dom::document::{Document, DocumentSource, HasBrowsingContext, IsHTMLD
 use crate::dom::servoparser::ServoParser;
 use crate::dom::trustedtypes::trustedhtml::TrustedHTML;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
+use crate::event_loop::document_loader::DocumentLoader;
 
 #[dom_struct]
 pub(crate) struct DOMParser {
@@ -43,9 +42,12 @@ impl DOMParser {
         window: &Window,
         proto: Option<HandleObject>,
     ) -> DomRoot<DOMParser> {
-        reflect_dom_object_with_proto(cx, Box::new(DOMParser::new_inherited(window)),
+        reflect_dom_object_with_proto(
+            cx,
+            Box::new(DOMParser::new_inherited(window)),
             window,
-            proto)
+            proto,
+        )
     }
 }
 
@@ -88,6 +90,7 @@ impl DOMParserMethods<crate::DomTypeHolder> for DOMParser {
                 // Step 2. Let document be a new Document, whose content type is type
                 // and URL is this's relevant global object's associated Document's URL.
                 let document = Document::new(
+                    cx,
                     &self.window,
                     HasBrowsingContext::No,
                     Some(url.clone()),
@@ -108,7 +111,8 @@ impl DOMParserMethods<crate::DomTypeHolder> for DOMParser {
                     doc.has_trustworthy_ancestor_or_current_origin(),
                     doc.custom_element_reaction_stack(),
                     doc.creation_sandboxing_flag_set(),
-                    CanGc::from_cx(cx),
+                    doc.pipeline_id(),
+                    doc.image_cache(),
                 );
                 // Step switch-1. Parse HTML from a string given document and compliantString.
                 ServoParser::parse_html_document(
@@ -125,6 +129,7 @@ impl DOMParserMethods<crate::DomTypeHolder> for DOMParser {
                 // Step 2. Let document be a new Document, whose content type is type
                 // and URL is this's relevant global object's associated Document's URL.
                 let document = Document::new(
+                    cx,
                     &self.window,
                     HasBrowsingContext::No,
                     Some(url.clone()),
@@ -145,16 +150,17 @@ impl DOMParserMethods<crate::DomTypeHolder> for DOMParser {
                     doc.has_trustworthy_ancestor_or_current_origin(),
                     doc.custom_element_reaction_stack(),
                     doc.creation_sandboxing_flag_set(),
-                    CanGc::from_cx(cx),
+                    doc.pipeline_id(),
+                    doc.image_cache(),
                 );
                 // Step switch-1. Create an XML parser parser, associated with document,
                 // and with XML scripting support disabled.
                 ServoParser::parse_xml_document(cx, &document, Some(compliant_string), url, None);
+                document.set_ready_state(cx, DocumentReadyState::Complete);
                 document
             },
         };
         // Step 4. Return document.
-        document.set_ready_state(cx, DocumentReadyState::Complete);
         Ok(document)
     }
 }

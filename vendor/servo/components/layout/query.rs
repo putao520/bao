@@ -3,12 +3,14 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 //! Utilities for querying the layout, as needed by layout.
+use std::cell::LazyCell;
+use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use app_units::Au;
 use embedder_traits::UntrustedNodeAddress;
-use euclid::{Point2D, Rect, SideOffsets2D, Size2D};
+use euclid::{Rect, Size2D};
 use itertools::Itertools;
 use layout_api::{
     AxesOverflow, BoxAreaType, CSSPixelRectVec, DangerousStyleElementOf, LayoutElement,
@@ -42,14 +44,15 @@ use style::values::generics::font::LineHeight;
 use style::values::generics::position::AspectRatio;
 use style::values::specified::GenericGridTemplateComponent;
 use style::values::specified::box_::DisplayInside;
-use style::values::specified::text::TextTransformCase;
 use style_traits::{CSSPixel, ParsingMode, ToCss};
+use webrender_api::units::LayoutPixel;
 
+use crate::cell::RefOrAtomicRef;
 use crate::display_list::{StackingContextTree, au_rect_to_length_rect};
 use crate::dom::NodeExt;
-use crate::flow::inline::construct::{TextTransformation, WhitespaceCollapse, capitalize_string};
+use crate::flow::inline::text_transform::TextTransformationIterator;
 use crate::fragment_tree::{
-    BoxFragment, Fragment, FragmentFlags, FragmentTree, SpecificLayoutInfo, TextFragment,
+    BoxFragment, Fragment, FragmentFlags, FragmentTree, SpecificLayoutInfo,
 };
 use crate::layout_impl::LayoutThread;
 use crate::style_ext::ComputedValuesExt;
@@ -72,18 +75,20 @@ fn root_transform_for_layout_node(
 pub(crate) fn process_padding_request(node: ServoLayoutNode<'_>) -> Option<PhysicalSides> {
     let fragments = node.fragments_for_pseudo(None);
     let fragment = fragments.first()?;
-    Some(match fragment {
-        Fragment::Box(box_fragment) | Fragment::Float(box_fragment) => {
-            let padding = box_fragment.padding;
-            PhysicalSides {
-                top: padding.top,
-                left: padding.left,
-                bottom: padding.bottom,
-                right: padding.right,
-            }
-        },
-        _ => Default::default(),
-    })
+    Some(
+        fragment
+            .retrieve_box_fragment()
+            .map(|box_fragment| {
+                let padding = box_fragment.padding;
+                PhysicalSides {
+                    top: padding.top,
+                    left: padding.left,
+                    bottom: padding.bottom,
+                    right: padding.right,
+                }
+            })
+            .unwrap_or_default(),
+    )
 }
 
 pub(crate) fn process_box_area_request(
@@ -100,7 +105,7 @@ pub(crate) fn process_box_area_request(
             !exclude_transform_and_inline ||
                 fragment
                     .retrieve_box_fragment()
-                    .is_none_or(|fragment| !fragment.is_inline_box())
+                    .is_none_or(|fragment| !fragment.with_style().is_inline_box())
         })
         .filter_map(|node| node.cumulative_box_area_rect(area, layout_thread.into()))
         .peekable();
@@ -187,7 +192,9 @@ pub fn process_node_scroll_area_request(
             .first()
             .map(|fragment| fragment.scrolling_area(layout_thread))
             .unwrap_or_default(),
-        None => tree.scrollable_overflow(),
+        None => tree
+            .scrollable_overflow()
+            .union(&tree.initial_containing_block),
     };
 
     Rect::new(
@@ -324,53 +331,48 @@ pub fn process_resolved_style_request(
     }
 
     let resolve_for_fragment = |fragment: &Fragment| {
-        let (content_rect, margins, padding, specific_layout_info) = match fragment {
-            Fragment::Box(box_fragment) | Fragment::Float(box_fragment) => {
-                if style.get_box().position != Position::Static {
-                    let resolved_insets = || {
-                        box_fragment.calculate_resolved_insets_if_positioned(layout_thread.into())
-                    };
-                    match longhand_id {
-                        LonghandId::Top => return resolved_insets().top.to_css_string(),
-                        LonghandId::Right => {
-                            return resolved_insets().right.to_css_string();
-                        },
-                        LonghandId::Bottom => {
-                            return resolved_insets().bottom.to_css_string();
-                        },
-                        LonghandId::Left => {
-                            return resolved_insets().left.to_css_string();
-                        },
-                        LonghandId::Transform => {
-                            // If we can compute the string do it, but otherwise fallback to a cruder serialization
-                            // of the value.
-                            if let Ok(string) = serialize_transform_value(Some(box_fragment)) {
-                                return string;
-                            }
-                        },
-                        _ => {},
+        if let Some(box_fragment) = fragment.retrieve_box_fragment() &&
+            style.get_box().position != Position::Static
+        {
+            let resolved_insets =
+                || box_fragment.calculate_resolved_insets_if_positioned(layout_thread.into());
+            match longhand_id {
+                LonghandId::Top => return resolved_insets().top.to_css_string(),
+                LonghandId::Right => {
+                    return resolved_insets().right.to_css_string();
+                },
+                LonghandId::Bottom => {
+                    return resolved_insets().bottom.to_css_string();
+                },
+                LonghandId::Left => {
+                    return resolved_insets().left.to_css_string();
+                },
+                LonghandId::Transform => {
+                    // If we can compute the string do it, but otherwise fallback to a cruder serialization
+                    // of the value.
+                    if let Ok(string) = serialize_transform_value(Some(&box_fragment)) {
+                        return string;
                     }
-                }
-                let content_rect = box_fragment.base.rect();
-                let margins = box_fragment.margin;
-                let padding = box_fragment.padding;
-                let specific_layout_info = box_fragment.specific_layout_info().as_deref().cloned();
-                (content_rect, margins, padding, specific_layout_info)
-            },
-            Fragment::Positioning(positioning_fragment) => (
-                positioning_fragment.base.rect(),
-                SideOffsets2D::zero(),
-                SideOffsets2D::zero(),
-                None,
-            ),
-            _ => return computed_style(Some(fragment)),
-        };
+                },
+                _ => {},
+            }
+        }
+
+        if !matches!(
+            fragment,
+            Fragment::LayoutRoot(..) | Fragment::Box(..) | Fragment::Positioning(..)
+        ) {
+            return computed_style(Some(fragment));
+        }
 
         // https://drafts.csswg.org/css-grid/#resolved-track-list
         // > The grid-template-rows and grid-template-columns properties are
         // > resolved value special case properties.
         //
         // > When an element generates a grid container box...
+        let specific_layout_info = fragment
+            .retrieve_box_fragment()
+            .and_then(|box_fragment| box_fragment.specific_layout_info().as_deref().cloned());
         if display.inside() == DisplayInside::Grid &&
             let Some(SpecificLayoutInfo::Grid(info)) = specific_layout_info &&
             let Some(value) = resolve_grid_template(&info, style, longhand_id)
@@ -385,6 +387,20 @@ pub fn process_resolved_style_request(
         //
         // However, all browsers ignore that for margin and padding properties, and resolve to a length
         // even if the property doesn't apply: https://github.com/w3c/csswg-drafts/issues/10391
+        let content_rect =
+            LazyCell::new(|| fragment.base().map(|base| base.rect()).unwrap_or_default());
+        let margins = LazyCell::new(|| {
+            fragment
+                .retrieve_box_fragment()
+                .map(|fragment| fragment.margin)
+                .unwrap_or_default()
+        });
+        let padding = LazyCell::new(|| {
+            fragment
+                .retrieve_box_fragment()
+                .map(|fragment| fragment.padding)
+                .unwrap_or_default()
+        });
         match longhand_id {
             LonghandId::Width if resolved_size_should_be_used_value(fragment) => {
                 content_rect.size.width
@@ -415,10 +431,13 @@ fn resolved_size_should_be_used_value(fragment: &Fragment) -> bool {
     // https://drafts.csswg.org/css-sizing-3/#preferred-size-properties
     // > Applies to: all elements except non-replaced inlines
     match fragment {
-        Fragment::Box(box_fragment) => !box_fragment.is_inline_box(),
+        Fragment::LayoutRoot(layout_root) => {
+            resolved_size_should_be_used_value(&layout_root.inner())
+        },
+        Fragment::Box(box_fragment) => !box_fragment.with_style().is_inline_box(),
         Fragment::Float(_) |
         Fragment::Positioning(_) |
-        Fragment::AbsoluteOrFixedPositioned(_) |
+        Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
         Fragment::Image(_) |
         Fragment::IFrame(_) => true,
         Fragment::Text(_) => false,
@@ -434,7 +453,7 @@ fn should_honor_min_size_auto(fragment: Option<&Fragment>, style: &ComputedValue
     // <https://github.com/w3c/csswg-drafts/issues/11716>
     // However, when a box is generated and `aspect-ratio` isn't `auto`, we need to preserve
     // the automatic minimum size as `auto`.
-    let Some(Fragment::Box(box_fragment)) = fragment else {
+    let Some(box_fragment) = fragment.and_then(|fragment| fragment.retrieve_box_fragment()) else {
         return false;
     };
     let flags = box_fragment.base.flags;
@@ -579,6 +598,13 @@ struct OffsetParentFragments {
     grandparent: Option<Fragment>,
 }
 
+impl OffsetParentFragments {
+    fn grandparent_box_fragment(&self) -> Option<RefOrAtomicRef<'_, Arc<BoxFragment>>> {
+        self.grandparent
+            .as_ref()
+            .and_then(|grandparent| grandparent.retrieve_box_fragment())
+    }
+}
 /// <https://www.w3.org/TR/2016/WD-cssom-view-1-20160317/#dom-htmlelement-offsetparent>
 #[expect(unsafe_code)]
 fn offset_parent_fragments(node: ServoLayoutNode<'_>) -> Option<OffsetParentFragments> {
@@ -594,9 +620,11 @@ fn offset_parent_fragments(node: ServoLayoutNode<'_>) -> Option<OffsetParentFrag
     ) {
         return None;
     }
-    if matches!(
-        fragment, Fragment::Box(fragment) if fragment.style().get_box().position == Position::Fixed
-    ) {
+
+    if fragment
+        .retrieve_box_fragment()
+        .is_some_and(|fragment| fragment.style().get_box().position == Position::Fixed)
+    {
         return None;
     }
 
@@ -611,9 +639,8 @@ fn offset_parent_fragments(node: ServoLayoutNode<'_>) -> Option<OffsetParentFrag
         maybe_parent_node = unsafe { parent_node.dangerous_dom_parent() };
 
         if let Some(parent_fragment) = parent_node.fragments_for_pseudo(None).first() {
-            let parent_fragment = match parent_fragment {
-                Fragment::Box(box_fragment) | Fragment::Float(box_fragment) => box_fragment,
-                _ => continue,
+            let Some(parent_fragment) = parent_fragment.retrieve_box_fragment() else {
+                continue;
             };
 
             let grandparent_fragment =
@@ -689,7 +716,7 @@ pub fn process_offset_parent_query(
         });
     };
 
-    let parent_fragment = offset_parent_fragment.parent;
+    let parent_fragment = &offset_parent_fragment.parent;
     let parent_is_static_body_element = parent_fragment
         .base
         .flags
@@ -704,13 +731,7 @@ pub fn process_offset_parent_query(
     //    that apply to the element and its ancestors.
     //
     // We generalize this for `offsetRight` as described in the specification.
-    let grandparent_box_fragment = || match offset_parent_fragment.grandparent {
-        Some(Fragment::Box(box_fragment)) | Some(Fragment::Float(box_fragment)) => {
-            Some(box_fragment)
-        },
-        _ => None,
-    };
-
+    //
     // The spec (https://www.w3.org/TR/cssom-view-1/#extensions-to-the-htmlelement-interface)
     // says that offsetTop/offsetLeft are always relative to the padding box of the offsetParent.
     // However, in practice this is not true in major browsers in the case that the offsetParent is the body
@@ -719,7 +740,7 @@ pub fn process_offset_parent_query(
     //
     // See <https://github.com/w3c/csswg-drafts/issues/10549>.
     let parent_offset_rect = if parent_is_static_body_element {
-        if let Some(grandparent_fragment) = grandparent_box_fragment() {
+        if let Some(grandparent_fragment) = offset_parent_fragment.grandparent_box_fragment() {
             grandparent_fragment.offset_by_containing_block(
                 &grandparent_fragment.border_rect(),
                 layout_thread.into(),
@@ -1093,16 +1114,15 @@ fn rendered_text_collection_steps(
                     display,
                     Display::InlineBlock | Display::InlineFlex | Display::InlineGrid
                 );
+
                 // Now we need to decide on whether to remove beginning white space or not, this
                 // is mainly decided by the elements we rendered before, but may be overwritten by the white-space
                 // property.
-                let trim_beginning_white_space =
+                let trim_leading_white_space =
                     !preserve_whitespace && (state.may_start_with_whitespace || is_inline);
-                let with_white_space_rules_applied = WhitespaceCollapse::new(
-                    text_content.chars(),
-                    white_space_collapse,
-                    trim_beginning_white_space,
-                );
+                // FIXME: This assumes the element always start at a word boundary. But can fail:
+                // a<span style="text-transform: capitalize">b</span>c
+                let on_word_boundary = true;
 
                 // Step 4: If node is a Text node, then for each CSS text box produced by node, in
                 // content order, compute the text of the box after application of the CSS
@@ -1111,16 +1131,14 @@ fn rendered_text_collection_steps(
                 // rules are slightly modified: collapsible spaces at the end of lines are always
                 // collapsed, but they are only removed if the line is the last line of the block,
                 // or it ends with a br element. Soft hyphens should be preserved.
-                let text_transform = style.clone_text_transform().case();
-                let mut transformed_text: String =
-                    TextTransformation::new(with_white_space_rules_applied, text_transform)
-                        .collect();
-
-                // Since iterator for capitalize not doing anything, we must handle it outside here
-                // FIXME: This assumes the element always start at a word boundary. But can fail:
-                // a<span style="text-transform: capitalize">b</span>c
-                if TextTransformCase::Capitalize == text_transform {
-                    transformed_text = capitalize_string(&transformed_text, true);
+                let mut transformed_text = String::with_capacity(text_content.len());
+                for iteration in TextTransformationIterator::new(
+                    &text_content,
+                    style,
+                    trim_leading_white_space,
+                    on_word_boundary,
+                ) {
+                    transformed_text.extend(iteration.characters());
                 }
 
                 let is_preformatted_element =
@@ -1161,7 +1179,9 @@ fn rendered_text_collection_steps(
             } else {
                 // If we don't have a parent element then there's no style data available,
                 // in this (pretty unlikely) case we just return the Text fragment as is.
-                items.push(InnerOrOuterTextItem::Text(node.text_content().into()));
+                items.push(InnerOrOuterTextItem::Text(
+                    node.text_content().deref().into(),
+                ));
             }
         },
         Some(LayoutNodeType::Element(LayoutElementType::HTMLBRElement)) => {
@@ -1347,99 +1367,22 @@ fn rendered_text_collection_steps(
     items
 }
 
-struct ClosestFragment {
-    fragment: Arc<TextFragment>,
-    point_in_fragment: Point2D<Au, CSSPixel>,
-    distance: Au,
-    point_in_vertical_bounds: bool,
-}
-
-impl ClosestFragment {
-    fn should_replace(&self, new_distance: Au, point_in_vertical_bounds: bool) -> bool {
-        if point_in_vertical_bounds && !self.point_in_vertical_bounds {
-            return true;
-        }
-        if self.point_in_vertical_bounds && !point_in_vertical_bounds {
-            return false;
-        }
-        new_distance <= self.distance
-    }
-}
-
-pub fn find_character_offset_in_fragment_descendants(
-    node: &ServoLayoutNode,
-    stacking_context_tree: &StackingContextTree,
-    point_in_viewport: Point2D<Au, CSSPixel>,
-) -> Option<usize> {
-    fn maybe_update_closest(
-        fragment: &Fragment,
-        point_in_fragment: Point2D<Au, CSSPixel>,
-        closest_relative_fragment: &mut Option<ClosestFragment>,
-    ) {
-        let Fragment::Text(text_fragment) = fragment else {
-            return;
-        };
-
-        let (distance, point_in_vertical_bounds) = {
-            (
-                text_fragment.distance_to_point_for_glyph_offset(point_in_fragment),
-                text_fragment.point_is_within_vertical_boundaries(point_in_fragment),
-            )
-        };
-
-        if closest_relative_fragment
-            .as_ref()
-            .is_none_or(|closest_fragment| {
-                closest_fragment.should_replace(distance, point_in_vertical_bounds)
-            })
-        {
-            *closest_relative_fragment = Some(ClosestFragment {
-                fragment: text_fragment.clone(),
-                point_in_fragment,
-                distance,
-                point_in_vertical_bounds,
-            });
-        }
-    }
-
-    fn collect_relevant_children(
-        fragment: &Fragment,
-        point_in_viewport: Point2D<Au, CSSPixel>,
-        closest_relative_fragment: &mut Option<ClosestFragment>,
-    ) {
-        maybe_update_closest(fragment, point_in_viewport, closest_relative_fragment);
-
-        if let Some(children) = fragment.children() {
-            for child in children.iter() {
-                let offset = child
-                    .base()
-                    .map(|base| base.rect().origin)
-                    .unwrap_or_default();
-                let point = point_in_viewport - offset.to_vector();
-                collect_relevant_children(child, point, closest_relative_fragment);
-            }
-        }
-    }
-
-    let mut closest_relative_fragment = None;
-    for fragment in &node.fragments_for_pseudo(None) {
-        if let Some(point_in_fragment) =
-            stacking_context_tree.offset_in_fragment(fragment, point_in_viewport)
-        {
-            collect_relevant_children(fragment, point_in_fragment, &mut closest_relative_fragment);
-        }
-    }
-
-    closest_relative_fragment.and_then(|closest_fragment| {
-        closest_fragment
-            .fragment
-            .character_offset(closest_fragment.point_in_fragment)
-    })
-}
-
 pub fn process_containing_block_query(node: ServoLayoutNode) -> Option<UntrustedNodeAddress> {
     let containing_block = containing_block_for_node(node);
     containing_block.map(|node| node.opaque().into())
+}
+
+pub fn process_containing_block_descendant_query(
+    possible_ancestor: ServoLayoutNode,
+    mut possible_descendant: ServoLayoutNode,
+) -> bool {
+    while let Some(establishing_node) = containing_block_for_node(possible_descendant) {
+        if establishing_node == possible_ancestor {
+            return true;
+        }
+        possible_descendant = establishing_node;
+    }
+    false
 }
 
 pub fn process_resolved_font_style_query<'dom, E>(
@@ -1547,14 +1490,23 @@ pub(crate) fn transform_au_rectangle(
     rect_to_transform: Rect<Au, CSSPixel>,
     transform: FastLayoutTransform,
 ) -> Option<Rect<Au, CSSPixel>> {
-    let rect_to_transform = &au_rect_to_f32_rect(rect_to_transform).cast_unit();
-    let outer_transformed_rect = match transform {
+    transform_f32_rectangle(
+        au_rect_to_f32_rect(rect_to_transform).cast_unit(),
+        transform,
+    )
+    .map(|transformed_rect| f32_rect_to_au_rect(transformed_rect).cast_unit())
+}
+
+pub(crate) fn transform_f32_rectangle(
+    rect_to_transform: Rect<f32, LayoutPixel>,
+    transform: FastLayoutTransform,
+) -> Option<Rect<f32, LayoutPixel>> {
+    match transform {
         FastLayoutTransform::Offset(offset) => Some(rect_to_transform.translate(offset)),
         FastLayoutTransform::Transform { transform, .. } => {
-            transform.outer_transformed_rect(rect_to_transform)
+            transform.outer_transformed_rect(&rect_to_transform)
         },
-    };
-    outer_transformed_rect.map(|transformed_rect| f32_rect_to_au_rect(transformed_rect).cast_unit())
+    }
 }
 
 pub(crate) fn process_effective_overflow_query(node: ServoLayoutNode<'_>) -> Option<AxesOverflow> {

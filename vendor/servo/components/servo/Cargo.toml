@@ -17,9 +17,22 @@ crate-type = ["rlib"]
 
 [features]
 # Note: Servoshell does not use the default features of servo, so you also
-# need to add features that should be default to ports/servoshell/Cargo.toml
-default = ["baked-in-resources", "clipboard", "js_jit"]
+# need to add feature-groups that should be default to ports/servoshell/Cargo.toml
+default = ["bundled", "clipboard", "js_jit"]
+## Convenience feature groups, to select multiple related features for a sensible
+#  configuration with `--no-default-features` build
+#
+# A convenience feature to enable all default web features servo has.
+default_web_features = ["brotli-compression-stream", "clipboard", "webgpu", "webxr"]
+# Bundle required resources in the binary.
+bundled = ["baked-in-resources", "bundled_freetype"]
+
+# Individual features below this line.
 background_hang_monitor = ["servo-background-hang-monitor/sampler"]
+
+# Allow brotli to be used for compression and decompression in TransportStream JavaScript API
+brotli-compression-stream = ["script/brotli-compression-stream"]
+
 # This is slightly magical, but this will also work on ohos, where `servo-default-resource` is not added,
 # which makes `baked-in-resources a no-op (as intended) on ohos (and perhaps other platforms in the future).
 baked-in-resources = ["dep:servo-default-resources"]
@@ -31,7 +44,8 @@ bluetooth = [
     "script/bluetooth",
     "script_traits/bluetooth",
 ]
-clipboard = ["dep:arboard"]
+bundled_freetype = ["fonts/bundled_freetype"]
+clipboard = ["dep:arboard", "dep:ohos-pasteboard"]
 crown = ["script/crown"]
 debugmozjs = ["script/debugmozjs"]
 dynamic_freetype = ["webrender/dynamic_freetype"]
@@ -117,7 +131,6 @@ servo-background-hang-monitor = { workspace = true }
 servo-base = { workspace = true }
 servo-bluetooth = { workspace = true, optional = true }
 servo-bluetooth-traits = { workspace = true, optional = true }
-servo-canvas = { workspace = true }
 servo-canvas-traits = { workspace = true }
 servo-config = { workspace = true }
 servo-constellation = { workspace = true }
@@ -156,7 +169,7 @@ webxr = { workspace = true, optional = true }
 arboard = { workspace = true, optional = true }
 webxr = { workspace = true, optional = true, features = ["glwindow", "headless"] }
 
-[target.'cfg(all(not(target_os = "windows"), not(target_os = "ios"), not(target_os = "android"), not(target_env = "ohos"), not(target_arch = "arm"), not(target_arch = "aarch64")))'.dependencies]
+[target.'cfg(all(not(target_os = "windows"), not(target_os = "ios"), not(target_os = "android"), not(target_env = "ohos"), not(target_arch = "arm"), not(target_arch = "aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64")))'.dependencies]
 gaol = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -164,16 +177,17 @@ webxr = { workspace = true, optional = true, features = ["glwindow", "headless",
 
 [target.'cfg(target_env = "ohos")'.dependencies]
 servo-media-ohos = { workspace = true }
+ohos-pasteboard = { workspace = true, optional = true }
 
 [dev-dependencies]
 accesskit_consumer = { workspace = true }
-bun_boringssl = { path = "../../../../src/boringssl" }
 content-security-policy = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 itertools = { workspace = true }
 net = { workspace = true, features = ["test-util"] }
+rustls = { workspace = true, default-features = false }
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
 servo = { path = ".", features = ["testbinding", "tracing"] }

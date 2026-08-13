@@ -21,7 +21,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use webrender_api::{
     ExternalScrollId, FontInstanceKey, FontKey, IdNamespace, ImageKey,
-    PipelineId as WebRenderPipelineId, SpatialTreeItemKey,
+    PipelineId as WebRenderPipelineId,
 };
 
 use crate::generic_channel::{self, GenericReceiver, GenericSender};
@@ -392,11 +392,9 @@ impl fmt::Display for WebViewId {
     }
 }
 
-impl From<WebViewId> for SpatialTreeItemKey {
-    fn from(webview_id: WebViewId) -> Self {
-        Self::new(webview_id.1.index.0.get() as u64, 0)
-    }
-}
+// BAO note: the previous `impl From<WebViewId> for SpatialTreeItemKey` was
+// removed — webrender 0.70 dropped the SpatialTreeItemKey type entirely and
+// no downstream consumer references the conversion.
 
 impl WebViewId {
     pub fn new(painter_id: PainterId) -> WebViewId {

@@ -17,16 +17,16 @@ use fonts::{
     ShapingOptions,
 };
 use icu_locid::subtags::Language;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use net_traits::image_cache::{ImageCache, ImageResponse};
 use net_traits::request::CorsSettings;
 use pixels::{Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use script_bindings::cell::DomRefCell;
 use servo_arc::Arc as ServoArc;
-use servo_base::generic_channel::GenericSender;
+use servo_base::generic_channel::GenericBufferedSender;
 use servo_base::{Epoch, generic_channel};
 use servo_canvas_traits::canvas::{
-    Canvas2dMsg, CanvasFont, CanvasId, CanvasMsg, CompositionOptions, CompositionOrBlending,
+    CanvasCommand, CanvasFont, CanvasId, CanvasMsg, CompositionOptions, CompositionOrBlending,
     FillOrStrokeStyle, FillRule, GlyphAndPosition, LineCapStyle, LineJoinStyle, LineOptions,
     LinearGradientStyle, Path, RadialGradientStyle, RepetitionStyle, ShadowOptions, TextRun,
 };
@@ -46,12 +46,11 @@ use style::values::specified::color::Color;
 use style_traits::values::ToCss;
 use style_traits::{CssWriter, ParsingMode};
 use unicode_script::Script;
-use url::Url;
 use webrender_api::ImageKey;
 
 use crate::canvas_context::{CanvasContext, OffscreenRenderingContext, RenderingContext};
 use crate::conversions::Convert;
-use crate::css::parser_context_for_anonymous_content;
+use crate::css::{ANONYMOUS_CONTENT_URL_DATA, parser_context_for_anonymous_content};
 use crate::dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::{
     CanvasDirection, CanvasFillRule, CanvasImageSource, CanvasLineCap, CanvasLineJoin,
     CanvasTextAlign, CanvasTextBaseline, ImageDataMethods,
@@ -78,7 +77,6 @@ use crate::dom::node::{Node, NodeTraits};
 use crate::dom::offscreencanvas::OffscreenCanvas;
 use crate::dom::paintworkletglobalscope::PaintWorkletGlobalScope;
 use crate::dom::textmetrics::TextMetrics;
-use crate::script_runtime::CanGc;
 
 const HANGING_BASELINE_DEFAULT: f64 = 0.8;
 const IDEOGRAPHIC_BASELINE_DEFAULT: f64 = 0.5;
@@ -197,8 +195,6 @@ impl CanvasContextState {
 #[derive(JSTraceable, MallocSizeOf)]
 pub(super) struct CanvasState {
     #[no_trace]
-    canvas_thread_sender: GenericSender<CanvasMsg>,
-    #[no_trace]
     canvas_id: CanvasId,
     #[no_trace]
     size: Cell<Size2D<u64>>,
@@ -220,6 +216,10 @@ pub(super) struct CanvasState {
     /// <https://html.spec.whatwg.org/multipage/#current-default-path>
     #[no_trace]
     current_default_path: DomRefCell<Path>,
+    /// Buffered sender for batching canvas commands.
+    #[ignore_malloc_size_of = "GenericBufferedSender"]
+    #[no_trace]
+    pub(super) buffered_sender: GenericBufferedSender<CanvasMsg, CanvasCommand>,
 }
 
 impl CanvasState {
@@ -246,7 +246,6 @@ impl CanvasState {
             global.origin().immutable().clone()
         };
         Some(CanvasState {
-            canvas_thread_sender,
             canvas_id,
             size: Cell::new(size),
             state: DomRefCell::new(CanvasContextState::new()),
@@ -257,11 +256,17 @@ impl CanvasState {
             saved_states: DomRefCell::new(Vec::new()),
             origin,
             current_default_path: DomRefCell::new(Path::new()),
+            buffered_sender: GenericBufferedSender::new(
+                canvas_thread_sender,
+                Box::new(move |cmds| (canvas_id, CanvasCommand::ProcessBatchMessages(cmds))),
+                servo_config::pref!(dom_canvas_msg_buffer_size) as usize,
+            ),
         })
     }
 
     pub(super) fn set_image_key(&self, image_key: ImageKey) {
-        self.send_canvas_2d_msg(Canvas2dMsg::SetImageKey(image_key));
+        // Flushing is not required for correctness, but optimization heuristics for heavy command.
+        self.send_canvas_command_immediate(CanvasCommand::SetImageKey(image_key));
     }
 
     pub(super) fn get_missing_image_urls(&self) -> &DomRefCell<Vec<ServoUrl>> {
@@ -272,18 +277,31 @@ impl CanvasState {
         self.canvas_id
     }
 
+    pub(super) fn bitmap_dimensions(&self) -> Size2D<u64> {
+        self.size.get()
+    }
+
     pub(super) fn is_paintable(&self) -> bool {
         !self.size.get().is_empty()
     }
 
-    pub(super) fn send_canvas_2d_msg(&self, msg: Canvas2dMsg) {
+    pub(super) fn send_canvas_command(&self, msg: CanvasCommand) {
         if !self.is_paintable() {
             return;
         }
+        self.buffered_sender.send(msg).unwrap();
+    }
 
-        self.canvas_thread_sender
-            .send(CanvasMsg::Canvas2d(msg, self.get_canvas_id()))
-            .unwrap()
+    /// Send a canvas command immediately.
+    /// If there are buffered commands, they are combined with this message
+    /// into a single `ProcessBatchMessages` to preserve ordering and avoid
+    /// two separate sends.
+    pub(super) fn send_canvas_command_immediate(&self, msg: CanvasCommand) {
+        if !self.is_paintable() {
+            self.buffered_sender.flush().unwrap();
+        } else {
+            self.buffered_sender.send_immediate(msg).unwrap();
+        }
     }
 
     /// Updates WR image and blocks on completion
@@ -292,12 +310,7 @@ impl CanvasState {
             return false;
         }
 
-        self.canvas_thread_sender
-            .send(CanvasMsg::Canvas2d(
-                Canvas2dMsg::UpdateImage(canvas_epoch),
-                self.canvas_id,
-            ))
-            .unwrap();
+        self.send_canvas_command_immediate(CanvasCommand::UpdateImage(canvas_epoch));
         true
     }
 
@@ -308,13 +321,10 @@ impl CanvasState {
 
         // Step 2. Resize the output bitmap to the new width and height.
         self.size.replace(adjust_canvas_size(size));
-
-        self.canvas_thread_sender
-            .send(CanvasMsg::Recreate(
-                Some(self.size.get()),
-                self.get_canvas_id(),
-            ))
-            .unwrap();
+        // Discard buffered commands targeting the old canvas.
+        self.buffered_sender.discard();
+        // Flushing is not required for correctness, but optimization heuristics for heavy command.
+        self.send_canvas_command_immediate(CanvasCommand::Recreate(Some(self.size.get())));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#reset-the-rendering-context-to-its-default-state>
@@ -326,9 +336,10 @@ impl CanvasState {
         }
 
         // Step 1. Clear canvas's bitmap to transparent black.
-        self.canvas_thread_sender
-            .send(CanvasMsg::Recreate(None, self.get_canvas_id()))
-            .unwrap();
+        // Discard buffered commands targeting the old canvas.
+        self.buffered_sender.discard();
+        // Flushing is not required for correctness, but optimization heuristics for heavy command.
+        self.send_canvas_command_immediate(CanvasCommand::Recreate(None));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#reset-the-rendering-context-to-its-default-state>
@@ -355,7 +366,7 @@ impl CanvasState {
             return;
         }
 
-        self.send_canvas_2d_msg(Canvas2dMsg::ClearRect(
+        self.send_canvas_command(CanvasCommand::ClearRect(
             self.size.get().to_f32().into(),
             Transform2D::identity(),
         ));
@@ -388,7 +399,7 @@ impl CanvasState {
     fn is_origin_clean(&self, source: CanvasImageSource) -> bool {
         match source {
             CanvasImageSource::HTMLImageElement(image) => {
-                image.same_origin(GlobalScope::entry().origin())
+                image.same_origin(&GlobalScope::entry().origin())
             },
             CanvasImageSource::HTMLVideoElement(video) => video.origin_is_clean(),
             CanvasImageSource::HTMLCanvasElement(canvas) => canvas.origin_is_clean(),
@@ -580,7 +591,7 @@ impl CanvasState {
 
         let smoothing_enabled = self.state.borrow().image_smoothing_enabled;
 
-        self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+        self.send_canvas_command(CanvasCommand::DrawImage(
             snapshot.to_shared(),
             dest_rect,
             source_rect,
@@ -629,7 +640,7 @@ impl CanvasState {
 
         let smoothing_enabled = self.state.borrow().image_smoothing_enabled;
 
-        self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+        self.send_canvas_command(CanvasCommand::DrawImage(
             snapshot.to_shared(),
             dest_rect,
             source_rect,
@@ -679,7 +690,8 @@ impl CanvasState {
         if let Some(context) = canvas.context() {
             match *context {
                 OffscreenRenderingContext::Context2d(ref context) => {
-                    context.send_canvas_2d_msg(Canvas2dMsg::DrawImageInOther(
+                    self.buffered_sender.flush().unwrap();
+                    context.send_canvas_command_immediate(CanvasCommand::DrawImageInOther(
                         self.get_canvas_id(),
                         dest_rect,
                         source_rect,
@@ -694,7 +706,7 @@ impl CanvasState {
                         return Ok(());
                     };
 
-                    self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+                    self.send_canvas_command(CanvasCommand::DrawImage(
                         snapshot.to_shared(),
                         dest_rect,
                         source_rect,
@@ -709,7 +721,7 @@ impl CanvasState {
                         return Ok(());
                     };
 
-                    self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+                    self.send_canvas_command(CanvasCommand::DrawImage(
                         snapshot.to_shared(),
                         dest_rect,
                         source_rect,
@@ -725,7 +737,7 @@ impl CanvasState {
                         return Ok(());
                     };
 
-                    self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+                    self.send_canvas_command(CanvasCommand::DrawImage(
                         snapshot.to_shared(),
                         dest_rect,
                         source_rect,
@@ -738,7 +750,7 @@ impl CanvasState {
                 OffscreenRenderingContext::Detached => return Err(Error::InvalidState(None)),
             }
         } else {
-            self.send_canvas_2d_msg(Canvas2dMsg::DrawEmptyImage(
+            self.send_canvas_command(CanvasCommand::DrawEmptyImage(
                 image_size,
                 dest_rect,
                 source_rect,
@@ -789,7 +801,8 @@ impl CanvasState {
         if let Some(context) = canvas.context() {
             match *context {
                 RenderingContext::Context2d(ref context) => {
-                    context.send_canvas_2d_msg(Canvas2dMsg::DrawImageInOther(
+                    self.buffered_sender.flush().unwrap();
+                    context.send_canvas_command_immediate(CanvasCommand::DrawImageInOther(
                         self.get_canvas_id(),
                         dest_rect,
                         source_rect,
@@ -804,7 +817,7 @@ impl CanvasState {
                         return Ok(());
                     };
 
-                    self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+                    self.send_canvas_command(CanvasCommand::DrawImage(
                         snapshot.to_shared(),
                         dest_rect,
                         source_rect,
@@ -819,8 +832,9 @@ impl CanvasState {
                         return Err(Error::InvalidState(None));
                     };
                     match *context {
-                        OffscreenRenderingContext::Context2d(ref context) => context
-                            .send_canvas_2d_msg(Canvas2dMsg::DrawImageInOther(
+                        OffscreenRenderingContext::Context2d(ref context) => {
+                            self.buffered_sender.flush().unwrap();
+                            context.send_canvas_command_immediate(CanvasCommand::DrawImageInOther(
                                 self.get_canvas_id(),
                                 dest_rect,
                                 source_rect,
@@ -828,13 +842,14 @@ impl CanvasState {
                                 self.state.borrow().shadow_options(),
                                 self.state.borrow().composition_options(),
                                 self.state.borrow().transform,
-                            )),
+                            ));
+                        },
                         OffscreenRenderingContext::BitmapRenderer(ref context) => {
                             let Some(snapshot) = context.get_image_data() else {
                                 return Ok(());
                             };
 
-                            self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+                            self.send_canvas_command(CanvasCommand::DrawImage(
                                 snapshot.to_shared(),
                                 dest_rect,
                                 source_rect,
@@ -849,7 +864,7 @@ impl CanvasState {
                                 return Ok(());
                             };
 
-                            self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+                            self.send_canvas_command(CanvasCommand::DrawImage(
                                 snapshot.to_shared(),
                                 dest_rect,
                                 source_rect,
@@ -865,7 +880,7 @@ impl CanvasState {
                                 return Ok(());
                             };
 
-                            self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+                            self.send_canvas_command(CanvasCommand::DrawImage(
                                 snapshot.to_shared(),
                                 dest_rect,
                                 source_rect,
@@ -883,7 +898,7 @@ impl CanvasState {
                 _ => return Err(Error::InvalidState(None)),
             }
         } else {
-            self.send_canvas_2d_msg(Canvas2dMsg::DrawEmptyImage(
+            self.send_canvas_command(CanvasCommand::DrawEmptyImage(
                 image_size,
                 dest_rect,
                 source_rect,
@@ -932,7 +947,7 @@ impl CanvasState {
         }
 
         let smoothing_enabled = self.state.borrow().image_smoothing_enabled;
-        self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+        self.send_canvas_command(CanvasCommand::DrawImage(
             snapshot.to_shared(),
             dest_rect,
             source_rect,
@@ -981,7 +996,7 @@ impl CanvasState {
 
         let smoothing_enabled = self.state.borrow().image_smoothing_enabled;
 
-        self.send_canvas_2d_msg(Canvas2dMsg::DrawImage(
+        self.send_canvas_command(CanvasCommand::DrawImage(
             snapshot.to_shared(),
             dest_rect,
             source_rect,
@@ -1082,7 +1097,7 @@ impl CanvasState {
     pub(super) fn fill_rect(&self, x: f64, y: f64, width: f64, height: f64) {
         if let Some(rect) = self.create_drawable_rect(x, y, width, height) {
             let style = self.state.borrow().fill_style.to_fill_or_stroke_style();
-            self.send_canvas_2d_msg(Canvas2dMsg::FillRect(
+            self.send_canvas_command(CanvasCommand::FillRect(
                 rect,
                 style,
                 self.state.borrow().shadow_options(),
@@ -1095,7 +1110,10 @@ impl CanvasState {
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-clearrect
     pub(super) fn clear_rect(&self, x: f64, y: f64, width: f64, height: f64) {
         if let Some(rect) = self.create_drawable_rect(x, y, width, height) {
-            self.send_canvas_2d_msg(Canvas2dMsg::ClearRect(rect, self.state.borrow().transform));
+            self.send_canvas_command(CanvasCommand::ClearRect(
+                rect,
+                self.state.borrow().transform,
+            ));
         }
     }
 
@@ -1103,7 +1121,7 @@ impl CanvasState {
     pub(super) fn stroke_rect(&self, x: f64, y: f64, width: f64, height: f64) {
         if let Some(rect) = self.create_drawable_rect(x, y, width, height) {
             let style = self.state.borrow().stroke_style.to_fill_or_stroke_style();
-            self.send_canvas_2d_msg(Canvas2dMsg::StrokeRect(
+            self.send_canvas_command(CanvasCommand::StrokeRect(
                 rect,
                 style,
                 self.state.borrow().line_options(),
@@ -1397,7 +1415,7 @@ impl CanvasState {
         if let Some(state) = saved_states.pop() {
             let clips_to_pop = self.state.borrow().clips_pushed;
             if clips_to_pop != 0 {
-                self.send_canvas_2d_msg(Canvas2dMsg::PopClips(clips_to_pop));
+                self.send_canvas_command(CanvasCommand::PopClips(clips_to_pop));
             }
             self.state.borrow_mut().clone_from(&state);
         }
@@ -1476,7 +1494,7 @@ impl CanvasState {
         ) else {
             return;
         };
-        self.send_canvas_2d_msg(Canvas2dMsg::FillText(
+        self.send_canvas_command(CanvasCommand::FillText(
             bounds,
             text_run,
             self.state.borrow().fill_style.to_fill_or_stroke_style(),
@@ -1520,7 +1538,7 @@ impl CanvasState {
         ) else {
             return;
         };
-        self.send_canvas_2d_msg(Canvas2dMsg::StrokeText(
+        self.send_canvas_command(CanvasCommand::StrokeText(
             bounds,
             text_run,
             self.state.borrow().stroke_style.to_fill_or_stroke_style(),
@@ -1553,11 +1571,7 @@ impl CanvasState {
             self.set_font(canvas, CanvasContextState::DEFAULT_FONT_STYLE.into());
         }
 
-        let Some(font_context) = global.font_context() else {
-            warn!("Tried to paint to a canvas of GlobalScope without a FontContext.");
-            return TextMetrics::default(global, cx);
-        };
-
+        let font_context = &global.font_context();
         let font_style = self.font_style();
         let font_group = font_context.font_group(font_style);
         let font = font_group.first(font_context).expect("couldn't find font");
@@ -1807,38 +1821,38 @@ impl CanvasState {
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-createimagedata
     pub(super) fn create_image_data(
         &self,
+        cx: &mut JSContext,
         global: &GlobalScope,
         sw: i32,
         sh: i32,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<ImageData>> {
         if sw == 0 || sh == 0 {
             return Err(Error::IndexSize(None));
         }
-        ImageData::new(global, sw.unsigned_abs(), sh.unsigned_abs(), None, can_gc)
+        ImageData::new(cx, global, sw.unsigned_abs(), sh.unsigned_abs(), None)
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-createimagedata
     pub(super) fn create_image_data_(
         &self,
+        cx: &mut JSContext,
         global: &GlobalScope,
         imagedata: &ImageData,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<ImageData>> {
-        ImageData::new(global, imagedata.Width(), imagedata.Height(), None, can_gc)
+        ImageData::new(cx, global, imagedata.Width(), imagedata.Height(), None)
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-getimagedata
     #[expect(clippy::too_many_arguments)]
     pub(super) fn get_image_data(
         &self,
+        cx: &mut JSContext,
         canvas_size: Size2D<u32>,
         global: &GlobalScope,
         sx: i32,
         sy: i32,
         sw: i32,
         sh: i32,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<ImageData>> {
         // FIXME(nox): There are many arithmetic operations here that can
         // overflow or underflow, this should probably be audited.
@@ -1856,13 +1870,16 @@ impl CanvasState {
             Some(rect) => rect,
             None => {
                 // All the pixels are outside the canvas surface.
-                return ImageData::new(global, size.width, size.height, None, can_gc);
+                return ImageData::new(cx, global, size.width, size.height, None);
             },
         };
 
         let data = if self.is_paintable() {
             let (sender, receiver) = generic_channel::channel().unwrap();
-            self.send_canvas_2d_msg(Canvas2dMsg::GetImageData(Some(read_rect), sender));
+            self.send_canvas_command_immediate(CanvasCommand::GetImageData(
+                Some(read_rect),
+                sender,
+            ));
 
             let mut snapshot = receiver.recv().unwrap().to_owned();
             snapshot.transform(
@@ -1876,18 +1893,20 @@ impl CanvasState {
             None
         };
 
-        ImageData::new(global, size.width, size.height, data, can_gc)
+        ImageData::new(cx, global, size.width, size.height, data)
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-putimagedata
     pub(super) fn put_image_data(
         &self,
+        no_gc: &NoGC,
         canvas_size: Size2D<u32>,
         imagedata: &ImageData,
         dx: i32,
         dy: i32,
     ) {
         self.put_image_data_(
+            no_gc,
             canvas_size,
             imagedata,
             dx,
@@ -1903,6 +1922,7 @@ impl CanvasState {
     #[expect(clippy::too_many_arguments)]
     pub(super) fn put_image_data_(
         &self,
+        no_gc: &NoGC,
         canvas_size: Size2D<u32>,
         imagedata: &ImageData,
         dx: i32,
@@ -1951,8 +1971,13 @@ impl CanvasState {
         };
 
         // Step 7.
-        let snapshot = imagedata.get_snapshot_rect(Rect::new(src_rect.origin, dst_rect.size));
-        self.send_canvas_2d_msg(Canvas2dMsg::PutImageData(dst_rect, snapshot.to_shared()));
+        let snapshot =
+            imagedata.get_snapshot_rect(no_gc, Rect::new(src_rect.origin, dst_rect.size));
+        // Flushing is not required for correctness, but optimization heuristics for heavy command.
+        self.send_canvas_command_immediate(CanvasCommand::PutImageData(
+            dst_rect,
+            snapshot.to_shared(),
+        ));
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-drawimage
@@ -2053,7 +2078,7 @@ impl CanvasState {
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-fill
     pub(super) fn fill_(&self, path: Path, fill_rule: CanvasFillRule) {
         let style = self.state.borrow().fill_style.to_fill_or_stroke_style();
-        self.send_canvas_2d_msg(Canvas2dMsg::FillPath(
+        self.send_canvas_command(CanvasCommand::FillPath(
             style,
             path,
             fill_rule.convert(),
@@ -2071,7 +2096,7 @@ impl CanvasState {
 
     pub(super) fn stroke_(&self, path: Path) {
         let style = self.state.borrow().stroke_style.to_fill_or_stroke_style();
-        self.send_canvas_2d_msg(Canvas2dMsg::StrokePath(
+        self.send_canvas_command(CanvasCommand::StrokePath(
             path,
             style,
             self.state.borrow().line_options(),
@@ -2090,7 +2115,7 @@ impl CanvasState {
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-clip
     pub(super) fn clip_(&self, path: Path, fill_rule: CanvasFillRule) {
         self.state.borrow_mut().clips_pushed += 1;
-        self.send_canvas_2d_msg(Canvas2dMsg::ClipPath(
+        self.send_canvas_command(CanvasCommand::ClipPath(
             path,
             fill_rule.convert(),
             self.state.borrow().transform,
@@ -2179,8 +2204,8 @@ impl CanvasState {
         global: &GlobalScope,
         cx: &mut JSContext,
     ) -> DomRoot<DOMMatrix> {
-        let transform = self.state.borrow_mut().transform;
-        DOMMatrix::new(global, true, transform.to_3d(), CanGc::from_cx(cx))
+        let transform = self.state.safe_borrow_mut(cx.no_gc()).transform;
+        DOMMatrix::new(cx, global, true, transform.to_3d())
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-settransform>
@@ -2324,10 +2349,7 @@ impl CanvasState {
         size: f64,
         max_width: Option<f64>,
     ) -> Option<(Rect<f64>, Vec<TextRun>)> {
-        let Some(font_context) = global_scope.font_context() else {
-            warn!("Tried to paint to a canvas of GlobalScope without a FontContext.");
-            return None;
-        };
+        let font_context = &global_scope.font_context();
 
         // Step 1: If maxWidth was provided but is less than or equal to zero or equal to NaN, then return an empty array.
         if max_width.is_some_and(|max_width| max_width.is_nan() || max_width <= 0.) {
@@ -2506,10 +2528,9 @@ impl CanvasState {
 
 impl Drop for CanvasState {
     fn drop(&mut self) {
-        if let Err(err) = self
-            .canvas_thread_sender
-            .send(CanvasMsg::Close(self.canvas_id))
-        {
+        // Discard buffered commands before closing the canvas.
+        self.buffered_sender.discard();
+        if let Err(err) = self.buffered_sender.send_immediate(CanvasCommand::Destroy) {
             warn!("Could not close canvas: {}", err)
         }
     }
@@ -2559,6 +2580,7 @@ impl UnshapedTextRun<'_> {
             east_asian: FontVariantEastAsian::NORMAL,
             feature_settings: FontFeatureSettings::normal(),
             position: FontVariantPosition::Normal,
+            alternates: Default::default(),
         };
 
         let glyphs = font.shape_text(self.string, &options);
@@ -2616,9 +2638,11 @@ pub(super) fn parse_color(
     let string = string.str();
     let mut input = ParserInput::new(&string);
     let mut parser = Parser::new(&mut input);
-    let url = Url::parse("about:blank").unwrap().into();
-    let context =
-        parser_context_for_anonymous_content(CssRuleType::Style, ParsingMode::DEFAULT, &url);
+    let context = parser_context_for_anonymous_content(
+        CssRuleType::Style,
+        ParsingMode::DEFAULT,
+        &ANONYMOUS_CONTENT_URL_DATA,
+    );
 
     // Step 1. Parse input as a <color>. If the result is failure, return failure;
     // otherwise, let color be the result.

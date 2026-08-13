@@ -3,14 +3,15 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use euclid::default::{Point2D, Rect, Size2D, Transform2D};
+use malloc_size_of::MallocSizeOfOps;
 use paint_api::CrossProcessPaintApi;
 use pixels::Snapshot;
+use profile_traits::mem::Report;
 use servo_base::Epoch;
 use servo_canvas_traits::canvas::*;
 use webrender_api::ImageKey;
 
 use crate::backend::GenericDrawTarget;
-use crate::canvas_noise::CanvasNoiseConfig;
 
 // Asserts on WR texture cache update for zero sized image with raw data.
 // https://github.com/servo/webrender/blob/main/webrender/src/texture_cache.rs#L1475
@@ -26,7 +27,6 @@ pub(crate) struct CanvasData<DrawTarget: GenericDrawTarget> {
     draw_target: DrawTarget,
     paint_api: CrossProcessPaintApi,
     image_key: Option<ImageKey>,
-    noise_config: CanvasNoiseConfig,
 }
 
 impl<DrawTarget: GenericDrawTarget> CanvasData<DrawTarget> {
@@ -38,8 +38,6 @@ impl<DrawTarget: GenericDrawTarget> CanvasData<DrawTarget> {
             draw_target: DrawTarget::new(size.max(MIN_WR_IMAGE_SIZE).cast()),
             paint_api,
             image_key: None,
-            noise_config: crate::canvas_noise::get_global_canvas_noise()
-                .map_or_else(CanvasNoiseConfig::disabled, |(seed, amp)| CanvasNoiseConfig::new(seed, amp)),
         }
     }
 
@@ -50,6 +48,31 @@ impl<DrawTarget: GenericDrawTarget> CanvasData<DrawTarget> {
         if let Some(old_image_key) = self.image_key.replace(image_key) {
             self.paint_api.delete_image(old_image_key);
         }
+    }
+
+    /// Returns memory-usage reports for a canvas.
+    ///
+    /// Called once for each canvas during memory reporting.
+    pub(crate) fn collect_memory_report(
+        &self,
+        canvas_id: CanvasId,
+        ops: &mut MallocSizeOfOps,
+    ) -> Vec<Report> {
+        let dimensions = self.draw_target.get_size();
+        let canvas_info_string = format!(
+            "canvas(id={}, {}x{})",
+            canvas_id.0, dimensions.width, dimensions.height
+        );
+        self.draw_target
+            .canvas_store_sizes(ops)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|canvas_store_type| Report {
+                path: profile_traits::path!["canvas", canvas_info_string, canvas_store_type.name],
+                kind: canvas_store_type.kind,
+                size: canvas_store_type.size,
+            })
+            .collect()
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -415,13 +438,11 @@ impl<DrawTarget: GenericDrawTarget> CanvasData<DrawTarget> {
     /// It reads image data from the canvas
     /// canvas_size: The size of the canvas we're reading from
     /// read_rect: The area of the canvas we want to read from
-    /// apply_noise: Whether to apply anti-fingerprinting noise (true for JS readback,
-    ///   false for canvas-to-canvas copies to prevent noise compounding)
     #[servo_tracing::instrument(skip_all)]
-    pub(crate) fn read_pixels(&mut self, read_rect: Option<Rect<u32>>, apply_noise: bool) -> Snapshot {
+    pub(crate) fn read_pixels(&mut self, read_rect: Option<Rect<u32>>) -> Snapshot {
         let canvas_size = self.draw_target.get_size().cast();
 
-        let mut snapshot = if let Some(read_rect) = read_rect {
+        if let Some(read_rect) = read_rect {
             let canvas_rect = Rect::from_size(canvas_size);
             if canvas_rect
                 .intersection(&read_rect)
@@ -433,26 +454,7 @@ impl<DrawTarget: GenericDrawTarget> CanvasData<DrawTarget> {
             }
         } else {
             self.draw_target.snapshot()
-        };
-
-        if apply_noise && self.noise_config.is_enabled() {
-            // Ensure RGBA8 unpremultiplied format before applying noise
-            snapshot.transform(
-                pixels::SnapshotAlphaMode::Transparent {
-                    premultiplied: false,
-                },
-                pixels::SnapshotPixelFormat::RGBA,
-            );
-            let width = snapshot.size().width;
-            let height = snapshot.size().height;
-            self.noise_config.apply_to_pixels(snapshot.as_raw_bytes_mut(), width, height);
         }
-
-        snapshot
-    }
-
-    pub(crate) fn set_noise_config(&mut self, config: CanvasNoiseConfig) {
-        self.noise_config = config;
     }
 
     pub(crate) fn pop_clips(&mut self, clips: usize) {

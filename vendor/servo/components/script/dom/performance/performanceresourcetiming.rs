@@ -33,6 +33,7 @@ pub(crate) enum InitiatorType {
     Navigation,
     XMLHttpRequest,
     Fetch,
+    Track,
     Other,
 }
 
@@ -72,57 +73,18 @@ pub(crate) struct PerformanceResourceTiming {
 
 // TODO(#21269): next_hop
 // TODO(#21264): worker_start
-// TODO(#21258): fetch_start
-// TODO(#21259): domain_lookup_start
 // TODO(#21260): domain_lookup_end
-// TODO(#21261): connect_start
-// TODO(#21262): connect_end
 impl PerformanceResourceTiming {
     pub(crate) fn new_inherited(
         url: ServoUrl,
         initiator_type: InitiatorType,
-        next_hop: Option<DOMString>,
-        fetch_start: Option<CrossProcessInstant>,
-    ) -> PerformanceResourceTiming {
-        let entry_type = if initiator_type == InitiatorType::Navigation {
-            EntryType::Navigation
-        } else {
-            EntryType::Resource
-        };
-        PerformanceResourceTiming {
-            entry: PerformanceEntry::new_inherited(
-                DOMString::from(url.into_string()),
-                entry_type,
-                None,
-                Duration::ZERO,
-            ),
-            initiator_type,
-            next_hop,
-            worker_start: None,
-            redirect_start: None,
-            redirect_end: None,
-            fetch_start,
-            domain_lookup_end: None,
-            domain_lookup_start: None,
-            connect_start: None,
-            connect_end: None,
-            secure_connection_start: None,
-            request_start: None,
-            response_start: None,
-            response_end: None,
-            transfer_size: 0,
-            encoded_body_size: 0,
-            decoded_body_size: 0,
-        }
-    }
-
-    // TODO fetch start should be in RFT
-    fn from_resource_timing(
-        url: ServoUrl,
-        initiator_type: InitiatorType,
-        next_hop: Option<DOMString>,
         resource_timing: &ResourceFetchTiming,
     ) -> PerformanceResourceTiming {
+        let (entry_type, start_time) = if initiator_type == InitiatorType::Navigation {
+            (EntryType::Navigation, None)
+        } else {
+            (EntryType::Resource, resource_timing.start_time)
+        };
         let duration = match (resource_timing.start_time, resource_timing.response_end) {
             (Some(start_time), Some(end_time)) => end_time - start_time,
             _ => Duration::ZERO,
@@ -130,18 +92,17 @@ impl PerformanceResourceTiming {
         PerformanceResourceTiming {
             entry: PerformanceEntry::new_inherited(
                 DOMString::from(url.into_string()),
-                EntryType::Resource,
-                resource_timing.start_time,
+                entry_type,
+                start_time,
                 duration,
             ),
             initiator_type,
-            next_hop,
+            next_hop: None,
             worker_start: None,
             redirect_start: resource_timing.redirect_start,
             redirect_end: resource_timing.redirect_end,
             fetch_start: resource_timing.fetch_start,
             domain_lookup_start: resource_timing.domain_lookup_start,
-            // TODO (#21260)
             domain_lookup_end: None,
             connect_start: resource_timing.connect_start,
             connect_end: resource_timing.connect_end,
@@ -160,14 +121,12 @@ impl PerformanceResourceTiming {
         global: &GlobalScope,
         url: ServoUrl,
         initiator_type: InitiatorType,
-        next_hop: Option<DOMString>,
         resource_timing: &ResourceFetchTiming,
     ) -> DomRoot<PerformanceResourceTiming> {
         reflect_dom_object_with_cx(
-            Box::new(PerformanceResourceTiming::from_resource_timing(
+            Box::new(PerformanceResourceTiming::new_inherited(
                 url,
                 initiator_type,
-                next_hop,
                 resource_timing,
             )),
             global,
@@ -180,10 +139,11 @@ impl PerformanceResourceTiming {
     /// always after that time.
     pub(crate) fn to_dom_high_res_time_stamp(
         &self,
+        cx: &mut JSContext,
         instant: Option<CrossProcessInstant>,
     ) -> DOMHighResTimeStamp {
         self.global()
-            .performance()
+            .performance(cx)
             .maybe_to_dom_high_res_time_stamp(instant)
     }
 }
@@ -199,6 +159,7 @@ impl PerformanceResourceTimingMethods<crate::DomTypeHolder> for PerformanceResou
             InitiatorType::Navigation => DOMString::from("navigation"),
             InitiatorType::XMLHttpRequest => DOMString::from("xmlhttprequest"),
             InitiatorType::Fetch => DOMString::from("fetch"),
+            InitiatorType::Track => DOMString::from("track"),
             InitiatorType::Other => DOMString::from("other"),
         }
     }
@@ -214,18 +175,18 @@ impl PerformanceResourceTimingMethods<crate::DomTypeHolder> for PerformanceResou
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-domainlookupstart>
-    fn DomainLookupStart(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.domain_lookup_start)
+    fn DomainLookupStart(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.domain_lookup_start)
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-domainlookupend>
-    fn DomainLookupEnd(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.domain_lookup_end)
+    fn DomainLookupEnd(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.domain_lookup_end)
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-secureconnectionstart>
-    fn SecureConnectionStart(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.secure_connection_start)
+    fn SecureConnectionStart(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.secure_connection_start)
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-transfersize>
@@ -244,42 +205,42 @@ impl PerformanceResourceTimingMethods<crate::DomTypeHolder> for PerformanceResou
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-requeststart>
-    fn RequestStart(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.request_start)
+    fn RequestStart(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.request_start)
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-redirectstart>
-    fn RedirectStart(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.redirect_start)
+    fn RedirectStart(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.redirect_start)
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-redirectend>
-    fn RedirectEnd(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.redirect_end)
+    fn RedirectEnd(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.redirect_end)
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-responsestart>
-    fn ResponseStart(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.response_start)
+    fn ResponseStart(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.response_start)
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-fetchstart>
-    fn FetchStart(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.fetch_start)
+    fn FetchStart(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.fetch_start)
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-connectstart>
-    fn ConnectStart(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.connect_start)
+    fn ConnectStart(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.connect_start)
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-connectend>
-    fn ConnectEnd(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.connect_end)
+    fn ConnectEnd(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.connect_end)
     }
 
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-responseend>
-    fn ResponseEnd(&self) -> DOMHighResTimeStamp {
-        self.to_dom_high_res_time_stamp(self.response_end)
+    fn ResponseEnd(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.to_dom_high_res_time_stamp(cx, self.response_end)
     }
 }

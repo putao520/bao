@@ -20,11 +20,12 @@ use embedder_traits::{
     Theme, ViewportDetails, WebDriverScriptCommand,
 };
 use euclid::{Scale, Size2D};
-use fonts_traits::SystemFontServiceProxySender;
+use fonts_traits::{SystemFontServiceProxySender, WebFontLoadEvent};
 use keyboard_types::Modifiers;
 use malloc_size_of_derive::MallocSizeOf;
 use media::WindowGLContext;
 use net_traits::ResourceThreads;
+use paint_api::largest_contentful_paint_candidate::LCPCandidateID;
 use paint_api::{CrossProcessPaintApi, PinchZoomInfos};
 use pixels::PixelFormat;
 use profile_traits::mem;
@@ -78,7 +79,7 @@ pub struct NewPipelineInfo {
     /// The ID of the `UserContentManager` associated with this new pipeline's `WebView`.
     pub user_content_manager_id: Option<UserContentManagerId>,
     /// The [`Theme`] of the new layout.
-    pub theme: Theme,
+    pub embedder_theme: Theme,
     /// A snapshot of the navigation parameters of the target of this navigation.
     pub target_snapshot_params: TargetSnapshotParams,
 }
@@ -118,6 +119,8 @@ pub enum ProgressiveWebMetricType {
     FirstContentfulPaint,
     /// Time for the largest contentful paint
     LargestContentfulPaint {
+        /// The identity of the element, if any.
+        id: LCPCandidateID,
         /// The pixel area of the largest contentful element.
         area: usize,
         /// The URL of the largest contentful element, if any.
@@ -247,9 +250,12 @@ pub enum ScriptThreadMessage {
     WebDriverScriptCommand(PipelineId, WebDriverScriptCommand),
     /// Notifies script thread that all animations are done
     TickAllAnimations(Vec<WebViewId>),
-    /// Notifies the script thread that a new Web font has been loaded, and thus the page should be
-    /// reflowed.
-    WebFontLoaded(PipelineId),
+    /// Notifies the script thread that a web font has finished loading.
+    ///
+    /// This is sent if either the web font loaded successfully, or to notify the script thread
+    /// that it should try to resolve `document.fonts.ready` because the font was the last one
+    /// loading.
+    WebFontLoadFinished(PipelineId, WebFontLoadEvent),
     /// Cause a `load` event to be dispatched at the appropriate iframe element.
     DispatchIFrameLoadEvent {
         /// The frame that has been marked as loaded.
@@ -359,6 +365,15 @@ pub struct ConstellationInputEvent {
     pub active_keyboard_modifiers: Modifiers,
     /// The [`InputEventAndId`] itself.
     pub event: InputEventAndId,
+}
+
+impl ConstellationInputEvent {
+    /// Returns whether `pressed_mouse_buttons` includes the primarry button
+    pub fn primary_button_is_pressed(&self) -> bool {
+        /// <https://w3c.github.io/pointerevents/#dom-mouseevent-buttons>
+        const PRIMARY_BUTTON_MASK: u16 = 1;
+        (self.pressed_mouse_buttons & PRIMARY_BUTTON_MASK) != 0
+    }
 }
 
 /// All of the information necessary to create a new [`ScriptThread`] for a new [`EventLoop`].

@@ -4,12 +4,11 @@
 
 use dom_struct::dom_struct;
 use euclid::default::Size2D;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use pixels::Snapshot;
-use script_bindings::reflector::{AssociatedMemory, Reflector, reflect_dom_object};
+use script_bindings::reflector::{AssociatedMemory, Reflector, reflect_dom_object_with_cx};
 use servo_base::{Epoch, generic_channel};
-use servo_canvas_traits::canvas::{Canvas2dMsg, CanvasId};
-use servo_url::ServoUrl;
+use servo_canvas_traits::canvas::{CanvasCommand, CanvasId};
 use webrender_api::ImageKey;
 
 use super::canvas_state::CanvasState;
@@ -36,7 +35,6 @@ use crate::dom::html::htmlcanvaselement::HTMLCanvasElement;
 use crate::dom::imagedata::ImageData;
 use crate::dom::path2d::Path2D;
 use crate::dom::textmetrics::TextMetrics;
-use crate::script_runtime::CanGc;
 
 // https://html.spec.whatwg.org/multipage/#canvasrenderingcontext2d
 #[dom_struct(associated_memory)]
@@ -47,6 +45,38 @@ pub(crate) struct CanvasRenderingContext2D {
 }
 
 impl CanvasRenderingContext2D {
+    const RGBA8_BYTES_PER_PIXEL: usize = 4;
+    /// Ideally this would be two bitmap buffers, unfortunately we currently have ~4 copies
+    /// which are all retained until GC:
+    ///
+    /// 1. The draw target's backing bitmap in the canvas paint thread
+    ///    (`CanvasData::draw_target`, e.g. `pixmap` in `VelloCPUDrawTarget`).
+    /// 2. Additional backend resources (approximated with 1 bitmap buffer, actually depends on backend):
+    ///    e.g. `ctx` and `resources` in `VelloCPUDrawTarget` for vello_cpu.
+    ///    TODO: #46785 tracks getting accurate statistics from the backend.
+    /// 3. `CachedImageData::Raw` in WebRender (cpu memory copy).
+    /// 4. GPU memory in webrender / driver (also lives in RAM on unified memory systems).
+    ///
+    /// This metric is only used to inform the GC about memory pressure, so it doesn't need to
+    /// be completely accurate, but undercounting may delay GCs and hence increase memory usage.
+    /// On mobile devices this slightly undercounts (usually unified memory), on desktop this
+    /// slightly overcounts, since GPU memory is separate.
+    const ASSOCIATED_MEMORY_BUFFER_COUNT: usize = 4;
+
+    fn associated_memory_size(size: Size2D<u64>) -> usize {
+        (size.width as usize)
+            .saturating_mul(size.height as usize)
+            .saturating_mul(Self::RGBA8_BYTES_PER_PIXEL)
+            .saturating_mul(Self::ASSOCIATED_MEMORY_BUFFER_COUNT)
+    }
+
+    pub(crate) fn update_associated_memory_size(&self) {
+        self.reflector_.update_memory_size(
+            self,
+            Self::associated_memory_size(self.canvas_state.bitmap_dimensions()),
+        );
+    }
+
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new_inherited(
         global: &GlobalScope,
@@ -63,29 +93,25 @@ impl CanvasRenderingContext2D {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         canvas: &HTMLCanvasElement,
         size: Size2D<u32>,
-        can_gc: CanGc,
     ) -> Option<DomRoot<CanvasRenderingContext2D>> {
         CanvasRenderingContext2D::new_inherited(
             global,
             HTMLCanvasElementOrOffscreenCanvas::HTMLCanvasElement(Dom::from_ref(canvas)),
             size,
         )
-        .map(|context| reflect_dom_object(Box::new(context), global, can_gc))
+        .map(|context| {
+            let context = reflect_dom_object_with_cx(Box::new(context), global, cx);
+            context.update_associated_memory_size();
+            context
+        })
     }
 
-    pub(crate) fn take_missing_image_urls(&self) -> Vec<ServoUrl> {
-        std::mem::take(&mut self.canvas_state.get_missing_image_urls().borrow_mut())
-    }
-
-    pub(crate) fn get_canvas_id(&self) -> CanvasId {
-        self.canvas_state.get_canvas_id()
-    }
-
-    pub(crate) fn send_canvas_2d_msg(&self, msg: Canvas2dMsg) {
-        self.canvas_state.send_canvas_2d_msg(msg)
+    pub(crate) fn send_canvas_command_immediate(&self, msg: CanvasCommand) {
+        self.canvas_state.send_canvas_command_immediate(msg)
     }
 
     pub(crate) fn set_image_key(&self, image_key: ImageKey) {
@@ -112,9 +138,8 @@ impl CanvasContext for CanvasRenderingContext2D {
     }
 
     fn resize(&self) {
-        self.reflector_
-            .update_memory_size(self, self.size().cast::<usize>().area());
         self.canvas_state.set_bitmap_dimensions(self.size().cast());
+        self.update_associated_memory_size();
     }
 
     fn reset_bitmap(&self) {
@@ -128,7 +153,7 @@ impl CanvasContext for CanvasRenderingContext2D {
 
         let (sender, receiver) = generic_channel::channel().unwrap();
         self.canvas_state
-            .send_canvas_2d_msg(Canvas2dMsg::GetImageData(None, sender));
+            .send_canvas_command_immediate(CanvasCommand::GetImageData(None, sender));
         Some(receiver.recv().unwrap().to_owned())
     }
 
@@ -513,44 +538,50 @@ impl CanvasRenderingContext2DMethods<crate::DomTypeHolder> for CanvasRenderingCo
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-createimagedata>
-    fn CreateImageData(&self, sw: i32, sh: i32, can_gc: CanGc) -> Fallible<DomRoot<ImageData>> {
+    fn CreateImageData(
+        &self,
+        cx: &mut JSContext,
+        sw: i32,
+        sh: i32,
+    ) -> Fallible<DomRoot<ImageData>> {
         self.canvas_state
-            .create_image_data(&self.global(), sw, sh, can_gc)
+            .create_image_data(cx, &self.global(), sw, sh)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-createimagedata>
     fn CreateImageData_(
         &self,
+        cx: &mut JSContext,
         imagedata: &ImageData,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<ImageData>> {
         self.canvas_state
-            .create_image_data_(&self.global(), imagedata, can_gc)
+            .create_image_data_(cx, &self.global(), imagedata)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-getimagedata>
     fn GetImageData(
         &self,
+        cx: &mut JSContext,
         sx: i32,
         sy: i32,
         sw: i32,
         sh: i32,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<ImageData>> {
         self.canvas_state
-            .get_image_data(self.canvas.size(), &self.global(), sx, sy, sw, sh, can_gc)
+            .get_image_data(cx, self.canvas.size(), &self.global(), sx, sy, sw, sh)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-putimagedata>
-    fn PutImageData(&self, imagedata: &ImageData, dx: i32, dy: i32) {
+    fn PutImageData(&self, no_gc: &NoGC, imagedata: &ImageData, dx: i32, dy: i32) {
         self.canvas_state
-            .put_image_data(self.canvas.size(), imagedata, dx, dy);
+            .put_image_data(no_gc, self.canvas.size(), imagedata, dx, dy);
         self.mark_as_dirty();
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-putimagedata
     fn PutImageData_(
         &self,
+        no_gc: &NoGC,
         imagedata: &ImageData,
         dx: i32,
         dy: i32,
@@ -560,6 +591,7 @@ impl CanvasRenderingContext2DMethods<crate::DomTypeHolder> for CanvasRenderingCo
         dirty_height: i32,
     ) {
         self.canvas_state.put_image_data_(
+            no_gc,
             self.canvas.size(),
             imagedata,
             dx,

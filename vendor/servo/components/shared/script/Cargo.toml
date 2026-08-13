@@ -22,9 +22,10 @@ accesskit = { workspace = true }
 crossbeam-channel = { workspace = true }
 devtools_traits = { workspace = true }
 embedder_traits = { workspace = true }
+# Bao patch: RouterProxy field in BaoPatches struct references ipc_channel
+ipc-channel = { workspace = true }
 euclid = { workspace = true }
 fonts_traits = { workspace = true }
-ipc-channel = { workspace = true }
 keyboard-types = { workspace = true }
 malloc_size_of = { workspace = true }
 malloc_size_of_derive = { workspace = true }

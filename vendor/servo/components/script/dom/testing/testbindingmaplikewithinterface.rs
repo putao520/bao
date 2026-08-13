@@ -6,6 +6,7 @@
 
 use dom_struct::dom_struct;
 use indexmap::IndexMap;
+use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
 use script_bindings::cformat;
@@ -19,7 +20,6 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::testbinding::TestBinding;
 use crate::maplike;
-use crate::script_runtime::CanGc;
 
 /// maplike<DOMString, TestBinding>
 #[dom_struct]
@@ -31,18 +31,18 @@ pub(crate) struct TestBindingMaplikeWithInterface {
 
 impl TestBindingMaplikeWithInterface {
     fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<TestBindingMaplikeWithInterface> {
         reflect_dom_object_with_proto(
+            cx,
             Box::new(TestBindingMaplikeWithInterface {
                 reflector: Reflector::new(),
                 internal: DomRefCell::new(IndexMap::new()),
             }),
             global,
             proto,
-            can_gc,
         )
     }
 }
@@ -51,28 +51,28 @@ impl TestBindingMaplikeWithInterfaceMethods<crate::DomTypeHolder>
     for TestBindingMaplikeWithInterface
 {
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<TestBindingMaplikeWithInterface>> {
-        Ok(TestBindingMaplikeWithInterface::new(global, proto, can_gc))
+        Ok(TestBindingMaplikeWithInterface::new(cx, global, proto))
     }
 
-    fn SetInternal(&self, key: DOMString, value: &TestBinding) {
+    fn SetInternal(&self, cx: &mut JSContext, key: DOMString, value: &TestBinding) {
         let value = DomRoot::from_ref(value);
-        self.internal.set(key, value)
+        self.internal.set(cx, key, value)
     }
 
-    fn ClearInternal(&self) {
-        self.internal.clear()
+    fn ClearInternal(&self, cx: &mut JSContext) {
+        self.internal.clear(cx)
     }
 
-    fn DeleteInternal(&self, key: DOMString) -> bool {
-        self.internal.delete(key)
+    fn DeleteInternal(&self, cx: &mut JSContext, key: DOMString) -> bool {
+        self.internal.delete(cx, key)
     }
 
-    fn HasInternal(&self, key: DOMString) -> bool {
-        self.internal.has(key)
+    fn HasInternal(&self, cx: &mut JSContext, key: DOMString) -> bool {
+        self.internal.has(cx, key)
     }
 
     fn GetInternal(&self, key: DOMString) -> Fallible<DomRoot<TestBinding>> {
@@ -84,8 +84,8 @@ impl TestBindingMaplikeWithInterfaceMethods<crate::DomTypeHolder>
             .cloned()
     }
 
-    fn Size(&self) -> u32 {
-        self.internal.size()
+    fn Size(&self, cx: &mut JSContext) -> u32 {
+        self.internal.size(cx)
     }
 }
 

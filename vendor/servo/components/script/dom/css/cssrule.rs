@@ -11,6 +11,7 @@ use style::shared_lock::{SharedRwLock, SharedRwLockReadGuard};
 use style::stylesheets::{CssRule as StyleCssRule, CssRuleType};
 
 use super::cssfontfacerule::CSSFontFaceRule;
+use super::cssfontfeaturevaluesrule::CSSFontFeatureValuesRule;
 use super::cssimportrule::CSSImportRule;
 use super::csskeyframerule::CSSKeyframeRule;
 use super::csskeyframesrule::CSSKeyframesRule;
@@ -27,11 +28,13 @@ use crate::dom::bindings::codegen::Bindings::CSSRuleBinding::CSSRuleMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::cssgroupingrule::CSSGroupingRule;
 use crate::dom::window::Window;
 
 #[dom_struct]
 pub(crate) struct CSSRule {
     reflector_: Reflector,
+    parent_rule: Option<Dom<CSSGroupingRule>>,
     parent_stylesheet: Dom<CSSStyleSheet>,
 
     /// Whether the parentStyleSheet attribute should return null.
@@ -41,9 +44,13 @@ pub(crate) struct CSSRule {
 }
 
 impl CSSRule {
-    pub(crate) fn new_inherited(parent_stylesheet: &CSSStyleSheet) -> CSSRule {
+    pub(crate) fn new_inherited(
+        parent_rule: Option<&CSSGroupingRule>,
+        parent_stylesheet: &CSSStyleSheet,
+    ) -> CSSRule {
         CSSRule {
             reflector_: Reflector::new(),
+            parent_rule: parent_rule.map(Dom::from_ref),
             parent_stylesheet: Dom::from_ref(parent_stylesheet),
             parent_stylesheet_removed: Cell::new(false),
         }
@@ -74,6 +81,8 @@ impl CSSRule {
             rule as &dyn SpecificCSSRule
         } else if let Some(rule) = self.downcast::<CSSPropertyRule>() {
             rule as &dyn SpecificCSSRule
+        } else if let Some(rule) = self.downcast::<CSSFontFeatureValuesRule>() {
+            rule as &dyn SpecificCSSRule
         } else {
             unreachable!()
         }
@@ -84,55 +93,102 @@ impl CSSRule {
     pub(crate) fn new_specific(
         cx: &mut JSContext,
         window: &Window,
+        parent_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         rule: StyleCssRule,
     ) -> DomRoot<CSSRule> {
         // be sure to update the match in as_specific when this is updated
         match rule {
-            StyleCssRule::Import(s) => {
-                DomRoot::upcast(CSSImportRule::new(cx, window, parent_stylesheet, s))
-            },
-            StyleCssRule::Style(s) => {
-                DomRoot::upcast(CSSStyleRule::new(cx, window, parent_stylesheet, s))
-            },
-            StyleCssRule::FontFace(s) => {
-                DomRoot::upcast(CSSFontFaceRule::new(cx, window, parent_stylesheet, s))
-            },
-            StyleCssRule::FontFeatureValues(_) => unimplemented!(),
+            StyleCssRule::Import(s) => DomRoot::upcast(CSSImportRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
+            StyleCssRule::Style(s) => DomRoot::upcast(CSSStyleRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
+            StyleCssRule::FontFace(s) => DomRoot::upcast(CSSFontFaceRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
+            StyleCssRule::FontFeatureValues(rule) => DomRoot::upcast(
+                CSSFontFeatureValuesRule::new(cx, window, parent_rule, parent_stylesheet, rule),
+            ),
             StyleCssRule::CounterStyle(_) => unimplemented!(),
-            StyleCssRule::Keyframes(s) => {
-                DomRoot::upcast(CSSKeyframesRule::new(cx, window, parent_stylesheet, s))
-            },
-            StyleCssRule::Media(s) => {
-                DomRoot::upcast(CSSMediaRule::new(cx, window, parent_stylesheet, s))
-            },
-            StyleCssRule::Namespace(s) => {
-                DomRoot::upcast(CSSNamespaceRule::new(cx, window, parent_stylesheet, s))
-            },
-            StyleCssRule::Supports(s) => {
-                DomRoot::upcast(CSSSupportsRule::new(cx, window, parent_stylesheet, s))
-            },
+            StyleCssRule::Keyframes(s) => DomRoot::upcast(CSSKeyframesRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
+            StyleCssRule::Media(s) => DomRoot::upcast(CSSMediaRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
+            StyleCssRule::Namespace(s) => DomRoot::upcast(CSSNamespaceRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
+            StyleCssRule::Supports(s) => DomRoot::upcast(CSSSupportsRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
             StyleCssRule::Page(_) => unreachable!(),
             StyleCssRule::Container(_) => unimplemented!(), // TODO
             StyleCssRule::Document(_) => unimplemented!(),  // TODO
-            StyleCssRule::LayerBlock(s) => {
-                DomRoot::upcast(CSSLayerBlockRule::new(cx, window, parent_stylesheet, s))
-            },
-            StyleCssRule::LayerStatement(s) => {
-                DomRoot::upcast(CSSLayerStatementRule::new(cx, window, parent_stylesheet, s))
-            },
+            StyleCssRule::LayerBlock(s) => DomRoot::upcast(CSSLayerBlockRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
+            StyleCssRule::LayerStatement(s) => DomRoot::upcast(CSSLayerStatementRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
             StyleCssRule::FontPaletteValues(_) => unimplemented!(), // TODO
-            StyleCssRule::Property(s) => {
-                DomRoot::upcast(CSSPropertyRule::new(cx, window, parent_stylesheet, s))
-            },
+            StyleCssRule::Property(s) => DomRoot::upcast(CSSPropertyRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
             StyleCssRule::Margin(_) => unimplemented!(), // TODO
             StyleCssRule::Scope(_) => unimplemented!(),  // TODO
             StyleCssRule::StartingStyle(_) => unimplemented!(), // TODO
             StyleCssRule::PositionTry(_) => unimplemented!(), // TODO
             StyleCssRule::CustomMedia(_) => unimplemented!(), // TODO
-            StyleCssRule::NestedDeclarations(s) => {
-                DomRoot::upcast(CSSNestedDeclarations::new(cx, window, parent_stylesheet, s))
-            },
+            StyleCssRule::NestedDeclarations(s) => DomRoot::upcast(CSSNestedDeclarations::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
             StyleCssRule::AppearanceBase(_) => unimplemented!(), // TODO
             StyleCssRule::ViewTransition(_) => unimplemented!(), // TODO
         }
@@ -153,12 +209,20 @@ impl CSSRule {
         self.as_specific().deparent_children();
     }
 
+    pub(crate) fn parent_rule(&self) -> Option<&CSSGroupingRule> {
+        self.parent_rule.as_deref()
+    }
+
     pub(crate) fn parent_stylesheet(&self) -> &CSSStyleSheet {
         &self.parent_stylesheet
     }
 
     pub(crate) fn shared_lock(&self) -> &SharedRwLock {
         self.parent_stylesheet.shared_lock()
+    }
+
+    pub(crate) fn rule_type(&self) -> CssRuleType {
+        self.as_specific().ty()
     }
 
     pub(crate) fn update_rule(&self, style_rule: &StyleCssRule, guard: &SharedRwLockReadGuard) {

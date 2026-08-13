@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::borrow::Cow;
-
 use layout_api::LayoutNode;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use servo_arc::Arc;
@@ -22,9 +20,11 @@ use crate::cell::ArcRefCell;
 use crate::context::LayoutContext;
 use crate::dom::{BoxSlot, LayoutBox, NodeExt};
 use crate::dom_traversal::{
-    Contents, NodeAndStyleInfo, NonReplacedContents, PseudoElementContentItem, TraversalHandler,
+    BoxTreeString, Contents, NodeAndStyleInfo, NonReplacedContents, PseudoElementContentItem,
+    TraversalHandler,
 };
 use crate::flow::float::FloatBox;
+use crate::flow::same_formatting_context_block::SameFormattingContextBlock;
 use crate::flow::{BlockContainer, BlockFormattingContext, BlockLevelBox};
 use crate::formatting_contexts::{
     IndependentFormattingContext, IndependentFormattingContextContents,
@@ -291,7 +291,10 @@ impl<'dom, 'style> BlockContainerBuilder<'dom, 'style> {
         }
 
         let context = self.context;
-        let block_level_boxes = if self.context.use_rayon {
+        let block_level_boxes = if self
+            .context
+            .should_parallelize(self.block_level_boxes.len())
+        {
             self.block_level_boxes
                 .into_par_iter()
                 .map(|block_level_job| block_level_job.finish(context))
@@ -424,7 +427,7 @@ impl<'dom> TraversalHandler<'dom> for BlockContainerBuilder<'dom, '_> {
         }
     }
 
-    fn handle_text(&mut self, info: &NodeAndStyleInfo<'dom>, text: Cow<'dom, str>) {
+    fn handle_text(&mut self, info: &NodeAndStyleInfo<'dom>, text: BoxTreeString<'dom>) {
         if text.is_empty() {
             return;
         }
@@ -562,7 +565,6 @@ impl<'dom> BlockContainerBuilder<'dom, '_> {
             self.handle_list_item_marker_inside(&marker_info, marker_contents)
         }
 
-        // `unwrap` doesn’t panic here because `is_replaced` returned `false`.
         non_replaced_contents.traverse(self.context, info, self);
 
         self.finish_anonymous_table_if_needed();
@@ -742,11 +744,13 @@ impl BlockLevelJob<'_> {
             BlockLevelCreator::SameFormattingContextBlock(intermediate_block_container) => {
                 let contents = intermediate_block_container.finish(context, info);
                 let contains_floats = contents.contains_floats();
-                ArcRefCell::new(BlockLevelBox::SameFormattingContextBlock {
-                    base: LayoutBoxBase::new(info.into(), info.style.clone()),
-                    contents,
-                    contains_floats,
-                })
+
+                let base = LayoutBoxBase::new(info.into(), info.style.clone());
+                base.set_subtree_size(contents.subtree_size() + 1);
+
+                ArcRefCell::new(BlockLevelBox::SameFormattingContextBlock(
+                    SameFormattingContextBlock::new(base, contents, contains_floats),
+                ))
             },
             BlockLevelCreator::Independent {
                 display_inside,

@@ -2,17 +2,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use app_units::Au;
+use atomic_refcell::AtomicRef;
 use euclid::{Point2D, Rect, Size2D};
 use fonts::{FontMetrics, ShapedTextSlice};
 use layout_api::BoxAreaType;
 use malloc_size_of_derive::MallocSizeOf;
+use servo_arc::Arc as ServoArc;
 use servo_base::id::PipelineId;
 use servo_base::print_tree::PrintTree;
+use servo_base::text::Utf32CodeUnits;
 use servo_url::ServoUrl;
 use style::Zero;
+use style::properties::ComputedValues;
 use style_traits::CSSPixel;
 use webrender_api::{FontInstanceKey, ImageKey};
 
@@ -21,14 +26,16 @@ use super::{
     Tag,
 };
 use crate::SharedStyle;
-use crate::cell::ArcRefCell;
-use crate::flow::inline::line::TextRunOffsets;
+use crate::cell::{ArcRefCell, RefOrAtomicRef};
+use crate::flow::inline::text_run::SharedTextRunData;
+use crate::fragment_tree::FragmentStatus;
 use crate::geom::{LogicalSides, PhysicalPoint, PhysicalRect};
 use crate::layout_impl::LayoutThread;
 use crate::style_ext::ComputedValuesExt;
 
 #[derive(Clone, MallocSizeOf)]
 pub(crate) enum Fragment {
+    LayoutRoot(LayoutRootFragment),
     Box(#[conditional_malloc_size_of] Arc<BoxFragment>),
     /// Floating content. A floated fragment is very similar to a normal
     /// [BoxFragment] but it isn't positioned using normal in block flow
@@ -37,14 +44,12 @@ pub(crate) enum Fragment {
     /// float containing block formatting context.
     Float(#[conditional_malloc_size_of] Arc<BoxFragment>),
     Positioning(#[conditional_malloc_size_of] Arc<PositioningFragment>),
-    /// Absolute and fixed position fragments are hoisted up so that they
-    /// are children of the BoxFragment that establishes their containing
-    /// blocks, so that they can be laid out properly. When this happens
-    /// an `AbsoluteOrFixedPositioned` fragment is left at the original tree
-    /// position. This allows these hoisted fragments to be painted with
-    /// regard to their original tree order during stacking context tree /
-    /// display list construction.
-    AbsoluteOrFixedPositioned(ArcRefCell<HoistedSharedFragment>),
+    /// Absolute and fixed position fragments are hoisted up so that they are children of the
+    /// BoxFragment that establishes their containing blocks, so that they can be laid out properly.
+    /// When this happens an `AbsoluteOrFixedPositionedPlaceholder` fragment is left at the original
+    /// tree position. This allows these hoisted fragments to be painted with regard to their
+    /// original tree order during stacking context tree / display list construction.
+    AbsoluteOrFixedPositionedPlaceholder(ArcRefCell<HoistedSharedFragment>),
     Text(#[conditional_malloc_size_of] Arc<TextFragment>),
     Image(#[conditional_malloc_size_of] Arc<ImageFragment>),
     IFrame(#[conditional_malloc_size_of] Arc<IFrameFragment>),
@@ -63,10 +68,34 @@ pub(crate) struct CollapsedMargin {
     min_negative: Au,
 }
 
+#[derive(Clone, MallocSizeOf)]
+pub(crate) struct LayoutRootFragment {
+    pub fragment: ArcRefCell<HoistedSharedFragment>,
+}
+
+impl LayoutRootFragment {
+    pub(crate) fn inner(&self) -> AtomicRef<'_, Fragment> {
+        AtomicRef::map(self.fragment.borrow(), |fragment| {
+            fragment
+                .fragment
+                .as_ref()
+                .expect("Should never create LayoutRoot without a Fragment")
+        })
+    }
+
+    pub(crate) fn inner_box_fragment(&self) -> AtomicRef<'_, Arc<BoxFragment>> {
+        AtomicRef::map(self.inner(), |fragment| match fragment {
+            Fragment::Box(box_fragment) => box_fragment,
+            _ => unreachable!("Layout root should always contain box fragment"),
+        })
+    }
+}
+
 #[derive(MallocSizeOf)]
 pub(crate) struct TextFragment {
     pub base: BaseFragment,
-    pub selected_style: SharedStyle,
+    #[conditional_malloc_size_of]
+    pub run_data: Arc<SharedTextRunData>,
     #[conditional_malloc_size_of]
     pub font_metrics: Arc<FontMetrics>,
     pub font_key: FontInstanceKey,
@@ -74,9 +103,9 @@ pub(crate) struct TextFragment {
     pub glyphs: Vec<Arc<ShapedTextSlice>>,
     /// Extra space to add for each justification opportunity.
     pub justification_adjustment: Au,
-    /// When necessary, this field store the [`TextRunOffsets`] for a particular
-    /// [`TextRunLineItem`]. This is currently only used inside of text inputs.
-    pub offsets: Option<Box<TextRunOffsets>>,
+    /// The range of characters this [`TextFragment`] represents within the text of its
+    /// original DOM node (modified by text transformation).
+    pub character_range_in_dom_node: Range<Utf32CodeUnits>,
     /// Whether or not this [`TextFragment`] is an empty fragment added for the
     /// benefit of placing a text cursor on an otherwise empty editable line.
     pub is_empty_for_text_cursor: bool,
@@ -85,40 +114,53 @@ pub(crate) struct TextFragment {
 #[derive(MallocSizeOf)]
 pub(crate) struct ImageFragment {
     pub base: BaseFragment,
+    pub style: SharedStyle,
     pub clip: PhysicalRect<Au>,
     pub image_key: Option<ImageKey>,
     pub showing_broken_image_icon: bool,
     pub url: Option<ServoUrl>,
+    /// The intrinsic (natural) width of the image, if known.
+    pub natural_width: Option<Au>,
+    /// The intrinsic (natural) height of the image, if known.
+    pub natural_height: Option<Au>,
 }
 
 #[derive(MallocSizeOf)]
 pub(crate) struct IFrameFragment {
     pub base: BaseFragment,
+    pub style: SharedStyle,
     pub pipeline_id: PipelineId,
 }
 
 impl Fragment {
-    pub fn base(&self) -> Option<&BaseFragment> {
+    pub fn base(&self) -> Option<RefOrAtomicRef<'_, BaseFragment>> {
         Some(match self {
-            Fragment::Box(fragment) => &fragment.base,
-            Fragment::Text(fragment) => &fragment.base,
-            Fragment::AbsoluteOrFixedPositioned(_) => return None,
-            Fragment::Positioning(fragment) => &fragment.base,
-            Fragment::Image(fragment) => &fragment.base,
-            Fragment::IFrame(fragment) => &fragment.base,
-            Fragment::Float(fragment) => &fragment.base,
+            Fragment::LayoutRoot(fragment) => RefOrAtomicRef::AtomicRef(AtomicRef::map(
+                fragment.inner_box_fragment(),
+                |box_fragment| &box_fragment.base,
+            )),
+            Fragment::Box(fragment) => RefOrAtomicRef::Ref(&fragment.base),
+            Fragment::Text(fragment) => RefOrAtomicRef::Ref(&fragment.base),
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) => return None,
+            Fragment::Positioning(fragment) => RefOrAtomicRef::Ref(&fragment.base),
+            Fragment::Image(fragment) => RefOrAtomicRef::Ref(&fragment.base),
+            Fragment::IFrame(fragment) => RefOrAtomicRef::Ref(&fragment.base),
+            Fragment::Float(fragment) => RefOrAtomicRef::Ref(&fragment.base),
         })
     }
 
     pub(crate) fn set_containing_block(&self, containing_block: &PhysicalRect<Au>) {
         match self {
+            Fragment::LayoutRoot(layout_root_fragment) => layout_root_fragment
+                .inner()
+                .set_containing_block(containing_block),
             Fragment::Box(box_fragment) | Fragment::Float(box_fragment) => {
                 box_fragment.set_containing_block(containing_block)
             },
             Fragment::Positioning(positioning_fragment) => {
                 positioning_fragment.set_containing_block(containing_block)
             },
-            Fragment::AbsoluteOrFixedPositioned(..) |
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(..) |
             Fragment::Text(..) |
             Fragment::Image(..) |
             Fragment::IFrame(..) => {},
@@ -131,13 +173,14 @@ impl Fragment {
 
     pub fn print(&self, tree: &mut PrintTree) {
         match self {
+            Fragment::LayoutRoot(layout_root_fragment) => layout_root_fragment.inner().print(tree),
             Fragment::Box(fragment) => fragment.print(tree),
             Fragment::Float(fragment) => {
                 tree.new_level("Float".to_string());
                 fragment.print(tree);
                 tree.end_level();
             },
-            Fragment::AbsoluteOrFixedPositioned(_) => {
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) => {
                 tree.add_item("AbsoluteOrFixedPositioned".to_string());
             },
             Fragment::Positioning(fragment) => fragment.print(tree),
@@ -148,11 +191,15 @@ impl Fragment {
     }
 
     pub(crate) fn scrolling_area(&self, layout_thread: &LayoutThread) -> PhysicalRect<Au> {
-        match self {
-            Fragment::Box(fragment) | Fragment::Float(fragment) => fragment
-                .offset_by_containing_block(&fragment.scrollable_overflow(), layout_thread.into()),
-            _ => self.scrollable_overflow_for_parent(),
-        }
+        self.retrieve_box_fragment().map_or_else(
+            || self.scrollable_overflow_for_parent(),
+            |box_fragment| {
+                box_fragment.offset_by_containing_block(
+                    &box_fragment.with_style().scrollable_overflow(),
+                    layout_thread.into(),
+                )
+            },
+        )
     }
 
     /// Clear the scrollable overflow on this [`Fragment`]. This is called during damage
@@ -160,6 +207,9 @@ impl Fragment {
     /// scrollable overflow damage.
     pub(crate) fn clear_scrollable_overflow(&self) {
         match self {
+            Fragment::LayoutRoot(fragment) => {
+                fragment.inner_box_fragment().clear_scrollable_overflow()
+            },
             Fragment::Box(fragment) | Fragment::Float(fragment) => {
                 fragment.clear_scrollable_overflow()
             },
@@ -170,11 +220,14 @@ impl Fragment {
 
     pub(crate) fn scrollable_overflow_for_parent(&self) -> PhysicalRect<Au> {
         match self {
+            Fragment::LayoutRoot(layout_root) => {
+                layout_root.inner().scrollable_overflow_for_parent()
+            },
             Fragment::Box(fragment) | Fragment::Float(fragment) => {
-                fragment.scrollable_overflow_for_parent()
+                fragment.with_style().scrollable_overflow_for_parent()
             },
             Fragment::Positioning(fragment) => fragment.scrollable_overflow_for_parent(),
-            Fragment::AbsoluteOrFixedPositioned(_) |
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
             Fragment::Text(..) |
             Fragment::Image(..) |
             Fragment::IFrame(..) => self.base().map(|base| base.rect()).unwrap_or_default(),
@@ -194,18 +247,19 @@ impl Fragment {
     ) -> Option<PhysicalRect<Au>> {
         match self {
             // TODO: This should consider the box in pre-relative-adjusted position state.
-            Fragment::Box(fragment) | Fragment::Float(fragment) => {
-                if !fragment.style().clone_position().is_absolutely_positioned() {
-                    Some(fragment.margin_rect())
-                } else {
-                    None
-                }
+            Fragment::Box(fragment) | Fragment::Float(fragment)
+                if !fragment.style().clone_position().is_absolutely_positioned() =>
+            {
+                Some(fragment.margin_rect())
             },
+            // Layout roots and absolutely positioned elements do not affect scrollable overflow
+            // for parents.
+            Fragment::Box(..) | Fragment::Float(..) | Fragment::LayoutRoot(..) => None,
             // TODO: This rectangle does not include extra size from overflowing inline items. As
             // this measurement is concerned with the actual fragments, it's quite likely that this
             // rectangle should include that.
             Fragment::Positioning(fragment) => Some(fragment.base.rect()),
-            Fragment::AbsoluteOrFixedPositioned(_) => None,
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) => None,
             Fragment::Text(..) | Fragment::Image(..) | Fragment::IFrame(..) => {
                 Some(self.base()?.rect())
             },
@@ -218,6 +272,9 @@ impl Fragment {
         containing_block_computation: ContainingBlockCalculation<'_>,
     ) -> Option<PhysicalRect<Au>> {
         match self {
+            Fragment::LayoutRoot(layout_root_fragment) => layout_root_fragment
+                .inner()
+                .cumulative_box_area_rect(area, containing_block_computation),
             Fragment::Box(fragment) | Fragment::Float(fragment) => Some(match area {
                 BoxAreaType::Content => {
                     fragment.cumulative_content_box_rect(containing_block_computation)
@@ -236,37 +293,37 @@ impl Fragment {
                 ))
             },
             Fragment::Text(_) |
-            Fragment::AbsoluteOrFixedPositioned(_) |
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
             Fragment::Image(_) |
             Fragment::IFrame(_) => None,
         }
     }
 
     pub(crate) fn client_rect(&self) -> Rect<i32, CSSPixel> {
-        let rect = match self {
-            Fragment::Box(fragment) | Fragment::Float(fragment) => {
-                // https://drafts.csswg.org/cssom-view/#dom-element-clienttop
-                // " If the element has no associated CSS layout box or if the
-                //   CSS layout box is inline, return zero." For this check we
-                // also explicitly ignore the list item portion of the display
-                // style.
-                if fragment.is_inline_box() {
-                    return Rect::zero();
-                }
+        let Some(fragment) = self.retrieve_box_fragment() else {
+            return Rect::zero();
+        };
+        let fragment = fragment.with_style();
 
-                if fragment.is_table_wrapper() {
-                    // For tables the border actually belongs to the table grid box,
-                    // so we need to include it in the dimension of the table wrapper box.
-                    let mut rect = fragment.border_rect();
-                    rect.origin = PhysicalPoint::zero();
-                    rect
-                } else {
-                    let mut rect = fragment.padding_rect();
-                    rect.origin = PhysicalPoint::new(fragment.border.left, fragment.border.top);
-                    rect
-                }
-            },
-            _ => return Rect::zero(),
+        // https://drafts.csswg.org/cssom-view/#dom-element-clienttop
+        // " If the element has no associated CSS layout box or if the
+        //   CSS layout box is inline, return zero." For this check we
+        // also explicitly ignore the list item portion of the display
+        // style.
+        if fragment.is_inline_box() {
+            return Rect::zero();
+        }
+
+        let rect = if fragment.is_table_wrapper() {
+            // For tables the border actually belongs to the table grid box,
+            // so we need to include it in the dimension of the table wrapper box.
+            let mut rect = fragment.border_rect();
+            rect.origin = PhysicalPoint::zero();
+            rect
+        } else {
+            let mut rect = fragment.padding_rect();
+            rect.origin = PhysicalPoint::new(fragment.border.left, fragment.border.top);
+            rect
         };
 
         let rect = Rect::new(
@@ -276,10 +333,16 @@ impl Fragment {
         rect.round().to_i32()
     }
 
-    pub(crate) fn children(&self) -> Option<&[Fragment]> {
+    pub(crate) fn children(&self) -> Option<RefOrAtomicRef<'_, Vec<Fragment>>> {
         match self {
-            Fragment::Box(fragment) | Fragment::Float(fragment) => Some(&fragment.children),
-            Fragment::Positioning(fragment) => Some(&fragment.children),
+            Fragment::LayoutRoot(fragment) => Some(RefOrAtomicRef::AtomicRef(AtomicRef::map(
+                fragment.inner_box_fragment(),
+                |fragment| &fragment.children,
+            ))),
+            Fragment::Box(fragment) | Fragment::Float(fragment) => {
+                Some(RefOrAtomicRef::Ref(&fragment.children))
+            },
+            Fragment::Positioning(fragment) => Some(RefOrAtomicRef::Ref(&fragment.children)),
             _ => None,
         }
     }
@@ -296,6 +359,11 @@ impl Fragment {
         }
 
         match self {
+            Fragment::LayoutRoot(layout_root_fragment) => {
+                layout_root_fragment
+                    .inner()
+                    .find(manager, level, process_func)
+            },
             Fragment::Box(fragment) | Fragment::Float(fragment) => {
                 let style = fragment.style();
                 let content_rect = fragment
@@ -336,15 +404,50 @@ impl Fragment {
         }
     }
 
-    pub(crate) fn retrieve_box_fragment(&self) -> Option<&Arc<BoxFragment>> {
+    pub(crate) fn repair_style(&self, new_style: &ServoArc<ComputedValues>) {
+        if let Some(base) = self.base() {
+            base.set_status(FragmentStatus::StyleChanged);
+        }
+
+        let inner_box_fragment;
+        let shared_style = match self {
+            Fragment::LayoutRoot(fragment) => {
+                inner_box_fragment = fragment.inner_box_fragment();
+                &inner_box_fragment.style
+            },
+            Fragment::Box(fragment) => &fragment.style,
+            Fragment::Text(fragment) => &fragment.run_data.inline_styles.style,
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) => return,
+            Fragment::Positioning(fragment) => &fragment.style,
+            Fragment::Image(fragment) => &fragment.style,
+            Fragment::IFrame(fragment) => &fragment.style,
+            Fragment::Float(fragment) => &fragment.style,
+        };
+        *shared_style.borrow_mut() = new_style.clone();
+    }
+
+    pub(crate) fn retrieve_box_fragment(&self) -> Option<RefOrAtomicRef<'_, Arc<BoxFragment>>> {
         match self {
-            Fragment::Box(box_fragment) | Fragment::Float(box_fragment) => Some(box_fragment),
+            Fragment::LayoutRoot(layout_root_fragment) => Some(RefOrAtomicRef::AtomicRef(
+                layout_root_fragment.inner_box_fragment(),
+            )),
+            Fragment::Box(box_fragment) | Fragment::Float(box_fragment) => {
+                Some(RefOrAtomicRef::Ref(box_fragment))
+            },
             _ => None,
         }
     }
 }
 
 impl TextFragment {
+    pub(crate) fn style<'a>(&'a self) -> AtomicRef<'a, ServoArc<ComputedValues>> {
+        self.run_data.inline_styles.style.borrow()
+    }
+
+    pub(crate) fn selected_style<'a>(&'a self) -> AtomicRef<'a, ServoArc<ComputedValues>> {
+        self.run_data.inline_styles.selected.borrow()
+    }
+
     pub fn print(&self, tree: &mut PrintTree) {
         tree.add_item(format!(
             "Text num_glyphs={} box={:?}",
@@ -373,16 +476,18 @@ impl TextFragment {
         &self,
         point_in_fragment: Point2D<Au, CSSPixel>,
     ) -> Au {
+        // point_in_fragment is alerady in a coordinate space where the fragment origin is (0, 0)
+        let rect = Rect::new(Point2D::origin(), self.base.rect().size);
+
         // This is the distance between the closest point on the edge of the rectangle and
         // the point. From <https://stackoverflow.com/a/18157551>.
-        let rect = &self.base.rect();
         let dx = (rect.min_x() - point_in_fragment.x)
             .max(Au::zero())
             .max(point_in_fragment.x - rect.max_x());
         let dy = (rect.min_y() - point_in_fragment.y)
             .max(Au::zero())
             .max(point_in_fragment.y - rect.max_y());
-        Au::from_f64_px((dx.to_f64_px().powi(2) + dy.to_f64_px().powi(2)).sqrt())
+        Au::from_f64_px(dx.to_f64_px().hypot(dy.to_f64_px()))
     }
 
     /// Given a point relative to this [`TextFragment`], find the most appropriate
@@ -395,12 +500,25 @@ impl TextFragment {
     pub(crate) fn character_offset(
         &self,
         point_in_fragment: Point2D<Au, CSSPixel>,
-    ) -> Option<usize> {
+    ) -> Option<Utf32CodeUnits> {
+        self.unmapped_character_offset(point_in_fragment)
+            .map(|character_offset| {
+                self.run_data
+                    .map_transformed_offset_to_dom_offset(character_offset)
+            })
+    }
+
+    /// Like [`Self::character_offset`], but returning the character offset in layout text (after
+    /// applying white space collapse and the `text-transform` property), instead of the original DOM
+    /// text.
+    fn unmapped_character_offset(
+        &self,
+        point_in_fragment: Point2D<Au, CSSPixel>,
+    ) -> Option<Utf32CodeUnits> {
         // If the click was far enough above the top of the fragment, then pick the first index.
-        let offsets = self.offsets.as_ref()?;
         let max_vertical_offset = self.base.rect().height().scale_by(0.25);
         if point_in_fragment.y < -max_vertical_offset {
-            return Some(offsets.character_range.start);
+            return Some(self.character_range_in_dom_node.start);
         }
 
         // If the click was below the fragment, return `None`, which will cause the
@@ -412,7 +530,7 @@ impl TextFragment {
             return None;
         }
 
-        let mut current_character = offsets.character_range.start;
+        let mut current_character = self.character_range_in_dom_node.start;
         let mut current_offset = Au::zero();
         for glyph_store in &self.glyphs {
             for glyph in glyph_store.glyphs() {
@@ -424,7 +542,7 @@ impl TextFragment {
                     return Some(current_character);
                 }
                 current_offset += advance;
-                current_character += glyph.character_count();
+                current_character += Utf32CodeUnits(glyph.character_count());
             }
         }
 

@@ -28,8 +28,8 @@ use background_hang_monitor_api::BackgroundHangMonitorRegister;
 use bitflags::bitflags;
 use embedder_traits::{Cursor, ScriptToEmbedderChan, Theme, UntrustedNodeAddress, ViewportDetails};
 use euclid::{Point2D, Rect};
-use fonts::{FontContext, TextByteRange, WebFontDocumentContext};
-pub use layout_damage::LayoutDamage;
+use fonts::{FontContext, TextByteRange, WebFontDocumentContext, WebFontSetDifference};
+pub use layout_damage::{AccessibilityDamage, LayoutDamage};
 pub use layout_dom::{
     DangerousStyleElementOf, DangerousStyleNodeOf, LayoutDomTypeBundle, LayoutElementOf,
     LayoutNodeOf,
@@ -42,18 +42,20 @@ use malloc_size_of_derive::MallocSizeOf;
 use net_traits::image_cache::{ImageCache, ImageCacheFactory, PendingImageId};
 use net_traits::request::InternalRequest;
 use paint_api::CrossProcessPaintApi;
+use paint_api::largest_contentful_paint_candidate::LCPCandidate;
 use parking_lot::RwLock;
-use pixels::RasterImage;
+use pixels::{RasterImage, Repeat};
 use profile_traits::mem::Report;
 use profile_traits::time;
 pub use pseudo_element_chain::PseudoElementChain;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use script_traits::{InitialScriptState, Painter, ScriptThreadMessage};
 use serde::{Deserialize, Serialize};
 use servo_arc::Arc as ServoArc;
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
+use servo_base::text::Utf32CodeUnits;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use style::Atom;
 use style::animation::DocumentAnimationSet;
@@ -73,6 +75,7 @@ use style::stylist::Stylist;
 use style::thread_state::{self, ThreadState};
 use style::values::computed::Overflow;
 use style_traits::CSSPixel;
+use uuid::Uuid;
 use webrender_api::units::{DeviceIntSize, LayoutPoint, LayoutVector2D};
 use webrender_api::{ExternalScrollId, ImageKey};
 
@@ -112,6 +115,7 @@ pub enum LayoutNodeType {
 pub enum LayoutElementType {
     Element,
     HTMLBodyElement,
+    HTMLButtonElement,
     HTMLBRElement,
     HTMLCanvasElement,
     HTMLHtmlElement,
@@ -161,7 +165,7 @@ pub struct SVGElementData<'dom> {
     pub source: Option<Result<ServoUrl, ()>>,
     pub width: Option<&'dom AttrValue>,
     pub height: Option<&'dom AttrValue>,
-    pub svg_id: String,
+    pub svg_id: Uuid,
     pub view_box: Option<&'dom AttrValue>,
 }
 
@@ -187,7 +191,7 @@ impl SVGElementData<'_> {
 }
 
 /// The address of a node known to be valid. These are sent from script to layout.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct TrustedNodeAddress(pub *const c_void);
 
 #[expect(unsafe_code)]
@@ -220,7 +224,7 @@ pub struct PendingImage {
     pub is_internal_request: InternalRequest,
 }
 
-/// A data structure to tarck vector image that are fully loaded (i.e has a parsed SVG
+/// A data structure to track vector image that are fully loaded (i.e has a parsed SVG
 /// tree) but not yet rasterized to the size needed by layout. The rasterization is
 /// happening in the image cache.
 #[derive(Debug)]
@@ -245,6 +249,7 @@ pub struct MediaMetadata {
 pub struct HTMLMediaData {
     pub current_frame: Option<MediaFrame>,
     pub metadata: Option<MediaMetadata>,
+    pub poster_url: Option<ServoUrl>,
 }
 
 pub struct LayoutConfig {
@@ -261,6 +266,13 @@ pub struct LayoutConfig {
     pub user_stylesheets: Rc<Vec<DocumentStyleSheet>>,
     pub theme: Theme,
     pub embedder_chan: ScriptToEmbedderChan,
+}
+
+bitflags! {
+    pub struct HitTestFlags: u8 {
+        /// Whether to populate [`ElementsFromPointResult::dom_position_for_selection`]
+        const IncludeDomPosition = 0b0000_0001;
+    }
 }
 
 pub trait LayoutFactory: Send + Sync {
@@ -282,22 +294,14 @@ pub trait Layout {
     /// if the [`ViewportDetails`] actually changed or `false` otherwise.
     fn set_viewport_details(&mut self, viewport_details: ViewportDetails) -> bool;
 
-    /// Load all fonts from the given stylesheet, returning the number of fonts that
-    /// need to be loaded.
-    fn load_web_fonts_from_stylesheet(
-        &self,
-        stylesheet: &ServoArc<Stylesheet>,
-        font_context: &WebFontDocumentContext,
-    );
-
-    /// Add a stylesheet to this Layout. This will add it to the Layout's `Stylist` as well as
-    /// loading all web fonts defined in the stylesheet. The second stylesheet is the insertion
-    /// point (if it exists, the sheet needs to be inserted before it).
+    /// Add a stylesheet to this Layout's `Stylist`.
+    ///
+    /// The second stylesheet is the insertion point (if it exists, the sheet needs to be
+    /// inserted before it).
     fn add_stylesheet(
         &mut self,
         stylesheet: ServoArc<Stylesheet>,
-        before_stylsheet: Option<ServoArc<Stylesheet>>,
-        font_context: &WebFontDocumentContext,
+        before_stylesheet: Option<ServoArc<Stylesheet>>,
     );
 
     /// Inform the layout that its ScriptThread is about to exit.
@@ -356,6 +360,11 @@ pub trait Layout {
     ) -> NodeRenderingType;
 
     fn query_containing_block(&self, node: TrustedNodeAddress) -> Option<UntrustedNodeAddress>;
+    fn query_containing_block_is_descendant(
+        &self,
+        root: TrustedNodeAddress,
+        possible_descendant: TrustedNodeAddress,
+    ) -> bool;
     fn query_padding(&self, node: TrustedNodeAddress) -> Option<PhysicalSides>;
     fn query_box_area(
         &self,
@@ -391,23 +400,16 @@ pub trait Layout {
         animation_timeline_value: f64,
     ) -> Option<ServoArc<Font>>;
     fn query_scrolling_area(&self, node: Option<TrustedNodeAddress>) -> Rect<i32, CSSPixel>;
-    /// Find the character offset of the point in the given node, if it has text content.
-    fn query_text_index(
-        &self,
-        node: TrustedNodeAddress,
-        point: Point2D<Au, CSSPixel>,
-    ) -> Option<usize>;
-    fn query_elements_from_point(
-        &self,
-        point: LayoutPoint,
-        flags: ElementsFromPointFlags,
-    ) -> Vec<ElementsFromPointResult>;
+    fn hit_test(&self, flags: HitTestFlags, point: LayoutPoint) -> HitTestResult;
     fn query_effective_overflow(&self, node: TrustedNodeAddress) -> Option<AxesOverflow>;
     fn stylist_mut(&mut self) -> &mut Stylist;
 
     /// Set whether the accessibility tree should be constructed for this Layout.
     /// This should be called by the embedder when accessibility is requested by the user.
     fn set_accessibility_active(&self, enabled: bool, epoch: Epoch);
+
+    /// Returns whether accessibility is active for this Layout.
+    fn accessibility_active(&self) -> bool;
 
     /// Whether the accessibility tree needs updating. This is set to true when
     /// - accessibility is activated; or
@@ -423,6 +425,8 @@ pub trait Layout {
 
     /// See [Self::needs_accessibility_update()].
     fn set_needs_accessibility_update(&self);
+
+    fn font_context(&self) -> &Arc<FontContext>;
 }
 
 /// This trait is part of `layout_api` because it depends on both `script_traits`
@@ -546,11 +550,14 @@ pub enum QueryMsg {
     OffsetParentQuery,
     ScrollParentQuery,
     ResolvedFontStyleQuery,
-    ResolvedStyleQuery,
+    /// A style query, with an optional [`PropertyId`], used to limit the phases
+    /// of layout run before the query.
+    ResolvedStyleQuery(PropertyId),
     ScrollingAreaOrOffsetQuery,
     StyleQuery,
     TextIndexQuery,
     PaddingQuery,
+    FlushForUpdateTheRenderingQuery,
 }
 
 /// The goal of a reflow request.
@@ -607,7 +614,7 @@ impl RestyleReason {
 }
 
 /// Information derived from a layout pass that needs to be returned to the script thread.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ReflowResult {
     /// The phases that were run during this reflow.
     pub reflow_phases_run: ReflowPhasesRun,
@@ -626,6 +633,12 @@ pub struct ReflowResult {
     /// finished before reaching this stage of the layout. I.e., no update
     /// required.
     pub iframe_sizes: Option<IFrameSizes>,
+    /// Enumerates web fonts that were added or removed as part of restyling.
+    pub changed_web_fonts: WebFontSetDifference,
+    /// The LCP candidate during this layout pass, if any.
+    pub lcp_candidate: Option<LCPCandidate>,
+    /// The UntrustedNodeAddress for the LCP candidate if any.
+    pub lcp_node_address: Option<UntrustedNodeAddress>,
 }
 
 bitflags! {
@@ -661,6 +674,14 @@ pub struct ReflowStatistics {
     /// A count of the number of fragments that are reused, but may have had some descendant
     /// fragment change.
     pub only_descendants_changed_count: u32,
+    /// A count of the number of accessibility nodes which were checked for changes based on their
+    /// corresponding DOM nodes (whether the check resulted in changes or not).
+    pub nodes_updated_from_dom: u32,
+    /// A count of the number of accessibility nodes which were checked for changes based on data
+    /// already in the accessibility tree (whether the check resulted in changes or not).
+    pub nodes_updated_from_tree: u32,
+    /// A count of the number of accessibility nodes actually serialized to the TreeUpdate.
+    pub nodes_in_tree_update: u32,
 }
 
 /// Information needed for a script-initiated reflow that requires a restyle
@@ -702,6 +723,12 @@ pub struct ReflowRequest {
     pub highlighted_dom_node: Option<OpaqueNode>,
     /// The current font context.
     pub document_context: WebFontDocumentContext,
+    /// Damage to the accessibility tree from DOM mutations.
+    pub accessibility_damage: Option<Vec<(TrustedNodeAddress, AccessibilityDamage)>>,
+    /// Nodes which were removed from the DOM tree since the last reflow, which were rooted in
+    /// [`AccessibilityData`]. Only set if [`pref::expensive_accessibility_test_assertions_enabled`]
+    /// is set.
+    pub rooted_nodes_for_accessibility_integrity_check: Option<FxHashSet<OpaqueNode>>,
 }
 
 impl ReflowRequest {
@@ -766,14 +793,27 @@ pub struct ImageAnimationState {
     pub image: Arc<RasterImage>,
     pub active_frame: usize,
     frame_start_time: f64,
+
+    /// The number of loops that have fully completed in this [`ImageAnimationState`].
+    /// If this is greater than or equal to the maximum number of loops in the
+    /// [`RasterImage`], then the animation has ended. If it is `None`, then the image
+    /// will loop infinitely.
+    pub completed_loops: Option<u32>,
 }
 
 impl ImageAnimationState {
     pub fn new(image: Arc<RasterImage>, last_update_time: f64) -> Self {
+        let completd_loops = match &image.loop_count {
+            None => unreachable!("Loop count of an animated Image should never be None"),
+            Some(repeat) if Repeat::Infinite == *repeat => None,
+            _ => Some(0),
+        };
+
         Self {
             image,
             active_frame: 0,
             frame_start_time: last_update_time,
+            completed_loops: completd_loops,
         }
     }
 
@@ -781,7 +821,10 @@ impl ImageAnimationState {
         self.image.id
     }
 
-    pub fn duration_to_next_frame(&self, now: f64) -> Duration {
+    pub fn duration_to_next_frame(&self, now: f64) -> Option<Duration> {
+        if self.is_finished() {
+            return None;
+        }
         let frame_delay = self
             .image
             .frames
@@ -792,20 +835,19 @@ impl ImageAnimationState {
 
         let time_since_frame_start = (now - self.frame_start_time).max(0.0) * 1000.0;
         let time_since_frame_start = Duration::from_secs_f64(time_since_frame_start);
-        frame_delay - time_since_frame_start.min(frame_delay)
+        Some(frame_delay - time_since_frame_start.min(frame_delay))
     }
 
     /// check whether image active frame need to be updated given current time,
     /// return true if there are image that need to be updated.
     /// false otherwise.
     pub fn update_frame_for_animation_timeline_value(&mut self, now: f64) -> bool {
-        if self.image.frames.len() <= 1 {
+        if self.image.frames.len() <= 1 || self.is_finished() {
             return false;
         }
-        let image = &self.image;
         let time_interval_since_last_update = now - self.frame_start_time;
         let mut remain_time_interval = time_interval_since_last_update -
-            image
+            self.image
                 .frames
                 .get(self.active_frame)
                 .unwrap()
@@ -813,9 +855,29 @@ impl ImageAnimationState {
                 .unwrap()
                 .as_secs_f64();
         let mut next_active_frame_id = self.active_frame;
+
+        let frame_count = self.image.frames.len();
         while remain_time_interval > 0.0 {
-            next_active_frame_id = (next_active_frame_id + 1) % image.frames.len();
-            remain_time_interval -= image
+            next_active_frame_id = (next_active_frame_id + 1) % frame_count;
+
+            // If the next active frame is 0, this means the animation is about to loop.
+            if next_active_frame_id == 0 {
+                self.advance_completed_loops();
+
+                // If we have just finished the animation, advance to the final frame if
+                // necessary and stop walking through frames.
+                if self.is_finished() {
+                    if self.active_frame == frame_count - 1 {
+                        return false;
+                    }
+                    self.active_frame = frame_count - 1;
+                    self.frame_start_time = now;
+                    return true;
+                }
+            }
+
+            remain_time_interval -= self
+                .image
                 .frames
                 .get(next_active_frame_id)
                 .unwrap()
@@ -830,11 +892,34 @@ impl ImageAnimationState {
         self.frame_start_time = now;
         true
     }
+
+    /// Whether or not this animation has finished looping and has reached its final frame.
+    fn is_finished(&self) -> bool {
+        let Some(Repeat::Finite(maximum_loops)) = self.image.loop_count.as_ref() else {
+            return false;
+        };
+        self.completed_loops
+            .is_some_and(|completed_loops| completed_loops >= maximum_loops.get())
+    }
+
+    /// If this animation has a finite number of loops, advance the count of completed loops.
+    fn advance_completed_loops(&mut self) {
+        if let Some(completed_loops) = self.completed_loops.as_mut() {
+            *completed_loops += 1;
+        }
+    }
+}
+
+/// The result of a hit test query.
+#[derive(Debug, Default)]
+pub struct HitTestResult {
+    pub items: Vec<HitTestResultItem>,
+    pub dom_position_for_selection: Option<(OpaqueNode, Utf32CodeUnits)>,
 }
 
 /// Describe an item that matched a hit-test query.
 #[derive(Debug)]
-pub struct ElementsFromPointResult {
+pub struct HitTestResultItem {
     /// An [`OpaqueNode`] that contains a pointer to the node hit by
     /// this hit test result.
     pub node: OpaqueNode,
@@ -844,14 +929,6 @@ pub struct ElementsFromPointResult {
     /// The [`Cursor`] that's defined on the item that is hit by this
     /// hit test result.
     pub cursor: Cursor,
-}
-
-bitflags! {
-    pub struct ElementsFromPointFlags: u8 {
-        /// Whether or not to find all of the items for a hit test or stop at the
-        /// first hit.
-        const FindAll = 0b00000001;
-    }
 }
 
 #[derive(Debug, Default, MallocSizeOf)]
@@ -935,15 +1012,16 @@ pub fn with_layout_state<R>(f: impl FnOnce() -> R) -> R {
 
 #[cfg(test)]
 mod test {
+    use std::num::NonZeroU32;
     use std::sync::Arc;
     use std::time::Duration;
 
-    use pixels::{CorsStatus, ImageFrame, ImageMetadata, PixelFormat, RasterImage};
+    use pixels::{CorsStatus, ImageFrame, ImageMetadata, PixelFormat, RasterImage, Repeat};
 
     use crate::ImageAnimationState;
 
     #[test]
-    fn test() {
+    fn test_animated_image_update() {
         let image_frames: Vec<ImageFrame> = std::iter::repeat_with(|| ImageFrame {
             delay: Some(Duration::from_millis(100)),
             byte_range: 0..1,
@@ -962,6 +1040,7 @@ mod test {
             bytes: Arc::new(vec![1]),
             frames: image_frames,
             cors_status: CorsStatus::Unsafe,
+            loop_count: Some(Repeat::Infinite),
             is_opaque: false,
         };
         let mut image_animation_state = ImageAnimationState::new(Arc::new(image), 0.0);
@@ -980,5 +1059,50 @@ mod test {
         );
         assert_eq!(image_animation_state.active_frame, 1);
         assert_eq!(image_animation_state.frame_start_time, 0.101);
+    }
+
+    #[test]
+    fn test_finite_image_repeat() {
+        let image_frames: Vec<ImageFrame> = std::iter::repeat_with(|| ImageFrame {
+            delay: Some(Duration::from_millis(100)),
+            byte_range: 0..1,
+            width: 100,
+            height: 100,
+        })
+        .take(2)
+        .collect();
+        let image = RasterImage {
+            metadata: ImageMetadata {
+                width: 100,
+                height: 100,
+            },
+            format: PixelFormat::BGRA8,
+            id: None,
+            bytes: Arc::new(vec![1]),
+            frames: image_frames,
+            cors_status: CorsStatus::Unsafe,
+            loop_count: Some(Repeat::Finite(NonZeroU32::new(1).unwrap())),
+            is_opaque: false,
+        };
+        let mut image_animation_state = ImageAnimationState::new(Arc::new(image), 0.0);
+
+        assert_eq!(image_animation_state.active_frame, 0);
+        assert_eq!(image_animation_state.frame_start_time, 0.0);
+        assert_eq!(
+            image_animation_state.update_frame_for_animation_timeline_value(0.101),
+            true
+        );
+        assert_eq!(image_animation_state.active_frame, 1);
+        assert_eq!(image_animation_state.frame_start_time, 0.101);
+        assert_eq!(
+            image_animation_state.update_frame_for_animation_timeline_value(0.202),
+            false
+        );
+        assert_eq!(
+            image_animation_state.update_frame_for_animation_timeline_value(0.303),
+            false
+        );
+
+        assert_eq!(image_animation_state.active_frame, 1);
     }
 }

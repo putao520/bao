@@ -31,13 +31,12 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlslotelement::HTMLSlotElement;
 use crate::dom::iterators::ShadowIncluding;
+use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{
     BindContext, ChildrenMutation, IsShadowTree, Node, NodeDamage, NodeTraits, UnbindContext,
 };
 use crate::dom::text::Text;
 use crate::dom::toggleevent::ToggleEvent;
-use crate::dom::virtualmethods::VirtualMethods;
-use crate::script_runtime::CanGc;
 
 /// The summary that should be presented if no `<summary>` element is present
 const DEFAULT_SUMMARY: &str = "Details";
@@ -235,7 +234,7 @@ impl HTMLDetailsElement {
             implicit_summary: fallback_summary.as_traced(),
         });
         self.upcast::<Node>()
-            .dirty(crate::dom::node::NodeDamage::Other);
+            .dirty(cx.no_gc(), crate::dom::node::NodeDamage::Other);
     }
 
     pub(crate) fn find_corresponding_summary_element(&self) -> Option<DomRoot<HTMLElement>> {
@@ -414,10 +413,7 @@ impl VirtualMethods for HTMLDetailsElement {
         // Step 2. If localName is name, then ensure details exclusivity by closing the given element if needed
         // given element.
         if attr.local_name() == &local_name!("name") {
-            let old_name: Option<DOMString> = match mutation {
-                AttributeMutation::Set(old, _) => old.map(|value| value.to_string().into()),
-                AttributeMutation::Removed => Some(attr.value().to_string().into()),
-            };
+            let old_name = mutation.old_value(attr).map(|value| value.into());
 
             if let Some(shadow_root) = self.containing_shadow_root() {
                 if let Some(old_name) = old_name {
@@ -466,6 +462,7 @@ impl VirtualMethods for HTMLDetailsElement {
                     let this = this.root();
                     if counter == this.toggle_counter.get() {
                         let event = ToggleEvent::new(
+                            cx,
                             this.global().as_window(),
                             atom!("toggle"),
                             EventBubbles::DoesNotBubble,
@@ -473,13 +470,12 @@ impl VirtualMethods for HTMLDetailsElement {
                             DOMString::from(old_state),
                             DOMString::from(new_state),
                             None,
-                            CanGc::from_cx(cx),
                         );
                         let event = event.upcast::<Event>();
                         event.fire(cx, this.upcast::<EventTarget>());
                     }
                 }));
-            self.upcast::<Node>().dirty(NodeDamage::Other);
+            self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
 
             // Step 3.2. If oldValue is null and value is not null, then ensure details exclusivity
             // by closing other elements if needed given element.

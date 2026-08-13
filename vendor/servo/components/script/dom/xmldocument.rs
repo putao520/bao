@@ -3,17 +3,19 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use data_url::mime::Mime;
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
+use net_traits::image_cache::ImageCache;
 use net_traits::request::InsecureRequestsPolicy;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
-use script_bindings::reflector::reflect_dom_object;
+use script_bindings::reflector::reflect_dom_object_with_cx;
 use script_traits::DocumentActivity;
 use servo_url::{MutableOrigin, ServoUrl};
 
-use crate::document_loader::DocumentLoader;
+use crate::dom::animations::documenttimeline::DocumentTimeline;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
     DocumentMethods, NamedPropertyValue,
 };
@@ -26,7 +28,7 @@ use crate::dom::document::{Document, DocumentSource, HasBrowsingContext, IsHTMLD
 use crate::dom::location::Location;
 use crate::dom::node::Node;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
+use crate::event_loop::document_loader::DocumentLoader;
 
 // https://dom.spec.whatwg.org/#xmldocument
 #[dom_struct]
@@ -50,7 +52,8 @@ impl XMLDocument {
         inherited_insecure_requests_policy: Option<InsecureRequestsPolicy>,
         has_trustworthy_ancestor_origin: bool,
         custom_element_reaction_stack: Rc<CustomElementReactionStack>,
-        can_gc: CanGc,
+        timeline: &DocumentTimeline,
+        image_cache: Arc<dyn ImageCache>,
     ) -> XMLDocument {
         XMLDocument {
             document: Document::new_inherited(
@@ -74,13 +77,16 @@ impl XMLDocument {
                 has_trustworthy_ancestor_origin,
                 custom_element_reaction_stack,
                 window.Document().creation_sandboxing_flag_set(),
-                can_gc,
+                timeline,
+                window.pipeline_id(),
+                image_cache,
             ),
         }
     }
 
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
+        cx: &mut JSContext,
         window: &Window,
         has_browsing_context: HasBrowsingContext,
         url: Option<ServoUrl>,
@@ -94,9 +100,10 @@ impl XMLDocument {
         inherited_insecure_requests_policy: Option<InsecureRequestsPolicy>,
         has_trustworthy_ancestor_origin: bool,
         custom_element_reaction_stack: Rc<CustomElementReactionStack>,
-        can_gc: CanGc,
+        image_cache: Arc<dyn ImageCache>,
     ) -> DomRoot<XMLDocument> {
-        let doc = reflect_dom_object(
+        let timeline = DocumentTimeline::new(cx, window);
+        let doc = reflect_dom_object_with_cx(
             Box::new(XMLDocument::new_inherited(
                 window,
                 has_browsing_context,
@@ -111,10 +118,11 @@ impl XMLDocument {
                 inherited_insecure_requests_policy,
                 has_trustworthy_ancestor_origin,
                 custom_element_reaction_stack,
-                can_gc,
+                &timeline,
+                image_cache,
             )),
             window,
-            can_gc,
+            cx,
         );
         {
             let node = doc.upcast::<Node>();
@@ -131,8 +139,8 @@ impl XMLDocumentMethods<crate::DomTypeHolder> for XMLDocument {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-tree-accessors:supported-property-names>
-    fn SupportedPropertyNames(&self) -> Vec<DOMString> {
-        self.upcast::<Document>().SupportedPropertyNames()
+    fn SupportedPropertyNames(&self, no_gc: &NoGC) -> Vec<DOMString> {
+        self.upcast::<Document>().SupportedPropertyNames(no_gc)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-tree-accessors:dom-document-nameditem-filter>

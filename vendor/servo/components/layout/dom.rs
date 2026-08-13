@@ -78,7 +78,7 @@ impl InnerDOMLayoutData {
         self.self_box
             .borrow()
             .as_ref()
-            .and_then(|layout_box| layout_box.with_base(LayoutBoxBase::fragments))
+            .and_then(|layout_box| layout_box.with_base(|base| base.fragments().clone()))
             .unwrap_or_default()
     }
 
@@ -98,19 +98,19 @@ impl InnerDOMLayoutData {
         }
     }
 
-    fn with_layout_box_base(&self, callback: impl Fn(&LayoutBoxBase)) {
+    fn with_layout_box_base(&self, callback: impl FnOnce(&LayoutBoxBase)) {
         if let Some(data) = self.self_box.borrow().as_ref() {
             data.with_base(callback);
         }
     }
 
-    fn with_layout_box_base_including_pseudos(&self, callback: impl Fn(&LayoutBoxBase)) {
-        self.with_layout_box_base(&callback);
+    fn with_layout_box_base_including_pseudos(&self, mut callback: impl FnMut(&LayoutBoxBase)) {
+        self.with_layout_box_base(&mut callback);
         for pseudo_layout_data in self.pseudo_boxes.iter() {
             pseudo_layout_data
                 .data
                 .borrow()
-                .with_layout_box_base(&callback);
+                .with_layout_box_base(&mut callback);
         }
     }
 }
@@ -341,13 +341,27 @@ pub(crate) trait NodeExt<'dom> {
     /// Remove boxes for the element itself, and all of its pseudo-element boxes.
     fn unset_all_boxes(&self);
 
+    /// Clear laid out `Fragment`s and dirty `Fragment` caches for all of this node's boxes,
+    /// ensuring that the next `FragmentTree` layout that happens at this node is complete.
+    fn clear_fragments_and_dirty_fragment_caches(&self);
+
+    /// Clear laid out `Fragment`s and dirty `Fragment` caches for all this node's boxes and
+    /// descendant's boxes, ensuring that the next `FragmentTree` layout that happens at and
+    /// below this node is complete.
+    fn clear_fragments_and_dirty_fragment_caches_recursively(&self);
+
+    /// Clear laid out `Fragment`s and dirty `Fragment` caches for all this node's descendant's
+    /// boxes.
+    fn clear_fragments_and_dirty_fragment_caches_of_descendants(&self);
+
     /// Returns the [`NodeRenderingType`] for this [`LayoutNode`] which describes whether
     /// the node is being rendered, delegating rendering, or not being rendered at all
     /// based on whether it has a [`LayoutBox`] and what kind.
     fn rendering_type(&self) -> NodeRenderingType;
 
     fn fragments_for_pseudo(&self, pseudo_element: Option<PseudoElement>) -> Vec<Fragment>;
-    fn with_layout_box_base_including_pseudos(&self, callback: impl Fn(&LayoutBoxBase));
+    fn with_layout_box_base(&self, callback: impl FnMut(&LayoutBoxBase));
+    fn with_layout_box_base_including_pseudos(&self, callback: impl FnMut(&LayoutBoxBase));
 
     fn repair_style(&self, context: &SharedStyleContext);
 
@@ -415,6 +429,7 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
         Some((
             VideoInfo {
                 image_key: data.current_frame.map(|frame| frame.image_key),
+                poster_url: data.poster_url,
             },
             natural_size,
         ))
@@ -532,6 +547,23 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
         // for DOM descendants of elements with `display: none`.
     }
 
+    fn clear_fragments_and_dirty_fragment_caches_recursively(&self) {
+        self.clear_fragments_and_dirty_fragment_caches();
+        self.clear_fragments_and_dirty_fragment_caches_of_descendants();
+    }
+
+    fn clear_fragments_and_dirty_fragment_caches(&self) {
+        self.with_layout_box_base_including_pseudos(|base| {
+            base.clear_fragments_and_dirty_fragment_cache()
+        });
+    }
+
+    fn clear_fragments_and_dirty_fragment_caches_of_descendants(&self) {
+        for child in self.flat_tree_children() {
+            child.clear_fragments_and_dirty_fragment_caches_recursively();
+        }
+    }
+
     fn rendering_type(&self) -> NodeRenderingType {
         let Some(layout_data) = self.inner_layout_data() else {
             return NodeRenderingType::NotRendered;
@@ -543,7 +575,13 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
         }
     }
 
-    fn with_layout_box_base_including_pseudos(&self, callback: impl Fn(&LayoutBoxBase)) {
+    fn with_layout_box_base(&self, callback: impl FnMut(&LayoutBoxBase)) {
+        if let Some(inner_layout_data) = self.inner_layout_data() {
+            inner_layout_data.with_layout_box_base(callback);
+        }
+    }
+
+    fn with_layout_box_base_including_pseudos(&self, callback: impl FnMut(&LayoutBoxBase)) {
         if let Some(inner_layout_data) = self.inner_layout_data() {
             inner_layout_data.with_layout_box_base_including_pseudos(callback);
         }

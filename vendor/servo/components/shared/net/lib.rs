@@ -21,7 +21,8 @@ use malloc_size_of::malloc_size_of_is_0;
 use malloc_size_of_derive::MallocSizeOf;
 use mime::Mime;
 use profile_traits::mem::ReportsChan;
-use rand::{RngCore, rng};
+use rand::rng;
+use rand::Rng as RngCore;
 use request::RequestId;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -256,6 +257,7 @@ pub enum FetchResponseMsg {
     ProcessResponseChunk(RequestId, DebugVec),
     ProcessResponseEOF(RequestId, Result<(), NetworkError>, ResourceFetchTiming),
     ProcessCspViolations(RequestId, Vec<csp::Violation>),
+    ProcessContentLength(RequestId, usize),
 }
 
 #[derive(Deserialize, PartialEq, Serialize, MallocSizeOf)]
@@ -287,6 +289,7 @@ impl FetchResponseMsg {
             FetchResponseMsg::ProcessResponse(id, ..) |
             FetchResponseMsg::ProcessResponseChunk(id, ..) |
             FetchResponseMsg::ProcessResponseEOF(id, ..) |
+            FetchResponseMsg::ProcessContentLength(id, _) |
             FetchResponseMsg::ProcessCspViolations(id, ..) => *id,
         }
     }
@@ -310,6 +313,8 @@ pub trait FetchTaskTarget {
     ///
     /// Fired when the response is fully fetched
     fn process_response_eof(&mut self, request: &Request, response: &Response);
+
+    fn process_response_length_hint(&mut self, request: &Request, length: usize);
 
     fn process_csp_violations(&mut self, request: &Request, violations: Vec<csp::Violation>);
 }
@@ -388,6 +393,10 @@ impl FetchTaskTarget for IpcSender<FetchResponseMsg> {
             request.id, violations,
         ));
     }
+
+    fn process_response_length_hint(&mut self, request: &Request, length: usize) {
+        let _ = self.send(FetchResponseMsg::ProcessContentLength(request.id, length));
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
@@ -463,6 +472,7 @@ impl FetchTaskTarget for IpcSender<WebSocketNetworkEvent> {
     fn process_csp_violations(&mut self, _: &Request, violations: Vec<csp::Violation>) {
         let _ = self.send(WebSocketNetworkEvent::ReportCSPViolations(violations));
     }
+    fn process_response_length_hint(&mut self, _: &Request, _: usize) {}
 }
 
 /// A fetch task that discards all data it's sent,
@@ -476,6 +486,7 @@ impl FetchTaskTarget for DiscardFetch {
     fn process_response_chunk(&mut self, _: &Request, _: Vec<u8>) {}
     fn process_response_eof(&mut self, _: &Request, _: &Response) {}
     fn process_csp_violations(&mut self, _: &Request, _: Vec<csp::Violation>) {}
+    fn process_response_length_hint(&mut self, _: &Request, _: usize) {}
 }
 
 /// Handle to an async runtime,

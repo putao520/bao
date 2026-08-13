@@ -6,7 +6,8 @@
 
 use std::borrow::ToOwned;
 use std::collections::HashMap;
-use std::io;
+use std::fs::File;
+use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::thread;
@@ -26,7 +27,7 @@ use net_traits::response::{Response, ResponseInit};
 use net_traits::{
     AsyncRuntime, CookieAsyncResponse, CookieData, CookieSource, CoreResourceMsg,
     CoreResourceThread, CustomResponseMediator, DiscardFetch, FetchChannels, FetchTaskTarget,
-    ResourceFetchTiming, ResourceThreads, ResourceTimingType, WebSocketDomAction,
+    NetworkError, ResourceFetchTiming, ResourceThreads, ResourceTimingType, WebSocketDomAction,
     WebSocketNetworkEvent,
 };
 use parking_lot::{Mutex, RwLock};
@@ -37,6 +38,8 @@ use profile_traits::mem::{
 use profile_traits::path;
 use profile_traits::time::ProfilerChan;
 use rustc_hash::FxHashMap;
+use rustls_pki_types::CertificateDer;
+use rustls_pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::{
     self, CallbackSetter, GenericCallback, GenericReceiver, GenericReceiverSet,
@@ -62,16 +65,23 @@ use crate::fetch::methods::{
 };
 use crate::filemanager_thread::FileManager;
 use crate::hsts::{self, HstsList};
-use crate::http_cache::HttpCache;
+use crate::http_cache::{HttpCache, HttpCacheAssignment};
 use crate::http_loader::{HttpState, http_redirect_fetch};
 use crate::protocols::ProtocolRegistry;
 use crate::request_interceptor::RequestInterceptor;
 use crate::websocket_loader::create_handshake_request;
 
-/// Load a file with CA certificate and produce DER-encoded certificate bytes.
-fn load_root_cert_store_from_file(file_path: String) -> io::Result<Vec<Vec<u8>>> {
-    let pem = std::fs::read_to_string(&file_path)?;
-    Ok(bao_boringssl_bridge::pem_parse_certs(&pem))
+/// Load a file with CA certificate and produce a RootCertStore with the results.
+fn load_root_cert_store_from_file(file_path: String) -> io::Result<Vec<CertificateDer<'static>>> {
+    let mut pem = BufReader::new(File::open(file_path)?);
+
+    let certs = CertificateDer::pem_reader_iter(&mut pem)
+        .filter_map(|cert| {
+            cert.inspect_err(|e| log::error!("Could not load certificate ({e}). Ignoring it."))
+                .ok()
+        })
+        .collect();
+    Ok(certs)
 }
 
 /// Returns a tuple of (public, private) senders to the new threads.
@@ -91,8 +101,9 @@ pub fn new_resource_threads(
 
     let ca_certificates = certificate_path
         .and_then(|path| {
-            let certs = load_root_cert_store_from_file(path).ok()?;
-            Some(CACertificates::Override(certs))
+            Some(CACertificates::Override(
+                load_root_cert_store_from_file(path).ok()?,
+            ))
         })
         .unwrap_or_default();
 
@@ -121,7 +132,7 @@ pub fn new_core_resource_thread(
     mem_profiler_chan: MemProfilerChan,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
     config_dir: Option<PathBuf>,
-    ca_certificates: CACertificates,
+    ca_certificates: CACertificates<'static>,
     ignore_certificate_errors: bool,
     protocols: Arc<ProtocolRegistry>,
 ) -> (CoreResourceThread, CoreResourceThread) {
@@ -180,7 +191,7 @@ pub fn new_core_resource_thread(
 struct ResourceChannelManager {
     resource_manager: CoreResourceManager,
     config_dir: Option<PathBuf>,
-    ca_certificates: CACertificates,
+    ca_certificates: CACertificates<'static>,
     ignore_certificate_errors: bool,
     cancellation_listeners: FxHashMap<RequestId, Weak<CancellationListener>>,
     cookie_listeners: FxHashMap<CookieStoreId, GenericCallback<CookieAsyncResponse>>,
@@ -189,7 +200,7 @@ struct ResourceChannelManager {
 /// This returns a tuple HttpState and a private HttpState.
 fn create_http_states(
     config_dir: Option<&Path>,
-    ca_certificates: CACertificates,
+    ca_certificates: CACertificates<'static>,
     ignore_certificate_errors: bool,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 ) -> (Arc<HttpState>, Arc<HttpState>) {
@@ -208,7 +219,7 @@ fn create_http_states(
         cookie_jar: RwLock::new(cookie_jar),
         auth_cache: RwLock::new(auth_cache),
         history_states: RwLock::new(FxHashMap::default()),
-        http_cache: HttpCache::default(),
+        http_cache: HttpCache::new(HttpCacheAssignment::Public),
         client: create_http_client(create_tls_config(
             ca_certificates.clone(),
             ignore_certificate_errors,
@@ -224,7 +235,7 @@ fn create_http_states(
         cookie_jar: RwLock::new(CookieStorage::new(150)),
         auth_cache: RwLock::new(AuthCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
-        http_cache: HttpCache::default(),
+        http_cache: HttpCache::new(HttpCacheAssignment::Private),
         client: create_http_client(create_tls_config(
             ca_certificates,
             ignore_certificate_errors,
@@ -522,9 +533,7 @@ impl ResourceChannelManager {
             CoreResourceMsg::GetCookieStringForUrl(url, consumer, source) => {
                 let mut cookie_jar = http_state.cookie_jar.write();
                 cookie_jar.remove_expired_cookies_for_url(&url);
-                consumer
-                    .send(cookie_jar.cookies_for_url(&url, source))
-                    .unwrap();
+                consumer.send_or_ignore(cookie_jar.cookies_for_url(&url, source));
             },
             CoreResourceMsg::GetCookiesForUrl(url, consumer, source) => {
                 let mut cookie_jar = http_state.cookie_jar.write();
@@ -533,7 +542,7 @@ impl ResourceChannelManager {
                     .cookies_data_for_url(&url, source)
                     .map(Serde)
                     .collect();
-                consumer.send(cookies).unwrap();
+                consumer.send_or_ignore(cookies);
             },
             CoreResourceMsg::GetCookieDataForUrlAsync(cookie_store_id, url, name) => {
                 let mut cookie_jar = http_state.cookie_jar.write();
@@ -611,13 +620,11 @@ impl ResourceChannelManager {
             CoreResourceMsg::ListCookies(sender) => {
                 let mut cookie_jar = http_state.cookie_jar.write();
                 cookie_jar.remove_all_expired_cookies();
-                let _ = sender.send(cookie_jar.cookie_site_descriptors());
+                sender.send_or_ignore(cookie_jar.cookie_site_descriptors());
             },
             CoreResourceMsg::GetHistoryState(history_state_id, consumer) => {
                 let history_states = http_state.history_states.read();
-                consumer
-                    .send(history_states.get(&history_state_id).cloned())
-                    .unwrap();
+                consumer.send_or_ignore(history_states.get(&history_state_id).cloned());
             },
             CoreResourceMsg::SetHistoryState(history_state_id, structured_data) => {
                 let mut history_states = http_state.history_states.write();
@@ -630,18 +637,15 @@ impl ResourceChannelManager {
                 }
             },
             CoreResourceMsg::GetCacheEntries(sender) => {
-                let _ = sender.send(http_state.http_cache.cache_entry_descriptors());
+                sender.send_or_ignore(http_state.http_cache.cache_entry_descriptors());
             },
             CoreResourceMsg::ClearCache(sender) => {
                 http_state.http_cache.clear();
                 if let Some(sender) = sender {
-                    let _ = sender.send(());
+                    sender.send_or_ignore(());
                 }
             },
             CoreResourceMsg::ToFileManager(msg) => self.resource_manager.filemanager.handle(msg),
-            CoreResourceMsg::StorePreloadedResponse(preload_id, response) => self
-                .resource_manager
-                .handle_preloaded_response(preload_id, response),
             CoreResourceMsg::TotalSizeOfInFlightKeepAliveRecords(pipeline_id, sender) => {
                 let total = self
                     .resource_manager
@@ -655,7 +659,7 @@ impl ResourceChannelManager {
                             .sum()
                     })
                     .unwrap_or_default();
-                let _ = sender.send(total);
+                sender.send_or_ignore(total);
             },
             CoreResourceMsg::Exit(sender) => {
                 if let Some(ref config_dir) = self.config_dir {
@@ -667,6 +671,7 @@ impl ResourceChannelManager {
                     servo_base::write_json_to_file(&*hsts, config_dir, "hsts_list.json");
                 }
                 self.resource_manager.exit();
+
                 let _ = sender.send(());
                 return false;
             },
@@ -705,7 +710,7 @@ pub struct CoreResourceManager {
     sw_managers: HashMap<ImmutableOrigin, IpcSender<CustomResponseMediator>>,
     filemanager: FileManager,
     request_interceptor: RequestInterceptor,
-    ca_certificates: CACertificates,
+    ca_certificates: CACertificates<'static>,
     ignore_certificate_errors: bool,
     preloaded_resources: SharedPreloadedResources,
     /// <https://fetch.spec.whatwg.org/#concept-fetch-record>
@@ -717,7 +722,7 @@ impl CoreResourceManager {
         devtools_sender: Option<Sender<DevtoolsControlMsg>>,
         _profiler_chan: ProfilerChan,
         embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
-        ca_certificates: CACertificates,
+        ca_certificates: CACertificates<'static>,
         ignore_certificate_errors: bool,
         blob_token_communicator: Arc<Mutex<BlobTokenCommunicator>>,
     ) -> CoreResourceManager {
@@ -733,8 +738,23 @@ impl CoreResourceManager {
         }
     }
 
-    fn handle_preloaded_response(&self, preload_id: PreloadId, response: Response) {
-        let mut preloaded_resources = self.preloaded_resources.lock().unwrap();
+    fn handle_preloaded_response(
+        preloaded_resources: SharedPreloadedResources,
+        preload_id: PreloadId,
+        response: Response,
+    ) {
+        // https://html.spec.whatwg.org/multipage/#preload
+        // Step 11.1. If bodyBytes is a byte sequence, then set response's body to bodyBytes as a body.
+        // Step 11.2. Otherwise, set response to a network error.
+        let response = response
+            .get_network_error()
+            .map(|_| {
+                Response::network_error(NetworkError::ResourceLoadError("Failed to preload".into()))
+            })
+            .unwrap_or(response);
+        let mut preloaded_resources = preloaded_resources.lock().unwrap();
+        // Step 11.5. If entry's on response available is null, then set entry's response to response;
+        // otherwise call entry's on response available given response.
         if let Some(entry) = preloaded_resources.get_mut(&preload_id) {
             entry.with_response(response);
         }
@@ -813,6 +833,7 @@ impl CoreResourceManager {
         }
 
         spawn_task(async move {
+            // XXXManishearth: Check origin against pipeline id (also ensure that the mode is allowed)
             // todo load context / mimesniff in fetch
             // todo referrer policy?
             // todo service worker stuff
@@ -829,7 +850,7 @@ impl CoreResourceManager {
                 websocket_chan: None,
                 ca_certificates,
                 ignore_certificate_errors,
-                preloaded_resources,
+                preloaded_resources: preloaded_resources.clone(),
                 in_flight_keep_alive_records,
             };
 
@@ -858,7 +879,11 @@ impl CoreResourceManager {
                     }
                 },
                 None => {
-                    fetch(request, &mut sender, &context).await;
+                    let preload_id = request.preload_id.clone();
+                    let response = fetch(request, &mut sender, &context).await;
+                    if let Some(preload_id) = preload_id {
+                        Self::handle_preloaded_response(preloaded_resources, preload_id, response);
+                    }
                 },
             };
 

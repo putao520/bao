@@ -64,9 +64,12 @@ impl Sanitizer {
         proto: Option<HandleObject>,
         configuration: SanitizerConfig,
     ) -> DomRoot<Sanitizer> {
-        reflect_dom_object_with_proto(cx, Box::new(Sanitizer::new_inherited(configuration)),
+        reflect_dom_object_with_proto(
+            cx,
+            Box::new(Sanitizer::new_inherited(configuration)),
             window,
-            proto)
+            proto,
+        )
     }
 
     /// <https://wicg.github.io/sanitizer-api/#sanitizerconfig-get-a-sanitizer-instance-from-options>
@@ -226,17 +229,20 @@ impl Sanitizer {
     /// <https://wicg.github.io/sanitizer-api/#sanitize>
     pub(crate) fn sanitize(&self, cx: &mut JSContext, node: &Node, safe: bool) -> ErrorResult {
         // Step 1. Let configuration be the value of sanitizer’s configuration.
-        let mut configuration = self.configuration.borrow_mut();
+        {
+            let mut configuration = self.configuration.borrow_mut();
 
-        // Step 2. Assert: configuration is valid.
-        debug_assert!(configuration.is_valid());
+            // Step 2. Assert: configuration is valid.
+            debug_assert!(configuration.is_valid());
 
-        // Step 3. If safe is true, then set configuration to the result of calling remove unsafe on
-        // configuration.
-        if safe {
-            configuration.remove_unsafe();
+            // Step 3. If safe is true, then set configuration to the result of calling remove unsafe on
+            // configuration.
+            if safe {
+                configuration.remove_unsafe();
+            }
         }
 
+        let configuration = self.configuration.borrow();
         // Step 4. Call sanitize core on node, configuration, and with
         // handleJavascriptNavigationUrls set to safe.
         sanitize_core(cx, node, &configuration, safe)
@@ -773,9 +779,9 @@ impl SanitizerMethods<crate::DomTypeHolder> for Sanitizer {
     }
 
     /// <https://wicg.github.io/sanitizer-api/#dom-sanitizer-allowelement>
-    fn AllowElement(&self, element: SanitizerElementWithAttributes) -> bool {
+    fn AllowElement(&self, cx: &mut JSContext, element: SanitizerElementWithAttributes) -> bool {
         // Step 1. Let configuration be this’s configuration.
-        let mut configuration = self.configuration.borrow_mut();
+        let mut configuration = self.configuration.safe_borrow_mut(cx);
 
         // Step 2. Assert: configuration is valid.
         debug_assert!(configuration.is_valid());
@@ -933,9 +939,12 @@ impl SanitizerMethods<crate::DomTypeHolder> for Sanitizer {
             if element.attributes().is_some() ||
                 !element.remove_attributes().unwrap_or_default().is_empty()
             {
+                std::mem::drop(configuration);
+
                 // Step 5.1.1. The user agent may report a warning to the console that this
                 // operation is not supported.
                 Console::internal_warn(
+                    cx,
                     &self.global(),
                     "Do not support adding an element with attributes to a sanitizer \
                         whose configuration[\"elements\"] does not exist."

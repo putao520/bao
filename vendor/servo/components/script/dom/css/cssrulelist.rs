@@ -14,7 +14,7 @@ use script_bindings::str::DOMString;
 use servo_arc::Arc;
 use style::shared_lock::{Locked, SharedRwLockReadGuard};
 use style::stylesheets::{
-    AllowImportRules, CssRuleType, CssRuleTypes, CssRules, KeyframesRule, RulesMutateError,
+    AllowImportRules, CssRuleTypes, CssRules, KeyframesRule, RulesMutateError,
     StylesheetInDocument, StylesheetLoader as StyleStylesheetLoader,
 };
 
@@ -26,6 +26,7 @@ use crate::dom::bindings::codegen::Bindings::CSSRuleListBinding::CSSRuleListMeth
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
+use crate::dom::cssgroupingrule::CSSGroupingRule;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::window::Window;
 use crate::stylesheet_loader::ElementStylesheetLoader;
@@ -46,6 +47,7 @@ impl Convert<Error> for RulesMutateError {
 #[dom_struct]
 pub(crate) struct CSSRuleList {
     reflector_: Reflector,
+    created_by_rule: Option<Dom<CSSGroupingRule>>,
     parent_stylesheet: Dom<CSSStyleSheet>,
     #[ignore_malloc_size_of = "Stylo"]
     rules: RefCell<RulesSource>,
@@ -60,6 +62,7 @@ pub(crate) enum RulesSource {
 impl CSSRuleList {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new_inherited(
+        created_by_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         rules: RulesSource,
     ) -> CSSRuleList {
@@ -81,6 +84,7 @@ impl CSSRuleList {
 
         CSSRuleList {
             reflector_: Reflector::new(),
+            created_by_rule: created_by_rule.map(Dom::from_ref),
             parent_stylesheet: Dom::from_ref(parent_stylesheet),
             rules: RefCell::new(rules),
             dom_rules: DomRefCell::new(dom_rules),
@@ -90,11 +94,16 @@ impl CSSRuleList {
     pub(crate) fn new(
         cx: &mut JSContext,
         window: &Window,
+        created_by_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         rules: RulesSource,
     ) -> DomRoot<CSSRuleList> {
         reflect_dom_object_with_cx(
-            Box::new(CSSRuleList::new_inherited(parent_stylesheet, rules)),
+            Box::new(CSSRuleList::new_inherited(
+                created_by_rule,
+                parent_stylesheet,
+                rules,
+            )),
             window,
             cx,
         )
@@ -107,8 +116,6 @@ impl CSSRuleList {
         cx: &mut JSContext,
         rule: &DOMString,
         idx: u32,
-        containing_rule_types: CssRuleTypes,
-        parse_relative_rule_type: Option<CssRuleType>,
     ) -> Fallible<u32> {
         self.parent_stylesheet.will_modify();
         let css_rules = if let RulesSource::Rules(rules) = &*self.rules.borrow() {
@@ -134,6 +141,22 @@ impl CSSRuleList {
         } else {
             AllowImportRules::Yes
         };
+
+        let mut containing_rule_types = CssRuleTypes::default();
+        let mut current_rule = self
+            .created_by_rule
+            .as_ref()
+            .map(|rule| rule.upcast::<CSSRule>())
+            .map(DomRoot::from_ref);
+        while let Some(containing_rule) = current_rule {
+            containing_rule_types.insert(containing_rule.rule_type());
+
+            current_rule = containing_rule
+                .parent_rule()
+                .map(|rule| rule.upcast::<CSSRule>())
+                .map(DomRoot::from_ref);
+        }
+
         let new_rule = {
             let guard = parent_stylesheet.shared_lock.read();
             css_rules
@@ -144,7 +167,9 @@ impl CSSRuleList {
                     parent_stylesheet.contents(&guard),
                     index,
                     containing_rule_types,
-                    parse_relative_rule_type,
+                    self.created_by_rule
+                        .as_ref()
+                        .map(|rule| rule.upcast::<CSSRule>().rule_type()),
                     loader.as_ref().map(|l| l as &dyn StyleStylesheetLoader),
                     allow_import_rules,
                 )
@@ -160,16 +185,23 @@ impl CSSRuleList {
 
         let parent_stylesheet = &*self.parent_stylesheet;
         parent_stylesheet.will_modify();
-        let dom_rule = CSSRule::new_specific(cx, window, parent_stylesheet, new_rule);
+
+        let dom_rule = CSSRule::new_specific(
+            cx,
+            window,
+            self.created_by_rule.as_deref(),
+            parent_stylesheet,
+            new_rule,
+        );
         self.dom_rules
-            .borrow_mut()
+            .safe_borrow_mut(cx.no_gc())
             .insert(index, MutNullableDom::new(Some(&*dom_rule)));
-        parent_stylesheet.notify_invalidations();
+        parent_stylesheet.notify_invalidations(cx.no_gc());
         Ok(idx)
     }
 
     /// In case of a keyframe rule, index must be valid.
-    pub(crate) fn remove_rule(&self, index: u32) -> ErrorResult {
+    pub(crate) fn remove_rule(&self, cx: &mut JSContext, index: u32) -> ErrorResult {
         self.parent_stylesheet.will_modify();
 
         let index = index as usize;
@@ -181,23 +213,23 @@ impl CSSRuleList {
                     .write_with(&mut guard)
                     .remove_rule(index)
                     .map_err(Convert::convert)?;
-                let mut dom_rules = self.dom_rules.borrow_mut();
+                let mut dom_rules = self.dom_rules.safe_borrow_mut(cx.no_gc());
                 if let Some(r) = dom_rules[index].get() {
                     r.detach()
                 }
                 dom_rules.remove(index);
-                self.parent_stylesheet.notify_invalidations();
+                self.parent_stylesheet.notify_invalidations(cx.no_gc());
                 Ok(())
             },
             RulesSource::Keyframes(ref kf) => {
                 // https://drafts.csswg.org/css-animations/#dom-csskeyframesrule-deleterule
-                let mut dom_rules = self.dom_rules.borrow_mut();
+                let mut dom_rules = self.dom_rules.safe_borrow_mut(cx.no_gc());
                 if let Some(r) = dom_rules[index].get() {
                     r.detach()
                 }
                 dom_rules.remove(index);
                 kf.write_with(&mut guard).keyframes.remove(index);
-                self.parent_stylesheet.notify_invalidations();
+                self.parent_stylesheet.notify_invalidations(cx.no_gc());
                 Ok(())
             },
         }
@@ -226,6 +258,7 @@ impl CSSRuleList {
                         CSSRule::new_specific(
                             cx,
                             self.global().as_window(),
+                            self.created_by_rule.as_deref(),
                             parent_stylesheet,
                             rule,
                         )
@@ -238,6 +271,7 @@ impl CSSRuleList {
                         DomRoot::upcast(CSSKeyframeRule::new(
                             cx,
                             self.global().as_window(),
+                            self.created_by_rule.as_deref(),
                             parent_stylesheet,
                             rule,
                         ))

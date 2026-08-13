@@ -22,10 +22,8 @@ use crate::dom::encoding::textdecodercommon::TextDecoderCommon;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::stream::transformstreamdefaultcontroller::TransformerType;
 use crate::dom::types::{TransformStream, TransformStreamDefaultController};
-use crate::script_runtime::CanGc;
 
 /// <https://encoding.spec.whatwg.org/#decode-and-enqueue-a-chunk>
-#[expect(unsafe_code)]
 pub(crate) fn decode_and_enqueue_a_chunk(
     cx: &mut js::context::JSContext,
     global: &GlobalScope,
@@ -52,7 +50,7 @@ pub(crate) fn decode_and_enqueue_a_chunk(
     // Step 4.3 Let result be the result of processing an item with item, decoder’s decoder,
     //      decoder’s I/O queue, output, and decoder’s error mode.
     // Step 4.4 If result is error, then throw a TypeError.
-    let output_chunk = decoder.decode(Some(buffer_source), false)?;
+    let output_chunk = decoder.decode(cx.no_gc(), Some(buffer_source), false)?;
 
     // Step 4.2.2 If outputChunk is not the empty string, then enqueue
     //      outputChunk in decoder’s transform.
@@ -60,12 +58,11 @@ pub(crate) fn decode_and_enqueue_a_chunk(
         return Ok(());
     }
     rooted!(&in(cx) let mut rval = UndefinedValue());
-    unsafe { output_chunk.to_jsval(cx.raw_cx(), rval.handle_mut()) };
+    output_chunk.safe_to_jsval(cx, rval.handle_mut());
     controller.enqueue(cx, global, rval.handle())
 }
 
 /// <https://encoding.spec.whatwg.org/#flush-and-enqueue>
-#[expect(unsafe_code)]
 pub(crate) fn flush_and_enqueue(
     cx: &mut js::context::JSContext,
     global: &GlobalScope,
@@ -82,7 +79,7 @@ pub(crate) fn flush_and_enqueue(
     //      with decoder and output.
     // Step 2.3.3 Return.
     // Step 2.3.4 Otherwise, if result is error, throw a TypeError.
-    let output_chunk = decoder.decode(None, true)?;
+    let output_chunk = decoder.decode(cx.no_gc(), None, true)?;
 
     // Step 2.3.2 If outputChunk is not the empty string, then enqueue
     //      outputChunk in decoder’s transform.
@@ -90,7 +87,7 @@ pub(crate) fn flush_and_enqueue(
         return Ok(());
     }
     rooted!(&in(cx) let mut rval = UndefinedValue());
-    unsafe { output_chunk.to_jsval(cx.raw_cx(), rval.handle_mut()) };
+    output_chunk.safe_to_jsval(cx, rval.handle_mut());
     controller.enqueue(cx, global, rval.handle())
 }
 
@@ -120,7 +117,7 @@ impl TextDecoderStream {
         }
     }
 
-    fn new_with_proto(
+    pub(crate) fn new_with_proto(
         cx: &mut js::context::JSContext,
         global: &GlobalScope,
         proto: Option<SafeHandleObject>,
@@ -129,14 +126,16 @@ impl TextDecoderStream {
         ignoreBOM: bool,
     ) -> Fallible<DomRoot<Self>> {
         let decoder = Rc::new(TextDecoderCommon::new_inherited(encoding, fatal, ignoreBOM));
-        let transformer_type = TransformerType::Decoder(decoder.clone());
 
-        let transform_stream = TransformStream::new_with_proto(global, None, CanGc::from_cx(cx));
-        transform_stream.set_up(cx, global, transformer_type)?;
+        let transform_stream = TransformStream::new_with_proto(cx, global, None);
+        transform_stream.set_up(cx, global, TransformerType::Decoder(decoder.clone()))?;
 
-        Ok(reflect_dom_object_with_proto(cx, Box::new(TextDecoderStream::new_inherited(decoder, &transform_stream)),
+        Ok(reflect_dom_object_with_proto(
+            cx,
+            Box::new(TextDecoderStream::new_inherited(decoder, &transform_stream)),
             global,
-            proto))
+            proto,
+        ))
     }
 }
 

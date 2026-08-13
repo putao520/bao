@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Ref;
+use std::ops::Deref;
 
 use devtools_traits::AttrInfo;
 use html5ever::{LocalName, Namespace, Prefix};
@@ -13,7 +14,7 @@ use script_bindings::str::DOMString;
 use style::attr::{AttrIdentifier, AttrValue};
 
 use crate::dom::attr::Attr;
-use crate::dom::bindings::root::ToLayout;
+use crate::dom::bindings::root::{LayoutDom, ToLayout};
 use crate::dom::element::Element;
 use crate::dom::node::node::NodeTraits;
 
@@ -59,7 +60,7 @@ pub(crate) enum AttrValueRef<'a> {
     Borrowed(Ref<'a, AttrValue>),
 }
 
-impl std::ops::Deref for AttrValueRef<'_> {
+impl Deref for AttrValueRef<'_> {
     type Target = AttrValue;
 
     fn deref(&self) -> &AttrValue {
@@ -67,6 +68,12 @@ impl std::ops::Deref for AttrValueRef<'_> {
             AttrValueRef::Direct(value) => value,
             AttrValueRef::Borrowed(value) => value,
         }
+    }
+}
+
+impl AsRef<str> for AttrValueRef<'_> {
+    fn as_ref(&self) -> &str {
+        self.deref()
     }
 }
 
@@ -181,7 +188,11 @@ impl AttributeEntry {
     pub(crate) fn value_for_layout(&self) -> &AttrValue {
         match self {
             AttributeEntry::Raw(data) => &data.value,
-            AttributeEntry::Dom(attr) => unsafe { attr.to_layout() }.value(),
+            AttributeEntry::Dom(attr) => unsafe {
+                let value: LayoutDom<'_, _> = attr.to_layout();
+                value
+            }
+            .value(),
         }
     }
 
@@ -191,7 +202,11 @@ impl AttributeEntry {
     pub(crate) fn local_name_for_layout(&self) -> &LocalName {
         match self {
             AttributeEntry::Raw(data) => data.local_name(),
-            AttributeEntry::Dom(attr) => unsafe { attr.to_layout() }.local_name(),
+            AttributeEntry::Dom(attr) => unsafe {
+                let value: LayoutDom<'_, _> = attr.to_layout();
+                value
+            }
+            .local_name(),
         }
     }
 
@@ -201,7 +216,11 @@ impl AttributeEntry {
     pub(crate) fn namespace_for_layout(&self) -> &Namespace {
         match self {
             AttributeEntry::Raw(data) => data.namespace(),
-            AttributeEntry::Dom(attr) => unsafe { attr.to_layout() }.namespace(),
+            AttributeEntry::Dom(attr) => unsafe {
+                let value: LayoutDom<'_, _> = attr.to_layout();
+                value
+            }
+            .namespace(),
         }
     }
 }

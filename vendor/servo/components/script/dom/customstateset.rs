@@ -2,16 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use atomic_refcell::{AtomicRef, AtomicRefCell};
 use dom_struct::dom_struct;
 use indexmap::IndexSet;
-use script_bindings::cell::DomRefCell;
+use js::context::{JSContext, NoGC};
 use script_bindings::codegen::GenericBindings::ElementInternalsBinding::CustomStateSetMethods;
 use script_bindings::like::Setlike;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use script_bindings::root::{Dom, DomRoot};
-use script_bindings::script_runtime::CanGc;
 use script_bindings::str::DOMString;
-use script_bindings::trace::CustomTraceable;
 
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::html::htmlelement::HTMLElement;
@@ -22,7 +21,8 @@ use crate::dom::window::Window;
 #[dom_struct]
 pub(crate) struct CustomStateSet {
     reflector: Reflector,
-    internal: DomRefCell<IndexSet<DOMString>>,
+    #[no_trace]
+    internal: AtomicRefCell<IndexSet<DOMString>>,
     owner_element: Dom<HTMLElement>,
 }
 
@@ -30,25 +30,23 @@ impl CustomStateSet {
     fn new_inherited(element: &HTMLElement) -> Self {
         Self {
             reflector: Reflector::new(),
-            internal: DomRefCell::new(Default::default()),
+            internal: Default::default(),
             owner_element: Dom::from_ref(element),
         }
     }
 
-    pub(crate) fn new(window: &Window, element: &HTMLElement, can_gc: CanGc) -> DomRoot<Self> {
-        reflect_dom_object(Box::new(Self::new_inherited(element)), window, can_gc)
+    pub(crate) fn new(cx: &mut JSContext, window: &Window, element: &HTMLElement) -> DomRoot<Self> {
+        reflect_dom_object_with_cx(Box::new(Self::new_inherited(element)), window, cx)
     }
 
-    /// Returns a borrowed version of the set without the usual Ref wrapper.
-    /// Mutating the underlying refcell while this value is active is
-    /// undefined behaviour.
-    #[expect(unsafe_code)]
-    pub(crate) unsafe fn set_for_layout(&self) -> &IndexSet<DOMString> {
-        unsafe { self.internal.borrow_for_layout() }
+    pub(crate) fn set_for_layout(&self) -> AtomicRef<'_, IndexSet<DOMString>> {
+        self.internal.borrow()
     }
 
-    fn states_did_change(&self) {
-        self.owner_element.upcast::<Node>().dirty(NodeDamage::Other);
+    fn states_did_change(&self, no_gc: &NoGC) {
+        self.owner_element
+            .upcast::<Node>()
+            .dirty(no_gc, NodeDamage::Other);
     }
 }
 
@@ -56,39 +54,39 @@ impl Setlike for CustomStateSet {
     type Key = DOMString;
 
     #[inline(always)]
-    fn get_index(&self, index: u32) -> Option<Self::Key> {
-        self.internal.get_index(index)
+    fn get_index(&self, cx: &mut JSContext, index: u32) -> Option<Self::Key> {
+        self.internal.get_index(cx, index)
     }
 
     #[inline(always)]
-    fn size(&self) -> u32 {
-        self.internal.size()
+    fn size(&self, cx: &mut JSContext) -> u32 {
+        self.internal.size(cx)
     }
 
     #[inline(always)]
-    fn add(&self, key: Self::Key) {
-        self.internal.add(key);
-        self.states_did_change();
+    fn add(&self, cx: &mut JSContext, key: Self::Key) {
+        self.internal.add(cx, key);
+        self.states_did_change(cx.no_gc());
     }
 
     #[inline(always)]
-    fn has(&self, key: Self::Key) -> bool {
-        self.internal.has(key)
+    fn has(&self, cx: &mut JSContext, key: Self::Key) -> bool {
+        self.internal.has(cx, key)
     }
 
     #[inline(always)]
-    fn clear(&self) {
-        let old_size = self.internal.size();
-        self.internal.clear();
+    fn clear(&self, cx: &mut JSContext) {
+        let old_size = self.internal.size(cx);
+        self.internal.clear(cx);
         if old_size != 0 {
-            self.states_did_change();
+            self.states_did_change(cx.no_gc());
         }
     }
 
     #[inline(always)]
-    fn delete(&self, key: Self::Key) -> bool {
-        if self.internal.delete(key) {
-            self.states_did_change();
+    fn delete(&self, cx: &mut JSContext, key: Self::Key) -> bool {
+        if self.internal.delete(cx, key) {
+            self.states_did_change(cx.no_gc());
             true
         } else {
             false
@@ -99,6 +97,6 @@ impl Setlike for CustomStateSet {
 impl CustomStateSetMethods<crate::DomTypeHolder> for CustomStateSet {
     /// <https://html.spec.whatwg.org/multipage/#customstateset>
     fn Size(&self) -> u32 {
-        self.internal.size()
+        self.internal.borrow().len() as u32
     }
 }

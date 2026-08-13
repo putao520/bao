@@ -98,7 +98,7 @@ impl CellLayout {
         self.layout
             .fragments
             .iter()
-            .all(|fragment| matches!(fragment, Fragment::AbsoluteOrFixedPositioned(_)))
+            .all(|fragment| matches!(fragment, Fragment::AbsoluteOrFixedPositionedPlaceholder(_)))
     }
 }
 
@@ -862,8 +862,8 @@ impl<'a> TableLayout<'a> {
         let bounds = |sum_a, sum_b| target_inline_size > sum_a && target_inline_size < sum_b;
 
         let blend = |a: &[Au], sum_a: Au, b: &[Au], sum_b: Au| {
-            // First convert the Au units to f32 in order to do floating point division.
-            let weight_a = (target_inline_size - sum_b).to_f32_px() / (sum_a - sum_b).to_f32_px();
+            // First convert the Au units to f64 in order to do floating point division.
+            let weight_a = (target_inline_size - sum_b).to_f64_px() / (sum_a - sum_b).to_f64_px();
             let weight_b = 1.0 - weight_a;
 
             let mut remaining_assignable_width = target_inline_size;
@@ -871,7 +871,9 @@ impl<'a> TableLayout<'a> {
                 .iter()
                 .zip(b.iter())
                 .map(|(guess_a, guess_b)| {
-                    let column_width = guess_a.scale_by(weight_a) + guess_b.scale_by(weight_b);
+                    let column_width = Au::from_f64_px(
+                        guess_a.to_f64_px() * weight_a + guess_b.to_f64_px() * weight_b,
+                    );
                     // Clamp to avoid exceeding the assignable width. This could otherwise
                     // happen when dealing with huge values whose sum is clamped to MAX_AU.
                     let column_width = column_width.min(remaining_assignable_width);
@@ -1142,7 +1144,12 @@ impl<'a> TableLayout<'a> {
             })
         };
 
-        self.cells_laid_out = if layout_context.use_rayon {
+        let job_sizes = self
+            .table
+            .slots
+            .iter()
+            .map(|row| row.iter().map(|item| item.subtree_size()).sum::<usize>());
+        self.cells_laid_out = if layout_context.should_parallelize_layout(job_sizes) {
             self.table
                 .slots
                 .par_iter()
@@ -1246,18 +1253,17 @@ impl<'a> TableLayout<'a> {
                 self.row_baselines.push(max_ascent);
                 max_row_height.max(max_ascent + max_descent)
             })
-            .collect();
+            .collect::<Vec<_>>();
         self.calculate_row_sizes_after_first_layout(&mut row_sizes, writing_mode);
         row_sizes
     }
 
-    #[allow(clippy::ptr_arg)] // Needs to be a vec because of the function above
     /// After doing layout of table rows, calculate final row size and distribute space across
     /// rowspanned cells. This follows the implementation of LayoutNG and the priority
     /// agorithm described at <https://github.com/w3c/csswg-drafts/issues/4418>.
     fn calculate_row_sizes_after_first_layout(
         &mut self,
-        row_sizes: &mut Vec<Au>,
+        row_sizes: &mut [Au],
         writing_mode: WritingMode,
     ) {
         let mut cells_to_distribute = Vec::new();
@@ -2918,6 +2924,7 @@ impl TableSlotCell {
             self.context.base.style.clone(),
             vertical_align_fragment_rect.as_physical(None),
             layout.layout.fragments,
+            false, /* is_line_box */
         );
 
         // Adjust the static position of all absolute children based on the
@@ -3053,8 +3060,11 @@ impl RowspanToDistribute<'_> {
         self.coordinates.y..self.coordinates.y + self.cell.rowspan
     }
 
+    /// Returns true if other is a proper subset of [`self`].
     fn fully_encloses(&self, other: &RowspanToDistribute) -> bool {
-        other.coordinates.y > self.coordinates.y && other.range().end < self.range().end
+        self.range() != other.range() &&
+            other.coordinates.y >= self.coordinates.y &&
+            other.range().end <= self.range().end
     }
 }
 

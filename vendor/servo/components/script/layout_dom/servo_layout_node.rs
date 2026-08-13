@@ -5,9 +5,9 @@
 #![expect(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::borrow::Cow;
 use std::fmt;
 
+use atomic_refcell::AtomicRef;
 use layout_api::{
     GenericLayoutData, HTMLCanvasData, HTMLMediaData, LayoutDataTrait, LayoutElement, LayoutNode,
     LayoutNodeType, PseudoElementChain, SVGElementData, SharedSelection, TrustedNodeAddress,
@@ -16,6 +16,7 @@ use net_traits::image_cache::Image;
 use pixels::ImageMetadata;
 use servo_arc::Arc;
 use servo_base::id::{BrowsingContextId, PipelineId};
+use servo_base::text::{RangeAny, Utf32CodeUnits};
 use servo_url::ServoUrl;
 use style;
 use style::context::SharedStyleContext;
@@ -26,7 +27,8 @@ use style::selector_parser::PseudoElement;
 use super::ServoLayoutElement;
 use crate::dom::bindings::root::LayoutDom;
 use crate::dom::element::Element;
-use crate::dom::node::{Node, NodeFlags, NodeTypeIdWrapper};
+use crate::dom::layout_dom::NodeTypeIdWrapper;
+use crate::dom::node::{Node, NodeFlags};
 use crate::layout_dom::{
     ServoDangerousStyleNode, ServoLayoutDomTypeBundle, ServoLayoutNodeChildrenIterator,
 };
@@ -241,12 +243,21 @@ impl<'dom> LayoutNode<'dom> for ServoLayoutNode<'dom> {
             .filter(|element| element.is_html_element())
     }
 
-    fn text_content(self) -> Cow<'dom, str> {
+    fn text_content(self) -> AtomicRef<'dom, str> {
         self.node.text_content()
     }
 
-    fn selection(&self) -> Option<SharedSelection> {
-        self.node.selection()
+    fn document_selection_in_text_node(&self) -> Option<RangeAny<Utf32CodeUnits>> {
+        // Pseudo-elements do not ever have document selection.
+        if !self.pseudo_element_chain.is_empty() {
+            return None;
+        }
+
+        self.node.document_selection_in_text_node()
+    }
+
+    fn form_control_selection_in_text_node(&self) -> Option<SharedSelection> {
+        self.node.form_control_selection_in_text_node()
     }
 
     fn image_url(&self) -> Option<ServoUrl> {

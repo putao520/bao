@@ -15,6 +15,9 @@ path = "lib.rs"
 test = false
 doctest = false
 
+[features]
+test-util = []
+
 [dependencies]
 content-security-policy = { workspace = true }
 cookie = { workspace = true }
@@ -37,7 +40,9 @@ percent-encoding = { workspace = true }
 pixels = { workspace = true }
 profile_traits = { workspace = true }
 rand = { workspace = true }
+resvg = { workspace = true }
 rustc-hash = { workspace = true }
+rustls-pki-types = { workspace = true }
 serde = { workspace = true }
 servo-base = { workspace = true }
 servo-config = { workspace = true }

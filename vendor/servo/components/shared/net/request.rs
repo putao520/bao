@@ -216,13 +216,15 @@ pub struct RequestClient {
     /// <https://html.spec.whatwg.org/multipage/#map-of-preloaded-resources>
     pub preloaded_resources: PreloadedResources,
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-policy-container>
-    pub policy_container: RequestPolicyContainer,
+    pub policy_container: PolicyContainer,
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-origin>
     pub origin: Origin,
     /// <https://html.spec.whatwg.org/multipage/#nested-browsing-context>
     pub is_nested_browsing_context: bool,
     /// <https://w3c.github.io/webappsec-upgrade-insecure-requests/#insecure-requests-policy>
     pub insecure_requests_policy: InsecureRequestsPolicy,
+    /// <https://w3c.github.io/webappsec-secure-contexts/#potentially-trustworthy-origin>
+    pub has_trustworthy_ancestor_origin: bool,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#system-visibility-state>
@@ -453,6 +455,12 @@ pub struct RequestBuilder {
 
     /// <https://fetch.spec.whatwg.org/#concept-request-body>
     pub body: Option<RequestBody>,
+    /// <https://fetch.spec.whatwg.org/#concept-request-reload-navigation-flag>
+    /// A request has an associated reload-navigation flag. Unless stated otherwise, it is unset.
+    pub reload_navigation: bool,
+    /// <https://fetch.spec.whatwg.org/#concept-request-history-navigation-flag>
+    /// A request has an associated history-navigation flag. Unless stated otherwise, it is unset.
+    pub history_navigation: bool,
 
     /// <https://fetch.spec.whatwg.org/#request-service-workers-mode>
     pub service_workers_mode: ServiceWorkersMode,
@@ -480,8 +488,6 @@ pub struct RequestBuilder {
 
     /// <https://fetch.spec.whatwg.org/#concept-request-policy-container>
     pub policy_container: RequestPolicyContainer,
-    pub insecure_requests_policy: InsecureRequestsPolicy,
-    pub has_trustworthy_ancestor_origin: bool,
 
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer>
     pub referrer: Referrer,
@@ -529,6 +535,8 @@ impl RequestBuilder {
             headers: HeaderMap::new(),
             unsafe_request: false,
             body: None,
+            reload_navigation: false,
+            history_navigation: false,
             service_workers_mode: ServiceWorkersMode::All,
             destination: Destination::None,
             synchronous: false,
@@ -541,8 +549,6 @@ impl RequestBuilder {
             origin: Origin::Client,
             client: None,
             policy_container: RequestPolicyContainer::default(),
-            insecure_requests_policy: InsecureRequestsPolicy::DoNotUpgrade,
-            has_trustworthy_ancestor_origin: false,
             referrer,
             referrer_policy: ReferrerPolicy::EmptyString,
             pipeline_id: None,
@@ -702,22 +708,6 @@ impl RequestBuilder {
         self
     }
 
-    pub fn insecure_requests_policy(
-        mut self,
-        insecure_requests_policy: InsecureRequestsPolicy,
-    ) -> RequestBuilder {
-        self.insecure_requests_policy = insecure_requests_policy;
-        self
-    }
-
-    pub fn has_trustworthy_ancestor_origin(
-        mut self,
-        has_trustworthy_ancestor_origin: bool,
-    ) -> RequestBuilder {
-        self.has_trustworthy_ancestor_origin = has_trustworthy_ancestor_origin;
-        self
-    }
-
     /// <https://fetch.spec.whatwg.org/#request-service-workers-mode>
     pub fn service_workers_mode(
         mut self,
@@ -753,6 +743,8 @@ impl RequestBuilder {
         request.headers = self.headers;
         request.unsafe_request = self.unsafe_request;
         request.body = self.body;
+        request.reload_navigation = self.reload_navigation;
+        request.history_navigation = self.history_navigation;
         request.service_workers_mode = self.service_workers_mode;
         request.destination = self.destination;
         request.synchronous = self.synchronous;
@@ -781,8 +773,6 @@ impl RequestBuilder {
         request.crash = self.crash;
         request.client = self.client;
         request.policy_container = self.policy_container;
-        request.insecure_requests_policy = self.insecure_requests_policy;
-        request.has_trustworthy_ancestor_origin = self.has_trustworthy_ancestor_origin;
         request.is_internal_request = self.is_internal_request;
         request
     }
@@ -813,6 +803,12 @@ pub struct Request {
     pub unsafe_request: bool,
     /// <https://fetch.spec.whatwg.org/#concept-request-body>
     pub body: Option<RequestBody>,
+    /// <https://fetch.spec.whatwg.org/#concept-request-reload-navigation-flag>
+    /// A request has an associated reload-navigation flag. Unless stated otherwise, it is unset.
+    pub reload_navigation: bool,
+    /// <https://fetch.spec.whatwg.org/#concept-request-history-navigation-flag>
+    /// A request has an associated history-navigation flag. Unless stated otherwise, it is unset.
+    pub history_navigation: bool,
     /// <https://fetch.spec.whatwg.org/#concept-request-client>
     pub client: Option<RequestClient>,
     /// <https://fetch.spec.whatwg.org/#concept-request-window>
@@ -862,9 +858,6 @@ pub struct Request {
     pub parser_metadata: ParserMetadata,
     /// <https://fetch.spec.whatwg.org/#concept-request-policy-container>
     pub policy_container: RequestPolicyContainer,
-    /// <https://w3c.github.io/webappsec-upgrade-insecure-requests/#insecure-requests-policy>
-    pub insecure_requests_policy: InsecureRequestsPolicy,
-    pub has_trustworthy_ancestor_origin: bool,
     /// Servo internal: if crash details are present, trigger a crash error page with these details.
     pub crash: Option<String>,
     /// Servo internal: whether this request originates from Servo internal implementation
@@ -888,6 +881,8 @@ impl Request {
             headers: HeaderMap::new(),
             unsafe_request: false,
             body: None,
+            reload_navigation: false,
+            history_navigation: false,
             client: None,
             traversable_for_user_prompts: TraversableForUserPrompts::Client,
             keep_alive: false,
@@ -913,8 +908,6 @@ impl Request {
             redirect_count: 0,
             response_tainting: ResponseTainting::Basic,
             policy_container: RequestPolicyContainer::Client,
-            insecure_requests_policy: InsecureRequestsPolicy::DoNotUpgrade,
-            has_trustworthy_ancestor_origin: false,
             is_internal_request: Default::default(),
             crash: None,
         }
@@ -1021,7 +1014,8 @@ impl Request {
             // Step 3.1. If request’s client is non-null, then set request’s
             // policy container to a clone of request’s client’s policy container. [HTML]
             if let Some(client) = self.client.as_ref() {
-                self.policy_container = client.policy_container.clone();
+                self.policy_container =
+                    RequestPolicyContainer::PolicyContainer(client.policy_container.clone());
             } else {
                 // Step 3.2. Otherwise, set request’s policy container to a new policy container.
                 self.policy_container =
@@ -1286,12 +1280,12 @@ pub fn convert_header_names_to_sorted_lowercase_set(
     ordered_set.into_iter().cloned().collect()
 }
 
-pub fn create_request_body_with_content(content: &str) -> RequestBody {
-    let content_bytes = GenericSharedMemory::from_bytes(content.as_bytes());
+pub fn create_request_body_with_content(content: String) -> RequestBody {
+    let content_bytes = GenericSharedMemory::from_vec(content.into_bytes());
     let content_len = content_bytes.len();
 
     let (chunk_request_sender, chunk_request_receiver) = ipc::channel().unwrap();
-    servo_base::ipc_router::router().add_typed_route(
+    ROUTER.add_typed_route(
         chunk_request_receiver,
         Box::new(move |message| {
             let request = message.unwrap();

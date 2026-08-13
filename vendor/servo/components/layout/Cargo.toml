@@ -21,6 +21,7 @@ tracing = ["dep:tracing"]
 [dependencies]
 accesskit = { workspace = true }
 app_units = { workspace = true }
+arrayvec = { workspace = true }
 atomic_refcell = { workspace = true }
 bitflags = { workspace = true }
 data-url = { workspace = true }
@@ -40,8 +41,10 @@ malloc_size_of_derive = { workspace = true }
 net_traits = { workspace = true }
 num-derive = { workspace = true }
 num-traits = { workspace = true }
+once_cell = { workspace = true }
 paint_api = { workspace = true }
 parking_lot = { workspace = true }
+phf = { workspace = true }
 pixels = { workspace = true }
 profile_traits = { workspace = true }
 rayon = { workspace = true }
@@ -67,6 +70,7 @@ unicode-bidi = { workspace = true }
 unicode-script = { workspace = true }
 unicode_categories = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 web_atoms = { workspace = true }
 webrender_api = { workspace = true }
 

@@ -3,8 +3,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use core::convert::Infallible;
-use std::fs;
-use std::io;
+use std::fs::File;
+use std::io::{self, BufReader};
 use std::net::TcpListener as StdTcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -21,9 +21,12 @@ use hyper::{Request as HyperRequest, Response as HyperResponse};
 use hyper_util::rt::tokio::TokioIo;
 use net_traits::AsyncRuntime;
 use net_traits::blob_url_store::UrlWithBlobClaim;
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use servo_default_resources as _;
 use servo_url::ServoUrl;
 use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::{self, TlsAcceptor};
 
 use crate::async_runtime::{
     async_runtime_initialized, init_async_runtime, spawn_blocking_task, spawn_task,
@@ -68,7 +71,7 @@ pub fn create_generic_embedder_proxy<T>() -> GenericEmbedderProxy<T> {
 #[derive(Debug)]
 pub struct Server {
     pub close_channel: tokio::sync::oneshot::Sender<()>,
-    pub certificates: Option<Vec<Vec<u8>>>,
+    pub certificates: Option<Vec<CertificateDer<'static>>>,
 }
 
 impl Server {
@@ -147,19 +150,30 @@ where
 }
 
 /// Given a path to a file containing PEM certificates, load and parse them into
-/// DER-encoded bytes using BoringSSL.
+/// a vector of RusTLS [Certificate]s.
 fn load_certificates_from_pem(
     path: &PathBuf,
-) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
-    let pem = fs::read_to_string(path)?;
-    Ok(bao_boringssl_bridge::pem_parse_certs(&pem))
+) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error>> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    Ok(CertificateDer::pem_reader_iter(&mut reader).collect::<Result<Vec<_>, _>>()?)
 }
 
-/// Given a path to a file containing a PEM key, load it as a string.
+/// Given a path to a file containing PEM keys, load and parse them into
+/// a vector of RusTLS [PrivateKey]s.
 fn load_private_key_from_file(
     path: &PathBuf,
-) -> Result<String, Box<dyn std::error::Error>> {
-    Ok(fs::read_to_string(path)?)
+) -> Result<PrivateKeyDer<'static>, Box<dyn std::error::Error>> {
+    let file = File::open(&path)?;
+    let mut reader = BufReader::new(file);
+    let mut keys =
+        PrivatePkcs8KeyDer::pem_reader_iter(&mut reader).collect::<Result<Vec<_>, _>>()?;
+
+    match keys.len() {
+        0 => Err(format!("No PKCS8-encoded private key found in {path:?}").into()),
+        1 => Ok(PrivateKeyDer::try_from(keys.remove(0))?),
+        _ => Err(format!("More than one PKCS8-encoded private key found in {path:?}").into()),
+    }
 }
 
 pub fn make_ssl_server<H>(handler: H) -> (Server, UrlWithBlobClaim)
@@ -190,13 +204,14 @@ where
         .canonicalize()
         .unwrap();
     let certificates = load_certificates_from_pem(&cert_path).expect("Invalid certificate");
-    let _key = load_private_key_from_file(&key_path).expect("Invalid key");
+    let key = load_private_key_from_file(&key_path).expect("Invalid key");
 
-    // TODO: Replace with BoringSSL-based TLS acceptor using TlsServer.
-    // For now, we run the test server without TLS (HTTP only) since the
-    // TLS test server was using rustls which has been removed.
-    // The certificate data is still loaded and returned for use by test code
-    // that needs to verify the server certificate.
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certificates.clone(), key)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
+        .expect("Could not create rustls ServerConfig");
+    let acceptor = TlsAcceptor::from(Arc::new(config));
 
     let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
     let server = async move {
@@ -213,6 +228,15 @@ where
             let stream = TcpStream::from_std(stream).unwrap();
 
             let handler = handler.clone();
+            let acceptor = acceptor.clone();
+
+            let stream = match acceptor.accept(stream).await {
+                Ok(stream) => stream,
+                Err(_) => {
+                    eprintln!("Error handling TLS stream.");
+                    continue;
+                },
+            };
 
             let _ = http1::Builder::new()
                 .serve_connection(

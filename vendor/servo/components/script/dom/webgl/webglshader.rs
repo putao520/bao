@@ -5,12 +5,14 @@
 // https://www.khronos.org/registry/webgl/specs/latest/1.0/webgl.idl
 use std::cell::Cell;
 use std::os::raw::c_int;
+use std::rc::Rc;
 use std::sync::Once;
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
 use mozangle::shaders::{BuiltInResources, CompileOptions, Output, ShaderValidator};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object;
 use script_bindings::weakref::WeakRef;
 use servo_canvas_traits::webgl::{
     GLLimits, GlType, WebGLCommand, WebGLError, WebGLResult, WebGLSLVersion, WebGLShaderId,
@@ -28,7 +30,6 @@ use crate::dom::webgl::extensions::oesstandardderivatives::OESStandardDerivative
 use crate::dom::webgl::webglobject::WebGLObject;
 use crate::dom::webgl::webglrenderingcontext::{Operation, WebGLRenderingContext};
 use crate::dom::webglrenderingcontext::capture_webgl_backtrace;
-use crate::script_runtime::CanGc;
 
 #[derive(Clone, Copy, Debug, JSTraceable, MallocSizeOf, PartialEq)]
 pub(crate) enum ShaderCompilationStatus {
@@ -101,6 +102,7 @@ impl WebGLShader {
     }
 
     pub(crate) fn maybe_new(
+        cx: &mut JSContext,
         context: &WebGLRenderingContext,
         shader_type: u32,
     ) -> Option<DomRoot<Self>> {
@@ -109,19 +111,19 @@ impl WebGLShader {
         receiver
             .recv()
             .unwrap()
-            .map(|id| WebGLShader::new(context, id, shader_type, CanGc::deprecated_note()))
+            .map(|id| WebGLShader::new(cx, context, id, shader_type))
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         context: &WebGLRenderingContext,
         id: WebGLShaderId,
         shader_type: u32,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
-        reflect_dom_object(
-            Box::new(WebGLShader::new_inherited(context, id, shader_type)),
+        reflect_weak_referenceable_dom_object(
+            cx,
+            Rc::new(WebGLShader::new_inherited(context, id, shader_type)),
             &*context.global(),
-            can_gc,
         )
     }
 }

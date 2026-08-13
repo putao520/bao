@@ -45,9 +45,7 @@ impl MediaStream {
         global: &GlobalScope,
         proto: Option<HandleObject>,
     ) -> DomRoot<MediaStream> {
-        reflect_dom_object_with_proto(cx, Box::new(MediaStream::new_inherited()),
-            global,
-            proto)
+        reflect_dom_object_with_proto(cx, Box::new(MediaStream::new_inherited()), global, proto)
     }
 
     pub(crate) fn new_single(

@@ -15,7 +15,6 @@ use embedder_traits::{Theme, ViewportDetails, WebDriverLoadStatus};
 use http::header;
 use js::context::JSContext;
 use net_traits::blob_url_store::UrlWithBlobClaim;
-use net_traits::policy_container::RequestPolicyContainer;
 use net_traits::request::{
     CredentialsMode, InsecureRequestsPolicy, Origin, PreloadedResources, RedirectMode,
     RequestBuilder, RequestClient, RequestMode,
@@ -44,9 +43,9 @@ use crate::dom::html::htmliframeelement::HTMLIFrameElement;
 use crate::dom::node::node::NodeTraits;
 use crate::dom::window::Window;
 use crate::dom::windowproxy::WindowProxy;
+use crate::event_loop::script_thread::ScriptThread;
 use crate::fetch::FetchCanceller;
 use crate::messaging::MainThreadScriptMsg;
-use crate::script_thread::ScriptThread;
 
 #[derive(Clone)]
 pub struct NavigationListener {
@@ -181,7 +180,7 @@ pub(crate) struct InProgressLoad {
     pub(crate) user_content_manager_id: Option<UserContentManagerId>,
     /// The [`Theme`] to use for this page, once it loads.
     #[no_trace]
-    pub(crate) theme: Theme,
+    pub(crate) embedder_theme: Theme,
     /// The [`TargetSnapshotParams`] to use when creating this document.
     #[no_trace]
     pub(crate) target_snapshot_params: TargetSnapshotParams,
@@ -205,7 +204,7 @@ impl InProgressLoad {
             load_data: new_pipeline_info.load_data,
             url_list: vec![url],
             user_content_manager_id: new_pipeline_info.user_content_manager_id,
-            theme: new_pipeline_info.theme,
+            embedder_theme: new_pipeline_info.embedder_theme,
             target_snapshot_params: new_pipeline_info.target_snapshot_params,
         }
     }
@@ -226,12 +225,11 @@ impl InProgressLoad {
 
         let request_client = RequestClient {
             preloaded_resources: PreloadedResources::default(),
-            policy_container: RequestPolicyContainer::PolicyContainer(
-                self.load_data.policy_container.clone().unwrap_or_default(),
-            ),
+            policy_container: self.load_data.policy_container.clone().unwrap_or_default(),
             origin: Origin::Origin(client_origin),
             is_nested_browsing_context: self.parent_info.is_some(),
             insecure_requests_policy,
+            has_trustworthy_ancestor_origin: self.load_data.has_trustworthy_ancestor_origin,
         };
 
         let mut request_builder = RequestBuilder::new(
@@ -247,14 +245,15 @@ impl InProgressLoad {
         .pipeline_id(Some(id))
         .referrer_policy(self.load_data.referrer_policy)
         .policy_container(self.load_data.policy_container.clone().unwrap_or_default())
-        .insecure_requests_policy(insecure_requests_policy)
-        .has_trustworthy_ancestor_origin(self.load_data.has_trustworthy_ancestor_origin)
         .headers(self.load_data.headers.clone())
         .body(self.load_data.data.clone())
         .redirect_mode(RedirectMode::Manual)
         .crash(self.load_data.crash.clone())
         .client(request_client)
         .url_list(self.url_list.clone());
+
+        request_builder.reload_navigation = self.load_data.reload_navigation;
+        request_builder.history_navigation = self.load_data.history_navigation;
 
         if !request_builder.headers.contains_key(header::ACCEPT) {
             request_builder
@@ -362,9 +361,15 @@ pub(crate) fn navigate(
     window: &Window,
     history_handling: NavigationHistoryBehavior,
     force_reload: bool,
-    load_data: LoadData,
+    mut load_data: LoadData,
 ) {
     let doc = window.Document();
+
+    // <https://html.spec.whatwg.org/multipage/#process-a-navigate-fetch>
+    if force_reload {
+        // Step 7. If entry's document state's reload pending is true, then set request's reload-navigation flag.
+        load_data.reload_navigation = true;
+    }
 
     // Step 3. Let initiatorOriginSnapshot be sourceDocument's origin.
     let initiator_origin_snapshot = &load_data.load_origin;

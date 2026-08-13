@@ -4,19 +4,25 @@
 
 //! The walker actor is responsible for traversing the DOM tree in various ways to create new nodes
 
+use std::sync::Arc;
+
 use atomic_refcell::AtomicRefCell;
-use devtools_traits::DevtoolScriptControlMsg::{GetChildren, GetDocumentElement, GetRootNode};
-use devtools_traits::{DevtoolScriptControlMsg, DomMutation};
+use devtools_traits::DevtoolScriptControlMsg::{
+    GetChildren, GetDocumentElement, GetInnerOrOuterHTML, GetRootNode,
+};
+use devtools_traits::{DomMutation, GetHTMLType};
 use malloc_size_of_derive::MallocSizeOf;
 use serde::Serialize;
 use serde_json::{self, Map, Value};
-use servo_base::generic_channel::{self, GenericSender};
-use servo_base::id::PipelineId;
+use servo_base::generic_channel;
 
-use crate::actor::{Actor, ActorEncode, ActorError, ActorRegistry, DowncastableActorArc};
+use crate::actor::{
+    Actor, ActorEncode, ActorError, ActorRegistry, DowncastableActorArc, new_actor_name,
+};
 use crate::actors::browsing_context::BrowsingContextActor;
 use crate::actors::inspector::layout::LayoutInspectorActor;
-use crate::actors::inspector::node::{NodeActorMsg, NodeInfoToProtocol};
+use crate::actors::inspector::node::{NodeActor, NodeActorMsg};
+use crate::actors::long_string::{LongStringActor, LongStringObj};
 use crate::protocol::{ClientRequest, DevtoolsConnection, JsonPacketStream};
 use crate::{ActorMsg, EmptyReplyMsg, StreamId};
 
@@ -111,9 +117,15 @@ struct NewMutationsNotification {
     type_: String,
 }
 
+#[derive(Serialize)]
+struct GetInnerOrOuterHTMLReply {
+    from: String,
+    value: LongStringObj,
+}
+
 impl Actor for WalkerActor {
-    fn name(&self) -> String {
-        self.name.clone()
+    fn name(&self) -> &str {
+        &self.name
     }
 
     /// The walker actor can handle the following messages:
@@ -132,6 +144,10 @@ impl Actor for WalkerActor {
     ///
     /// - `querySelector`: Recursively looks for the specified selector in the tree, reutrning the
     ///   node and its ascendents
+    ///
+    /// - `outerHTML`: Return outer html element or text from specified node
+    ///
+    /// - `innerHTML`: Return inner html element or text from specified node
     fn handle_message(
         &self,
         mut request: ClientRequest,
@@ -170,20 +186,19 @@ impl Actor for WalkerActor {
                     nodes: children
                         .into_iter()
                         .map(|child| {
-                            child.encode(
-                                registry,
-                                browsing_context_actor.script_chan(),
-                                browsing_context_actor.pipeline_id(),
-                                self.name(),
-                            )
+                            let node_actor =
+                                NodeActor::register_or_update(registry, &self.name, child);
+                            node_actor.encode(registry)
                         })
                         .collect(),
-                    from: self.name(),
+                    from: self.name().into(),
                 };
                 request.reply_final(&msg)?
             },
             "clearPseudoClassLocks" => {
-                let msg = EmptyReplyMsg { from: self.name() };
+                let msg = EmptyReplyMsg {
+                    from: self.name().into(),
+                };
                 request.reply_final(&msg)?
             },
             "documentElement" => {
@@ -194,31 +209,24 @@ impl Actor for WalkerActor {
                     .script_chan()
                     .send(GetDocumentElement(browsing_context_actor.pipeline_id(), tx))
                     .map_err(|_| ActorError::Internal)?;
-                let doc_elem_info = rx
+                let node_info = rx
                     .recv()
                     .map_err(|_| ActorError::Internal)?
                     .ok_or(ActorError::Internal)?;
-                let node = doc_elem_info.encode(
-                    registry,
-                    browsing_context_actor.script_chan(),
-                    browsing_context_actor.pipeline_id(),
-                    self.name(),
-                );
+
+                let node_actor = NodeActor::register_or_update(registry, &self.name, node_info);
+                let node = node_actor.encode(registry);
 
                 let msg = DocumentElementReply {
-                    from: self.name(),
+                    from: self.name().into(),
                     node,
                 };
                 request.reply_final(&msg)?
             },
             "getLayoutInspector" => {
-                // TODO: Create actual layout inspector actor
-                let layout_inspector_name = LayoutInspectorActor::register(registry);
-                let layout_inspector_actor =
-                    registry.find::<LayoutInspectorActor>(&layout_inspector_name);
-
+                let layout_inspector_actor = LayoutInspectorActor::register(registry);
                 let msg = GetLayoutInspectorReply {
-                    from: self.name(),
+                    from: self.name().into(),
                     actor: layout_inspector_actor.encode(registry),
                 };
                 request.reply_final(&msg)?
@@ -226,7 +234,7 @@ impl Actor for WalkerActor {
             "getMutations" => self.handle_get_mutations(request, registry)?,
             "getOffsetParent" => {
                 let msg = GetOffsetParentReply {
-                    from: self.name(),
+                    from: self.name().into(),
                     node: None,
                 };
                 request.reply_final(&msg)?
@@ -242,21 +250,15 @@ impl Actor for WalkerActor {
                     .ok_or(ActorError::MissingParameter)?
                     .as_str()
                     .ok_or(ActorError::BadParameterType)?;
-                let mut hierarchy = find_child(
-                    &browsing_context_actor.script_chan(),
-                    browsing_context_actor.pipeline_id(),
-                    &self.name,
-                    registry,
-                    node_name,
-                    vec![],
-                    |msg| msg.display_name == selector,
-                )
+                let mut hierarchy = find_child(&self.name, registry, node_name, vec![], |msg| {
+                    msg.display_name == selector
+                })
                 .map_err(|_| ActorError::Internal)?;
                 hierarchy.reverse();
                 let node = hierarchy.pop().ok_or(ActorError::Internal)?;
 
                 let msg = QuerySelectorReply {
-                    from: self.name(),
+                    from: self.name().into(),
                     node,
                     new_parents: hierarchy,
                 };
@@ -265,13 +267,21 @@ impl Actor for WalkerActor {
             "watchRootNode" => {
                 let msg = WatchRootNodeNotification {
                     type_: "root-available".into(),
-                    from: self.name(),
+                    from: self.name().into(),
                     node: self.root(registry)?,
                 };
                 let _ = request.write_json_packet(&msg);
 
-                let msg = EmptyReplyMsg { from: self.name() };
+                let msg = EmptyReplyMsg {
+                    from: self.name().into(),
+                };
                 request.reply_final(&msg)?
+            },
+            "outerHTML" => {
+                self.handle_get_inner_or_outer_html(request, registry, msg, GetHTMLType::OuterHTML)?
+            },
+            "innerHTML" => {
+                self.handle_get_inner_or_outer_html(request, registry, msg, GetHTMLType::InnerHTML)?
             },
             _ => return Err(ActorError::UnrecognizedPacketType),
         };
@@ -280,15 +290,14 @@ impl Actor for WalkerActor {
 }
 
 impl WalkerActor {
-    pub fn register(registry: &ActorRegistry, browsing_context_name: String) -> String {
-        let name = registry.new_name::<WalkerActor>();
+    pub fn register(registry: &ActorRegistry, browsing_context_name: String) -> Arc<Self> {
+        let name = new_actor_name::<WalkerActor>();
         let actor = WalkerActor {
-            name: name.clone(),
+            name,
             mutations: AtomicRefCell::new(vec![]),
             browsing_context_name,
         };
-        registry.register::<Self>(actor);
-        name
+        registry.register::<Self>(actor)
     }
 
     pub(crate) fn browsing_context_actor(
@@ -306,16 +315,13 @@ impl WalkerActor {
             .script_chan()
             .send(GetRootNode(pipeline, tx))
             .map_err(|_| ActorError::Internal)?;
-        let root_node = rx
+        let node_info = rx
             .recv()
             .map_err(|_| ActorError::Internal)?
             .ok_or(ActorError::Internal)?;
-        Ok(root_node.encode(
-            registry,
-            browsing_context_actor.script_chan(),
-            pipeline,
-            self.name(),
-        ))
+
+        let node_actor = NodeActor::register_or_update(registry, &self.name, node_info);
+        Ok(node_actor.encode(registry))
     }
 
     pub(crate) fn handle_dom_mutation(
@@ -343,7 +349,7 @@ impl WalkerActor {
         pending_mutations.push(dom_mutation);
 
         stream.write_json_packet(&NewMutationsNotification {
-            from: self.name(),
+            from: self.name().into(),
             type_: "newMutations".into(),
         })
     }
@@ -355,7 +361,7 @@ impl WalkerActor {
         registry: &ActorRegistry,
     ) -> Result<(), ActorError> {
         let msg = GetMutationsReply {
-            from: self.name(),
+            from: self.name().into(),
             mutations: self
                 .mutations
                 .borrow_mut()
@@ -370,11 +376,57 @@ impl WalkerActor {
                             attribute_name,
                             new_value,
                         },
-                        target: registry.script_to_actor(node),
+                        target: registry.script_to_actor(&node),
                         type_: "attributes".to_owned(),
                     },
                 })
                 .collect(),
+        };
+
+        request.reply_final(&msg)
+    }
+
+    fn handle_get_inner_or_outer_html(
+        &self,
+        request: ClientRequest,
+        registry: &ActorRegistry,
+        msg: &Map<String, Value>,
+        html_type: GetHTMLType,
+    ) -> Result<(), ActorError> {
+        let target = msg
+            .get("node")
+            .ok_or(ActorError::MissingParameter)?
+            .as_str()
+            .ok_or(ActorError::BadParameterType)?;
+
+        let Some((tx, rx)) = generic_channel::channel() else {
+            return Err(ActorError::Internal);
+        };
+
+        let browsing_context_actor = self.browsing_context_actor(registry);
+
+        let handle_get_inner_or_outer_html = GetInnerOrOuterHTML(
+            browsing_context_actor.pipeline_id(),
+            registry.actor_to_script(target.into()),
+            tx,
+            html_type,
+        );
+
+        browsing_context_actor
+            .script_chan()
+            .send(handle_get_inner_or_outer_html)
+            .map_err(|_| ActorError::Internal)?;
+
+        let html_text = rx
+            .recv()
+            .map_err(|_| ActorError::Internal)?
+            .ok_or(ActorError::Internal)?;
+
+        let long_string_actor = LongStringActor::register(registry, html_text);
+
+        let msg = GetInnerOrOuterHTMLReply {
+            from: self.name().into(),
+            value: long_string_actor.long_string_obj(),
         };
 
         request.reply_final(&msg)
@@ -385,14 +437,17 @@ impl WalkerActor {
 /// If it is found, returns a list with the child and all of its ancestors.
 /// TODO: Investigate how to cache this to some extent.
 pub fn find_child(
-    script_chan: &GenericSender<DevtoolScriptControlMsg>,
-    pipeline: PipelineId,
-    name: &str,
+    walker_name: &str,
     registry: &ActorRegistry,
     node_name: &str,
     mut hierarchy: Vec<NodeActorMsg>,
     compare_fn: impl Fn(&NodeActorMsg) -> bool + Clone,
 ) -> Result<Vec<NodeActorMsg>, Vec<NodeActorMsg>> {
+    let walker = registry.find::<WalkerActor>(walker_name);
+    let browsing_context = walker.browsing_context_actor(registry);
+    let script_chan = browsing_context.script_chan();
+    let pipeline = browsing_context.pipeline_id();
+
     let (tx, rx) = generic_channel::channel().unwrap();
     script_chan
         .send(GetChildren(
@@ -404,7 +459,9 @@ pub fn find_child(
     let children = rx.recv().unwrap().ok_or(vec![])?;
 
     for child in children {
-        let msg = child.encode(registry, script_chan.clone(), pipeline, name.into());
+        let node_actor = NodeActor::register_or_update(registry, walker_name, child);
+        let msg = node_actor.encode(registry);
+
         if compare_fn(&msg) {
             hierarchy.push(msg);
             return Ok(hierarchy);
@@ -415,9 +472,7 @@ pub fn find_child(
         }
 
         match find_child(
-            script_chan,
-            pipeline,
-            name,
+            walker_name,
             registry,
             &msg.actor,
             hierarchy,
@@ -438,7 +493,7 @@ pub fn find_child(
 impl ActorEncode<WalkerMsg> for WalkerActor {
     fn encode(&self, registry: &ActorRegistry) -> WalkerMsg {
         WalkerMsg {
-            actor: self.name(),
+            actor: self.name().into(),
             root: self.root(registry).unwrap(),
         }
     }

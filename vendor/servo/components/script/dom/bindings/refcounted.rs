@@ -32,14 +32,13 @@ use std::sync::{Arc, Weak};
 use js::jsapi::JSTracer;
 use rustc_hash::FxHashMap;
 use script_bindings::reflector::{DomObject, Reflector};
-use script_bindings::script_runtime::CanGc;
 
 use crate::dom::bindings::conversions::ToJSValConvertible;
 use crate::dom::bindings::error::Error;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::trace::trace_reflector;
 use crate::dom::promise::Promise;
-use crate::task::TaskOnce;
+use crate::tasks::task::TaskOnce;
 
 mod dummy {
     // Attributes don’t apply through the macro.
@@ -139,7 +138,7 @@ impl TrustedPromise {
         let this = self;
         task!(reject_promise: move |cx| {
             debug!("Rejecting promise.");
-            this.root().reject_error(error, CanGc::from_cx(cx));
+            this.root().reject_error(cx, error);
         })
     }
 
@@ -151,7 +150,7 @@ impl TrustedPromise {
         let this = self;
         task!(resolve_promise: move |cx| {
             debug!("Resolving promise.");
-            this.root().resolve_native(&value, CanGc::from_cx(cx));
+            this.root().resolve_native(cx, &value);
         })
     }
 }

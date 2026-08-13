@@ -281,49 +281,10 @@ impl FontList {
 
     /// Detect available fonts or fallback to a hardcoded list
     fn detect_installed_font_families() -> Vec<FontFamily> {
-        let mut families = enumerate_font_files()
+        enumerate_font_files()
             .inspect_err(|e| error!("Failed to enumerate font files due to `{e:?}`"))
             .map(get_system_font_families)
-            .unwrap_or_else(|_| FontList::fallback_font_families());
-        families.extend(Self::hardcoded_font_families());
-        families
-    }
-
-    /// A List of hardcoded fonts, added in addition to both detected and fallback font families.
-    ///
-    /// There are only two emoji fonts, and their filenames are stable, so we just hardcode
-    /// their paths, instead of attempting to parse the family name from the filepaths.
-    fn hardcoded_font_families() -> Vec<FontFamily> {
-        let hardcoded_fonts = vec![
-            FontFamily {
-                name: "HMOS Color Emoji".to_string(),
-                fonts: vec![Font {
-                    filepath: FontList::font_absolute_path("HMOSColorEmojiCompat.ttf"),
-                    ..Default::default()
-                }],
-            },
-            FontFamily {
-                name: "HMOS Color Emoji Flags".to_string(),
-                fonts: vec![Font {
-                    filepath: FontList::font_absolute_path("HMOSColorEmojiFlags.ttf"),
-                    ..Default::default()
-                }],
-            },
-        ];
-        if log::log_enabled!(log::Level::Warn) {
-            for family in hardcoded_fonts.iter() {
-                for font in &family.fonts {
-                    let path = Path::new(&font.filepath);
-                    if !path.exists() {
-                        warn!(
-                            "Hardcoded Emoji Font {} was not found at `{}`",
-                            family.name, font.filepath
-                        )
-                    }
-                }
-            }
-        }
-        hardcoded_fonts
+            .unwrap_or_else(|_| FontList::fallback_font_families())
     }
 
     fn fallback_font_families() -> Vec<FontFamily> {
@@ -445,7 +406,6 @@ where
             FontIdentifier::Local(local_font_identifier),
             descriptor,
             None,
-            None,
         ));
     };
 
@@ -534,6 +494,10 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
                 families.push("HarmonyOS Sans SC");
                 families.push("Noto Sans CJK SC");
                 families.push("Noto Sans Mono CJK SC");
+            },
+            UnicodeBlock::CJKSymbolsandPunctuation => {
+                families.push("HarmonyOS Sans SC");
+                families.push("HarmonyOS Sans TC");
             },
             _ => {},
         }

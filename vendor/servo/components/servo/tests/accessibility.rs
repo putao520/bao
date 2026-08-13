@@ -31,15 +31,7 @@ impl TreeChangeHandler for NoOpChangeHandler {
 
 #[test]
 fn test_basic_accessibility_update() {
-    let servo_test = ServoTest::new_with_builder(|builder| {
-        let mut preferences = Preferences::default();
-        preferences.accessibility_enabled = true;
-        preferences.expensive_accessibility_test_assertions_enabled = true;
-        let mut opts = Opts::default();
-        opts.debug
-            .toggle_option(DiagnosticsLoggingOption::AccessibilityTree, true);
-        builder.preferences(preferences).opts(opts)
-    });
+    let servo_test = build_test();
 
     let delegate = Rc::new(WebViewDelegateImpl::default());
     let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
@@ -59,15 +51,7 @@ fn test_basic_accessibility_update() {
 
 #[test]
 fn test_activate_accessibility_after_layout() {
-    let servo_test = ServoTest::new_with_builder(|builder| {
-        let mut preferences = Preferences::default();
-        preferences.accessibility_enabled = true;
-        preferences.expensive_accessibility_test_assertions_enabled = true;
-        let mut opts = Opts::default();
-        opts.debug
-            .toggle_option(DiagnosticsLoggingOption::AccessibilityTree, true);
-        builder.preferences(preferences).opts(opts)
-    });
+    let servo_test = build_test();
 
     let delegate = Rc::new(WebViewDelegateImpl::default());
     let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
@@ -87,15 +71,7 @@ fn test_activate_accessibility_after_layout() {
 
 #[test]
 fn test_navigate_creates_new_accessibility_update() {
-    let servo_test = ServoTest::new_with_builder(|builder| {
-        let mut preferences = Preferences::default();
-        preferences.accessibility_enabled = true;
-        preferences.expensive_accessibility_test_assertions_enabled = true;
-        let mut opts = Opts::default();
-        opts.debug
-            .toggle_option(DiagnosticsLoggingOption::AccessibilityTree, true);
-        builder.preferences(preferences).opts(opts)
-    });
+    let servo_test = build_test();
 
     let page_1_url = Url::parse("data:text/html,<!DOCTYPE html> page 1").unwrap();
     let page_2_url = Url::parse("data:text/html,<!DOCTYPE html> page 2").unwrap();
@@ -146,15 +122,7 @@ fn test_navigate_creates_new_accessibility_update() {
 // a11y tree building, this test will break.
 #[test]
 fn test_accessibility_after_navigate_and_back() {
-    let servo_test = ServoTest::new_with_builder(|builder| {
-        let mut preferences = Preferences::default();
-        preferences.accessibility_enabled = true;
-        preferences.expensive_accessibility_test_assertions_enabled = true;
-        let mut opts = Opts::default();
-        opts.debug
-            .toggle_option(DiagnosticsLoggingOption::AccessibilityTree, true);
-        builder.preferences(preferences).opts(opts)
-    });
+    let servo_test = build_test();
 
     let page_1_url = Url::parse("data:text/html,<!DOCTYPE html> page 1").unwrap();
     let page_2_url = Url::parse("data:text/html,<!DOCTYPE html> page 2").unwrap();
@@ -219,17 +187,6 @@ fn test_accessibility_after_navigate_and_back() {
 
 #[test]
 fn test_accessibility_basic_mapping() {
-    let servo_test = ServoTest::new_with_builder(|builder| {
-        let mut preferences = Preferences::default();
-        preferences.accessibility_enabled = true;
-        preferences.expensive_accessibility_test_assertions_enabled = true;
-        let mut opts = Opts::default();
-        opts.debug
-            .toggle_option(DiagnosticsLoggingOption::AccessibilityTree, true);
-        builder.preferences(preferences).opts(opts)
-    });
-    let delegate = Rc::new(WebViewDelegateImpl::default());
-
     let mut element_role_pairs = VecDeque::from([
         ("article", Role::Article),
         ("aside", Role::Complementary),
@@ -251,18 +208,9 @@ fn test_accessibility_basic_mapping() {
     for (element, _) in element_role_pairs.iter() {
         url.push_str(format!("<{element}></{element}>").as_str());
     }
-    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
-        .delegate(delegate.clone())
-        .url(Url::parse(url.as_str()).unwrap())
-        .build();
 
-    webview.set_accessibility_active(true);
+    let (_servo_test, _delegate, _webview, tree) = build_webview_and_tree(url.as_str());
 
-    let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
-
-    let updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
-    let tree = build_tree(updates);
     let root = assert_tree_structure_and_get_root_web_area(&tree);
     assert_eq!(root.children().len(), element_role_pairs.len());
     for child in root.children() {
@@ -280,28 +228,8 @@ fn test_accessibility_basic_mapping() {
 
 #[test]
 fn test_accessibility_basic_name_from_contents() {
-    let servo_test = ServoTest::new_with_builder(|builder| {
-        let mut preferences = Preferences::default();
-        preferences.accessibility_enabled = true;
-        preferences.expensive_accessibility_test_assertions_enabled = true;
-        let mut opts = Opts::default();
-        opts.debug
-            .toggle_option(DiagnosticsLoggingOption::AccessibilityTree, true);
-        builder.preferences(preferences).opts(opts)
-    });
-    let delegate = Rc::new(WebViewDelegateImpl::default());
-    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
-        .delegate(delegate.clone())
-        .url(Url::parse("data:text/html,<!DOCTYPE html><h1>Servo</h1>").unwrap())
-        .build();
-
-    webview.set_accessibility_active(true);
-
-    let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
-
-    let updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
-    let tree = build_tree(updates);
+    let url = "data:text/html,<!DOCTYPE html><h1>Servo</h1>";
+    let (_servo_test, _delegate, _webview, tree) = build_webview_and_tree(url);
     let root = assert_tree_structure_and_get_root_web_area(&tree);
     let first_child = root
         .children()
@@ -313,32 +241,12 @@ fn test_accessibility_basic_name_from_contents() {
 
 #[test]
 fn test_accessibility_name_from_contents_subtree() {
-    let servo_test = ServoTest::new_with_builder(|builder| {
-        let mut preferences = Preferences::default();
-        preferences.accessibility_enabled = true;
-        preferences.expensive_accessibility_test_assertions_enabled = true;
-        let mut opts = Opts::default();
-        opts.debug
-            .toggle_option(DiagnosticsLoggingOption::AccessibilityTree, true);
-        builder.preferences(preferences).opts(opts)
-    });
     let url = "data:text/html,<!DOCTYPE html>\
                <h1>Servo aims to empower <code>developers</code> with a <em>lightweight</em>, \
                <strong>high-performance</strong> alternative for <span>embedding \
                <span>web technologies</span> in <span>applications</span></span>.</h1>";
-    let delegate = Rc::new(WebViewDelegateImpl::default());
-    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
-        .delegate(delegate.clone())
-        .url(Url::parse(url).unwrap())
-        .build();
+    let (_servo_test, _delegate, _webview, tree) = build_webview_and_tree(url);
 
-    webview.set_accessibility_active(true);
-
-    let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
-
-    let updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
-    let tree = build_tree(updates);
     let root = assert_tree_structure_and_get_root_web_area(&tree);
     let heading = root
         .children()
@@ -360,32 +268,11 @@ fn test_accessibility_name_from_contents_subtree() {
 
 #[test]
 fn test_accessibility_basic_mutation() {
-    let servo_test = ServoTest::new_with_builder(|builder| {
-        let mut preferences = Preferences::default();
-        preferences.accessibility_enabled = true;
-        preferences.dom_servo_helpers_enabled = true;
-        preferences.expensive_accessibility_test_assertions_enabled = true;
-        let mut opts = Opts::default();
-        opts.debug
-            .toggle_option(DiagnosticsLoggingOption::AccessibilityTree, true);
-        builder.preferences(preferences).opts(opts)
-    });
     let url = "data:text/html,<!DOCTYPE html>\
                <h1 id='h1'>This is an h1</h1>\
                <h2 id='h2'>This is an h2</h2>";
-    let delegate = Rc::new(WebViewDelegateImpl::default());
-    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
-        .delegate(delegate.clone())
-        .url(Url::parse(url).unwrap())
-        .build();
+    let (servo_test, delegate, webview, mut tree) = build_webview_and_tree(url);
 
-    webview.set_accessibility_active(true);
-
-    let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
-
-    let updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
-    let mut tree = build_tree(updates);
     let root = assert_tree_structure_and_get_root_web_area(&tree);
     let children: Vec<_> = root.children().collect();
     assert_eq!(children.len(), 2);
@@ -397,8 +284,7 @@ fn test_accessibility_basic_mutation() {
     let _ = evaluate_javascript(
         &servo_test,
         webview.clone(),
-        "document.getElementById('h2').remove();\
-         window.ServoTestUtils.forceAccessibilityUpdate();",
+        "document.getElementById('h2').remove();",
     );
 
     let mut updates = wait_for_min_updates(&servo_test, delegate.clone(), 1);
@@ -418,34 +304,13 @@ fn test_accessibility_basic_mutation() {
 
 #[test]
 fn test_accessibility_with_mutation_move_nodes() {
-    let servo_test = ServoTest::new_with_builder(|builder| {
-        let mut preferences = Preferences::default();
-        preferences.accessibility_enabled = true;
-        preferences.dom_servo_helpers_enabled = true;
-        preferences.expensive_accessibility_test_assertions_enabled = true;
-        let mut opts = Opts::default();
-        opts.debug
-            .toggle_option(DiagnosticsLoggingOption::AccessibilityTree, true);
-        builder.preferences(preferences).opts(opts)
-    });
     let url = "data:text/html,<!DOCTYPE html>\
                <div id='div1'></div>\
                <h1 id='h1'>This is an h1</h1>\
                <h2 id='h2'>This is an h2</h2>\
                <div id='div2'></div>";
-    let delegate = Rc::new(WebViewDelegateImpl::default());
-    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
-        .delegate(delegate.clone())
-        .url(Url::parse(url).unwrap())
-        .build();
+    let (servo_test, delegate, webview, mut tree) = build_webview_and_tree(url);
 
-    webview.set_accessibility_active(true);
-
-    let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
-
-    let updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
-    let mut tree = build_tree(updates);
     let root = assert_tree_structure_and_get_root_web_area(&tree);
     let children: Vec<accesskit_consumer::Node> = root.children().collect();
     assert_eq!(children.len(), 4);
@@ -460,11 +325,11 @@ fn test_accessibility_with_mutation_move_nodes() {
     assert_eq!(h2.label(), Some("This is an h2".to_owned()));
     assert_eq!(div2.role(), Role::GenericContainer);
 
+    // use both moveBefore and appendChild to exercise the different ways nodes move.
     let _ = evaluate_javascript(
         &servo_test,
         webview.clone(),
-        "div1.moveBefore(h1,null); div2.moveBefore(h2,null);\
-         window.ServoTestUtils.forceAccessibilityUpdate();",
+        "div1.moveBefore(h1,null); div2.appendChild(h2);",
     );
 
     let mut updates = wait_for_min_updates(&servo_test, delegate.clone(), 1);
@@ -491,6 +356,226 @@ fn test_accessibility_with_mutation_move_nodes() {
     assert_eq!(h1.label().as_deref(), Some("This is an h1"));
     assert_eq!(h2.role(), Role::Heading);
     assert_eq!(h2.label().as_deref(), Some("This is an h2"));
+}
+
+#[test]
+fn test_accessibility_text_change() {
+    let url = "data:text/html,<!DOCTYPE html>\
+               <h1 id='h1'>This is an h1</h1>";
+    let (servo_test, delegate, webview, mut tree) = build_webview_and_tree(url);
+
+    let root = assert_tree_structure_and_get_root_web_area(&tree);
+    let children: Vec<accesskit_consumer::Node> = root.children().collect();
+    assert_eq!(children.len(), 1);
+    let h1 = children[0];
+    assert_eq!(h1.role(), Role::Heading);
+    assert_eq!(h1.label(), Some("This is an h1".to_owned()));
+
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "h1.firstChild.appendData(', now with more text');",
+    );
+    let mut updates = wait_for_min_updates(&servo_test, delegate.clone(), 1);
+    assert_eq!(updates.len(), 1);
+    let update = updates.pop().expect("Guaranteed by assert above");
+    assert_eq!(update.nodes.len(), 2);
+    assert_eq!(update.nodes[0].1.role(), Role::TextRun);
+    assert_eq!(update.nodes[1].1.role(), Role::Heading);
+    assert_eq!(update.nodes[1].1.children().len(), 1);
+    tree.update_and_process_changes(update, &mut NoOpChangeHandler);
+    let root = assert_tree_structure_and_get_root_web_area(&tree);
+    let children: Vec<accesskit_consumer::Node> = root.children().collect();
+    assert_eq!(children.len(), 1);
+    let h1 = children[0];
+    assert_eq!(h1.role(), Role::Heading);
+    assert_eq!(
+        h1.label(),
+        Some("This is an h1, now with more text".to_owned())
+    );
+}
+
+#[test]
+fn test_accessibility_partial_subtree_move_and_delete() {
+    let url = "data:text/html,<!DOCTYPE html>\
+               <header id='header'>\
+                 <div id='div'>\
+                   <h1 id='h1'>This is an h1</h1>\
+                   <p id='p'>This is a paragraph</p>\
+                 </div>\
+               </header>\
+               <article id='article'><h2 id='h2'>This is an h2</h2></article>";
+    let (servo_test, delegate, webview, mut tree) = build_webview_and_tree(url);
+
+    let root = assert_tree_structure_and_get_root_web_area(&tree);
+    let children: Vec<accesskit_consumer::Node> = root.children().collect();
+    assert_eq!(children.len(), 2);
+    let header = children[0];
+    assert_eq!(header.role(), Role::Banner);
+    let h1 = find_all_matching_nodes(header, |node| node.role() == Role::Heading)[0];
+    assert_eq!(h1.label(), Some("This is an h1".to_owned()));
+    let _p = find_all_matching_nodes(header, |node| node.role() == Role::Paragraph)
+        .pop()
+        .expect("Should be exactly one Paragraph node");
+
+    let article = children[1];
+    assert_eq!(article.role(), Role::Article);
+    let h2 = find_all_matching_nodes(article, |node| node.role() == Role::Heading)[0];
+    assert_eq!(h2.label(), Some("This is an h2".to_owned()));
+
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "article.moveBefore(div, h2);\
+         article.moveBefore(h1, div);\
+         p.remove();\
+         header.remove();",
+    );
+    let mut updates = wait_for_min_updates(&servo_test, delegate.clone(), 1);
+    assert_eq!(updates.len(), 1);
+    let update = updates.pop().expect("Guaranteed by assert above");
+    tree.update_and_process_changes(update, &mut NoOpChangeHandler);
+    let root = assert_tree_structure_and_get_root_web_area(&tree);
+    let children: Vec<accesskit_consumer::Node> = root.children().collect();
+    assert_eq!(children.len(), 1);
+    let article = children[0];
+    assert_eq!(article.role(), Role::Article);
+    let children: Vec<accesskit_consumer::Node> = article.children().collect();
+    assert_eq!(children.len(), 3);
+    let h1 = children[0];
+    assert_eq!(h1.role(), Role::Heading);
+    assert_eq!(h1.label(), Some("This is an h1".to_owned()));
+    let div = children[1];
+    assert_eq!(div.role(), Role::GenericContainer);
+    let h2 = children[2];
+    assert_eq!(h2.role(), Role::Heading);
+    assert_eq!(h2.label(), Some("This is an h2".to_owned()));
+}
+
+#[test]
+fn test_accessibility_children_of_heading_change() {
+    let url = "data:text/html,<!DOCTYPE html>\
+               <h2>Activating accessibility for a <code>WebView</code></h2>";
+    let (servo_test, delegate, webview, mut tree) = build_webview_and_tree(url);
+
+    let root = assert_tree_structure_and_get_root_web_area(&tree);
+    let children: Vec<accesskit_consumer::Node> = root.children().collect();
+    assert_eq!(children.len(), 1);
+    let heading = children[0];
+    assert_eq!(heading.role(), Role::Heading);
+    assert_eq!(
+        heading.label(),
+        Some("Activating accessibility for a WebView".to_owned())
+    );
+    let heading_children: Vec<_> = heading.children().collect();
+    assert_eq!(heading_children.len(), 2);
+    assert_eq!(heading_children[0].role(), Role::TextRun);
+    assert_eq!(heading_children[1].role(), Role::GenericContainer);
+
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "document.querySelector('code').remove();",
+    );
+
+    let mut updates = wait_for_min_updates(&servo_test, delegate.clone(), 1);
+    assert_eq!(updates.len(), 1);
+    let update = updates.pop().expect("Guaranteed by assert above");
+    tree.update_and_process_changes(update, &mut NoOpChangeHandler);
+
+    let root = assert_tree_structure_and_get_root_web_area(&tree);
+    let heading = find_first_matching_node(root, |node| node.role() == Role::Heading)
+        .expect("Heading should still be in the tree");
+    assert_eq!(
+        heading.label(),
+        Some("Activating accessibility for a".to_owned())
+    );
+}
+
+#[test]
+fn test_accessibility_descendants_of_heading_change() {
+    let url = "data:text/html,<!DOCTYPE html>\
+               <h1>We really <em>really <strong>really</strong></em> like owls</h1>";
+    let (servo_test, delegate, webview, mut tree) = build_webview_and_tree(url);
+
+    let root = assert_tree_structure_and_get_root_web_area(&tree);
+    let children: Vec<accesskit_consumer::Node> = root.children().collect();
+    assert_eq!(children.len(), 1);
+    let heading = children[0];
+    assert_eq!(heading.role(), Role::Heading);
+    assert_eq!(
+        heading.label(),
+        Some("We really really really like owls".to_owned())
+    );
+    let heading_children: Vec<_> = heading.children().collect();
+    assert_eq!(heading_children.len(), 3);
+    assert_eq!(heading_children[0].role(), Role::TextRun);
+    assert_eq!(heading_children[1].role(), Role::GenericContainer);
+    assert_eq!(heading_children[2].role(), Role::TextRun);
+
+    let em = heading_children[1];
+    assert_eq!(em.children().collect::<Vec<_>>().len(), 2);
+
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "document.querySelector('strong').remove();",
+    );
+
+    let mut updates = wait_for_min_updates(&servo_test, delegate.clone(), 1);
+    assert_eq!(updates.len(), 1);
+    let update = updates.pop().expect("Guaranteed by assert above");
+    tree.update_and_process_changes(update, &mut NoOpChangeHandler);
+
+    let root = assert_tree_structure_and_get_root_web_area(&tree);
+    let heading = find_first_matching_node(root, |node| node.role() == Role::Heading)
+        .expect("Heading should still be in the tree");
+    assert_eq!(
+        heading.label(),
+        Some("We really really  like owls".to_owned())
+    );
+}
+
+// ************************************************************************************************
+// If you're adding a new test here, consider adding a matching test in
+// tests/wpt/mozilla/tests/accessibility-tree/
+// ************************************************************************************************
+
+fn build_test() -> ServoTest {
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        let mut preferences = Preferences::default();
+        preferences.accessibility_enabled = true;
+        preferences.dom_servo_helpers_enabled = true;
+        preferences.expensive_accessibility_test_assertions_enabled = true;
+        let mut opts = Opts::default();
+        opts.debug
+            .toggle_option(DiagnosticsLoggingOption::AccessibilityTree, true);
+        builder.preferences(preferences).opts(opts)
+    });
+    servo_test
+}
+
+fn build_webview_and_tree(
+    url: &str,
+) -> (
+    ServoTest,
+    Rc<WebViewDelegateImpl>,
+    servo::WebView,
+    accesskit_consumer::Tree,
+) {
+    let servo_test = build_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse(url).unwrap())
+        .build();
+    webview.set_accessibility_active(true);
+    let load_webview = webview.clone();
+    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
+
+    let updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
+    let tree = build_tree(updates);
+    (servo_test, delegate, webview, tree)
 }
 
 fn wait_for_min_updates(

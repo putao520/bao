@@ -13,8 +13,6 @@ pub(crate) mod errorevent;
 #[allow(clippy::module_inception, reason = "The interface name is Event")]
 pub(crate) mod event;
 pub(crate) mod eventtarget;
-pub(crate) mod extendableevent;
-pub(crate) mod extendablemessageevent;
 pub(crate) mod focusevent;
 pub(crate) mod formdataevent;
 pub(crate) mod hashchangeevent;
@@ -23,7 +21,6 @@ pub(crate) mod keyboardevent;
 pub(crate) mod messageevent;
 pub(crate) mod mouseevent;
 pub(crate) mod pagetransitionevent;
-#[expect(dead_code)]
 pub(crate) mod pointerevent;
 pub(crate) mod popstateevent;
 pub(crate) mod progressevent;

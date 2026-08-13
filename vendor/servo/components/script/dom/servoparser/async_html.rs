@@ -38,12 +38,11 @@ use crate::dom::html::htmlformelement::{FormControlElementHelpers, HTMLFormEleme
 use crate::dom::html::htmlscriptelement::HTMLScriptElement;
 use crate::dom::html::htmltemplateelement::HTMLTemplateElement;
 use crate::dom::node::Node;
+use crate::dom::node::virtualmethods::vtable_for;
 use crate::dom::processinginstruction::ProcessingInstruction;
 use crate::dom::servoparser::{
     ElementAttribute, ParsingAlgorithm, attach_declarative_shadow_inner, create_element_for_token,
 };
-use crate::dom::virtualmethods::vtable_for;
-use crate::script_runtime::CanGc;
 
 type ParseNodeId = usize;
 
@@ -547,12 +546,7 @@ impl Tokenizer {
                     .downcast::<Element>()
                     .expect("tried to set attrs on non-Element in HTML parsing");
                 for attr in attrs {
-                    elem.set_attribute_from_parser(
-                        cx,
-                        attr.name,
-                        DOMString::from(attr.value),
-                        None,
-                    );
+                    elem.set_attribute_from_parser(cx, attr.name, DOMString::from(attr.value));
                 }
             },
             ParseOperation::RemoveFromParent { target } => {
@@ -600,7 +594,7 @@ impl Tokenizer {
                 let control = elem.and_then(|e| e.as_maybe_form_control());
 
                 if let Some(control) = control {
-                    control.set_form_owner_from_parser(&form, CanGc::from_cx(cx));
+                    control.set_form_owner_from_parser(cx, &form);
                 }
             },
             ParseOperation::Pop { node } => {

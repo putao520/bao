@@ -3,8 +3,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
+use js::context::{JSContext, NoGC};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use webgpu_traits::{WebGPU, WebGPUDevice, WebGPURequest, WebGPUSampler};
 use wgpu_core::resource::SamplerDescriptor;
 
@@ -17,7 +18,6 @@ use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::USVString;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::webgpu::gpudevice::GPUDevice;
-use crate::script_runtime::CanGc;
 
 #[derive(JSTraceable, MallocSizeOf)]
 struct DroppableGPUSampler {
@@ -67,15 +67,15 @@ impl GPUSampler {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         channel: WebGPU,
         device: WebGPUDevice,
         compare_enable: bool,
         sampler: WebGPUSampler,
         label: USVString,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(GPUSampler::new_inherited(
                 channel,
                 device,
@@ -84,7 +84,7 @@ impl GPUSampler {
                 label,
             )),
             global,
-            can_gc,
+            cx,
         )
     }
 }
@@ -96,9 +96,9 @@ impl GPUSampler {
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-createsampler>
     pub(crate) fn create(
+        cx: &mut JSContext,
         device: &GPUDevice,
         descriptor: &GPUSamplerDescriptor,
-        can_gc: CanGc,
     ) -> DomRoot<GPUSampler> {
         let sampler_id = device.global().wgpu_id_hub().create_sampler_id();
         let compare_enable = descriptor.compare.is_some();
@@ -132,13 +132,13 @@ impl GPUSampler {
         let sampler = WebGPUSampler(sampler_id);
 
         GPUSampler::new(
+            cx,
             &device.global(),
             device.channel(),
             device.id(),
             compare_enable,
             sampler,
             descriptor.parent.label.clone(),
-            can_gc,
         )
     }
 }
@@ -150,7 +150,7 @@ impl GPUSamplerMethods<crate::DomTypeHolder> for GPUSampler {
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label>
-    fn SetLabel(&self, value: USVString) {
-        *self.label.borrow_mut() = value;
+    fn SetLabel(&self, no_gc: &NoGC, value: USVString) {
+        *self.label.safe_borrow_mut(no_gc) = value;
     }
 }

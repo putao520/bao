@@ -154,6 +154,13 @@ partial interface Element {
   Promise<undefined> requestFullscreen();
 };
 
+// https://w3c.github.io/pointerevents/#extensions-to-the-element-interface
+partial interface Element {
+  [Throws] undefined setPointerCapture(long pointerId);
+  [Throws] undefined releasePointerCapture(long pointerId);
+  boolean hasPointerCapture(long pointerId);
+};
+
 Element includes ChildNode;
 Element includes NonDocumentTypeChildNode;
 Element includes ParentNode;
@@ -169,3 +176,6 @@ partial interface Element {
 partial interface Element {
   [CEReactions, Throws] undefined setHTML(DOMString html, optional SetHTMLOptions options = {});
 };
+
+// https://drafts.csswg.org/web-animations-1/#extensions-to-the-element-interface
+Element includes Animatable;

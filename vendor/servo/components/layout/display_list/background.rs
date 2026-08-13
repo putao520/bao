@@ -17,6 +17,7 @@ use style::values::specified::background::{
 use webrender_api::{self as wr, units};
 use wr::ClipChainId;
 
+use crate::display_list::{DisplayListBuilder, TraversalState};
 use crate::replaced::NaturalSizes;
 
 pub(super) struct BackgroundLayer {
@@ -73,14 +74,15 @@ impl<'a> BackgroundPainter<'a> {
         match get_cyclic(&background.background_clip.0, layer_index) {
             Clip::ContentBox => *fragment_builder.content_rect(),
             Clip::PaddingBox => *fragment_builder.padding_rect(),
-            Clip::BorderBox => fragment_builder.border_rect,
+            Clip::BorderBox | Clip::BorderArea => fragment_builder.border_rect,
         }
     }
 
     fn clip(
         &self,
         fragment_builder: &'a super::BuilderForBoxFragment,
-        builder: &mut super::DisplayListBuilder,
+        builder: &mut DisplayListBuilder,
+        state: &TraversalState,
         layer_index: usize,
     ) -> Option<ClipChainId> {
         if self.painting_area_override.is_some() {
@@ -88,7 +90,7 @@ impl<'a> BackgroundPainter<'a> {
         }
 
         if self.positioning_area_override.is_some() {
-            return fragment_builder.border_edge_clip(builder, false);
+            return fragment_builder.border_edge_clip(builder, state, false);
         }
 
         // The 'backgound-clip' property maps directly to `clip_rect` in `CommonItemProperties`:
@@ -96,9 +98,16 @@ impl<'a> BackgroundPainter<'a> {
         let force_clip_creation = get_cyclic(&background.background_attachment.0, layer_index) ==
             &BackgroundAttachment::Fixed;
         match get_cyclic(&background.background_clip.0, layer_index) {
-            Clip::ContentBox => fragment_builder.content_edge_clip(builder, force_clip_creation),
-            Clip::PaddingBox => fragment_builder.padding_edge_clip(builder, force_clip_creation),
-            Clip::BorderBox => fragment_builder.border_edge_clip(builder, force_clip_creation),
+            Clip::ContentBox => {
+                fragment_builder.content_edge_clip(builder, state, force_clip_creation)
+            },
+            Clip::PaddingBox => {
+                fragment_builder.padding_edge_clip(builder, state, force_clip_creation)
+            },
+            Clip::BorderBox => {
+                fragment_builder.border_edge_clip(builder, state, force_clip_creation)
+            },
+            Clip::BorderArea => unreachable!("Should be disabled behind a pref"),
         }
     }
 
@@ -109,12 +118,13 @@ impl<'a> BackgroundPainter<'a> {
         &self,
         fragment_builder: &'a super::BuilderForBoxFragment,
         builder: &mut super::DisplayListBuilder,
+        state: &TraversalState,
         layer_index: usize,
         painting_area: units::LayoutRect,
     ) -> wr::CommonItemProperties {
-        let clip = self.clip(fragment_builder, builder, layer_index);
+        let clip = self.clip(fragment_builder, builder, state, layer_index);
         let style = fragment_builder.fragment.style();
-        let mut common = builder.common_properties(painting_area, &style);
+        let mut common = builder.common_properties(state, painting_area, style);
         if let Some(clip_chain_id) = clip {
             common.clip_chain_id = clip_chain_id;
         }
@@ -157,15 +167,17 @@ impl<'a> BackgroundPainter<'a> {
 }
 
 pub(super) fn layout_layer(
-    fragment_builder: &mut super::BuilderForBoxFragment,
+    fragment_builder: &super::BuilderForBoxFragment,
     painter: &BackgroundPainter,
-    builder: &mut super::DisplayListBuilder,
+    builder: &mut DisplayListBuilder,
+    state: &TraversalState,
     layer_index: usize,
     natural_sizes: NaturalSizes,
 ) -> Option<BackgroundLayer> {
     let painting_area = painter.painting_area(fragment_builder, builder, layer_index);
     let positioning_area = painter.positioning_area(fragment_builder, builder, layer_index);
-    let common = painter.common_properties(fragment_builder, builder, layer_index, painting_area);
+    let common =
+        painter.common_properties(fragment_builder, builder, state, layer_index, painting_area);
 
     // https://drafts.csswg.org/css-backgrounds/#background-size
     enum ContainOrCover {

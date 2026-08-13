@@ -40,9 +40,12 @@ impl XPathEvaluator {
         window: &Window,
         proto: Option<HandleObject>,
     ) -> DomRoot<XPathEvaluator> {
-        reflect_dom_object_with_proto(cx, Box::new(XPathEvaluator::new_inherited(window)),
+        reflect_dom_object_with_proto(
+            cx,
+            Box::new(XPathEvaluator::new_inherited(window)),
             window,
-            proto)
+            proto,
+        )
     }
 }
 

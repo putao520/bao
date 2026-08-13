@@ -5,7 +5,7 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use webxr_api::{InputId, InputSource};
 
 use crate::dom::bindings::codegen::Bindings::XRInputSourceArrayBinding::XRInputSourceArrayMethods;
@@ -17,7 +17,6 @@ use crate::dom::window::Window;
 use crate::dom::xrinputsource::XRInputSource;
 use crate::dom::xrinputsourceschangeevent::XRInputSourcesChangeEvent;
 use crate::dom::xrsession::XRSession;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct XRInputSourceArray {
@@ -33,12 +32,8 @@ impl XRInputSourceArray {
         }
     }
 
-    pub(crate) fn new(window: &Window, can_gc: CanGc) -> DomRoot<XRInputSourceArray> {
-        reflect_dom_object(
-            Box::new(XRInputSourceArray::new_inherited()),
-            window,
-            can_gc,
-        )
+    pub(crate) fn new(cx: &mut JSContext, window: &Window) -> DomRoot<XRInputSourceArray> {
+        reflect_dom_object_with_cx(Box::new(XRInputSourceArray::new_inherited()), window, cx)
     }
 
     pub(crate) fn add_input_sources(
@@ -62,12 +57,13 @@ impl XRInputSourceArray {
                     .any(|i| i.id() == info.id),
                 "Should never add a duplicate input id!"
             );
-            let input = XRInputSource::new(window, session, info.clone(), CanGc::from_cx(cx));
+            let input = XRInputSource::new(cx, window, session, info.clone());
             self.input_sources.borrow_mut().push(Dom::from_ref(&input));
             added.push(input);
         }
 
         let event = XRInputSourcesChangeEvent::new(
+            cx,
             window,
             atom!("inputsourceschange"),
             false,
@@ -75,7 +71,6 @@ impl XRInputSourceArray {
             session,
             &added,
             &[],
-            CanGc::from_cx(cx),
         );
         event.upcast::<Event>().fire(cx, session.upcast());
     }
@@ -84,13 +79,14 @@ impl XRInputSourceArray {
         let global = self.global();
         let window = global.as_window();
         let removed = if let Some(i) = self.input_sources.borrow().iter().find(|i| i.id() == id) {
-            i.gamepad().update_connected(cx, false, false);
+            i.gamepad().update_connected(false);
             [DomRoot::from_ref(&**i)]
         } else {
             return;
         };
 
         let event = XRInputSourcesChangeEvent::new(
+            cx,
             window,
             atom!("inputsourceschange"),
             false,
@@ -98,7 +94,6 @@ impl XRInputSourceArray {
             session,
             &[],
             &removed,
-            CanGc::from_cx(cx),
         );
         self.input_sources.borrow_mut().retain(|i| i.id() != id);
         event.upcast::<Event>().fire(cx, session.upcast());
@@ -115,7 +110,7 @@ impl XRInputSourceArray {
         let window = global.as_window();
         let root;
         let removed = if let Some(i) = self.input_sources.borrow().iter().find(|i| i.id() == id) {
-            i.gamepad().update_connected(cx, false, false);
+            i.gamepad().update_connected(false);
             root = [DomRoot::from_ref(&**i)];
             &root as &[_]
         } else {
@@ -123,12 +118,13 @@ impl XRInputSourceArray {
             &[]
         };
         self.input_sources.borrow_mut().retain(|i| i.id() != id);
-        let input = XRInputSource::new(window, session, info, CanGc::from_cx(cx));
+        let input = XRInputSource::new(cx, window, session, info);
         self.input_sources.borrow_mut().push(Dom::from_ref(&input));
 
         let added = [input];
 
         let event = XRInputSourcesChangeEvent::new(
+            cx,
             window,
             atom!("inputsourceschange"),
             false,
@@ -136,7 +132,6 @@ impl XRInputSourceArray {
             session,
             &added,
             removed,
-            CanGc::from_cx(cx),
         );
         event.upcast::<Event>().fire(cx, session.upcast());
     }

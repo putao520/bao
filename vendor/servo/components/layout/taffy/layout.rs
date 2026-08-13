@@ -79,6 +79,10 @@ impl Iterator for ChildIter {
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next().map(taffy::NodeId::from)
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.0.len(), Some(self.0.len()))
+    }
 }
 
 impl taffy::TraversePartialTree for TaffyContainerContext<'_> {
@@ -556,7 +560,7 @@ impl TaffyContainer {
                         );
                         let hoisted_fragment = hoisted_box.fragment.clone();
                         container_ctx.positioning_context.push(hoisted_box);
-                        Fragment::AbsoluteOrFixedPositioned(hoisted_fragment)
+                        Fragment::AbsoluteOrFixedPositionedPlaceholder(hoisted_fragment)
                     },
                 };
 
@@ -598,5 +602,12 @@ impl TaffyContainer {
                 base.parent_box.replace(layout_box.clone());
             });
         }
+    }
+
+    pub(crate) fn subtree_size(&self) -> usize {
+        self.children
+            .iter()
+            .map(|child| child.borrow().with_base(|base| base.subtree_size()))
+            .sum()
     }
 }

@@ -251,7 +251,7 @@ impl SendReportsToEndpoints for GlobalScope {
         // Step 3. Return the byte sequence resulting from executing serialize an
         // Infra value to JSON bytes on collection.
         Some(create_request_body_with_content(
-            &serde_json::to_string(&report_body).unwrap_or("".to_owned()),
+            serde_json::to_string(&report_body).unwrap_or_default(),
         ))
     }
 }
@@ -341,7 +341,13 @@ impl FetchResponseListener for CSPReportEndpointFetchListener {
         submit_timing(cx, &self, &response, &timing);
     }
 
-    fn process_csp_violations(&mut self, _request_id: RequestId, _violations: Vec<Violation>) {}
+    fn process_csp_violations(
+        &mut self,
+        _cx: &mut js::context::JSContext,
+        _request_id: RequestId,
+        _violations: Vec<Violation>,
+    ) {
+    }
 }
 
 impl ResourceTimingListener for CSPReportEndpointFetchListener {

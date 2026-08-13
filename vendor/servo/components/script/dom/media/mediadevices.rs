@@ -7,7 +7,7 @@ use std::rc::Rc;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::realm::CurrentRealm;
-use script_bindings::reflector::reflect_dom_object;
+use script_bindings::reflector::reflect_dom_object_with_cx;
 use servo_media::ServoMedia;
 use servo_media::streams::MediaStreamType;
 use servo_media::streams::capture::{Constrain, ConstrainRange, MediaTrackConstraintSet};
@@ -28,7 +28,6 @@ use crate::dom::media::mediadeviceinfo::MediaDeviceInfo;
 use crate::dom::media::mediastream::MediaStream;
 use crate::dom::media::mediastreamtrack::MediaStreamTrack;
 use crate::dom::promise::Promise;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct MediaDevices {
@@ -42,8 +41,8 @@ impl MediaDevices {
         }
     }
 
-    pub(crate) fn new(global: &GlobalScope, can_gc: CanGc) -> DomRoot<MediaDevices> {
-        reflect_dom_object(Box::new(MediaDevices::new_inherited()), global, can_gc)
+    pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<MediaDevices> {
+        reflect_dom_object_with_cx(Box::new(MediaDevices::new_inherited()), global, cx)
     }
 }
 
@@ -70,7 +69,7 @@ impl MediaDevicesMethods<crate::DomTypeHolder> for MediaDevices {
             stream.add_track(&track);
         }
 
-        p.resolve_native(&stream, CanGc::from_cx(cx));
+        p.resolve_native(cx, &stream);
         p
     }
 
@@ -107,7 +106,7 @@ impl MediaDevicesMethods<crate::DomTypeHolder> for MediaDevices {
             })
             .unwrap_or_default();
 
-        p.resolve_native(&result_list, CanGc::from_cx(cx));
+        p.resolve_native(cx, &result_list);
 
         // Step 3.
         p

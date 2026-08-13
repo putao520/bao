@@ -3,8 +3,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
+use js::context::{JSContext, NoGC};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use webgpu_traits::{WebGPU, WebGPURequest, WebGPUTextureView};
 
 use crate::dom::bindings::codegen::Bindings::WebGPUBinding::GPUTextureViewMethods;
@@ -12,7 +13,6 @@ use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::USVString;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::webgpu::gputexture::GPUTexture;
-use crate::script_runtime::CanGc;
 
 #[derive(JSTraceable, MallocSizeOf)]
 struct DroppableGPUTextureView {
@@ -65,14 +65,14 @@ impl GPUTextureView {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         channel: WebGPU,
         texture_view: WebGPUTextureView,
         texture: &GPUTexture,
         label: USVString,
-        can_gc: CanGc,
     ) -> DomRoot<GPUTextureView> {
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(GPUTextureView::new_inherited(
                 channel,
                 texture_view,
@@ -80,7 +80,7 @@ impl GPUTextureView {
                 label,
             )),
             global,
-            can_gc,
+            cx,
         )
     }
 }
@@ -98,7 +98,7 @@ impl GPUTextureViewMethods<crate::DomTypeHolder> for GPUTextureView {
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label>
-    fn SetLabel(&self, value: USVString) {
-        *self.label.borrow_mut() = value;
+    fn SetLabel(&self, no_gc: &NoGC, value: USVString) {
+        *self.label.safe_borrow_mut(no_gc) = value;
     }
 }

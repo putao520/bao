@@ -24,8 +24,8 @@ use servo::{
     ContextMenuAction, ContextMenuElementInformation, ContextMenuElementInformationFlags,
     ContextMenuItem, CreateNewWebViewRequest, Cursor, EmbedderControl, InputEvent, InputMethodType,
     JSValue, LoadStatus, MouseButton, MouseButtonAction, MouseButtonEvent, MouseLeftViewportEvent,
-    MouseMoveEvent, RenderingContext, Scroll, SimpleDialog, Theme, WebView, WebViewBuilder,
-    WebViewDelegate, WebViewPoint, WebViewVector,
+    MouseMoveEvent, PrefValue, RenderingContext, Scroll, SimpleDialog, Theme, WebView,
+    WebViewBuilder, WebViewDelegate, WebViewPoint, WebViewVector,
 };
 use servo_config::prefs::Preferences;
 use servo_url::ServoUrl;
@@ -196,6 +196,46 @@ fn test_theme_change() {
     webview.notify_theme_change(Theme::Dark);
     let result = evaluate_javascript(&servo_test, webview.clone(), is_dark_theme_script);
     assert_eq!(result, Ok(JSValue::Boolean(true)));
+}
+
+#[test]
+fn test_theme_change_media_query_event() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                r#"data:text/html,<!DOCTYPE html><html><script>
+            let mediaQueryChanges = 0;
+            const mediaQueryList = window.matchMedia('(prefers-color-scheme: dark)');
+            mediaQueryList.addEventListener('change', () => {
+                mediaQueryChanges += 1;
+                console.log(mediaQueryChanges);
+            });
+            </script></html>"#,
+            )
+            .unwrap(),
+        )
+        .build();
+
+    // Check that we increment mediaQueryChanges each time the theme changes.
+
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let result = evaluate_javascript(&servo_test, webview.clone(), "mediaQueryChanges");
+    assert_eq!(result, Ok(JSValue::Number(0.0)));
+
+    webview.notify_theme_change(Theme::Dark);
+
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let result = evaluate_javascript(&servo_test, webview.clone(), "mediaQueryChanges");
+    assert_eq!(result, Ok(JSValue::Number(1.0)));
+
+    webview.notify_theme_change(Theme::Light);
+
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let result = evaluate_javascript(&servo_test, webview.clone(), "mediaQueryChanges");
+    assert_eq!(result, Ok(JSValue::Number(2.0)));
 }
 
 #[test]
@@ -1037,4 +1077,97 @@ fn test_console_log_and_error_ordering() {
         "Expected second message to contain error info, got: {:?}",
         messages[1].1
     );
+}
+
+#[test]
+fn test_preferences_change() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+
+    let test_page =
+        Url::parse("data:text/html,<div id=\"target\" style=\"backdrop-filter: sepia(1)\"></div>")
+            .expect("Data URL failed to build");
+
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(test_page.clone())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    assert_eq!(
+        // The backdrop-filter style is feature flagged by the layout.unimplemented feature,
+        // so when layout.unimplemented feature is disabled, the backdrop-filter style specified
+        // in the stylesheet won't parse and the computed value undefined
+        Ok(JSValue::Array(vec![
+            JSValue::String("".to_string()),
+            JSValue::String("".to_string())
+        ])),
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "let old_value = target.style.getPropertyValue('backdrop-filter');
+            target.style.backdropFilter = 'sepia(1)';
+            let new_value = target.style.getPropertyValue('backdrop-filter');
+            [old_value, new_value]"
+        )
+    );
+
+    servo_test
+        .servo()
+        .set_preference("layout_unimplemented", PrefValue::Bool(true));
+
+    webview.reload();
+
+    assert_eq!(
+        // When layout.unimplemented feature is enabled, the backdrop-filter style specified in
+        // the stylesheet will parse and the computed value will be that value
+        Ok(JSValue::Array(vec![
+            JSValue::String("sepia(1)".to_string()),
+            JSValue::String("opacity(0.5)".to_string())
+        ])),
+        evaluate_javascript(
+            &servo_test,
+            webview,
+            "let old_value = target.style.getPropertyValue('backdrop-filter');
+            target.style.backdropFilter = 'opacity(0.5)';
+            let new_value = target.style.getPropertyValue('backdrop-filter');
+            [old_value, new_value]"
+        )
+    );
+}
+
+#[test]
+fn test_fullscreen() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+
+    let test_page = Url::parse(
+        "data:text/html,\
+        <button onclick='this.requestFullscreen()'>click</button>\
+        <a href=about:blank>click</a>",
+    )
+    .expect("Data URL failed to build");
+
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(test_page.clone())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    click_at_point(&webview, Point2D::new(10., 10.));
+
+    let captured = delegate.clone();
+    servo_test.spin(move || !captured.fullscreen.get());
+
+    assert!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "document.querySelector('a').click();"
+        )
+        .is_ok()
+    );
+
+    let captured = delegate.clone();
+    servo_test.spin(move || captured.fullscreen.get());
 }

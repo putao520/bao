@@ -2,7 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use script_bindings::cell::Ref;
+use atomic_refcell::AtomicRef;
+use js::context::NoGC;
 use script_bindings::inheritance::Castable;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 
@@ -11,12 +12,13 @@ use crate::dom::characterdata::CharacterData;
 use crate::dom::element::Element;
 use crate::dom::html::htmlbrelement::HTMLBRElement;
 use crate::dom::html::htmlimageelement::HTMLImageElement;
+use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::Node;
 use crate::dom::text::Text;
 
 impl Text {
     /// <https://dom.spec.whatwg.org/#concept-cd-data>
-    pub(crate) fn data(&self) -> Ref<'_, String> {
+    pub(crate) fn data(&self) -> AtomicRef<'_, String> {
         self.upcast::<CharacterData>().data()
     }
 
@@ -57,7 +59,7 @@ impl Text {
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#collapsed-whitespace-node>
-    pub(crate) fn is_collapsed_whitespace_node(&self) -> bool {
+    pub(crate) fn is_collapsed_whitespace_node(&self, no_gc: &NoGC) -> bool {
         // Step 1. If node is not a whitespace node, return false.
         if !self.is_whitespace_node() {
             return false;
@@ -110,7 +112,9 @@ impl Text {
         // Step 9. Let reference be node.
         // Step 10. While reference is a descendant of ancestor:
         // Step 10.1. Let reference be the node after it in tree order, or null if there is no such node.
-        for reference in node.following_nodes(&resolved_ancestor) {
+        for reference in
+            node.following_nodes_unrooted(no_gc, &resolved_ancestor, ShadowIncluding::No)
+        {
             // Step 10.2. If reference is a block node or a br, return true.
             if reference.is_block_node() || reference.is::<HTMLBRElement>() {
                 return true;

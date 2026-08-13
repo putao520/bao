@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use app_units::Au;
-use layout_api::AxesOverflow;
+use layout_api::{AxesOverflow, LayoutElementType, LayoutNode, LayoutNodeType};
 use malloc_size_of_derive::MallocSizeOf;
 use style::Zero;
 use style::color::AbsoluteColor;
@@ -36,7 +36,7 @@ use unicode_bidi::Level;
 use webrender_api as wr;
 use webrender_api::units::LayoutTransform;
 
-use crate::dom_traversal::Contents;
+use crate::dom_traversal::{Contents, NodeAndStyleInfo};
 use crate::fragment_tree::FragmentFlags;
 use crate::geom::{
     AuOrAuto, LengthPercentageOrAuto, LogicalSides, LogicalSides1D, LogicalVec2, PhysicalSides,
@@ -72,7 +72,11 @@ impl DisplayGeneratingBox {
         }
     }
 
-    pub(crate) fn used_value_for_contents(&self, contents: &Contents) -> Self {
+    pub(crate) fn used_value_for_contents(
+        &self,
+        contents: &Contents,
+        info: &NodeAndStyleInfo,
+    ) -> Self {
         // From <https://www.w3.org/TR/css-display-3/#layout-specific-display>:
         // > When the display property of a replaced element computes to one of
         // > the layout-internal values, it is handled as having a used value of
@@ -85,10 +89,21 @@ impl DisplayGeneratingBox {
                 },
             }
         } else if matches!(contents, Contents::Widget(_)) {
-            // If it's a widget, make sure the display-inside is flow-root.
             // <https://html.spec.whatwg.org/multipage/#form-controls>
-            // TODO: Do we want flow-root, or just an independent formatting context?
-            if let DisplayGeneratingBox::OutsideInside { outside, .. } = self {
+            // Widgets should establish an independent formatting context. Therefore,
+            // replace a `flow` inner display type with `flow-root`, or just use
+            // `flow-root` unconditionally, depending on the element.
+            // Also, prevent it from being a list item, like Blink and WebKit, but
+            // unlike Gecko. See https://github.com/w3c/csswg-drafts/issues/14187
+            if let DisplayGeneratingBox::OutsideInside { outside, inside } = self &&
+                (matches!(
+                    inside,
+                    DisplayInside::Flow { .. } | DisplayInside::FlowRoot { .. }
+                ) || info.node.type_id() !=
+                    Some(LayoutNodeType::Element(
+                        LayoutElementType::HTMLButtonElement,
+                    )))
+            {
                 DisplayGeneratingBox::OutsideInside {
                     outside: *outside,
                     inside: DisplayInside::FlowRoot {
@@ -333,6 +348,7 @@ pub(crate) trait ComputedValuesExt {
     fn z_index_applies(&self, fragment_flags: FragmentFlags) -> bool;
     fn effective_z_index(&self, fragment_flags: FragmentFlags) -> i32;
     fn effective_overflow(&self, fragment_flags: FragmentFlags) -> AxesOverflow;
+    fn used_transform_style(&self, fragment_flags: FragmentFlags) -> ComputedTransformStyle;
     fn establishes_block_formatting_context(&self, fragment_flags: FragmentFlags) -> bool;
     fn establishes_stacking_context(&self, fragment_flags: FragmentFlags) -> bool;
     fn establishes_scroll_container(&self, fragment_flags: FragmentFlags) -> bool;
@@ -520,13 +536,19 @@ impl ComputedValuesExt for ComputedValues {
     }
 
     fn is_inline_box(&self, fragment_flags: FragmentFlags) -> bool {
-        self.get_box().display.is_inline_flow() &&
-            !fragment_flags.intersects(FragmentFlags::IS_REPLACED | FragmentFlags::IS_WIDGET)
+        (self.get_box().display.is_inline_flow() &&
+            !fragment_flags.intersects(
+                FragmentFlags::IS_REPLACED |
+                    FragmentFlags::IS_WIDGET |
+                    FragmentFlags::IS_FLEX_OR_GRID_ITEM,
+            )) ||
+            matches!(self.pseudo(), Some(PseudoElement::FirstLetter))
     }
 
     fn is_atomic_inline_level(&self, fragment_flags: FragmentFlags) -> bool {
         self.get_box().display.outside() == stylo::DisplayOutside::Inline &&
-            !self.is_inline_box(fragment_flags)
+            !self.is_inline_box(fragment_flags) &&
+            !fragment_flags.intersects(FragmentFlags::IS_FLEX_OR_GRID_ITEM)
     }
 
     /// Returns true if this is a transformable element.
@@ -651,6 +673,50 @@ impl ComputedValuesExt for ComputedValues {
         overflow
     }
 
+    /// Get the used `transform-style` value according to the the rules in
+    /// <https://drafts.csswg.org/css-transforms/#grouping-property-values>.
+    fn used_transform_style(&self, fragment_flags: FragmentFlags) -> ComputedTransformStyle {
+        // The check for flat here is to avoid having to check all of the properties below when
+        // possible.
+        let box_style = self.get_box();
+        if box_style.transform_style == ComputedTransformStyle::Flat {
+            return ComputedTransformStyle::Flat;
+        }
+
+        // https://drafts.csswg.org/css-transforms-2/#grouping-property-values
+        //  * overflow: any value other than visible or clip.
+        //  * opacity: any value less than 1.
+        //  * filter: any value other than none.
+        //  * clip: any value other than auto.
+        //  * clip-path: any value other than none.
+        //  * isolation: used value of isolate.
+        //  * mask-image: any value other than none.
+        //  * mask-border-source: any value other than none.
+        //  * mix-blend-mode: any value other than normal.
+        //  * contain: paint and any other property/value combination that causes
+        //    paint containment. Note: this includes any property that affect the
+        //    used value of the contain property, such as content-visibility:
+        //    hidden.
+        //
+        // TODO: Support `mask-image`, `mask-border-source`, and `contain`.
+        let effects = self.get_effects();
+        let overflow = self.effective_overflow(fragment_flags);
+        if !matches!(overflow.x, Overflow::Visible | Overflow::Clip) ||
+            !matches!(overflow.y, Overflow::Visible | Overflow::Clip) ||
+            effects.opacity < 1.0 ||
+            !effects.filter.0.is_empty() ||
+            !effects.clip.is_auto() ||
+            self.get_svg().clip_path != ClipPath::None ||
+            self.get_box().isolation == ComputedIsolation::Isolate ||
+            effects.mix_blend_mode != ComputedMixBlendMode::Normal
+        {
+            return ComputedTransformStyle::Flat;
+        }
+
+        // Return the computed value if not overridden by the above exceptions
+        box_style.transform_style
+    }
+
     /// Return true if this style is a normal block and establishes
     /// a new block formatting context.
     ///
@@ -735,7 +801,8 @@ impl ComputedValuesExt for ComputedValues {
         // > establishes both a stacking context and a containing block for all descendants.
         if self.is_transformable(fragment_flags) &&
             (self.has_transform_or_perspective_style() ||
-                self.get_box().transform_style == ComputedTransformStyle::Preserve3d ||
+                self.used_transform_style(fragment_flags) ==
+                    ComputedTransformStyle::Preserve3d ||
                 will_change_bits
                     .intersects(WillChangeBits::TRANSFORM | WillChangeBits::PERSPECTIVE))
         {
@@ -848,7 +915,8 @@ impl ComputedValuesExt for ComputedValues {
         // > establishes both a stacking context and a containing block for all descendants.
         if self.is_transformable(fragment_flags) &&
             (self.has_transform_or_perspective_style() ||
-                self.get_box().transform_style == ComputedTransformStyle::Preserve3d ||
+                self.used_transform_style(fragment_flags) ==
+                    ComputedTransformStyle::Preserve3d ||
                 will_change_bits
                     .intersects(WillChangeBits::TRANSFORM | WillChangeBits::PERSPECTIVE))
         {

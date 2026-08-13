@@ -27,6 +27,7 @@ ipc-channel = { workspace = true }
 keyboard-types = { workspace = true }
 markup5ever = { workspace = true }
 mime = { workspace = true }
+once_cell = { workspace = true }
 parking_lot = { workspace = true }
 resvg = { workspace = true }
 servo-allocator = { workspace = true }
@@ -45,6 +46,7 @@ unicode-script = { workspace = true }
 url = { workspace = true }
 urlpattern = { workspace = true }
 uuid = { workspace = true }
+vello_cpu = { workspace = true }
 webrender = { workspace = true }
 webrender_api = { workspace = true }
 wr_malloc_size_of = { workspace = true }

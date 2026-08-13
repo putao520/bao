@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use dom_struct::dom_struct;
 use html5ever::local_name;
 use js::context::JSContext;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use servo_arc::Arc;
 use servo_url::ServoUrl;
 use style::attr::AttrValue;
@@ -33,7 +33,6 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::element::Element;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 // http://dev.w3.org/csswg/cssom/#the-cssstyledeclaration-interface
 #[dom_struct]
@@ -78,7 +77,8 @@ impl CSSStyleOwner {
             CSSStyleOwner::Element(ref element) => {
                 let document = element.owner_document();
                 let shared_lock = document.style_shared_author_lock();
-                let mut attribute_pdb = element.style_attribute().borrow_mut().take();
+                let mut attribute_pdb =
+                    element.style_attribute().safe_borrow_mut(cx.no_gc()).take();
 
                 // When there are mutation observers, the old PDB and the new PDB need to
                 // co-exist so that both attribute values can be serialized and sent to
@@ -113,7 +113,7 @@ impl CSSStyleOwner {
                 // declaration block is empty (see
                 // https://github.com/whatwg/html/issues/2306).
                 if !changed {
-                    *element.style_attribute().borrow_mut() = Some(attribute_pdb);
+                    *element.style_attribute().safe_borrow_mut(cx.no_gc()) = Some(attribute_pdb);
                     return result;
                 }
 
@@ -131,7 +131,7 @@ impl CSSStyleOwner {
                     f(&mut *pdb.borrow().write_with(&mut guard), &mut changed)
                 };
                 if changed {
-                    rule.parent_stylesheet().notify_invalidations();
+                    rule.parent_stylesheet().notify_invalidations(cx.no_gc());
                 }
                 result
             },
@@ -254,20 +254,20 @@ impl CSSStyleDeclaration {
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &Window,
         owner: CSSStyleOwner,
         pseudo: Option<PseudoElement>,
         modification_access: CSSModificationAccess,
-        can_gc: CanGc,
     ) -> DomRoot<CSSStyleDeclaration> {
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(CSSStyleDeclaration::new_inherited(
                 owner,
                 pseudo,
                 modification_access,
             )),
             global,
-            can_gc,
+            cx,
         )
     }
 

@@ -11,18 +11,17 @@ use js::realm::CurrentRealm;
 use js::rust::HandleObject;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 
+use crate::dom::WorkletThreadPool;
 use crate::dom::bindings::codegen::Bindings::TestWorkletBinding::TestWorkletMethods;
 use crate::dom::bindings::codegen::Bindings::WorkletBinding::Worklet_Binding::WorkletMethods;
 use crate::dom::bindings::codegen::Bindings::WorkletBinding::WorkletOptions;
 use crate::dom::bindings::error::Fallible;
-use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::promise::Promise;
 use crate::dom::window::Window;
 use crate::dom::worklet::Worklet;
 use crate::dom::workletglobalscope::WorkletGlobalScopeType;
-use crate::script_thread::ScriptThread;
 
 #[dom_struct]
 pub(crate) struct TestWorklet {
@@ -43,10 +42,19 @@ impl TestWorklet {
         window: &Window,
         proto: Option<HandleObject>,
     ) -> DomRoot<TestWorklet> {
-        let worklet = Worklet::new(cx, window, WorkletGlobalScopeType::Test);
-        reflect_dom_object_with_proto(cx, Box::new(TestWorklet::new_inherited(&worklet)),
+        let worklet_global_scope_init = window.into();
+        let worklet = Worklet::new(
+            cx,
             window,
-            proto)
+            WorkletGlobalScopeType::Test,
+            Box::new(|| Rc::new(WorkletThreadPool::spawn(worklet_global_scope_init))),
+        );
+        reflect_dom_object_with_proto(
+            cx,
+            Box::new(TestWorklet::new_inherited(&worklet)),
+            window,
+            proto,
+        )
     }
 }
 
@@ -70,8 +78,10 @@ impl TestWorkletMethods<crate::DomTypeHolder> for TestWorklet {
 
     fn Lookup(&self, key: DOMString) -> Option<DOMString> {
         let id = self.worklet.worklet_id();
-        let pool = ScriptThread::worklet_thread_pool(self.global().image_cache());
-        pool.test_worklet_lookup(id, String::from(key))
+
+        self.worklet
+            .worklet_thread_pool()
+            .test_worklet_lookup(id, String::from(key))
             .map(DOMString::from)
     }
 }

@@ -17,7 +17,7 @@ test = false
 doctest = false
 
 [features]
-test-util = ["hyper-util/server-graceful", "dep:servo-default-resources"]
+test-util = ["hyper-util/server-graceful", "dep:servo-default-resources", "net_traits/test-util"]
 tracing = ["dep:tracing"]
 
 [dependencies]
@@ -34,17 +34,15 @@ data-url = { workspace = true }
 devtools_traits = { workspace = true }
 embedder_traits = { workspace = true }
 fst = { workspace = true }
+fonts = { workspace = true }
 futures = { workspace = true }
 futures-core = { workspace = true }
 futures-util = { workspace = true }
-generic-array = { workspace = true }
 headers = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-bao_boringssl_bridge = { path = "../../../../src/bao_boringssl_bridge" }
-bun_boringssl = { path = "../../../../src/boringssl" }
-bun_boringssl_sys = { path = "../../../../src/boringssl_sys" }
 hyper = { workspace = true, features = ["client", "http1", "http2"] }
+hyper-rustls = { workspace = true }
 hyper-util = { workspace = true }
 hyper_serde = { workspace = true }
 imsz = { workspace = true }
@@ -61,10 +59,16 @@ paint_api = { workspace = true }
 parking_lot = { workspace = true }
 pixels = { workspace = true }
 profile_traits = { workspace = true }
+postcard = { workspace = true }
 quick_cache = { workspace = true, features = ["ahash"] }
+rand = { workspace = true }
 regex = { workspace = true }
 resvg = { workspace = true }
 rustc-hash = { workspace = true }
+rustls = { workspace = true, features = ["aws-lc-rs"] }
+rustls-pki-types = { workspace = true }
+rustls-platform-verifier = { workspace = true }
+rusqlite = { workspace = true }
 serde = { workspace = true }
 servo-base = { workspace = true }
 servo-config = { workspace = true }
@@ -72,9 +76,14 @@ servo-default-resources = { workspace = true, optional = true }
 servo-tracing = { workspace = true }
 servo-url = { workspace = true }
 servo_arc = { workspace = true }
+sea-query = { workspace = true }
+sea-query-rusqlite = { workspace = true }
 sha2 = { workspace = true }
+smallvec = { workspace = true }
+tempfile = { workspace = true }
 time = { workspace = true }
-tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
+tokio-rustls = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["codec", "io"] }
 tower = { workspace = true }
@@ -93,6 +102,7 @@ hyper-util = { workspace = true, features = ["server-graceful"] }
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
 net = { package = "servo-net", path = ".", features = ["test-util"] }
+rustls = { workspace = true, features = ["aws-lc-rs"] }
 servo-default-resources = { workspace = true }
 
 [[test]]

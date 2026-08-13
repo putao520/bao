@@ -4,20 +4,24 @@
 
 use std::cmp;
 use std::f32::consts::PI;
+use std::sync::{Arc, OnceLock};
 
 use malloc_size_of_derive::MallocSizeOf;
+use servo_base::generic_channel::GenericCallback;
 
+use crate::audio_node::{
+    AudioNodeEngine, AudioNodeType, BlockInfo, ChannelInfo, ChannelInterpretation,
+};
 use crate::block::{Block, Chunk, FRAMES_PER_BLOCK_USIZE};
-use crate::node::{AudioNodeEngine, AudioNodeType, BlockInfo, ChannelInfo, ChannelInterpretation};
 
 #[derive(AudioNodeCommon)]
 pub(crate) struct AnalyserNode {
     channel_info: ChannelInfo,
-    callback: Box<dyn FnMut(Block) + Send>,
+    callback: Arc<OnceLock<GenericCallback<Block>>>,
 }
 
 impl AnalyserNode {
-    pub fn new(callback: Box<dyn FnMut(Block) + Send>, channel_info: ChannelInfo) -> Self {
+    pub fn new(callback: Arc<OnceLock<GenericCallback<Block>>>, channel_info: ChannelInfo) -> Self {
         Self {
             callback,
             channel_info,
@@ -36,7 +40,9 @@ impl AudioNodeEngine for AnalyserNode {
         let mut push = inputs.blocks[0].clone();
         push.mix(1, ChannelInterpretation::Speakers);
 
-        (self.callback)(push);
+        if let Some(callback) = self.callback.get() {
+            let _ = callback.send(push);
+        }
 
         // analyser node doesn't modify the inputs
         inputs

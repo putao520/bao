@@ -8,8 +8,9 @@
 //! and <http://tools.ietf.org/html/rfc7232>.
 
 use std::ops::Bound;
+use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use headers::{
     CacheControl, ContentRange, Expires, HeaderMapExt, LastModified, Pragma, Range, Vary,
@@ -19,24 +20,32 @@ use log::{debug, error};
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::http_status::HttpStatus;
-use net_traits::request::Request;
+use net_traits::request::{CacheMode, Request};
 use net_traits::response::{Response, ResponseBody};
 use net_traits::{CacheEntryDescriptor, FetchMetadata, Metadata, ResourceFetchTiming};
 use parking_lot::Mutex as ParkingLotMutex;
-use quick_cache::sync::{Cache, DefaultLifecycle, PlaceholderGuard};
-use quick_cache::{DefaultHashBuilder, UnitWeighter};
+use quick_cache::sync::{Cache, PlaceholderGuard};
+use quick_cache::{DefaultHashBuilder, Lifecycle, UnitWeighter};
+use serde::{Deserialize, Serialize};
 use servo_arc::Arc;
 use servo_config::pref;
 use servo_url::ServoUrl;
 use tokio::sync::mpsc::{UnboundedSender as TokioSender, unbounded_channel as unbounded};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock as TokioRwLock};
 
+use crate::disk_cache::DiskCache;
 use crate::fetch::methods::{Data, DoneChannel};
 
 /// The key used to differentiate requests in the cache.
-#[derive(Clone, Eq, Hash, MallocSizeOf, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq)]
 pub struct CacheKey {
     url: ServoUrl,
+}
+
+impl AsRef<str> for CacheKey {
+    fn as_ref(&self) -> &str {
+        self.url.as_str()
+    }
 }
 
 impl CacheKey {
@@ -54,30 +63,71 @@ impl CacheKey {
 }
 
 /// A complete cached resource.
-#[derive(Clone, MallocSizeOf)]
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub struct CachedResource {
     #[conditional_malloc_size_of]
-    request_headers: Arc<ParkingLotMutex<HeaderMap>>,
+    request_headers: Arc<ParkingLotMutex<SerializeableHeaderMap>>,
     #[conditional_malloc_size_of]
     body: Arc<ParkingLotMutex<ResponseBody>>,
     #[conditional_malloc_size_of]
     aborted: Arc<AtomicBool>,
     #[conditional_malloc_size_of]
+    #[serde(skip)]
     awaiting_body: Arc<ParkingLotMutex<Vec<TokioSender<Data>>>>,
     metadata: CachedMetadata,
     location_url: Option<Result<ServoUrl, String>>,
     status: HttpStatus,
     url_list: Vec<ServoUrl>,
     expires: Duration,
-    last_validated: Instant,
+    stale_while_revalidate: Duration,
+    #[conditional_malloc_size_of]
+    #[serde(skip)]
+    revalidating: StdArc<AtomicBool>,
+    last_validated: SystemTime,
+}
+
+impl CachedResource {
+    pub(crate) fn is_done(&self) -> bool {
+        self.body.lock().is_done()
+    }
+}
+
+#[derive(Debug, Deserialize, MallocSizeOf, Serialize)]
+/// Wrapper type for HeaderMap
+struct SerializeableHeaderMap(
+    #[serde(
+        deserialize_with = "hyper_serde::deserialize",
+        serialize_with = "hyper_serde::serialize"
+    )]
+    HeaderMap,
+);
+
+impl std::ops::Deref for SerializeableHeaderMap {
+    type Target = HeaderMap;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SerializeableHeaderMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<HeaderMap> for SerializeableHeaderMap {
+    fn from(value: HeaderMap) -> Self {
+        SerializeableHeaderMap(value)
+    }
 }
 
 /// Metadata about a loaded resource, such as is obtained from HTTP headers.
-#[derive(Clone, MallocSizeOf)]
+#[derive(Clone, Debug, Deserialize, Serialize, MallocSizeOf)]
 struct CachedMetadata {
     /// Headers
     #[conditional_malloc_size_of]
-    pub headers: Arc<ParkingLotMutex<HeaderMap>>,
+    pub headers: Arc<ParkingLotMutex<SerializeableHeaderMap>>,
     /// Final URL after redirects.
     pub final_url: ServoUrl,
     /// MIME type / subtype.
@@ -87,19 +137,50 @@ struct CachedMetadata {
     /// HTTP Status
     pub status: HttpStatus,
 }
+
+/// Whether a cached response is fresh or requires validation before or after use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValidationStatus {
+    /// The response is fresh and can be used without any revalidation.
+    Valid,
+    /// The response is stale.
+    Stale {
+        /// Whether the stale response can be served immediately, leaving the
+        /// caller responsible for revalidating it in the background.
+        revalidate_in_background: bool,
+    },
+}
+
 /// Wrapper around a cached response, including information on re-validation needs
 pub(crate) struct CachedResponse {
     /// The response constructed from the cached resource
     pub response: Response,
-    /// The revalidation flag for the stored response
-    pub needs_validation: bool,
+    /// Whether the stored response is fresh or stale
+    pub validation_status: ValidationStatus,
+    /// Single-flight guard for the background revalidation.
+    pub revalidation_guard: StdArc<AtomicBool>,
 }
 
-type CacheEntry = std::sync::Arc<TokioRwLock<Vec<CachedResource>>>;
-type QuickCache = Cache<CacheKey, CacheEntry, UnitWeighter>;
-type OurLifecycle = DefaultLifecycle<CacheKey, CacheEntry>;
-type QuickCachePlaceeholderGuard<'a> =
-    PlaceholderGuard<'a, CacheKey, CacheEntry, UnitWeighter, DefaultHashBuilder, OurLifecycle>;
+pub(crate) type CacheEntry = std::sync::Arc<TokioRwLock<Vec<CachedResource>>>;
+type QuickCache =
+    Cache<CacheKey, CacheEntry, UnitWeighter, DefaultHashBuilder, MemoryCacheLifecycle>;
+type QuickCachePlaceholderGuard<'a> = PlaceholderGuard<
+    'a,
+    CacheKey,
+    CacheEntry,
+    UnitWeighter,
+    DefaultHashBuilder,
+    MemoryCacheLifecycle,
+>;
+
+/// Is this state assigned to the private or public side.
+#[derive(Debug, MallocSizeOf, PartialEq)]
+pub enum HttpCacheAssignment {
+    /// Public Cache State, possibly stored to disk.
+    Public,
+    /// Private Cache State, not stored to disk.
+    Private,
+}
 
 /// A simple memory cache.
 /// Elements will be evicted based on the cache heuristic. We weight elements
@@ -109,6 +190,7 @@ type QuickCachePlaceeholderGuard<'a> =
 pub struct HttpCache {
     /// cached responses.
     entries: QuickCache,
+    disk_cache: Option<std::sync::Arc<DiskCache>>,
 }
 
 impl MallocSizeOf for HttpCache {
@@ -116,17 +198,58 @@ impl MallocSizeOf for HttpCache {
         self.entries
             .iter()
             .map(|(_key, entry)| entry.blocking_read().size_of(ops))
-            .sum()
+            .sum::<usize>() +
+            self.disk_cache
+                .as_ref()
+                .map(|data| data.size_of(ops))
+                .unwrap_or(0)
     }
 }
 
-impl Default for HttpCache {
-    fn default() -> Self {
+impl HttpCache {
+    /// Create a new HttpCache with [`HttpCacheAssignment`]
+    pub fn new(assignment: HttpCacheAssignment) -> Self {
         let size = pref!(network_http_cache_size)
             .try_into()
             .expect("http_cache_size needs to fit into u64");
+        let (disk_cache, lifecycle) = DiskCache::new(assignment);
+        let memory_cache = Cache::with(
+            size,
+            size as u64,
+            UnitWeighter,
+            DefaultHashBuilder::new(),
+            lifecycle,
+        );
+
         Self {
-            entries: Cache::new(size),
+            entries: memory_cache,
+            disk_cache,
+        }
+    }
+}
+
+#[derive(Clone)]
+/// The lifecycle hooks of the HttpCache.
+/// Responsible for moving data to the disk.
+pub struct MemoryCacheLifecycle {
+    pub(crate) disk_cache: Option<std::sync::Arc<DiskCache>>,
+}
+
+impl MemoryCacheLifecycle {
+    pub(crate) fn empty() -> MemoryCacheLifecycle {
+        MemoryCacheLifecycle { disk_cache: None }
+    }
+}
+
+impl Lifecycle<CacheKey, CacheEntry> for MemoryCacheLifecycle {
+    type RequestState = ();
+
+    fn begin_request(&self) -> Self::RequestState {}
+
+    fn on_evict(&self, _state: &mut Self::RequestState, key: CacheKey, value: CacheEntry) {
+        if let Some(disk_cache_data) = &self.disk_cache {
+            let disk_cache_data = disk_cache_data.clone();
+            tokio::spawn(async move { disk_cache_data.store(key, value).await });
         }
     }
 }
@@ -239,7 +362,8 @@ fn get_response_expiry(response: &Response) -> Duration {
                 max_heuristic
             }
         } else {
-            max_heuristic
+            // Compatible with other browsers.
+            Duration::ZERO
         };
         if is_cacheable_by_default(*code) {
             // Status codes that are cacheable by default can use heuristics to determine freshness.
@@ -254,6 +378,56 @@ fn get_response_expiry(response: &Response) -> Duration {
     }
     // Requires validation upon first use as default.
     Duration::ZERO
+}
+
+/// The `headers` crate's `CacheControl` does not understand `stale-while-revalidate` directive,
+/// so we need to parse the raw `Cache-Control` header values.
+/// <https://datatracker.ietf.org/doc/html/rfc5861#section-3>
+fn get_stale_while_revalidate(headers: &HeaderMap) -> Duration {
+    for value in headers.get_all(header::CACHE_CONTROL) {
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        for directive in value.split(',') {
+            let directive = directive.trim();
+            let Some((name, argument)) = directive.split_once('=') else {
+                continue;
+            };
+            if !name.trim().eq_ignore_ascii_case("stale-while-revalidate") {
+                continue;
+            }
+            // The argument is a number of seconds, optionally quoted.
+            let argument = argument.trim().trim_matches('"');
+            if let Ok(seconds) = argument.parse::<u64>() {
+                return Duration::from_secs(seconds);
+            }
+        }
+    }
+    Duration::ZERO
+}
+
+/// Determine whether the request itself demands revalidation.
+/// <https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.1>
+fn request_demands_revalidation(request: &Request) -> bool {
+    if matches!(
+        request.cache_mode,
+        CacheMode::NoCache | CacheMode::Reload | CacheMode::NoStore
+    ) {
+        return true;
+    }
+    if let Some(directive) = request.headers.typed_get::<CacheControl>() {
+        // The request's `no-store` directive is deliberately *not* treated as
+        // demanding revalidation: https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.1.5
+        // > "does not apply to the already stored response".
+        if directive.no_cache() {
+            return true;
+        }
+
+        if directive.max_age() == Some(Duration::ZERO) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Request Cache-Control Directives
@@ -319,15 +493,36 @@ fn create_cached_response(
 
     let expires = cached_resource.expires;
     let adjusted_expires = get_expiry_adjustment_from_request_headers(request, expires);
-    let time_since_validated = Instant::now() - cached_resource.last_validated;
+    let Ok(time_since_validated) = SystemTime::now().duration_since(cached_resource.last_validated)
+    else {
+        return None;
+    };
 
     // TODO: take must-revalidate into account <https://tools.ietf.org/html/rfc7234#section-5.2.2.1>
     // TODO: if this cache is to be considered shared, take proxy-revalidate into account
     // <https://tools.ietf.org/html/rfc7234#section-5.2.2.7>
     let has_expired = adjusted_expires <= time_since_validated;
+
+    // - fresh: return immediately, no validation.
+    // - stale:
+    //    - within the stale-while-revalidate window: return immediately + revalidate in the background
+    //    - beyond the stale-while-revalidate window: synchronous validation is required.
+    let stale_for = time_since_validated.saturating_sub(adjusted_expires);
+    let within_stale_while_revalidate_window = stale_for <= cached_resource.stale_while_revalidate;
+    let validation_status = if !has_expired {
+        ValidationStatus::Valid
+    } else {
+        ValidationStatus::Stale {
+            revalidate_in_background: within_stale_while_revalidate_window &&
+                !cached_resource.stale_while_revalidate.is_zero() &&
+                !request_demands_revalidation(request),
+        }
+    };
+
     let cached_response = CachedResponse {
         response,
-        needs_validation: has_expired,
+        validation_status,
+        revalidation_guard: cached_resource.revalidating.clone(),
     };
     Some(cached_response)
 }
@@ -348,6 +543,8 @@ fn create_resource_with_bytes_from_resource(
         status: StatusCode::PARTIAL_CONTENT.into(),
         url_list: resource.url_list.clone(),
         expires: resource.expires,
+        stale_while_revalidate: resource.stale_while_revalidate,
+        revalidating: resource.revalidating.clone(),
         last_validated: resource.last_validated,
     }
 }
@@ -685,10 +882,16 @@ pub fn refresh(
 
     // Update cached Resource with response and constructed response.
     if let Some(constructed_response) = constructed_response.as_mut() {
+        // Bracket is to minimize lock duration.
+        {
+            let mut stored_headers = cached_resource.metadata.headers.lock();
+            stored_headers.extend(response.headers);
+            constructed_response.headers = stored_headers.clone();
+        }
         cached_resource.expires = get_response_expiry(constructed_response);
-        let mut stored_headers = cached_resource.metadata.headers.lock();
-        stored_headers.extend(response.headers);
-        constructed_response.headers = stored_headers.clone();
+        cached_resource.stale_while_revalidate =
+            get_stale_while_revalidate(&constructed_response.headers);
+        cached_resource.last_validated = SystemTime::now();
     }
 
     constructed_response
@@ -772,6 +975,9 @@ impl HttpCache {
     /// Clear the contents of this cache.
     pub(crate) fn clear(&self) {
         self.entries.clear();
+        if let Some(disk_cache) = &self.disk_cache {
+            disk_cache.clear();
+        }
     }
 
     /// Insert a response for `request` into the cache (used by tests that need direct access).
@@ -790,6 +996,20 @@ impl HttpCache {
         let cached_resources = entry.read().await;
         construct_response(request, done_chan, cached_resources.as_slice())
             .map(|cached| cached.response)
+    }
+
+    /// Like [`construct_response`](Self::construct_response), but additionally
+    /// reports the [`ValidationStatus`] of the constructed response.
+    #[cfg(feature = "test-util")]
+    pub async fn construct_response_freshness(
+        &self,
+        request: &Request,
+        done_chan: &mut DoneChannel,
+    ) -> Option<ValidationStatus> {
+        let entry = self.entries.get(&CacheKey::new(request))?;
+        let cached_resources = entry.read().await;
+        construct_response(request, done_chan, cached_resources.as_slice())
+            .map(|cached| cached.validation_status)
     }
 
     /// Invalidate cache entries referenced by Location/Content-Location headers.
@@ -819,10 +1039,28 @@ impl HttpCache {
 
     /// If the value exist in the cache, return it. If the value does not exist, return a guard you can use to insert values in the cache.
     /// If the guard is alive, all other accesses to this function will block.
+    #[servo_tracing::instrument(skip(self))]
     pub async fn get_or_guard(&self, entry_key: CacheKey) -> CachedResourcesOrGuard<'_> {
-        match self.entries.get_value_or_guard_async(&entry_key).await {
-            Ok(val) => CachedResourcesOrGuard::Value(val.write_owned().await),
-            Err(guard) => CachedResourcesOrGuard::Guard(guard),
+        let guard_or_value = self.entries.get_value_or_guard_async(&entry_key).await;
+        if let Ok(value) = guard_or_value {
+            return CachedResourcesOrGuard::Value(value.write_owned().await);
+        }
+        let guard = guard_or_value.unwrap_err();
+
+        if let Some(disk_cache) = &self.disk_cache {
+            if let Some(response) = disk_cache.get(entry_key).await {
+                if guard.insert(response.clone()).is_err() {
+                    error!(
+                        "Cache guard is invalid. This should not happen. Cache will be in inconsistent state."
+                    );
+                }
+                let response = response.write_owned().await;
+                CachedResourcesOrGuard::Value(response)
+            } else {
+                CachedResourcesOrGuard::Guard(guard)
+            }
+        } else {
+            CachedResourcesOrGuard::Guard(guard)
         }
     }
 }
@@ -833,7 +1071,7 @@ pub enum CachedResourcesOrGuard<'a> {
     /// The value of the resource in the cache.
     Value(OwnedRwLockWriteGuard<Vec<CachedResource>>),
     /// A guard that blocks requests to the cache entry this guard is for.
-    Guard(QuickCachePlaceeholderGuard<'a>),
+    Guard(QuickCachePlaceholderGuard<'a>),
 }
 
 impl<'a> CachedResourcesOrGuard<'a> {
@@ -868,15 +1106,16 @@ impl<'a> CachedResourcesOrGuard<'a> {
             return;
         }
         let expiry = get_response_expiry(response);
+        let stale_while_revalidate = get_stale_while_revalidate(&response.headers);
         let cacheable_metadata = CachedMetadata {
-            headers: Arc::new(ParkingLotMutex::new(response.headers.clone())),
+            headers: Arc::new(ParkingLotMutex::new(response.headers.clone().into())),
             final_url: metadata.final_url,
             content_type: metadata.content_type.map(|v| v.0.to_string()),
             charset: metadata.charset,
             status: metadata.status,
         };
         let entry_resource = CachedResource {
-            request_headers: Arc::new(ParkingLotMutex::new(request.headers.clone())),
+            request_headers: Arc::new(ParkingLotMutex::new(request.headers.clone().into())),
             body: response.body.clone(),
             aborted: response.aborted.clone(),
             awaiting_body: Arc::new(ParkingLotMutex::new(vec![])),
@@ -885,7 +1124,9 @@ impl<'a> CachedResourcesOrGuard<'a> {
             status: response.status.clone(),
             url_list: response.url_list.clone(),
             expires: expiry,
-            last_validated: Instant::now(),
+            stale_while_revalidate,
+            revalidating: StdArc::new(AtomicBool::new(false)),
+            last_validated: SystemTime::now(),
         };
 
         match self {

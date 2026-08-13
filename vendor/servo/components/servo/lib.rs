@@ -4,13 +4,42 @@
 
 //! Servo, the mighty web browser engine from the future.
 //!
-//! This is a very simple library that wires all of Servo's components together as
-//! type `Servo`, along with a Webview implementation, `WebView` to create a working
-//! web browser.
+//! This crate wires all of Servo's components together as type [`Servo`], along with
+//! a Webview implementation, [`WebView`], to create a working web engine.
 //!
-//! The `Servo` type is responsible for configuring a `Constellation`, which does the
-//! heavy lifting of coordinating all of Servo's internal subsystems, including the
-//! `ScriptThread` and the `LayoutThread`, as well maintains the navigation context.
+//! To embed Servo in your application, you need to:
+//! 1) Create an instance of a type that implements the [`EventLoopWaker`] trait.
+//!    This trait allows Servo to integrate with your application's event loop. Your
+//!    [`EventLoopWaker::wake`] implementation needs to ensure that
+//!    [`Servo::spin_event_loop`] is eventually called to let Servo process user input,
+//!    network events etc.
+//! 2) Create a [`Servo`] instance using the [`ServoBuilder`] type. You can optionally
+//!    register a [`ServoDelegate`] implementation to subscribe to notifications about
+//!    events and customize certain behaviours.
+//! 3) Create an instance of a type that implements the [`RenderingContext`] trait.
+//!    Note: You can either use one of the existing types in this crate (such as
+//!    [`WindowRenderingContext`], [`OffscreenRenderingContext`] or [`SoftwareRenderingContext`])
+//!    or provide a custom implementation.
+//! 4) For each [`WebView`] in your application, create a [`WebViewBuilder`] by passing
+//!    it the [`RenderingContext`] and [`Servo`] instance, and then configure the
+//!    builder and use it to create a [`WebView`] instance. The builder must be provided
+//!    with a [`WebViewDelegate`] implementation which, at a minimum, should handle
+//!    [`WebViewDelegate::notify_new_frame_ready`] by calling [`WebView::paint`]
+//!    and presenting the rendered page using [`RenderingContext::present`]. Refer to the
+//!    documentation of the [`WebView`] type to learn more about the relation
+//!    between a [`WebView`] and its [`RenderingContext`].
+//! 5) Run the application's event loop. Your application's event handlers need to
+//!    forward input events for a particular [`WebView`] using one of the `notify_*` methods
+//!    on that [`WebView`] instance. For example, to forward a mouse event to a [`WebView`],
+//!    call the [`WebView::notify_input_event`]. You can also invoke methods on a [`WebView`]
+//!    to request certain actions. For instance, the [`WebView::load`] method requests that
+//!    Servo navigate to a new page. In both cases, the calls to the [`WebView`] methods
+//!    must be followed by calls to [`Servo::spin_event_loop`] to allow Servo to process
+//!    those requests.
+//!
+//! For a minimal working example, refer to the [`winit_minimal`] code.
+//!
+//! [`winit_minimal`]: https://github.com/servo/servo/blob/main/components/servo/examples/winit_minimal.rs
 
 mod clipboard_delegate;
 #[cfg(feature = "gamepad")]
@@ -40,6 +69,7 @@ pub use keyboard_types::{
 pub use media::{
     GlApi as MediaGlApi, GlContext as MediaGlContext, NativeDisplay as MediaNativeDisplay,
 };
+pub use net::image_cache::should_panic_hook_suppress_termination;
 pub use net_traits::CookieSource;
 // This API should probably not be exposed in this way. Instead there should be a fully
 // fleshed out public domains API if we want to expose it.
@@ -60,46 +90,6 @@ pub use servo_base::id::WebViewId;
 pub use servo_config::opts::{DiagnosticsLogging, DiagnosticsLoggingOption, Opts, OutputOptions};
 pub use servo_config::prefs::{PrefValue, Preferences, UserAgentPlatform};
 pub use servo_config::{opts, pref, prefs};
-
-/// Register a callback to be executed on the script thread the next time
-/// `WebView::evaluate_javascript` is called for the given WebView.
-///
-/// The callback receives `(cx: *mut c_void, global: *mut c_void)` which are
-/// actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
-/// Cast them to the correct types in your callback.
-///
-/// This enables embedders (e.g., Bao) to register Rust host functions on
-/// servo's Window global object, making them available to page JavaScript.
-pub fn register_script_thread_callback(
-    webview_id: WebViewId,
-    callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send>,
-) {
-    script::script_thread::register_embedder_callback(webview_id, callback);
-}
-
-/// Register a callback to be executed on the Worker thread the next time a
-/// servo-native `DedicatedWorkerGlobalScope::run_worker_scope` finishes
-/// constructing the Worker global object.
-///
-/// The callback receives `(cx: *mut c_void, global: *mut c_void)` which are
-/// actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
-/// Cast them to the correct types in your callback.
-///
-/// This enables embedders (e.g., Bao) to register Rust host functions on
-/// the Worker's global object (DedicatedWorkerGlobalScope), making them
-/// available to Worker-scoped JavaScript. It is the Worker-scope analogue
-/// of `register_script_thread_callback`.
-///
-/// Use case (Bao): inject stealth profile inheritance (DEC-WK-007),
-/// establish WorkerHandle lifecycle tracking (DF-WK-1), and hook
-/// self.close()/importScripts natives (REQ-BRW-004 criteria #4/#5/#8).
-///
-/// Bao vendor patch (DEC-WK-001 / TASK-1: servo-native Worker path).
-pub fn register_worker_scope_callback(
-    callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send>,
-) {
-    script::script_thread::register_worker_scope_callback(callback);
-}
 pub use servo_geometry::{
     DeviceIndependentIntRect, DeviceIndependentPixel, convert_rect_to_css_pixel,
 };
@@ -129,31 +119,6 @@ pub use crate::webview_delegate::{
     InputMethodControl, NavigationRequest, PermissionRequest, PromptDialog, SelectElement,
     SimpleDialog, WebResourceLoad, WebViewDelegate,
 };
-
-/// Set anti-fingerprinting canvas noise seed and amplitude.
-///
-/// Called from Bao's runtime bridge during stealth profile initialization.
-/// The noise is applied at the servo rendering layer (CanvasData::read_pixels),
-/// making it undetectable from JavaScript (REQ-STL-003).
-pub fn set_canvas_noise_seed(seed: u64, noise_amplitude: f64) {
-    servo_canvas::canvas_noise::set_global_canvas_noise(seed, noise_amplitude);
-}
-
-/// Set anti-fingerprinting TLS/HTTP2 configuration for servo's network layer.
-///
-/// Called from Bao's runtime bridge during stealth profile initialization,
-/// following the same pattern as `set_canvas_noise_seed()`. When set, servo's
-/// HTTP client uses these values for TLS cipher suite/curves/signature algorithm
-/// reordering and ALPN negotiation, plus HTTP/2 connection parameters
-/// (SETTINGS frame, window sizes).
-///
-/// BoringSSL supports full JA3/JA4 fingerprint configuration including cipher
-/// suite reordering, curves/groups ordering, and signature algorithm ordering.
-pub use net::connector::StealthTlsWireConfig;
-
-pub fn set_stealth_tls_config(config: Option<StealthTlsWireConfig>) {
-    net::connector::set_stealth_tls_config(config);
-}
 
 #[cfg(feature = "webxr")]
 pub mod webxr {

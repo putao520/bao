@@ -8,8 +8,9 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use net::image_cache::ImageCacheFactoryImpl;
 use net_traits::image_cache::{
-    ImageCache, ImageCacheFactory, ImageCacheResponseMessage, ImageCacheResult, ImageLoadListener,
-    ImageOrMetadataAvailable, ImageResponse, PendingImageId, PendingImageResponse,
+    FontResolver, ImageCache, ImageCacheFactory, ImageCacheResponseMessage, ImageCacheResult,
+    ImageLoadListener, ImageOrMetadataAvailable, ImageResponse, PendingImageId,
+    PendingImageResponse,
 };
 use net_traits::request::RequestId;
 use net_traits::{
@@ -17,12 +18,30 @@ use net_traits::{
     ResourceFetchTiming, ResourceTimingType,
 };
 use paint_api::{CrossProcessPaintApi, PaintMessage};
+// For dummy Font Resolver
+use resvg::usvg::{Font, fontdb};
 use servo_base::id::{PipelineId, TEST_PIPELINE_ID, TEST_WEBVIEW_ID};
 use servo_url::ServoUrl;
 use uuid::Uuid;
 use webrender_api::ImageKey;
 
 use crate::mock_origin;
+
+struct DummyFontResolver;
+impl FontResolver for DummyFontResolver {
+    fn resolve(&self, _: &Font, _: &mut Arc<fontdb::Database>) -> Option<fontdb::ID> {
+        None
+    }
+
+    fn resolve_fallback(
+        &self,
+        _: char,
+        _: &[fontdb::ID],
+        _: &mut Arc<fontdb::Database>,
+    ) -> Option<fontdb::ID> {
+        None
+    }
+}
 
 fn create_test_image_cache() -> (Arc<dyn ImageCache>, Receiver<PipelineId>) {
     let (sender, receiver) = unbounded();
@@ -31,9 +50,15 @@ fn create_test_image_cache() -> (Arc<dyn ImageCache>, Receiver<PipelineId>) {
             let _ = sender.send(pipeline_id);
         }
     })));
+    let dummy_resolver = Arc::new(DummyFontResolver);
 
     let factory = ImageCacheFactoryImpl::new(vec![]);
-    let cache = factory.create(TEST_WEBVIEW_ID, TEST_PIPELINE_ID, &paint_api);
+    let cache = factory.create(
+        TEST_WEBVIEW_ID,
+        TEST_PIPELINE_ID,
+        &paint_api,
+        dummy_resolver.clone(),
+    );
     (cache, receiver)
 }
 
@@ -42,7 +67,7 @@ fn handle_pending_key_requests(cache: &Arc<dyn ImageCache>, receiver: &Receiver<
         let keys: Vec<_> = (0..10)
             .map(|i| ImageKey::new(webrender_api::IdNamespace(42), i as u32))
             .collect();
-        cache.fill_key_cache_with_batch_of_keys(keys);
+        cache.dispatch_fill_key_cache_with_batch_of_keys(keys);
     }
 }
 
@@ -631,4 +656,131 @@ fn test_rasterization_listener() {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+#[test]
+/// Test if multiple rasterization requests rasterize the svg only once.
+fn test_svg_rasterization_do_not_double_rasterize() {
+    let (cache, _key_receiver) = create_test_image_cache();
+    let url = ServoUrl::parse("http://example.com/image.svg").unwrap();
+    let origin = mock_origin();
+
+    let id = match cache.get_cached_image_status(url.clone(), origin.clone(), None) {
+        ImageCacheResult::ReadyForRequest(id) => id,
+        _ => panic!("Expected ReadyForRequest"),
+    };
+
+    cache.notify_pending_response(
+        id,
+        FetchResponseMsg::ProcessResponse(
+            create_request_id(),
+            Ok(create_test_metadata(Some(mime::IMAGE_SVG))),
+        ),
+    );
+
+    let svg_bytes = svg_image_bytes();
+    cache.notify_pending_response(
+        id,
+        FetchResponseMsg::ProcessResponseChunk(create_request_id(), DebugVec(svg_bytes)),
+    );
+
+    cache.notify_pending_response(
+        id,
+        FetchResponseMsg::ProcessResponseEOF(create_request_id(), Ok(()), create_timing()),
+    );
+
+    let vec_img = loop {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let result = cache.get_cached_image_status(url.clone(), origin.clone(), None);
+        let ImageCacheResult::Available(ImageOrMetadataAvailable::ImageAvailable { image, .. }) =
+            result
+        else {
+            continue;
+        };
+
+        let net_traits::image_cache::Image::Vector(vec_img) = image else {
+            panic!("Expected vector image");
+        };
+        break vec_img;
+    };
+
+    let size = webrender_api::units::DeviceIntSize::new(100, 100);
+    // Because we do not set image keys yet, the rasterization task will never finish, so we know the added tasks will stay in the queue.
+    assert!(
+        cache
+            .rasterize_vector_image(vec_img.id, size, None)
+            .is_none()
+    );
+    assert!(
+        cache
+            .rasterize_vector_image(vec_img.id, size, None)
+            .is_none()
+    );
+    assert_eq!(cache.number_of_rasterize_tasks(), 1);
+}
+
+#[test]
+fn test_svg_not_rasterize_zero_size() {
+    let (cache, key_receiver) = create_test_image_cache();
+    let url = ServoUrl::parse("http://example.com/image.svg").unwrap();
+    let origin = mock_origin();
+
+    let id = match cache.get_cached_image_status(url.clone(), origin.clone(), None) {
+        ImageCacheResult::ReadyForRequest(id) => id,
+        _ => panic!("Expected ReadyForRequest"),
+    };
+
+    cache.notify_pending_response(
+        id,
+        FetchResponseMsg::ProcessResponse(
+            create_request_id(),
+            Ok(create_test_metadata(Some(mime::IMAGE_SVG))),
+        ),
+    );
+
+    let svg_bytes = svg_image_bytes();
+    cache.notify_pending_response(
+        id,
+        FetchResponseMsg::ProcessResponseChunk(create_request_id(), DebugVec(svg_bytes)),
+    );
+
+    cache.notify_pending_response(
+        id,
+        FetchResponseMsg::ProcessResponseEOF(create_request_id(), Ok(()), create_timing()),
+    );
+
+    let vec_img = loop {
+        handle_pending_key_requests(&cache, &key_receiver);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let result = cache.get_cached_image_status(url.clone(), origin.clone(), None);
+        let ImageCacheResult::Available(ImageOrMetadataAvailable::ImageAvailable { image, .. }) =
+            result
+        else {
+            continue;
+        };
+
+        let net_traits::image_cache::Image::Vector(vec_img) = image else {
+            panic!("Expected vector image");
+        };
+        break vec_img;
+    };
+
+    let size = webrender_api::units::DeviceIntSize::new(0, 100);
+    assert!(
+        cache
+            .rasterize_vector_image(vec_img.id, size, None)
+            .is_none()
+    );
+    let size = webrender_api::units::DeviceIntSize::new(100, 0);
+    assert!(
+        cache
+            .rasterize_vector_image(vec_img.id, size, None)
+            .is_none()
+    );
+    let size = webrender_api::units::DeviceIntSize::new(0, 0);
+    assert!(
+        cache
+            .rasterize_vector_image(vec_img.id, size, None)
+            .is_none()
+    );
 }

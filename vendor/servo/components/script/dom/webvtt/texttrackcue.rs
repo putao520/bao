@@ -6,7 +6,6 @@ use std::cell::Cell;
 
 use dom_struct::dom_struct;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object;
 
 use crate::dom::bindings::codegen::Bindings::TextTrackCueBinding::TextTrackCueMethods;
 use crate::dom::bindings::num::Finite;
@@ -14,8 +13,6 @@ use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::texttrack::TextTrack;
-use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct TextTrackCue {
@@ -42,22 +39,6 @@ impl TextTrackCue {
             end_time: Cell::new(end_time),
             pause_on_exit: Cell::new(false),
         }
-    }
-
-    #[expect(dead_code)]
-    pub(crate) fn new(
-        window: &Window,
-        id: DOMString,
-        start_time: f64,
-        end_time: f64,
-        track: Option<&TextTrack>,
-        can_gc: CanGc,
-    ) -> DomRoot<TextTrackCue> {
-        reflect_dom_object(
-            Box::new(TextTrackCue::new_inherited(id, start_time, end_time, track)),
-            window,
-            can_gc,
-        )
     }
 
     pub(crate) fn id(&self) -> DOMString {
