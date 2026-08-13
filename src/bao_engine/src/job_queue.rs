@@ -9,6 +9,7 @@ use ::std::sync::atomic::{AtomicUsize, Ordering};
 use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps};
 use mozjs::jsapi::*;
 use mozjs::jsval::UndefinedValue;
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{RunJobs, SetJobQueue};
 
@@ -16,7 +17,15 @@ static JOB_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     // Track job IDs in order — the actual JSObject* is stored as a global property
-    static JOB_IDS: RefCell<VecDeque<usize>> = const { RefCell::new(VecDeque::new()) };
+    // (keyed by the id) on the global that was current at enqueue time. The
+    // global pointer is stored alongside the id because `run_jobs` may run
+    // outside any realm (event-loop tick / ConcurrentTask dispatch), where
+    // `CurrentGlobalOrNull(cx)` is NULL and the job's backing global cannot
+    // be rediscovered (BCE-BUG-ENG-370 companion fix). A realm's global
+    // outlives the realm's jobs and is kept alive by its realm (and every
+    // live job object is itself rooted as a property of that global).
+    static JOB_IDS: RefCell<VecDeque<(usize, *mut mozjs::jsapi::JSObject)>> =
+        const { RefCell::new(VecDeque::new()) };
     static QUEUE_PTR: RefCell<*mut mozjs::jsapi::JobQueue> = const { RefCell::new(ptr::null_mut()) };
 }
 
@@ -105,7 +114,7 @@ unsafe extern "C" fn enqueue_job(
     }
 
     JOB_IDS.with(|q| {
-        q.borrow_mut().push_back(id);
+        q.borrow_mut().push_back((id, global));
     });
     true
 }
@@ -113,21 +122,29 @@ unsafe extern "C" fn enqueue_job(
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
     loop {
-        let job_id = JOB_IDS.with(|q| q.borrow_mut().pop_front());
-        let Some(id) = job_id else {
+        let job_entry = JOB_IDS.with(|q| q.borrow_mut().pop_front());
+        let Some((id, global)) = job_entry else {
             break;
         };
 
-        let global = unsafe { CurrentGlobalOrNull(cx) };
         if global.is_null() {
-            break;
+            continue;
         }
 
-        // Retrieve the job object from the global property
+        // `run_jobs` is invoked from js::RunJobs which may fire outside any
+        // realm (event-loop tick, ConcurrentTask dispatch) — cx->realm_ is
+        // NULL there, so property access on `global` requires entering its
+        // realm first. AutoRealm restores the (possibly NULL) previous realm
+        // on drop.
         let prop = job_prop_name(id);
         let mut wrapped_cx =
             mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-        rooted!(&in(wrapped_cx) let global_root = global);
+        let mut realm = AutoRealm::new(
+            &mut wrapped_cx,
+            ::std::ptr::NonNull::new_unchecked(global),
+        );
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+        rooted!(&in(realm_cx) let global_root = global);
         let mut job_val = UndefinedValue();
         unsafe {
             JS_GetProperty(
@@ -146,8 +163,8 @@ unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
         }
 
         let mut rval = UndefinedValue();
-        rooted!(&in(wrapped_cx) let obj_root = global);
-        rooted!(&in(wrapped_cx) let fval_root = job_val);
+        rooted!(&in(realm_cx) let obj_root = global);
+        rooted!(&in(realm_cx) let fval_root = job_val);
         let empty_args = HandleValueArray::empty();
         let rval_handle = MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,

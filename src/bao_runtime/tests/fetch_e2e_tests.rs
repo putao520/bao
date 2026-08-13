@@ -30,7 +30,15 @@ fn start_test_http_server(response_body: &'static [u8]) -> (u16, Arc<AtomicBool>
     let shutdown_clone = Arc::clone(&shutdown);
 
     std::thread::spawn(move || {
-        for _ in 0..16 {
+        // Serve until shutdown is signalled OR the deadline passes. A fixed
+        // accept-count loop (previously 16 iterations, each either an accept
+        // or a 5ms error-sleep) let the thread exit within ~80ms when async
+        // fetch was slow to connect, turning the e2e test into a spurious
+        // ConnectionRefused (test-infra failure, not a runtime bug). The
+        // deadline keeps the thread self-terminating even if a caller never
+        // sets the shutdown flag; Rust kills leftover threads at process exit.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
             if shutdown_clone.load(Ordering::Relaxed) {
                 break;
             }

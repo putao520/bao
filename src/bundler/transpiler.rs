@@ -1677,8 +1677,8 @@ impl<'a> Transpiler<'a> {
 
                 opts.features.inlining = self.options.inlining;
                 opts.features.auto_import_jsx = self.options.auto_import_jsx;
-                // JavaScriptCore implements `using` / `await using` natively, so
-                // when targeting Bun there is no need to lower them.
+                // Bun's JS engine implements `using` / `await using` natively,
+                // so when targeting Bun there is no need to lower them.
                 opts.features.lower_using = !target.is_bun();
 
                 opts.features.inject_jest_globals = this_parse.inject_jest_globals;

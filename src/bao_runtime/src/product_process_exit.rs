@@ -11,8 +11,8 @@
 //! ## Dual-def rule
 //! Do **not** re-register `LifecycleScript` / `SecurityScan` / `SyncWindows`.
 //! Product residual must not also `link_noop` the variants registered here.
-//! Product path does not link old `src/cli` ProcessExit impls; when those are
-//! wired, they must **consume** these owners (single `link_impl` site).
+//! The old `src/cli` port (never wired, deleted 2026-08-13) had ProcessExit
+//! impls that must **consume** these owners (single `link_impl` site).
 
 use core::ptr;
 
@@ -217,8 +217,8 @@ product_process_exit!(CronRemove => ProductCronRemoveExit);
 product_process_exit!(ChromeProcess => ProductChromeProcessExit);
 product_process_exit!(HostProcess => ProductHostProcessExit);
 
-// CLI residual arms (product path does not link old `src/cli` ProcessExit
-// impls; single link_impl site lives here — no dual-def with bao_cli).
+// Arms for handles from the deleted `src/cli` port (canonical single
+// link_impl site kept — future bao_cli commands must consume, not dual-def).
 product_process_exit!(FilterRunHandle => ProductFilterRunHandleExit);
 product_process_exit!(MultiRunHandle => ProductMultiRunHandleExit);
 product_process_exit!(TestParallelWorker => ProductTestParallelWorkerExit);

@@ -788,7 +788,6 @@ use bun_core::printer::{
     surrogate_pair_escape,
 };
 
-/// For support JavaScriptCore
 const ASCII_ONLY_ALWAYS_ON_UNLESS_MINIFYING: bool = true;
 
 pub fn write_module_id(writer: &mut impl core::fmt::Write, module_id: u32) {
@@ -7925,7 +7924,7 @@ pub enum Format {
     Cjs,
     // bun.js must escape non-latin1 identifiers in the output This is because
     // we load JavaScript as a UTF-8 buffer instead of a UTF-16 buffer
-    // JavaScriptCore does not support UTF-8 identifiers when the source code
+    // SpiderMonkey does not support UTF-8 identifiers when the source code
     // string is loaded as const char* We don't want to double the size of code
     // in memory...
     EsmAscii,

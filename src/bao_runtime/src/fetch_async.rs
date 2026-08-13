@@ -46,6 +46,7 @@ use ::std::sync::{Arc, Mutex};
 use bun_core::ZBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 
 use crate::stealth_http::{StealthSyncResult, stealth_http_request};
@@ -411,12 +412,15 @@ unsafe fn start_with_kind(
     //     the whole AsyncHTTP on the heap with a stable address.
     //   - `addr_of_mut!((*async_http_box).task)` hands the heap-stable task
     //     field address to the HTTPThread scheduler.
-    //   - No `mem::forget` — ownership of the allocation is held by the heap
-    //     pointer until the completion path (`on_http_done`) deallocates it.
-    //   - `on_http_done` receives the `*mut AsyncHTTP<'static>` argument from
-    //     the HTTPThread and calls `bun_core::heap::take` to reclaim + drop it
-    //     after the result is copied out (single-consumer: completion path is
-    //     the sole deallocator).
+    //   - No `mem::forget` — ownership of this allocation is held by the
+    //     heap pointer until `on_http_done` reclaims it VIA THE `real`
+    //     BACKREF (see ownership audit in `on_http_done` step 5). The
+    //     HTTPThread creates a SECOND, bitwise-copied box
+    //     (`ThreadlocalAsyncHTTP`) at `start_queued_task`; that clone's
+    //     `real` field points back to THIS box. `on_http_done` takes
+    //     `real`, `Box::from_raw`s THIS box and drops it (sole dropper of
+    //     the bitwise-shared fields). The clone box is raw-deallocated by
+    //     `on_async_http_callback_raw`:827.
     let async_http_box: *mut bun_http::AsyncHTTP<'static> =
         bun_core::heap::into_raw(Box::new(bun_http::AsyncHTTP::init(
             method,
@@ -458,7 +462,8 @@ unsafe fn start_with_kind(
 
     // Schedule the AsyncHTTP task on the HTTPThread (single epoll thread).
     // SAFETY: `async_http_box` is a live heap allocation whose backing memory
-    // is stable until `on_http_done` deallocates it; `(*async_http_box).task`
+    // is stable until `on_http_done` drops it via the `real` backref (see
+    // ownership audit in `on_http_done` step 5); `(*async_http_box).task`
     // therefore yields a task pointer the HTTPThread may dereference after
     // this frame returns. This mirrors `AsyncHTTP.rs:442` Preconnect.
     let batch = bun_threading::thread_pool::Batch::from(unsafe {
@@ -467,10 +472,11 @@ unsafe fn start_with_kind(
     bun_http::HTTPThread::schedule(batch);
 
     // No `mem::forget` — the AsyncHTTP is heap-allocated and owned by
-    // `async_http_box`. The completion path (`on_http_done`) reclaims it via
-    // `bun_core::heap::take` after copying the result out. The
-    // `async_http_box` raw pointer is intentionally not bound to a local `Box`
-    // here — ownership has been ceded to the HTTPThread task system.
+    // `async_http_box`. The completion path (`on_http_done`) reclaims it
+    // through the `real` backref (set by `start_queued_task`:1190 on the
+    // HTTPThread clone) by `Box::from_raw + drop`. The `async_http_box`
+    // raw pointer is intentionally not bound to a local `Box` here —
+    // ownership has been ceded to the HTTPThread task system.
 
     // ref_concurrently: keep the event loop alive while this fetch is in flight.
     // Mirrors Bun's `FetchTasklet.refConcurrently()`.
@@ -508,14 +514,21 @@ unsafe fn start_with_kind(
 ///   4. If claimed, enqueues `resolve_tasklet` on the JS thread's
 ///      `MiniEventLoop` via `enqueue_task_concurrent_with_extra_ctx`,
 ///      which auto-wakes the JS thread.
-///   5. Reclaims + drops the heap-allocated `AsyncHTTP` (C12 ownership
-///      contract: completion path is the sole deallocator of the Box the
-///      scheduler received).
+///   5. Reclaims the JS-thread `Box<AsyncHTTP>` via the `real` backref on
+///      the HTTPThread clone (see ownership audit at step 5 below for the
+///      double-free / leak root-cause fix). The `async_http_box` PARAMETER
+///      is the HTTPThread clone, NOT the JS box.
 fn on_http_done(
     this: *mut PendingFetch,
     async_http_box: *mut bun_http::AsyncHTTP<'static>,
     result: bun_http::HTTPClientResult<'_>,
 ) {
+    // Snapshot has_more up-front: the outcome block below partially moves
+    // `result` (`result.fail`, `result.body`), and the reclaim guard in
+    // step 5 needs `has_more` after that. `bool` is `Copy`, so reading it
+    // here is safe regardless of later partial moves.
+    let result_is_terminal = !result.has_more;
+
     // 1. Convert HTTPClientResult → FetchOutcome (pure Rust).
     let outcome: FetchOutcome = if let Some(fail) = result.fail {
         Err(format!("{:?}", fail))
@@ -609,25 +622,102 @@ fn on_http_done(
         }
     }
 
-    // 5. Reclaim + drop the heap-allocated AsyncHTTP (C12 ownership contract).
+    // 5. Reclaim the JS-thread `Box<AsyncHTTP>` via the `real` backref.
     //
-    // `async_http_box` was allocated via `bun_core::heap::into_raw(Box::new(..))`
-    // in `start_with_kind`. The HTTPThread has finished driving this request
-    // (it called this completion callback), so the task node is no longer
-    // linked into the run queue and no further dereference of `task` will
-    // occur. We are the sole consumer — single-dealloc.
+    // OWNERSHIP AUDIT (BCE-007-R6, double-free + leak root-cause fix):
     //
-    // SAFETY: `async_http_box` is a live heap allocation produced by
-    // `bun_core::heap::into_raw` in `start_with_kind`; this callback is the
-    // sole deallocator (no other code path `take`s or `destroy`s it).
-    // `result` has already been copied out into the `outcome` slot above, so
-    // dropping the AsyncHTTP (and its HTTPClient / response buffer slice) is
-    // sound. The `response_buffer` itself is a separate Box owned by the
-    // outer scope (its bytes were already copied into `body_bytes`).
-    if !async_http_box.is_null() {
-        // SAFETY: see above.
-        let _async_http_box = unsafe { bun_core::heap::take(async_http_box) };
-        drop(_async_http_box);
+    // There are TWO distinct boxes around `AsyncHTTP` for any fetch request:
+    //
+    //   (a) JS-thread box   — `Box::new(AsyncHTTP::init(..))` at
+    //                         `start_with_kind` (fetch_async.rs:420). Its
+    //                         raw pointer is handed to the HTTPThread
+    //                         scheduler via `addr_of_mut!((*box).task)`.
+    //
+    //   (b) HTTPThread box  — `ThreadlocalAsyncHTTP::new(ptr::read(http))` at
+    //                         `start_queued_task` (HTTPThread.rs:1184). It is
+    //                         a bitwise byte-copy of (a); its `real` field is
+    //                         set back to (a) (`start_queued_task`:1190).
+    //
+    // The two boxes bitwise-share every field that was populated BEFORE the
+    // byte-copy (request_headers, client.header_entries, proxy_headers,
+    // proxy_authorization, tls_props, unix_socket_path, response_buffer, …):
+    // both boxes hold pointers to the SAME heap allocations. Exactly ONE box
+    // must run Drop on those shared fields.
+    //
+    // The HTTPThread side honours this contract: `on_async_http_callback_raw`
+    // (AsyncHTTP.rs:778-830) drops only the clone-owned fields
+    // (redirect/prev_redirect/proxy_tunnel/custom_ssl_ctx/state — populated
+    // AFTER the byte-copy, exclusive to the clone) and then RAW-deallocates
+    // box (b)'s storage (`std::alloc::dealloc`, NOT `Box::drop`) so the
+    // shared fields are NOT dropped again.
+    //
+    // Box (a) is therefore the SOLE dropper of the shared fields. The
+    // previous code wrongly tried to reclaim it by treating the
+    // `async_http_box` PARAMETER as box (a). That parameter is actually box
+    // (b) (the HTTPThread clone): `on_async_http_callback_raw` calls
+    // `callback.run(async_http, ..)` with `async_http == this` (comment at
+    // AsyncHTTP.rs:727-731), and `this` is the HTTPThread clone. Because
+    // `ThreadlocalAsyncHTTP` has a single field at offset 0, the field
+    // address equals the box address. `Box::from_raw + drop` on that pointer
+    // therefore deallocated box (b)'s storage; the subsequent raw `dealloc`
+    // at AsyncHTTP.rs:827 freed the same bytes again → mimalloc double-free.
+    // Meanwhile box (a) was never freed → leak.
+    //
+    // FIX: recover box (a) through the `real` backref (which uniquely points
+    // from the HTTPThread clone back to the JS-thread original) and drop IT.
+    // We are the sole consumer of `real` (take). Dropping box (a):
+    //   - runs Drop on each shared field exactly once (freeing the shared
+    //     heap allocations exactly once);
+    //   - deallocates box (a)'s storage (closing the leak).
+    // Box (b) continues to be raw-deallocated by `on_async_http_callback_raw`
+    // unchanged — its shared-field slots are now dangling but raw dealloc
+    // never dereferences them, so there is no use-after-free.
+    //
+    // `response_buffer` is a raw `*mut MutableString` (AsyncHTTP has no
+    // `impl Drop`, so the raw pointer is never freed by either box's Drop
+    // glue). It was allocated via `Box::into_raw` at `start_with_kind`
+    // (fetch_async.rs:367) and bitwise-copied into both boxes. Free it
+    // explicitly here, once — the body bytes have already been copied into
+    // `body_bytes` above.
+    //
+    // GUARD: only reclaim on the terminal callback (`!result.has_more`).
+    // `on_async_http_callback_raw` invokes `callback.run` in BOTH the
+    // `has_more` and `!has_more` branches; for `has_more` the clone is kept
+    // alive (no dealloc, no clone-owned teardown) because the HTTPThread is
+    // still streaming. Freeing box (a) prematurely on a `has_more` callback
+    // would leave the live clone's shared fields dangling. For fetch,
+    // `has_more` is always false (single buffered response), but the guard
+    // makes the contract explicit and protects future streaming callers.
+    if !async_http_box.is_null() && result_is_terminal {
+        // SAFETY: `async_http_box` is the live HTTPThread clone; `real` was
+        // set by `start_queued_task`:1190 to the JS-thread `Box<AsyncHTTP>`
+        // allocated at `start_with_kind`:420. `take` claims sole ownership
+        // of the backref; no other code path reads `real` after this point
+        // (the post-callback tail at AsyncHTTP.rs:805-830 only does
+        // `from_field_ptr` pointer arithmetic, `in_flight` swap_remove by
+        // pointer identity, and a raw `dealloc`).
+        let real = unsafe { (*async_http_box).real.take() };
+        if let Some(real_ptr) = real {
+            let js_box_ptr = real_ptr.as_ptr();
+
+            // Free the shared `response_buffer` (raw *mut; not handled by
+            // either box's Drop). SAFETY: allocated via `Box::into_raw` at
+            // start_with_kind:367; bitwise-shared by both boxes, freed once
+            // here; body bytes already copied into `body_bytes` above.
+            let resp_buf = unsafe { (*js_box_ptr).response_buffer };
+            if !resp_buf.is_null() {
+                drop(unsafe { Box::from_raw(resp_buf) });
+            }
+
+            // Drop box (a): runs Drop on the shared fields once (freeing
+            // their heap allocations) and deallocates box (a)'s storage.
+            // Clone-owned fields (redirect/state/proxy_tunnel/…) on box (a)
+            // are still `Default` (populated only on the HTTPThread clone),
+            // so their Drop glue is a no-op. SAFETY: `js_box_ptr` was
+            // produced by `Box::into_raw(Box::new(AsyncHTTP::init(..)))` at
+            // start_with_kind:420; we are the sole reclaiming site.
+            drop(unsafe { Box::from_raw(js_box_ptr) });
+        }
     }
 }
 
@@ -680,35 +770,50 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
     rooted!(&in(cx_ref) let promise_obj = promise_val.to_object());
     let promise_h = promise_obj.handle().into();
 
-    match (outcome, kind) {
-        (Ok(resp), ResolveKind::Response) => {
-            let resp_obj = build_response_js(cx, &resp);
-            if !resp_obj.is_null() {
-                rooted!(&in(cx_ref) let resp_val = ObjectValue(resp_obj));
-                JS::ResolvePromise(cx, promise_h, resp_val.handle().into());
-            } else {
-                reject_with_message(cx, promise_h, "http: failed to build Response");
-            }
-        }
-        (Ok(_resp), ResolveKind::TlsSocket { host_idx }) => {
-            let host = HOST_STRINGS
-                .with(|h| h.borrow().get(host_idx).cloned())
-                .unwrap_or_default();
-            let tls_obj = build_tls_socket_js(cx, &host);
-            if !tls_obj.is_null() {
-                rooted!(&in(cx_ref) let tls_val = ObjectValue(tls_obj));
-                JS::ResolvePromise(cx, promise_h, tls_val.handle().into());
-            } else {
-                reject_with_message(cx, promise_h, "tls: failed to build socket object");
-            }
-            HOST_STRINGS.with(|h| {
-                if host_idx < h.borrow().len() {
-                    h.borrow_mut()[host_idx].clear();
+    // BCE-BUG-ENG-370: resolve_tasklet runs from the MiniEventLoop tick
+    // (ConcurrentTask dispatch), OUTSIDE any JS activation — at that point
+    // `cx->realm_` and `cx->zone_` are NULL (leaving the JSAutoRealm of the
+    // eval that called fetch() restored them to nothing). Any SM API that
+    // derives from the current realm (JS_NewPlainObject → cx->global() →
+    // realm()->globalObject()) NULL-derefs — the reject-path SIGSEGV at
+    // PlainObject.cpp:144 (`mov 0x58(%rdx),%rax` with rdx=0, fault addr 0x58
+    // = realm_ + offsetof(globalObject_)). Fix: enter the Promise's realm for
+    // the whole resolve/reject window (standard SM embedding rule: a callback
+    // re-enters the realm of the object it operates on).
+    {
+        let mut realm = AutoRealm::new_from_handle(cx_ref, promise_obj.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+        match (outcome, kind) {
+            (Ok(resp), ResolveKind::Response) => {
+                let resp_obj = build_response_js(cx, &resp);
+                if !resp_obj.is_null() {
+                    rooted!(&in(realm_cx) let resp_val = ObjectValue(resp_obj));
+                    JS::ResolvePromise(cx, promise_h, resp_val.handle().into());
+                } else {
+                    reject_with_message(cx, promise_h, "http: failed to build Response");
                 }
-            });
-        }
-        (Err(msg), _) => {
-            reject_with_message(cx, promise_h, &msg);
+            }
+            (Ok(_resp), ResolveKind::TlsSocket { host_idx }) => {
+                let host = HOST_STRINGS
+                    .with(|h| h.borrow().get(host_idx).cloned())
+                    .unwrap_or_default();
+                let tls_obj = build_tls_socket_js(cx, &host);
+                if !tls_obj.is_null() {
+                    rooted!(&in(realm_cx) let tls_val = ObjectValue(tls_obj));
+                    JS::ResolvePromise(cx, promise_h, tls_val.handle().into());
+                } else {
+                    reject_with_message(cx, promise_h, "tls: failed to build socket object");
+                }
+                HOST_STRINGS.with(|h| {
+                    if host_idx < h.borrow().len() {
+                        h.borrow_mut()[host_idx].clear();
+                    }
+                });
+            }
+            (Err(msg), _) => {
+                reject_with_message(cx, promise_h, &msg);
+            }
         }
     }
 

@@ -2,8 +2,9 @@
 //!
 //! These structs must have the same fn-pointer layout as the ones defined in
 //! `bun_jsc` (`VirtualMachine::RuntimeHooks`, `ModuleLoader::LoaderHooks`,
-//! `bun_sql_jsc::jsc::SqlRuntimeHooks`) so that `bun_runtime::jsc_hooks.rs`
-//! can populate the static instances.
+//! `bun_sql_jsc::jsc::SqlRuntimeHooks`) so the runtime tier can populate the
+//! static instances (upstream populator: Bun's `jsc_hooks.rs`; no Bao
+//! populator is wired yet).
 //!
 //! # Layout compatibility
 //!
@@ -29,7 +30,8 @@ pub type RuntimeState = *mut c_void;
 
 /// Runtime hooks — 28+ function pointer slots.
 ///
-/// Populated by `bao_runtime::jsc_hooks.rs` (5290 lines).
+/// Populated by the runtime tier at startup (upstream: Bun's
+/// `jsc_hooks.rs`, ~5290 lines; no Bao populator is wired yet).
 /// Each field mirrors the corresponding `bun_jsc::VirtualMachine::RuntimeHooks`
 /// fn-pointer slot. Fields that reference JSC-specific types use SM-compatible
 /// equivalents; the signatures are ABI-identical since all types are pointer-width.
@@ -87,8 +89,8 @@ pub struct RuntimeHooks {
 
 /// Loader hooks — 7 function pointer slots.
 ///
-/// Mirrors `bun_jsc::ModuleLoader::LoaderHooks`. Populated by
-/// `bao_runtime::jsc_hooks.rs`.
+/// Mirrors `bun_jsc::ModuleLoader::LoaderHooks`. Populated by the runtime
+/// tier (upstream: Bun's `jsc_hooks.rs`; no Bao populator is wired yet).
 pub struct LoaderHooks {
     pub transpile_source_code:
         unsafe fn(vm: *mut VirtualMachine, args: *const c_void, ret: *mut c_void) -> bool,
