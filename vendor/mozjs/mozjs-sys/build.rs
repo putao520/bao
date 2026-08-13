@@ -16,7 +16,6 @@ const ENV_VARS: &'static [&'static str] = &[
     "AS",
     "CC",
     "CFLAGS",
-    "CLANGFLAGS",
     "CPP",
     "CPPFLAGS",
     "CXX",
@@ -39,7 +38,6 @@ const SM_TARGET_ENV_VARS: &'static [&'static str] = &[
     "AS",
     "CC",
     "CFLAGS",
-    "CLANGFLAGS",
     "CPP",
     "CPPFLAGS",
     "CXX",
@@ -106,6 +104,12 @@ fn main() {
         // TODO: use this and remove `no-rust-unicode-bidi.patch`
         // cbindgen_bidi(&build_dir);
         build_spidermonkey(&build_dir);
+        // Bao patch: Fix mozjs incremental build bug. After `make` recompiles
+        // patched .o files (e.g., Mutex_posix.cpp, BaselineFrame.cpp), the
+        // archive `libjs_static.a` may still hold stale .o entries. Replace
+        // any stale entries with the fresh standalone .o files before the
+        // subsequent cc::Build steps pull symbols from the archive.
+        fix_stale_archive_objects(&build_dir);
         build(&build_dir, BuildTarget::JSApi);
         build_bindings(&build_dir, BuildTarget::JSApi);
         build(&build_dir, BuildTarget::JSGlue);
@@ -134,6 +138,46 @@ fn main() {
         for file in EXTRA_FILES {
             println!("cargo:rerun-if-changed={}", file);
         }
+    }
+}
+
+/// Bao patch: Fix mozjs incremental build bug.
+///
+/// Scans `libjs_static.a` for .o entries that also exist as standalone files
+/// in the build tree. If a standalone .o is newer than the archived copy,
+/// replaces the stale entry using `ar -d` + `ar -q`. This matters because
+/// `make` recompiles patched .cpp files (EBUSY, BCE-20260621-002, etc.) into
+/// standalone .o files but does NOT repack the archive, leaving stale object
+/// code that causes SIGSEGV at process exit (e.g., unpatched
+/// `MutexImpl::~MutexImpl` calling MOZ_CRASH on EBUSY).
+fn fix_stale_archive_objects(build_dir: &Path) {
+    let archive = build_dir.join("js/src/build/libjs_static.a");
+    if !archive.exists() {
+        return;
+    }
+    let list_output = match Command::new("ar").arg("t").arg(&archive).output() {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    if !list_output.status.success() {
+        return;
+    }
+    let entries = String::from_utf8_lossy(&list_output.stdout);
+    for entry in entries.lines() {
+        let entry = entry.trim();
+        if !entry.ends_with(".o") {
+            continue;
+        }
+        let standalone = build_dir.join("js/src/build").join(entry);
+        if !standalone.exists() {
+            continue;
+        }
+        let _ = Command::new("ar").arg("d").arg(&archive).arg(entry).output();
+        let _ = Command::new("ar")
+            .arg("q")
+            .arg(&archive)
+            .arg(&standalone)
+            .output();
     }
 }
 
@@ -245,9 +289,11 @@ fn build_spidermonkey(build_dir: &Path) {
         cxxflags.push(String::from("-stdlib=libc++"));
     }
 
-    let base_cxxflags = env::var("CXXFLAGS").unwrap_or_default();
-    let mut cxxflags = cxxflags.join(" ");
-    cxxflags.push_str(&base_cxxflags);
+    if let Some(user_cxxflags) = get_cc_rs_env("CXXFLAGS").filter(|s| !s.is_empty()) {
+        // We want the user-provided CXXFLAGS after ours, since that allows overriding.
+        cxxflags.push(user_cxxflags);
+    };
+    let cxxflags = cxxflags.join(" ");
     cmd.env("CXXFLAGS", cxxflags);
 
     let cargo_manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
@@ -269,19 +315,6 @@ fn build_spidermonkey(build_dir: &Path) {
     }
     assert!(result.status.success());
 
-    // Bao patch: Fix mozjs incremental build bug.
-    //
-    // When `make` recompiles a .o file (e.g., after patching Mutex_posix.cpp),
-    // it writes the new .o to the source directory but does NOT update the
-    // copy inside `libjs_static.a`. The archive keeps the old .o. This causes
-    // the linker to pull stale object code, leading to SIGSEGV at process exit
-    // (e.g., the unpatched `MutexImpl::~MutexImpl` calls MOZ_CRASH on EBUSY).
-    //
-    // We fix this by scanning the archive for .o files that also exist as
-    // standalone files in the build tree, comparing timestamps, and replacing
-    // any stale entries in the archive with the fresh standalone .o files.
-    fix_stale_archive_objects(&build_dir);
-
     if target.contains("windows") {
         let mut make_static = cc::Build::new();
         make_static.out_dir(join_path(build_dir, "js/src/build"));
@@ -296,53 +329,6 @@ fn build_spidermonkey(build_dir: &Path) {
     }
 
     link_static_lib_binaries(build_dir);
-}
-
-/// Bao patch: Fix mozjs incremental build bug.
-///
-/// Scans `libjs_static.a` for .o entries that also exist as standalone files
-/// in the build tree. If a standalone .o is newer than the archived copy,
-/// replaces the stale entry using `ar -d` + `ar -q`.
-fn fix_stale_archive_objects(build_dir: &Path) {
-    let archive = build_dir.join("js/src/build/libjs_static.a");
-    if !archive.exists() {
-        return;
-    }
-    // List all .o files currently in the archive
-    let list_output = match Command::new("ar")
-        .arg("t")
-        .arg(&archive)
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return,
-    };
-    if !list_output.status.success() {
-        return;
-    }
-    let entries = String::from_utf8_lossy(&list_output.stdout);
-    for entry in entries.lines() {
-        let entry = entry.trim();
-        if !entry.ends_with(".o") {
-            continue;
-        }
-        // Check if this .o also exists as a standalone file in the build tree
-        let standalone = build_dir.join("js/src/build").join(entry);
-        if !standalone.exists() {
-            continue;
-        }
-        // The standalone .o is fresher — replace it in the archive
-        let _ = Command::new("ar")
-            .arg("d")
-            .arg(&archive)
-            .arg(entry)
-            .output();
-        let _ = Command::new("ar")
-            .arg("q")
-            .arg(&archive)
-            .arg(&standalone)
-            .output();
-    }
 }
 
 /*
@@ -381,22 +367,11 @@ fn is_buggy_make_version() -> bool {
 }
 
 fn build(build_dir: &Path, target: BuildTarget) {
-    let mut build = cc::Build::new();
-    build.cpp(true).file(target.path());
-
-    for flag in cc_flags(false) {
-        build.flag_if_supported(flag);
-    }
+    let mut build = get_common_cc(build_dir, target);
+    build.file(target.path());
 
     if let Ok(android_api) = env::var("ANDROID_API_LEVEL").as_deref() {
         build.define("__ANDROID_MIN_SDK_VERSION__", android_api);
-    }
-
-    build.flag(include_file_flag(build.get_compiler().is_like_msvc()));
-    build.flag(&js_config_path(build_dir));
-
-    for path in target.include_paths(build_dir) {
-        build.include(path);
     }
 
     build.out_dir(build_dir).compile(target.output());
@@ -415,7 +390,7 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
     config &= !CodegenConfig::DESTRUCTORS;
     config &= !CodegenConfig::METHODS;
 
-    let mut builder = bindgen::builder()
+    let builder = bindgen::builder()
         .rust_target(minimum_rust_target())
         .header(target.path())
         // Translate every enum with the "rustified enum" strategy. We should
@@ -425,8 +400,43 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
         .derive_partialeq(true)
         .size_t_is_usize(true)
         .enable_cxx_namespaces()
-        .with_codegen_config(config)
-        .clang_args(cc_flags(true));
+        .with_codegen_config(config);
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+
+    let mut cc_rs_builder = get_common_cc(build_dir, target);
+    cc_rs_builder.define("RUST_BINDGEN", None);
+    let is_msvc = cc_rs_builder.get_compiler().is_like_msvc();
+    if is_msvc {
+        cc_rs_builder.flag("--driver-mode=cl");
+    }
+
+    // `.cpp(true)` from cc_rs_builder will not propagate to bindgen clang-args,
+    // so we need to set it explicitly here.
+    let mut builder = if is_msvc {
+        // /TP is the equivalent of `-x c++` for msvc, but it causes `libclang` to error out.
+        // <https://learn.microsoft.com/en-us/cpp/build/reference/tc-tp-tc-tp-specify-source-file-type?view=msvc-170>
+        builder
+    } else {
+        builder.clang_args(["-x", "c++"])
+    };
+
+    let compiler = cc_rs_builder.get_compiler();
+
+    // Setting CLANG_PATH to the absolute path (when using the default c++ compiler on macos),
+    // allows bindgen to find the c++ headers (not just the system headers).
+    if env::var_os("CLANG_PATH").is_none() {
+        if target_os == "macos" && compiler.path().to_str() == Some("c++") {
+            env::set_var("CLANG_PATH", "/usr/bin/c++");
+        }
+    }
+
+    for arg in compiler.args() {
+        builder = builder.clang_arg(
+            arg.to_str()
+                .expect("Non UTF-8 compiler flag in cc::Build args"),
+        );
+    }
 
     if env::var("TARGET").unwrap().contains("wasi") {
         builder = builder
@@ -440,28 +450,6 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
             .allowlist_file(target.path())
             .allowlist_recursively(false);
     }
-
-    for path in target.include_paths(build_dir) {
-        builder = builder.clang_args(&["-I", &path]);
-    }
-
-    if let Some(flags) = get_cc_rs_env("CXXFLAGS") {
-        for flag in flags.split_whitespace() {
-            builder = builder.clang_arg(flag);
-        }
-    }
-
-    if let Some(flags) = get_cc_rs_env("CLANGFLAGS") {
-        for flag in flags.split_whitespace() {
-            builder = builder.clang_arg(flag);
-        }
-    }
-
-    let target_env = env::var("TARGET").unwrap();
-    builder = builder.clang_args(&[
-        include_file_flag(target_env.contains("windows")),
-        &js_config_path(build_dir),
-    ]);
 
     println!(
         "Generating bindings {:?} {}.",
@@ -562,79 +550,90 @@ fn minimum_rust_target() -> RustTarget {
     }
 }
 
-fn cc_flags(bindgen: bool) -> Vec<&'static str> {
-    let mut flags = Vec::new();
+fn get_common_cc(build_dir: &Path, target: BuildTarget) -> cc::Build {
+    let mut builder = cc::Build::new();
 
-    let target = env::var("TARGET").unwrap();
+    let target_triple = env::var("TARGET").unwrap();
 
-    if target.contains("windows") {
-        if bindgen {
-            flags.push("--driver-mode=cl");
-        }
+    // Must be set before any `get_compiler()` call.
+    builder.cpp(true);
 
-        flags.extend(&[
-            "-std:c++17",
-            "-Zi",
-            "-GR-",
-            "-DWIN32",
+    if target_triple.contains("windows") {
+        builder
+            .std("c++17")
+            .flag_if_supported("-Zi")
+            .flag_if_supported("-GR-")
+            .define("WIN32", None)
             // Don't use reinterpret_cast() in offsetof(),
             // since it's not a constant expression, so can't
             // be used in static_assert().
-            "-D_CRT_USE_BUILTIN_OFFSETOF",
-        ]);
+            .define("_CRT_USE_BUILTIN_OFFSETOF", None);
     } else {
-        flags.extend(&[
-            "-std=gnu++17",
-            "-std=c++17",
-            "-xc++",
-            "-fPIC",
-            "-fno-rtti",
-            "-fno-sized-deallocation",
-            "-Wno-c++0x-extensions",
-            "-Wno-return-type-c-linkage",
-            "-Wno-unused-parameter",
-            "-Wno-invalid-offsetof",
-            "-Wno-unused-private-field",
-        ]);
+        builder
+            .std("gnu++17")
+            .pic(true)
+            .flag_if_supported("-fno-rtti")
+            .flag_if_supported("-fno-sized-deallocation")
+            .flag_if_supported("-Wno-c++0x-extensions")
+            .flag_if_supported("-Wno-return-type-c-linkage")
+            .flag_if_supported("-Wno-unused-parameter")
+            .flag_if_supported("-Wno-invalid-offsetof")
+            .flag_if_supported("-Wno-unused-private-field");
 
         if env::var_os("CARGO_FEATURE_PROFILEMOZJS").is_some() {
-            flags.push("-fno-omit-frame-pointer");
+            builder.force_frame_pointer(true);
         }
 
-        if target.contains("wasi") {
+        if target_triple.contains("wasi") {
             // Unconditionally target p1 for now. Even if the application
             // targets p2, an adapter will take care of it.
-            flags.push("--target=wasm32-wasip1");
-            flags.push("-fvisibility=default");
+            // TODO: This looks wierd to me. As part of the cc-rs migration,
+            // we'll stick with using the raw `.flag` instead of `.target()` for
+            // now, since using `.target()` would have other side-effects too,
+            // like looking at other `<VAR>_<target>` variables (if the cargo target
+            // doesn't match `-wasip1`).
+            // Someone familiar with wasi should look into this.
+            builder
+                .flag("--target=wasm32-wasip1")
+                .flag_if_supported("-fvisibility=default");
         }
     }
 
-    flags.extend(&["-DSTATIC_JS_API", "-DRUST_BINDGEN"]);
+    // Force-include the JS header with the configure defines.
+    // This is not the same as `builder.include()`!
+    builder.flag(include_file_flag(builder.get_compiler().is_like_msvc()));
+    builder.flag(&js_config_path(build_dir));
+
+    for path in target.include_paths(build_dir) {
+        builder.include(path);
+    }
+
+    builder.define("STATIC_JS_API", None);
     if env::var_os("CARGO_FEATURE_DEBUGMOZJS").is_some() {
-        flags.extend(&["-DJS_GC_ZEAL", "-DDEBUG", "-DJS_DEBUG"]);
+        builder
+            .define("JS_GC_ZEAL", None)
+            .define("DEBUG", None)
+            .define("JS_DEBUG", None);
 
-        if !bindgen {
-            if target.contains("windows") {
-                flags.push("-Od");
-            } else {
-                flags.extend(&["-g", "-O0"]);
-            }
+        if !target_triple.contains("windows") {
+            builder.debug(true);
         }
     }
 
-    let is_apple = target.contains("apple");
-    let is_freebsd = target.contains("freebsd");
-    let is_ohos = target.contains("ohos");
-
-    if is_apple || is_freebsd || is_ohos {
-        flags.push("-stdlib=libc++");
+    if get_cc_rs_env_os("CXXSTDLIB").is_none() {
+        let is_apple = target_triple.contains("apple");
+        let is_freebsd = target_triple.contains("freebsd");
+        let is_ohos = target_triple.contains("ohos");
+        if is_apple || is_freebsd || is_ohos {
+            builder.cpp_set_stdlib("c++");
+        }
     }
 
-    if target.contains("wasi") {
-        flags.push("-D_WASI_EMULATED_GETPID");
+    if target_triple.contains("wasi") {
+        builder.define("_WASI_EMULATED_GETPID", None);
     }
 
-    flags
+    builder
 }
 
 fn include_file_flag(msvc_like: bool) -> &'static str {
@@ -1119,9 +1118,10 @@ mod archive {
     pub(crate) fn archive() -> String {
         let target = env::var("TARGET").unwrap();
         let features = if env::var_os("CARGO_FEATURE_DEBUGMOZJS").is_some() {
-            "-debugmozjs"
+            let opt_level = env::var("OPT_LEVEL").expect("OPT_LEVEL not set by cargo?");
+            format!("-debugmozjs-O{opt_level}")
         } else {
-            ""
+            "".to_string()
         };
         format!("libmozjs-{target}{features}.tar.gz")
     }
@@ -1296,6 +1296,13 @@ fn join_path(base: &Path, additional: &str) -> PathBuf {
     base
 }
 
+/// Returns the value `cc-rs` would use for `var_base`.
+///
+/// See also [get_cc_rs_env_os].
+fn get_cc_rs_env(var_base: &str) -> Option<String> {
+    get_cc_rs_env_os(var_base).map(|val| val.to_str().expect("Not a valid string.").to_string())
+}
+
 /// Returns the value `cc-rs` would use for `var_base`
 ///
 /// Since we build parts of our code without cc-rs by directly invoking spidermonkey,
@@ -1303,11 +1310,6 @@ fn join_path(base: &Path, additional: &str) -> PathBuf {
 /// have the values that users of `cc-rs` would expect.
 ///
 /// Adapted from https://github.com/rust-lang/cc-rs/blob/3ba23569a623074748a3030f382afd22483555df/src/lib.rs#L3617
-fn get_cc_rs_env(var_base: &str) -> Option<String> {
-    get_cc_rs_env_os(var_base).map(|val| val.to_str().expect("Not a valid string.").to_string())
-}
-
-/// Like `get_cc_rs_env()` but returns the OsString value.
 fn get_cc_rs_env_os(var_base: &str) -> Option<OsString> {
     fn get_env(var: &str) -> Option<OsString> {
         println!("cargo:rerun-if-env-changed={}", var);

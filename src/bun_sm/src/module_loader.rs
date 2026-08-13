@@ -277,7 +277,7 @@ unsafe fn base_dir_from_private_cx(
     let Some(jsstr) = NonNull::new(url_jsstr) else {
         return None;
     };
-    let url = unsafe { mozjs::conversions::jsstr_to_string(raw_cx, jsstr) };
+    let url = unsafe { mozjs::conversions::unsafe_jsstr_to_string(raw_cx, jsstr) };
     let path_str = url.strip_prefix("file://")?;
     let decoded = percent_decode_path(path_str);
     let path = PathBuf::from(decoded);
@@ -593,7 +593,7 @@ unsafe extern "C" fn host_resolve_imported_module(
         return ::std::ptr::null_mut();
     }
 
-    let specifier_str = mozjs::conversions::jsstr_to_string(
+    let specifier_str = mozjs::conversions::unsafe_jsstr_to_string(
         raw_cx,
         NonNull::new(specifier).expect("null-checked specifier"),
     );
@@ -1499,7 +1499,7 @@ unsafe extern "C" fn host_populate_import_meta(
         // - file:  just the file name component of path
         // - main:  true if this module is the entry point
         let specifier = if private_value.is_string() {
-            mozjs::conversions::jsstr_to_string(
+            mozjs::conversions::unsafe_jsstr_to_string(
                 raw_cx,
                 NonNull::new(private_value.to_string()).expect("valid private value"),
             )
@@ -1680,7 +1680,7 @@ unsafe extern "C" fn host_dynamic_import(
     if specifier.is_null() {
         return false;
     }
-    let specifier_str = mozjs::conversions::jsstr_to_string(
+    let specifier_str = mozjs::conversions::unsafe_jsstr_to_string(
         raw_cx,
         NonNull::new(specifier).expect("null-checked specifier"),
     );

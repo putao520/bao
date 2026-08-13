@@ -4,7 +4,7 @@
 
 use dom_struct::dom_struct;
 use euclid::default::Transform3D;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::rust::{CustomAutoRooterGuard, HandleObject};
 use js::typedarray::{Float32Array, Float64Array};
 use rustc_hash::FxHashMap;
@@ -27,7 +27,6 @@ use crate::dom::dommatrixreadonly::{
 };
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct DOMMatrix {
@@ -37,24 +36,24 @@ pub(crate) struct DOMMatrix {
 #[expect(non_snake_case)]
 impl DOMMatrix {
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         is2D: bool,
         matrix: Transform3D<f64>,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
-        Self::new_with_proto(global, None, is2D, matrix, can_gc)
+        Self::new_with_proto(cx, global, None, is2D, matrix)
     }
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new_with_proto(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         is2D: bool,
         matrix: Transform3D<f64>,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
         let dommatrix = Self::new_inherited(is2D, matrix);
-        reflect_dom_object_with_proto(Box::new(dommatrix), global, proto, can_gc)
+        reflect_dom_object_with_proto(cx, Box::new(dommatrix), global, proto)
     }
 
     pub(crate) fn new_inherited(is2D: bool, matrix: Transform3D<f64>) -> Self {
@@ -66,9 +65,9 @@ impl DOMMatrix {
     pub(crate) fn from_readonly(
         global: &GlobalScope,
         ro: &DOMMatrixReadOnly,
-        can_gc: CanGc,
+        cx: &mut JSContext,
     ) -> DomRoot<Self> {
-        Self::new(global, ro.is2D(), *ro.matrix(), can_gc)
+        Self::new(cx, global, ro.is2D(), *ro.matrix())
     }
 }
 
@@ -76,18 +75,18 @@ impl DOMMatrix {
 impl DOMMatrixMethods<crate::DomTypeHolder> for DOMMatrix {
     /// <https://drafts.fxtf.org/geometry-1/#dom-dommatrixreadonly-dommatrixreadonly>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         init: Option<StringOrUnrestrictedDoubleSequence>,
     ) -> Fallible<DomRoot<Self>> {
         if init.is_none() {
             return Ok(Self::new_with_proto(
+                cx,
                 global,
                 proto,
                 true,
                 Transform3D::identity(),
-                can_gc,
             ));
         }
         match init.unwrap() {
@@ -98,53 +97,58 @@ impl DOMMatrixMethods<crate::DomTypeHolder> for DOMMatrix {
                     ));
                 }
                 if s.is_empty() {
-                    return Ok(Self::new(global, true, Transform3D::identity(), can_gc));
+                    return Ok(Self::new(cx, global, true, Transform3D::identity()));
                 }
                 transform_to_matrix(&s.str())
-                    .map(|(is2D, matrix)| Self::new_with_proto(global, proto, is2D, matrix, can_gc))
+                    .map(|(is2D, matrix)| Self::new_with_proto(cx, global, proto, is2D, matrix))
             },
             StringOrUnrestrictedDoubleSequence::UnrestrictedDoubleSequence(ref entries) => {
                 entries_to_matrix(&entries[..])
-                    .map(|(is2D, matrix)| Self::new_with_proto(global, proto, is2D, matrix, can_gc))
+                    .map(|(is2D, matrix)| Self::new_with_proto(cx, global, proto, is2D, matrix))
             },
         }
     }
 
     /// <https://drafts.fxtf.org/geometry-1/#dom-dommatrix-frommatrix>
     fn FromMatrix(
+        cx: &mut js::context::JSContext,
         global: &GlobalScope,
         other: &DOMMatrixInit,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<Self>> {
-        dommatrixinit_to_matrix(other).map(|(is2D, matrix)| Self::new(global, is2D, matrix, can_gc))
+        dommatrixinit_to_matrix(other).map(|(is2D, matrix)| Self::new(cx, global, is2D, matrix))
     }
 
     /// <https://drafts.fxtf.org/geometry-1/#dom-dommatrix-fromfloat32array>
     fn FromFloat32Array(
+        cx: &mut js::context::JSContext,
         global: &GlobalScope,
         array: CustomAutoRooterGuard<Float32Array>,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<DOMMatrix>> {
-        let vec: Vec<f64> = array.to_vec().iter().map(|&x| x as f64).collect();
+        let vec: Vec<f64> = array
+            .to_vec()
+            .unwrap_or_default()
+            .iter()
+            .map(|&x| x as f64)
+            .collect();
         DOMMatrix::Constructor(
+            cx,
             global,
             None,
-            can_gc,
             Some(StringOrUnrestrictedDoubleSequence::UnrestrictedDoubleSequence(vec)),
         )
     }
 
     /// <https://drafts.fxtf.org/geometry-1/#dom-dommatrix-fromfloat64array>
     fn FromFloat64Array(
+        cx: &mut js::context::JSContext,
         global: &GlobalScope,
         array: CustomAutoRooterGuard<Float64Array>,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<DOMMatrix>> {
-        let vec: Vec<f64> = array.to_vec();
+        let vec: Vec<f64> = array.to_vec().unwrap_or_default();
         DOMMatrix::Constructor(
+            cx,
             global,
             None,
-            can_gc,
             Some(StringOrUnrestrictedDoubleSequence::UnrestrictedDoubleSequence(vec)),
         )
     }
@@ -484,15 +488,11 @@ impl DOMMatrixMethods<crate::DomTypeHolder> for DOMMatrix {
         // 1. Parse transformList into an abstract matrix, and let
         // matrix and 2dTransform be the result. If the result is failure,
         // then throw a "SyntaxError" DOMException.
-        match transform_to_matrix(&transformList.str()) {
-            Ok(tuple) => {
-                // 2. Set is 2D to the value of 2dTransform.
-                self.parent.set_is2D(tuple.0);
-                // 3. Set m11 element through m44 element to the element values of matrix in column-major order.
-                self.parent.set_matrix(tuple.1);
-            },
-            Err(error) => return Err(error),
-        }
+        let (is_2d, matrix) = transform_to_matrix(&transformList.str())?;
+        // 2. Set is 2D to the value of 2dTransform.
+        self.parent.set_is2D(is_2d);
+        // 3. Set m11 element through m44 element to the element values of matrix in column-major order.
+        self.parent.set_matrix(matrix);
 
         // 4. Return the current matrix.
         Ok(DomRoot::from_ref(self))
@@ -503,7 +503,7 @@ impl Serializable for DOMMatrix {
     type Index = DomMatrixIndex;
     type Data = DomMatrix;
 
-    fn serialize(&self) -> Result<(DomMatrixId, Self::Data), ()> {
+    fn serialize(&self, _no_gc: &NoGC) -> Result<(DomMatrixId, Self::Data), ()> {
         let serialized = if self.parent.is2D() {
             DomMatrix {
                 matrix: Transform3D::new(
@@ -545,6 +545,7 @@ impl Serializable for DOMMatrix {
     {
         if serialized.is_2d {
             Ok(Self::new(
+                cx,
                 owner,
                 true,
                 Transform3D::new(
@@ -565,15 +566,9 @@ impl Serializable for DOMMatrix {
                     0.0,
                     1.0,
                 ),
-                CanGc::from_cx(cx),
             ))
         } else {
-            Ok(Self::new(
-                owner,
-                false,
-                serialized.matrix,
-                CanGc::from_cx(cx),
-            ))
+            Ok(Self::new(cx, owner, false, serialized.matrix))
         }
     }
 

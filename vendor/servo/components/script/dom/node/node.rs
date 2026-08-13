@@ -38,7 +38,7 @@ use pixels::ImageMetadata;
 use script_bindings::cell::{DomRefCell, Ref, RefMut};
 use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
 use script_bindings::codegen::InheritTypes::DocumentFragmentTypeId;
-use script_bindings::reflector::{DomObject, DomObjectWrap, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{DomObject, DomObjectWrap, reflect_dom_object_with_proto};
 use script_traits::DocumentActivity;
 use servo_arc::Arc as ServoArc;
 use servo_base::id::{BrowsingContextId, PipelineId};
@@ -2408,7 +2408,7 @@ impl Node {
         N: DerivedFrom<Node> + DomObject + DomObjectWrap<crate::DomTypeHolder>,
     {
         let window = document.window();
-        reflect_dom_object_with_proto_and_cx(node, window, proto, cx)
+        reflect_dom_object_with_proto(cx, node, window, proto)
     }
 
     pub(crate) fn new_inherited(doc: &Document) -> Node {

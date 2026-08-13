@@ -3,18 +3,20 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::ptr::NonNull;
 use std::str::FromStr;
 
 use dom_struct::dom_struct;
+use js::context::NoGC;
+use js::conversions::ToJSValConvertible;
 use js::jsapi::{Heap, JSObject, Value};
+use js::rust::MutableHandleObject;
 use malloc_size_of::MallocSizeOf;
 use rustc_hash::FxHashMap;
-use script_bindings::cell::DomRefCell;
-use script_bindings::conversions::SafeToJSValConvertible;
+use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use servo_base::id::{CryptoKeyId, CryptoKeyIndex};
 use servo_constellation_traits::{SerializableCryptoKey, SerializableCryptoKeyHandle};
+use strum::VariantArray;
 use zeroize::Zeroizing;
 
 use crate::dom::bindings::codegen::Bindings::CryptoKeyBinding::{
@@ -25,7 +27,6 @@ use crate::dom::bindings::serializable::Serializable;
 use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::subtlecrypto::KeyAlgorithmAndDerivatives;
-use crate::script_runtime::{CanGc, JSContext};
 
 pub(crate) enum CryptoKeyOrCryptoKeyPair {
     CryptoKey(DomRoot<CryptoKey>),
@@ -46,31 +47,34 @@ pub(crate) enum Handle {
     P256PublicKey(p256::PublicKey),
     P384PublicKey(p384::PublicKey),
     P521PublicKey(p521::PublicKey),
-    Ed25519PrivateKey(Zeroizing<Vec<u8>>),
-    Ed25519PublicKey(Vec<u8>),
+    Ed25519PrivateKey(ed25519_dalek::SigningKey),
+    Ed25519PublicKey(ed25519_dalek::VerifyingKey),
     X25519PrivateKey(x25519_dalek::StaticSecret),
     X25519PublicKey(x25519_dalek::PublicKey),
-    Aes128Key(aes::cipher::crypto_common::Key<aes::Aes128>),
-    Aes192Key(aes::cipher::crypto_common::Key<aes::Aes192>),
-    Aes256Key(aes::cipher::crypto_common::Key<aes::Aes256>),
+    Ed448PrivateKey(ed448_goldilocks::SigningKey),
+    Ed448PublicKey(ed448_goldilocks::VerifyingKey),
+    X448PrivateKey(x448::StaticSecret),
+    X448PublicKey(x448::PublicKey),
+    Aes128Key(aes::cipher::common::Key<aes::Aes128>),
+    Aes192Key(aes::cipher::common::Key<aes::Aes192>),
+    Aes256Key(aes::cipher::common::Key<aes::Aes256>),
     HkdfSecret(Zeroizing<Vec<u8>>),
     Pbkdf2(Zeroizing<Vec<u8>>),
     Hmac(Zeroizing<Vec<u8>>),
-    MlKem512PrivateKey((ml_kem::B32, ml_kem::B32)),
-    MlKem768PrivateKey((ml_kem::B32, ml_kem::B32)),
-    MlKem1024PrivateKey((ml_kem::B32, ml_kem::B32)),
-    MlKem512PublicKey(Box<ml_kem::Encoded<ml_kem::kem::EncapsulationKey<ml_kem::MlKem512Params>>>),
-    MlKem768PublicKey(Box<ml_kem::Encoded<ml_kem::kem::EncapsulationKey<ml_kem::MlKem768Params>>>),
-    MlKem1024PublicKey(
-        Box<ml_kem::Encoded<ml_kem::kem::EncapsulationKey<ml_kem::MlKem1024Params>>>,
-    ),
-    MlDsa44PrivateKey(ml_dsa::B32),
-    MlDsa65PrivateKey(ml_dsa::B32),
-    MlDsa87PrivateKey(ml_dsa::B32),
-    MlDsa44PublicKey(Box<ml_dsa::EncodedVerifyingKey<ml_dsa::MlDsa44>>),
-    MlDsa65PublicKey(Box<ml_dsa::EncodedVerifyingKey<ml_dsa::MlDsa65>>),
-    MlDsa87PublicKey(Box<ml_dsa::EncodedVerifyingKey<ml_dsa::MlDsa87>>),
+    MlKem512PrivateKey(ml_kem::DecapsulationKey<ml_kem::MlKem512>),
+    MlKem768PrivateKey(ml_kem::DecapsulationKey<ml_kem::MlKem768>),
+    MlKem1024PrivateKey(ml_kem::DecapsulationKey<ml_kem::MlKem1024>),
+    MlKem512PublicKey(ml_kem::EncapsulationKey<ml_kem::MlKem512>),
+    MlKem768PublicKey(ml_kem::EncapsulationKey<ml_kem::MlKem768>),
+    MlKem1024PublicKey(ml_kem::EncapsulationKey<ml_kem::MlKem1024>),
+    MlDsa44PrivateKey(ml_dsa::SigningKey<ml_dsa::MlDsa44>),
+    MlDsa65PrivateKey(ml_dsa::SigningKey<ml_dsa::MlDsa65>),
+    MlDsa87PrivateKey(ml_dsa::SigningKey<ml_dsa::MlDsa87>),
+    MlDsa44PublicKey(ml_dsa::VerifyingKey<ml_dsa::MlDsa44>),
+    MlDsa65PublicKey(ml_dsa::VerifyingKey<ml_dsa::MlDsa65>),
+    MlDsa87PublicKey(ml_dsa::VerifyingKey<ml_dsa::MlDsa87>),
     ChaCha20Poly1305Key(chacha20poly1305::Key),
+    KmacKey(Zeroizing<Vec<u8>>),
     Argon2Password(Zeroizing<Vec<u8>>),
 }
 
@@ -153,22 +157,14 @@ impl CryptoKey {
 
         // Create and store a cached object of algorithm
         rooted!(&in(cx) let mut algorithm_object_value: Value);
-        algorithm.safe_to_jsval(
-            cx.into(),
-            algorithm_object_value.handle_mut(),
-            CanGc::from_cx(cx),
-        );
+        algorithm.safe_to_jsval(cx, algorithm_object_value.handle_mut());
         crypto_key
             .algorithm_cached
             .set(algorithm_object_value.to_object());
 
         // Create and store a cached object of usages
         rooted!(&in(cx) let mut usages_object_value: Value);
-        usages.safe_to_jsval(
-            cx.into(),
-            usages_object_value.handle_mut(),
-            CanGc::from_cx(cx),
-        );
+        usages.safe_to_jsval(cx, usages_object_value.handle_mut());
         crypto_key
             .usages_cached
             .set(usages_object_value.to_object());
@@ -180,29 +176,12 @@ impl CryptoKey {
         &self.algorithm
     }
 
-    pub(crate) fn usages(&self) -> Vec<KeyUsage> {
-        self.usages.borrow().clone()
+    pub(crate) fn usages(&self) -> Ref<'_, Vec<KeyUsage>> {
+        self.usages.borrow()
     }
 
     pub(crate) fn handle(&self) -> &Handle {
         &self.handle
-    }
-
-    pub(crate) fn set_extractable(&self, extractable: bool) {
-        self.extractable.set(extractable);
-    }
-
-    pub(crate) fn set_usages(&self, cx: &mut js::context::JSContext, usages: &[KeyUsage]) {
-        *self.usages.borrow_mut() = usages.to_owned();
-
-        // Create and store a cached object of usages
-        rooted!(&in(cx) let mut usages_object_value: Value);
-        usages.safe_to_jsval(
-            cx.into(),
-            usages_object_value.handle_mut(),
-            CanGc::from_cx(cx),
-        );
-        self.usages_cached.set(usages_object_value.to_object());
     }
 }
 
@@ -221,16 +200,16 @@ impl CryptoKeyMethods<crate::DomTypeHolder> for CryptoKey {
     }
 
     /// <https://w3c.github.io/webcrypto/#dom-cryptokey-algorithm>
-    fn Algorithm(&self, _cx: JSContext) -> NonNull<JSObject> {
+    fn Algorithm(&self, mut return_value: MutableHandleObject) {
         // Returns the cached ECMAScript object associated with the [[algorithm]] internal slot.
-        NonNull::new(self.algorithm_cached.get()).unwrap()
+        return_value.set(self.algorithm_cached.get())
     }
 
     /// <https://w3c.github.io/webcrypto/#dom-cryptokey-usages>
-    fn Usages(&self, _cx: JSContext) -> NonNull<JSObject> {
+    fn Usages(&self, mut return_value: MutableHandleObject) {
         // Returns the cached ECMAScript object associated with the [[usages]] internal slot, which
         // indicates which cryptographic operations are permissible to be used with this key.
-        NonNull::new(self.usages_cached.get()).unwrap()
+        return_value.set(self.usages_cached.get())
     }
 }
 
@@ -239,7 +218,7 @@ impl Serializable for CryptoKey {
     type Data = SerializableCryptoKey;
 
     /// <https://w3c.github.io/webcrypto/#cryptokey-interface-serializable>
-    fn serialize(&self) -> Result<(CryptoKeyId, Self::Data), ()> {
+    fn serialize(&self, _no_gc: &NoGC) -> Result<(CryptoKeyId, Self::Data), ()> {
         // Step 1. Set serialized.[[Type]] to the [[type]] internal slot of value.
         // Step 2. Set serialized.[[Extractable]] to the [[extractable]] internal slot of value.
         // Step 3. Set serialized.[[Algorithm]] to the sub-serialization of the [[algorithm]]
@@ -306,8 +285,6 @@ impl Handle {
         match self {
             Self::Pbkdf2(bytes) => bytes,
             Self::Hmac(bytes) => bytes,
-            Self::Ed25519PrivateKey(bytes) => bytes,
-            Self::Ed25519PublicKey(bytes) => bytes,
             _ => unreachable!(),
         }
     }
@@ -328,25 +305,30 @@ impl MallocSizeOf for Handle {
             Handle::Ed25519PublicKey(bytes) => bytes.size_of(ops),
             Handle::X25519PrivateKey(private_key) => private_key.size_of(ops),
             Handle::X25519PublicKey(public_key) => public_key.size_of(ops),
+            Handle::Ed448PrivateKey(private_key) => private_key.size_of(ops),
+            Handle::Ed448PublicKey(public_key) => public_key.size_of(ops),
+            Handle::X448PrivateKey(private_key) => private_key.size_of(ops),
+            Handle::X448PublicKey(public_key) => public_key.size_of(ops),
             Handle::Aes128Key(key) => key.size_of(ops),
             Handle::Aes192Key(key) => key.size_of(ops),
             Handle::Aes256Key(key) => key.size_of(ops),
             Handle::HkdfSecret(secret) => secret.size_of(ops),
             Handle::Pbkdf2(bytes) => bytes.size_of(ops),
             Handle::Hmac(bytes) => bytes.size_of(ops),
-            Handle::MlKem512PrivateKey(seed) => seed.0.size_of(ops) + seed.1.size_of(ops),
-            Handle::MlKem768PrivateKey(seed) => seed.0.size_of(ops) + seed.1.size_of(ops),
-            Handle::MlKem1024PrivateKey(seed) => seed.0.size_of(ops) + seed.1.size_of(ops),
+            Handle::MlKem512PrivateKey(private_key) => private_key.size_of(ops),
+            Handle::MlKem768PrivateKey(private_key) => private_key.size_of(ops),
+            Handle::MlKem1024PrivateKey(private_key) => private_key.size_of(ops),
             Handle::MlKem512PublicKey(public_key) => public_key.size_of(ops),
             Handle::MlKem768PublicKey(public_key) => public_key.size_of(ops),
             Handle::MlKem1024PublicKey(public_key) => public_key.size_of(ops),
-            Handle::MlDsa44PrivateKey(seed) => seed.size_of(ops),
-            Handle::MlDsa65PrivateKey(seed) => seed.size_of(ops),
-            Handle::MlDsa87PrivateKey(seed) => seed.size_of(ops),
+            Handle::MlDsa44PrivateKey(private_key) => private_key.size_of(ops),
+            Handle::MlDsa65PrivateKey(private_key) => private_key.size_of(ops),
+            Handle::MlDsa87PrivateKey(private_key) => private_key.size_of(ops),
             Handle::MlDsa44PublicKey(public_key) => public_key.size_of(ops),
             Handle::MlDsa65PublicKey(public_key) => public_key.size_of(ops),
             Handle::MlDsa87PublicKey(public_key) => public_key.size_of(ops),
             Handle::ChaCha20Poly1305Key(key) => key.size_of(ops),
+            Handle::KmacKey(key) => key.size_of(ops),
             Handle::Argon2Password(password) => password.size_of(ops),
         }
     }
@@ -358,19 +340,20 @@ impl TryFrom<SerializableCryptoKeyHandle> for Handle {
     fn try_from(value: SerializableCryptoKeyHandle) -> Result<Self, Self::Error> {
         match &value {
             SerializableCryptoKeyHandle::RsaPrivateKey(private_key) => Ok(Handle::RsaPrivateKey(
-                pkcs8::DecodePrivateKey::from_pkcs8_der(private_key).map_err(|_| ())?,
+                rsa::pkcs8::DecodePrivateKey::from_pkcs8_der(private_key).map_err(|_| ())?,
             )),
             SerializableCryptoKeyHandle::RsaPublicKey(public_key) => Ok(Handle::RsaPublicKey(
-                pkcs8::spki::DecodePublicKey::from_public_key_der(public_key).map_err(|_| ())?,
+                rsa::pkcs8::spki::DecodePublicKey::from_public_key_der(public_key)
+                    .map_err(|_| ())?,
             )),
             SerializableCryptoKeyHandle::P256PrivateKey(private_key) => Ok(Handle::P256PrivateKey(
-                p256::SecretKey::from_sec1_der(private_key).map_err(|_| ())?,
+                p256::SecretKey::from_slice(private_key).map_err(|_| ())?,
             )),
             SerializableCryptoKeyHandle::P384PrivateKey(private_key) => Ok(Handle::P384PrivateKey(
-                p384::SecretKey::from_sec1_der(private_key).map_err(|_| ())?,
+                p384::SecretKey::from_slice(private_key).map_err(|_| ())?,
             )),
             SerializableCryptoKeyHandle::P521PrivateKey(private_key) => Ok(Handle::P521PrivateKey(
-                p521::SecretKey::from_sec1_der(private_key).map_err(|_| ())?,
+                p521::SecretKey::from_slice(private_key).map_err(|_| ())?,
             )),
             SerializableCryptoKeyHandle::P256PublicKey(public_key) => Ok(Handle::P256PublicKey(
                 p256::PublicKey::from_sec1_bytes(public_key).map_err(|_| ())?,
@@ -381,11 +364,13 @@ impl TryFrom<SerializableCryptoKeyHandle> for Handle {
             SerializableCryptoKeyHandle::P521PublicKey(public_key) => Ok(Handle::P521PublicKey(
                 p521::PublicKey::from_sec1_bytes(public_key).map_err(|_| ())?,
             )),
-            SerializableCryptoKeyHandle::Ed25519PrivateKey(bytes) => {
-                Ok(Handle::Ed25519PrivateKey(bytes.clone().into()))
-            },
-            SerializableCryptoKeyHandle::Ed25519PublicKey(bytes) => {
-                Ok(Handle::Ed25519PublicKey(bytes.clone()))
+            SerializableCryptoKeyHandle::Ed25519PrivateKey(private_key) => Ok(
+                Handle::Ed25519PrivateKey(ed25519_dalek::SigningKey::from_bytes(private_key)),
+            ),
+            SerializableCryptoKeyHandle::Ed25519PublicKey(public_key) => {
+                Ok(Handle::Ed25519PublicKey(
+                    ed25519_dalek::VerifyingKey::from_bytes(public_key).map_err(|_| ())?,
+                ))
             },
             SerializableCryptoKeyHandle::X25519PrivateKey(private_key) => {
                 Ok(Handle::X25519PrivateKey((*private_key).into()))
@@ -393,86 +378,103 @@ impl TryFrom<SerializableCryptoKeyHandle> for Handle {
             SerializableCryptoKeyHandle::X25519PublicKey(public_key) => {
                 Ok(Handle::X25519PublicKey((*public_key).into()))
             },
-            SerializableCryptoKeyHandle::Aes128Key(key) => {
-                Ok(Handle::Aes128Key(aes::cipher::crypto_common::Key::<
-                    aes::Aes128,
-                >::clone_from_slice(key)))
+            SerializableCryptoKeyHandle::Ed448PrivateKey(private_key) => {
+                Ok(Handle::Ed448PrivateKey(
+                    ed448_goldilocks::SigningKey::try_from(private_key).map_err(|_| ())?,
+                ))
             },
-            SerializableCryptoKeyHandle::Aes192Key(key) => {
-                Ok(Handle::Aes192Key(aes::cipher::crypto_common::Key::<
-                    aes::Aes192,
-                >::clone_from_slice(key)))
+            SerializableCryptoKeyHandle::Ed448PublicKey(public_key) => Ok(Handle::Ed448PublicKey(
+                ed448_goldilocks::VerifyingKey::from_bytes(
+                    public_key.as_slice().try_into().map_err(|_| ())?,
+                )
+                .map_err(|_| ())?,
+            )),
+            SerializableCryptoKeyHandle::X448PrivateKey(private_key) => {
+                Ok(Handle::X448PrivateKey(x448::StaticSecret::from(
+                    <[u8; 56]>::try_from(private_key.as_slice()).map_err(|_| ())?,
+                )))
             },
-            SerializableCryptoKeyHandle::Aes256Key(key) => {
-                Ok(Handle::Aes256Key(aes::cipher::crypto_common::Key::<
-                    aes::Aes256,
-                >::clone_from_slice(key)))
-            },
+            SerializableCryptoKeyHandle::X448PublicKey(public_key) => Ok(Handle::X448PublicKey(
+                x448::PublicKey::from_bytes_unchecked(public_key).ok_or(())?,
+            )),
+            SerializableCryptoKeyHandle::Aes128Key(key) => Ok(Handle::Aes128Key(
+                aes::cipher::common::Key::<aes::Aes128>::try_from(key).map_err(|_| ())?,
+            )),
+            SerializableCryptoKeyHandle::Aes192Key(key) => Ok(Handle::Aes192Key(
+                aes::cipher::common::Key::<aes::Aes192>::try_from(key).map_err(|_| ())?,
+            )),
+            SerializableCryptoKeyHandle::Aes256Key(key) => Ok(Handle::Aes256Key(
+                aes::cipher::common::Key::<aes::Aes256>::try_from(key).map_err(|_| ())?,
+            )),
             SerializableCryptoKeyHandle::Hmac(bytes) => Ok(Handle::Hmac(bytes.clone().into())),
             SerializableCryptoKeyHandle::HkdfSecret(bytes) => {
                 Ok(Handle::HkdfSecret(bytes.clone().into()))
             },
             SerializableCryptoKeyHandle::Pbkdf2(bytes) => Ok(Handle::Pbkdf2(bytes.clone().into())),
-            SerializableCryptoKeyHandle::MlKem512PrivateKey(seed) => {
-                Ok(Handle::MlKem512PrivateKey((
-                    seed.0.as_slice().try_into().map_err(|_| ())?,
-                    seed.1.as_slice().try_into().map_err(|_| ())?,
-                )))
+            SerializableCryptoKeyHandle::MlKem512PrivateKey(private_key) => {
+                Ok(Handle::MlKem512PrivateKey(
+                    ml_kem::KeyInit::new_from_slice(private_key).map_err(|_| ())?,
+                ))
             },
-            SerializableCryptoKeyHandle::MlKem768PrivateKey(seed) => {
-                Ok(Handle::MlKem768PrivateKey((
-                    seed.0.as_slice().try_into().map_err(|_| ())?,
-                    seed.1.as_slice().try_into().map_err(|_| ())?,
-                )))
+            SerializableCryptoKeyHandle::MlKem768PrivateKey(private_key) => {
+                Ok(Handle::MlKem768PrivateKey(
+                    ml_kem::KeyInit::new_from_slice(private_key).map_err(|_| ())?,
+                ))
             },
-            SerializableCryptoKeyHandle::MlKem1024PrivateKey(seed) => {
-                Ok(Handle::MlKem1024PrivateKey((
-                    seed.0.as_slice().try_into().map_err(|_| ())?,
-                    seed.1.as_slice().try_into().map_err(|_| ())?,
-                )))
+            SerializableCryptoKeyHandle::MlKem1024PrivateKey(private_key) => {
+                Ok(Handle::MlKem1024PrivateKey(
+                    ml_kem::KeyInit::new_from_slice(private_key).map_err(|_| ())?,
+                ))
             },
             SerializableCryptoKeyHandle::MlKem512PublicKey(public_key) => {
-                Ok(Handle::MlKem512PublicKey(Box::new(
-                    public_key.as_slice().try_into().map_err(|_| ())?,
-                )))
+                Ok(Handle::MlKem512PublicKey(
+                    ml_kem::TryKeyInit::new_from_slice(public_key).map_err(|_| ())?,
+                ))
             },
             SerializableCryptoKeyHandle::MlKem768PublicKey(public_key) => {
-                Ok(Handle::MlKem768PublicKey(Box::new(
-                    public_key.as_slice().try_into().map_err(|_| ())?,
-                )))
+                Ok(Handle::MlKem768PublicKey(
+                    ml_kem::TryKeyInit::new_from_slice(public_key).map_err(|_| ())?,
+                ))
             },
             SerializableCryptoKeyHandle::MlKem1024PublicKey(public_key) => {
-                Ok(Handle::MlKem1024PublicKey(Box::new(
-                    public_key.as_slice().try_into().map_err(|_| ())?,
-                )))
+                Ok(Handle::MlKem1024PublicKey(
+                    ml_kem::TryKeyInit::new_from_slice(public_key).map_err(|_| ())?,
+                ))
             },
-            SerializableCryptoKeyHandle::MlDsa44PrivateKey(seed) => Ok(Handle::MlDsa44PrivateKey(
-                seed.as_slice().try_into().map_err(|_| ())?,
-            )),
-            SerializableCryptoKeyHandle::MlDsa65PrivateKey(seed) => Ok(Handle::MlDsa65PrivateKey(
-                seed.as_slice().try_into().map_err(|_| ())?,
-            )),
-            SerializableCryptoKeyHandle::MlDsa87PrivateKey(seed) => Ok(Handle::MlDsa87PrivateKey(
-                seed.as_slice().try_into().map_err(|_| ())?,
-            )),
+            SerializableCryptoKeyHandle::MlDsa44PrivateKey(private_key) => {
+                Ok(Handle::MlDsa44PrivateKey(
+                    ml_dsa::KeyInit::new_from_slice(private_key).map_err(|_| ())?,
+                ))
+            },
+            SerializableCryptoKeyHandle::MlDsa65PrivateKey(private_key) => {
+                Ok(Handle::MlDsa65PrivateKey(
+                    ml_dsa::KeyInit::new_from_slice(private_key).map_err(|_| ())?,
+                ))
+            },
+            SerializableCryptoKeyHandle::MlDsa87PrivateKey(private_key) => {
+                Ok(Handle::MlDsa87PrivateKey(
+                    ml_dsa::KeyInit::new_from_slice(private_key).map_err(|_| ())?,
+                ))
+            },
             SerializableCryptoKeyHandle::MlDsa44PublicKey(public_key) => {
-                Ok(Handle::MlDsa44PublicKey(Box::new(
-                    public_key.as_slice().try_into().map_err(|_| ())?,
-                )))
+                Ok(Handle::MlDsa44PublicKey(
+                    ml_dsa::KeyInit::new_from_slice(public_key).map_err(|_| ())?,
+                ))
             },
             SerializableCryptoKeyHandle::MlDsa65PublicKey(public_key) => {
-                Ok(Handle::MlDsa65PublicKey(Box::new(
-                    public_key.as_slice().try_into().map_err(|_| ())?,
-                )))
+                Ok(Handle::MlDsa65PublicKey(
+                    ml_dsa::KeyInit::new_from_slice(public_key).map_err(|_| ())?,
+                ))
             },
             SerializableCryptoKeyHandle::MlDsa87PublicKey(public_key) => {
-                Ok(Handle::MlDsa87PublicKey(Box::new(
-                    public_key.as_slice().try_into().map_err(|_| ())?,
-                )))
+                Ok(Handle::MlDsa87PublicKey(
+                    ml_dsa::KeyInit::new_from_slice(public_key).map_err(|_| ())?,
+                ))
             },
             SerializableCryptoKeyHandle::ChaCha20Poly1305Key(key) => Ok(
-                Handle::ChaCha20Poly1305Key(chacha20poly1305::Key::clone_from_slice(key)),
+                Handle::ChaCha20Poly1305Key(chacha20poly1305::Key::try_from(key).map_err(|_| ())?),
             ),
+            SerializableCryptoKeyHandle::KmacKey(key) => Ok(Handle::KmacKey(key.clone().into())),
             SerializableCryptoKeyHandle::Argon2Password(password) => {
                 Ok(Handle::Argon2Password(password.clone().into()))
             },
@@ -491,25 +493,24 @@ impl TryFrom<&Handle> for SerializableCryptoKeyHandle {
     fn try_from(value: &Handle) -> Result<Self, Self::Error> {
         match value {
             Handle::RsaPrivateKey(private_key) => Ok(SerializableCryptoKeyHandle::RsaPrivateKey(
-                pkcs8::EncodePrivateKey::to_pkcs8_der(private_key)
+                rsa::pkcs8::EncodePrivateKey::to_pkcs8_der(private_key)
                     .map_err(|_| ())?
-                    .to_bytes()
+                    .as_bytes()
                     .to_vec(),
             )),
             Handle::RsaPublicKey(public_key) => Ok(SerializableCryptoKeyHandle::RsaPublicKey(
-                pkcs8::spki::EncodePublicKey::to_public_key_der(public_key)
+                rsa::pkcs8::spki::EncodePublicKey::to_public_key_der(public_key)
                     .map_err(|_| ())?
-                    .into_vec()
-                    .to_vec(),
+                    .into_vec(),
             )),
             Handle::P256PrivateKey(private_key) => Ok(SerializableCryptoKeyHandle::P256PrivateKey(
-                private_key.to_sec1_der().map_err(|_| ())?.to_vec(),
+                private_key.to_bytes().as_slice().to_vec(),
             )),
             Handle::P384PrivateKey(private_key) => Ok(SerializableCryptoKeyHandle::P384PrivateKey(
-                private_key.to_sec1_der().map_err(|_| ())?.to_vec(),
+                private_key.to_bytes().as_slice().to_vec(),
             )),
             Handle::P521PrivateKey(private_key) => Ok(SerializableCryptoKeyHandle::P521PrivateKey(
-                private_key.to_sec1_der().map_err(|_| ())?.to_vec(),
+                private_key.to_bytes().as_slice().to_vec(),
             )),
             Handle::P256PublicKey(public_key) => Ok(SerializableCryptoKeyHandle::P256PublicKey(
                 public_key.to_sec1_bytes().to_vec(),
@@ -520,83 +521,152 @@ impl TryFrom<&Handle> for SerializableCryptoKeyHandle {
             Handle::P521PublicKey(public_key) => Ok(SerializableCryptoKeyHandle::P521PublicKey(
                 public_key.to_sec1_bytes().to_vec(),
             )),
-            Handle::Ed25519PrivateKey(bytes) => Ok(SerializableCryptoKeyHandle::Ed25519PrivateKey(
-                bytes.to_vec(),
-            )),
-            Handle::Ed25519PublicKey(bytes) => Ok(SerializableCryptoKeyHandle::Ed25519PublicKey(
-                bytes.to_vec(),
-            )),
+            Handle::Ed25519PrivateKey(private_key) => Ok(
+                SerializableCryptoKeyHandle::Ed25519PrivateKey(private_key.to_bytes()),
+            ),
+            Handle::Ed25519PublicKey(public_key) => Ok(
+                SerializableCryptoKeyHandle::Ed25519PublicKey(public_key.to_bytes()),
+            ),
             Handle::X25519PrivateKey(private_key) => Ok(
                 SerializableCryptoKeyHandle::X25519PrivateKey(private_key.to_bytes()),
             ),
             Handle::X25519PublicKey(public_key) => Ok(
                 SerializableCryptoKeyHandle::X25519PublicKey(public_key.to_bytes()),
             ),
-            Handle::Aes128Key(key) => Ok(SerializableCryptoKeyHandle::Aes128Key(
-                key.as_slice().into(),
+            Handle::Ed448PrivateKey(private_key) => Ok(
+                SerializableCryptoKeyHandle::Ed448PrivateKey(private_key.as_bytes().to_vec()),
+            ),
+            Handle::Ed448PublicKey(public_key) => Ok(SerializableCryptoKeyHandle::Ed448PublicKey(
+                public_key.as_bytes().to_vec(),
             )),
-            Handle::Aes192Key(key) => Ok(SerializableCryptoKeyHandle::Aes192Key(
-                key.as_slice().into(),
+            Handle::X448PrivateKey(private_key) => Ok(SerializableCryptoKeyHandle::X448PrivateKey(
+                private_key.as_bytes().to_vec(),
             )),
-            Handle::Aes256Key(key) => Ok(SerializableCryptoKeyHandle::Aes256Key(
-                key.as_slice().into(),
+            Handle::X448PublicKey(public_key) => Ok(SerializableCryptoKeyHandle::X448PublicKey(
+                public_key.as_bytes().to_vec(),
             )),
+            Handle::Aes128Key(key) => Ok(SerializableCryptoKeyHandle::Aes128Key(key.to_vec())),
+            Handle::Aes192Key(key) => Ok(SerializableCryptoKeyHandle::Aes192Key(key.to_vec())),
+            Handle::Aes256Key(key) => Ok(SerializableCryptoKeyHandle::Aes256Key(key.to_vec())),
             Handle::Hmac(bytes) => Ok(SerializableCryptoKeyHandle::Hmac(bytes.to_vec())),
             Handle::HkdfSecret(bytes) => {
                 Ok(SerializableCryptoKeyHandle::HkdfSecret(bytes.to_vec()))
             },
             Handle::Pbkdf2(bytes) => Ok(SerializableCryptoKeyHandle::Pbkdf2(bytes.to_vec())),
-            Handle::MlKem512PrivateKey(seed) => {
-                Ok(SerializableCryptoKeyHandle::MlKem512PrivateKey((
-                    seed.0.as_slice().to_vec(),
-                    seed.1.as_slice().to_vec(),
-                )))
+            Handle::MlKem512PrivateKey(private_key) => {
+                Ok(SerializableCryptoKeyHandle::MlKem512PrivateKey(
+                    private_key
+                        .to_seed()
+                        .expect("This decapsulation key should contain seed value")
+                        .as_slice()
+                        .to_vec(),
+                ))
             },
-            Handle::MlKem768PrivateKey(seed) => {
-                Ok(SerializableCryptoKeyHandle::MlKem768PrivateKey((
-                    seed.0.as_slice().to_vec(),
-                    seed.1.as_slice().to_vec(),
-                )))
+            Handle::MlKem768PrivateKey(private_key) => {
+                Ok(SerializableCryptoKeyHandle::MlKem768PrivateKey(
+                    private_key
+                        .to_seed()
+                        .expect("This decapsulation key should contain seed value")
+                        .as_slice()
+                        .to_vec(),
+                ))
             },
-            Handle::MlKem1024PrivateKey(seed) => {
-                Ok(SerializableCryptoKeyHandle::MlKem1024PrivateKey((
-                    seed.0.as_slice().to_vec(),
-                    seed.1.as_slice().to_vec(),
-                )))
+            Handle::MlKem1024PrivateKey(private_key) => {
+                Ok(SerializableCryptoKeyHandle::MlKem1024PrivateKey(
+                    private_key
+                        .to_seed()
+                        .expect("This decapsulation key should contain seed value")
+                        .as_slice()
+                        .to_vec(),
+                ))
             },
-            Handle::MlKem512PublicKey(public_key) => Ok(
-                SerializableCryptoKeyHandle::MlKem512PublicKey(public_key.as_slice().to_vec()),
-            ),
-            Handle::MlKem768PublicKey(public_key) => Ok(
-                SerializableCryptoKeyHandle::MlKem768PublicKey(public_key.as_slice().to_vec()),
-            ),
-            Handle::MlKem1024PublicKey(public_key) => Ok(
-                SerializableCryptoKeyHandle::MlKem1024PublicKey(public_key.as_slice().to_vec()),
-            ),
-            Handle::MlDsa44PrivateKey(seed) => Ok(SerializableCryptoKeyHandle::MlDsa44PrivateKey(
-                seed.as_slice().to_vec(),
-            )),
-            Handle::MlDsa65PrivateKey(seed) => Ok(SerializableCryptoKeyHandle::MlDsa65PrivateKey(
-                seed.as_slice().to_vec(),
-            )),
-            Handle::MlDsa87PrivateKey(seed) => Ok(SerializableCryptoKeyHandle::MlDsa87PrivateKey(
-                seed.as_slice().to_vec(),
-            )),
-            Handle::MlDsa44PublicKey(public_key) => Ok(
-                SerializableCryptoKeyHandle::MlDsa44PublicKey(public_key.as_slice().to_vec()),
-            ),
-            Handle::MlDsa65PublicKey(public_key) => Ok(
-                SerializableCryptoKeyHandle::MlDsa65PublicKey(public_key.as_slice().to_vec()),
-            ),
-            Handle::MlDsa87PublicKey(public_key) => Ok(
-                SerializableCryptoKeyHandle::MlDsa87PublicKey(public_key.as_slice().to_vec()),
-            ),
+            Handle::MlKem512PublicKey(public_key) => {
+                Ok(SerializableCryptoKeyHandle::MlKem512PublicKey(
+                    ml_kem::KeyExport::to_bytes(public_key).as_slice().to_vec(),
+                ))
+            },
+            Handle::MlKem768PublicKey(public_key) => {
+                Ok(SerializableCryptoKeyHandle::MlKem768PublicKey(
+                    ml_kem::KeyExport::to_bytes(public_key).as_slice().to_vec(),
+                ))
+            },
+            Handle::MlKem1024PublicKey(public_key) => {
+                Ok(SerializableCryptoKeyHandle::MlKem1024PublicKey(
+                    ml_kem::KeyExport::to_bytes(public_key).as_slice().to_vec(),
+                ))
+            },
+            Handle::MlDsa44PrivateKey(private_key) => {
+                Ok(SerializableCryptoKeyHandle::MlDsa44PrivateKey(
+                    private_key.as_seed().as_slice().to_vec(),
+                ))
+            },
+            Handle::MlDsa65PrivateKey(private_key) => {
+                Ok(SerializableCryptoKeyHandle::MlDsa65PrivateKey(
+                    private_key.as_seed().as_slice().to_vec(),
+                ))
+            },
+            Handle::MlDsa87PrivateKey(private_key) => {
+                Ok(SerializableCryptoKeyHandle::MlDsa87PrivateKey(
+                    private_key.as_seed().as_slice().to_vec(),
+                ))
+            },
+            Handle::MlDsa44PublicKey(public_key) => {
+                Ok(SerializableCryptoKeyHandle::MlDsa44PublicKey(
+                    ml_dsa::KeyExport::to_bytes(public_key).as_slice().to_vec(),
+                ))
+            },
+            Handle::MlDsa65PublicKey(public_key) => {
+                Ok(SerializableCryptoKeyHandle::MlDsa65PublicKey(
+                    ml_dsa::KeyExport::to_bytes(public_key).as_slice().to_vec(),
+                ))
+            },
+            Handle::MlDsa87PublicKey(public_key) => {
+                Ok(SerializableCryptoKeyHandle::MlDsa87PublicKey(
+                    ml_dsa::KeyExport::to_bytes(public_key).as_slice().to_vec(),
+                ))
+            },
             Handle::ChaCha20Poly1305Key(key) => Ok(
                 SerializableCryptoKeyHandle::ChaCha20Poly1305Key(key.as_slice().to_vec()),
             ),
+            Handle::KmacKey(key) => Ok(SerializableCryptoKeyHandle::KmacKey(key.to_vec())),
             Handle::Argon2Password(password) => Ok(SerializableCryptoKeyHandle::Argon2Password(
                 password.to_vec(),
             )),
         }
+    }
+}
+
+/// The trait providing helper functions for [`Vec<KeyUsage>`]
+pub(crate) trait KeyUsageVecHelper {
+    /// <https://w3c.github.io/webcrypto/#concept-usage-intersection>
+    fn usage_intersection(&self, other: &[KeyUsage]) -> Vec<KeyUsage>;
+
+    /// <https://w3c.github.io/webcrypto/#concept-normalized-usages>
+    fn normalized_value(&self) -> Vec<KeyUsage>;
+}
+
+impl KeyUsageVecHelper for Vec<KeyUsage> {
+    fn usage_intersection(&self, other: &[KeyUsage]) -> Vec<KeyUsage> {
+        // When this specification says to calculate the usage intersection of two sequences, a and
+        // b the result shall be a sequence containing each recognized key usage value that appears
+        // in both a and b, in the order listed in the list of recognized key usage values, where a
+        // value is said to appear in a sequence if an element of the sequence exists that is a
+        // case-sensitive string match for that value.
+        let mut intersection = self
+            .iter()
+            .filter(|usage| other.contains(usage))
+            .cloned()
+            .collect::<Vec<KeyUsage>>();
+        intersection.sort();
+        intersection.dedup();
+
+        intersection
+    }
+
+    fn normalized_value(&self) -> Vec<KeyUsage> {
+        // When this specification says to calculate the normalized value of a usages list, usages
+        // the result shall be the usage intersection of usages and a sequence containing all
+        // recognized key usage values.
+        self.usage_intersection(KeyUsage::VARIANTS)
     }
 }

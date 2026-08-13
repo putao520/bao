@@ -5,9 +5,10 @@
 use std::rc::Rc;
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
 use js::error::throw_type_error;
 use js::gc::{HandleValue, MutableHandleValue};
-use js::jsapi::{CallArgs, JSContext};
+use js::jsapi::CallArgs;
 use js::jsval::{JSVal, UndefinedValue};
 use js::rust::HandleObject;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
@@ -16,13 +17,12 @@ use crate::dom::bindings::codegen::Bindings::FunctionBinding::Function;
 use crate::dom::bindings::codegen::Bindings::QueuingStrategyBinding::{
     ByteLengthQueuingStrategyMethods, QueuingStrategyInit,
 };
+use crate::dom::bindings::conversions::get_property_jsval;
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::utils::get_dictionary_property;
 use crate::dom::types::GlobalScope;
 use crate::native_fn;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct ByteLengthQueuingStrategy {
@@ -39,24 +39,24 @@ impl ByteLengthQueuingStrategy {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         init: f64,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
-        reflect_dom_object_with_proto(Box::new(Self::new_inherited(init)), global, proto, can_gc)
+        reflect_dom_object_with_proto(cx, Box::new(Self::new_inherited(init)), global, proto)
     }
 }
 
 impl ByteLengthQueuingStrategyMethods<crate::DomTypeHolder> for ByteLengthQueuingStrategy {
     /// <https://streams.spec.whatwg.org/#blqs-constructor>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         init: &QueuingStrategyInit,
     ) -> DomRoot<Self> {
-        Self::new(global, proto, init.highWaterMark, can_gc)
+        Self::new(cx, global, proto, init.highWaterMark)
     }
     /// <https://streams.spec.whatwg.org/#blqs-high-water-mark>
     fn HighWaterMark(&self) -> f64 {
@@ -115,14 +115,8 @@ fn byte_length_queuing_strategy_size(cx: &mut js::context::JSContext, args: Call
     rooted!(&in(cx) let object = chunk.to_object());
 
     // Return ? O.[[Get]](P, V).
-    match get_dictionary_property(cx, object.handle(), c"byteLength", unsafe {
+    get_property_jsval(cx, object.handle(), c"byteLength", unsafe {
         MutableHandleValue::from_raw(args.rval())
-    }) {
-        Ok(true) => true,
-        Ok(false) => {
-            args.rval().set(UndefinedValue());
-            true
-        },
-        Err(()) => false,
-    }
+    })
+    .is_ok()
 }

@@ -2,7 +2,7 @@
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
@@ -1341,7 +1341,7 @@ unsafe extern "C" fn url_search_params_constructor(
                             continue;
                         }
                         let key_str = jsid.to_string();
-                        let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str));
+                        let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_str));
                         let c_key = ZBox::from_bytes(&*key.as_bytes());
                         let mut v_val = UndefinedValue();
                         JS_GetProperty(
@@ -1672,7 +1672,7 @@ unsafe extern "C" fn sp_to_string(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
                 continue;
             }
             let key_str = jsid.to_string();
-            let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str));
+            let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_str));
             if key.starts_with("__") {
                 continue;
             }
@@ -1769,7 +1769,7 @@ unsafe fn sp_collect_entries(cx: *mut JSContext, obj: *mut JSObject) -> Vec<(Str
             continue;
         }
         let key_str = jsid.to_string();
-        let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str));
+        let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_str));
         if key.starts_with("__") {
             continue;
         }
@@ -2024,7 +2024,7 @@ unsafe extern "C" fn sp_for_each(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             continue;
         }
         let key_str = jsid.to_string();
-        let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str));
+        let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_str));
         let c_key = ZBox::from_bytes(&*key.as_bytes());
 
         let mut val = UndefinedValue();

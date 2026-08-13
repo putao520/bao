@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::io::{self, Write};
 use std::ptr;
 
+#[cfg(feature = "brotli-compression-stream")]
 use brotli::DecompressorWriter as BrotliDecoder;
 use dom_struct::dom_struct;
 use flate2::write::{DeflateDecoder, GzDecoder, ZlibDecoder};
@@ -14,20 +15,21 @@ use js::jsval::UndefinedValue;
 use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use js::typedarray::Uint8;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 
 use crate::dom::bindings::buffer_source::create_buffer_source;
 use crate::dom::bindings::codegen::Bindings::CompressionStreamBinding::CompressionFormat;
 use crate::dom::bindings::codegen::Bindings::DecompressionStreamBinding::DecompressionStreamMethods;
-use crate::dom::bindings::conversions::SafeToJSValConvertible;
+use crate::dom::bindings::conversions::ToJSValConvertible;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::root::{Dom, DomRoot};
-use crate::dom::stream::compressionstream::{BROTLI_BUFFER_SIZE, convert_chunk_to_vec};
+#[cfg(feature = "brotli-compression-stream")]
+use crate::dom::stream::compressionstream::BROTLI_BUFFER_SIZE;
+use crate::dom::stream::compressionstream::convert_chunk_to_vec;
 use crate::dom::stream::transformstreamdefaultcontroller::TransformerType;
 use crate::dom::types::{
     GlobalScope, ReadableStream, TransformStream, TransformStreamDefaultController, WritableStream,
 };
-use crate::script_runtime::CanGc;
 
 /// <https://compression.spec.whatwg.org/#decompressionstream>
 #[dom_struct]
@@ -49,28 +51,29 @@ impl DecompressionStream {
     fn new_inherited(
         transform: &TransformStream,
         format: CompressionFormat,
-    ) -> DecompressionStream {
-        DecompressionStream {
+    ) -> Fallible<DecompressionStream> {
+        Ok(DecompressionStream {
             reflector_: Reflector::new(),
             transform: Dom::from_ref(transform),
             format,
-            context: RefCell::new(DecompressionContext::new(format)),
-        }
+            context: RefCell::new(DecompressionContext::new(format)?),
+        })
     }
 
+    #[cfg_attr(crown, expect(crown::unrooted_must_root))] // reflect will only be called on the box which is fine
     fn new_with_proto(
         cx: &mut js::context::JSContext,
         global: &GlobalScope,
         proto: Option<SafeHandleObject>,
         transform: &TransformStream,
         format: CompressionFormat,
-    ) -> DomRoot<DecompressionStream> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(DecompressionStream::new_inherited(transform, format)),
+    ) -> Fallible<DomRoot<DecompressionStream>> {
+        Ok(reflect_dom_object_with_proto(
+            cx,
+            Box::new(DecompressionStream::new_inherited(transform, format)?),
             global,
             proto,
-            cx,
-        )
+        ))
     }
 }
 
@@ -87,19 +90,22 @@ impl DecompressionStreamMethods<crate::DomTypeHolder> for DecompressionStream {
 
         // Step 2. Set this’s format to format.
         // Step 5. Set this’s transform to a new TransformStream.
-        let transform = TransformStream::new_with_proto(global, None, CanGc::from_cx(cx));
+        let transform = TransformStream::new_with_proto(cx, global, None);
         let decompression_stream =
-            DecompressionStream::new_with_proto(cx, global, proto, &transform, format);
+            DecompressionStream::new_with_proto(cx, global, proto, &transform, format)?;
 
         // Step 3. Let transformAlgorithm be an algorithm which takes a chunk argument and runs the
         // decompress and enqueue a chunk algorithm with this and chunk.
         // Step 4. Let flushAlgorithm be an algorithm which takes no argument and runs the
         // decompress flush and enqueue algorithm with this.
-        let transformer_type = TransformerType::Decompressor(decompression_stream.clone());
 
         // Step 6. Set up this’s transform with transformAlgorithm set to transformAlgorithm and
         // flushAlgorithm set to flushAlgorithm.
-        transform.set_up(cx, global, transformer_type)?;
+        transform.set_up(
+            cx,
+            global,
+            TransformerType::Decompressor(decompression_stream.as_traced()),
+        )?;
 
         Ok(decompression_stream)
     }
@@ -126,40 +132,37 @@ pub(crate) fn decompress_and_enqueue_a_chunk(
     controller: &TransformStreamDefaultController,
 ) -> Fallible<()> {
     // Step 1. If chunk is not a BufferSource type, then throw a TypeError.
-    let chunk = convert_chunk_to_vec(cx.into(), chunk, CanGc::from_cx(cx))?;
+    let chunk = convert_chunk_to_vec(cx, chunk)?;
 
     // Step 2. Let buffer be the result of decompressing chunk with ds’s format and context. If
     // this results in an error, then throw a TypeError.
     // NOTE: In our implementation, the enum type of context already indicates the format.
-    let mut decompression_context = ds.context.borrow_mut();
-    let buffer = decompression_context
-        .decompress(&chunk)
-        .map_err(|_| Error::Type(c"Failed to decompress a chunk of compressed input".into()))?;
+    let buffer = {
+        let mut decompression_context = ds.context.borrow_mut();
+        let buffer = decompression_context
+            .decompress(&chunk)
+            .map_err(|_| Error::Type(c"Failed to decompress a chunk of compressed input".into()))?;
 
-    // Step 3. If buffer is empty, return.
-    if buffer.is_empty() {
-        return Ok(());
-    }
-
+        // Step 3. If buffer is empty, return.
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        buffer
+    };
     // Step 4. Let arrays be the result of splitting buffer into one or more non-empty pieces and
     // converting them into Uint8Arrays.
     // Step 5. For each Uint8Array array of arrays, enqueue array in ds’s transform.
     // NOTE: We process the result in a single Uint8Array.
     rooted!(&in(cx) let mut js_object = ptr::null_mut::<JSObject>());
-    let array = create_buffer_source::<Uint8>(
-        cx.into(),
-        &buffer,
-        js_object.handle_mut(),
-        CanGc::from_cx(cx),
-    )
-    .map_err(|_| Error::Type(c"Cannot convert byte sequence to Uint8Array".to_owned()))?;
+    let array = create_buffer_source::<Uint8>(cx, &buffer, js_object.handle_mut())
+        .map_err(|_| Error::Type(c"Cannot convert byte sequence to Uint8Array".to_owned()))?;
     rooted!(&in(cx) let mut rval = UndefinedValue());
-    array.safe_to_jsval(cx.into(), rval.handle_mut(), CanGc::from_cx(cx));
+    array.safe_to_jsval(cx, rval.handle_mut());
     controller.enqueue(cx, global, rval.handle())?;
 
     // Step 6. If the end of the compressed input has been reached, and ds’s context has not fully
     // consumed chunk, then throw a TypeError.
-    if decompression_context.is_ended {
+    if ds.context.borrow().is_ended {
         return Err(Error::Type(
             c"The end of the compressed input has been reached".to_owned(),
         ));
@@ -178,11 +181,12 @@ pub(crate) fn decompress_flush_and_enqueue(
     // Step 1. Let buffer be the result of decompressing an empty input with ds’s format and
     // context, with the finish flag.
     // NOTE: In our implementation, the enum type of context already indicates the format.
-    let mut decompression_context = ds.context.borrow_mut();
-    let buffer = decompression_context
-        .finalize()
-        .map_err(|_| Error::Type(c"Failed to finalize the decompression stream".into()))?;
-
+    let buffer = {
+        let mut decompression_context = ds.context.borrow_mut();
+        decompression_context
+            .finalize()
+            .map_err(|_| Error::Type(c"Failed to finalize the decompression stream".into()))?
+    };
     // Step 2. If buffer is empty, return.
     if !buffer.is_empty() {
         // Step 2.1. Let arrays be the result of splitting buffer into one or more non-empty pieces
@@ -190,15 +194,10 @@ pub(crate) fn decompress_flush_and_enqueue(
         // Step 2.2. For each Uint8Array array of arrays, enqueue array in ds’s transform.
         // NOTE: We process the result in a single Uint8Array.
         rooted!(&in(cx) let mut js_object = ptr::null_mut::<JSObject>());
-        let array = create_buffer_source::<Uint8>(
-            cx.into(),
-            &buffer,
-            js_object.handle_mut(),
-            CanGc::from_cx(cx),
-        )
-        .map_err(|_| Error::Type(c"Cannot convert byte sequence to Uint8Array".to_owned()))?;
+        let array = create_buffer_source::<Uint8>(cx, &buffer, js_object.handle_mut())
+            .map_err(|_| Error::Type(c"Cannot convert byte sequence to Uint8Array".to_owned()))?;
         rooted!(&in(cx) let mut rval = UndefinedValue());
-        array.safe_to_jsval(cx.into(), rval.handle_mut(), CanGc::from_cx(cx));
+        array.safe_to_jsval(cx, rval.handle_mut());
         controller.enqueue(cx, global, rval.handle())?;
     }
 
@@ -212,7 +211,7 @@ pub(crate) fn decompress_flush_and_enqueue(
     // indicates the end has not been reached. Otherwise, the end has been reached. This test has
     // to been done before calling `try_finish`, so we execute it in Step 1, and store the result
     // in `is_ended`.
-    if !decompression_context.is_ended {
+    if !ds.context.borrow().is_ended {
         return Err(Error::Type(
             c"The end of the compressed input has not been reached".to_owned(),
         ));
@@ -223,6 +222,7 @@ pub(crate) fn decompress_flush_and_enqueue(
 
 /// An enum grouping decoders of differenct compression algorithms.
 enum Decoder {
+    #[cfg(feature = "brotli-compression-stream")]
     Brotli(Box<BrotliDecoder<Vec<u8>>>),
     Deflate(ZlibDecoder<Vec<u8>>),
     DeflateRaw(DeflateDecoder<Vec<u8>>),
@@ -230,9 +230,10 @@ enum Decoder {
 }
 
 impl MallocSizeOf for Decoder {
-    #[expect(unsafe_code)]
+    #[cfg_attr(feature = "brotli-compression-stream", expect(unsafe_code))]
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         match self {
+            #[cfg(feature = "brotli-compression-stream")]
             Decoder::Brotli(decoder) => unsafe { ops.malloc_size_of(&**decoder) },
             Decoder::Deflate(decoder) => decoder.size_of(ops),
             Decoder::DeflateRaw(decoder) => decoder.size_of(ops),
@@ -250,25 +251,31 @@ struct DecompressionContext {
 }
 
 impl DecompressionContext {
-    fn new(format: CompressionFormat) -> DecompressionContext {
+    fn new(format: CompressionFormat) -> Fallible<DecompressionContext> {
         let decoder = match format {
+            #[cfg(feature = "brotli-compression-stream")]
             CompressionFormat::Brotli => {
                 Decoder::Brotli(Box::new(BrotliDecoder::new(Vec::new(), BROTLI_BUFFER_SIZE)))
+            },
+            #[cfg(not(feature = "brotli-compression-stream"))]
+            CompressionFormat::Brotli => {
+                return Err(Error::NotSupported(Some("Brotli not supported".into())));
             },
             CompressionFormat::Deflate => Decoder::Deflate(ZlibDecoder::new(Vec::new())),
             CompressionFormat::Deflate_raw => Decoder::DeflateRaw(DeflateDecoder::new(Vec::new())),
             CompressionFormat::Gzip => Decoder::Gzip(GzDecoder::new(Vec::new())),
         };
-        DecompressionContext {
+        Ok(DecompressionContext {
             decoder,
             is_ended: false,
-        }
+        })
     }
 
     fn decompress(&mut self, mut chunk: &[u8]) -> Result<Vec<u8>, io::Error> {
         let mut result = Vec::new();
 
         match &mut self.decoder {
+            #[cfg(feature = "brotli-compression-stream")]
             Decoder::Brotli(decoder) => {
                 while !chunk.is_empty() {
                     let written = decoder.write(chunk)?;
@@ -326,6 +333,7 @@ impl DecompressionContext {
         let mut result = Vec::new();
 
         match &mut self.decoder {
+            #[cfg(feature = "brotli-compression-stream")]
             Decoder::Brotli(decoder) => {
                 if decoder.close().is_ok() {
                     self.is_ended = true;

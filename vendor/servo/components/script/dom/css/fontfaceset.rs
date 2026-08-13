@@ -10,7 +10,7 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
 use script_bindings::like::Setlike;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 
 use crate::dom::bindings::codegen::Bindings::FontFaceSetBinding::FontFaceSetMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
@@ -51,12 +51,9 @@ impl FontFaceSet {
         global: &GlobalScope,
         proto: Option<HandleObject>,
     ) -> DomRoot<Self> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(FontFaceSet::new_inherited(cx, global)),
+        reflect_dom_object_with_proto(cx, Box::new(FontFaceSet::new_inherited(cx, global)),
             global,
-            proto,
-            cx,
-        )
+            proto)
     }
 
     pub(super) fn handle_font_face_status_changed(&self, font_face: &FontFace) {

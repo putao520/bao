@@ -338,9 +338,9 @@ unsafe fn arg_to_string(
     if val.is_undefined() || val.is_null() {
         return ::std::option::Option::None;
     }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let val_root = val);
-    let s = mozjs::rust::ToString(cx, val_root.handle().into());
+    let s = mozjs::rust::ToString(&mut wrapped_cx, val_root.handle().into());
     if s.is_null() {
         return ::std::option::Option::None;
     }

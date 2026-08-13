@@ -38,16 +38,15 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::element::Element;
 use crate::dom::eventtarget::{EventListeners, EventTarget, ListenerPhase};
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::html::form_controls::htmlinputelement::InputActivationState;
 use crate::dom::html::htmlslotelement::HTMLSlotElement;
-use crate::dom::html::input_element::InputActivationState;
 use crate::dom::mouseevent::MouseEvent;
+use crate::dom::node::virtualmethods::vtable_for;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::shadowroot::ShadowRoot;
 use crate::dom::types::{KeyboardEvent, PointerEvent, UserActivation};
-use crate::dom::virtualmethods::vtable_for;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
-use crate::task::TaskOnce;
+use crate::tasks::task::TaskOnce;
 
 /// <https://dom.spec.whatwg.org/#concept-event>
 #[dom_struct]
@@ -131,37 +130,37 @@ impl Event {
         }
     }
 
-    pub(crate) fn new_uninitialized(global: &GlobalScope, can_gc: CanGc) -> DomRoot<Event> {
-        Self::new_uninitialized_with_proto(global, None, can_gc)
+    pub(crate) fn new_uninitialized(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<Event> {
+        Self::new_uninitialized_with_proto(cx, global, None)
     }
 
     pub(crate) fn new_uninitialized_with_proto(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<Event> {
-        reflect_dom_object_with_proto(Box::new(Event::new_inherited()), global, proto, can_gc)
+        reflect_dom_object_with_proto(cx, Box::new(Event::new_inherited()), global, proto)
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         type_: Atom,
         bubbles: EventBubbles,
         cancelable: EventCancelable,
-        can_gc: CanGc,
     ) -> DomRoot<Event> {
-        Self::new_with_proto(global, None, type_, bubbles, cancelable, can_gc)
+        Self::new_with_proto(cx, global, None, type_, bubbles, cancelable)
     }
 
     fn new_with_proto(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         type_: Atom,
         bubbles: EventBubbles,
         cancelable: EventCancelable,
-        can_gc: CanGc,
     ) -> DomRoot<Event> {
-        let event = Event::new_uninitialized_with_proto(global, proto, can_gc);
+        let event = Event::new_uninitialized_with_proto(cx, global, proto);
 
         // NOTE: The spec doesn't tell us to call init event here, it just happens to do what we need.
         event.init_event(type_, bool::from(bubbles), bool::from(cancelable));
@@ -768,14 +767,14 @@ impl Event {
 
     /// <https://dom.spec.whatwg.org/#inner-event-creation-steps>
     fn inner_creation_steps(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         init: &EventBinding::EventInit,
-        can_gc: CanGc,
     ) -> DomRoot<Event> {
         // Step 1. Let event be the result of creating a new object using eventInterface.
         // If realm is non-null, then use that realm; otherwise, use the default behavior defined in Web IDL.
-        let event = Event::new_uninitialized_with_proto(global, proto, can_gc);
+        let event = Event::new_uninitialized_with_proto(cx, global, proto);
 
         // Step 2. Set event’s initialized flag.
         event.set_flags(EventFlags::Initialized);
@@ -835,15 +834,15 @@ impl Event {
 impl EventMethods<crate::DomTypeHolder> for Event {
     /// <https://dom.spec.whatwg.org/#concept-event-constructor>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         type_: DOMString,
         init: &EventBinding::EventInit,
     ) -> Fallible<DomRoot<Event>> {
         // Step 1. Let event be the result of running the inner event creation steps with
         // this interface, null, now, and eventInitDict.
-        let event = Event::inner_creation_steps(global, proto, init, can_gc);
+        let event = Event::inner_creation_steps(cx, global, proto, init);
 
         // Step 2. Initialize event’s type attribute to type.
         *event.type_.borrow_mut() = Atom::from(type_);
@@ -1067,9 +1066,9 @@ impl EventMethods<crate::DomTypeHolder> for Event {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-timestamp>
-    fn TimeStamp(&self) -> DOMHighResTimeStamp {
+    fn TimeStamp(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
         self.global()
-            .performance()
+            .performance(cx)
             .to_dom_high_res_time_stamp(self.time_stamp)
     }
 

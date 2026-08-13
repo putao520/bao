@@ -13,14 +13,14 @@ use js::realm::CurrentRealm;
 use js::rust::{HandleObject, HandleValue as SafeHandleValue, MutableHandleValue};
 use script_bindings::cell::DomRefCell;
 use script_bindings::record::Record;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use servo_constellation_traits::BlobImpl;
 
 use crate::dom::bindings::codegen::Bindings::ClipboardBinding::{
     ClipboardItemMethods, ClipboardItemOptions, PresentationStyle,
 };
 use crate::dom::bindings::conversions::{
-    ConversionResult, SafeFromJSValConvertible, StringificationBehavior,
+    ConversionResult, FromJSValConvertible, StringificationBehavior,
 };
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::frozenarray::CachedFrozenArray;
@@ -133,12 +133,9 @@ impl ClipboardItem {
         window: &Window,
         proto: Option<HandleObject>,
     ) -> DomRoot<ClipboardItem> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(ClipboardItem::new_inherited()),
+        reflect_dom_object_with_proto(cx, Box::new(ClipboardItem::new_inherited()),
             window,
-            proto,
-            cx,
-        )
+            proto)
     }
 }
 

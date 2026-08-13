@@ -972,7 +972,7 @@ unsafe extern "C" fn res_write_head(
                                     continue;
                                 }
                                 let key_str = jsid.to_string();
-                                let key = mozjs::conversions::jsstr_to_string(
+                                let key = mozjs::conversions::unsafe_jsstr_to_string(
                                     cx,
                                     NonNull::new_unchecked(key_str),
                                 );

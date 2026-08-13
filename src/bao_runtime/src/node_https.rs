@@ -2,7 +2,7 @@
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, StringValue, UndefinedValue};
 use mozjs::rooted;
@@ -178,25 +178,25 @@ unsafe extern "C" fn https_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let args = CallArgs::from_vp(vp, argc);
 
     let url = if argc > 0 && (*args.get(0).ptr).is_string() {
-        jsstr_to_string(cx, NonNull::new_unchecked((*args.get(0).ptr).to_string()))
+        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(0).ptr).to_string()))
     } else {
         String::new()
     };
 
     let method = if argc > 1 && (*args.get(1).ptr).is_string() {
-        jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
+        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
     } else {
         "GET".to_string()
     };
 
     let headers_json = if argc > 2 && (*args.get(2).ptr).is_string() {
-        jsstr_to_string(cx, NonNull::new_unchecked((*args.get(2).ptr).to_string()))
+        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(2).ptr).to_string()))
     } else {
         "{}".to_string()
     };
 
     let body = if argc > 3 && (*args.get(3).ptr).is_string() {
-        jsstr_to_string(cx, NonNull::new_unchecked((*args.get(3).ptr).to_string()))
+        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(3).ptr).to_string()))
     } else {
         String::new()
     };

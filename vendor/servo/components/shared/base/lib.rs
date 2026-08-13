@@ -12,10 +12,15 @@
 pub mod cross_process_instant;
 pub mod generic_channel;
 pub mod id;
+// Bao addition (BCE-20260628-002): thread-local RouterProxy for per-instance
+// IPC routing. Upstream removed this module; Bao's servo_base consumers
+// (net-traits, constellation, script) still route through it.
+#[allow(unsafe_code)]
 pub mod ipc_router;
 pub mod print_tree;
 mod rope;
 pub mod text;
+pub mod threadboost;
 pub mod threadpool;
 mod unicode_block;
 

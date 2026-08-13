@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
-import os
-import sys
 import json
+import os
 import re
-from typing import TYPE_CHECKING
+import sys
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 SCRIPT_PATH = os.path.abspath(os.path.dirname(__file__))
 SCRIPT_BINDINGS_ROOT = os.path.abspath(os.path.join(SCRIPT_PATH, ".."))
@@ -36,8 +36,8 @@ def main() -> None:
     config_file = "Bindings.conf"
 
     import WebIDL
-    from configuration import Configuration
     from codegen import CGBindingRoot, CGConcreteBindingRoot
+    from configuration import Configuration
 
     parser = WebIDL.Parser(make_dir(os.path.join(out_dir, "cache")))
     webidls = [name for name in os.listdir(webidls_dir) if name.endswith(".webidl")]
@@ -58,6 +58,7 @@ def main() -> None:
     config = Configuration(config_file, parser_results)
     make_dir(os.path.join(out_dir, "Bindings"))
     make_dir(os.path.join(out_dir, "ConcreteBindings"))
+    make_dir(os.path.join(out_dir, "WebGPUConcreteBindings"))
 
     for name, filename in [
         ("PrototypeList", "PrototypeList.rs"),
@@ -70,6 +71,7 @@ def main() -> None:
         ("ConcreteInheritTypes", "ConcreteInheritTypes.rs"),
         ("Bindings", "Bindings/mod.rs"),
         ("Bindings", "ConcreteBindings/mod.rs"),
+        ("Bindings", "WebGPUConcreteBindings/mod.rs"),
         ("UnionTypes", "GenericUnionTypes.rs"),
         ("ConcreteUnionTypes", "UnionTypes.rs"),
         ("DomTypes", "DomTypes.rs"),
@@ -80,6 +82,8 @@ def main() -> None:
     make_dir(doc_servo)
     generate(config, "SupportedDomApis", os.path.join(doc_servo, "apis.html"))
 
+    all_interface_descriptors = set(d.interface.identifier.name.replace('\'','') for d in config.descriptors)
+    s = set(item for item in config.sub_crates["script_webgpu"])
     for webidl in webidls:
         filename = os.path.join(webidls_dir, webidl)
         prefix = "Bindings/%sBinding" % webidl[:-len(".webidl")]
@@ -88,7 +92,16 @@ def main() -> None:
             with open(os.path.join(out_dir, prefix + ".rs"), "wb") as f:
                 f.write(module.encode("utf-8"))
         prefix = "ConcreteBindings/%sBinding" % webidl[:-len(".webidl")]
-        module = CGConcreteBindingRoot(config, prefix, filename).define()
+        module = CGConcreteBindingRoot(config, prefix, filename, only_interfaces = all_interface_descriptors -s).define()
+        if module:
+            with open(os.path.join(out_dir, prefix + ".rs"), "wb") as f:
+                f.write(module.encode("utf-8"))
+
+    for webidl in webidls:
+        filename = os.path.join(webidls_dir, webidl)
+        prefix = "ConcreteBindings/%sBinding" % webidl[:-len(".webidl")]
+        module = CGConcreteBindingRoot(config, prefix, filename, only_interfaces = s, generic=True).define()
+        prefix = "WebGPUConcreteBindings/%sBinding" % webidl[:-len(".webidl")]
         if module:
             with open(os.path.join(out_dir, prefix + ".rs"), "wb") as f:
                 f.write(module.encode("utf-8"))
@@ -119,7 +132,10 @@ def add_css_properties_attributes(css_properties_json: str, parser: Parser) -> N
             ["layout.threads", "layout_threads"],
             ["layout.columns.enabled", "layout_columns_enabled"],
             ["layout.grid.enabled", "layout_grid_enabled"],
+            ["layout.css.alpha-color-function.enabled", "layout_css_alpha_color_function_enabled"],
             ["layout.css.attr.enabled", "layout_css_attr_enabled"],
+            ["layout.css.ellipse-corners.enabled", "layout_css_ellipse_corners_enabled"],
+            ["layout.css.progress-function.enabled", "layout_css_progress_function_enabled"],
             ["layout.writing-mode.enabled", "layout_writing_mode_enabled"],
             ["layout.container-queries.enabled", "layout_container_queries_enabled"],
             ["layout.variable_fonts.enabled", "layout_variable_fonts_enabled"]

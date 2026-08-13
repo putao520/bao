@@ -5838,7 +5838,7 @@ dependencies = [
 
 [[package]]
 name = "mozjs"
-version = "0.15.14"
+version = "0.21.4"
 dependencies = [
  "bindgen",
  "cc",
@@ -5851,7 +5851,7 @@ dependencies = [
 
 [[package]]
 name = "mozjs_sys"
-version = "140.10.1-0"
+version = "140.13.0-4"
 dependencies = [
  "bindgen",
  "cc",
@@ -8553,6 +8553,7 @@ dependencies = [
 name = "servo-script-bindings"
 version = "0.2.0"
 dependencies = [
+ "atomic_refcell",
  "bitflags 2.11.1",
  "crossbeam-channel",
  "encoding_rs",
@@ -8580,6 +8581,7 @@ dependencies = [
  "servo-url",
  "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=05479131c60d6ef8e57b7c7f736d2be970fd4190)",
  "smallvec",
+ "strum 0.28.0",
  "stylo",
  "stylo_atoms",
  "tendril",

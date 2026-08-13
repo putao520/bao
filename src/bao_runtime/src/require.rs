@@ -6,7 +6,7 @@ use ::std::ptr::NonNull;
 use bun_core::ZBox;
 use bun_sys::fs as bun_fs;
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::glue::NewCompileOptions;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};

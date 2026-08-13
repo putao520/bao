@@ -22,7 +22,7 @@ use bun_dns::{
     freeaddrinfo,
 };
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
@@ -1451,7 +1451,7 @@ unsafe extern "C" fn dns_lookup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         return false;
     }
 
-    let hostname = jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
+    let hostname = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
 
     let cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
 
@@ -1538,7 +1538,7 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return false;
     }
 
-    let hostname = jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
+    let hostname = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
 
     let mut cx_wrap = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
@@ -1586,7 +1586,7 @@ unsafe extern "C" fn dns_resolve6(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         return false;
     }
 
-    let hostname = jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
+    let hostname = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
 
     let mut cx_wrap = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
@@ -1679,7 +1679,7 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return false;
     }
 
-    let ip_str = jsstr_to_string(cx, NonNull::new_unchecked(ip_val.to_string()));
+    let ip_str = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(ip_val.to_string()));
 
     let mut cx_wrap = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
@@ -1744,7 +1744,7 @@ unsafe extern "C" fn dns_lookup_service(cx: *mut JSContext, argc: u32, vp: *mut 
         JS_ReportErrorUTF8(cx, c"dns.lookupService address must be a string".as_ptr());
         return false;
     }
-    let addr_str = jsstr_to_string(cx, NonNull::new_unchecked(addr_val.to_string()));
+    let addr_str = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(addr_val.to_string()));
 
     let port: u16 = if argc > 1 {
         let port_val = *args.get(1).ptr;
@@ -1976,7 +1976,7 @@ unsafe extern "C" fn dns_set_servers(cx: *mut JSContext, argc: u32, vp: *mut JSV
             },
         );
         if elem.is_string() {
-            let s = jsstr_to_string(cx, NonNull::new_unchecked(elem.to_string()));
+            let s = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(elem.to_string()));
             new_servers.push(s);
         }
     }
@@ -2005,13 +2005,13 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         JS_ReportErrorUTF8(cx, c"dns.resolve hostname must be a string".as_ptr());
         return false;
     }
-    let hostname = jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
+    let hostname = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
 
     // Determine rrtype — default "A"
     let rrtype = if argc > 1 {
         let rrtype_val = *args.get(1).ptr;
         if rrtype_val.is_string() {
-            jsstr_to_string(cx, NonNull::new_unchecked(rrtype_val.to_string()))
+            unsafe_jsstr_to_string(cx, NonNull::new_unchecked(rrtype_val.to_string()))
         } else {
             "A".to_string()
         }

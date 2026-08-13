@@ -13,7 +13,7 @@ use js::rust::{HandleObject, HandleValue};
 use net_traits::http_status::HttpStatus;
 use script_bindings::cell::DomRefCell;
 use script_bindings::cformat;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use servo_url::ServoUrl;
 use url::Position;
 
@@ -96,12 +96,9 @@ impl Response {
         global: &GlobalScope,
         proto: Option<HandleObject>,
     ) -> DomRoot<Response> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(Response::new_inherited(cx, global)),
+        reflect_dom_object_with_proto(cx, Box::new(Response::new_inherited(cx, global)),
             global,
-            proto,
-            cx,
-        )
+            proto)
     }
 
     pub(crate) fn error_stream(&self, cx: &mut js::context::JSContext, error: Error) {

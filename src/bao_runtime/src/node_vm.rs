@@ -28,7 +28,7 @@
 use ::std::cell::RefCell;
 use ::std::ptr::{self, NonNull};
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
@@ -514,7 +514,7 @@ fn collect_sandbox_properties(
         if key_str_ptr.is_null() {
             continue;
         }
-        let key = unsafe { jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr)) };
+        let key = unsafe { unsafe_jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr)) };
 
         // Get the property value by id using the raw JS_GetPropertyById
         // (takes *mut JSContext + raw Handle types from mozjs_sys).

@@ -2,7 +2,7 @@
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
@@ -1149,7 +1149,7 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
                     if key_str_ptr.is_null() {
                         continue;
                     }
-                    let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str_ptr));
+                    let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_str_ptr));
                     let c_key = ZBox::from_bytes(key.as_bytes());
                     let mut v = UndefinedValue();
                     JS_GetProperty(
@@ -1988,8 +1988,8 @@ unsafe extern "C" fn util_is_deep_strict_equal(
         || a.is_int32() && b.is_int32() && a.to_int32() == b.to_int32()
         || a.is_double() && b.is_double() && a.to_double() == b.to_double()
         || a.is_string() && b.is_string() && {
-            let sa = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(a.to_string()));
-            let sb = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(b.to_string()));
+            let sa = unsafe_jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(a.to_string()));
+            let sb = unsafe_jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(b.to_string()));
             sa == sb
         };
     args.rval().set(BooleanValue(equal));

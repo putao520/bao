@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
 use js::jsapi::Heap;
 use js::jsval::JSVal;
 use js::rust::{HandleObject, HandleValue, MutableHandleValue};
@@ -27,55 +28,43 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::messageport::MessagePort;
 use crate::dom::serviceworker::ServiceWorker;
 use crate::dom::serviceworkerglobalscope::ServiceWorkerGlobalScope;
-use crate::script_runtime::{CanGc, JSContext};
 
 /// <https://w3c.github.io/ServiceWorker/#dom-extendablemessageevent-source>
-#[derive(Clone, JSTraceable, MallocSizeOf)]
-pub(crate) enum MessageSource {
-    Client(DomRoot<Client>),
-    ServiceWorker(DomRoot<ServiceWorker>),
-    MessagePort(DomRoot<MessagePort>),
-}
-
-impl From<ClientOrServiceWorkerOrMessagePort> for MessageSource {
-    fn from(value: ClientOrServiceWorkerOrMessagePort) -> Self {
-        match value {
-            ClientOrServiceWorkerOrMessagePort::Client(client) => MessageSource::Client(client),
-            ClientOrServiceWorkerOrMessagePort::ServiceWorker(sw) => {
-                MessageSource::ServiceWorker(sw)
-            },
-            ClientOrServiceWorkerOrMessagePort::MessagePort(port) => {
-                MessageSource::MessagePort(port)
-            },
-        }
-    }
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+enum MessageSource {
+    Client(Dom<Client>),
+    ServiceWorker(Dom<ServiceWorker>),
+    MessagePort(Dom<MessagePort>),
 }
 
 impl From<&ClientOrServiceWorkerOrMessagePort> for MessageSource {
     fn from(value: &ClientOrServiceWorkerOrMessagePort) -> Self {
         match value {
             ClientOrServiceWorkerOrMessagePort::Client(client) => {
-                MessageSource::Client(DomRoot::from_ref(client))
+                MessageSource::Client(Dom::from_ref(client))
             },
             ClientOrServiceWorkerOrMessagePort::ServiceWorker(sw) => {
-                MessageSource::ServiceWorker(DomRoot::from_ref(sw))
+                MessageSource::ServiceWorker(Dom::from_ref(sw))
             },
             ClientOrServiceWorkerOrMessagePort::MessagePort(port) => {
-                MessageSource::MessagePort(DomRoot::from_ref(port))
+                MessageSource::MessagePort(Dom::from_ref(port))
             },
         }
     }
 }
 
-impl From<MessageSource> for ClientOrServiceWorkerOrMessagePort {
-    fn from(value: MessageSource) -> Self {
+impl From<&MessageSource> for ClientOrServiceWorkerOrMessagePort {
+    fn from(value: &MessageSource) -> Self {
         match value {
-            MessageSource::Client(client) => ClientOrServiceWorkerOrMessagePort::Client(client),
+            MessageSource::Client(client) => {
+                ClientOrServiceWorkerOrMessagePort::Client(DomRoot::from_ref(client))
+            },
             MessageSource::ServiceWorker(sw) => {
-                ClientOrServiceWorkerOrMessagePort::ServiceWorker(sw)
+                ClientOrServiceWorkerOrMessagePort::ServiceWorker(DomRoot::from_ref(sw))
             },
             MessageSource::MessagePort(port) => {
-                ClientOrServiceWorkerOrMessagePort::MessagePort(port)
+                ClientOrServiceWorkerOrMessagePort::MessagePort(DomRoot::from_ref(port))
             },
         }
     }
@@ -106,7 +95,7 @@ impl ExtendableMessageEvent {
     pub(crate) fn new_inherited(
         origin: DOMString,
         lastEventId: DOMString,
-        source: Option<MessageSource>,
+        source: Option<&ClientOrServiceWorkerOrMessagePort>,
         ports: Vec<DomRoot<MessagePort>>,
     ) -> ExtendableMessageEvent {
         ExtendableMessageEvent {
@@ -114,7 +103,7 @@ impl ExtendableMessageEvent {
             data: Heap::default(),
             origin,
             lastEventId,
-            source,
+            source: source.map(Into::into),
             ports: ports
                 .into_iter()
                 .map(|port| Dom::from_ref(&*port))
@@ -124,7 +113,8 @@ impl ExtendableMessageEvent {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         type_: Atom,
         bubbles: bool,
@@ -132,11 +122,11 @@ impl ExtendableMessageEvent {
         data: HandleValue,
         origin: DOMString,
         lastEventId: DOMString,
-        source: Option<MessageSource>,
+        source: Option<&ClientOrServiceWorkerOrMessagePort>,
         ports: Vec<DomRoot<MessagePort>>,
-        can_gc: CanGc,
     ) -> DomRoot<ExtendableMessageEvent> {
         Self::new_with_proto(
+            cx,
             global,
             None,
             type_,
@@ -147,12 +137,12 @@ impl ExtendableMessageEvent {
             lastEventId,
             source,
             ports,
-            can_gc,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn new_with_proto(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         type_: Atom,
@@ -161,9 +151,8 @@ impl ExtendableMessageEvent {
         data: HandleValue,
         origin: DOMString,
         lastEventId: DOMString,
-        source: Option<MessageSource>,
+        source: Option<&ClientOrServiceWorkerOrMessagePort>,
         ports: Vec<DomRoot<MessagePort>>,
-        can_gc: CanGc,
     ) -> DomRoot<ExtendableMessageEvent> {
         let ev = Box::new(ExtendableMessageEvent::new_inherited(
             origin,
@@ -171,7 +160,7 @@ impl ExtendableMessageEvent {
             source,
             ports,
         ));
-        let ev = reflect_dom_object_with_proto(ev, global, proto, can_gc);
+        let ev = reflect_dom_object_with_proto(cx, ev, global, proto);
         {
             let event = ev.upcast::<Event>();
             event.init_event(type_, bubbles, cancelable);
@@ -180,19 +169,17 @@ impl ExtendableMessageEvent {
 
         ev
     }
-}
 
-#[expect(non_snake_case)]
-impl ExtendableMessageEvent {
     pub(crate) fn dispatch_jsval(
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         target: &EventTarget,
         scope: &GlobalScope,
         message: HandleValue,
-        source: Option<MessageSource>,
+        source: Option<&ClientOrServiceWorkerOrMessagePort>,
         ports: Vec<DomRoot<MessagePort>>,
     ) {
         let Extendablemessageevent = ExtendableMessageEvent::new(
+            cx,
             scope,
             atom!("message"),
             false,
@@ -202,30 +189,22 @@ impl ExtendableMessageEvent {
             DOMString::new(),
             source,
             ports,
-            CanGc::from_cx(cx),
         );
         Extendablemessageevent.upcast::<Event>().fire(cx, target);
     }
 
-    pub(crate) fn dispatch_error(
-        cx: &mut js::context::JSContext,
-        target: &EventTarget,
-        scope: &GlobalScope,
-    ) {
-        let init = ExtendableMessageEventBinding::ExtendableMessageEventInit::empty();
+    pub(crate) fn dispatch_error(cx: &mut JSContext, target: &EventTarget, scope: &GlobalScope) {
         let ExtendableMsgEvent = ExtendableMessageEvent::new(
+            cx,
             scope,
             atom!("messageerror"),
-            init.parent.parent.bubbles,
-            init.parent.parent.cancelable,
-            init.data.handle(),
-            init.origin.clone(),
-            init.lastEventId.clone(),
-            init.source
-                .as_ref()
-                .and_then(|s| s.as_ref().map(|s| s.into())),
-            init.ports.clone(),
-            CanGc::from_cx(cx),
+            false,
+            false,
+            HandleValue::null(),
+            DOMString::new(),
+            DOMString::new(),
+            None,
+            Vec::new(),
         );
         ExtendableMsgEvent.upcast::<Event>().fire(cx, target);
     }
@@ -234,14 +213,15 @@ impl ExtendableMessageEvent {
 impl ExtendableMessageEventMethods<crate::DomTypeHolder> for ExtendableMessageEvent {
     /// <https://w3c.github.io/ServiceWorker/#dom-extendablemessageevent-extendablemessageevent>
     fn Constructor(
+        cx: &mut JSContext,
         worker: &ServiceWorkerGlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         type_: DOMString,
         init: RootedTraceableBox<ExtendableMessageEventBinding::ExtendableMessageEventInit>,
     ) -> Fallible<DomRoot<ExtendableMessageEvent>> {
         let global = worker.upcast::<GlobalScope>();
         let ev = ExtendableMessageEvent::new_with_proto(
+            cx,
             global,
             proto,
             Atom::from(type_),
@@ -250,17 +230,14 @@ impl ExtendableMessageEventMethods<crate::DomTypeHolder> for ExtendableMessageEv
             init.data.handle(),
             init.origin.clone(),
             init.lastEventId.clone(),
-            init.source
-                .as_ref()
-                .and_then(|s| s.as_ref().map(|s| s.into())),
+            init.source.as_ref().and_then(Option::as_ref),
             vec![],
-            can_gc,
         );
         Ok(ev)
     }
 
     /// <https://w3c.github.io/ServiceWorker/#dom-extendablemessageevent-data>
-    fn Data(&self, _cx: JSContext, mut retval: MutableHandleValue) {
+    fn Data(&self, _cx: &mut JSContext, mut retval: MutableHandleValue) {
         retval.set(self.data.get())
     }
 
@@ -281,21 +258,20 @@ impl ExtendableMessageEventMethods<crate::DomTypeHolder> for ExtendableMessageEv
 
     /// <https://w3c.github.io/ServiceWorker/#dom-extendablemessageevent-source>
     fn GetSource(&self) -> Option<ClientOrServiceWorkerOrMessagePort> {
-        self.source.clone().map(|s| s.into())
+        self.source.as_ref().map(Into::into)
     }
 
     /// <https://w3c.github.io/ServiceWorker/#extendablemessage-event-ports>
-    fn Ports(&self, cx: JSContext, can_gc: CanGc, retval: MutableHandleValue) {
+    fn Ports(&self, cx: &mut JSContext, retval: MutableHandleValue) {
         self.frozen_ports.get_or_init(
+            cx,
             || {
                 self.ports
                     .iter()
                     .map(|port| DomRoot::from_ref(&**port))
                     .collect()
             },
-            cx,
             retval,
-            can_gc,
         );
     }
 }

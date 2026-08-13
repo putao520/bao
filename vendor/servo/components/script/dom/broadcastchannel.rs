@@ -7,7 +7,7 @@ use std::cell::Cell;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::{HandleObject, HandleValue};
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_constellation_traits::BroadcastChannelMsg;
 use uuid::Uuid;
 
@@ -36,12 +36,9 @@ impl BroadcastChannel {
         proto: Option<HandleObject>,
         name: DOMString,
     ) -> DomRoot<BroadcastChannel> {
-        let channel = reflect_dom_object_with_proto_and_cx(
-            Box::new(BroadcastChannel::new_inherited(name)),
+        let channel = reflect_dom_object_with_proto(cx, Box::new(BroadcastChannel::new_inherited(name)),
             global,
-            proto,
-            cx,
-        );
+            proto);
         global.track_broadcast_channel(&channel);
         channel
     }

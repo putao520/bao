@@ -563,9 +563,6 @@ wrap!(jsapi: pub fn JS_SetImmutablePrototype(cx: &mut JSContext, obj: HandleObje
 wrap!(jsapi: pub fn JS_AssignObject(cx: &mut JSContext, target: HandleObject, src: HandleObject) -> bool);
 wrap!(jsapi: pub fn JS_SetAllNonReservedSlotsToUndefined(obj: HandleObject));
 wrap!(jsapi: pub fn JS_NewFunction(cx: &mut JSContext, call: JSNative, nargs: ::std::os::raw::c_uint, flags: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSFunction);
-// Bao extension: callable object whose typeof is "undefined".
-wrap!(jsapi: pub fn JS_NewEmulatesUndefinedFunction(cx: &mut JSContext, native: JSNative, nargs: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSObject);
-
 wrap!(jsapi: pub fn JS_GetFunctionId(cx: &JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool);
 wrap!(jsapi: pub fn JS_GetFunctionDisplayId(cx: &JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool);
 wrap!(jsapi: pub fn JS_GetFunctionLength(cx: &mut JSContext, fun: HandleFunction, length: *mut u16) -> bool);

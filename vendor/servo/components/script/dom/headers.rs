@@ -7,6 +7,7 @@ use std::str::{self, FromStr};
 
 use dom_struct::dom_struct;
 use http::header::{HeaderMap as HyperHeaders, HeaderName, HeaderValue};
+use js::context::JSContext;
 use js::rust::HandleObject;
 use net_traits::fetch::headers::{
     extract_mime_type, get_decode_and_split_header_value, get_value_from_header_list,
@@ -24,7 +25,6 @@ use crate::dom::bindings::iterable::Iterable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::{ByteString, is_token};
 use crate::dom::globalscope::GlobalScope;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct Headers {
@@ -53,28 +53,28 @@ impl Headers {
         }
     }
 
-    pub(crate) fn new(global: &GlobalScope, can_gc: CanGc) -> DomRoot<Headers> {
-        Self::new_with_proto(global, None, can_gc)
+    pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<Headers> {
+        Self::new_with_proto(cx, global, None)
     }
 
     fn new_with_proto(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<Headers> {
-        reflect_dom_object_with_proto(Box::new(Headers::new_inherited()), global, proto, can_gc)
+        reflect_dom_object_with_proto(cx, Box::new(Headers::new_inherited()), global, proto)
     }
 }
 
 impl HeadersMethods<crate::DomTypeHolder> for Headers {
     /// <https://fetch.spec.whatwg.org/#dom-headers>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         init: Option<HeadersInit>,
     ) -> Fallible<DomRoot<Headers>> {
-        let dom_headers_new = Headers::new_with_proto(global, proto, can_gc);
+        let dom_headers_new = Headers::new_with_proto(cx, global, proto);
         dom_headers_new.fill(init)?;
         Ok(dom_headers_new)
     }
@@ -114,18 +114,15 @@ impl HeadersMethods<crate::DomTypeHolder> for Headers {
         }
 
         // 4. Append (name, value) to headers’s header list.
-        match HeaderValue::from_bytes(&valid_value) {
-            Ok(value) => {
-                self.header_list
-                    .borrow_mut()
-                    .append(HeaderName::from_str(&valid_name).unwrap(), value);
+        match (
+            HeaderName::from_str(&valid_name),
+            HeaderValue::from_bytes(&valid_value),
+        ) {
+            (Ok(name), Ok(value)) => {
+                self.header_list.borrow_mut().append(name, value);
             },
-            Err(_) => {
-                // can't add the header, but we don't need to panic the browser over it
-                warn!(
-                    "Servo thinks \"{:?}\" is a valid HTTP header value but HeaderValue doesn't.",
-                    valid_value
-                );
+            _ => {
+                warn!("Could not set header \"{valid_name:?}: {valid_value:?}\"");
             },
         };
 
@@ -223,18 +220,15 @@ impl HeadersMethods<crate::DomTypeHolder> for Headers {
 
         // 4. Set (name, value) in this’s header list.
         // https://fetch.spec.whatwg.org/#concept-header-list-set
-        match HeaderValue::from_bytes(&valid_value) {
-            Ok(value) => {
-                self.header_list
-                    .borrow_mut()
-                    .insert(HeaderName::from_str(&valid_name).unwrap(), value);
+        match (
+            HeaderName::from_str(&valid_name),
+            HeaderValue::from_bytes(&valid_value),
+        ) {
+            (Ok(name), Ok(value)) => {
+                self.header_list.borrow_mut().insert(name, value);
             },
-            Err(_) => {
-                // can't add the header, but we don't need to panic the browser over it
-                warn!(
-                    "Servo thinks \"{:?}\" is a valid HTTP header value but HeaderValue doesn't.",
-                    valid_value
-                );
+            _ => {
+                warn!("Could not set header:  \"{valid_name:?}: {valid_value:?}\"");
             },
         };
 
@@ -248,7 +242,7 @@ impl HeadersMethods<crate::DomTypeHolder> for Headers {
 }
 
 impl Headers {
-    pub(crate) fn copy_from_headers(&self, headers: DomRoot<Headers>) -> ErrorResult {
+    pub(crate) fn copy_from_headers(&self, headers: &Headers) -> ErrorResult {
         for (name, value) in headers.header_list.borrow().iter() {
             self.Append(
                 ByteString::new(Vec::from(name.as_str())),
@@ -286,14 +280,14 @@ impl Headers {
         }
     }
 
-    pub(crate) fn for_request(global: &GlobalScope, can_gc: CanGc) -> DomRoot<Headers> {
-        let headers_for_request = Headers::new(global, can_gc);
+    pub(crate) fn for_request(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<Headers> {
+        let headers_for_request = Headers::new(cx, global);
         headers_for_request.guard.set(Guard::Request);
         headers_for_request
     }
 
-    pub(crate) fn for_response(global: &GlobalScope, can_gc: CanGc) -> DomRoot<Headers> {
-        let headers_for_response = Headers::new(global, can_gc);
+    pub(crate) fn for_response(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<Headers> {
+        let headers_for_response = Headers::new(cx, global);
         headers_for_response.guard.set(Guard::Response);
         headers_for_response
     }
@@ -377,20 +371,20 @@ impl Iterable for Headers {
     type Key = ByteString;
     type Value = ByteString;
 
-    fn get_iterable_length(&self) -> u32 {
+    fn get_iterable_length(&self, _cx: &mut JSContext) -> u32 {
         let sorted_header_vec = self.sort_and_combine();
         sorted_header_vec.len() as u32
     }
 
-    fn get_value_at_index(&self, n: u32) -> ByteString {
+    fn get_value_at_index(&self, _cx: &mut JSContext, index: u32) -> ByteString {
         let sorted_header_vec = self.sort_and_combine();
-        let value = sorted_header_vec[n as usize].1.clone();
+        let value = sorted_header_vec[index as usize].1.clone();
         ByteString::new(value)
     }
 
-    fn get_key_at_index(&self, n: u32) -> ByteString {
+    fn get_key_at_index(&self, _cx: &mut JSContext, index: u32) -> ByteString {
         let sorted_header_vec = self.sort_and_combine();
-        let key = sorted_header_vec[n as usize].0.clone();
+        let key = sorted_header_vec[index as usize].0.clone();
         ByteString::new(key.into_bytes().to_vec())
     }
 }

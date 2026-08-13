@@ -4,6 +4,7 @@
 
 use std::fmt;
 use std::marker::PhantomData;
+use std::panic::Location;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -27,6 +28,22 @@ impl<T: Serialize> GenericOneshotSender<T> {
                 sender.send(Ok(msg)).map_err(|_| SendError::Disconnected)
             },
         }
+    }
+
+    #[inline]
+    #[track_caller]
+    /// Send a message across the channel or log a warning if it fails
+    pub fn send_or_warn(self, msg: T) {
+        if let Err(error) = self.send(msg) {
+            let location = Location::caller();
+            log::warn!("Failed to send msg due to `{error}` at {location:?}");
+        }
+    }
+
+    #[inline]
+    /// Send a message across the channel, ignoring the result.
+    pub fn send_or_ignore(self, msg: T) {
+        let _ = self.send(msg);
     }
 }
 
@@ -55,7 +72,8 @@ pub struct GenericOneshotReceiver<T: Serialize + for<'de> Deserialize<'de>>(
     GenericReceiverVariants<T>,
 );
 
-/// Creates a oneshot generic channel. This channel allows only a fixed capacity and might have other optimizations.
+/// Creates a oneshot generic channel used to send only a single message, similar tokio::sync::oneshot.
+/// This is not the same as ipc_channel::oneshot.
 /// The send and receive methods will consume the Sender/Receiver.
 /// We will automatically select ipc or crossbeam channels.
 pub fn oneshot<T>() -> Option<(GenericOneshotSender<T>, GenericOneshotReceiver<T>)>

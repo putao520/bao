@@ -21,6 +21,12 @@ enum GenericSharedMemoryVariant {
     InProcess(Arc<Vec<u8>>),
 }
 
+impl AsRef<[u8]> for GenericSharedMemory {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
 impl Deref for GenericSharedMemory {
     type Target = [u8];
 
@@ -65,6 +71,34 @@ impl GenericSharedMemory {
                 data;
                 length
             ])))
+        }
+    }
+
+    /// Build a `GenericSharedMemory` from a `Vec<u8>`.
+    ///
+    /// In single-process mode this allows reusing the Vec and the only cost is
+    /// allocating a new Arc. Prefer over `Self::from_bytes` if ownership is
+    /// transferred.
+    pub fn from_vec(bytes: Vec<u8>) -> Self {
+        if servo_config::opts::get().multiprocess || servo_config::opts::get().force_ipc {
+            GenericSharedMemory(GenericSharedMemoryVariant::Ipc(
+                IpcSharedMemory::from_bytes(&bytes),
+            ))
+        } else {
+            GenericSharedMemory(GenericSharedMemoryVariant::InProcess(Arc::new(bytes)))
+        }
+    }
+
+    /// Build a `GenericSharedMemory` from an `Arc<Vec<u8>>`.
+    ///
+    /// In single-process mode this allows creating shared memory without copying.
+    pub fn from_arc_vec(arc: Arc<Vec<u8>>) -> Self {
+        if servo_config::opts::get().multiprocess || servo_config::opts::get().force_ipc {
+            GenericSharedMemory(GenericSharedMemoryVariant::Ipc(
+                IpcSharedMemory::from_bytes(&arc),
+            ))
+        } else {
+            GenericSharedMemory(GenericSharedMemoryVariant::InProcess(arc))
         }
     }
 

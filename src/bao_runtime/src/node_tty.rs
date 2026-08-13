@@ -2,7 +2,7 @@
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
@@ -499,7 +499,7 @@ unsafe extern "C" fn tty_write_stream_write(cx: *mut JSContext, argc: u32, vp: *
     if argc > 0 {
         let v = *args.get(0).ptr;
         if v.is_string() {
-            let s = jsstr_to_string(cx, NonNull::new_unchecked(v.to_string()));
+            let s = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(v.to_string()));
             let bytes = s.as_bytes();
             libc::write(
                 fd,

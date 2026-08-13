@@ -176,7 +176,7 @@ pub unsafe fn js_to_rust_string(
 ) -> String {
     let ptr = val.to_string();
     match ::std::ptr::NonNull::new(ptr) {
-        Some(nn) => mozjs::conversions::jsstr_to_string(cx, nn),
+        Some(nn) => mozjs::conversions::unsafe_jsstr_to_string(cx, nn),
         None => String::new(),
     }
 }
@@ -190,7 +190,7 @@ pub unsafe fn jsstr_to_rust_string(
     s: *mut mozjs::jsapi::JSString,
 ) -> String {
     match ::std::ptr::NonNull::new(s) {
-        Some(nn) => mozjs::conversions::jsstr_to_string(cx, nn),
+        Some(nn) => mozjs::conversions::unsafe_jsstr_to_string(cx, nn),
         None => String::new(),
     }
 }

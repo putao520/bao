@@ -8,7 +8,8 @@ use std::ffi::CStr;
 use std::os::raw;
 use std::ptr::{self, NonNull};
 
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
+use js::conversions::ToJSValConvertible;
 use js::gc::RootedVec;
 use js::glue::{
     CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData, WriteBytesToJSStructuredCloneData,
@@ -26,7 +27,7 @@ use js::rust::{
     CustomAutoRooterGuard, HandleValue, JSAutoStructuredCloneBufferWrapper, MutableHandleValue,
 };
 use rustc_hash::FxHashMap;
-use script_bindings::conversions::{IDLInterface, SafeToJSValConvertible};
+use script_bindings::conversions::IDLInterface;
 use servo_base::id::{
     BlobId, CryptoKeyId, DomExceptionId, DomMatrixId, DomPointId, DomQuadId, DomRectId, FileId,
     FileListId, ImageBitmapId, ImageDataId, Index, MessagePortId, NamespaceIndex,
@@ -64,7 +65,6 @@ use crate::dom::types::{
     QuotaExceededError, TransformStream,
 };
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::CanGc;
 
 // TODO: Should we add Min and Max const to https://github.com/servo/rust-mozjs/blob/master/src/consts.rs?
 // TODO: Determine for sure which value Min and Max should have.
@@ -203,13 +203,14 @@ unsafe fn read_object<T: Serializable>(
 }
 
 unsafe fn write_object<T: Serializable>(
+    no_gc: &NoGC,
     interface: SerializableInterface,
     owner: &GlobalScope,
     object: &T,
     w: *mut JSStructuredCloneWriter,
     sc_writer: &mut StructuredDataWriter,
 ) -> bool {
-    if let Ok((new_id, serialized)) = object.serialize() {
+    if let Ok((new_id, serialized)) = object.serialize(no_gc) {
         let objects = T::serialized_storage(StructuredData::Writer(sc_writer))
             .get_or_insert(FxHashMap::default());
         objects.insert(new_id, serialized);
@@ -256,8 +257,8 @@ unsafe extern "C" fn read_callback(
 
     let sc_reader = unsafe { &mut *(closure as *mut StructuredDataReader<'_>) };
 
-    let realm = CurrentRealm::assert(cx);
-    let global = GlobalScope::from_current_realm(&realm);
+    let mut realm = CurrentRealm::assert(cx);
+    let global = GlobalScope::from_current_realm(&mut realm);
 
     for serializable in SerializableInterface::iter() {
         if tag == StructuredCloneTags::from(serializable) as u32 {
@@ -282,9 +283,9 @@ unsafe fn try_serialize<T: Serializable + IDLInterface>(
     w: *mut JSStructuredCloneWriter,
     writer: &mut StructuredDataWriter,
 ) -> Result<bool, OperationError> {
-    let object = unsafe { root_from_object::<T>(*object, cx.raw_cx()) };
+    let object = unsafe { root_from_object::<T>(cx, *object) };
     if let Ok(obj) = object {
-        return unsafe { Ok(write_object(val, global, &*obj, w, writer)) };
+        return unsafe { Ok(write_object(cx.no_gc(), val, global, &*obj, w, writer)) };
     }
     Err(OperationError::InterfaceDoesNotMatch)
 }
@@ -331,8 +332,8 @@ unsafe extern "C" fn write_callback(
 
     let sc_writer = unsafe { &mut *(closure as *mut StructuredDataWriter) };
 
-    let realm = CurrentRealm::assert(cx);
-    let global = GlobalScope::from_current_realm(&realm);
+    let mut realm = CurrentRealm::assert(cx);
+    let global = GlobalScope::from_current_realm(&mut realm);
 
     for serializable in SerializableInterface::iter() {
         let serializer = serialize_for_type(serializable);
@@ -426,13 +427,13 @@ unsafe extern "C" fn read_transfer_callback(
             NonNull::new(cx).expect("JSContext pointer should not be null in SM hook"),
         )
     };
-    let mut cx = CurrentRealm::assert(&mut cx);
-    let owner = GlobalScope::from_current_realm(&cx);
+    let mut realm = CurrentRealm::assert(&mut cx);
+    let owner = GlobalScope::from_current_realm(&mut realm);
 
     for transferrable in TransferrableInterface::iter() {
         if tag == StructuredCloneTags::from(transferrable) as u32 {
             let transfer_receiver = receiver_for_type(transferrable);
-            if transfer_receiver(&mut cx, &owner, sc_reader, extra_data, return_object).is_ok() {
+            if transfer_receiver(&mut realm, &owner, sc_reader, extra_data, return_object).is_ok() {
                 return true;
             }
         }
@@ -449,7 +450,7 @@ unsafe fn try_transfer<T: Transferable + IDLInterface>(
     ownership: *mut TransferableOwnership,
     extra_data: *mut u64,
 ) -> Result<(), OperationError> {
-    let object = unsafe { root_from_object::<T>(*obj, cx.raw_cx()) };
+    let object = unsafe { root_from_object::<T>(cx, *obj) };
     let Ok(object) = object else {
         return Err(OperationError::InterfaceDoesNotMatch);
     };
@@ -564,7 +565,7 @@ unsafe fn can_transfer_for_type(
         cx: &mut JSContext,
         obj: RawHandleObject,
     ) -> Result<bool, ()> {
-        unsafe { root_from_object::<T>(*obj, cx.raw_cx()).map(|o| Transferable::can_transfer(&*o)) }
+        unsafe { root_from_object::<T>(cx, *obj).map(|o| Transferable::can_transfer(&*o)) }
     }
 
     unsafe {
@@ -738,7 +739,7 @@ pub(crate) fn write(
     unsafe {
         rooted!(&in(cx) let mut val = UndefinedValue());
         if let Some(transfer) = transfer {
-            transfer.safe_to_jsval(cx.into(), val.handle_mut(), CanGc::from_cx(cx));
+            transfer.safe_to_jsval(cx, val.handle_mut());
         }
         let mut sc_writer = StructuredDataWriter::default();
         let sc_writer_ptr = &mut sc_writer as *mut _;
@@ -872,8 +873,7 @@ pub(crate) fn read(
 
         let mut message_ports = vec![];
         for reflector in sc_reader.roots.iter() {
-            let Ok(message_port) = root_from_object::<MessagePort>(reflector.get(), cx.raw_cx())
-            else {
+            let Ok(message_port) = root_from_object::<MessagePort>(cx, reflector.get()) else {
                 continue;
             };
             message_ports.push(message_port);

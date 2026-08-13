@@ -9,7 +9,7 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use rustc_hash::FxHashMap;
 use script_bindings::reflector::{
-    Reflector, reflect_dom_object_with_cx, reflect_dom_object_with_proto_and_cx,
+    Reflector, reflect_dom_object_with_cx, reflect_dom_object_with_proto,
 };
 use servo_base::id::{DomRectId, DomRectIndex};
 use servo_constellation_traits::DomRect;
@@ -52,12 +52,9 @@ impl DOMRectReadOnly {
         width: f64,
         height: f64,
     ) -> DomRoot<DOMRectReadOnly> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(DOMRectReadOnly::new_inherited(x, y, width, height)),
+        reflect_dom_object_with_proto(cx, Box::new(DOMRectReadOnly::new_inherited(x, y, width, height)),
             global,
-            proto,
-            cx,
-        )
+            proto)
     }
 
     pub(crate) fn new_from_dictionary(
@@ -66,12 +63,9 @@ impl DOMRectReadOnly {
         proto: Option<HandleObject>,
         dictionary: &DOMRectInit,
     ) -> DomRoot<DOMRectReadOnly> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(create_a_domrectreadonly_from_the_dictionary(dictionary)),
+        reflect_dom_object_with_proto(cx, Box::new(create_a_domrectreadonly_from_the_dictionary(dictionary)),
             global,
-            proto,
-            cx,
-        )
+            proto)
     }
 
     pub(crate) fn set_x(&self, value: f64) {

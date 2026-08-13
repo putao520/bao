@@ -157,7 +157,7 @@ bool BaselineFrame::initForOsr(InterpreterFrame* fp, uint32_t numStackValues) {
   // servo's ScriptThread), `cx->activation()` can be NULL when OSR is entered
   // from a C++ frame with no live JitActivation pushed, and even when a
   // JitActivation exists, its `prev()` can be NULL (no interpreter activation
-  // beneath). Dereferencing either SIGSEGVs deterministically (`Script#NN`
+  // on the stack). Dereferencing either SIGSEGVs deterministically (`Script#NN`
   // thread in `pagepool_chaos_memory_safety`).
   // Bail out cleanly (return false → caller falls back to the interpreter)
   // instead of crashing. This is conservative: when a real interpreter

@@ -2,16 +2,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::sync::{Arc, OnceLock};
+
 use dom_struct::dom_struct;
-use ipc_channel::ipc::{self, IpcReceiver};
-use ipc_channel::router::ROUTER;
+use js::context::{JSContext, NoGC};
 use js::rust::{CustomAutoRooterGuard, HandleObject};
 use js::typedarray::{Float32Array, Uint8Array};
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::reflect_dom_object_with_proto;
+use servo_base::generic_channel::GenericCallback;
 use servo_media::audio::analyser_node::AnalysisEngine;
+use servo_media::audio::audio_node::AudioNodeInit;
 use servo_media::audio::block::Block;
-use servo_media::audio::node::AudioNodeInit;
 
 use crate::dom::audio::audionode::{AudioNode, AudioNodeOptionsHelper};
 use crate::dom::audio::baseaudiocontext::BaseAudioContext;
@@ -26,7 +28,6 @@ use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct AnalyserNode {
@@ -39,10 +40,12 @@ pub(crate) struct AnalyserNode {
 impl AnalyserNode {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new_inherited(
+        cx: &mut JSContext,
         _: &Window,
         context: &BaseAudioContext,
         options: &AnalyserOptions,
-    ) -> Fallible<(AnalyserNode, IpcReceiver<Block>)> {
+        callback: Arc<OnceLock<GenericCallback<Block>>>,
+    ) -> Fallible<AnalyserNode> {
         let node_options =
             options
                 .parent
@@ -63,13 +66,9 @@ impl AnalyserNode {
             return Err(Error::IndexSize(None));
         }
 
-        let (send, rcv) = ipc::channel().unwrap();
-        let callback = move |block| {
-            send.send(block).unwrap();
-        };
-
         let node = AudioNode::new_inherited(
-            AudioNodeInit::AnalyserNode(Box::new(callback)),
+            cx,
+            AudioNodeInit::AnalyserNode(callback),
             context,
             node_options,
             1, // inputs
@@ -82,34 +81,33 @@ impl AnalyserNode {
             *options.minDecibels,
             *options.maxDecibels,
         );
-        Ok((
-            AnalyserNode {
-                node,
-                engine: DomRefCell::new(engine),
-            },
-            rcv,
-        ))
+        Ok(AnalyserNode {
+            node,
+            engine: DomRefCell::new(engine),
+        })
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         window: &Window,
         context: &BaseAudioContext,
         options: &AnalyserOptions,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<AnalyserNode>> {
-        Self::new_with_proto(window, None, context, options, can_gc)
+        Self::new_with_proto(cx, window, None, context, options)
     }
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new_with_proto(
+        cx: &mut JSContext,
         window: &Window,
         proto: Option<HandleObject>,
         context: &BaseAudioContext,
         options: &AnalyserOptions,
-        can_gc: CanGc,
     ) -> Fallible<DomRoot<AnalyserNode>> {
-        let (node, recv) = AnalyserNode::new_inherited(window, context, options)?;
-        let object = reflect_dom_object_with_proto(Box::new(node), window, proto, can_gc);
+        let callback_oncelock = Arc::new(OnceLock::new());
+        let node =
+            AnalyserNode::new_inherited(cx, window, context, options, callback_oncelock.clone())?;
+        let object = reflect_dom_object_with_proto(cx, Box::new(node), window, proto);
         let task_source = window
             .as_global_scope()
             .task_manager()
@@ -117,16 +115,18 @@ impl AnalyserNode {
             .to_sendable();
         let this = Trusted::new(&*object);
 
-        servo_base::ipc_router::router().add_typed_route(
-            recv,
-            Box::new(move |block| {
-                let this = this.clone();
-                task_source.queue(task!(append_analysis_block: move || {
-                    let this = this.root();
-                    this.push_block(block.unwrap())
-                }));
-            }),
-        );
+        let callback = GenericCallback::new(move |block| {
+            let this = this.clone();
+            task_source.queue(task!(append_analysis_block: move || {
+                let this = this.root();
+                this.push_block(block.unwrap())
+            }));
+        })
+        .unwrap();
+        if callback_oncelock.set(callback).is_err() {
+            log::error!("AnalyzerNode callback is already set. Not setting it again");
+        }
+
         Ok(object)
     }
 
@@ -138,49 +138,53 @@ impl AnalyserNode {
 impl AnalyserNodeMethods<crate::DomTypeHolder> for AnalyserNode {
     /// <https://webaudio.github.io/web-audio-api/#dom-analysernode-analysernode>
     fn Constructor(
+        cx: &mut JSContext,
         window: &Window,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         context: &BaseAudioContext,
         options: &AnalyserOptions,
     ) -> Fallible<DomRoot<AnalyserNode>> {
-        AnalyserNode::new_with_proto(window, proto, context, options, can_gc)
+        AnalyserNode::new_with_proto(cx, window, proto, context, options)
     }
 
-    #[expect(unsafe_code)]
     /// <https://webaudio.github.io/web-audio-api/#dom-analysernode-getfloatfrequencydata>
-    fn GetFloatFrequencyData(&self, mut array: CustomAutoRooterGuard<Float32Array>) {
+    fn GetFloatFrequencyData(&self, no_gc: &NoGC, mut array: CustomAutoRooterGuard<Float32Array>) {
         // Invariant to maintain: No JS code that may touch the array should
         // run whilst we're writing to it
-        let dest = unsafe { array.as_mut_slice() };
-        self.engine.borrow_mut().fill_frequency_data(dest);
+        let dest = array.as_mut_slice_safe(no_gc);
+        self.engine
+            .borrow_mut()
+            .fill_frequency_data(dest.unwrap_or(&mut []));
     }
 
-    #[expect(unsafe_code)]
     /// <https://webaudio.github.io/web-audio-api/#dom-analysernode-getbytefrequencydata>
-    fn GetByteFrequencyData(&self, mut array: CustomAutoRooterGuard<Uint8Array>) {
+    fn GetByteFrequencyData(&self, no_gc: &NoGC, mut array: CustomAutoRooterGuard<Uint8Array>) {
         // Invariant to maintain: No JS code that may touch the array should
         // run whilst we're writing to it
-        let dest = unsafe { array.as_mut_slice() };
-        self.engine.borrow_mut().fill_byte_frequency_data(dest);
+        let dest = array.as_mut_slice_safe(no_gc);
+        self.engine
+            .borrow_mut()
+            .fill_byte_frequency_data(dest.unwrap_or(&mut []));
     }
 
-    #[expect(unsafe_code)]
     /// <https://webaudio.github.io/web-audio-api/#dom-analysernode-getfloattimedomaindata>
-    fn GetFloatTimeDomainData(&self, mut array: CustomAutoRooterGuard<Float32Array>) {
+    fn GetFloatTimeDomainData(&self, no_gc: &NoGC, mut array: CustomAutoRooterGuard<Float32Array>) {
         // Invariant to maintain: No JS code that may touch the array should
         // run whilst we're writing to it
-        let dest = unsafe { array.as_mut_slice() };
-        self.engine.borrow().fill_time_domain_data(dest);
+        let dest = array.as_mut_slice_safe(no_gc);
+        self.engine
+            .borrow()
+            .fill_time_domain_data(dest.unwrap_or(&mut []));
     }
 
-    #[expect(unsafe_code)]
     /// <https://webaudio.github.io/web-audio-api/#dom-analysernode-getbytetimedomaindata>
-    fn GetByteTimeDomainData(&self, mut array: CustomAutoRooterGuard<Uint8Array>) {
+    fn GetByteTimeDomainData(&self, no_gc: &NoGC, mut array: CustomAutoRooterGuard<Uint8Array>) {
         // Invariant to maintain: No JS code that may touch the array should
         // run whilst we're writing to it
-        let dest = unsafe { array.as_mut_slice() };
-        self.engine.borrow().fill_byte_time_domain_data(dest);
+        let dest = array.as_mut_slice_safe(no_gc);
+        self.engine
+            .borrow()
+            .fill_byte_time_domain_data(dest.unwrap_or(&mut []));
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-analysernode-fftsize>

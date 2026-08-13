@@ -5,9 +5,12 @@
 use std::borrow::ToOwned;
 use std::cell::Cell;
 use std::ptr::{self, NonNull};
+use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use ipc_channel::router::ROUTER;
+use js::context::JSContext;
+use js::conversions::ToJSValConvertible;
 use js::jsapi::JSObject;
 use js::jsval::UndefinedValue;
 use js::realm::AutoRealm;
@@ -23,8 +26,7 @@ use net_traits::{
 };
 use profile_traits::ipc as ProfiledIpc;
 use script_bindings::cell::DomRefCell;
-use script_bindings::conversions::SafeToJSValConvertible;
-use script_bindings::reflector::{DomObject, reflect_dom_object_with_proto};
+use script_bindings::reflector::{DomObject, reflect_weak_referenceable_dom_object_with_proto};
 use servo_base::generic_channel::{LazyCallback, lazy_callback};
 use servo_constellation_traits::BlobImpl;
 use servo_url::{ImmutableOrigin, ServoUrl};
@@ -48,9 +50,8 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::messageevent::MessageEvent;
 use crate::dom::window::Window;
 use crate::fetch::RequestWithGlobalScope;
-use crate::script_runtime::CanGc;
-use crate::task::TaskOnce;
-use crate::task_source::SendableTaskSource;
+use crate::tasks::task::TaskOnce;
+use crate::tasks::task_source::SendableTaskSource;
 
 #[derive(Clone, Copy, Debug, JSTraceable, MallocSizeOf, PartialEq)]
 enum WebSocketRequestState {
@@ -130,17 +131,17 @@ impl WebSocket {
     }
 
     fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         url: ServoUrl,
         sender: LazyCallback<WebSocketDomAction>,
-        can_gc: CanGc,
     ) -> DomRoot<WebSocket> {
-        let websocket = reflect_dom_object_with_proto(
-            Box::new(WebSocket::new_inherited(url, sender)),
+        let websocket = reflect_weak_referenceable_dom_object_with_proto(
+            cx,
+            Rc::new(WebSocket::new_inherited(url, sender)),
             global,
             proto,
-            can_gc,
         );
         if let Some(window) = global.downcast::<Window>() {
             window.Document().track_websocket(&websocket);
@@ -198,9 +199,9 @@ impl WebSocket {
 impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
     /// <https://html.spec.whatwg.org/multipage/#dom-websocket>
     fn Constructor(
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         url: DOMString,
         protocols: Option<StringOrStringSequence>,
     ) -> Fallible<DomRoot<WebSocket>> {
@@ -270,7 +271,7 @@ impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
             ProfiledIpc::channel(global.time_profiler_chan().clone()).unwrap();
 
         // Step 12. Establish a WebSocket connection given urlRecord, protocols, and client.
-        let ws = WebSocket::new(global, proto, url_record.clone(), dom_action_sender, can_gc);
+        let ws = WebSocket::new(cx, global, proto, url_record.clone(), dom_action_sender);
         let address = Trusted::new(&*ws);
 
         // https://websockets.spec.whatwg.org/#concept-websocket-establish
@@ -302,7 +303,7 @@ impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
             .send(CoreResourceMsg::Fetch(request, channels));
 
         let task_source = global.task_manager().websocket_task_source().to_sendable();
-        servo_base::ipc_router::router().add_typed_route(
+        ROUTER.add_typed_route(
             dom_event_receiver.to_ipc_receiver(),
             Box::new(move |message| match message.unwrap() {
                 WebSocketNetworkEvent::ReportCSPViolations(violations) => {
@@ -415,7 +416,7 @@ impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-websocket-send>
     fn Send__(&self, array: CustomAutoRooterGuard<ArrayBuffer>) -> ErrorResult {
-        let bytes = array.to_vec();
+        let bytes = array.to_vec().unwrap_or_default();
         let data_byte_len = bytes.len();
         let send_data = self.send_impl(data_byte_len as u64)?;
 
@@ -429,7 +430,7 @@ impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-websocket-send>
     fn Send___(&self, array: CustomAutoRooterGuard<ArrayBufferView>) -> ErrorResult {
-        let bytes = array.to_vec();
+        let bytes = array.to_vec().unwrap_or_default();
         let data_byte_len = bytes.len();
         let send_data = self.send_impl(data_byte_len as u64)?;
 
@@ -492,9 +493,9 @@ struct ReportCSPViolationTask {
 }
 
 impl TaskOnce for ReportCSPViolationTask {
-    fn run_once(self, _cx: &mut js::context::JSContext) {
+    fn run_once(self, cx: &mut JSContext) {
         let global = self.websocket.root().global();
-        global.report_csp_violations(self.violations, None, None);
+        global.report_csp_violations(cx, self.violations, None, None);
     }
 }
 
@@ -507,7 +508,7 @@ struct ConnectionEstablishedTask {
 
 impl TaskOnce for ConnectionEstablishedTask {
     /// <https://html.spec.whatwg.org/multipage/#feedback-from-the-protocol:concept-websocket-established>
-    fn run_once(self, cx: &mut js::context::JSContext) {
+    fn run_once(self, cx: &mut JSContext) {
         let ws = self.address.root();
 
         // Step 1.
@@ -536,7 +537,7 @@ impl TaskOnce for BufferedAmountTask {
     // To be compliant with standards, we need to reset bufferedAmount only when the event loop
     // reaches step 1.  In our implementation, the bytes will already have been sent on a background
     // thread.
-    fn run_once(self, _cx: &mut js::context::JSContext) {
+    fn run_once(self, _cx: &mut JSContext) {
         let ws = self.address.root();
 
         ws.buffered_amount.set(0);
@@ -552,7 +553,7 @@ struct CloseTask {
 }
 
 impl TaskOnce for CloseTask {
-    fn run_once(self, cx: &mut js::context::JSContext) {
+    fn run_once(self, cx: &mut JSContext) {
         let ws = self.address.root();
 
         if ws.ready_state.get() == WebSocketRequestState::Closed {
@@ -576,6 +577,7 @@ impl TaskOnce for CloseTask {
         let code = self.code.unwrap_or(close_code::NO_STATUS);
         let reason = DOMString::from(self.reason.unwrap_or("".to_owned()));
         let close_event = CloseEvent::new(
+            cx,
             &ws.global(),
             atom!("close"),
             EventBubbles::DoesNotBubble,
@@ -583,7 +585,6 @@ impl TaskOnce for CloseTask {
             clean_close,
             code,
             reason,
-            CanGc::from_cx(cx),
         );
         close_event.upcast::<Event>().fire(cx, ws.upcast());
     }
@@ -596,7 +597,7 @@ struct MessageReceivedTask {
 
 impl TaskOnce for MessageReceivedTask {
     #[expect(unsafe_code)]
-    fn run_once(self, cx: &mut js::context::JSContext) {
+    fn run_once(self, cx: &mut JSContext) {
         let ws = self.address.root();
         debug!(
             "MessageReceivedTask::handler({:p}): readyState={:?}",
@@ -618,18 +619,15 @@ impl TaskOnce for MessageReceivedTask {
         let cx = &mut *realm;
         rooted!(&in(cx) let mut message = UndefinedValue());
         match self.message {
-            MessageData::Text(text) => {
-                text.safe_to_jsval(cx.into(), message.handle_mut(), CanGc::from_cx(cx))
-            },
+            MessageData::Text(text) => text.safe_to_jsval(cx, message.handle_mut()),
             MessageData::Binary(data) => match ws.binary_type.get() {
                 BinaryType::Blob => {
                     let blob =
                         Blob::new(cx, &global, BlobImpl::new_from_bytes(data, "".to_owned()));
-                    blob.safe_to_jsval(cx.into(), message.handle_mut(), CanGc::from_cx(cx));
+                    blob.safe_to_jsval(cx, message.handle_mut());
                 },
                 BinaryType::Arraybuffer => {
                     rooted!(&in(cx) let mut array_buffer = ptr::null_mut::<JSObject>());
-                    // GlobalScope::get_cx() returns a valid `JSContext` pointer, so this is safe.
                     unsafe {
                         assert!(
                             ArrayBuffer::create(
@@ -641,11 +639,7 @@ impl TaskOnce for MessageReceivedTask {
                         )
                     };
 
-                    (*array_buffer).safe_to_jsval(
-                        cx.into(),
-                        message.handle_mut(),
-                        CanGc::from_cx(cx),
-                    );
+                    (*array_buffer).safe_to_jsval(cx, message.handle_mut());
                 },
             },
         }

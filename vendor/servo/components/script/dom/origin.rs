@@ -10,7 +10,7 @@ use servo_url::{ImmutableOrigin, ServoUrl};
 
 use crate::dom::bindings::codegen::Bindings::OriginBinding::OriginMethods;
 use crate::dom::bindings::conversions::{
-    ConversionResult, SafeFromJSValConvertible, StringificationBehavior, root_from_handlevalue,
+    ConversionResult, FromJSValConvertible, StringificationBehavior, root_from_handlevalue,
 };
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::root::DomRoot;

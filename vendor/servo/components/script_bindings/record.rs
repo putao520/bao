@@ -10,16 +10,15 @@ use std::marker::Sized;
 use std::ops::{Deref, DerefMut};
 
 use indexmap::IndexMap;
-use js::context::{JSContext, RawJSContext};
+use js::context::JSContext;
 use js::conversions::{ConversionResult, FromJSValConvertible, ToJSValConvertible};
 use js::jsapi::{
-    JS_NewPlainObject, JSITER_HIDDEN, JSITER_OWNONLY, JSITER_SYMBOLS, JSPROP_ENUMERATE,
-    PropertyDescriptor,
+    JSITER_HIDDEN, JSITER_OWNONLY, JSITER_SYMBOLS, JSPROP_ENUMERATE, PropertyDescriptor,
 };
 use js::jsval::{ObjectValue, UndefinedValue};
-use js::rust::wrappers::JS_DefineUCProperty2;
 use js::rust::wrappers2::{
-    GetPropertyKeys, JS_GetOwnPropertyDescriptorById, JS_GetPropertyById, JS_IdToValue,
+    GetPropertyKeys, JS_DefineUCProperty2, JS_GetOwnPropertyDescriptorById, JS_GetPropertyById,
+    JS_IdToValue, JS_NewPlainObject,
 };
 use js::rust::{HandleId, HandleValue, IdVector, MutableHandleValue};
 
@@ -110,15 +109,6 @@ where
     C: Clone,
 {
     type Config = C;
-    unsafe fn from_jsval(
-        _cx: *mut RawJSContext,
-        value: HandleValue,
-        config: C,
-    ) -> Result<ConversionResult<Self>, ()> {
-        // TODO https://github.com/servo/mozjs/issues/749
-        let mut cx = unsafe { crate::script_runtime::temp_cx() };
-        FromJSValConvertible::safe_from_jsval(&mut cx, value, config)
-    }
 
     fn safe_from_jsval(
         cx: &mut JSContext,
@@ -199,23 +189,25 @@ where
     V: ToJSValConvertible,
 {
     #[inline]
-    unsafe fn to_jsval(&self, cx: *mut RawJSContext, mut rval: MutableHandleValue) {
-        rooted!(in(cx) let js_object = JS_NewPlainObject(cx));
+    fn safe_to_jsval(&self, cx: &mut JSContext, mut rval: MutableHandleValue) {
+        rooted!(&in(cx) let js_object = unsafe { JS_NewPlainObject(cx) });
         assert!(!js_object.handle().is_null());
 
-        rooted!(in(cx) let mut js_value = UndefinedValue());
+        rooted!(&in(cx) let mut js_value = UndefinedValue());
         for (key, value) in &self.map {
             let key = key.to_utf16_vec();
-            value.to_jsval(cx, js_value.handle_mut());
+            value.safe_to_jsval(cx, js_value.handle_mut());
 
-            assert!(JS_DefineUCProperty2(
-                cx,
-                js_object.handle(),
-                key.as_ptr(),
-                key.len(),
-                js_value.handle(),
-                JSPROP_ENUMERATE as u32
-            ));
+            assert!(unsafe {
+                JS_DefineUCProperty2(
+                    cx,
+                    js_object.handle(),
+                    key.as_ptr(),
+                    key.len(),
+                    js_value.handle(),
+                    JSPROP_ENUMERATE as u32,
+                )
+            });
         }
 
         rval.set(ObjectValue(js_object.handle().get()));

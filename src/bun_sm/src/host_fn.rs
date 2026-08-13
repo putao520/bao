@@ -2,7 +2,7 @@
 use ::std::ptr::NonNull;
 use log::{debug, error, info, trace, warn};
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
@@ -478,7 +478,7 @@ pub unsafe fn get_string_property(
     if val.is_string() {
         let s = val.to_string();
         if !s.is_null() {
-            Some(jsstr_to_string(cx, NonNull::new(s)?))
+            Some(unsafe_jsstr_to_string(cx, NonNull::new(s)?))
         } else {
             None
         }
@@ -602,7 +602,7 @@ unsafe fn print_value(cx: *mut JSContext, val: JSVal) {
     } else if val.is_string() {
         let s = val.to_string();
         if !s.is_null() {
-            let rust_str = jsstr_to_string(cx, NonNull::new(s).expect("null-checked JSString"));
+            let rust_str = unsafe_jsstr_to_string(cx, NonNull::new(s).expect("null-checked JSString"));
             print!("{}", rust_str);
         }
     } else if val.is_object() {
@@ -762,7 +762,7 @@ unsafe fn extract_label(cx: *mut JSContext, argc: u32, args: &CallArgs) -> Strin
     if argc > 0 && (*args.get(0).ptr).is_string() {
         let s = (*args.get(0).ptr).to_string();
         if !s.is_null() {
-            jsstr_to_string(cx, NonNull::new(s).expect("null-checked JSString"))
+            unsafe_jsstr_to_string(cx, NonNull::new(s).expect("null-checked JSString"))
         } else {
             "default".into()
         }
@@ -825,7 +825,7 @@ impl<'a> ArgReader<'a> {
         if val.is_string() {
             let s = val.to_string();
             if !s.is_null() {
-                jsstr_to_string(self.cx, NonNull::new(s).expect("null-checked"))
+                unsafe_jsstr_to_string(self.cx, NonNull::new(s).expect("null-checked"))
             } else {
                 ::std::string::String::new()
             }

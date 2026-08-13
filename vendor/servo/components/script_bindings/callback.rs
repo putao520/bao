@@ -8,24 +8,34 @@ use std::default::Default;
 use std::ffi::CStr;
 use std::rc::Rc;
 
-use js::jsapi::{AddRawValueRoot, Heap, IsCallable, JSObject, RemoveRawValueRoot};
+use js::context::JSContext;
+use js::jsapi::{Heap, IsCallable, JSObject, RemoveRawValueRoot};
 use js::jsval::{JSVal, NullValue, ObjectValue, UndefinedValue};
-use js::rust::wrappers2::{EnterRealm, JS_GetProperty, JS_WrapObject, LeaveRealm};
+use js::rust::wrappers2::{AddRawValueRoot, EnterRealm, JS_GetProperty, JS_WrapObject, LeaveRealm};
 use js::rust::{HandleObject, MutableHandleValue, Runtime};
 
 use crate::codegen::GenericBindings::WindowBinding::Window_Binding::WindowMethods;
 use crate::error::{Error, Fallible};
-use crate::inheritance::Castable;
 use crate::interfaces::{DocumentHelpers, DomHelpers, GlobalScopeHelpers};
 use crate::realms::enter_auto_realm;
 use crate::reflector::DomObject;
 use crate::root::Dom;
-use crate::script_runtime::JSContext;
 use crate::settings_stack::{run_a_callback, run_a_script};
 use crate::{DomTypes, cformat};
 
 pub trait ThisReflector {
     fn jsobject(&self) -> *mut JSObject;
+}
+
+/// Try to obtain a Window object from a callback target.
+/// This Window may be different than the callback's associated global if the
+/// owner has been adopted into a different realm than it was created in.
+/// As such, the default implementation should be used for any callback target
+/// that cannot be adopted (i.e. is not a descendant of Node).
+pub trait OwnerWindow<D: DomTypes> {
+    fn owner_window(&self) -> Option<crate::root::DomRoot<D::Window>> {
+        None
+    }
 }
 
 impl<T: DomObject> ThisReflector for T {
@@ -39,6 +49,8 @@ impl ThisReflector for HandleObject<'_> {
         self.get()
     }
 }
+
+impl<D: DomTypes> OwnerWindow<D> for HandleObject<'_> {}
 
 /// The exception handling used for a call.
 #[derive(Clone, Copy, PartialEq)]
@@ -90,12 +102,12 @@ impl<D: DomTypes> CallbackObject<D> {
     }
 
     #[expect(unsafe_code)]
-    unsafe fn init(&mut self, cx: JSContext, callback: *mut JSObject) {
+    unsafe fn init(&mut self, cx: &JSContext, callback: *mut JSObject) {
         self.callback.set(callback);
         self.permanent_js_root.set(ObjectValue(callback));
         unsafe {
             assert!(AddRawValueRoot(
-                *cx,
+                cx,
                 self.permanent_js_root.get_unsafe(),
                 c"CallbackObject::root".as_ptr()
             ));
@@ -127,7 +139,7 @@ pub trait CallbackContainer<D: DomTypes> {
     ///
     /// # Safety
     /// `callback` must point to a valid, non-null JSObject.
-    unsafe fn new(cx: JSContext, callback: *mut JSObject) -> Rc<Self>;
+    unsafe fn new(cx: &JSContext, callback: *mut JSObject) -> Rc<Self>;
     /// Returns the underlying `CallbackObject`.
     fn callback_holder(&self) -> &CallbackObject<D>;
     /// Returns the underlying `JSObject`.
@@ -170,7 +182,7 @@ impl<D: DomTypes> CallbackFunction<D> {
     ///
     /// # Safety
     /// `callback` must point to a valid, non-null JSObject.
-    pub unsafe fn init(&mut self, cx: JSContext, callback: *mut JSObject) {
+    pub unsafe fn init(&mut self, cx: &JSContext, callback: *mut JSObject) {
         unsafe { self.object.init(cx, callback) };
     }
 }
@@ -202,17 +214,13 @@ impl<D: DomTypes> CallbackInterface<D> {
     ///
     /// # Safety
     /// `callback` must point to a valid, non-null JSObject.
-    pub unsafe fn init(&mut self, cx: JSContext, callback: *mut JSObject) {
+    pub unsafe fn init(&mut self, cx: &JSContext, callback: *mut JSObject) {
         unsafe { self.object.init(cx, callback) };
     }
 
     /// Returns the property with the given `name`, if it is a callable object,
     /// or an error otherwise.
-    pub fn get_callable_property(
-        &self,
-        cx: &mut js::context::JSContext,
-        name: &CStr,
-    ) -> Fallible<JSVal> {
+    pub fn get_callable_property(&self, cx: &mut JSContext, name: &CStr) -> Fallible<JSVal> {
         rooted!(&in(cx) let mut callable = UndefinedValue());
         rooted!(&in(cx) let obj = self.callback_holder().get());
         unsafe {
@@ -233,7 +241,7 @@ impl<D: DomTypes> CallbackInterface<D> {
 
 /// Wraps the reflector for `p` into the realm of `cx`.
 pub(crate) fn wrap_call_this_value<T: ThisReflector>(
-    cx: &mut js::context::JSContext,
+    cx: &mut JSContext,
     p: &T,
     mut rval: MutableHandleValue,
 ) -> bool {
@@ -257,23 +265,24 @@ pub(crate) fn wrap_call_this_value<T: ThisReflector>(
 /// A function wrapper that performs whatever setup we need to safely make a call.
 ///
 /// <https://webidl.spec.whatwg.org/#es-invoking-callback-functions>
-pub fn call_setup<D: DomTypes, T: CallbackContainer<D>, R>(
-    cx: &mut js::context::JSContext,
+pub(crate) fn call_setup<D: DomTypes, T: CallbackContainer<D>, R>(
+    cx: &mut JSContext,
     callback: &T,
+    owner_window: Option<&D::Window>,
     handling: ExceptionHandling,
-    f: impl FnOnce(&mut js::context::JSContext) -> R,
+    f: impl FnOnce(&mut JSContext) -> R,
 ) -> R {
-    // The global for reporting exceptions. This is the global object of the
-    // (possibly wrapped) callback object.
-    let global = unsafe { D::GlobalScope::from_object(callback.callback()) };
-    if let Some(window) = global.downcast::<D::Window>() {
+    if let Some(window) = owner_window {
         window.Document().ensure_safe_to_run_script_or_layout();
     }
 
+    // The global for reporting exceptions. This is the global object of the
+    // (possibly wrapped) callback object.
+    let global = unsafe { D::GlobalScope::from_object(callback.callback()) };
     let global = &global;
 
     // Step 8: Prepare to run script with relevant settings.
-    run_a_script::<D, R>(global, move || {
+    run_a_script::<D, R, _>(cx, global, move |cx| {
         let actual_callback = || {
             let old_realm = unsafe { EnterRealm(cx, callback.callback()) };
             let result = f(cx);

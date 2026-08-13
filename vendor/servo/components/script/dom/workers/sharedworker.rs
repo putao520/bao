@@ -11,7 +11,7 @@ use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::HandleObject;
 use net_traits::request::Referrer;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_base::generic_channel;
 use servo_constellation_traits::WorkerScriptLoadOrigin;
 use uuid::Uuid;
@@ -73,12 +73,9 @@ impl SharedWorker {
         control_sender: Sender<SharedWorkerControlMsg>,
         cx: &mut js::context::JSContext,
     ) -> DomRoot<SharedWorker> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(SharedWorker::new_inherited(port, control_sender)),
+        reflect_dom_object_with_proto(cx, Box::new(SharedWorker::new_inherited(port, control_sender)),
             global,
-            proto,
-            cx,
-        )
+            proto)
     }
 
     pub(crate) fn dispatch_simple_error(cx: &mut JSContext, address: TrustedSharedWorkerAddress) {

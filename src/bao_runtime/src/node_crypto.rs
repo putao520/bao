@@ -6,7 +6,7 @@ use bun_core::ZBox;
 use bun_sha_hmac;
 use bun_sha_hmac::hmac::EVP_MAX_MD_SIZE;
 use core::ptr;
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
@@ -657,9 +657,9 @@ unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> Option<String> {
     if val.is_undefined() || val.is_null() {
         return None;
     }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let val_root = val);
-    let s = mozjs::rust::ToString(cx, val_root.handle().into());
+    let s = mozjs::rust::ToString(&mut wrapped_cx, val_root.handle().into());
     if s.is_null() {
         return None;
     }

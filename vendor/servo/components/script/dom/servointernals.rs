@@ -5,46 +5,44 @@
 use std::rc::Rc;
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
+use js::conversions::ToJSValConvertible;
 use js::gc::MutableHandleValue;
 use js::jsapi::Heap;
 use js::jsval::UndefinedValue;
+use js::realm::CurrentRealm;
 use js::rust::HandleObject;
 use profile_traits::mem::MemoryReportResult;
-use script_bindings::conversions::SafeToJSValConvertible;
 use script_bindings::error::{Error, Fallible};
 use script_bindings::interfaces::ServoInternalsHelpers;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
-use script_bindings::script_runtime::JSContext;
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use script_bindings::str::USVString;
 use servo_config::prefs::{self, PrefValue, Preferences};
 use servo_constellation_traits::ScriptToConstellationMessage;
 
 use crate::dom::bindings::codegen::Bindings::ServoInternalsBinding::ServoInternalsMethods;
-use crate::dom::bindings::import::base::SafeJSContext;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
-use crate::realms::{AlreadyInRealm, InRealm};
+use crate::event_loop::script_thread::ScriptThread;
 use crate::routed_promise::{RoutedPromiseListener, callback_promise};
-use crate::script_runtime::CanGc;
-use crate::script_thread::ScriptThread;
 
-fn pref_to_jsval(pref: &PrefValue, cx: JSContext, rval: MutableHandleValue, can_gc: CanGc) {
+fn pref_to_jsval(cx: &mut js::context::JSContext, pref: &PrefValue, rval: MutableHandleValue) {
     match pref {
-        PrefValue::Bool(b) => b.safe_to_jsval(cx, rval, can_gc),
-        PrefValue::Int(i) => i.safe_to_jsval(cx, rval, can_gc),
-        PrefValue::UInt(u) => u.safe_to_jsval(cx, rval, can_gc),
-        PrefValue::Str(s) => s.safe_to_jsval(cx, rval, can_gc),
-        PrefValue::Float(f) => f.safe_to_jsval(cx, rval, can_gc),
+        PrefValue::Bool(b) => b.safe_to_jsval(cx, rval),
+        PrefValue::Int(i) => i.safe_to_jsval(cx, rval),
+        PrefValue::UInt(u) => u.safe_to_jsval(cx, rval),
+        PrefValue::Str(s) => s.safe_to_jsval(cx, rval),
+        PrefValue::Float(f) => f.safe_to_jsval(cx, rval),
         PrefValue::Array(arr) => {
             rooted_vec!(let mut js_arr);
             for item in arr {
-                rooted!(in(*cx) let mut js_val = UndefinedValue());
-                pref_to_jsval(item, cx, js_val.handle_mut(), can_gc);
+                rooted!(&in(cx) let mut js_val = UndefinedValue());
+                pref_to_jsval(cx, item, js_val.handle_mut());
                 js_arr.push(Heap::boxed(js_val.get()));
             }
-            js_arr.safe_to_jsval(cx, rval, can_gc);
+            js_arr.safe_to_jsval(cx, rval);
         },
     }
 }
@@ -61,17 +59,18 @@ impl ServoInternals {
         }
     }
 
-    pub(crate) fn new(global: &GlobalScope, can_gc: CanGc) -> DomRoot<ServoInternals> {
-        reflect_dom_object(Box::new(ServoInternals::new_inherited()), global, can_gc)
+    pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<ServoInternals> {
+        reflect_dom_object_with_cx(Box::new(ServoInternals::new_inherited()), global, cx)
     }
 }
 
 impl ServoInternalsMethods<crate::DomTypeHolder> for ServoInternals {
     /// <https://servo.org/internal-no-spec>
-    fn ReportMemory(&self, comp: InRealm, can_gc: CanGc) -> Rc<Promise> {
-        let global = &self.global();
-        let promise = Promise::new_in_current_realm(comp, can_gc);
-        let task_source = global.task_manager().dom_manipulation_task_source();
+    fn ReportMemory(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
+        let promise = Promise::new_in_realm(cx);
+        let global = self.global();
+        let task_manager = global.task_manager();
+        let task_source = task_manager.dom_manipulation_task_source();
         let callback = callback_promise(&promise, self, task_source);
 
         let script_to_constellation_chan = global.script_to_constellation_chan();
@@ -79,7 +78,7 @@ impl ServoInternalsMethods<crate::DomTypeHolder> for ServoInternals {
             .send(ScriptToConstellationMessage::ReportMemory(callback))
             .is_err()
         {
-            promise.reject_error(Error::Operation(None), can_gc);
+            promise.reject_error(cx, Error::Operation(None));
         }
         promise
     }
@@ -113,7 +112,7 @@ impl ServoInternalsMethods<crate::DomTypeHolder> for ServoInternals {
     /// <https://servo.org/internal-no-spec>
     fn DefaultPreferenceValue(
         &self,
-        cx: SafeJSContext,
+        cx: &mut JSContext,
         name: USVString,
         rval: MutableHandleValue,
     ) -> Fallible<()> {
@@ -121,14 +120,14 @@ impl ServoInternalsMethods<crate::DomTypeHolder> for ServoInternals {
             return Err(Error::NotFound(None));
         }
         let pref = Preferences::default().get_value(&name);
-        pref_to_jsval(&pref, cx, rval, CanGc::deprecated_note());
+        pref_to_jsval(cx, &pref, rval);
         Ok(())
     }
 
     /// <https://servo.org/internal-no-spec>
     fn GetPreference(
         &self,
-        cx: JSContext,
+        cx: &mut JSContext,
         name: USVString,
         rval: MutableHandleValue,
     ) -> Fallible<()> {
@@ -136,7 +135,7 @@ impl ServoInternalsMethods<crate::DomTypeHolder> for ServoInternals {
             return Err(Error::NotFound(None));
         }
         let pref = prefs::get().get_value(&name);
-        pref_to_jsval(&pref, cx, rval, CanGc::deprecated_note());
+        pref_to_jsval(cx, &pref, rval);
         Ok(())
     }
 
@@ -198,27 +197,25 @@ impl ServoInternalsMethods<crate::DomTypeHolder> for ServoInternals {
 impl RoutedPromiseListener<MemoryReportResult> for ServoInternals {
     fn handle_response(
         &self,
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         response: MemoryReportResult,
         promise: &Rc<Promise>,
     ) {
         let stringified = serde_json::to_string(&response.results)
             .unwrap_or_else(|_| "{ error: \"failed to create memory report\"}".to_owned());
-        promise.resolve_native(&stringified, CanGc::from_cx(cx));
+        promise.resolve_native(cx, &stringified);
     }
 }
 
 impl ServoInternalsHelpers for ServoInternals {
     /// The navigator.servo api is exposed to about: pages except about:blank, as
     /// well as any URLs provided by embedders that register new protocol handlers.
-    #[expect(unsafe_code)]
-    fn is_servo_internal(cx: JSContext, _global: HandleObject) -> bool {
-        unsafe {
-            let in_realm_proof = AlreadyInRealm::assert_for_cx(cx);
-            let global_scope = GlobalScope::from_context(*cx, InRealm::Already(&in_realm_proof));
-            let url = global_scope.get_url();
-            (url.scheme() == "about" && url.as_str() != "about:blank") ||
-                ScriptThread::is_servo_privileged(url)
-        }
+    fn is_servo_internal(cx: &mut JSContext, _global: HandleObject) -> bool {
+        let mut realm = CurrentRealm::assert(cx);
+        let global_scope = GlobalScope::from_current_realm(&mut realm);
+        let url = global_scope.get_url();
+        (url.scheme() == "about" && url.as_str() != "about:blank") ||
+            ScriptThread::is_servo_privileged(url) ||
+            prefs::get().expose_servointernals_globally
     }
 }

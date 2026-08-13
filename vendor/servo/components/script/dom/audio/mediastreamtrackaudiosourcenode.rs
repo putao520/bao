@@ -4,7 +4,7 @@
 
 use dom_struct::dom_struct;
 use js::rust::HandleObject;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_media::audio::node::AudioNodeInit;
 
 use crate::dom::audio::audiocontext::AudioContext;
@@ -61,12 +61,9 @@ impl MediaStreamTrackAudioSourceNode {
         track: &MediaStreamTrack,
     ) -> Fallible<DomRoot<MediaStreamTrackAudioSourceNode>> {
         let node = MediaStreamTrackAudioSourceNode::new_inherited(context, track)?;
-        Ok(reflect_dom_object_with_proto_and_cx(
-            Box::new(node),
+        Ok(reflect_dom_object_with_proto(cx, Box::new(node),
             window,
-            proto,
-            cx,
-        ))
+            proto))
     }
 }
 

@@ -882,7 +882,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 rooted!(&in(cx) let val_root = val);
 
                 let cname = ZBox::from_bytes(
-                    mozjs::conversions::jsstr_to_string(
+                    mozjs::conversions::unsafe_jsstr_to_string(
                         cx_raw,
                         ::std::ptr::NonNull::new_unchecked(key_str_ptr),
                     )

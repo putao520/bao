@@ -15,7 +15,7 @@
 // See `fetch_async.rs` module-level doc for the full BCE analysis.
 use bun_core::ZBox;
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;

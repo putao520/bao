@@ -5,7 +5,7 @@ use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicU64, Ordering};
 use bun_core::ZBox;
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, PrivateValue, UndefinedValue};

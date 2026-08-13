@@ -11,7 +11,7 @@ use html5ever::{LocalName, Namespace, local_name, ns};
 use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use style::attr::AttrValue;
 use url::Url;
 
@@ -64,12 +64,9 @@ impl Sanitizer {
         proto: Option<HandleObject>,
         configuration: SanitizerConfig,
     ) -> DomRoot<Sanitizer> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(Sanitizer::new_inherited(configuration)),
+        reflect_dom_object_with_proto(cx, Box::new(Sanitizer::new_inherited(configuration)),
             window,
-            proto,
-            cx,
-        )
+            proto)
     }
 
     /// <https://wicg.github.io/sanitizer-api/#sanitizerconfig-get-a-sanitizer-instance-from-options>

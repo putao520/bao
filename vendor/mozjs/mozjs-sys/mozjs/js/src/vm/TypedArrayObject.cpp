@@ -773,20 +773,6 @@ class TypedArrayObjectTemplate {
     }
     size_t byteLength = count * BYTES_PER_ELEMENT;
 
-    // Bao: enforce a Node.js-style maximum ArrayBuffer/Buffer byte length so
-    // that `new Uint8Array(2**32 + 1)` throws RangeError "Out of memory"
-    // exactly like Bun/V8 (buffer.constants.MAX_LENGTH === 2**32 on 64-bit).
-    // Without this, SM happily allocates >4GB buffers (ByteLengthLimit is 8GB
-    // on 64-bit) and buffer.test.js "length overflow" fails because no error
-    // is thrown. The cap mirrors Node's MaxTemplateLength bound for Uint8Array
-    // (BYTES_PER_ELEMENT == 1) — larger element types keep SM's native limit.
-    constexpr size_t BaoBufferMaxByteLength = size_t(1) << 32;  // 4 GiB
-    if (BYTES_PER_ELEMENT == 1 && byteLength > BaoBufferMaxByteLength) {
-      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                                JSMSG_BUFFER_OUT_OF_MEMORY);
-      return false;
-    }
-
     MOZ_ASSERT(byteLength <= ByteLengthLimit);
     static_assert(INLINE_BUFFER_LIMIT % BYTES_PER_ELEMENT == 0,
                   "ArrayBuffer inline storage shouldn't waste any space");

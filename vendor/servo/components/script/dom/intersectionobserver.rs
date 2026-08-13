@@ -13,7 +13,7 @@ use euclid::{Rect, SideOffsets2D, Size2D, Vector2D};
 use js::context::JSContext;
 use js::rust::{HandleObject, MutableHandleValue};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_geometry::f32_rect_to_au_rect;
 use style::parser::Parse;
@@ -160,8 +160,7 @@ impl IntersectionObserver {
         // > 2. Set this’s internal [[callback]] slot to callback.
         // > 3. ... set this’s internal [[rootMargin]] slot to that.
         // > 4. ... set this’s internal [[scrollMargin]] slot to that.
-        let observer = reflect_dom_object_with_proto_and_cx(
-            Box::new(Self::new_inherited(
+        let observer = reflect_dom_object_with_proto(cx, Box::new(Self::new_inherited(
                 window,
                 callback,
                 init.root.clone(),
@@ -169,9 +168,7 @@ impl IntersectionObserver {
                 scroll_margin,
             )),
             window,
-            proto,
-            cx,
-        );
+            proto);
 
         // Step 5-13
         observer.init_observer(init)?;

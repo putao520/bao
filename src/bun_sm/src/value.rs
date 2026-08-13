@@ -1,7 +1,7 @@
 // @trace REQ-ENG-003
 use ::std::ptr::NonNull;
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::JSVal;
 use mozjs::rooted;
@@ -312,9 +312,9 @@ pub unsafe fn jsval_to_jsvalue(cx: *mut JSContext, val: JSVal) -> JsValue {
     } else if val.is_string() {
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let val_root = val);
-        let s = mozjs::rust::ToString(cx, val_root.handle().into());
+        let s = mozjs::rust::ToString(&mut wrapped_cx, val_root.handle().into());
         if !s.is_null() {
-            let rust_str = jsstr_to_string(cx, NonNull::new(s).expect("null-checked JSString"));
+            let rust_str = unsafe_jsstr_to_string(cx, NonNull::new(s).expect("null-checked JSString"));
             JsValue::String(rust_str)
         } else {
             JsValue::String(::std::string::String::new())

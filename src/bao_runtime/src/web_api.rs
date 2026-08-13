@@ -13,7 +13,7 @@ use bun_core::ZBox;
 // both the plain ws:// (via WebSocketClient) and the wss:// (TLS-driven) path.
 use bun_uws::ws_codec::apply_mask;
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
@@ -539,7 +539,7 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     let send_result = WS_CONNECTIONS.with(|c| {
         let mut conns = c.borrow_mut();
         if idx < conns.len() {
-            let s = jsstr_to_string(cx, NonNull::new_unchecked(msg_val.to_string()));
+            let s = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(msg_val.to_string()));
             conns[idx].client.send_text(&s)
         } else {
             Err("invalid WebSocket index".to_string())
@@ -603,7 +603,7 @@ unsafe extern "C" fn websocket_constructor(cx: *mut JSContext, argc: u32, vp: *m
         JS_ReportErrorUTF8(cx, c"WebSocket URL must be a string".as_ptr());
         return false;
     }
-    let url = jsstr_to_string(cx, NonNull::new_unchecked(url_val.to_string()));
+    let url = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(url_val.to_string()));
 
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let ws_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
@@ -916,7 +916,7 @@ unsafe extern "C" fn atob_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         args.rval().set(UndefinedValue());
         return true;
     }
-    let s = jsstr_to_string(
+    let s = unsafe_jsstr_to_string(
         cx,
         ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()),
     );
@@ -946,7 +946,7 @@ unsafe extern "C" fn btoa_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         args.rval().set(UndefinedValue());
         return true;
     }
-    let s = jsstr_to_string(
+    let s = unsafe_jsstr_to_string(
         cx,
         ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()),
     );

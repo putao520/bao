@@ -38,12 +38,9 @@ pub(crate) fn expand_dom_object(
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let items = quote! {
         impl #impl_generics ::js::conversions::ToJSValConvertible for #name #ty_generics #where_clause {
-            #[expect(unsafe_code)]
-            unsafe fn to_jsval(&self,
-                                cx: *mut js::jsapi::JSContext,
-                                rval: js::rust::MutableHandleValue) {
+            fn safe_to_jsval(&self, cx: &mut js::context::JSContext, rval: js::rust::MutableHandleValue) {
                 let object = crate::DomObject::reflector(self).get_jsobject();
-                object.to_jsval(cx, rval)
+                object.safe_to_jsval(cx, rval);
             }
         }
 
@@ -91,7 +88,6 @@ pub(crate) fn expand_dom_object(
         impl<T: ?Sized> NoDomObjectInDomObject<()> for T {}
 
         // Used for the specialized impl when DomObject is implemented.
-        #[expect(dead_code)]
         struct Invalid;
         // forbids DomObject
         impl<T> NoDomObjectInDomObject<Invalid> for T where T: ?Sized + crate::DomObject {}

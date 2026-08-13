@@ -338,6 +338,8 @@ pub struct Preferences {
     pub thread_pool_async_runtime_workers_max: u64,
     /// Maximum number of workers for WebRender
     pub thread_pool_webrender_workers_max: u64,
+    /// Whether to enable the perf thread boost (threadboost.rs scheduling hint).
+    pub perf_thread_boost_enabled: bool,
     /// The user-agent to use for Servo. This can also be set via [`UserAgentPlatform`] in
     /// order to set the value to the default value for the given platform.
     pub user_agent: String,
@@ -513,6 +515,7 @@ impl Preferences {
             thread_pool_async_runtime_workers_max: 6,
             thread_pool_fallback_workers: 3,
             thread_pool_webrender_workers_max: 4,
+            perf_thread_boost_enabled: true,
             webgl_testing_context_creation_error: false,
             user_agent: String::new(),
             viewport_meta_enabled: false,

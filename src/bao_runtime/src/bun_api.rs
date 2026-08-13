@@ -10,7 +10,7 @@ use bun_sys::fs as bun_fs;
 use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
     BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue,
@@ -2196,7 +2196,7 @@ unsafe extern "C" fn stdin_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         args.rval().set(UndefinedValue());
         return true;
     }
-    let event = jsstr_to_string(cx, NonNull::new_unchecked(event_val.to_string()));
+    let event = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(event_val.to_string()));
     if event != "data" && event != "end" && event != "close" && event != "error" {
         args.rval().set(UndefinedValue());
         return true;
@@ -3131,7 +3131,7 @@ unsafe extern "C" fn ws_js_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
             // Not a binary object — convert to string via JS::ToString and send as text.
             // SAFETY: data_val is an object; rooted handle for ToString call.
             rooted!(&in(cx_ref) let data_root = data_val);
-            let jsstr = mozjs::rust::ToString(cx, data_root.handle());
+            let jsstr = mozjs::rust::ToString(cx_ref, data_root.handle());
             if jsstr.is_null() {
                 args.rval().set(BooleanValue(false));
                 return true;
@@ -4238,7 +4238,7 @@ unsafe fn serve_write_response_object(
                     continue;
                 }
                 let key_str_ptr = jsid.to_string();
-                let key = jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr));
+                let key = unsafe_jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr));
                 let mut header_val = UndefinedValue();
                 let c_key = ZBox::from_bytes(key.as_bytes());
                 JS_GetProperty(
@@ -4412,10 +4412,10 @@ unsafe extern "C" fn bun_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return false;
     }
     let specifier =
-        mozjs::conversions::jsstr_to_string(cx, NonNull::new_unchecked(spec_val.to_string()));
+        mozjs::conversions::unsafe_jsstr_to_string(cx, NonNull::new_unchecked(spec_val.to_string()));
 
     let from = if argc > 1 && (*args.get(1).ptr).is_string() {
-        let from_str = mozjs::conversions::jsstr_to_string(
+        let from_str = mozjs::conversions::unsafe_jsstr_to_string(
             cx,
             NonNull::new_unchecked((*args.get(1).ptr).to_string()),
         );
@@ -4603,7 +4603,7 @@ unsafe extern "C" fn bun_build(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                             };
                             JS_GetElement(cx, ep_obj.handle().into(), i, item_rv);
                             if item_val.is_string() {
-                                let s = jsstr_to_string(
+                                let s = unsafe_jsstr_to_string(
                                     cx,
                                     NonNull::new_unchecked(item_val.to_string()),
                                 );
@@ -4625,7 +4625,7 @@ unsafe extern "C" fn bun_build(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                 };
                 JS_GetProperty(cx, cfg_h, od_name.as_ptr(), od_rv);
                 if od_val.is_string() {
-                    outdir = jsstr_to_string(cx, NonNull::new_unchecked(od_val.to_string()));
+                    outdir = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(od_val.to_string()));
                 }
             }
 
@@ -4640,7 +4640,7 @@ unsafe extern "C" fn bun_build(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                 };
                 JS_GetProperty(cx, cfg_h, nm_name.as_ptr(), nm_rv);
                 if nm_val.is_string() {
-                    naming = Some(jsstr_to_string(
+                    naming = Some(unsafe_jsstr_to_string(
                         cx,
                         NonNull::new_unchecked(nm_val.to_string()),
                     ));
@@ -4812,7 +4812,7 @@ unsafe extern "C" fn bun_test(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         return true;
     }
 
-    let name = jsstr_to_string(cx, NonNull::new_unchecked(name_val.to_string()));
+    let name = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(name_val.to_string()));
     let mut wrapped_cx_test = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref_test = &mut wrapped_cx_test;
     rooted!(&in(cx_ref_test) let callback = fn_val.to_object());
@@ -5136,7 +5136,7 @@ unsafe extern "C" fn process_chdir(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         JS_ReportErrorUTF8(cx, c"process.chdir requires a string".as_ptr());
         return false;
     }
-    let dir = jsstr_to_string(cx, NonNull::new_unchecked(dir_val.to_string()));
+    let dir = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(dir_val.to_string()));
     if let Err(e) = ::std::env::set_current_dir(&dir) {
         let msg = format!("process.chdir failed: {}", e);
         let c_msg = ZBox::from_bytes(msg.as_bytes());

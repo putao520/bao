@@ -390,11 +390,11 @@ pub unsafe fn evaluate_in_node_realm(
         if js_str.is_null() {
             Some(String::new())
         } else {
-            // Use mozjs's built-in jsstr_to_string for safe UTF-8 conversion.
+            // Use mozjs's built-in unsafe_jsstr_to_string for safe UTF-8 conversion.
             // It handles both Latin1 and TwoByte JS string encodings.
             let raw_cx = realm.raw_cx();
             match NonNull::new(js_str) {
-                Some(nn) => Some(mozjs::conversions::jsstr_to_string(raw_cx, nn)),
+                Some(nn) => Some(mozjs::conversions::unsafe_jsstr_to_string(raw_cx, nn)),
                 None => Some(String::new()),
             }
         }

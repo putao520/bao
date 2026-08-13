@@ -25,7 +25,7 @@ use net_traits::{FetchMetadata, FetchResponseMsg, NetworkError, ResourceFetchTim
 use pixels::RasterImage;
 use rustc_hash::FxHashSet;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use uuid::Uuid;
 
@@ -131,8 +131,7 @@ impl Notification {
         fallback_timestamp: u64,
         proto: Option<HandleObject>,
     ) -> DomRoot<Self> {
-        let notification = reflect_dom_object_with_proto_and_cx(
-            Box::new(Notification::new_inherited(
+        let notification = reflect_dom_object_with_proto(cx, Box::new(Notification::new_inherited(
                 global,
                 title,
                 &options,
@@ -141,9 +140,7 @@ impl Notification {
                 fallback_timestamp,
             )),
             global,
-            proto,
-            cx,
-        );
+            proto);
 
         notification.data.set(options.data.get());
 

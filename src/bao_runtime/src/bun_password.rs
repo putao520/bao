@@ -127,7 +127,7 @@ unsafe fn get_string_arg(
         return None;
     }
     let ptr = val.to_string();
-    NonNull::new(ptr).map(|nn| mozjs::conversions::jsstr_to_string(cx, nn))
+    NonNull::new(ptr).map(|nn| mozjs::conversions::unsafe_jsstr_to_string(cx, nn))
 }
 
 /// Algorithm and parameters parsed from the optional `options` argument.
@@ -165,7 +165,7 @@ unsafe fn parse_hash_options(cx: *mut JSContext, args: &CallArgs, argc: u32) -> 
     if val.is_string() {
         let ptr = val.to_string();
         if let Some(nn) = NonNull::new(ptr) {
-            opts.algorithm = mozjs::conversions::jsstr_to_string(cx, nn);
+            opts.algorithm = mozjs::conversions::unsafe_jsstr_to_string(cx, nn);
         }
         return opts;
     }
@@ -215,7 +215,7 @@ unsafe fn parse_verify_options(cx: *mut JSContext, args: &CallArgs, argc: u32) -
 
     if val.is_string() {
         let ptr = val.to_string();
-        return NonNull::new(ptr).map(|nn| mozjs::conversions::jsstr_to_string(cx, nn));
+        return NonNull::new(ptr).map(|nn| mozjs::conversions::unsafe_jsstr_to_string(cx, nn));
     }
 
     if val.is_object() {
@@ -251,7 +251,7 @@ unsafe fn get_string_property(
         return None;
     }
     let ptr = val.to_string();
-    NonNull::new(ptr).map(|nn| mozjs::conversions::jsstr_to_string(cx.raw_cx(), nn))
+    NonNull::new(ptr).map(|nn| mozjs::conversions::unsafe_jsstr_to_string(cx.raw_cx(), nn))
 }
 
 /// Read a u32 property from a JS object.

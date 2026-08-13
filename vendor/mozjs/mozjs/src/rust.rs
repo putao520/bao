@@ -18,13 +18,12 @@ use std::str;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use self::wrappers::{
+use self::wrappers2::{
     StackGCVectorStringAtIndex, StackGCVectorStringLength, StackGCVectorValueAtIndex,
-    StackGCVectorValueLength,
+    StackGCVectorValueLength, ToStringSlow,
 };
 use crate::consts::{JSCLASS_GLOBAL_SLOT_COUNT, JSCLASS_RESERVED_SLOTS_MASK};
 use crate::consts::{JSCLASS_IS_DOMJSCLASS, JSCLASS_IS_GLOBAL};
-use crate::conversions::jsstr_to_string;
 use crate::default_heapsize;
 pub use crate::gc::*;
 use crate::glue::AppendToRootedObjectVector;
@@ -68,7 +67,7 @@ use crate::jsapi::{
     RootedObject, RootedValue, ToUint32Slow, ToUint64Slow, ToWindowProxyIfWindowSlow,
 };
 use crate::jsapi::{SetWarningReporter, SourceText, ToBooleanSlow};
-use crate::jsapi::{ToInt32Slow, ToInt64Slow, ToNumberSlow, ToStringSlow, ToUint16Slow};
+use crate::jsapi::{ToInt32Slow, ToInt64Slow, ToNumberSlow, ToUint16Slow};
 use crate::jsval::{JSVal, ObjectValue, UndefinedValue};
 use crate::panic::maybe_resume_unwind;
 use crate::realm::AutoRealm;
@@ -570,6 +569,7 @@ impl CompileOptionsWrapper {
     /// # Safety
     /// `cx` must point to a non-null, valid [`JSContext`].
     /// To create an instance from safe code, use [`Runtime::new_compile_options`].
+    #[deprecated(note = "Use CompileOptionsWrapper::new instead")]
     pub unsafe fn new_raw(cx: *mut JSContext, filename: CString, line: u32) -> Self {
         let ptr = NewCompileOptions(cx, filename.as_ptr(), line);
         assert!(!ptr.is_null());
@@ -786,7 +786,7 @@ pub unsafe fn ToUint64(cx: *mut JSContext, v: HandleValue) -> Result<u64, ()> {
 }
 
 #[inline]
-pub unsafe fn ToString(cx: *mut JSContext, v: HandleValue) -> *mut JSString {
+pub unsafe fn ToString(cx: &mut crate::context::JSContext, v: HandleValue) -> *mut JSString {
     let val = *v.ptr.as_ptr();
     if val.is_string() {
         return val.to_string();
@@ -1029,30 +1029,36 @@ pub unsafe fn maybe_wrap_object(cx: *mut JSContext, mut obj: MutableHandleObject
 }
 
 #[inline]
-pub unsafe fn maybe_wrap_object_value(cx: *mut JSContext, rval: MutableHandleValue) {
+pub unsafe fn maybe_wrap_object_value(
+    cx: &mut crate::context::JSContext,
+    rval: MutableHandleValue,
+) {
     assert!(rval.is_object());
     let obj = rval.to_object();
-    if get_object_realm(obj) != get_context_realm(cx) {
-        assert!(JS_WrapValue(cx, rval.into()));
+    if get_object_realm(obj) != get_context_realm(cx.raw_cx()) {
+        assert!(JS_WrapValue(cx.raw_cx(), rval.into()));
     } else if is_dom_object(obj) {
         try_to_outerize(rval);
     }
 }
 
 #[inline]
-pub unsafe fn maybe_wrap_object_or_null_value(cx: *mut JSContext, rval: MutableHandleValue) {
+pub fn maybe_wrap_object_or_null_value(
+    cx: &mut crate::context::JSContext,
+    rval: MutableHandleValue,
+) {
     assert!(rval.is_object_or_null());
     if !rval.is_null() {
-        maybe_wrap_object_value(cx, rval);
+        unsafe { maybe_wrap_object_value(cx, rval) };
     }
 }
 
 #[inline]
-pub unsafe fn maybe_wrap_value(cx: *mut JSContext, rval: MutableHandleValue) {
+pub fn maybe_wrap_value(cx: &mut crate::context::JSContext, rval: MutableHandleValue) {
     if rval.is_string() {
-        assert!(JS_WrapValue(cx, rval.into()));
+        assert!(unsafe { JS_WrapValue(cx.raw_cx(), rval.into()) });
     } else if rval.is_object() {
-        maybe_wrap_object_value(cx, rval);
+        unsafe { maybe_wrap_object_value(cx, rval) };
     }
 }
 
@@ -1091,6 +1097,7 @@ pub struct ScriptedCaller {
     pub col: u32,
 }
 
+#[deprecated(note = "Use describe_scripted_caller_safe instead")]
 pub unsafe fn describe_scripted_caller(cx: *mut JSContext) -> Result<ScriptedCaller, ()> {
     let mut buf = [0; 1024];
     let mut line = 0;
@@ -1099,6 +1106,23 @@ pub unsafe fn describe_scripted_caller(cx: *mut JSContext) -> Result<ScriptedCal
         return Err(());
     }
     let filename = CStr::from_ptr((&buf) as *const _ as *const _);
+    Ok(ScriptedCaller {
+        filename: String::from_utf8_lossy(filename.to_bytes()).into_owned(),
+        line,
+        col,
+    })
+}
+
+pub fn describe_scripted_caller_safe(cx: &crate::context::JSContext) -> Result<ScriptedCaller, ()> {
+    let mut buf = [0; 1024];
+    let mut line = 0;
+    let mut col = 0;
+    if unsafe {
+        !wrappers2::DescribeScriptedCaller(cx, buf.as_mut_ptr(), buf.len(), &mut line, &mut col)
+    } {
+        return Err(());
+    }
+    let filename = unsafe { CStr::from_ptr(buf.as_ptr()) };
     Ok(ScriptedCaller {
         filename: String::from_utf8_lossy(filename.to_bytes()).into_owned(),
         line,
@@ -1123,6 +1147,39 @@ unsafe extern "C" fn fill_string_callback(ptr: *const c_char, len: usize, target
 
 /// Retrieve error info from the pending exception stack, by clearing it.
 /// Return None if there isn't one or if it is a warning.
+pub fn error_info_from_exception_stack_safe(
+    cx: &mut crate::context::JSContext,
+    rval: MutableHandleValue,
+) -> Option<ErrorInfo> {
+    let mut message = String::new();
+    let mut filename = String::new();
+
+    let mut line = 0;
+    let mut col = 0;
+
+    unsafe {
+        if !wrappers2::PendingExceptionStackInfo(
+            cx,
+            Some(fill_string_callback),
+            &raw mut message as *mut c_void,
+            &raw mut filename as *mut c_void,
+            &mut line,
+            &mut col,
+            rval,
+        ) {
+            return None;
+        }
+    }
+
+    Some(ErrorInfo {
+        message,
+        filename,
+        line,
+        col,
+    })
+}
+
+#[deprecated(note = "Use error_info_from_exception_stack_safe instead")]
 pub unsafe fn error_info_from_exception_stack(
     cx: *mut JSContext,
     rval: RawMutableHandleValue,
@@ -1200,7 +1257,11 @@ impl<'a> CapturedJSStack<'a> {
                 return None;
             }
 
-            Some(jsstr_to_string(self.cx, NonNull::new(string_handle.get())?))
+            #[expect(deprecated)]
+            Some(crate::conversions::unsafe_jsstr_to_string(
+                self.cx,
+                NonNull::new(string_handle.get())?,
+            ))
         }
     }
 
@@ -1236,7 +1297,7 @@ impl<'a> CapturedJSStack<'a> {
 #[macro_export]
 macro_rules! capture_stack {
     (&in($cx:expr) $($t:tt)*) => {
-        capture_stack!(in(unsafe {$cx.raw_cx_no_gc()}) $($t)*);
+        capture_stack!(in(unsafe {$cx.raw_cx()}) $($t)*);
     };
     (in($cx:expr) let $name:ident = with max depth($max_frame_count:expr)) => {
         rooted!(in($cx) let mut __obj = ::std::ptr::null_mut());
@@ -1415,6 +1476,7 @@ where
 }
 
 /// Wrappers for JSAPI methods that accept lifetimed Handle and MutableHandle arguments
+#[deprecated(note = "Use wrappers2 instead")]
 pub mod wrappers {
     macro_rules! wrap {
         // The invocation of @inner has the following form:

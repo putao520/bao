@@ -6,6 +6,9 @@
 //! typed arrays or wrapping existing JS reflectors, and prevents reinterpreting
 //! existing buffers as different types except in well-defined cases.
 
+use std::ptr::NonNull;
+
+use crate::context::NoGC;
 use crate::conversions::ConversionResult;
 use crate::conversions::FromJSValConvertible;
 use crate::conversions::ToJSValConvertible;
@@ -63,7 +66,6 @@ use crate::rust::{HandleValue, MutableHandleObject, MutableHandleValue};
 
 use std::cell::Cell;
 use std::ptr;
-use std::slice;
 
 /// Trait that specifies how pointers to wrapped objects are stored. It supports
 /// two variants, one with bare pointer (to be rooted on stack using
@@ -98,8 +100,9 @@ impl JSObjectStorage for Box<Heap<*mut JSObject>> {
 
 impl<T: TypedArrayElement, S: JSObjectStorage> FromJSValConvertible for TypedArray<T, S> {
     type Config = ();
-    unsafe fn from_jsval(
-        _cx: *mut JSContext,
+
+    fn safe_from_jsval(
+        _cx: &mut crate::context::JSContext,
         value: HandleValue,
         _option: (),
     ) -> Result<ConversionResult<Self>, ()> {
@@ -113,8 +116,8 @@ impl<T: TypedArrayElement, S: JSObjectStorage> FromJSValConvertible for TypedArr
 
 impl<T: TypedArrayElement, S: JSObjectStorage> ToJSValConvertible for TypedArray<T, S> {
     #[inline]
-    unsafe fn to_jsval(&self, cx: *mut JSContext, rval: MutableHandleValue) {
-        ToJSValConvertible::to_jsval(&self.object.as_raw(), cx, rval);
+    fn safe_to_jsval(&self, cx: &mut crate::context::JSContext, rval: MutableHandleValue) {
+        ToJSValConvertible::safe_to_jsval(&self.object.as_raw(), cx, rval);
     }
 }
 
@@ -123,10 +126,17 @@ pub enum CreateWith<'a, T: 'a> {
     Slice(&'a [T]),
 }
 
+#[derive(Clone, Copy)]
+enum ArrayData<T> {
+    NotYetComputed,
+    Detached,
+    Computed(NonNull<[T]>),
+}
+
 /// A typed array wrapper.
 pub struct TypedArray<T: TypedArrayElement, S: JSObjectStorage> {
     object: S,
-    computed: Cell<Option<(*mut T::Element, usize)>>,
+    computed: Cell<ArrayData<T::Element>>,
 }
 
 unsafe impl<T> CustomTrace for TypedArray<T, *mut JSObject>
@@ -154,24 +164,28 @@ impl<T: TypedArrayElement, S: JSObjectStorage> TypedArray<T, S> {
 
             Ok(TypedArray {
                 object: S::from_raw(unwrapped),
-                computed: Cell::new(None),
+                computed: Cell::new(ArrayData::NotYetComputed),
             })
         }
     }
 
-    fn data(&self) -> (*mut T::Element, usize) {
-        if let Some(data) = self.computed.get() {
-            return data;
+    fn data(&self) -> Option<NonNull<[T::Element]>> {
+        if let ArrayData::Computed(data) = self.computed.get() {
+            return Some(data);
         }
 
         let data = unsafe { T::length_and_data(self.object.as_raw()) };
-        self.computed.set(Some(data));
+        self.computed.set(if let Some(data) = data {
+            ArrayData::Computed(data)
+        } else {
+            ArrayData::Detached
+        });
         data
     }
 
     /// Returns the number of elements in the underlying typed array.
     pub fn len(&self) -> usize {
-        self.data().1 as usize
+        self.data().map_or(0, |data| data.len())
     }
 
     /// # Unsafety
@@ -187,7 +201,9 @@ impl<T: TypedArrayElement, S: JSObjectStorage> TypedArray<T, S> {
     }
 
     /// Retrieves an owned data that's represented by the typed array.
-    pub fn to_vec(&self) -> Vec<T::Element>
+    /// Returns None if the underlying buffer is detached.
+    #[allow(deprecated)]
+    pub fn to_vec(&self) -> Option<Vec<T::Element>>
     where
         T::Element: Clone,
     {
@@ -196,16 +212,30 @@ impl<T: TypedArrayElement, S: JSObjectStorage> TypedArray<T, S> {
         // the underlying buffer can easily invalidated when transferred with
         // postMessage to another thread (To remedy that, we shouldn't
         // execute any JS code between getting the data pointer and using it).
-        unsafe { self.as_slice().to_vec() }
+        unsafe { self.as_slice().map(|slice| slice.to_vec()) }
     }
 
     /// # Unsafety
     ///
     /// The returned slice can be invalidated if the underlying typed array
     /// is neutered.
-    pub unsafe fn as_slice(&self) -> &[T::Element] {
-        let (pointer, length) = self.data();
-        slice::from_raw_parts(pointer as *const T::Element, length as usize)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the underlying data points to a nullptr.
+    #[deprecated = "use as_slice_safe instead"]
+    pub unsafe fn as_slice(&self) -> Option<&[T::Element]> {
+        self.data().map(|data| data.as_ref())
+    }
+
+    /// Returns None if the underlying array buffer is detached.
+    /// Otherwise, returns Some with the slice data.
+    pub fn as_slice_safe<'a>(&self, _no_gc: &'a NoGC) -> Option<&'a [T::Element]> {
+        // SAFETY: The slice can only be invalidated by invoking JS engine
+        //         behaviour that detaches the underlying typed array.
+        //         The slice's lifetime is bounded by the provided NoGC token,
+        //         which prevents any JS engine interaction.
+        self.data().map(|data| unsafe { data.as_ref() })
     }
 
     /// # Unsafety
@@ -215,9 +245,21 @@ impl<T: TypedArrayElement, S: JSObjectStorage> TypedArray<T, S> {
     ///
     /// The underlying `JSObject` can be aliased, which can lead to
     /// Undefined Behavior due to mutable aliasing.
-    pub unsafe fn as_mut_slice(&mut self) -> &mut [T::Element] {
-        let (pointer, length) = self.data();
-        slice::from_raw_parts_mut(pointer, length as usize)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the underlying data points to a nullptr.
+    #[deprecated = "use as_mut_slice_safe instead"]
+    pub unsafe fn as_mut_slice(&mut self) -> Option<&mut [T::Element]> {
+        self.data().map(|mut data| data.as_mut())
+    }
+
+    pub fn as_mut_slice_safe<'a>(&mut self, _no_gc: &'a NoGC) -> Option<&'a mut [T::Element]> {
+        // SAFETY: The slice can only be invalidated by invoking JS engine
+        //         behaviour that detaches the underlying typed array.
+        //         The slice's lifetime is bounded by the provided NoGC token,
+        //         which prevents any JS engine interaction.
+        self.data().map(|mut data| unsafe { data.as_mut() })
     }
 
     /// Return a boolean flag which denotes whether the underlying buffer
@@ -260,9 +302,15 @@ impl<T: TypedArrayElementCreator + TypedArrayElement, S: JSObjectStorage> TypedA
     }
 
     unsafe fn update_raw(data: &[T::Element], result: *mut JSObject) {
-        let (buf, length) = T::length_and_data(result);
-        assert!(data.len() <= length as usize);
-        ptr::copy_nonoverlapping(data.as_ptr(), buf, data.len());
+        let Some(mut buffer) = T::length_and_data(result) else {
+            return;
+        };
+        assert!(data.len() <= buffer.len());
+        ptr::copy_nonoverlapping(
+            data.as_ptr(),
+            buffer.as_mut().as_mut_ptr(), /* as *mut T::Element*/
+            data.len(),
+        );
     }
 }
 
@@ -270,11 +318,11 @@ impl<T: TypedArrayElementCreator + TypedArrayElement, S: JSObjectStorage> TypedA
 /// and various functions required to manipulate typed arrays of that element type.
 pub trait TypedArrayElement {
     /// Underlying primitive representation of this element type.
-    type Element;
+    type Element: Copy;
     /// Unwrap a typed array JS reflector for this element type.
     unsafe fn unwrap_array(obj: *mut JSObject) -> *mut JSObject;
     /// Retrieve the length and data of a typed array's buffer for this element type.
-    unsafe fn length_and_data(obj: *mut JSObject) -> (*mut Self::Element, usize);
+    unsafe fn length_and_data(obj: *mut JSObject) -> Option<NonNull<[Self::Element]>>;
 }
 
 /// Internal trait for creating new typed arrays.
@@ -299,13 +347,13 @@ macro_rules! typed_array_element {
                 $unwrap(obj)
             }
 
-            unsafe fn length_and_data(obj: *mut JSObject) -> (*mut Self::Element, usize) {
+            unsafe fn length_and_data(obj: *mut JSObject) -> Option<NonNull<[Self::Element]>> {
                 let mut len = 0;
                 let mut shared = false;
                 let mut data = ptr::null_mut();
                 $length_and_data(obj, &mut len, &mut shared, &mut data);
                 assert!(!shared);
-                (data, len)
+                NonNull::new(data).map(|data| NonNull::slice_from_raw_parts(data, len))
             }
         }
     };

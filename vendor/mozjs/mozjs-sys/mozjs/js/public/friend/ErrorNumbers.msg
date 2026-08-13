@@ -85,7 +85,6 @@ MSG_DEF(JSMSG_WEAKMAP_KEY_MUST_BE_AN_OBJECT, 1, JSEXN_TYPEERR, "WeakMap key {0} 
 MSG_DEF(JSMSG_WEAKSET_VAL_MUST_BE_AN_OBJECT, 1, JSEXN_TYPEERR, "WeakSet value {0} must be an object")
 MSG_DEF(JSMSG_BAD_GETTER_OR_SETTER,    1, JSEXN_TYPEERR, "invalid {0} usage")
 MSG_DEF(JSMSG_BAD_ARRAY_LENGTH,        0, JSEXN_RANGEERR, "invalid array length")
-MSG_DEF(JSMSG_BUFFER_OUT_OF_MEMORY,    0, JSEXN_RANGEERR, "Out of memory")
 MSG_DEF(JSMSG_SOURCE_ARRAY_TOO_LONG,   0, JSEXN_RANGEERR, "source array is too long")
 MSG_DEF(JSMSG_PREV_DECLARATION,        2, JSEXN_NOTE, "Previously declared at line {0}, column {1}")
 MSG_DEF(JSMSG_REDECLARED_VAR,          2, JSEXN_SYNTAXERR, "redeclaration of {0} {1}")
@@ -805,6 +804,7 @@ MSG_DEF(JSMSG_ITERATOR_NO_THROW,       0, JSEXN_TYPEERR, "iterator does not have
 
 // Async Function
 MSG_DEF(JSMSG_UNHANDLABLE_PROMISE_REJECTION_WARNING, 0, JSEXN_WARN, "unhandlable error after resolving async function's promise")
+MSG_DEF(JSMSG_UNHANDLABLE_PROMISE_RESOLUTION_WARNING, 0, JSEXN_WARN, "unhandlable resolve after resolving async function's promise")
 
 // Async Iteration
 MSG_DEF(JSMSG_FOR_AWAIT_NOT_OF,        0, JSEXN_SYNTAXERR, "'for await' loop should be used with 'of'")

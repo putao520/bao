@@ -8,7 +8,9 @@ use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Namespace, ns};
+use js::context::JSContext;
 use js::rust::HandleObject;
+use script_bindings::callback::OwnerWindow;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 
@@ -24,8 +26,7 @@ use crate::dom::iterators::ShadowIncluding;
 use crate::dom::mutationrecord::MutationRecord;
 use crate::dom::node::Node;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
-use crate::script_thread::ScriptThread;
+use crate::event_loop::script_thread::ScriptThread;
 
 #[dom_struct]
 pub(crate) struct MutationObserver {
@@ -73,13 +74,13 @@ pub(crate) struct ObserverOptions {
 
 impl MutationObserver {
     fn new_with_proto(
+        cx: &mut JSContext,
         global: &Window,
         proto: Option<HandleObject>,
         callback: Rc<MutationCallback>,
-        can_gc: CanGc,
     ) -> DomRoot<MutationObserver> {
         let boxed_observer = Box::new(MutationObserver::new_inherited(callback));
-        reflect_dom_object_with_proto(boxed_observer, global, proto, can_gc)
+        reflect_dom_object_with_proto(cx, boxed_observer, global, proto)
     }
 
     fn new_inherited(callback: Rc<MutationCallback>) -> MutationObserver {
@@ -101,6 +102,7 @@ impl MutationObserver {
 
     /// <https://dom.spec.whatwg.org/#queueing-a-mutation-record>
     pub(crate) fn queue_a_mutation_record<'a, F>(
+        cx: &mut JSContext,
         target: &Node,
         attr_type: LazyCell<Mutation<'a>, F>,
     ) where
@@ -211,32 +213,17 @@ impl MutationObserver {
                     } else {
                         None
                     };
-                    MutationRecord::attribute_mutated(
-                        target,
-                        name,
-                        namespace,
-                        mapped_old_value,
-                        CanGc::deprecated_note(),
-                    )
+                    MutationRecord::attribute_mutated(cx, target, name, namespace, mapped_old_value)
                 },
-                Mutation::CharacterData { .. } => MutationRecord::character_data_mutated(
-                    target,
-                    mapped_old_value,
-                    CanGc::deprecated_note(),
-                ),
+                Mutation::CharacterData { .. } => {
+                    MutationRecord::character_data_mutated(cx, target, mapped_old_value)
+                },
                 Mutation::ChildList {
                     ref added,
                     ref removed,
                     ref next,
                     ref prev,
-                } => MutationRecord::child_list_mutated(
-                    target,
-                    *added,
-                    *removed,
-                    *next,
-                    *prev,
-                    CanGc::deprecated_note(),
-                ),
+                } => MutationRecord::child_list_mutated(cx, target, *added, *removed, *next, *prev),
             };
             // Step 4.2 Enqueue record to observer’s record queue.
             observer
@@ -249,20 +236,20 @@ impl MutationObserver {
 
         // Step 5 Queue a mutation observer microtask.
         let mutation_observers = ScriptThread::mutation_observers();
-        mutation_observers.queue_mutation_observer_microtask(ScriptThread::microtask_queue());
+        mutation_observers.queue_mutation_observer_microtask(cx, ScriptThread::microtask_queue());
     }
 }
 
 impl MutationObserverMethods<crate::DomTypeHolder> for MutationObserver {
     /// <https://dom.spec.whatwg.org/#dom-mutationobserver-mutationobserver>
     fn Constructor(
+        cx: &mut JSContext,
         global: &Window,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
         callback: Rc<MutationCallback>,
     ) -> Fallible<DomRoot<MutationObserver>> {
         global.set_exists_mut_observer();
-        let observer = MutationObserver::new_with_proto(global, proto, callback, can_gc);
+        let observer = MutationObserver::new_with_proto(cx, global, proto, callback);
         ScriptThread::mutation_observers().add_mutation_observer(&observer);
         Ok(observer)
     }
@@ -321,7 +308,7 @@ impl MutationObserverMethods<crate::DomTypeHolder> for MutationObserver {
         let add_new_observer = {
             let mut replaced = false;
             for registered in &mut *target.registered_mutation_observers_mut() {
-                if !std::ptr::eq(&*registered.observer, self) {
+                if registered.observer != self {
                     continue;
                 }
                 // TODO: remove matching transient registered observers
@@ -392,3 +379,5 @@ impl MutationObserverMethods<crate::DomTypeHolder> for MutationObserver {
         self.record_queue.borrow_mut().clear();
     }
 }
+
+impl OwnerWindow<crate::DomTypeHolder> for MutationObserver {}

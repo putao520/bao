@@ -18,7 +18,6 @@
 #include "js/BuildId.h"
 #include "js/Class.h"
 #include "js/ColumnNumber.h"
-#include "js/ContextOptions.h"
 #include "js/Id.h"
 #include "js/MemoryMetrics.h"
 #include "js/Modules.h"  // include for JS::GetModulePrivate
@@ -744,21 +743,6 @@ void DeleteCompileOptions(JS::ReadOnlyCompileOptions* aOpts) {
 
 JS::ReadOnlyCompileOptions* NewCompileOptions(JSContext* aCx, const char* aFile,
                                               unsigned aLine) {
-  // Enable Explicit Resource Management (`using` / `await using` bindings).
-  // The feature ships in SpiderMonkey behind ENABLE_EXPLICIT_RESOURCE_MANAGEMENT;
-  // at compile time the parser rejects `using` / `await using` declarations
-  // unless the per-compile pref is on. Flip the context-wide pref once per
-  // JSContext so all subsequent CompileOptions constructed from this context
-  // inherit it (NewCompileOptions is the single entry point mozjs-rust uses
-  // for every script/module compile, so this is guaranteed to run first).
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
-  static bool sExplicitResourceInitialized = false;
-  if (!sExplicitResourceInitialized) {
-    JS::ContextOptionsRef(aCx).compileOptions().setExplicitResourceManagement(true);
-    sExplicitResourceInitialized = true;
-  }
-#endif
-
   JS::CompileOptions opts(aCx);
   opts.setFileAndLine(aFile, aLine);
 

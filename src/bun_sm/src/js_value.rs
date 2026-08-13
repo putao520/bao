@@ -235,7 +235,7 @@ impl JSValue {
         let mut wrapped_cx =
             mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let val_root = js_val);
-        let js_str = unsafe { mozjs::rust::ToString(cx, val_root.handle().into()) };
+        let js_str = unsafe { mozjs::rust::ToString(&mut wrapped_cx, val_root.handle().into()) };
         if js_str.is_null() {
             return Err(crate::error::JsError {
                 message: "ToString failed".into(),
@@ -246,7 +246,7 @@ impl JSValue {
             });
         }
         let nn = ::std::ptr::NonNull::new(js_str).unwrap();
-        Ok(unsafe { mozjs::conversions::jsstr_to_string(cx, nn) })
+        Ok(unsafe { mozjs::conversions::unsafe_jsstr_to_string(cx, nn) })
     }
 
     /// Convert to a JSObject pointer using SpiderMonkey's ToObject.

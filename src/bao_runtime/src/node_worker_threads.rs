@@ -17,7 +17,7 @@ use ::std::sync::atomic::{AtomicU32, Ordering};
 use ::std::sync::mpsc::{self, Receiver, Sender};
 
 use dashmap::DashMap;
-use mozjs::conversions::jsstr_to_string;
+use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
     BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue,
@@ -265,7 +265,7 @@ unsafe extern "C" fn worker_post_to_main(cx: *mut JSContext, argc: u32, vp: *mut
     }
 
     let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
-    let rust_str = jsstr_to_string(
+    let rust_str = unsafe_jsstr_to_string(
         wrapped_cx.raw_cx(),
         NonNull::new_unchecked(json_val.to_string()),
     );
@@ -363,7 +363,7 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     }
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let filename = jsstr_to_string(
+    let filename = unsafe_jsstr_to_string(
         wrapped_cx.raw_cx(),
         NonNull::new_unchecked(filename_val.to_string()),
     );
@@ -421,7 +421,7 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
                 rooted!(&in(cx_ref) let mut json_val = UndefinedValue());
                 let json_ok = json_stringify(cx, wd_val, json_val.handle_mut());
                 if json_ok && json_val.is_string() {
-                    worker_data_json = Some(jsstr_to_string(
+                    worker_data_json = Some(unsafe_jsstr_to_string(
                         cx_ref.raw_cx(),
                         NonNull::new_unchecked(json_val.get().to_string()),
                     ));
@@ -598,7 +598,7 @@ unsafe extern "C" fn worker_post_message(cx: *mut JSContext, argc: u32, vp: *mut
         rooted!(&in(cx_ref) let mut json_val = UndefinedValue());
         let ok = json_stringify(cx, data_val, json_val.handle_mut());
         if ok && json_val.is_string() {
-            jsstr_to_string(
+            unsafe_jsstr_to_string(
                 cx_ref.raw_cx(),
                 NonNull::new_unchecked(json_val.get().to_string()),
             )

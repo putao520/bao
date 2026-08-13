@@ -4,7 +4,7 @@
 
 use dom_struct::dom_struct;
 use js::rust::HandleObject;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_media::ServoMedia;
 use servo_media::audio::node::AudioNodeInit;
 use servo_media::streams::MediaStreamType;
@@ -74,12 +74,9 @@ impl MediaStreamAudioDestinationNode {
         options: &AudioNodeOptions,
     ) -> Fallible<DomRoot<MediaStreamAudioDestinationNode>> {
         let node = MediaStreamAudioDestinationNode::new_inherited(cx, context, options)?;
-        Ok(reflect_dom_object_with_proto_and_cx(
-            Box::new(node),
+        Ok(reflect_dom_object_with_proto(cx, Box::new(node),
             window,
-            proto,
-            cx,
-        ))
+            proto))
     }
 }
 

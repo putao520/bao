@@ -7,12 +7,14 @@
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr;
-use std::ptr::NonNull;
 
 use dom_struct::dom_struct;
+use js::context::JSContext;
 use js::conversions::ToJSValConvertible;
-use js::jsapi::{Heap, JSObject};
+use js::jsapi::Heap;
 use js::jsval::UndefinedValue;
+use js::realm::CurrentRealm;
+use js::rust::wrappers2::JS_NewObject;
 use js::rust::{HandleObject, HandleValue, MutableHandleObject};
 
 use crate::codegen::GenericBindings::IterableIteratorBinding::{
@@ -20,11 +22,9 @@ use crate::codegen::GenericBindings::IterableIteratorBinding::{
 };
 use crate::conversions::IDLInterface;
 use crate::error::Fallible;
-use crate::interfaces::DomHelpers;
-use crate::realms::InRealm;
+use crate::interfaces::{DomHelpers, GlobalScopeHelpers};
 use crate::reflector::{DomGlobalGeneric, DomObjectIteratorWrap, DomObjectWrap, Reflector};
 use crate::root::{Dom, DomRoot, Root};
-use crate::script_runtime::{CanGc, JSContext};
 use crate::trace::{NoTrace, RootedTraceableBox};
 use crate::utils::DOMClass;
 use crate::{DomTypes, JSTraceable};
@@ -46,12 +46,13 @@ pub trait Iterable {
     type Key: ToJSValConvertible;
     /// The type of the value of the iterator pair.
     type Value: ToJSValConvertible;
+
     /// Return the number of entries that can be iterated over.
-    fn get_iterable_length(&self) -> u32;
+    fn get_iterable_length(&self, cx: &mut JSContext) -> u32;
     /// Return the value at the provided index.
-    fn get_value_at_index(&self, index: u32) -> Self::Value;
+    fn get_value_at_index(&self, cx: &mut JSContext, index: u32) -> Self::Value;
     /// Return the key at the provided index.
-    fn get_key_at_index(&self, index: u32) -> Self::Key;
+    fn get_key_at_index(&self, cx: &mut JSContext, index: u32) -> Self::Key;
 }
 
 /// A version of the [IDLInterface] trait that is specific to types that have
@@ -63,7 +64,7 @@ pub trait IteratorDerives {
 }
 
 /// An iterator over the iterable entries of a given DOM interface.
-#[dom_struct]
+#[dom_struct(no_has_parent)]
 pub struct IterableIterator<
     D: DomTypes,
     T: DomObjectIteratorWrap<D> + JSTraceable + Iterable + DomGlobalGeneric<D>,
@@ -73,12 +74,6 @@ pub struct IterableIterator<
     type_: IteratorType,
     index: Cell<u32>,
     _marker: NoTrace<PhantomData<D>>,
-}
-
-impl<D: DomTypes, T: DomObjectIteratorWrap<D> + JSTraceable + Iterable> IterableIterator<D, T> {
-    pub fn global_(&self, realm: InRealm) -> DomRoot<D::GlobalScope> {
-        <Self as DomGlobalGeneric<D>>::global_(self, realm)
-    }
 }
 
 impl<
@@ -100,7 +95,11 @@ impl<D: DomTypes, T: DomObjectIteratorWrap<D> + JSTraceable + Iterable + DomGlob
     IterableIterator<D, T>
 {
     /// Create a new iterator instance for the provided iterable DOM interface.
-    pub(crate) fn new(iterable: &T, type_: IteratorType, realm: InRealm) -> DomRoot<Self> {
+    pub(crate) fn new(
+        realm: &mut CurrentRealm,
+        iterable: &T,
+        type_: IteratorType,
+    ) -> DomRoot<Self> {
         let iterator = Box::new(IterableIterator {
             reflector: Reflector::new(),
             type_,
@@ -108,55 +107,45 @@ impl<D: DomTypes, T: DomObjectIteratorWrap<D> + JSTraceable + Iterable + DomGlob
             index: Cell::new(0),
             _marker: NoTrace(PhantomData),
         });
-        <D as DomHelpers<D>>::reflect_dom_object(
-            iterator,
-            &*iterable.global_(realm),
-            CanGc::deprecated_note(),
-        )
+        let global = D::GlobalScope::from_current_realm(realm);
+        <D as DomHelpers<D>>::reflect_dom_object_with_cx(realm, iterator, &*global)
     }
 
     /// Return the next value from the iterable object.
     #[expect(non_snake_case)]
-    pub fn Next(&self, cx: JSContext) -> Fallible<NonNull<JSObject>> {
+    pub fn Next(&self, cx: &mut JSContext, return_value: MutableHandleObject) -> Fallible<()> {
         let index = self.index.get();
-        rooted!(in(*cx) let mut value = UndefinedValue());
-        rooted!(in(*cx) let mut rval = ptr::null_mut::<JSObject>());
-        let result = if index >= self.iterable.get_iterable_length() {
-            dict_return(cx, rval.handle_mut(), true, value.handle())
+        rooted!(&in(cx) let mut value = UndefinedValue());
+        let result = if index >= self.iterable.get_iterable_length(cx) {
+            dict_return(cx, return_value, true, value.handle())
         } else {
             match self.type_ {
                 IteratorType::Keys => {
-                    unsafe {
-                        self.iterable
-                            .get_key_at_index(index)
-                            .to_jsval(*cx, value.handle_mut());
-                    }
-                    dict_return(cx, rval.handle_mut(), false, value.handle())
+                    self.iterable
+                        .get_key_at_index(cx, index)
+                        .safe_to_jsval(cx, value.handle_mut());
+                    dict_return(cx, return_value, false, value.handle())
                 },
                 IteratorType::Values => {
-                    unsafe {
-                        self.iterable
-                            .get_value_at_index(index)
-                            .to_jsval(*cx, value.handle_mut());
-                    }
-                    dict_return(cx, rval.handle_mut(), false, value.handle())
+                    self.iterable
+                        .get_value_at_index(cx, index)
+                        .safe_to_jsval(cx, value.handle_mut());
+                    dict_return(cx, return_value, false, value.handle())
                 },
                 IteratorType::Entries => {
-                    rooted!(in(*cx) let mut key = UndefinedValue());
-                    unsafe {
-                        self.iterable
-                            .get_key_at_index(index)
-                            .to_jsval(*cx, key.handle_mut());
-                        self.iterable
-                            .get_value_at_index(index)
-                            .to_jsval(*cx, value.handle_mut());
-                    }
-                    key_and_value_return(cx, rval.handle_mut(), key.handle(), value.handle())
+                    rooted!(&in(cx) let mut key = UndefinedValue());
+                    self.iterable
+                        .get_key_at_index(cx, index)
+                        .safe_to_jsval(cx, key.handle_mut());
+                    self.iterable
+                        .get_value_at_index(cx, index)
+                        .safe_to_jsval(cx, value.handle_mut());
+                    key_and_value_return(cx, return_value, key.handle(), value.handle())
                 },
             }
         };
         self.index.set(index + 1);
-        result.map(|_| NonNull::new(rval.get()).expect("got a null pointer"))
+        result
     }
 }
 
@@ -164,7 +153,7 @@ impl<D: DomTypes, T: DomObjectIteratorWrap<D> + JSTraceable + Iterable + DomGlob
     DomObjectWrap<D> for IterableIterator<D, T>
 {
     const WRAP: unsafe fn(
-        &mut js::context::JSContext,
+        &mut JSContext,
         &D::GlobalScope,
         Option<HandleObject>,
         Box<Self>,
@@ -172,7 +161,7 @@ impl<D: DomTypes, T: DomObjectIteratorWrap<D> + JSTraceable + Iterable + DomGlob
 }
 
 fn dict_return(
-    cx: JSContext,
+    cx: &mut JSContext,
     mut result: MutableHandleObject,
     done: bool,
     value: HandleValue,
@@ -180,16 +169,14 @@ fn dict_return(
     let mut dict = IterableKeyOrValueResult::empty();
     dict.done = done;
     dict.value.set(value.get());
-    rooted!(in(*cx) let mut dict_value = UndefinedValue());
-    unsafe {
-        dict.to_jsval(*cx, dict_value.handle_mut());
-    }
-    result.set(dict_value.to_object());
+
+    unsafe { result.set(JS_NewObject(cx, ptr::null())) };
+    dict.to_jsobject(cx, result);
     Ok(())
 }
 
 fn key_and_value_return(
-    cx: JSContext,
+    cx: &mut JSContext,
     mut result: MutableHandleObject,
     key: HandleValue,
     value: HandleValue,
@@ -202,10 +189,8 @@ fn key_and_value_return(
             .map(|handle| RootedTraceableBox::from_box(Heap::boxed(handle.get())))
             .collect(),
     );
-    rooted!(in(*cx) let mut dict_value = UndefinedValue());
-    unsafe {
-        dict.to_jsval(*cx, dict_value.handle_mut());
-    }
-    result.set(dict_value.to_object());
+
+    unsafe { result.set(JS_NewObject(cx, ptr::null())) };
+    dict.to_jsobject(cx, result);
     Ok(())
 }
