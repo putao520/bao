@@ -3,11 +3,13 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use dom_struct::dom_struct;
 use euclid::default::Size2D;
 use html5ever::{LocalName, Prefix, local_name, ns};
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use layout_api::{HTMLMediaData, MediaMetadata};
 use net_traits::blob_url_store::UrlWithBlobClaim;
@@ -21,11 +23,11 @@ use net_traits::{
 };
 use pixels::{Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use script_bindings::cell::DomRefCell;
+use script_bindings::error::Fallible;
 use servo_media::player::video::VideoFrame;
 use servo_url::ServoUrl;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
 
-use crate::document_loader::{LoadBlocker, LoadType};
 use crate::dom::bindings::codegen::Bindings::HTMLVideoElementBinding::HTMLVideoElementMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
@@ -38,9 +40,10 @@ use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmlmediaelement::{HTMLMediaElement, NetworkState, ReadyState};
+use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{Node, NodeDamage, NodeTraits};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::virtualmethods::VirtualMethods;
+use crate::event_loop::document_loader::{LoadBlocker, LoadType};
 use crate::fetch::{FetchCanceller, RequestWithGlobalScope};
 use crate::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
@@ -52,6 +55,9 @@ pub(crate) struct HTMLVideoElement {
     video_width: Cell<Option<u32>>,
     /// <https://html.spec.whatwg.org/multipage/#dom-video-videoheight>
     video_height: Cell<Option<u32>>,
+    /// <https://html.spec.whatwg.org/multipage/#dom-video-poster>
+    #[no_trace]
+    poster_url: DomRefCell<Option<UrlWithBlobClaim>>,
     /// Incremented whenever tasks associated with this element are cancelled.
     generation_id: Cell<u32>,
     /// Load event blocker. Will block the load event while the poster frame
@@ -61,6 +67,10 @@ pub(crate) struct HTMLVideoElement {
     #[ignore_malloc_size_of = "VideoFrame"]
     #[no_trace]
     last_frame: DomRefCell<Option<VideoFrame>>,
+    #[cfg(feature = "webgpu")]
+    #[conditional_malloc_size_of]
+    /// Planar texture for WebGPU
+    planar_texture: DomRefCell<Option<Rc<crate::dom::gpuexternaltexture::PlanarTexture>>>,
 }
 
 impl HTMLVideoElement {
@@ -73,22 +83,25 @@ impl HTMLVideoElement {
             htmlmediaelement: HTMLMediaElement::new_inherited(local_name, prefix, document),
             video_width: Cell::new(None),
             video_height: Cell::new(None),
+            poster_url: Default::default(),
             generation_id: Cell::new(0),
             load_blocker: Default::default(),
             last_frame: Default::default(),
+            #[cfg(feature = "webgpu")]
+            planar_texture: DomRefCell::new(None),
         }
     }
 
     pub(crate) fn new(
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
     ) -> DomRoot<HTMLVideoElement> {
-        Node::reflect_node_with_proto(
+        Node::reflect_weak_referenceable_node_with_proto(
             cx,
-            Box::new(HTMLVideoElement::new_inherited(
+            Rc::new(HTMLVideoElement::new_inherited(
                 local_name, prefix, document,
             )),
             document,
@@ -104,7 +117,12 @@ impl HTMLVideoElement {
         self.video_height.get()
     }
 
-    pub(crate) fn set_natural_dimensions(&self, width: Option<u32>, height: Option<u32>) -> bool {
+    pub(crate) fn set_natural_dimensions(
+        &self,
+        no_gc: &NoGC,
+        width: Option<u32>,
+        height: Option<u32>,
+    ) -> bool {
         if self.video_width.get() == width && self.video_height.get() == height {
             return false;
         }
@@ -112,7 +130,7 @@ impl HTMLVideoElement {
         self.video_width.set(width);
         self.video_height.set(height);
 
-        self.upcast::<Node>().dirty(NodeDamage::Other);
+        self.upcast::<Node>().dirty(no_gc, NodeDamage::Other);
         true
     }
 
@@ -148,8 +166,56 @@ impl HTMLVideoElement {
         }
     }
 
+    #[cfg(feature = "webgpu")]
+    pub(crate) fn planar_video_for_webgpu(
+        &self,
+        device: &crate::dom::types::GPUDevice,
+    ) -> Fallible<(
+        Size2D<u32>,
+        Option<Rc<crate::dom::gpuexternaltexture::PlanarTexture>>,
+    )> {
+        use crate::dom::gpuexternaltexture::PlanarTexture;
+        // 1. If source is not origin-clean, throw a SecurityError and return.
+        if !self.origin_is_clean() {
+            return Err(script_bindings::error::Error::Security(Some(
+                "Source is not origin-clean".to_string(),
+            )));
+        }
+        // 2. Let usability be ? check the usability of the image argument(source).
+        if !self.is_usable() {
+            // 3. If usability is not good:
+            // Generate a validation error.
+            // Return an invalidated GPUExternalTexture.
+            Ok((Size2D::zero(), None))
+        } else {
+            // 4. Let data be the result of converting the current image contents of source into the color space descriptor.colorSpace with unpremultiplied alpha.
+            let mut planar_texture = self.planar_texture.borrow_mut();
+            match planar_texture.as_ref() {
+                Some(planar_texture) => {
+                    if planar_texture.is_expired() &&
+                        let Some(snapshot) = self.get_current_frame_data()
+                    {
+                        planar_texture.update(snapshot);
+                    }
+                },
+                None => {
+                    *planar_texture = self.get_current_frame_data().map(|snapshot| {
+                        Rc::new(PlanarTexture::new(device.channel(), device, snapshot))
+                    });
+                },
+            };
+            Ok((
+                planar_texture
+                    .as_ref()
+                    .map(|pt| pt.size())
+                    .unwrap_or_default(),
+                planar_texture.as_ref().cloned(),
+            ))
+        }
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#poster-frame>
-    fn update_poster_frame(&self, poster_url: Option<&str>, cx: &mut js::context::JSContext) {
+    fn update_poster_frame(&self, poster_attribute: Option<&str>, cx: &mut JSContext) {
         // Step 1. If there is an existing instance of this algorithm running
         // for this video element, abort that instance of this algorithm without
         // changing the poster frame.
@@ -157,8 +223,10 @@ impl HTMLVideoElement {
 
         // Step 2. If the poster attribute's value is the empty string or
         // if the attribute is absent, then there is no poster frame; return.
-        let Some(poster_url) = poster_url.filter(|poster_url| !poster_url.is_empty()) else {
-            self.htmlmediaelement.set_poster_frame(None);
+        *self.poster_url.safe_borrow_mut(cx.no_gc()) = None;
+        let Some(url) = poster_attribute.filter(|poster_attribute| !poster_attribute.is_empty())
+        else {
+            self.htmlmediaelement.set_poster_frame(cx.no_gc(), None);
             return;
         };
 
@@ -167,17 +235,15 @@ impl HTMLVideoElement {
         // document.
         // Step 4. If url is failure, then return. There is no poster frame.
         let global = self.owner_global();
-        let poster_url = match self
+        let Ok(poster_url) = self
             .owner_document()
-            .encoding_parse_a_url(poster_url)
+            .encoding_parse_a_url(url)
             .map(|url| ensure_blob_referenced_by_url_is_kept_alive(&global, url))
-        {
-            Ok(url) => url,
-            Err(_) => {
-                self.htmlmediaelement.set_poster_frame(None);
-                return;
-            },
+        else {
+            self.htmlmediaelement.set_poster_frame(cx.no_gc(), None);
+            return;
         };
+        *self.poster_url.safe_borrow_mut(cx.no_gc()) = Some(poster_url.clone());
 
         // We use the image cache for poster frames so we save as much
         // network activity as possible.
@@ -230,7 +296,7 @@ impl HTMLVideoElement {
         &self,
         poster_url: UrlWithBlobClaim,
         id: PendingImageId,
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
     ) {
         // Step 5. Let request be a new request whose URL is url, client is the element's node
         // document's relevant settings object, destination is "image", initiator type is "video",
@@ -255,8 +321,9 @@ impl HTMLVideoElement {
         // will block the document's load event forever.
         let blocker = &self.load_blocker;
         LoadBlocker::terminate(blocker, cx);
+        let document = self.owner_document();
         *blocker.borrow_mut() = Some(LoadBlocker::new(
-            &self.owner_document(),
+            &document,
             LoadType::Image(poster_url.url()),
         ));
 
@@ -275,14 +342,16 @@ impl HTMLVideoElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#poster-frame>
-    fn process_image_response(&self, response: ImageResponse, cx: &mut js::context::JSContext) {
+    fn process_image_response(&self, response: ImageResponse, cx: &mut JSContext) {
         // Step 7. If an image is thus obtained, the poster frame is that image.
         // Otherwise, there is no poster frame.
         match response {
             ImageResponse::Loaded(image, url) => {
                 debug!("Loaded poster image for video element: {:?}", url);
                 match image.as_raster_image() {
-                    Some(image) => self.htmlmediaelement.set_poster_frame(Some(image)),
+                    Some(image) => self
+                        .htmlmediaelement
+                        .set_poster_frame(cx.no_gc(), Some(image)),
                     None => warn!("Vector images are not yet supported in video poster"),
                 }
                 LoadBlocker::terminate(&self.load_blocker, cx);
@@ -290,7 +359,7 @@ impl HTMLVideoElement {
             ImageResponse::MetadataLoaded(..) => {},
             // The image cache may have loaded a placeholder for an invalid poster url
             ImageResponse::FailedToLoadOrDecode => {
-                self.htmlmediaelement.set_poster_frame(None);
+                self.htmlmediaelement.set_poster_frame(cx.no_gc(), None);
                 // A failed load should unblock the document load.
                 LoadBlocker::terminate(&self.load_blocker, cx);
             },
@@ -361,7 +430,7 @@ impl VirtualMethods for HTMLVideoElement {
 
     fn attribute_mutated(
         &self,
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         attr: AttrRef<'_>,
         mutation: AttributeMutation,
     ) {
@@ -423,7 +492,7 @@ impl FetchResponseListener for PosterFrameFetchContext {
 
     fn process_response(
         &mut self,
-        _: &mut js::context::JSContext,
+        _: &mut JSContext,
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -449,7 +518,7 @@ impl FetchResponseListener for PosterFrameFetchContext {
 
     fn process_response_chunk(
         &mut self,
-        _: &mut js::context::JSContext,
+        _: &mut JSContext,
         request_id: RequestId,
         payload: Vec<u8>,
     ) {
@@ -466,7 +535,7 @@ impl FetchResponseListener for PosterFrameFetchContext {
 
     fn process_response_eof(
         self,
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         request_id: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -478,9 +547,21 @@ impl FetchResponseListener for PosterFrameFetchContext {
         network_listener::submit_timing(cx, &self, &response, &timing);
     }
 
-    fn process_csp_violations(&mut self, _request_id: RequestId, violations: Vec<Violation>) {
+    fn process_csp_violations(
+        &mut self,
+        cx: &mut js::context::JSContext,
+        _request_id: RequestId,
+        violations: Vec<Violation>,
+    ) {
         let global = &self.resource_timing_global();
-        global.report_csp_violations(violations, None, None);
+        global.report_csp_violations(cx, violations, None, None);
+    }
+
+    fn process_content_length(&mut self, request_id: RequestId, size: usize) {
+        self.image_cache.notify_pending_response(
+            self.id,
+            FetchResponseMsg::ProcessContentLength(request_id, size),
+        );
     }
 }
 
@@ -522,6 +603,7 @@ impl PosterFrameFetchContext {
 }
 
 impl LayoutDom<'_, HTMLVideoElement> {
+    #[expect(unsafe_code)]
     pub(crate) fn data(self) -> HTMLMediaData {
         let video = self.unsafe_get();
 
@@ -539,6 +621,13 @@ impl LayoutDom<'_, HTMLVideoElement> {
         HTMLMediaData {
             current_frame,
             metadata,
+            poster_url: unsafe {
+                video
+                    .poster_url
+                    .borrow_for_layout()
+                    .clone()
+                    .map(|url| url.url())
+            },
         }
     }
 

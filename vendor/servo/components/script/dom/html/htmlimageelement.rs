@@ -3,21 +3,16 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::default::Default;
+use std::mem;
 use std::rc::Rc;
-use std::sync::{Arc, LazyLock};
-use std::{char, mem};
+use std::sync::Arc;
 
-use app_units::Au;
-use cssparser::{Parser, ParserInput};
 use dom_struct::dom_struct;
 use euclid::default::Point2D;
 use html5ever::{LocalName, Prefix, QualName, local_name, ns};
-use js::context::JSContext;
-use js::realm::AutoRealm;
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use mime::{self, Mime};
-use net_traits::http_status::HttpStatus;
 use net_traits::image_cache::{
     Image, ImageCache, ImageCacheResult, ImageLoadListener, ImageOrMetadataAvailable,
     ImageResponse, PendingImageId,
@@ -28,19 +23,11 @@ use net_traits::{
 };
 use num_traits::ToPrimitive;
 use pixels::{CorsStatus, ImageMetadata, Snapshot};
-use regex::Regex;
-use rustc_hash::FxHashSet;
-use script_bindings::cell::{DomRefCell, RefMut};
+use script_bindings::cell::DomRefCell;
 use servo_url::ServoUrl;
 use servo_url::origin::MutableOrigin;
-use style::attr::{AttrValue, LengthOrPercentageOrAuto, parse_unsigned_integer};
-use style::stylesheets::CssRuleType;
-use style::values::specified::source_size_list::SourceSizeList;
-use style_traits::ParsingMode;
-use url::Url;
+use style::attr::{AttrValue, LengthOrPercentageOrAuto};
 
-use crate::css::parser_context_for_anonymous_content;
-use crate::document_loader::{LoadBlocker, LoadType};
 use crate::dom::activation::Activatable;
 use crate::dom::bindings::codegen::Bindings::DOMRectBinding::DOMRect_Binding::DOMRectMethods;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::Element_Binding::ElementMethods;
@@ -52,7 +39,7 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{DomRoot, LayoutDom, MutNullableDom};
+use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom, ToLayoutOptional};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::csp::{GlobalCspReporting, Violation};
 use crate::dom::document::Document;
@@ -70,74 +57,20 @@ use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlformelement::{FormControl, HTMLFormElement};
 use crate::dom::html::htmlmapelement::HTMLMapElement;
 use crate::dom::html::htmlpictureelement::HTMLPictureElement;
-use crate::dom::html::htmlsourceelement::HTMLSourceElement;
 use crate::dom::iterators::ShadowIncluding;
-use crate::dom::medialist::MediaList;
 use crate::dom::mouseevent::MouseEvent;
+use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{BindContext, MoveContext, Node, NodeDamage, NodeTraits, UnbindContext};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::dom::promise::Promise;
-use crate::dom::virtualmethods::VirtualMethods;
+use crate::dom::srcset::SourceSet;
 use crate::dom::window::Window;
+use crate::event_loop::document_loader::{LoadBlocker, LoadType};
+use crate::event_loop::script_thread::ScriptThread;
 use crate::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
-use crate::microtask::{Microtask, MicrotaskRunnable};
+use crate::microtask::MicrotaskRunnable;
 use crate::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::CanGc;
-use crate::script_thread::ScriptThread;
-
-/// Supported image MIME types as defined by
-/// <https://mimesniff.spec.whatwg.org/#image-mime-type>.
-/// Keep this in sync with 'detect_image_format' from components/pixels/lib.rs
-const SUPPORTED_IMAGE_MIME_TYPES: &[&str] = &[
-    "image/bmp",
-    "image/gif",
-    "image/jpeg",
-    "image/jpg",
-    "image/pjpeg",
-    "image/png",
-    "image/apng",
-    "image/x-png",
-    "image/svg+xml",
-    "image/vnd.microsoft.icon",
-    "image/x-icon",
-    "image/webp",
-];
-
-#[derive(Clone, Copy, Debug)]
-enum ParseState {
-    InDescriptor,
-    InParens,
-    AfterDescriptor,
-}
-
-/// <https://html.spec.whatwg.org/multipage/#source-set>
-#[derive(MallocSizeOf)]
-pub(crate) struct SourceSet {
-    image_sources: Vec<ImageSource>,
-    source_size: SourceSizeList,
-}
-
-impl SourceSet {
-    fn new() -> SourceSet {
-        SourceSet {
-            image_sources: Vec::new(),
-            source_size: SourceSizeList::empty(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, MallocSizeOf, PartialEq)]
-pub struct ImageSource {
-    pub url: String,
-    pub descriptor: Descriptor,
-}
-
-#[derive(Clone, Debug, MallocSizeOf, PartialEq)]
-pub struct Descriptor {
-    pub width: Option<u32>,
-    pub density: Option<f64>,
-}
 
 /// <https://html.spec.whatwg.org/multipage/#img-req-state>
 #[derive(Clone, Copy, JSTraceable, MallocSizeOf)]
@@ -205,7 +138,9 @@ impl HTMLImageElement {
 
         match self.current_request.borrow().state {
             // If image's current request's state is broken, then throw an "InvalidStateError" DOMException.
-            State::Broken => Err(Error::InvalidState(None)),
+            State::Broken => Err(Error::InvalidState(Some(
+                "Image element's state is broken".into(),
+            ))),
             State::CompletelyAvailable => Ok(true),
             // If image is not fully decodable, then return bad.
             State::PartiallyAvailable | State::Unavailable => Ok(false),
@@ -276,24 +211,13 @@ impl FetchResponseListener for ImageContext {
             }
         }
 
-        let status = metadata
-            .as_ref()
-            .map(|m| m.status.clone())
-            .unwrap_or_else(HttpStatus::new_error);
-
-        self.status = {
-            if status.is_error() {
-                Err(NetworkError::ResourceLoadError(
-                    "No http status code received".to_owned(),
-                ))
-            } else if status.is_success() {
-                Ok(())
-            } else {
-                Err(NetworkError::ResourceLoadError(format!(
-                    "HTTP error code {}",
-                    status.code()
-                )))
-            }
+        // The HTTP status code is ignored here. Ok NetworkError is treated
+        // as real error
+        self.status = match metadata.as_ref().map(|m| m.status.clone()) {
+            None => Err(NetworkError::ResourceLoadError(
+                "No http status code received".to_owned(),
+            )),
+            Some(_) => Ok(()),
         };
     }
 
@@ -325,13 +249,25 @@ impl FetchResponseListener for ImageContext {
         network_listener::submit_timing(cx, &self, &response, &timing);
     }
 
-    fn process_csp_violations(&mut self, _request_id: RequestId, violations: Vec<Violation>) {
+    fn process_csp_violations(
+        &mut self,
+        cx: &mut js::context::JSContext,
+        _request_id: RequestId,
+        violations: Vec<Violation>,
+    ) {
         let global = &self.resource_timing_global();
         let elem = self.element.root();
         let source_position = elem
             .upcast::<Element>()
             .compute_source_position(elem.line_number as u32);
-        global.report_csp_violations(violations, None, Some(source_position));
+        global.report_csp_violations(cx, violations, None, Some(source_position));
+    }
+
+    fn process_content_length(&mut self, request_id: RequestId, size: usize) {
+        self.image_cache.notify_pending_response(
+            self.id,
+            FetchResponseMsg::ProcessContentLength(request_id, size),
+        );
     }
 }
 
@@ -471,7 +407,7 @@ impl HTMLImageElement {
         self.current_request.borrow_mut().state = State::CompletelyAvailable;
         LoadBlocker::terminate(&self.current_request.borrow().blocker, cx);
         // Mark the node dirty
-        self.upcast::<Node>().dirty(NodeDamage::Other);
+        self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
         self.resolve_image_decode_promises();
     }
 
@@ -517,7 +453,7 @@ impl HTMLImageElement {
                 // Step 1. Abort the image request for image request.
                 self.abort_request(State::Broken, ImageRequestPhase::Current, cx);
 
-                self.load_broken_image_icon();
+                self.load_broken_image_icon(cx.no_gc());
 
                 // Step 2. If maybe omit events is not set or previousURL is not equal to urlString,
                 // then fire an event named error at the img element.
@@ -543,7 +479,7 @@ impl HTMLImageElement {
                 // Step 3. Set the current request's state to broken.
                 self.current_request.borrow_mut().state = State::Broken;
 
-                self.load_broken_image_icon();
+                self.load_broken_image_icon(cx.no_gc());
 
                 // Step 4. Fire an event named error at the img element.
                 (false, true)
@@ -610,11 +546,12 @@ impl HTMLImageElement {
         request: ImageRequestPhase,
         cx: &mut js::context::JSContext,
     ) {
-        let mut request = match request {
-            ImageRequestPhase::Current => self.current_request.borrow_mut(),
-            ImageRequestPhase::Pending => self.pending_request.borrow_mut(),
+        let request = match request {
+            ImageRequestPhase::Current => &self.current_request,
+            ImageRequestPhase::Pending => &self.pending_request,
         };
-        LoadBlocker::terminate(&request.blocker, cx);
+        LoadBlocker::terminate(&request.borrow().blocker, cx);
+        let mut request = request.safe_borrow_mut(cx);
         request.state = state;
         request.image = None;
         request.metadata = None;
@@ -627,277 +564,23 @@ impl HTMLImageElement {
         }
     }
 
-    /// <https://html.spec.whatwg.org/multipage/#create-a-source-set>
-    fn create_source_set(&self) -> SourceSet {
-        let element = self.upcast::<Element>();
-
-        // Step 1. Let source set be an empty source set.
-        let mut source_set = SourceSet::new();
-
-        // Step 2. If srcset is not an empty string, then set source set to the result of parsing
-        // srcset.
-        if let Some(srcset) = element.get_attribute_string_value(&local_name!("srcset")) {
-            source_set.image_sources = parse_a_srcset_attribute(&srcset);
-        }
-
-        // Step 3. Set source set's source size to the result of parsing sizes with img.
-        if let Some(sizes) = element.get_attribute_string_value(&local_name!("sizes")) {
-            source_set.source_size = parse_a_sizes_attribute(&sizes);
-        }
-
-        // Step 4. If default source is not the empty string and source set does not contain an
-        // image source with a pixel density descriptor value of 1, and no image source with a width
-        // descriptor, append default source to source set.
-        let src = element.get_string_attribute(&local_name!("src"));
-        let no_density_source_of_1 = source_set
-            .image_sources
-            .iter()
-            .all(|source| source.descriptor.density != Some(1.));
-        let no_width_descriptor = source_set
-            .image_sources
-            .iter()
-            .all(|source| source.descriptor.width.is_none());
-        if !src.is_empty() && no_density_source_of_1 && no_width_descriptor {
-            source_set.image_sources.push(ImageSource {
-                url: String::from(src),
-                descriptor: Descriptor {
-                    width: None,
-                    density: None,
-                },
-            })
-        }
-
-        // Step 5. Normalize the source densities of source set.
-        self.normalise_source_densities(&mut source_set);
-
-        // Step 6. Return source set.
-        source_set
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#update-the-source-set>
-    fn update_source_set(&self) {
-        // Step 1. Set el's source set to an empty source set.
-        *self.source_set.borrow_mut() = SourceSet::new();
-
-        // Step 2. Let elements be « el ».
-        // Step 3. If el is an img element whose parent node is a picture element, then replace the
-        // contents of elements with el's parent node's child elements, retaining relative order.
-        // Step 4. Let img be el if el is an img element, otherwise null.
-        let elem = self.upcast::<Element>();
-        let parent = elem.upcast::<Node>().GetParentElement();
-        let elements = match parent.as_ref() {
-            Some(p) => {
-                if p.is::<HTMLPictureElement>() {
-                    p.upcast::<Node>()
-                        .children()
-                        .filter_map(DomRoot::downcast::<Element>)
-                        .map(|n| DomRoot::from_ref(&*n))
-                        .collect()
-                } else {
-                    vec![DomRoot::from_ref(elem)]
-                }
-            },
-            None => vec![DomRoot::from_ref(elem)],
-        };
-
-        // Step 5. For each child in elements:
-        for element in &elements {
-            // Step 5.1. If child is el:
-            if *element == DomRoot::from_ref(elem) {
-                // Step 5.1.10. Set el's source set to the result of creating a source set given
-                // default source, srcset, sizes, and img.
-                *self.source_set.borrow_mut() = self.create_source_set();
-
-                // Step 5.1.11. Return.
-                return;
-            }
-            // Step 5.2. If child is not a source element, then continue.
-            if !element.is::<HTMLSourceElement>() {
-                continue;
-            }
-
-            let mut source_set = SourceSet::new();
-
-            // Step 5.3. If child does not have a srcset attribute, continue to the next child.
-            // Step 5.4. Parse child's srcset attribute and let source set be the returned source
-            // set.
-            match element.get_attribute_string_value(&local_name!("srcset")) {
-                Some(srcset) => {
-                    source_set.image_sources = parse_a_srcset_attribute(&srcset);
-                },
-                _ => continue,
-            }
-
-            // Step 5.5. If source set has zero image sources, continue to the next child.
-            if source_set.image_sources.is_empty() {
-                continue;
-            }
-
-            // Step 5.6. If child has a media attribute, and its value does not match the
-            // environment, continue to the next child.
-            if let Some(media) = element.get_attribute_string_value(&local_name!("media")) &&
-                !MediaList::matches_environment(&element.owner_document(), &media)
-            {
-                continue;
-            }
-
-            // Step 5.7. Parse child's sizes attribute with img, and let source set's source size be
-            // the returned value.
-            if let Some(sizes) = element.get_attribute_string_value(&local_name!("sizes")) {
-                source_set.source_size = parse_a_sizes_attribute(&sizes);
-            }
-
-            // Step 5.8. If child has a type attribute, and its value is an unknown or unsupported
-            // MIME type, continue to the next child.
-            if let Some(type_) = element.get_attribute_string_value(&local_name!("type")) &&
-                !is_supported_image_mime_type(&type_)
-            {
-                continue;
-            }
-
-            // Step 5.9. If child has width or height attributes, set el's dimension attribute
-            // source to child. Otherwise, set el's dimension attribute source to el.
-            if element.has_attribute(&local_name!("width")) ||
-                element.has_attribute(&local_name!("height"))
-            {
-                self.dimension_attribute_source.set(Some(element));
-            } else {
-                self.dimension_attribute_source.set(Some(elem));
-            }
-
-            // Step 5.10. Normalize the source densities of source set.
-            self.normalise_source_densities(&mut source_set);
-
-            // Step 5.11. Set el's source set to source set.
-            *self.source_set.borrow_mut() = source_set;
-
-            // Step 5.12. Return.
-            return;
-        }
-    }
-
-    fn evaluate_source_size_list(&self, source_size_list: &SourceSizeList) -> Au {
-        let document = self.owner_document();
-        let quirks_mode = document.quirks_mode();
-        source_size_list.evaluate(document.window().layout().device(), quirks_mode)
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#normalise-the-source-densities>
-    fn normalise_source_densities(&self, source_set: &mut SourceSet) {
-        // Step 1. Let source size be source set's source size.
-        let source_size = self.evaluate_source_size_list(&source_set.source_size);
-
-        // Step 2. For each image source in source set:
-        for image_source in &mut source_set.image_sources {
-            // Step 2.1. If the image source has a pixel density descriptor, continue to the next
-            // image source.
-            if image_source.descriptor.density.is_some() {
-                continue;
-            }
-
-            // Step 2.2. Otherwise, if the image source has a width descriptor, replace the width
-            // descriptor with a pixel density descriptor with a value of the width descriptor value
-            // divided by source size and a unit of x.
-            if let Some(width) = image_source.descriptor.width {
-                image_source.descriptor.density = Some(width as f64 / source_size.to_f64_px());
-            } else {
-                // Step 2.3. Otherwise, give the image source a pixel density descriptor of 1x.
-                image_source.descriptor.density = Some(1_f64);
-            }
-        }
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#select-an-image-source>
-    fn select_image_source(&self) -> Option<(USVString, f64)> {
-        // Step 1. Update the source set for el.
-        self.update_source_set();
-
-        // Step 2. If el's source set is empty, return null as the URL and undefined as the pixel
-        // density.
-        if self.source_set.borrow().image_sources.is_empty() {
-            return None;
-        }
-
-        // Step 3. Return the result of selecting an image from el's source set.
-        self.select_image_source_from_source_set()
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#select-an-image-source-from-a-source-set>
-    fn select_image_source_from_source_set(&self) -> Option<(USVString, f64)> {
-        // Step 1. If an entry b in sourceSet has the same associated pixel density descriptor as an
-        // earlier entry a in sourceSet, then remove entry b. Repeat this step until none of the
-        // entries in sourceSet have the same associated pixel density descriptor as an earlier
-        // entry.
-        let source_set = self.source_set.borrow();
-        let len = source_set.image_sources.len();
-
-        // Using FxHash is ok here as the indices are just 0..len
-        let mut repeat_indices = FxHashSet::default();
-        for outer_index in 0..len {
-            if repeat_indices.contains(&outer_index) {
-                continue;
-            }
-            let imgsource = &source_set.image_sources[outer_index];
-            let pixel_density = imgsource.descriptor.density.unwrap();
-            for inner_index in (outer_index + 1)..len {
-                let imgsource2 = &source_set.image_sources[inner_index];
-                if pixel_density == imgsource2.descriptor.density.unwrap() {
-                    repeat_indices.insert(inner_index);
-                }
-            }
-        }
-
-        let mut max = (0f64, 0);
-        let img_sources = &mut vec![];
-        for (index, image_source) in source_set.image_sources.iter().enumerate() {
-            if repeat_indices.contains(&index) {
-                continue;
-            }
-            let den = image_source.descriptor.density.unwrap();
-            if max.0 < den {
-                max = (den, img_sources.len());
-            }
-            img_sources.push(image_source);
-        }
-
-        // Step 2. In an implementation-defined manner, choose one image source from sourceSet. Let
-        // selectedSource be this choice.
-        let mut best_candidate = max;
-        let device_pixel_ratio = self
-            .owner_document()
-            .window()
-            .viewport_details()
-            .hidpi_scale_factor
-            .get() as f64;
-        for (index, image_source) in img_sources.iter().enumerate() {
-            let current_den = image_source.descriptor.density.unwrap();
-            if current_den < best_candidate.0 && current_den >= device_pixel_ratio {
-                best_candidate = (current_den, index);
-            }
-        }
-        let selected_source = img_sources.remove(best_candidate.1).clone();
-
-        // Step 3. Return selectedSource and its associated pixel density.
-        Some((
-            USVString(selected_source.url),
-            selected_source.descriptor.density.unwrap(),
-        ))
-    }
-
     fn init_image_request(
         &self,
-        request: &mut RefMut<'_, ImageRequest>,
+        request: &DomRefCell<ImageRequest>,
         url: &ServoUrl,
         src: &USVString,
         cx: &mut js::context::JSContext,
     ) {
-        request.parsed_url = Some(url.clone());
-        request.source_url = Some(src.clone());
-        request.image = None;
-        request.metadata = None;
+        {
+            let mut request = request.borrow_mut();
+            request.parsed_url = Some(url.clone());
+            request.source_url = Some(src.clone());
+            request.image = None;
+            request.metadata = None;
+        }
         let document = self.owner_document();
-        LoadBlocker::terminate(&request.blocker, cx);
-        *request.blocker.borrow_mut() =
+        LoadBlocker::terminate(&request.borrow().blocker, cx);
+        *request.borrow_mut().blocker.borrow_mut() =
             Some(LoadBlocker::new(&document, LoadType::Image(url.clone())));
     }
 
@@ -928,18 +611,19 @@ impl HTMLImageElement {
                 self.abort_request(State::Unavailable, ImageRequestPhase::Pending, cx);
 
                 // Step 17. Set image request to a new image request whose current URL is urlString.
+                let (current_request_url, current_request_state) = {
+                    let current_request = self.current_request.borrow();
+                    (current_request.parsed_url.clone(), current_request.state)
+                };
 
-                let mut current_request = self.current_request.borrow_mut();
-                let mut pending_request = self.pending_request.borrow_mut();
-
-                match (current_request.parsed_url.as_ref(), current_request.state) {
+                match (current_request_url, current_request_state) {
                     (Some(parsed_url), State::PartiallyAvailable) => {
                         // Step 15. If urlString is the same as the current request's current URL
                         // and the current request's state is partially available, then abort the
                         // image request for the pending request, queue an element task on the DOM
                         // manipulation task source given the img element to restart the animation
                         // if restart animation is set, and return.
-                        if *parsed_url == *image_url {
+                        if parsed_url == *image_url {
                             // TODO: queue a task to restart animation, if restart-animation is set
                             return;
                         }
@@ -949,24 +633,26 @@ impl HTMLImageElement {
                         // request to image request.
                         self.image_request.set(ImageRequestPhase::Pending);
                         self.init_image_request(
-                            &mut pending_request,
+                            &self.pending_request,
                             image_url,
                             selected_source,
                             cx,
                         );
-                        pending_request.current_pixel_density = Some(selected_pixel_density);
+                        self.pending_request.borrow_mut().current_pixel_density =
+                            Some(selected_pixel_density);
                     },
                     (_, State::Broken) | (_, State::Unavailable) => {
                         // Step 18. If the current request's state is unavailable or broken, then
                         // set the current request to image request. Otherwise, set the pending
                         // request to image request.
                         self.init_image_request(
-                            &mut current_request,
+                            &self.current_request,
                             image_url,
                             selected_source,
                             cx,
                         );
-                        current_request.current_pixel_density = Some(selected_pixel_density);
+                        self.current_request.borrow_mut().current_pixel_density =
+                            Some(selected_pixel_density);
                         self.reject_image_decode_promises();
                     },
                     (_, _) => {
@@ -975,12 +661,13 @@ impl HTMLImageElement {
                         // request to image request.
                         self.image_request.set(ImageRequestPhase::Pending);
                         self.init_image_request(
-                            &mut pending_request,
+                            &self.pending_request,
                             image_url,
                             selected_source,
                             cx,
                         );
-                        pending_request.current_pixel_density = Some(selected_pixel_density);
+                        self.pending_request.borrow_mut().current_pixel_density =
+                            Some(selected_pixel_density);
                     },
                 }
             },
@@ -993,7 +680,11 @@ impl HTMLImageElement {
     fn update_the_image_data_sync_steps(&self, cx: &mut js::context::JSContext) {
         // Step 10. Let selected source and selected pixel density be the URL and pixel density that
         // results from selecting an image source, respectively.
-        let Some((selected_source, selected_pixel_density)) = self.select_image_source() else {
+        let Some((selected_source, selected_pixel_density)) = self
+            .source_set
+            .borrow_mut()
+            .select_image_source(self.upcast::<Element>())
+        else {
             // Step 11. If selected source is null, then:
 
             // Step 11.1. Set the current request's state to broken, abort the image request for the
@@ -1162,7 +853,7 @@ impl HTMLImageElement {
 
                     // TODO Step 7.4.5. Prepare the current request for presentation given the img
                     // element.
-                    self.upcast::<Node>().dirty(NodeDamage::Other);
+                    self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
 
                     // Step 7.4.6. Set the current request's current pixel density to selected pixel
                     // density.
@@ -1204,22 +895,22 @@ impl HTMLImageElement {
         // Step 8. Queue a microtask to perform the rest of this algorithm, allowing the task that
         // invoked this algorithm to continue.
         let task = ImageElementMicrotask::UpdateImageData {
-            elem: DomRoot::from_ref(self),
+            elem: Dom::from_ref(self),
             generation: self.generation.get(),
         };
 
-        ScriptThread::await_stable_state(Microtask::ImageElement(task));
+        ScriptThread::await_stable_state(cx, Box::new(task));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#img-environment-changes>
-    pub(crate) fn react_to_environment_changes(&self) {
+    pub(crate) fn react_to_environment_changes(&self, cx: &JSContext) {
         // Step 1. Await a stable state.
         let task = ImageElementMicrotask::EnvironmentChanges {
-            elem: DomRoot::from_ref(self),
+            elem: Dom::from_ref(self),
             generation: self.generation.get(),
         };
 
-        ScriptThread::await_stable_state(Microtask::ImageElement(task));
+        ScriptThread::await_stable_state(cx, Box::new(task));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#img-environment-changes>
@@ -1240,7 +931,11 @@ impl HTMLImageElement {
 
         // Step 3. Let selected source and selected pixel density be the URL and pixel density that
         // results from selecting an image source, respectively.
-        let Some((selected_source, selected_pixel_density)) = self.select_image_source() else {
+        let Some((selected_source, selected_pixel_density)) = self
+            .source_set
+            .borrow_mut()
+            .select_image_source(self.upcast::<Element>())
+        else {
             // Step 4. If selected source is null, then return.
             return;
         };
@@ -1282,12 +977,7 @@ impl HTMLImageElement {
 
         // Step 13. Set the element's pending request to image request.
         self.image_request.set(ImageRequestPhase::Pending);
-        self.init_image_request(
-            &mut self.pending_request.borrow_mut(),
-            &image_url,
-            &selected_source,
-            cx,
-        );
+        self.init_image_request(&self.pending_request, &image_url, &selected_source, cx);
 
         // Step 15. If the list of available images contains an entry for key, then set image
         // request's image data to that of the entry. Continue to the next step.
@@ -1341,20 +1031,20 @@ impl HTMLImageElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-img-decode>
-    fn react_to_decode_image_sync_steps(&self, promise: Rc<Promise>, can_gc: CanGc) {
+    fn react_to_decode_image_sync_steps(&self, cx: &mut JSContext, promise: Rc<Promise>) {
         // Step 2.2. If any of the following are true: this's node document is not fully active; or
         // this's current request's state is broken, then reject promise with an "EncodingError"
         // DOMException.
         if !self.owner_document().is_fully_active() ||
             matches!(self.current_request.borrow().state, State::Broken)
         {
-            promise.reject_error(Error::Encoding(None), can_gc);
+            promise.reject_error(cx, Error::Encoding(Some("Image element's owner document is not fully active or image element's request is broken".into())));
         } else if matches!(
             self.current_request.borrow().state,
             State::CompletelyAvailable
         ) {
             // this doesn't follow the spec, but it's been discussed in <https://github.com/whatwg/html/issues/4217>
-            promise.resolve_native(&(), can_gc);
+            promise.resolve_native(cx, &());
         } else if matches!(self.current_request.borrow().state, State::Unavailable) &&
             self.current_request.borrow().source_url.is_none()
         {
@@ -1362,7 +1052,12 @@ impl HTMLImageElement {
             // request's state is unavailable and current URL is empty string (<img> without "src"
             // and "srcset" attributes) then reject promise with an "EncodingError" DOMException.
             // <https://github.com/whatwg/html/issues/11769>
-            promise.reject_error(Error::Encoding(None), can_gc);
+            promise.reject_error(
+                cx,
+                Error::Encoding(Some(
+                    "Image element does not provide `src` or `srcset` attributes".into(),
+                )),
+            );
         } else {
             self.image_decode_promises.borrow_mut().push(promise);
         }
@@ -1390,7 +1085,7 @@ impl HTMLImageElement {
             .dom_manipulation_task_source()
             .queue(task!(fulfill_image_decode_promises: move |cx| {
                 for trusted_promise in trusted_image_decode_promises {
-                    trusted_promise.root().resolve_native(&(), CanGc::from_cx(cx));
+                    trusted_promise.root().resolve_native(cx, &());
                 }
             }));
     }
@@ -1417,7 +1112,7 @@ impl HTMLImageElement {
             .dom_manipulation_task_source()
             .queue(task!(reject_image_decode_promises: move |cx| {
                 for trusted_promise in trusted_image_decode_promises {
-                    trusted_promise.root().reject_error(Error::Encoding(None), CanGc::from_cx(cx));
+                    trusted_promise.root().reject_error(cx, Error::Encoding(Some("Could not decode all image promises".into())));
                 }
             }));
     }
@@ -1471,7 +1166,7 @@ impl HTMLImageElement {
                 this.image_request.set(ImageRequestPhase::Current);
 
                 // TODO Step 16.6. Prepare image request for presentation given the img element.
-                this.upcast::<Node>().dirty(NodeDamage::Other);
+                this.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
 
                 // Step 16.7. Fire an event named load at the img element.
                 this.upcast::<EventTarget>().fire_event(cx, atom!("load"));
@@ -1595,7 +1290,7 @@ impl HTMLImageElement {
         self.generation.get()
     }
 
-    fn load_broken_image_icon(&self) {
+    fn load_broken_image_icon(&self, no_gc: &NoGC) {
         let window = self.owner_window();
         let Some(broken_image_icon) = window.image_cache().get_broken_image_icon() else {
             return;
@@ -1603,7 +1298,7 @@ impl HTMLImageElement {
 
         self.current_request.borrow_mut().metadata = Some(broken_image_icon.metadata);
         self.current_request.borrow_mut().image = Some(Image::Raster(broken_image_icon));
-        self.upcast::<Node>().dirty(NodeDamage::Other);
+        self.upcast::<Node>().dirty(no_gc, NodeDamage::Other);
     }
 
     /// Get the full URL of the current image of this `<img>` element, returning `None` if the URL
@@ -1614,20 +1309,24 @@ impl HTMLImageElement {
             .join(&self.CurrentSrc())
             .ok()
     }
+
+    pub(crate) fn set_dimension_attribute_source(&self, value: Option<&Element>) {
+        self.dimension_attribute_source.set(value)
+    }
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
 pub(crate) enum ImageElementMicrotask {
     UpdateImageData {
-        elem: DomRoot<HTMLImageElement>,
+        elem: Dom<HTMLImageElement>,
         generation: u32,
     },
     EnvironmentChanges {
-        elem: DomRoot<HTMLImageElement>,
+        elem: Dom<HTMLImageElement>,
         generation: u32,
     },
     Decode {
-        elem: DomRoot<HTMLImageElement>,
+        elem: Dom<HTMLImageElement>,
         #[conditional_malloc_size_of]
         promise: Rc<Promise>,
     },
@@ -1635,6 +1334,12 @@ pub(crate) enum ImageElementMicrotask {
 
 impl MicrotaskRunnable for ImageElementMicrotask {
     fn handler(&self, cx: &mut js::context::JSContext) {
+        let mut realm = match self {
+            &ImageElementMicrotask::UpdateImageData { ref elem, .. } |
+            &ImageElementMicrotask::EnvironmentChanges { ref elem, .. } |
+            &ImageElementMicrotask::Decode { ref elem, .. } => enter_auto_realm(cx, &**elem),
+        };
+        let cx = &mut realm;
         match *self {
             ImageElementMicrotask::UpdateImageData {
                 ref elem,
@@ -1657,16 +1362,8 @@ impl MicrotaskRunnable for ImageElementMicrotask {
                 ref elem,
                 ref promise,
             } => {
-                elem.react_to_decode_image_sync_steps(promise.clone(), CanGc::from_cx(cx));
+                elem.react_to_decode_image_sync_steps(cx, promise.clone());
             },
-        }
-    }
-
-    fn enter_realm<'cx>(&self, cx: &'cx mut js::context::JSContext) -> AutoRealm<'cx> {
-        match self {
-            &ImageElementMicrotask::UpdateImageData { ref elem, .. } |
-            &ImageElementMicrotask::EnvironmentChanges { ref elem, .. } |
-            &ImageElementMicrotask::Decode { ref elem, .. } => enter_auto_realm(cx, &**elem),
         }
     }
 }
@@ -1682,7 +1379,7 @@ impl<'dom> LayoutDom<'dom, HTMLImageElement> {
         unsafe {
             self.unsafe_get()
                 .dimension_attribute_source
-                .get_inner_as_layout()
+                .to_layout()
                 .expect("dimension attribute source should be always non-null")
         }
     }
@@ -1719,18 +1416,6 @@ impl<'dom> LayoutDom<'dom, HTMLImageElement> {
             .cloned()
             .unwrap_or(LengthOrPercentageOrAuto::Auto)
     }
-}
-
-/// <https://html.spec.whatwg.org/multipage/#parse-a-sizes-attribute>
-fn parse_a_sizes_attribute(value: &str) -> SourceSizeList {
-    let mut input = ParserInput::new(value);
-    let mut parser = Parser::new(&mut input);
-    let url_data = Url::parse("about:blank").unwrap().into();
-    // FIXME(emilio): why ::empty() instead of ::DEFAULT? Also, what do
-    // browsers do regarding quirks-mode in a media list?
-    let context =
-        parser_context_for_anonymous_content(CssRuleType::Style, ParsingMode::empty(), &url_data);
-    SourceSizeList::parse(&context, &mut parser)
 }
 
 impl HTMLImageElementMethods<crate::DomTypeHolder> for HTMLImageElement {
@@ -1926,15 +1611,15 @@ impl HTMLImageElementMethods<crate::DomTypeHolder> for HTMLImageElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-img-decode>
     fn Decode(&self, cx: &mut JSContext) -> Rc<Promise> {
         // Step 1. Let promise be a new promise.
-        let promise = Promise::new2(cx, &self.global());
+        let promise = Promise::new(cx, &self.global());
 
         // Step 2. Queue a microtask to perform the following steps:
         let task = ImageElementMicrotask::Decode {
-            elem: DomRoot::from_ref(self),
+            elem: Dom::from_ref(self),
             promise: promise.clone(),
         };
 
-        ScriptThread::await_stable_state(Microtask::ImageElement(task));
+        ScriptThread::await_stable_state(cx, Box::new(task));
 
         // Step 3. Return promise.
         promise
@@ -2072,34 +1757,34 @@ impl VirtualMethods for HTMLImageElement {
             return;
         }
 
-        let area_elements = self.areas();
-        let elements = match area_elements {
-            Some(x) => x,
-            None => return,
+        let Some(area_elements) = self.areas() else {
+            return;
         };
 
         // Fetch click coordinates
-        let mouse_event = match event.downcast::<MouseEvent>() {
-            Some(x) => x,
-            None => return,
+        let Some(mouse_event) = event.downcast::<MouseEvent>() else {
+            return;
         };
 
-        let point = Point2D::new(
+        let click_location = Point2D::new(
             mouse_event.ClientX().to_f32().unwrap(),
             mouse_event.ClientY().to_f32().unwrap(),
         );
-        let bcr = self.upcast::<Element>().GetBoundingClientRect(cx);
-        let bcr_p = Point2D::new(bcr.X() as f32, bcr.Y() as f32);
+        let bounding_rectangle = self.upcast::<Element>().GetBoundingClientRect(cx);
+        let image_extents =
+            Point2D::new(bounding_rectangle.X() as f32, bounding_rectangle.Y() as f32);
 
         // Walk HTMLAreaElements
-        for element in elements {
-            let shape = element.get_shape_from_coords();
-            let shp = match shape {
-                Some(x) => x.absolute_coords(bcr_p),
+        for area_element in area_elements {
+            if !area_element.is_instance_activatable() {
+                continue;
+            }
+            let activatable_area = match area_element.get_shape_from_coords() {
+                Some(shape) => shape.absolute_coords(image_extents),
                 None => return,
             };
-            if shp.hit_test(&point) {
-                element.activation_behavior(cx, event, self.upcast());
+            if activatable_area.hit_test(&click_location) {
+                area_element.activation_behavior(cx, event, self.upcast());
                 return;
             }
         }
@@ -2119,7 +1804,7 @@ impl VirtualMethods for HTMLImageElement {
 
         // Step 1. If insertedNode's parent is a picture element, then, count this as a relevant
         // mutation for insertedNode.
-        if parent.is::<HTMLPictureElement>() && std::ptr::eq(&*parent, context.parent) {
+        if parent.is::<HTMLPictureElement>() && *parent == *context.parent {
             self.update_the_image_data(cx);
         }
     }
@@ -2157,317 +1842,13 @@ impl FormControl for HTMLImageElement {
         self.form_owner.get()
     }
 
-    fn set_form_owner(&self, form: Option<&HTMLFormElement>) {
+    fn set_form_owner(&self, _cx: &mut JSContext, form: Option<&HTMLFormElement>) {
         self.form_owner.set(form);
     }
 
-    fn to_element(&self) -> &Element {
-        self.upcast::<Element>()
+    fn to_html_element(&self) -> &HTMLElement {
+        self.upcast::<HTMLElement>()
     }
-
-    fn is_listed(&self) -> bool {
-        false
-    }
-}
-
-/// Collect sequence of code points
-/// <https://infra.spec.whatwg.org/#collect-a-sequence-of-code-points>
-pub(crate) fn collect_sequence_characters(
-    s: &str,
-    mut predicate: impl FnMut(&char) -> bool,
-) -> (&str, &str) {
-    let i = s.find(|ch| !predicate(&ch)).unwrap_or(s.len());
-    (&s[0..i], &s[i..])
-}
-
-/// <https://html.spec.whatwg.org/multipage/#valid-non-negative-integer>
-/// TODO(#39315): Use the validation rule from Stylo
-fn is_valid_non_negative_integer_string(s: &str) -> bool {
-    s.chars().all(|c| c.is_ascii_digit())
-}
-
-/// <https://html.spec.whatwg.org/multipage/#valid-floating-point-number>
-/// TODO(#39315): Use the validation rule from Stylo
-fn is_valid_floating_point_number_string(s: &str) -> bool {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^-?(?:\d+\.\d+|\d+|\.\d+)(?:(e|E)(\+|\-)?\d+)?$").unwrap());
-
-    RE.is_match(s)
-}
-
-/// Parse an `srcset` attribute:
-/// <https://html.spec.whatwg.org/multipage/#parsing-a-srcset-attribute>.
-pub fn parse_a_srcset_attribute(input: &str) -> Vec<ImageSource> {
-    // > 1. Let input be the value passed to this algorithm.
-    // > 2. Let position be a pointer into input, initially pointing at the start of the string.
-    let mut current_index = 0;
-
-    // > 3. Let candidates be an initially empty source set.
-    let mut candidates = vec![];
-    while current_index < input.len() {
-        let remaining_string = &input[current_index..];
-
-        // > 4. Splitting loop: Collect a sequence of code points that are ASCII whitespace or
-        // > U+002C COMMA characters from input given position. If any U+002C COMMA
-        // > characters were collected, that is a parse error.
-        // NOTE: A parse error indicating a non-fatal mismatch between the input and the
-        // requirements will be silently ignored to match the behavior of other browsers.
-        // <https://html.spec.whatwg.org/multipage/#concept-microsyntax-parse-error>
-        let (collected_characters, string_after_whitespace) =
-            collect_sequence_characters(remaining_string, |character| {
-                *character == ',' || character.is_ascii_whitespace()
-            });
-
-        // Add the length of collected whitespace, to find the start of the URL we are going
-        // to parse.
-        current_index += collected_characters.len();
-
-        // > 5. If position is past the end of input, return candidates.
-        if string_after_whitespace.is_empty() {
-            return candidates;
-        }
-
-        // 6. Collect a sequence of code points that are not ASCII whitespace from input
-        // given position, and let that be url.
-        let (url, _) =
-            collect_sequence_characters(string_after_whitespace, |c| !char::is_ascii_whitespace(c));
-
-        // Add the length of `url` that we will parse to advance the index of the next part
-        // of the string to prase.
-        current_index += url.len();
-
-        // 7. Let descriptors be a new empty list.
-        let mut descriptors = Vec::new();
-
-        // > 8. If url ends with U+002C (,), then:
-        // >    1. Remove all trailing U+002C COMMA characters from url. If this removed
-        // >       more than one character, that is a parse error.
-        if url.ends_with(',') {
-            let image_source = ImageSource {
-                url: url.trim_end_matches(',').into(),
-                descriptor: Descriptor {
-                    width: None,
-                    density: None,
-                },
-            };
-            candidates.push(image_source);
-            continue;
-        }
-
-        // Otherwise:
-        // > 8.1. Descriptor tokenizer: Skip ASCII whitespace within input given position.
-        let descriptors_string = &input[current_index..];
-        let (spaces, descriptors_string) =
-            collect_sequence_characters(descriptors_string, |character| {
-                character.is_ascii_whitespace()
-            });
-        current_index += spaces.len();
-
-        // > 8.2. Let current descriptor be the empty string.
-        let mut current_descriptor = String::new();
-
-        // > 8.3. Let state be "in descriptor".
-        let mut state = ParseState::InDescriptor;
-
-        // > 8.4. Let c be the character at position. Do the following depending on the value of
-        // > state. For the purpose of this step, "EOF" is a special character representing
-        // > that position is past the end of input.
-        let mut characters = descriptors_string.chars();
-        let mut character = characters.next();
-        if let Some(character) = character {
-            current_index += character.len_utf8();
-        }
-
-        loop {
-            match (state, character) {
-                (ParseState::InDescriptor, Some(character)) if character.is_ascii_whitespace() => {
-                    // > If current descriptor is not empty, append current descriptor to
-                    // > descriptors and let current descriptor be the empty string. Set
-                    // > state to after descriptor.
-                    if !current_descriptor.is_empty() {
-                        descriptors.push(current_descriptor);
-                        current_descriptor = String::new();
-                        state = ParseState::AfterDescriptor;
-                    }
-                },
-                (ParseState::InDescriptor, Some(',')) => {
-                    // > Advance position to the next character in input. If current descriptor
-                    // > is not empty, append current descriptor to descriptors. Jump to the
-                    // > step labeled descriptor parser.
-                    if !current_descriptor.is_empty() {
-                        descriptors.push(current_descriptor);
-                    }
-                    break;
-                },
-                (ParseState::InDescriptor, Some('(')) => {
-                    // > Append c to current descriptor. Set state to in parens.
-                    current_descriptor.push('(');
-                    state = ParseState::InParens;
-                },
-                (ParseState::InDescriptor, Some(character)) => {
-                    // > Append c to current descriptor.
-                    current_descriptor.push(character);
-                },
-                (ParseState::InDescriptor, None) => {
-                    // > If current descriptor is not empty, append current descriptor to
-                    // > descriptors. Jump to the step labeled descriptor parser.
-                    if !current_descriptor.is_empty() {
-                        descriptors.push(current_descriptor);
-                    }
-                    break;
-                },
-                (ParseState::InParens, Some(')')) => {
-                    // > Append c to current descriptor. Set state to in descriptor.
-                    current_descriptor.push(')');
-                    state = ParseState::InDescriptor;
-                },
-                (ParseState::InParens, Some(character)) => {
-                    // Append c to current descriptor.
-                    current_descriptor.push(character);
-                },
-                (ParseState::InParens, None) => {
-                    // > Append current descriptor to descriptors. Jump to the step
-                    // > labeled descriptor parser.
-                    descriptors.push(current_descriptor);
-                    break;
-                },
-                (ParseState::AfterDescriptor, Some(character))
-                    if character.is_ascii_whitespace() =>
-                {
-                    // > Stay in this state.
-                },
-                (ParseState::AfterDescriptor, Some(_)) => {
-                    // > Set state to in descriptor. Set position to the previous
-                    // > character in input.
-                    state = ParseState::InDescriptor;
-                    continue;
-                },
-                (ParseState::AfterDescriptor, None) => {
-                    // > Jump to the step labeled descriptor parser.
-                    break;
-                },
-            }
-
-            character = characters.next();
-            if let Some(character) = character {
-                current_index += character.len_utf8();
-            }
-        }
-
-        // > 9. Descriptor parser: Let error be no.
-        let mut error = false;
-        // > 10. Let width be absent.
-        let mut width: Option<u32> = None;
-        // > 11. Let density be absent.
-        let mut density: Option<f64> = None;
-        // > 12. Let future-compat-h be absent.
-        let mut future_compat_h: Option<u32> = None;
-
-        // > 13. For each descriptor in descriptors, run the appropriate set of steps from
-        // > the following list:
-        for descriptor in descriptors.into_iter() {
-            let Some(last_character) = descriptor.chars().last() else {
-                break;
-            };
-
-            let first_part_of_string = &descriptor[0..descriptor.len() - last_character.len_utf8()];
-            match last_character {
-                // > If the descriptor consists of a valid non-negative integer followed by a
-                // > U+0077 LATIN SMALL LETTER W character
-                // > 1. If the user agent does not support the sizes attribute, let error be yes.
-                // > 2. If width and density are not both absent, then let error be yes.
-                // > 3. Apply the rules for parsing non-negative integers to the descriptor.
-                // >    If the result is 0, let error be yes. Otherwise, let width be the result.
-                'w' if is_valid_non_negative_integer_string(first_part_of_string) &&
-                    density.is_none() &&
-                    width.is_none() =>
-                {
-                    match parse_unsigned_integer(first_part_of_string.chars()) {
-                        Ok(number) if number > 0 => {
-                            width = Some(number);
-                            continue;
-                        },
-                        _ => error = true,
-                    }
-                },
-
-                // > If the descriptor consists of a valid floating-point number followed by a
-                // > U+0078 LATIN SMALL LETTER X character
-                // > 1. If width, density and future-compat-h are not all absent, then let
-                // >    error be yes.
-                // > 2. Apply the rules for parsing floating-point number values to the
-                // >    descriptor. If the result is less than 0, let error be yes. Otherwise, let
-                // >    density be the result.
-                //
-                // The HTML specification has a procedure for parsing floats that is different enough from
-                // the one that stylo uses, that it's better to use Rust's float parser here. This is
-                // what Gecko does, but it also checks to see if the number is a valid HTML-spec compliant
-                // number first. Not doing that means that we might be parsing numbers that otherwise
-                // wouldn't parse.
-                'x' if is_valid_floating_point_number_string(first_part_of_string) &&
-                    width.is_none() &&
-                    density.is_none() &&
-                    future_compat_h.is_none() =>
-                {
-                    match first_part_of_string.parse::<f64>() {
-                        Ok(number) if number.is_finite() && number >= 0. => {
-                            density = Some(number);
-                            continue;
-                        },
-                        _ => error = true,
-                    }
-                },
-
-                // > If the descriptor consists of a valid non-negative integer followed by a
-                // > U+0068 LATIN SMALL LETTER H character
-                // >   This is a parse error.
-                // > 1. If future-compat-h and density are not both absent, then let error be
-                // >    yes.
-                // > 2. Apply the rules for parsing non-negative integers to the descriptor.
-                // >    If the result is 0, let error be yes. Otherwise, let future-compat-h be the
-                // >    result.
-                'h' if is_valid_non_negative_integer_string(first_part_of_string) &&
-                    future_compat_h.is_none() &&
-                    density.is_none() =>
-                {
-                    match parse_unsigned_integer(first_part_of_string.chars()) {
-                        Ok(number) if number > 0 => {
-                            future_compat_h = Some(number);
-                            continue;
-                        },
-                        _ => error = true,
-                    }
-                },
-
-                // > Anything else
-                // >  Let error be yes.
-                _ => error = true,
-            }
-
-            if error {
-                break;
-            }
-        }
-
-        // > 14. If future-compat-h is not absent and width is absent, let error be yes.
-        if future_compat_h.is_some() && width.is_none() {
-            error = true;
-        }
-
-        // Step 15. If error is still no, then append a new image source to candidates whose URL is
-        // url, associated with a width width if not absent and a pixel density density if not
-        // absent. Otherwise, there is a parse error.
-        if !error {
-            let image_source = ImageSource {
-                url: url.into(),
-                descriptor: Descriptor { width, density },
-            };
-            candidates.push(image_source);
-        }
-
-        // Step 16. Return to the step labeled splitting loop.
-    }
-    candidates
 }
 
 #[derive(Clone)]
@@ -2477,26 +1858,4 @@ enum ChangeType {
         selected_pixel_density: f64,
     },
     Element,
-}
-
-/// Returns true if the given image MIME type is supported.
-fn is_supported_image_mime_type(input: &str) -> bool {
-    // Remove any leading and trailing HTTP whitespace from input.
-    let mime_type = input.trim();
-
-    // <https://mimesniff.spec.whatwg.org/#mime-type-essence>
-    let mime_type_essence = match mime_type.find(';') {
-        Some(semi) => &mime_type[..semi],
-        _ => mime_type,
-    };
-
-    // The HTML specification says the type attribute may be present and if present, the value
-    // must be a valid MIME type string. However an empty type attribute is implicitly supported
-    // to match the behavior of other browsers.
-    // <https://html.spec.whatwg.org/multipage/#attr-source-type>
-    if mime_type_essence.is_empty() {
-        return true;
-    }
-
-    SUPPORTED_IMAGE_MIME_TYPES.contains(&mime_type_essence)
 }

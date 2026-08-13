@@ -9,7 +9,7 @@ use std::str::FromStr;
 
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name};
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use net_traits::image_cache::{
     Image, ImageCache, ImageCacheResponseCallback, ImageCacheResult, ImageLoadListener,
@@ -50,20 +50,20 @@ use crate::dom::element::{
     cors_settings_attribute_credential_mode, referrer_policy_for_element,
     reflect_cross_origin_attribute, reflect_referrer_policy_attribute, set_cross_origin_attribute,
 };
-use crate::dom::html::htmlelement::HTMLElement;
-use crate::dom::medialist::MediaList;
-use crate::dom::node::{BindContext, Node, NodeTraits, UnbindContext};
-use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::processingoptions::{
+use crate::dom::html::documentmetadata::processingoptions::{
     LinkFetchContext, LinkFetchContextType, LinkProcessingOptions,
 };
+use crate::dom::html::htmlelement::HTMLElement;
+use crate::dom::medialist::MediaList;
+use crate::dom::node::virtualmethods::VirtualMethods;
+use crate::dom::node::{BindContext, Node, NodeTraits, UnbindContext};
+use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::dom::types::{EventTarget, GlobalScope};
-use crate::dom::virtualmethods::VirtualMethods;
 use crate::links::LinkRelations;
+use crate::modules::script_module::{ScriptFetchOptions, fetch_a_modulepreload_module};
 use crate::network_listener::{FetchResponseListener, ResourceTimingListener, submit_timing};
-use crate::script_module::{ScriptFetchOptions, fetch_a_modulepreload_module};
-use crate::script_runtime::CanGc;
 use crate::stylesheet_loader::{ElementStylesheetLoader, StylesheetContextSource, StylesheetOwner};
+use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 #[derive(Clone, Copy, JSTraceable, MallocSizeOf, PartialEq)]
 pub(crate) struct RequestGenerationId(u32);
@@ -162,7 +162,7 @@ impl HTMLLinkElement {
     }
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
-    fn remove_stylesheet(&self) {
+    fn remove_stylesheet(&self, no_gc: &NoGC) {
         if let Some(stylesheet) = self.stylesheet.borrow_mut().take() {
             let owner = self.stylesheet_list_owner();
             owner.remove_stylesheet(
@@ -170,7 +170,7 @@ impl HTMLLinkElement {
                 &stylesheet,
             );
             self.clean_stylesheet_ownership();
-            owner.invalidate_stylesheets();
+            owner.invalidate_stylesheets(no_gc);
         }
     }
 
@@ -192,10 +192,14 @@ impl HTMLLinkElement {
         self.stylesheet.borrow().clone()
     }
 
-    pub(crate) fn get_cssom_stylesheet(&self, can_gc: CanGc) -> Option<DomRoot<CSSStyleSheet>> {
+    pub(crate) fn get_cssom_stylesheet(
+        &self,
+        cx: &mut JSContext,
+    ) -> Option<DomRoot<CSSStyleSheet>> {
         self.get_stylesheet().map(|sheet| {
             self.cssom_stylesheet.or_init(|| {
                 CSSStyleSheet::new(
+                    cx,
                     &self.owner_window(),
                     Some(self.upcast::<Element>()),
                     "text/css".into(),
@@ -203,7 +207,6 @@ impl HTMLLinkElement {
                     None, // todo handle title
                     sheet,
                     None, // constructor_document
-                    can_gc,
                 )
             })
         })
@@ -250,7 +253,7 @@ impl VirtualMethods for HTMLLinkElement {
         let is_removal = mutation.is_removal();
         match *local_name {
             local_name!("disabled") => {
-                self.handle_disabled_attribute_change(is_removal);
+                self.handle_disabled_attribute_change(cx.no_gc(), is_removal);
                 return;
             },
             local_name!("rel") | local_name!("rev") => {
@@ -287,7 +290,7 @@ impl VirtualMethods for HTMLLinkElement {
                 if self.relations.get().contains(LinkRelations::STYLESHEET) {
                     self.handle_stylesheet_url(cx);
                 } else {
-                    self.remove_stylesheet();
+                    self.remove_stylesheet(cx.no_gc());
                 }
 
                 if self.relations.get().contains(LinkRelations::MODULE_PRELOAD) {
@@ -299,7 +302,7 @@ impl VirtualMethods for HTMLLinkElement {
                 // > If both the href and imagesrcset attributes are absent, then the element does not define a link.
                 if is_removal {
                     if self.relations.get().contains(LinkRelations::STYLESHEET) {
-                        self.remove_stylesheet();
+                        self.remove_stylesheet(cx.no_gc());
                     }
                     return;
                 }
@@ -411,7 +414,7 @@ impl VirtualMethods for HTMLLinkElement {
                         },
                         AttributeMutation::Removed => *media = StyleMediaList::empty(),
                     };
-                    self.owner_document().invalidate_stylesheets();
+                    self.owner_document().invalidate_stylesheets(cx.no_gc());
                 }
 
                 let matches_media_environment =
@@ -479,7 +482,7 @@ impl VirtualMethods for HTMLLinkElement {
             s.unbind_from_tree(cx, context);
         }
 
-        self.remove_stylesheet();
+        self.remove_stylesheet(cx.no_gc());
     }
 }
 
@@ -514,9 +517,7 @@ impl HTMLLinkElement {
             source_set: None, // FIXME
             origin: document.borrow().origin().immutable().to_owned(),
             base_url: document.borrow().base_url(),
-            insecure_requests_policy: document.insecure_requests_policy(),
-            has_trustworthy_ancestor_origin: document.has_trustworthy_ancestor_or_current_origin(),
-            request_client: global.request_client(),
+            request_client: global.request_client(None),
             referrer: global.get_referrer(),
         };
 
@@ -644,7 +645,6 @@ impl HTMLLinkElement {
         let fetch_context = LinkFetchContext {
             url,
             link: Some(Trusted::new(self)),
-            document: Trusted::new(&document),
             global: Trusted::new(&document.global()),
             type_: LinkFetchContextType::Prefetch,
             response_body: vec![],
@@ -717,7 +717,7 @@ impl HTMLLinkElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#attr-link-disabled>
-    fn handle_disabled_attribute_change(&self, is_removal: bool) {
+    fn handle_disabled_attribute_change(&self, no_gc: &NoGC, is_removal: bool) {
         // > Whenever the disabled attribute is removed, set the link element's explicitly enabled attribute to true.
         if is_removal {
             self.is_explicitly_enabled.set(true);
@@ -725,7 +725,7 @@ impl HTMLLinkElement {
         if let Some(stylesheet) = self.get_stylesheet() &&
             stylesheet.set_disabled(!is_removal)
         {
-            self.stylesheet_list_owner().invalidate_stylesheets();
+            self.stylesheet_list_owner().invalidate_stylesheets(no_gc);
         }
     }
 
@@ -852,7 +852,9 @@ impl HTMLLinkElement {
             let embedder_image = embedder_traits::Image::new(
                 frame.width,
                 frame.height,
-                std::sync::Arc::new(GenericSharedMemory::from_bytes(&raster_image.bytes)),
+                std::sync::Arc::new(GenericSharedMemory::from_arc_vec(
+                    raster_image.bytes.clone(),
+                )),
                 raster_image.frames[0].byte_range.clone(),
                 format,
             );
@@ -982,6 +984,7 @@ impl HTMLLinkElement {
         let Ok(url) = document.encoding_parse_a_url(&href_attribute_value.str()) else {
             return;
         };
+        let url = ensure_blob_referenced_by_url_is_kept_alive(&global, url);
 
         // Step 6. Let settings object be el's node document's relevant settings object.
 
@@ -999,7 +1002,7 @@ impl HTMLLinkElement {
             .unwrap_or_else(|| {
                 global
                     .import_map()
-                    .resolve_a_module_integrity_metadata(&url)
+                    .resolve_a_module_integrity_metadata(&url.url())
             });
 
         // Step 11. Let referrer policy be the current state of el's referrerpolicy attribute.
@@ -1090,8 +1093,8 @@ impl StylesheetOwner for HTMLLinkElement {
         ReferrerPolicy::EmptyString
     }
 
-    fn set_origin_clean(&self, origin_clean: bool) {
-        if let Some(stylesheet) = self.get_cssom_stylesheet(CanGc::deprecated_note()) {
+    fn set_origin_clean(&self, cx: &mut js::context::JSContext, origin_clean: bool) {
+        if let Some(stylesheet) = self.get_cssom_stylesheet(cx) {
             stylesheet.set_origin_clean(origin_clean);
         }
     }
@@ -1235,8 +1238,8 @@ impl HTMLLinkElementMethods<crate::DomTypeHolder> for HTMLLinkElement {
     make_setter!(SetReferrerPolicy, "referrerpolicy");
 
     /// <https://drafts.csswg.org/cssom/#dom-linkstyle-sheet>
-    fn GetSheet(&self, can_gc: CanGc) -> Option<DomRoot<DOMStyleSheet>> {
-        self.get_cssom_stylesheet(can_gc).map(DomRoot::upcast)
+    fn GetSheet(&self, cx: &mut JSContext) -> Option<DomRoot<DOMStyleSheet>> {
+        self.get_cssom_stylesheet(cx).map(DomRoot::upcast)
     }
 }
 
@@ -1291,9 +1294,21 @@ impl FetchResponseListener for FaviconFetchContext {
         submit_timing(cx, &self, &response, &timing);
     }
 
-    fn process_csp_violations(&mut self, _request_id: RequestId, violations: Vec<Violation>) {
+    fn process_csp_violations(
+        &mut self,
+        cx: &mut js::context::JSContext,
+        _request_id: RequestId,
+        violations: Vec<Violation>,
+    ) {
         let global = &self.resource_timing_global();
-        global.report_csp_violations(violations, None, None);
+        global.report_csp_violations(cx, violations, None, None);
+    }
+
+    fn process_content_length(&mut self, request_id: RequestId, size: usize) {
+        self.image_cache.notify_pending_response(
+            self.id,
+            FetchResponseMsg::ProcessContentLength(request_id, size),
+        )
     }
 }
 

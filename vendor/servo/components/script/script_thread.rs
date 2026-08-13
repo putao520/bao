@@ -115,8 +115,8 @@ use url::Position;
 use webgpu_traits::{WebGPUDevice, WebGPUMsg};
 
 use crate::devtools::DevtoolsState;
-use crate::document_collection::DocumentCollection;
-use crate::document_loader::DocumentLoader;
+use crate::event_loop::document_collection::DocumentCollection;
+use crate::event_loop::document_loader::DocumentLoader;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
     DocumentMethods, DocumentReadyState,
 };
@@ -159,13 +159,13 @@ use crate::mime::{APPLICATION, CHARSET, MimeExt, TEXT, XML};
 use crate::navigation::{InProgressLoad, NavigationListener};
 use crate::network_listener::{FetchResponseListener, submit_timing};
 use crate::realms::{enter_auto_realm, enter_realm};
-use crate::script_mutation_observers::ScriptMutationObservers;
+use crate::event_loop::script_mutation_observers::ScriptMutationObservers;
 use crate::script_runtime::{
     CanGc, IntroductionType, JSContextHelper, Runtime, ScriptThreadEventCategory,
     ThreadSafeJSContext,
 };
-use crate::script_window_proxies::ScriptWindowProxies;
-use crate::task_queue::TaskQueue;
+use crate::event_loop::script_window_proxies::ScriptWindowProxies;
+use crate::tasks::task_queue::TaskQueue;
 use crate::webdriver_handlers::jsval_to_webdriver;
 use crate::{devtools, webdriver_handlers};
 

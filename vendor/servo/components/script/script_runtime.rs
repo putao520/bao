@@ -96,8 +96,8 @@ use crate::dom::trustedtypes::trustedscript::TrustedScript;
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopSender};
 use crate::microtask::{EnqueuedPromiseCallback, Microtask, MicrotaskQueue};
 use crate::realms::{AlreadyInRealm, InRealm, enter_auto_realm, enter_realm};
-use crate::script_module::EnsureModuleHooksInitialized;
-use crate::task_source::TaskSourceName;
+use crate::modules::script_module::EnsureModuleHooksInitialized;
+use crate::tasks::task_source::TaskSourceName;
 use crate::{DomTypeHolder, ScriptThread};
 
 static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {

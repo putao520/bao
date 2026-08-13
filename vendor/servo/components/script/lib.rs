@@ -24,21 +24,8 @@ mod animations;
 mod css;
 #[macro_use]
 mod tasks;
-// Bao legacy flat modules: kept (in addition to upstream's event_loop/ and
-// tasks/ trees) because the BCE-patched script_thread.rs / script_runtime.rs /
-// dedicatedworkerglobalscope.rs reference these old crate paths.
-mod clipboard_provider;
-mod document_collection;
-mod document_loader;
-mod module_loading;
-mod script_module;
-mod script_mutation_observers;
-mod script_window_proxies;
-mod task;
-mod task_manager;
-mod task_queue;
-mod task_source;
-pub mod textinput;
+// Bao BCE-patched ScriptThread (old flat module, kept for its multi-instance
+// patches); imports migrated to the upstream module tree in Stage 3.
 pub mod script_thread;
 mod body;
 pub(crate) mod conversions;
