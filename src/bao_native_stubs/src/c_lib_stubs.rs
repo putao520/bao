@@ -145,7 +145,7 @@ pub fn force_c_lib_stubs() {
     // directly so the linker keeps the symbol without triggering a SIGSEGV
     // from a null deref. The `as usize` cast forces a symbol reference
     // without invoking the function body.
-    let _ = bao_uloop::us_loop_run_bun_tick as *const () as usize;
+    let _ = bao_uloop::bao_loop_tick as *const () as usize;
     let _ = bao_uloop::us_wakeup_loop as *const () as usize;
 
     // SSL symbols now come from libusockets.a (compiled with TLS).
