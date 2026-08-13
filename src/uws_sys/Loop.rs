@@ -208,20 +208,24 @@ impl PosixLoop {
     }
 
     pub fn tick(&mut self) {
+        // BCE-007 unified dispatch: Rust epoll_wait via bao_uloop, not C version.
+        unsafe extern "C" { fn bao_loop_tick(loop_: *mut Loop, timeout: *const Timespec); }
         // SAFETY: self is a valid loop pointer
-        unsafe { c::us_loop_run_bun_tick(self, core::ptr::null()) };
+        unsafe { bao_loop_tick(self as *mut _, core::ptr::null()) };
     }
 
     pub fn tick_without_idle(&mut self) {
         let timespec = Timespec { sec: 0, nsec: 0 };
+        unsafe extern "C" { fn bao_loop_tick(loop_: *mut Loop, timeout: *const Timespec); }
         // SAFETY: self is a valid loop pointer; &timespec lives for the call
-        unsafe { c::us_loop_run_bun_tick(self, &raw const timespec) };
+        unsafe { bao_loop_tick(self as *mut _, &raw const timespec) };
     }
 
     pub fn tick_with_timeout(&mut self, timespec: Option<&Timespec>) {
+        unsafe extern "C" { fn bao_loop_tick(loop_: *mut Loop, timeout: *const Timespec); }
         // SAFETY: self is a valid loop pointer
         unsafe {
-            c::us_loop_run_bun_tick(self, timespec.map_or(core::ptr::null(), std::ptr::from_ref))
+            bao_loop_tick(self as *mut _, timespec.map_or(core::ptr::null(), std::ptr::from_ref))
         };
     }
 
@@ -606,7 +610,9 @@ mod c {
         pub(super) fn uws_loop_addPostHandler(loop_: *mut Loop, ctx: *mut c_void, cb: LoopCtxCb);
         pub(super) fn uws_loop_removePostHandler(loop_: *mut Loop, ctx: *mut c_void, cb: LoopCtxCb);
         pub(super) fn uws_loop_addPreHandler(loop_: *mut Loop, ctx: *mut c_void, cb: LoopCtxCb);
+        // us_loop_run_bun_tick removed: replaced by bao_loop_tick (Rust epoll_wait).
         #[cfg(not(windows))]
+        #[allow(dead_code)]
         pub(super) fn us_loop_run_bun_tick(loop_: *mut Loop, timeout_ms: *const Timespec);
         pub(super) fn us_internal_free_closed_sockets(loop_: *mut Loop);
         pub(super) fn us_loop_close_all_groups(loop_: *mut Loop) -> c_int;

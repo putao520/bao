@@ -1215,7 +1215,7 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     break;
                 }
                 unsafe {
-                    bao_uloop::us_loop_run_bun_tick(loop_, ptr::null());
+                    bao_uloop::bao_loop_tick(loop_, ptr::null());
                 }
             }
 

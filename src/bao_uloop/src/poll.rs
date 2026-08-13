@@ -146,6 +146,10 @@ fn is_tagged_pointer(p: *mut c_void) -> bool {
 #[cfg(not(test))]
 unsafe extern "C" {
     fn Bun__internal_dispatch_ready_poll(loop_: *mut Loop, tagged_pointer: *mut c_void);
+    /// C dispatch for untagged us_poll_t (socket/semi-socket/callback).
+    /// Provided by libusockets.a (epoll_kqueue.c). Symbol confirmed `T` (exported).
+    /// Used by the unified Rust epoll_wait → C dispatch path.
+    fn us_internal_dispatch_ready_poll(p: *mut c_void, error: c_int, eof: c_int);
 }
 
 #[cfg(test)]
@@ -369,16 +373,25 @@ pub(crate) unsafe fn dispatch_ready_polls(loop_: *mut Loop) {
             continue;
         }
 
-        // Untagged → us_poll_t dispatch
-        let poll = poll_ptr as *mut BaoPoll;
+        // Untagged → C dispatch (us_internal_dispatch_ready_poll from libusockets.a)
+        // This is the unified path: Rust epoll_wait delivers events, C dispatch
+        // handles socket/semi-socket/callback poll types with full vtable logic.
+        // The Rust stub `dispatch_ready_poll` is deleted — C dispatch is the
+        // single source of truth for untagged poll events.
+        let poll = poll_ptr;
         let events = event.events as c_int;
         let error = events & libc::EPOLLERR;
         let eof = events & libc::EPOLLHUP;
-        let filtered_events = events & unsafe { (*poll).events() };
 
-        if filtered_events != 0 || error != 0 || eof != 0 {
+        if events != 0 || error != 0 || eof != 0 {
+            #[cfg(not(test))]
             unsafe {
-                dispatch_ready_poll(poll, error, eof, filtered_events);
+                us_internal_dispatch_ready_poll(poll, error, eof);
+            }
+            #[cfg(test)]
+            unsafe {
+                // In tests, no C library — call the Rust stub for unit tests.
+                dispatch_ready_poll(poll as *mut BaoPoll, error, eof, events);
             }
         }
     }

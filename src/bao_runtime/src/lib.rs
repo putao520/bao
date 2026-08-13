@@ -215,7 +215,7 @@ fn force_link_native_c_libs() {
     let _ = bun_boringssl_sys::force_link as *const () as usize;
     let _ = bao_uloop::force_link as *const () as usize;
     // Keep loop entry symbols live without calling with null (null-deref risk).
-    let _ = bao_uloop::us_loop_run_bun_tick as *const () as usize;
+    let _ = bao_uloop::bao_loop_tick as *const () as usize;
     let _ = bao_uloop::us_wakeup_loop as *const () as usize;
     let _ = bao_uloop::uws_get_loop as *const () as usize;
     // Retain product real ProcessExit + BufferedReader + RealImpl compilation units.

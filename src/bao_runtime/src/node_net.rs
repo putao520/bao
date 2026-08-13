@@ -650,7 +650,7 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 }
                 // Tick the event loop — epoll_wait will block until an event arrives.
                 unsafe {
-                    bao_uloop::us_loop_run_bun_tick(loop_, ptr::null());
+                    bao_uloop::bao_loop_tick(loop_, ptr::null());
                 }
             }
 

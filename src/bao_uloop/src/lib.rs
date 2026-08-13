@@ -533,9 +533,6 @@ unsafe extern "C" {
     /// Cross-thread wake. Provided by libusockets.a (C, loop.c).
     pub unsafe fn us_wakeup_loop(loop_: *mut Loop);
 
-    /// Single-iteration tick. Provided by libusockets.a (C, loop.c).
-    pub unsafe fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec);
-
     /// Run until active==0. Provided by libusockets.a (C, loop.c).
     pub unsafe fn us_loop_run(loop_: *mut Loop);
 
@@ -553,6 +550,44 @@ unsafe extern "C" {
 
     /// Remove a post-tick handler. Provided by libuwsockets.a (C++).
     pub unsafe fn uws_loop_removePostHandler(loop_: *mut Loop, ctx: *mut c_void, cb: LoopCtxCb);
+}
+
+// ──────────────── us_loop_run_bun_tick (Rust override of C version) ──────
+//
+// The C version (libusockets.a, loop.c) does its own `epoll_pwait2` which
+// blocked indefinitely on NULL timeout — the root cause of BCE-007 fetch hang.
+//
+// We can't simply #[no_mangle] override it because the C symbol is `T`
+// (exported), causing a duplicate-symbol error with the wild linker.
+// Instead we provide a Rust tick entry point and call it from the sites
+// that used to call the C version (Loop.rs::tick / tick_without_idle).
+//
+// The C version remains in libusockets.a but is no longer called from
+// bao's Rust code — all tick paths go through `bao_uloop_tick`.
+
+/// Single-iteration event loop tick — Rust implementation.
+/// Does `epoll_wait` with controlled timeout (no NULL blocking) then
+/// dispatches via `dispatch_ready_polls` → C `us_internal_dispatch_ready_poll`
+/// for socket events.
+///
+/// # Safety
+/// `loop_` must be a valid `*mut Loop` created by `us_create_loop`.
+/// Single-iteration event loop tick — Rust implementation.
+/// Does `epoll_wait` with controlled timeout (no NULL blocking) then
+/// dispatches via `dispatch_ready_polls` → C `us_internal_dispatch_ready_poll`
+/// for socket events.
+///
+/// Called from `bun_uws_sys::Loop::tick/tick_without_idle` via extern "C"
+/// linkage (#[no_mangle] `bao_loop_tick`). This avoids a crate dependency
+/// cycle (bun_uws_sys cannot depend on bao_uloop).
+///
+/// # Safety
+/// `loop_` must be a valid `*mut Loop` created by `us_create_loop`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bao_loop_tick(loop_: *mut Loop, timeout: *const Timespec) {
+    let loop_ptr: *mut PosixLoop = loop_;
+    let pending = unsafe { (*loop_ptr).active };
+    run_epoll(loop_, pending, timeout);
 }
 
 // ──────────────── us_dispatch_* kind→vtable routing ──────────────────
