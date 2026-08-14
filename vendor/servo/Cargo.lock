@@ -382,6 +382,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ar_archive_writer"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
+dependencies = [
+ "object 0.39.1",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -481,12 +490,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ascii"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
+
+[[package]]
 name = "ash"
 version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
  "libloading 0.8.9",
+]
+
+[[package]]
+name = "ast_node"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eb025ef00a6da925cf40870b9c8d008526b6004ece399cb0974209720f0b194"
+dependencies = [
+ "quote",
+ "swc_macros_common",
+ "syn",
 ]
 
 [[package]]
@@ -782,7 +808,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "miniz_oxide",
- "object",
+ "object 0.37.3",
  "rustc-demangle",
  "windows-link 0.2.1",
 ]
@@ -811,6 +837,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao_engine"
+version = "0.1.0"
+dependencies = [
+ "bao_engine_macros",
+ "bun_collections",
+ "bun_core",
+ "bun_crash_handler",
+ "bun_event_loop",
+ "bun_io",
+ "bun_sm",
+ "bun_spawn",
+ "bun_uws",
+ "libc",
+ "log",
+ "mozjs",
+ "mozjs_sys",
+]
+
+[[package]]
+name = "bao_engine_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "bao_stealth"
+version = "0.1.0"
+dependencies = [
+ "bao_engine",
+ "bun_core",
+ "bun_sha_hmac",
+ "dashmap",
+ "mozjs",
+ "mozjs_sys",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "base16ct"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -833,6 +901,15 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
+
+[[package]]
+name = "better_scoped_tls"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd228125315b132eed175bf47619ac79b945b26e56b848ba203ae4ea8603609"
+dependencies = [
+ "scoped-tls",
+]
 
 [[package]]
 name = "bincode"
@@ -1127,6 +1204,9 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+dependencies = [
+ "allocator-api2",
+]
 
 [[package]]
 name = "bun_alloc"
@@ -1147,6 +1227,65 @@ dependencies = [
  "scopeguard",
  "strum 0.26.3",
  "typed-arena",
+]
+
+[[package]]
+name = "bun_analytics"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_core",
+ "bun_semver",
+ "bun_sys",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_ast"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bumpalo",
+ "bun_alloc",
+ "bun_collections",
+ "bun_core",
+ "bun_dispatch",
+ "bun_paths",
+ "bun_ptr",
+ "bun_sys",
+ "bun_wyhash",
+ "bytemuck",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "typed-arena",
+]
+
+[[package]]
+name = "bun_base64"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "base64 0.22.1",
+ "bstr",
+ "bun_alloc",
+ "bun_core",
+ "bun_simdutf_sys",
+ "bun_wyhash",
+ "strum 0.26.3",
+ "thiserror 2.0.18",
+ "vlq",
 ]
 
 [[package]]
@@ -1185,6 +1324,58 @@ dependencies = [
  "phf 0.11.3",
  "scopeguard",
  "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_bundler"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bumpalo",
+ "bun_alloc",
+ "bun_ast",
+ "bun_base64",
+ "bun_collections",
+ "bun_core",
+ "bun_crash_handler",
+ "bun_css",
+ "bun_dispatch",
+ "bun_dotenv",
+ "bun_event_loop",
+ "bun_glob",
+ "bun_hash",
+ "bun_http_types",
+ "bun_io",
+ "bun_js_parser",
+ "bun_js_printer",
+ "bun_lolhtml_sys",
+ "bun_md",
+ "bun_opaque",
+ "bun_options_types",
+ "bun_parsers",
+ "bun_paths",
+ "bun_perf",
+ "bun_ptr",
+ "bun_resolve_builtins",
+ "bun_resolver",
+ "bun_router",
+ "bun_sourcemap",
+ "bun_sys",
+ "bun_threading",
+ "bun_url",
+ "bun_watcher",
+ "bun_wyhash",
+ "bytemuck",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "thiserror 2.0.18",
+ "typed-arena",
 ]
 
 [[package]]
@@ -1260,12 +1451,103 @@ dependencies = [
 ]
 
 [[package]]
+name = "bun_crash_handler"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_alloc",
+ "bun_analytics",
+ "bun_ast",
+ "bun_base64",
+ "bun_collections",
+ "bun_core",
+ "bun_dispatch",
+ "bun_io",
+ "bun_options_types",
+ "bun_paths",
+ "bun_ptr",
+ "bun_sys",
+ "bun_threading",
+ "bun_which",
+ "bun_zlib",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_css"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bumpalo",
+ "bun_alloc",
+ "bun_ast",
+ "bun_base64",
+ "bun_collections",
+ "bun_core",
+ "bun_css_derive",
+ "bun_io",
+ "bun_paths",
+ "bun_ptr",
+ "bun_wyhash",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "typed-arena",
+]
+
+[[package]]
+name = "bun_css_derive"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "bun_dispatch"
 version = "0.1.0-alpha.1"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "bun_dotenv"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_alloc",
+ "bun_ast",
+ "bun_collections",
+ "bun_core",
+ "bun_dispatch",
+ "bun_paths",
+ "bun_sys",
+ "bun_url",
+ "bun_which",
+ "bun_wyhash",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
 ]
 
 [[package]]
@@ -1285,6 +1567,51 @@ dependencies = [
  "scopeguard",
  "strum 0.26.3",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bun_event_loop"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_collections",
+ "bun_core",
+ "bun_dispatch",
+ "bun_dotenv",
+ "bun_io",
+ "bun_paths",
+ "bun_ptr",
+ "bun_sys",
+ "bun_threading",
+ "bun_uws",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_glob"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_alloc",
+ "bun_collections",
+ "bun_core",
+ "bun_paths",
+ "bun_sys",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
 ]
 
 [[package]]
@@ -1323,6 +1650,147 @@ dependencies = [
 ]
 
 [[package]]
+name = "bun_install_types"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_alloc",
+ "bun_ast",
+ "bun_collections",
+ "bun_core",
+ "bun_semver",
+ "bun_wyhash",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_io"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_collections",
+ "bun_core",
+ "bun_dispatch",
+ "bun_errno",
+ "bun_opaque",
+ "bun_paths",
+ "bun_ptr",
+ "bun_spawn_sys",
+ "bun_sys",
+ "bun_threading",
+ "bun_uws_sys",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_js_parser"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bumpalo",
+ "bun_alloc",
+ "bun_ast",
+ "bun_base64",
+ "bun_collections",
+ "bun_core",
+ "bun_crash_handler",
+ "bun_dispatch",
+ "bun_highway",
+ "bun_io",
+ "bun_options_types",
+ "bun_paths",
+ "bun_ptr",
+ "bun_url",
+ "bun_wyhash",
+ "bytemuck",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "smallvec",
+ "strum 0.26.3",
+ "typed-arena",
+]
+
+[[package]]
+name = "bun_js_printer"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bumpalo",
+ "bun_alloc",
+ "bun_ast",
+ "bun_collections",
+ "bun_core",
+ "bun_crash_handler",
+ "bun_io",
+ "bun_options_types",
+ "bun_paths",
+ "bun_ptr",
+ "bun_sourcemap",
+ "bun_sys",
+ "bun_wyhash",
+ "bytemuck",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "typed-arena",
+]
+
+[[package]]
+name = "bun_jsc_macros"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "bun_libarchive"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_collections",
+ "bun_core",
+ "bun_opaque",
+ "bun_paths",
+ "bun_sys",
+ "bun_wyhash",
+ "bytemuck",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
 name = "bun_libuv_sys"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -1341,11 +1809,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "bun_lolhtml_sys"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bun_core",
+ "lol_html",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "bun_lsquic_sys"
 version = "0.1.0"
 dependencies = [
  "bun_boringssl_sys",
  "cc",
+]
+
+[[package]]
+name = "bun_md"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bun_alloc",
+ "bun_collections",
+ "bun_core",
+ "bun_paths",
+ "bun_sys",
+ "bun_url",
+ "pulldown-cmark",
+ "scopeguard",
 ]
 
 [[package]]
@@ -1370,8 +1861,67 @@ name = "bun_opaque"
 version = "0.1.0-alpha.1"
 
 [[package]]
+name = "bun_options_types"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_ast",
+ "bun_collections",
+ "bun_core",
+ "bun_dotenv",
+ "bun_install_types",
+ "bun_libarchive",
+ "bun_paths",
+ "bun_semver",
+ "bun_sys",
+ "bun_url",
+ "bun_wyhash",
+ "bun_zlib",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bun_output"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bun_core",
+]
+
+[[package]]
 name = "bun_output_tags"
 version = "0.1.0-alpha.1"
+
+[[package]]
+name = "bun_parsers"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bumpalo",
+ "bun_alloc",
+ "bun_ast",
+ "bun_collections",
+ "bun_core",
+ "bun_highway",
+ "bytemuck",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "thiserror 2.0.18",
+ "typed-arena",
+]
 
 [[package]]
 name = "bun_paths"
@@ -1390,6 +1940,24 @@ dependencies = [
  "scopeguard",
  "strum 0.26.3",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bun_perf"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_core",
+ "bun_paths",
+ "bun_sys",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
 ]
 
 [[package]]
@@ -1412,6 +1980,148 @@ dependencies = [
 ]
 
 [[package]]
+name = "bun_resolve_builtins"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_ast",
+ "bun_core",
+ "bun_options_types",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_resolver"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bumpalo",
+ "bun_alloc",
+ "bun_analytics",
+ "bun_ast",
+ "bun_base64",
+ "bun_collections",
+ "bun_core",
+ "bun_crash_handler",
+ "bun_dotenv",
+ "bun_glob",
+ "bun_hash",
+ "bun_http_types",
+ "bun_install_types",
+ "bun_js_parser",
+ "bun_options_types",
+ "bun_parsers",
+ "bun_paths",
+ "bun_perf",
+ "bun_ptr",
+ "bun_resolve_builtins",
+ "bun_semver",
+ "bun_sys",
+ "bun_threading",
+ "bun_url",
+ "bun_watcher",
+ "bun_wyhash",
+ "bun_zstd",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bun_router"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_ast",
+ "bun_collections",
+ "bun_core",
+ "bun_http_types",
+ "bun_options_types",
+ "bun_paths",
+ "bun_resolver",
+ "bun_sys",
+ "bun_url",
+ "bun_wyhash",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_safety"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_alloc",
+ "bun_core",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bun_semver"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_alloc",
+ "bun_collections",
+ "bun_core",
+ "bun_wyhash",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_sha_hmac"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_boringssl",
+ "bun_boringssl_sys",
+ "bun_core",
+ "bun_opaque",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
 name = "bun_simdutf_sys"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -1422,6 +2132,94 @@ dependencies = [
  "enumset",
  "libc",
  "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_sm"
+version = "0.1.0"
+dependencies = [
+ "bao_engine_macros",
+ "bun_collections",
+ "bun_core",
+ "bun_event_loop",
+ "bun_io",
+ "bun_sys",
+ "bun_threading",
+ "bun_transpiler",
+ "libc",
+ "log",
+ "mozjs",
+ "mozjs_sys",
+]
+
+[[package]]
+name = "bun_sourcemap"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bumpalo",
+ "bun_alloc",
+ "bun_ast",
+ "bun_base64",
+ "bun_collections",
+ "bun_core",
+ "bun_io",
+ "bun_opaque",
+ "bun_parsers",
+ "bun_paths",
+ "bun_ptr",
+ "bun_semver",
+ "bun_sys",
+ "bun_url",
+ "bun_zstd",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "smallvec",
+ "strum 0.26.3",
+ "typed-arena",
+]
+
+[[package]]
+name = "bun_spawn"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bstr",
+ "bun_analytics",
+ "bun_core",
+ "bun_crash_handler",
+ "bun_dispatch",
+ "bun_event_loop",
+ "bun_io",
+ "bun_opaque",
+ "bun_output",
+ "bun_ptr",
+ "bun_spawn_sys",
+ "bun_sys",
+ "bun_threading",
+ "bun_which",
+ "libc",
+ "scopeguard",
+]
+
+[[package]]
+name = "bun_spawn_sys"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bstr",
+ "bun_analytics",
+ "bun_core",
+ "bun_libuv_sys",
+ "bun_sys",
+ "bun_windows_sys",
+ "enumset",
+ "libc",
  "scopeguard",
  "strum 0.26.3",
 ]
@@ -1454,6 +2252,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "bun_threading"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_alloc",
+ "bun_collections",
+ "bun_core",
+ "bun_ptr",
+ "bun_safety",
+ "bun_sys",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bun_transpiler"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bun_bundler",
+ "swc_common",
+ "swc_ecma_ast",
+ "swc_ecma_codegen",
+ "swc_ecma_parser",
+ "swc_ecma_transforms_base",
+ "swc_ecma_transforms_typescript",
+ "swc_ecma_visit",
+]
+
+[[package]]
 name = "bun_url"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -1464,6 +2298,29 @@ dependencies = [
  "bun_core",
  "bun_paths",
  "bun_wyhash",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_uws"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_base64",
+ "bun_boringssl",
+ "bun_boringssl_sys",
+ "bun_core",
+ "bun_jsc_macros",
+ "bun_opaque",
+ "bun_ptr",
+ "bun_uws_sys",
  "const_format",
  "enum-map",
  "enumset",
@@ -1500,6 +2357,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "bun_watcher"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_collections",
+ "bun_core",
+ "bun_paths",
+ "bun_ptr",
+ "bun_sys",
+ "bun_threading",
+ "bun_wyhash",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_which"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_core",
+ "bun_paths",
+ "bun_sys",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
 name = "bun_windows_sys"
 version = "0.1.0-alpha.1"
 
@@ -1516,6 +2413,36 @@ dependencies = [
  "phf 0.11.3",
  "scopeguard",
  "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_zlib"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_alloc",
+ "bun_collections",
+ "bun_core",
+ "bun_io",
+ "const_format",
+ "crc32fast",
+ "enum-map",
+ "enumset",
+ "flate2",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "bun_zstd"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bun_core",
+ "strum 0.26.3",
+ "zstd-pure-rs",
 ]
 
 [[package]]
@@ -1563,6 +2490,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
+name = "bytes-str"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "577d2bf5650f8554d5a372af5ac93535110a0fc75b3e702bb853369febf227c2"
+dependencies = [
+ "bytes",
+ "serde",
+]
+
+[[package]]
 name = "calendrical_calculations"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1603,6 +2540,15 @@ name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
+
+[[package]]
+name = "castaway"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec551ab6e7578819132c713a93c022a05d60159dc86e7a7050223577484c55a"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "cbc"
@@ -1870,6 +2816,19 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "compact_str"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f86b9c4c00838774a6d902ef931eff7470720c51d90c2e32cfe15dc304737b3f"
+dependencies = [
+ "castaway",
+ "cfg-if",
+ "itoa",
+ "ryu",
+ "static_assertions",
 ]
 
 [[package]]
@@ -2213,16 +3172,39 @@ dependencies = [
 
 [[package]]
 name = "cssparser"
+version = "0.36.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dae61cf9c0abb83bd659dab65b7e4e38d8236824c85f0f804f173567bda257d2"
+dependencies = [
+ "cssparser-macros 0.6.1",
+ "dtoa-short",
+ "itoa",
+ "phf 0.13.1",
+ "smallvec",
+]
+
+[[package]]
+name = "cssparser"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c9cdaae01d5ed7882b04d795e7f752f46ff52d2fa3b50a20d28c464510bba98"
 dependencies = [
- "cssparser-macros",
+ "cssparser-macros 0.7.0",
  "dtoa-short",
  "itoa",
  "phf 0.13.1",
  "serde",
  "smallvec",
+]
+
+[[package]]
+name = "cssparser-macros"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13b588ba4ac1a99f7f2964d24b3d896ddc6bf847ee3855dbd4366f058cfcd331"
+dependencies = [
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -2604,6 +3586,12 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+
+[[package]]
+name = "dragonbox_ecma"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd8e701084c37e7ef62d3f9e453b618130cbc0ef3573847785952a3ac3f746bf"
 
 [[package]]
 name = "dtoa"
@@ -3331,6 +4319,16 @@ dependencies = [
  "cc",
  "libz-sys",
  "pkg-config",
+]
+
+[[package]]
+name = "from_variant"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5ff35a391aef949120a0340d690269b3d9f63460a6106e99bd07b961f345ea9"
+dependencies = [
+ "swc_macros_common",
+ "syn",
 ]
 
 [[package]]
@@ -4182,6 +5180,10 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash",
+ "allocator-api2",
+]
 
 [[package]]
 name = "hashbrown"
@@ -4210,6 +5212,8 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.2.0",
  "serde",
  "serde_core",
@@ -4337,6 +5341,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest 0.11.3",
+]
+
+[[package]]
+name = "hstr"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83bb87e4b300d73412f6dcc7022ee7741452b51b155c2b06e5994d0770c2dbe2"
+dependencies = [
+ "hashbrown 0.14.5",
+ "new_debug_unreachable",
+ "once_cell",
+ "rustc-hash 2.1.2",
+ "serde",
+ "triomphe",
 ]
 
 [[package]]
@@ -5087,6 +6105,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
+name = "is-macro"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d57a3e447e24c22647738e4607f1df1e0ec6f72e16182c4cd199f647cdfb0e4"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5508,6 +6538,25 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+
+[[package]]
+name = "lol_html"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5adbb62638edf7e6bc88835cd3ea388bdd53382af42045da0e414ea78aa0c91a"
+dependencies = [
+ "bitflags 2.11.1",
+ "cfg-if",
+ "cssparser 0.36.0",
+ "encoding_rs",
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
+ "memchr",
+ "mime",
+ "precomputed-hash",
+ "selectors 0.37.0",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "loop9"
@@ -6008,6 +7057,7 @@ checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
  "num-integer",
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -6489,6 +7539,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "ocb3"
 version = "0.2.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6791,6 +7850,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "par-core"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e96cbd21255b7fb29a5d51ef38a779b517a91abd59e2756c039583f43ef4c90f"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7003,7 +8071,7 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
 dependencies = [
- "siphasher",
+ "siphasher 1.0.3",
 ]
 
 [[package]]
@@ -7012,7 +8080,7 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
 dependencies = [
- "siphasher",
+ "siphasher 1.0.3",
 ]
 
 [[package]]
@@ -7342,6 +8410,34 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "psm"
+version = "0.1.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
+dependencies = [
+ "ar_archive_writer",
+ "cc",
+]
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f86ba2052aebccc42cbbb3ed234b8b13ce76f75c3551a303cb2bcffcff12bb14"
+dependencies = [
+ "bitflags 2.11.1",
+ "memchr",
+ "pulldown-cmark-escape",
+ "unicase",
+]
+
+[[package]]
+name = "pulldown-cmark-escape"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 
 [[package]]
 name = "pxfm"
@@ -8049,11 +9145,12 @@ dependencies = [
 
 [[package]]
 name = "selectors"
-version = "0.40.0"
-source = "git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7#f6d1d525db9a7fb1aa0842926458e63faa4f44c7"
+version = "0.37.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cfaaa6035167f0e604e42723c7650d59ee269ef220d7bbe0565602c8a0173b9"
 dependencies = [
  "bitflags 2.11.1",
- "cssparser",
+ "cssparser 0.36.0",
  "derive_more",
  "log",
  "new_debug_unreachable",
@@ -8061,7 +9158,25 @@ dependencies = [
  "phf_codegen",
  "precomputed-hash",
  "rustc-hash 2.1.2",
- "servo_arc",
+ "servo_arc 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "smallvec",
+]
+
+[[package]]
+name = "selectors"
+version = "0.40.0"
+source = "git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7#f6d1d525db9a7fb1aa0842926458e63faa4f44c7"
+dependencies = [
+ "bitflags 2.11.1",
+ "cssparser 0.37.0",
+ "derive_more",
+ "log",
+ "new_debug_unreachable",
+ "phf 0.13.1",
+ "phf_codegen",
+ "precomputed-hash",
+ "rustc-hash 2.1.2",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "smallvec",
  "to_shmem",
  "to_shmem_derive",
@@ -8676,7 +9791,7 @@ dependencies = [
  "servo-profile-traits",
  "servo-tracing",
  "servo-url",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "skrifa 0.44.0",
  "smallvec",
  "stylo",
@@ -8710,7 +9825,7 @@ dependencies = [
  "servo-malloc-size-of",
  "servo-profile-traits",
  "servo-url",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "stylo",
  "uuid",
  "webrender_api",
@@ -8780,7 +9895,7 @@ dependencies = [
  "quickcheck",
  "rayon",
  "rustc-hash 2.1.2",
- "selectors",
+ "selectors 0.40.0",
  "serde",
  "servo-base",
  "servo-config",
@@ -8798,7 +9913,7 @@ dependencies = [
  "servo-script-traits",
  "servo-tracing",
  "servo-url",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "smallvec",
  "strum 0.28.0",
  "stylo",
@@ -8828,7 +9943,7 @@ dependencies = [
  "malloc_size_of_derive",
  "parking_lot",
  "rustc-hash 2.1.2",
- "selectors",
+ "selectors 0.40.0",
  "serde",
  "servo-background-hang-monitor-api",
  "servo-base",
@@ -8841,7 +9956,7 @@ dependencies = [
  "servo-profile-traits",
  "servo-script-traits",
  "servo-url",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "stylo",
  "stylo_traits",
  "uuid",
@@ -8870,7 +9985,7 @@ dependencies = [
  "parking_lot",
  "resvg",
  "servo-allocator",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "smallvec",
  "string_cache",
  "stylo",
@@ -9136,6 +10251,7 @@ dependencies = [
  "async-recursion",
  "async-tungstenite",
  "bao_boringssl_bridge",
+ "bao_stealth",
  "base64 0.23.1",
  "bun_boringssl",
  "bun_boringssl_sys",
@@ -9193,7 +10309,7 @@ dependencies = [
  "servo-profile-traits",
  "servo-tracing",
  "servo-url",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "sha2 0.11.0",
  "smallvec",
  "tempfile",
@@ -9244,7 +10360,7 @@ dependencies = [
  "servo-pixels",
  "servo-profile-traits",
  "servo-url",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "sys-locale",
  "tokio",
  "url",
@@ -9401,7 +10517,7 @@ dependencies = [
  "crossbeam-channel",
  "crypto-bigint",
  "cshake",
- "cssparser",
+ "cssparser 0.37.0",
  "ctr",
  "ctutils",
  "data-url",
@@ -9451,7 +10567,7 @@ dependencies = [
  "resvg",
  "rsa",
  "rustc-hash 2.1.2",
- "selectors",
+ "selectors 0.40.0",
  "seq-macro",
  "serde",
  "serde_json",
@@ -9490,7 +10606,7 @@ dependencies = [
  "servo-webvtt",
  "servo-webxr-api",
  "servo-xpath",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "sha1 0.11.0",
  "sha2 0.11.0",
  "sha3 0.12.0",
@@ -9555,7 +10671,7 @@ dependencies = [
  "servo-profile-traits",
  "servo-url",
  "servo-webxr-api",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "smallvec",
  "strum 0.28.0",
  "stylo",
@@ -9689,7 +10805,7 @@ dependencies = [
  "malloc_size_of_derive",
  "serde",
  "servo-malloc-size-of",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "url",
  "uuid",
 ]
@@ -9842,6 +10958,15 @@ dependencies = [
  "malloc_size_of_derive",
  "markup5ever",
  "servo-malloc-size-of",
+]
+
+[[package]]
+name = "servo_arc"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "170fb83ab34de17dc69aa7c67482b22218ddb85da56546f9bd6b929e32a05930"
+dependencies = [
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -10074,6 +11199,12 @@ dependencies = [
 
 [[package]]
 name = "siphasher"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38b58827f4464d87d377d175e90bf58eb00fd8716ff0a62f80356b5e61555d0d"
+
+[[package]]
+name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
@@ -10136,6 +11267,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "smartstring"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fb72c633efbaa2dd666986505016c32c3044395ceaf881518399d2f4127ee29"
+dependencies = [
+ "autocfg",
+ "static_assertions",
+ "version_check",
 ]
 
 [[package]]
@@ -10243,6 +11385,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "stacker"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "707f49d46706bacf8a2b00d51dace3f9de527c13eec3778f570c411f89e69967"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "psm",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10299,6 +11454,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "string_enum"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae36a4951ca7bd1cfd991c241584a9824a70f6aff1e7d4f693fb3f2465e4030e"
+dependencies = [
+ "quote",
+ "swc_macros_common",
+ "syn",
+]
+
+[[package]]
 name = "strum"
 version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10351,7 +11517,7 @@ dependencies = [
  "atomic_refcell",
  "bitflags 2.11.1",
  "byteorder",
- "cssparser",
+ "cssparser 0.37.0",
  "derive_more",
  "encoding_rs",
  "euclid",
@@ -10372,9 +11538,9 @@ dependencies = [
  "rayon",
  "rayon-core",
  "rustc-hash 2.1.2",
- "selectors",
+ "selectors 0.40.0",
  "serde",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "smallbitvec",
  "smallvec",
  "static_assertions",
@@ -10433,10 +11599,10 @@ version = "0.20.0"
 source = "git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7#f6d1d525db9a7fb1aa0842926458e63faa4f44c7"
 dependencies = [
  "app_units",
- "cssparser",
+ "cssparser 0.37.0",
  "euclid",
- "selectors",
- "servo_arc",
+ "selectors 0.40.0",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "smallbitvec",
  "smallvec",
  "string_cache",
@@ -10459,12 +11625,12 @@ source = "git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63
 dependencies = [
  "app_units",
  "bitflags 2.11.1",
- "cssparser",
+ "cssparser 0.37.0",
  "euclid",
  "malloc_size_of_derive",
- "selectors",
+ "selectors 0.40.0",
  "serde",
- "servo_arc",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "stylo_atoms",
  "stylo_malloc_size_of",
  "thin-vec",
@@ -10522,7 +11688,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "695b5790b3131dafa99b3bbfd25a216edb3d216dad9ca208d4657bfb8f2abc3d"
 dependencies = [
  "kurbo",
- "siphasher",
+ "siphasher 1.0.3",
 ]
 
 [[package]]
@@ -10530,6 +11696,298 @@ name = "swapper"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e454d048db5527d000bfddb77bd072bbf3a1e2ae785f16d9bd116e07c2ab45eb"
+
+[[package]]
+name = "swc_allocator"
+version = "4.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d7eefd2c8b228a8c73056482b2ae4b3a1071fbe07638e3b55ceca8570cc48bb"
+dependencies = [
+ "allocator-api2",
+ "bumpalo",
+ "hashbrown 0.14.5",
+ "rustc-hash 2.1.2",
+]
+
+[[package]]
+name = "swc_atoms"
+version = "9.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "845f31910b5236db42dba106e8277681098d183b9b65b8dfa88ca8abe464aeff"
+dependencies = [
+ "hstr",
+ "once_cell",
+ "serde",
+]
+
+[[package]]
+name = "swc_common"
+version = "23.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "176fb11b1abd0a175e8ac47d4b061c5c8a9ae13b9196f30d44fe5db9cb7dfcbd"
+dependencies = [
+ "anyhow",
+ "ast_node",
+ "better_scoped_tls",
+ "bytes-str",
+ "either",
+ "from_variant",
+ "num-bigint",
+ "once_cell",
+ "rustc-hash 2.1.2",
+ "serde",
+ "siphasher 0.3.11",
+ "swc_atoms",
+ "swc_eq_ignore_macros",
+ "swc_visit",
+ "termcolor",
+ "tracing",
+ "unicode-width",
+ "url",
+]
+
+[[package]]
+name = "swc_config"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ee60aaa4eaea81fb9c730e64a0b88c363b5c237b774d114c97cba82f8655fdb"
+dependencies = [
+ "anyhow",
+ "bytes-str",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "swc_config_macro",
+]
+
+[[package]]
+name = "swc_config_macro"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b416e8ce6de17dc5ea496e10c7012b35bbc0e3fef38d2e065eed936490db0b3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "swc_macros_common",
+ "syn",
+]
+
+[[package]]
+name = "swc_ecma_ast"
+version = "25.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a207e09f23885ff1f4354ebfdd4e715ccd4a68fca2e7e0df09baafbca850762e"
+dependencies = [
+ "bitflags 2.11.1",
+ "is-macro",
+ "num-bigint",
+ "once_cell",
+ "phf 0.11.3",
+ "rustc-hash 2.1.2",
+ "string_enum",
+ "swc_atoms",
+ "swc_common",
+ "swc_visit",
+ "unicode-id-start",
+]
+
+[[package]]
+name = "swc_ecma_codegen"
+version = "28.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5a2fbf46c8cc66e112b6d8226ae0dacc6b983589df6192b38c7669d7721e02a"
+dependencies = [
+ "ascii",
+ "compact_str",
+ "dragonbox_ecma",
+ "memchr",
+ "num-bigint",
+ "once_cell",
+ "regex",
+ "rustc-hash 2.1.2",
+ "serde",
+ "swc_allocator",
+ "swc_atoms",
+ "swc_common",
+ "swc_ecma_ast",
+ "swc_ecma_codegen_macros",
+ "tracing",
+]
+
+[[package]]
+name = "swc_ecma_codegen_macros"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e276dc62c0a2625a560397827989c82a93fd545fcf6f7faec0935a82cc4ddbb8"
+dependencies = [
+ "proc-macro2",
+ "swc_macros_common",
+ "syn",
+]
+
+[[package]]
+name = "swc_ecma_hooks"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b3085866c59066b1346b50a70e12f28b9c06e44048370f7b20a25a769be92a0"
+dependencies = [
+ "swc_atoms",
+ "swc_common",
+ "swc_ecma_ast",
+ "swc_ecma_visit",
+]
+
+[[package]]
+name = "swc_ecma_parser"
+version = "41.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0f6c9c63026f4d1a70c3c6703446d42ce7b0fe83d4c33b6fe985faf96753f3e"
+dependencies = [
+ "bitflags 2.11.1",
+ "either",
+ "num-bigint",
+ "phf 0.11.3",
+ "rustc-hash 2.1.2",
+ "seq-macro",
+ "serde",
+ "smartstring",
+ "stacker",
+ "swc_atoms",
+ "swc_common",
+ "swc_ecma_ast",
+ "tracing",
+]
+
+[[package]]
+name = "swc_ecma_transforms_base"
+version = "44.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc20652dd5e4ca9d0b2964eaacfa8e319c51442a4e866fa37c6c367376f0b85b"
+dependencies = [
+ "better_scoped_tls",
+ "indexmap",
+ "once_cell",
+ "par-core",
+ "phf 0.11.3",
+ "rustc-hash 2.1.2",
+ "serde",
+ "swc_atoms",
+ "swc_common",
+ "swc_ecma_ast",
+ "swc_ecma_parser",
+ "swc_ecma_utils",
+ "swc_ecma_visit",
+ "tracing",
+]
+
+[[package]]
+name = "swc_ecma_transforms_react"
+version = "49.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ccd84bf2208c1104f87ecf4c771772ed0d09232ce4b9d57c8dc544174d27ca4"
+dependencies = [
+ "base64 0.22.1",
+ "bytes-str",
+ "indexmap",
+ "once_cell",
+ "rustc-hash 2.1.2",
+ "serde",
+ "sha1 0.10.6",
+ "string_enum",
+ "swc_atoms",
+ "swc_common",
+ "swc_config",
+ "swc_ecma_ast",
+ "swc_ecma_hooks",
+ "swc_ecma_parser",
+ "swc_ecma_transforms_base",
+ "swc_ecma_utils",
+ "swc_ecma_visit",
+]
+
+[[package]]
+name = "swc_ecma_transforms_typescript"
+version = "49.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5708773743fe6d95b59bb5084710b12996c109ee00304751aba3d10001dd3dbc"
+dependencies = [
+ "bytes-str",
+ "rustc-hash 2.1.2",
+ "serde",
+ "swc_atoms",
+ "swc_common",
+ "swc_ecma_ast",
+ "swc_ecma_transforms_base",
+ "swc_ecma_transforms_react",
+ "swc_ecma_utils",
+ "swc_ecma_visit",
+]
+
+[[package]]
+name = "swc_ecma_utils"
+version = "31.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04108a8cd1db73a46e8703e146568e4966b4afbecd238fe5cc4a10bf7e39a42e"
+dependencies = [
+ "dragonbox_ecma",
+ "indexmap",
+ "num_cpus",
+ "once_cell",
+ "par-core",
+ "rustc-hash 2.1.2",
+ "swc_atoms",
+ "swc_common",
+ "swc_ecma_ast",
+ "swc_ecma_visit",
+ "tracing",
+]
+
+[[package]]
+name = "swc_ecma_visit"
+version = "25.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f9cb1e958e57fa6427c106674a12190c4578684beee783e3a0508f048d1b372"
+dependencies = [
+ "new_debug_unreachable",
+ "num-bigint",
+ "swc_atoms",
+ "swc_common",
+ "swc_ecma_ast",
+ "swc_visit",
+ "tracing",
+]
+
+[[package]]
+name = "swc_eq_ignore_macros"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c16ce73424a6316e95e09065ba6a207eba7765496fed113702278b7711d4b632"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "swc_macros_common"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aae1efbaa74943dc5ad2a2fb16cbd78b77d7e4d63188f3c5b4df2b4dcd2faaae"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "swc_visit"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62fb71484b486c185e34d2172f0eabe7f4722742aad700f426a494bb2de232a2"
+dependencies = [
+ "either",
+ "new_debug_unreachable",
+]
 
 [[package]]
 name = "syn"
@@ -10878,8 +12336,8 @@ name = "to_shmem"
 version = "0.5.0"
 source = "git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7#f6d1d525db9a7fb1aa0842926458e63faa4f44c7"
 dependencies = [
- "cssparser",
- "servo_arc",
+ "cssparser 0.37.0",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=f6d1d525db9a7fb1aa0842926458e63faa4f44c7)",
  "smallbitvec",
  "smallvec",
  "string_cache",
@@ -11138,6 +12596,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "triomphe"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b40688ea6389c8171614b25491f71d4a27946e0c7ce2da1c6de27e25abf1a0ae"
+dependencies = [
+ "serde",
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11184,7 +12652,7 @@ version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8464ec13c3691491391d9fce00f6416c9a48e46972f72d7865688be2080192c9"
 dependencies = [
- "rand 0.9.2",
+ "rand 0.10.2",
 ]
 
 [[package]]
@@ -11293,6 +12761,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
 
 [[package]]
+name = "unicode-id-start"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81b79ad29b5e19de4260020f8919b443b2ef0277d242ce532ec7b7a2cc8b6007"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11398,7 +12872,7 @@ dependencies = [
  "pico-args",
  "roxmltree 0.21.1",
  "simplecss",
- "siphasher",
+ "siphasher 1.0.3",
  "skrifa 0.44.0",
  "strict-num",
  "svgtypes",
@@ -11590,6 +13064,12 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vlq"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65dd7eed29412da847b0f78bcec0ac98588165988a8cfe41d4ea1d429f8ccfff"
 
 [[package]]
 name = "void"
@@ -13293,6 +14773,12 @@ checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
  "zstd-safe",
 ]
+
+[[package]]
+name = "zstd-pure-rs"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f5e05972e1a97c5261f46a9bb305fc2076171c3cf42033d4bf0b6c1942f7f8a"
 
 [[package]]
 name = "zstd-safe"

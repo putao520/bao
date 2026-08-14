@@ -1,11 +1,13 @@
 // @trace REQ-ENG-006
 // WebSocket + Performance + TextEncoder/TextDecoder + atob/btoa + queueMicrotask
 use ::std::cell::RefCell;
+use ::std::ffi::CString;
 use ::std::io::{Read, Write};
 use ::std::net::TcpStream;
 use ::std::net::ToSocketAddrs;
 use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicU64, Ordering};
+use ::std::sync::{Arc, Mutex};
 use ::std::time::Duration;
 use bun_core::ZBox;
 
@@ -16,6 +18,7 @@ use bun_uws::ws_codec::apply_mask;
 use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{
     CallOriginalPromiseResolve, CallOriginalPromiseThen, JS_DefineFunction, JS_DefineProperty3,
@@ -33,6 +36,24 @@ use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove};
 // `ws_handshake`. The wss:// (TLS) variant drives `bao_boringssl_bridge`'s
 // TlsConnection over the TCP socket and reuses the same `bun_uws` codec /
 // handshake primitives so the two schemes share one wire-format code path.
+//
+// @trace REQ-STL-001 — the wss:// TLS handshake applies the page's
+// StealthProfile through the exact same application path fetch() uses
+// (`stealth_http::stealth_profile_to_ssl_config` →
+// `bun_http::configure_http_client_with_alpn`), so a page's WebSocket and
+// its fetch present an identical JA3/JA4 fingerprint.
+//
+// Async model (root fix for ScriptThread blocking): `new WebSocket(..)` never
+// connects on the JS thread. The constructor captures the thread's stealth
+// profile, spawns a background worker that performs the full blocking connect
+// (TCP + TLS + RFC 6455 handshake, ≤10s), and returns immediately with
+// readyState=CONNECTING. The worker's outcome lands in an
+// `Arc<Mutex<Option<..>>>` slot — the ONLY cross-thread channel (no JSObject
+// pointers cross threads; BCE-20260621-001 rule). The JS-thread drain pump
+// (`ws_pump_all`, wired into `timers::drain_and_check` /
+// `timers::drain_one_pass` / the servo node-realm evaluate entry) consumes
+// the slot (onopen/onerror) and pumps inbound frames (onmessage/onclose)
+// with the sockets in non-blocking mode.
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -52,6 +73,12 @@ enum WsMessage {
 struct TlsStream {
     tcp: TcpStream,
     tls: bao_boringssl_bridge::connection::TlsConnection,
+    /// Decrypted plaintext not yet handed to the reader. `Read` callers (the
+    /// WS handshake reads byte-at-a-time) may take less than one TLS record
+    /// per read(); the surplus must survive across calls (BCE-20260814-WS-TLS:
+    /// the prior adapter dropped it, corrupting the handshake).
+    pending_plain: Vec<u8>,
+    pending_off: usize,
 }
 
 impl TlsStream {
@@ -106,9 +133,16 @@ impl TlsStream {
 
 impl ::std::io::Read for TlsStream {
     fn read(&mut self, buf: &mut [u8]) -> ::std::io::Result<usize> {
-        let plain = self.pump_inbound()?;
-        let n = plain.len().min(buf.len());
-        buf[..n].copy_from_slice(&plain[..n]);
+        // Serve buffered plaintext first; only pump the TLS state machine
+        // when the buffer is drained (records can exceed the caller's buf).
+        if self.pending_off >= self.pending_plain.len() {
+            self.pending_plain = self.pump_inbound()?;
+            self.pending_off = 0;
+        }
+        let avail = &self.pending_plain[self.pending_off..];
+        let n = avail.len().min(buf.len());
+        buf[..n].copy_from_slice(&avail[..n]);
+        self.pending_off += n;
         Ok(n)
     }
 }
@@ -141,8 +175,13 @@ enum WsConn {
 }
 
 impl WsConn {
-    /// Connect to a `ws://` or `wss://` URL.
-    fn connect(url: &str) -> ::std::result::Result<Self, String> {
+    /// Connect to a `ws://` or `wss://` URL, applying the caller's stealth
+    /// profile to the wss:// TLS handshake. Runs entirely on the caller's
+    /// thread — the JS bridge only invokes this on a background worker.
+    fn connect(
+        url: &str,
+        profile: &::std::option::Option<bao_stealth::StealthProfile>,
+    ) -> ::std::result::Result<Self, String> {
         let (scheme, rest) = if let Some(r) = url.strip_prefix("ws://") {
             ("ws", r)
         } else if let Some(r) = url.strip_prefix("wss://") {
@@ -155,7 +194,7 @@ impl WsConn {
 
         let (host, port, path) = split_authority_and_path(rest, scheme);
         if scheme == "wss" {
-            Self::connect_tls(&host, port, &path)
+            Self::connect_tls(&host, port, &path, profile)
         } else {
             // ws:// — delegate to bun_uws::WebSocketClient (reconstructs the
             // canonical URL because bun_uws::parse_ws_url is scheme-strict).
@@ -170,7 +209,12 @@ impl WsConn {
         }
     }
 
-    fn connect_tls(host: &str, port: u16, path: &str) -> ::std::result::Result<Self, String> {
+    fn connect_tls(
+        host: &str,
+        port: u16,
+        path: &str,
+        profile: &::std::option::Option<bao_stealth::StealthProfile>,
+    ) -> ::std::result::Result<Self, String> {
         let addr = format!("{}:{}", host, port);
         let socket_addr = addr
             .to_socket_addrs()
@@ -189,15 +233,50 @@ impl WsConn {
             bao_boringssl_bridge::connection::TlsConnection::new_client(&tls_client, host)
                 .map_err(|e| format!("tls conn: {}", e))?;
 
-        // Complete the TLS handshake by pumping records until active.
-        loop {
-            let outgoing = tls.take_outgoing();
-            if !outgoing.is_empty() && tcp.write_all(&outgoing).is_err() {
-                return Err("tls handshake write failed".to_string());
+        // STEALTH (REQ-STL-001): apply the page's TLS fingerprint through the
+        // same application path fetch() uses — cipher list / TLS 1.3 suites /
+        // curves / sigalgs, plus SNI and ALPN(http/1.1) (what a browser
+        // offers on a WebSocket TLS connection). Must run BEFORE the first
+        // `process()` call so the config lands in the ClientHello.
+        let ssl_config = crate::stealth_http::stealth_profile_to_ssl_config(profile);
+        let host_c = CString::new(host).map_err(|_| format!("invalid host: {}", host))?;
+        {
+            let ssl = tls.ssl_ptr();
+            if !ssl.is_null() {
+                // SAFETY: `ssl_ptr` returns the live SSL handle of this
+                // connection; `configure_http_client_with_alpn` only issues
+                // SSL_set_* configuration calls on it.
+                bun_http::configure_http_client_with_alpn(
+                    unsafe { &mut *ssl },
+                    host_c.as_ptr(),
+                    bun_http::AlpnOffer::H1,
+                    Some(&ssl_config),
+                );
             }
+        }
+
+        // Complete the TLS handshake by pumping records until active.
+        // BCE-20260814-WS-TLS: the flight produced by `process()` MUST be
+        // flushed to the socket BEFORE blocking on read — the prior order
+        // (take_outgoing → process → read) left the ClientHello stranded in
+        // the write BIO while waiting for a ServerHello that could never
+        // arrive (both sides reading → deadlock, surfaced as "handshake
+        // stalled" after the 10s timeout).
+        loop {
             match tls.process() {
                 Ok(res) => {
                     use bao_boringssl_bridge::connection::TlsState;
+                    // Flush every flight the state machine just produced
+                    // (ClientHello / Finished) before waiting on the peer.
+                    loop {
+                        let outgoing = tls.take_outgoing();
+                        if outgoing.is_empty() {
+                            break;
+                        }
+                        if tcp.write_all(&outgoing).is_err() {
+                            return Err("tls handshake write failed".to_string());
+                        }
+                    }
                     if res.state == TlsState::Active || res.state == TlsState::PeerClosed {
                         break;
                     }
@@ -214,7 +293,12 @@ impl WsConn {
             }
         }
 
-        let mut stream = TlsStream { tcp, tls };
+        let mut stream = TlsStream {
+            tcp,
+            tls,
+            pending_plain: Vec::new(),
+            pending_off: 0,
+        };
         // RFC 6455 client handshake over the TLS stream (bun_uws-owned).
         bun_uws::ws_handshake::client_handshake(&mut stream, host, &path)
             .map_err(|e| format!("ws handshake: {:?}", e))?;
@@ -237,6 +321,11 @@ impl WsConn {
                 frame.extend_from_slice(&key);
                 let mut masked = payload.to_vec();
                 apply_mask(&mut masked, &key);
+                // BCE-20260814-WS-TLS: the masked payload was never appended
+                // to the frame — every wss:// send() transmitted header+key
+                // only, dropping the message body (peer then misparsed the
+                // next frame's bytes as this frame's payload).
+                frame.extend_from_slice(&masked);
                 stream
                     .write_all(&frame)
                     .map_err(|e| format!("send failed: {}", e))
@@ -318,22 +407,30 @@ impl WsConn {
         }
     }
 
+    /// Send a masked close frame (code 1000). Deliberately does NOT delegate
+    /// to `WebSocketClient::close()` for the Plain variant — that method
+    /// `shutdown(Both)`s the socket immediately, killing the TCP connection
+    /// before the peer's Close reply can arrive (no close handshake). Here
+    /// only the frame is sent; the socket stays readable so the drain pump
+    /// can observe the peer's Close reply and fire onclose.
     fn close(&mut self) -> ::std::result::Result<(), String> {
+        let frame = encode_masked_close_frame();
         match self {
-            WsConn::Plain(c) => c.close().map_err(|e| format!("close failed: {}", e)),
-            WsConn::Tls { stream, closed, .. } => {
-                if *closed {
+            WsConn::Plain(c) => {
+                if c.is_closed() {
                     return Ok(());
                 }
-                *closed = true;
-                let key = bun_uws::ws_codec::gen_mask_key();
-                let mut frame = vec![0x88]; // FIN + close
-                let payload = 1000u16.to_be_bytes();
-                push_masked_len(&mut frame, payload.len());
-                frame.extend_from_slice(&key);
-                let mut masked = payload.to_vec();
-                apply_mask(&mut masked, &key);
-                frame.extend_from_slice(&masked);
+                c.stream_mut()
+                    .write_all(&frame)
+                    .map_err(|e| format!("close failed: {}", e))
+            }
+            WsConn::Tls { stream, .. } => {
+                // Send the close frame only. Do NOT set the internal `closed`
+                // flag here — `read_message` uses it to short-circuit, which
+                // would discard inbound frames still in flight (post-close
+                // messages are delivered until the close handshake completes,
+                // browser semantics). The flag flips when the peer's Close
+                // frame is actually read.
                 let _ = stream.write_all(&frame);
                 Ok(())
             }
@@ -372,6 +469,19 @@ fn split_authority_and_path(rest: &str, scheme: &str) -> (String, u16, String) {
     (host, port, path)
 }
 
+/// Masked close frame (FIN + Close, code 1000), client→server layout.
+fn encode_masked_close_frame() -> Vec<u8> {
+    let key = bun_uws::ws_codec::gen_mask_key();
+    let mut frame = vec![0x88];
+    let payload = 1000u16.to_be_bytes();
+    push_masked_len(&mut frame, payload.len());
+    frame.extend_from_slice(&key);
+    let mut masked = payload.to_vec();
+    apply_mask(&mut masked, &key);
+    frame.extend_from_slice(&masked);
+    frame
+}
+
 /// Append the masked-length + (caller-supplied) mask bytes layout for a
 /// client→server frame, matching `bun_uws::ws_codec::FrameEncoder::encode_frame`.
 fn push_masked_len(frame: &mut Vec<u8>, len: usize) {
@@ -392,14 +502,51 @@ fn push_masked_len(frame: &mut Vec<u8>, len: usize) {
 /// Global counter for generating unique GcStore keys for WebSocket objects.
 static WS_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[allow(dead_code)]
+/// Per-connection registry entry. Everything except `connect_slot`'s payload
+/// is confined to the thread that constructed the WebSocket (the JS thread);
+/// the background connect worker communicates exclusively through the
+/// `Arc<Mutex<..>>` slot — no JSObject pointers cross threads
+/// (BCE-20260621-001 rule).
 struct WsEntry {
-    client: WsConn,
+    /// Live connection once the background connect completed and onopen
+    /// dispatched. Polled non-blocking by `ws_pump_all`.
+    client: ::std::option::Option<WsConn>,
+    /// Present while the background connect worker is in flight. The worker
+    /// writes `Some(Ok(..))` / `Some(Err(..))` exactly once; the JS-thread
+    /// drain pump consumes it. `None` + `client: None` = dead entry.
+    connect_slot: ::std::option::Option<
+        Arc<Mutex<::std::option::Option<::std::result::Result<WsConn, String>>>>,
+    >,
+    /// JS called close() while still CONNECTING — when the connect lands, the
+    /// pump closes it immediately instead of firing onopen.
+    close_requested: bool,
+    /// JS called close() on an open connection — the close frame was sent;
+    /// the pump fires onclose when the peer's Close reply (or transport
+    /// error) lands (browser close-handshake semantics).
+    close_initiated: bool,
+    /// The realm global the WebSocket JS object lives in (captured at
+    /// construction). Every dispatch AutoRealms into it (realm-per-context
+    /// model, c943b1cc) so the GcStore property lookup and handler call run
+    /// in the right compartment.
+    realm_global: *mut JSObject,
     js_obj_key: String,
+}
+
+impl WsEntry {
+    fn is_live(&self) -> bool {
+        self.connect_slot.is_some() || self.client.is_some()
+    }
 }
 
 thread_local! {
     static WS_CONNECTIONS: RefCell<Vec<WsEntry>> = const { RefCell::new(Vec::new()) };
+}
+
+/// True while any WebSocket on this thread is connecting or open. Wired into
+/// the event-loop liveness checks (`timers::drain_and_check` return value) so
+/// the eval loop keeps draining while WS traffic is in flight.
+pub fn ws_has_pending() -> bool {
+    WS_CONNECTIONS.with(|c| c.borrow().iter().any(|e| e.is_live()))
 }
 
 pub fn install_websocket_constructor(
@@ -449,18 +596,43 @@ pub fn install_websocket_constructor(
     }
 }
 
+/// Fire an `onXXX` handler stored on the WebSocket object. `realm_global` is
+/// the realm global captured at construction; dispatch AutoRealms into it
+/// (the drain pump runs with no realm entered — realm-per-context model).
+/// `this` for the call is the WebSocket object (browser semantics).
+///
+/// # Safety
+/// `cx` must be a live JSContext on the current thread; `realm_global` must
+/// be the (always-rooted) global of a live realm on that context.
 unsafe fn ws_trigger_event(
     cx: *mut JSContext,
+    realm_global: *mut JSObject,
     ws_obj_key: &str,
     event_name: &str,
     data_val: Option<JSVal>,
 ) {
+    if realm_global.is_null() {
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = realm_global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+    // Root the event data FIRST — gc_store_get / JS_GetProperty below can
+    // trigger GC and an unrooted JSVal argument would dangle. Always root
+    // (undefined placeholder when the event carries no data) so the guard
+    // lives for the whole frame.
+    let has_data = data_val.is_some();
+    let dv_in = data_val.unwrap_or_else(UndefinedValue);
+    rooted!(&in(cx_ref) let data_root = dv_in);
+
     let ws_obj = match gc_store_get(cx, ws_obj_key) {
         Some(obj) => obj,
         None => return,
     };
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let ws_obj_root = ws_obj);
+    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
     let mut handler_val = UndefinedValue();
     let c_name = ZBox::from_bytes(event_name.as_bytes());
     JS_GetProperty(
@@ -473,42 +645,37 @@ unsafe fn ws_trigger_event(
         },
     );
     if handler_val.is_object() {
-        rooted!(&in(wrapped_cx) let handler_obj_root = handler_val.to_object());
+        rooted!(&in(cx_ref) let handler_obj_root = handler_val.to_object());
         if JS_ObjectIsFunction(handler_obj_root.get()) {
-            let global = CurrentGlobalOrNull(cx);
-            if !global.is_null() {
-                rooted!(&in(wrapped_cx) let global_root = global);
-                rooted!(&in(wrapped_cx) let handler_jsval = ObjectValue(handler_obj_root.get()));
+            rooted!(&in(cx_ref) let handler_jsval = ObjectValue(handler_obj_root.get()));
 
-                rooted!(&in(wrapped_cx) let event_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
-                if !event_obj.get().is_null() {
-                    if let Some(dv) = data_val {
-                        rooted!(&in(wrapped_cx) let dv_root = dv);
-                        JS_DefineProperty(
-                            cx,
-                            event_obj.handle().into(),
-                            c"data".as_ptr(),
-                            dv_root.handle().into(),
-                            JSPROP_ENUMERATE as u32,
-                        );
-                    }
-                    let ev_val = ObjectValue(event_obj.get());
-                    let call_args = HandleValueArray {
-                        length_: 1,
-                        elements_: &ev_val,
-                    };
-                    let mut rval = UndefinedValue();
-                    let _ = JS_CallFunctionValue(
+            rooted!(&in(cx_ref) let event_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
+            if !event_obj.get().is_null() {
+                if has_data {
+                    JS_DefineProperty(
                         cx,
-                        global_root.handle().into(),
-                        handler_jsval.handle().into(),
-                        &call_args,
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut rval,
-                        },
+                        event_obj.handle().into(),
+                        c"data".as_ptr(),
+                        data_root.handle().into(),
+                        JSPROP_ENUMERATE as u32,
                     );
                 }
+                let ev_val = ObjectValue(event_obj.get());
+                let call_args = HandleValueArray {
+                    length_: 1,
+                    elements_: &ev_val,
+                };
+                let mut rval = UndefinedValue();
+                let _ = JS_CallFunctionValue(
+                    cx,
+                    ws_obj_root.handle().into(),
+                    handler_jsval.handle().into(),
+                    &call_args,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut rval,
+                    },
+                );
             }
         }
     }
@@ -538,11 +705,17 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
 
     let send_result = WS_CONNECTIONS.with(|c| {
         let mut conns = c.borrow_mut();
-        if idx < conns.len() {
-            let s = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(msg_val.to_string()));
-            conns[idx].client.send_text(&s)
-        } else {
-            Err("invalid WebSocket index".to_string())
+        match conns.get_mut(idx) {
+            // Browser parity: send() while CONNECTING/CLOSED throws
+            // InvalidStateError (never silently drops the message).
+            Some(e) if e.client.is_some() => {
+                let s = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(msg_val.to_string()));
+                e.client.as_mut().unwrap().send_text(&s)
+            }
+            Some(e) if e.connect_slot.is_some() => {
+                Err("InvalidStateError: WebSocket is still connecting".to_string())
+            }
+            _ => Err("InvalidStateError: WebSocket is already closed".to_string()),
         }
     });
 
@@ -575,8 +748,20 @@ unsafe extern "C" fn ws_close_fn(cx: *mut JSContext, _argc: u32, vp: *mut JSVal)
 
     WS_CONNECTIONS.with(|c| {
         let mut conns = c.borrow_mut();
-        if idx < conns.len() {
-            let _ = conns[idx].client.close();
+        if let Some(e) = conns.get_mut(idx) {
+            if e.client.is_some() && !e.close_initiated {
+                // Send the close frame once; keep the socket alive so the
+                // pump can see the peer's Close reply and fire onclose
+                // (close handshake).
+                if let Some(client) = &mut e.client {
+                    let _ = client.close();
+                }
+                e.close_initiated = true;
+            } else if e.connect_slot.is_some() {
+                // Still CONNECTING — flag it; the pump closes immediately
+                // when the background connect lands (no onopen).
+                e.close_requested = true;
+            }
         }
     });
 
@@ -674,80 +859,423 @@ unsafe extern "C" fn websocket_constructor(cx: *mut JSContext, argc: u32, vp: *m
         JSPROP_ENUMERATE as u32,
     );
 
-    match WsConn::connect(&url) {
-        Ok(mut client) => {
-            rooted!(&in(wrapped_cx) let open_val = Int32Value(1));
-            JS_SetProperty(
-                cx,
-                ws_obj.handle().into(),
-                c"readyState".as_ptr(),
-                open_val.handle().into(),
-            );
-
-            // Store the JS WebSocket object in GcStore for GC safety
-            let ws_id = WS_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let ws_key = format!("ws_{}", ws_id);
-            gc_store_insert(cx, &ws_key, ws_obj.get());
-
-            // Set non-blocking to drain available messages
-            client.set_nonblocking(true);
-            loop {
-                match client.read_message() {
-                    Ok(WsMessage::Text(text)) => {
-                        let c_text = ZBox::from_bytes(text.as_bytes());
-                        let js_str = JS_NewStringCopyZ(cx, c_text.as_ptr());
-                        if !js_str.is_null() {
-                            let dv = StringValue(&*js_str);
-                            ws_trigger_event(cx, &ws_key, "onmessage", Some(dv));
-                        }
-                    }
-                    Ok(WsMessage::Binary(_)) => {}
-                    Ok(WsMessage::Close) => {
-                        rooted!(&in(wrapped_cx) let closed_val = Int32Value(3));
-                        JS_SetProperty(
-                            cx,
-                            ws_obj.handle().into(),
-                            c"readyState".as_ptr(),
-                            closed_val.handle().into(),
-                        );
-                        ws_trigger_event(cx, &ws_key, "onclose", None);
-                        gc_store_remove(cx, &ws_key);
-                        break;
-                    }
-                    Err(_) => break, // WouldBlock or other error
-                }
-            }
-            client.set_nonblocking(false);
-
-            let ws_idx = WS_CONNECTIONS.with(|c| {
-                let mut conns = c.borrow_mut();
-                conns.push(WsEntry {
-                    client,
-                    js_obj_key: ws_key.clone(),
-                });
-                conns.len() - 1
-            });
-            rooted!(&in(wrapped_cx) let idx_val = Int32Value(ws_idx as i32));
-            JS_DefineProperty(
-                cx,
-                ws_obj.handle().into(),
-                c"_wsIdx".as_ptr(),
-                idx_val.handle().into(),
-                0,
-            );
-
-            ws_trigger_event(cx, &ws_key, "onopen", None);
-        }
-        Err(e) => {
-            let msg = format!("WebSocket connection failed: {}", e);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
+    // Permission parity with fetch(): the page's net scope governs
+    // WebSocket egress too (Permission sandbox).
+    {
+        let (scheme, rest) = if let Some(r) = url.strip_prefix("ws://") {
+            ("ws", r)
+        } else if let Some(r) = url.strip_prefix("wss://") {
+            ("wss", r)
+        } else {
+            ("ws", url.as_str())
+        };
+        let (host, _, _) = split_authority_and_path(rest, scheme);
+        if let ::std::result::Result::Err(e) = crate::permission_bridge::check_net(&host) {
+            let c_msg = ZBox::from_bytes(e.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
 
+    // Store the JS WebSocket object in GcStore for GC safety.
+    let ws_id = WS_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let ws_key = format!("ws_{}", ws_id);
+    gc_store_insert(cx, &ws_key, ws_obj.get());
+
+    // Capture the realm global (dispatch AutoRealm target) and the thread's
+    // stealth profile HERE, on the JS thread — both are thread-local state.
+    let realm_global = CurrentGlobalOrNull(cx);
+    let profile = crate::fetch_api::get_fetch_stealth_profile();
+
+    // Register the entry with a pending connect slot; _wsIdx must exist
+    // immediately (send()/close() may be called while CONNECTING).
+    let slot: Arc<Mutex<::std::option::Option<::std::result::Result<WsConn, String>>>> =
+        Arc::new(Mutex::new(None));
+    let ws_idx = WS_CONNECTIONS.with(|c| {
+        let mut conns = c.borrow_mut();
+        conns.push(WsEntry {
+            client: None,
+            connect_slot: Some(Arc::clone(&slot)),
+            close_requested: false,
+            close_initiated: false,
+            realm_global,
+            js_obj_key: ws_key.clone(),
+        });
+        conns.len() - 1
+    });
+    rooted!(&in(wrapped_cx) let idx_val = Int32Value(ws_idx as i32));
+    JS_DefineProperty(
+        cx,
+        ws_obj.handle().into(),
+        c"_wsIdx".as_ptr(),
+        idx_val.handle().into(),
+        0,
+    );
+
+    // Background connect: the full blocking sequence (TCP + TLS with the
+    // page's stealth fingerprint + RFC 6455 handshake, ≤10s) runs OFF the JS
+    // thread. The Arc<Mutex> slot is the only cross-thread channel; the
+    // JS-thread drain pump (`ws_pump_all`) consumes the outcome and fires
+    // onopen / onerror(+onclose). No JSObject pointer crosses threads.
+    let url_owned = url.clone();
+    ::std::thread::spawn(move || {
+        let result = WsConn::connect(&url_owned, &profile);
+        if let Ok(mut guard) = slot.lock() {
+            *guard = Some(result);
+        }
+        // If the JS thread is gone (process teardown), the slot leaks —
+        // bounded by the 10s connect timeout.
+    });
+
+    // readyState stays 0 (CONNECTING). The constructor returns immediately —
+    // connect failures surface as onerror + onclose (browser semantics),
+    // never a constructor throw, never a silent swallow.
     args.rval().set(mozjs::jsval::ObjectValue(ws_obj.get()));
     true
+}
+
+// ── WebSocket drain pump ──
+// Runs on the JS thread from the event-loop drain paths. Consumes completed
+// background connects and pumps inbound frames. Never blocks (try_lock +
+// non-blocking sockets); JS handlers run OUTSIDE the WS_CONNECTIONS borrow so
+// they can call send()/close() reentrantly.
+
+/// One action peeled off the registry per iteration (JS calls happen after
+/// the borrow is dropped).
+enum PumpAction {
+    /// Background connect finished (slot outcome consumed).
+    ConnectDone(usize, ::std::result::Result<WsConn, String>),
+    /// Text frame received on an open connection.
+    TextMessage(usize, String),
+    /// Binary frame received on an open connection.
+    BinaryMessage(usize, Vec<u8>),
+    /// Close frame received / transport error — connection is dead.
+    /// `msg` is Some for a transport error (fires onerror first), None for a
+    /// clean close handshake.
+    Closed(usize, ::std::option::Option<String>),
+}
+
+/// Pump all WebSockets on this thread. Called from `timers::drain_and_check`,
+/// `timers::drain_one_pass`, and the servo node-realm evaluate entry.
+pub fn ws_pump_all(raw_cx: *mut JSContext) {
+    loop {
+        let action = WS_CONNECTIONS.with(|c| {
+            let mut conns = c.borrow_mut();
+            for (idx, e) in conns.iter_mut().enumerate() {
+                // 1. Completed background connects (try_lock — the worker
+                //    may still hold the lock writing its outcome). Take the
+                //    slot out first so the MutexGuard borrow ends before the
+                //    assignment below.
+                if e.connect_slot.is_some() {
+                    let taken = e
+                        .connect_slot
+                        .as_ref()
+                        .unwrap()
+                        .try_lock()
+                        .ok()
+                        .and_then(|mut guard| guard.take());
+                    if let ::std::option::Option::Some(res) = taken {
+                        e.connect_slot = ::std::option::Option::None;
+                        return ::std::option::Option::Some(PumpAction::ConnectDone(idx, res));
+                    }
+                    continue;
+                }
+                // 2. Inbound frames on open connections (non-blocking).
+                //    Frames received after a locally-initiated close are
+                //    still delivered (browser semantics: messages queue
+                //    until the close handshake completes).
+                let ::std::option::Option::Some(client) = &mut e.client else {
+                    continue;
+                };
+                match client.read_message() {
+                    Ok(WsMessage::Text(t)) => {
+                        return ::std::option::Option::Some(PumpAction::TextMessage(idx, t))
+                    }
+                    Ok(WsMessage::Binary(b)) => {
+                        return ::std::option::Option::Some(PumpAction::BinaryMessage(idx, b))
+                    }
+                    Ok(WsMessage::Close) => {
+                        // Echo the close handshake unless we already sent
+                        // our close frame (close_initiated).
+                        if !e.close_initiated {
+                            let _ = client.close();
+                        }
+                        e.client = ::std::option::Option::None;
+                        return ::std::option::Option::Some(PumpAction::Closed(idx, None));
+                    }
+                    Err(err) if err == "wouldblock" => continue,
+                    Err(err) => {
+                        // Transport error — explicit surface, never silent.
+                        let _ = client.close();
+                        e.client = ::std::option::Option::None;
+                        return ::std::option::Option::Some(PumpAction::Closed(
+                            idx,
+                            ::std::option::Option::Some(err),
+                        ));
+                    }
+                }
+            }
+            ::std::option::Option::None
+        });
+
+        match action {
+            ::std::option::Option::Some(PumpAction::ConnectDone(idx, res)) => unsafe {
+                ws_connect_dispatch(raw_cx, idx, res);
+            },
+            ::std::option::Option::Some(PumpAction::TextMessage(idx, text)) => unsafe {
+                ws_message_dispatch(raw_cx, idx, ::std::option::Option::Some(text), None);
+            },
+            ::std::option::Option::Some(PumpAction::BinaryMessage(idx, bytes)) => unsafe {
+                ws_message_dispatch(raw_cx, idx, None, ::std::option::Option::Some(bytes));
+            },
+            ::std::option::Option::Some(PumpAction::Closed(idx, err)) => unsafe {
+                ws_closed_dispatch(raw_cx, idx, err);
+            },
+            ::std::option::Option::None => break,
+        }
+    }
+}
+
+/// Snapshot of the dispatch-relevant fields of one entry.
+struct WsDispatchInfo {
+    realm_global: *mut JSObject,
+    js_obj_key: String,
+    is_open: bool,
+}
+
+fn ws_entry_info(idx: usize) -> ::std::option::Option<WsDispatchInfo> {
+    WS_CONNECTIONS.with(|c| {
+        c.borrow().get(idx).map(|e| WsDispatchInfo {
+            realm_global: e.realm_global,
+            js_obj_key: e.js_obj_key.clone(),
+            is_open: e.client.is_some(),
+        })
+    })
+}
+
+/// Set `readyState` on the stored WebSocket object (inside its realm).
+///
+/// # Safety
+/// `raw_cx` must be a live JSContext on the current thread.
+unsafe fn ws_set_ready_state(
+    raw_cx: *mut JSContext,
+    realm_global: *mut JSObject,
+    ws_key: &str,
+    state: i32,
+) {
+    if realm_global.is_null() {
+        return;
+    }
+    // Enter the realm FIRST — gc_store_get resolves through
+    // CurrentGlobalOrNull, which is null while the drain pump runs.
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = realm_global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+    let ws_obj = match gc_store_get(raw_cx, ws_key) {
+        Some(o) => o,
+        None => return,
+    };
+    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
+    rooted!(&in(cx_ref) let state_val = Int32Value(state));
+    JS_SetProperty(
+        raw_cx,
+        ws_obj_root.handle().into(),
+        c"readyState".as_ptr(),
+        state_val.handle().into(),
+    );
+}
+
+/// Background connect completed: install the connection and fire onopen, or
+/// surface the failure as onerror + onclose (explicit, never silent).
+///
+/// # Safety
+/// `raw_cx` must be a live JSContext on the current thread.
+unsafe fn ws_connect_dispatch(
+    raw_cx: *mut JSContext,
+    idx: usize,
+    res: ::std::result::Result<WsConn, String>,
+) {
+    let info = match ws_entry_info(idx) {
+        Some(i) => i,
+        None => return,
+    };
+    match res {
+        Ok(mut client) => {
+            // Non-blocking from here on — the drain pump polls this socket.
+            client.set_nonblocking(true);
+            enum Landed {
+                Open,
+                CloseNow,
+            }
+            let landed = WS_CONNECTIONS.with(|c| {
+                let mut conns = c.borrow_mut();
+                match conns.get_mut(idx) {
+                    // close() was called while CONNECTING: never open it.
+                    ::std::option::Option::Some(e) if e.close_requested => {
+                        e.close_requested = false;
+                        Landed::CloseNow
+                    }
+                    ::std::option::Option::Some(e) => {
+                        e.client = ::std::option::Option::Some(client);
+                        Landed::Open
+                    }
+                    ::std::option::Option::None => Landed::CloseNow,
+                }
+            });
+            match landed {
+                Landed::Open => {
+                    ws_set_ready_state(raw_cx, info.realm_global, &info.js_obj_key, 1);
+                    ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onopen", None);
+                }
+                Landed::CloseNow => {
+                    // `client` was not installed; dropping it closes the
+                    // socket (TcpStream Drop).
+                    ws_set_ready_state(raw_cx, info.realm_global, &info.js_obj_key, 3);
+                    ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onclose", None);
+                    gc_store_remove(raw_cx, &info.js_obj_key);
+                }
+            }
+        }
+        Err(msg) => {
+            // Connect failed: CLOSED + onerror(with the reason) + onclose.
+            ws_set_ready_state(raw_cx, info.realm_global, &info.js_obj_key, 3);
+            // Enter the realm before creating the error string — allocation
+            // needs a valid zone (the pump runs with no realm entered).
+            let data = if !info.realm_global.is_null() {
+                let mut wrapped_cx =
+                    mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+                let cx_ref = &mut wrapped_cx;
+                rooted!(&in(cx_ref) let global_root = info.realm_global);
+                let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+                let _cx_in_realm: &mut mozjs::context::JSContext = &mut realm;
+                let c_msg = ZBox::from_bytes(msg.as_bytes());
+                let js_str = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
+                if !js_str.is_null() {
+                    ::std::option::Option::Some(StringValue(&*js_str))
+                } else {
+                    ::std::option::Option::None
+                }
+            } else {
+                ::std::option::Option::None
+            };
+            ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onerror", data);
+            ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onclose", None);
+            gc_store_remove(raw_cx, &info.js_obj_key);
+        }
+    }
+}
+
+/// Inbound frame on an open connection: fire onmessage. Text frames arrive
+/// as strings; binary frames as an Array of byte values (explicit — binary
+/// was previously dropped silently).
+///
+/// # Safety
+/// `raw_cx` must be a live JSContext on the current thread.
+unsafe fn ws_message_dispatch(
+    raw_cx: *mut JSContext,
+    idx: usize,
+    text: ::std::option::Option<String>,
+    binary: ::std::option::Option<Vec<u8>>,
+) {
+    let info = match ws_entry_info(idx) {
+        Some(i) => i,
+        None => return,
+    };
+    if !info.is_open {
+        return;
+    }
+    if info.realm_global.is_null() {
+        return;
+    }
+    // Enter the realm BEFORE any JS value creation — JS_NewStringCopyZ /
+    // JS_NewUint8Array allocate in the current zone, and the drain pump runs
+    // with no realm entered (invalid zone → SIGSEGV in the allocator).
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = info.realm_global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+    let data = if let ::std::option::Option::Some(t) = text {
+        let c_text = ZBox::from_bytes(t.as_bytes());
+        let js_str = JS_NewStringCopyZ(raw_cx, c_text.as_ptr());
+        if js_str.is_null() {
+            return;
+        }
+        StringValue(&*js_str)
+    } else if let ::std::option::Option::Some(bytes) = binary {
+        let arr = mozjs_sys::jsapi::JS_NewUint8Array(raw_cx, bytes.len());
+        if arr.is_null() {
+            return;
+        }
+        rooted!(&in(cx_ref) let arr_root = arr);
+        if !bytes.is_empty() {
+            let mut is_shared = false;
+            // SAFETY: same pattern as bun_api.rs — data pointer of the
+            // just-created, rooted Uint8Array; copied before any GC point.
+            let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(
+                arr_root.get(),
+                &mut is_shared,
+                ::std::ptr::null(),
+            );
+            if !data_ptr.is_null() {
+                ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+            }
+        }
+        ObjectValue(arr_root.get())
+    } else {
+        return;
+    };
+    ws_trigger_event(
+        raw_cx,
+        info.realm_global,
+        &info.js_obj_key,
+        "onmessage",
+        ::std::option::Option::Some(data),
+    );
+}
+
+/// Connection is dead (close handshake finished or transport error): CLOSED +
+/// onclose (+ onerror first for a transport error). Terminal cleanup of the
+/// GcStore root.
+///
+/// # Safety
+/// `raw_cx` must be a live JSContext on the current thread.
+unsafe fn ws_closed_dispatch(
+    raw_cx: *mut JSContext,
+    idx: usize,
+    err: ::std::option::Option<String>,
+) {
+    let info = match ws_entry_info(idx) {
+        Some(i) => i,
+        None => return,
+    };
+    ws_set_ready_state(raw_cx, info.realm_global, &info.js_obj_key, 3);
+    if let ::std::option::Option::Some(msg) = err {
+        // Enter the realm before creating the error string (valid zone for
+        // allocation — the pump runs with no realm entered).
+        let data = if !info.realm_global.is_null() {
+            let mut wrapped_cx =
+                mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let global_root = info.realm_global);
+            let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+            let _cx_in_realm: &mut mozjs::context::JSContext = &mut realm;
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            let js_str = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
+            if !js_str.is_null() {
+                ::std::option::Option::Some(StringValue(&*js_str))
+            } else {
+                ::std::option::Option::None
+            }
+        } else {
+            ::std::option::Option::None
+        };
+        ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onerror", data);
+    }
+    ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onclose", None);
+    gc_store_remove(raw_cx, &info.js_obj_key);
 }
 
 // ── Performance ──
@@ -1368,5 +1896,51 @@ mod tests {
         assert!(format!("{:?}", text).contains("Text"));
         assert!(format!("{:?}", binary).contains("Binary"));
         assert!(format!("{:?}", close).contains("Close"));
+    }
+
+    // Async WS state machine: liveness transitions of a registry entry.
+    // dead (no client, no slot) → connecting (slot) → open (client) → dead.
+    #[test]
+    fn ws_entry_liveness_transitions() {
+        let connecting = WsEntry {
+            client: None,
+            connect_slot: Some(Arc::new(Mutex::new(None))),
+            close_requested: false,
+            close_initiated: false,
+            realm_global: ::std::ptr::null_mut(),
+            js_obj_key: "ws_test".to_string(),
+        };
+        assert!(connecting.is_live(), "connecting entry is live");
+
+        let dead = WsEntry {
+            client: None,
+            connect_slot: None,
+            close_requested: false,
+            close_initiated: false,
+            realm_global: ::std::ptr::null_mut(),
+            js_obj_key: "ws_test".to_string(),
+        };
+        assert!(
+            !dead.is_live(),
+            "dead entry (post-close/failure) is not live"
+        );
+    }
+
+    // Stealth plumbing: the wss path consumes the exact same profile source
+    // fetch() uses. `get_fetch_stealth_profile` must round-trip what
+    // `set_fetch_stealth_profile` stored (default-None when unset).
+    #[test]
+    fn fetch_stealth_profile_getter_roundtrip() {
+        let saved = crate::fetch_api::get_fetch_stealth_profile();
+        crate::fetch_api::set_fetch_stealth_profile(Some(
+            bao_stealth::StealthProfile::firefox_default(),
+        ));
+        let got = crate::fetch_api::get_fetch_stealth_profile();
+        crate::fetch_api::set_fetch_stealth_profile(saved);
+        let p = got.expect("profile must round-trip");
+        assert!(
+            !p.tls.cipher_suites.is_empty(),
+            "firefox profile must carry cipher suites (wss stealth source)"
+        );
     }
 }

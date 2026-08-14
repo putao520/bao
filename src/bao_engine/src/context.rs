@@ -780,8 +780,13 @@ mod tests {
     }
 
     #[test]
-    fn jscontext_no_drop() {
-        assert!(!std::mem::needs_drop::<JsContext>());
+    fn jscontext_realm_global_needs_drop() {
+        // realm-per-context (c943b1cc): JsContext holds `realm_global:
+        // Option<Box<PersistentGlobal>>`, whose Drop (RemoveRawValueRoot)
+        // releases the rooted realm global before the Runtime goes away.
+        // The type system must keep enforcing this release — failing here
+        // means the realm root was dropped from JsContext.
+        assert!(std::mem::needs_drop::<JsContext>());
     }
 
     #[test]

@@ -8503,6 +8503,7 @@ dependencies = [
  "async-recursion",
  "async-tungstenite",
  "bao_boringssl_bridge",
+ "bao_stealth",
  "base64 0.23.1",
  "bun_boringssl",
  "bun_boringssl_sys",

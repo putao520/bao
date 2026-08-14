@@ -296,11 +296,19 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     drain_bao_timers(raw_cx);
     bao_engine::job_queue::JobQueue::drain(cx);
 
+    // Page WebSocket pump: consume completed background connects
+    // (onopen/onerror) and drain inbound frames (onmessage/onclose).
+    // Non-blocking — sockets are polled in non-blocking mode.
+    crate::web_api::ws_pump_all(raw_cx);
+
     // BCE-20260619-010: drain_pending_fetches removed. FetchTasklet event-driven
     // paradigm resolves promises via ConcurrentTask (resolve_tasklet), not via
     // JS-thread polling. No drain call needed here.
 
-    bao_has_pending_timers() || has_http || has_pending_async_fetch
+    bao_has_pending_timers()
+        || has_http
+        || has_pending_async_fetch
+        || crate::web_api::ws_has_pending()
 }
 
 /// Drive a single "wait for promise / timer" iteration in test-runner mode.
@@ -360,6 +368,9 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
     mozjs_sys::jsapi::js::RunJobs(raw_cx);
     // BCE-20260619-010: drain_pending_fetches removed.
     // FetchTasklet resolves via ConcurrentTask; no drain call needed.
+    // Page WebSocket pump (connect completion + inbound frames) — same
+    // non-blocking poll as drain_and_check.
+    crate::web_api::ws_pump_all(raw_cx);
     fired
 }
 
@@ -388,9 +399,18 @@ pub unsafe fn fire_js_callback_raw(
 ) {
     unsafe {
         let global = CurrentGlobalOrNull(raw_cx);
-        if global.is_null() {
-            return;
-        }
+        // Drain-time dispatch may run outside any entered realm (manual pump
+        // callers, embedder drain hooks). Fall back to the thread's persistent
+        // realm global (realm-per-context model) instead of silently dropping
+        // the timer callback — same convention as node_http route dispatch.
+        let global = if global.is_null() {
+            match bao_engine::context::thread_realm_global() {
+                ::std::option::Option::Some(g) if !g.is_null() => g,
+                _ => return,
+            }
+        } else {
+            global
+        };
 
         let cx_ref =
             mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx));
@@ -1851,7 +1871,7 @@ mod bao_timeout_tests {
         let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
         let null_cx: *mut JSContext = ::std::ptr::null_mut();
         let id = schedule_raw(null_cx, sentinel, 1000, true, &[]); // interval
-        // Pop it the way drain_bao_timers does.
+                                                                   // Pop it the way drain_bao_timers does.
         let _obj = BAO_REGISTRY.with(|r| r.borrow_mut().remove(id));
         assert!(!BAO_REGISTRY.with(|r| r.borrow().owned.contains_key(&id)));
 

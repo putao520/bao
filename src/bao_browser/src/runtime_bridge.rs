@@ -380,6 +380,13 @@ pub unsafe fn evaluate_in_node_realm(
         return;
     }
 
+    // Page WebSocket pump (async WS root fix): servo evaluates are one-shot
+    // (no CLI-style post-eval loop), so consume completed background
+    // connects (onopen/onerror) and inbound frames (onmessage/onclose) here.
+    // `ws_pump_all` AutoRealms per entry, so it is realm-agnostic; run it
+    // inside the node realm borrow (raw_cx unchanged).
+    bun_runtime::web_api::ws_pump_all(raw_cx);
+
     // Serialize rval to a string. Undefined is treated as no value.
     let rval_val = rval.get();
     let value = if rval_val.is_undefined() {
