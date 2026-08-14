@@ -18,7 +18,7 @@
 //     client stack uses), on an OS-assigned port in a background thread.
 #![allow(dead_code)]
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -122,18 +122,7 @@ fn data_url_escape(s: &str) -> String {
     out
 }
 
-// NOTE #[ignore]: as of 2026-08-15 the servo page harness is broken
-// TREE-WIDE — `pool.create_page` fails with "pipeline not ready after
-// timeout" for the pre-existing realworld_full_stack_tests scenarios too
-// (all 5 skip on page creation; baseline captured while authoring this
-// test), so this page-level e2e cannot judge the WS migration until that
-// harness recovers. The migrated segment itself is covered GREEN by
-// bun_http's `ws_tls_stream_async_roundtrip` (same wire path: tokio +
-// WsTlsStream + RFC 6455 upgrade + masked frame roundtrip) and
-// `ws_http_client_tls_roundtrip`. Re-enable with:
-//   cargo test -p bao_browser --test page_wss_bao_tls_e2e_tests -- --ignored
 #[test]
-#[ignore = "servo page harness broken tree-wide (pipeline not ready); see NOTE above"]
 fn page_wss_roundtrip_over_bao_tls() {
     let (wss_port, wss_shutdown) = spawn_wss_echo_server();
 
@@ -152,7 +141,7 @@ try {{
   window.__wsState = 'connecting';
   ws.onopen = function() {{ window.__wsState = 'open'; ws.send('ping'); }};
   ws.onmessage = function(ev) {{
-    window.__wsState = (ev.data === 'pong') ? 'done' : ('wrong:' + ev.data);
+    window.__wsState = (ev.data === 'ping') ? 'done' : ('wrong:' + ev.data);
   }};
   ws.onerror = function() {{
     if (window.__wsState !== 'done') window.__wsState = 'error';

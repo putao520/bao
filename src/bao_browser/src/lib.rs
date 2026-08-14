@@ -92,16 +92,6 @@ impl BaoRuntime {
         // against servo's get_or_init(Default::default).
         std::sync::LazyLock::force(&BAO_SERVO_OPTS_INIT);
 
-        let servo: Rc<Servo> = Rc::new(
-            ServoBuilder::default()
-                .opts(Opts {
-                    force_isolate_event_loops: true,
-                    disable_script_debugger: true,
-                    ..Opts::default()
-                })
-                .build(),
-        );
-
         // BUG-ENG-366: `force_isolate_event_loops` only governs servo's event-loop
         // multiplexing (per-pipeline ScriptThread vs shared). It does NOT control
         // SpiderMonkey Compartment isolation — every page always gets its own
