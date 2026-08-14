@@ -67,8 +67,8 @@ impl PendingConnect {
         let addrinfo = self_.pc_mut().addrinfo();
         let self_ = bun_core::heap::into_raw(self_);
         // SAFETY: `self_` is the Box we just leaked above and is consumed by
-        // `on_dns_resolved` (via the global cache's notify path).
-        unsafe { bun_dns::internal::register_quic(addrinfo, self_.cast()) };
+        // `dns_resolved_thunk` (via the addrinfo registry's notify path).
+        unsafe { bun_dns::internal::register_quic(addrinfo, self_.cast(), dns_resolved_thunk) };
     }
 
     pub fn r#loop(&self) -> *mut uws::Loop {
@@ -190,3 +190,12 @@ unsafe impl Send for Resolved {}
 static RESOLVED: Guarded<Vec<Resolved>> = Guarded::new(Vec::new());
 
 // ported from: src/http/h3_client/PendingConnect.zig
+
+/// C-ABI completion thunk handed to the addrinfo registry
+/// (`bun_dns::internal::register_quic`): the resolver worker may complete on
+/// its own thread, so the threadsafe drain is the correct entry either way.
+unsafe extern "C" fn dns_resolved_thunk(pc: *mut core::ffi::c_void) {
+    // SAFETY: `pc` is the PendingConnect pointer leaked in `register`;
+    // `on_dns_resolved_threadsafe` owns its lifetime from here.
+    unsafe { PendingConnect::on_dns_resolved_threadsafe(pc.cast()) };
+}

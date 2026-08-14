@@ -1,5 +1,7 @@
 #![warn(unused_must_use)]
 
+pub mod cache;
+
 use core::ffi::c_int;
 use std::io::Write as _;
 
@@ -495,9 +497,16 @@ pub mod internal {
     use core::ffi::c_void;
 
     unsafe extern "C" {
-        // Defined in `bun_runtime::dns_jsc::internal` alongside the other
-        // `Bun__addrinfo_*` exports; resolved at link time.
-        fn Bun__addrinfo_registerQuic(request: *mut c_void, pc: *mut c_void);
+        // Defined in `bao_uloop::addrinfo` (the `Bun__addrinfo_*` seam) and
+        // resolved at link time. The `_2` variant carries the completion
+        // callback so the registry never needs a crate dep on the QUIC
+        // client: the caller (`bun_http::h3_client`) supplies its own
+        // threadsafe drain fn.
+        fn Bun__addrinfo_registerQuic2(
+            request: *mut c_void,
+            pc: *mut c_void,
+            notify: Option<unsafe extern "C" fn(*mut c_void)>,
+        );
     }
 
     unsafe extern "Rust" {
@@ -507,7 +516,12 @@ pub mod internal {
         /// `bun_runtime::dns_jsc::internal::prefetch`; lower-tier crates
         /// (`bun_install`) reach it via this link-time extern to avoid a crate
         /// cycle. Defined `#[no_mangle]` in `bun_runtime::dns_jsc`.
-        unsafe fn __bun_dns_prefetch(loop_: *mut c_void, hostname: *const u8, len: usize, port: u16);
+        unsafe fn __bun_dns_prefetch(
+            loop_: *mut c_void,
+            hostname: *const u8,
+            len: usize,
+            port: u16,
+        );
     }
 
     #[inline]
@@ -527,17 +541,23 @@ pub mod internal {
 
     /// Register `pc` to be notified when the addrinfo `request` resolves.
     /// Mirrors `us_getaddrinfo_set` for the QUIC client connect path, which
-    /// has no `us_connecting_socket_t` to hang the callback on.
+    /// has no `us_connecting_socket_t` to hang the callback on. `notify` is
+    /// invoked exactly once when the request completes (from the resolver
+    /// worker thread, so it must be threadsafe — h3 passes
+    /// `PendingConnect::on_dns_resolved_threadsafe`).
     ///
     /// SAFETY: `request` must be the live addrinfo request handle returned by
     /// `us_quic_pending_connect_addrinfo`; `pc` must be a live
-    /// `bun_http::H3::PendingConnect` that stays valid until its
-    /// `on_dns_resolved[_threadsafe]` fires.
+    /// `bun_http::H3::PendingConnect` that stays valid until `notify` fires.
     #[inline]
-    pub unsafe fn register_quic(request: *mut c_void, pc: *mut c_void) {
-        // SAFETY: forwarded to the runtime export; both pointers are opaque on
-        // this side of the crate boundary and re-typed by the callee.
-        unsafe { Bun__addrinfo_registerQuic(request, pc) }
+    pub unsafe fn register_quic(
+        request: *mut c_void,
+        pc: *mut c_void,
+        notify: unsafe extern "C" fn(*mut c_void),
+    ) {
+        // SAFETY: forwarded to the bao_uloop registry; both pointers are
+        // opaque on this side of the crate boundary and re-typed by `notify`.
+        unsafe { Bun__addrinfo_registerQuic2(request, pc, Some(notify)) }
     }
 }
 

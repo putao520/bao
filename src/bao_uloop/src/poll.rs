@@ -226,7 +226,10 @@ unsafe fn dispatch_ready_poll(poll: *mut BaoPoll, error: c_int, eof: c_int, even
         // Test-only probe: record the (error, eof, events) triple the dispatch
         // loop handed down, so unit tests can assert the epoll→libus mapping
         // (LIBUS_POLL_HANGUP tagging, error normalization, interest masking).
-        tests::DISPATCH_CALLS.lock().unwrap().push((error, eof, events));
+        tests::DISPATCH_CALLS
+            .lock()
+            .unwrap()
+            .push((error, eof, events));
     }
     unsafe {
         let kind = (*poll).kind();
@@ -959,7 +962,8 @@ mod tests {
         calls.clear();
         drop(calls);
 
-        let boxed: *mut PosixLoop = Box::into_raw(unsafe { Box::new(core::mem::zeroed::<PosixLoop>()) });
+        let boxed: *mut PosixLoop =
+            Box::into_raw(unsafe { Box::new(core::mem::zeroed::<PosixLoop>()) });
         unsafe {
             (*boxed).num_ready_polls = 1;
             (*boxed).current_ready_poll = 0;
@@ -1006,11 +1010,8 @@ mod tests {
         poll.set_poll_type(POLL_TYPE_UDP | POLL_TYPE_POLLING_IN);
 
         let (error, eof, events) = dispatch_once(
-            (libc::EPOLLERR
-                | libc::EPOLLHUP
-                | libc::EPOLLRDHUP
-                | libc::EPOLLIN
-                | libc::EPOLLOUT) as u32,
+            (libc::EPOLLERR | libc::EPOLLHUP | libc::EPOLLRDHUP | libc::EPOLLIN | libc::EPOLLOUT)
+                as u32,
             &mut poll,
         );
         assert_eq!(error, 1);

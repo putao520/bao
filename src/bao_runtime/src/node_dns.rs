@@ -649,6 +649,16 @@ thread_local! {
 ///
 /// @trace REQ-ENG-007 [api:dns.lookup/resolve] [code:bun_dns]
 fn resolve_hostname_libc(hostname: &str) -> Vec<(::std::string::String, i32)> {
+    // Shared-cache consultation (fusion point with the usockets and
+    // servo/hyper paths — one resolver per process, not per stack). Hit →
+    // render straight from the cached addresses, no system call.
+    if let Some(addrs) = bun_dns::cache::lookup(hostname.as_bytes()) {
+        return addrs
+            .iter()
+            .map(|ip| (render_cache_ip(ip), cache_ip_family(ip)))
+            .collect();
+    }
+
     // Build the typed request via bun_dns so the hints structure, family flag,
     // and SOCK_STREAM default match Bun's resolver exactly.
     let req = GetAddrInfo {
@@ -690,6 +700,7 @@ fn resolve_hostname_libc(hostname: &str) -> Vec<(::std::string::String, i32)> {
     // Walk the chain; freeaddrinfo on scope exit (Drop would require wrapping,
     // so do it manually after collecting).
     let mut out: Vec<(::std::string::String, i32)> = Vec::new();
+    let mut cache_ips: Vec<bun_dns::cache::IpAddr> = Vec::new();
     let mut cur: *mut addrinfo = result_head;
     while !cur.is_null() {
         // SAFETY: cur is non-null and points into the getaddrinfo result chain.
@@ -703,12 +714,55 @@ fn resolve_hostname_libc(hostname: &str) -> Vec<(::std::string::String, i32)> {
                 };
                 out.push((s, family));
             }
+            if let Some(ip) = address_to_cache_ip(&res.address) {
+                cache_ips.push(ip);
+            }
         }
         cur = ai.ai_next;
     }
     // SAFETY: result_head was allocated by C getaddrinfo; chain intact above.
     unsafe { freeaddrinfo(result_head) };
+    // getaddrinfo returns no TTL (see bun_dns GetAddrInfoResult::ttl) — the
+    // cache applies its engine cap (BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS).
+    bun_dns::cache::insert(hostname.as_bytes(), cache_ips, None);
     out
+}
+
+/// Render a shared-cache address to canonical text (same forms as
+/// [`render_address`], from the raw cached bytes instead of a sockaddr).
+fn render_cache_ip(ip: &bun_dns::cache::IpAddr) -> ::std::string::String {
+    match ip {
+        bun_dns::cache::IpAddr::V4(o) => format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3]),
+        bun_dns::cache::IpAddr::V6(bytes) => {
+            let segs: [u16; 8] =
+                core::array::from_fn(|i| u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]));
+            ::std::net::Ipv6Addr::from(segs).to_string()
+        }
+    }
+}
+
+/// Node-style family marker (4/6) for a shared-cache address.
+fn cache_ip_family(ip: &bun_dns::cache::IpAddr) -> i32 {
+    match ip {
+        bun_dns::cache::IpAddr::V4(_) => 4,
+        bun_dns::cache::IpAddr::V6(_) => 6,
+    }
+}
+
+/// Extract the raw bytes of a resolved `bun_dns::Address` for the shared
+/// cache. Returns None for non-IP families (AF_UNIX etc.).
+fn address_to_cache_ip(addr: &bun_dns::Address) -> Option<bun_dns::cache::IpAddr> {
+    if let Some(v4) = addr.as_in4() {
+        // SAFETY: sin_addr is 4 POD bytes on every target (see render_address).
+        let octets: [u8; 4] = unsafe { *::std::ptr::addr_of!(v4.sin_addr).cast::<[u8; 4]>() };
+        return Some(bun_dns::cache::IpAddr::V4(octets));
+    }
+    if let Some(v6) = addr.as_in6() {
+        // SAFETY: sin6_addr is 16 POD bytes (see render_address).
+        let bytes: [u8; 16] = unsafe { *::std::ptr::addr_of!(v6.sin6_addr).cast::<[u8; 16]>() };
+        return Some(bun_dns::cache::IpAddr::V6(bytes));
+    }
+    None
 }
 
 /// Render a `bun_dns::Address` to its canonical text form (IPv4 dotted-quad or
@@ -1225,11 +1279,14 @@ const DNS_JS: &str = r#"
         });
       });
     },
+    // NB: executor params are fulfill/reject — naming the first one `resolve`
+    // shadows the outer dns.resolve below, so the DNS query never runs and the
+    // promise fulfills with the raw hostname string instead of the RR records.
     resolve: function(hostname, rrtype) {
-      return new Promise(function(resolve, reject) {
+      return new Promise(function(fulfill, reject) {
         resolve(hostname, rrtype || "A", function(err, result) {
           if (err) reject(err);
-          else resolve(result);
+          else fulfill(result);
         });
       });
     },

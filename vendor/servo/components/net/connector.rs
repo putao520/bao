@@ -133,14 +133,96 @@ fn get_stealth_tls_config() -> Option<StealthTlsWireConfig> {
 
 // ── HTTP connector ────────────────────────────────────────────────────
 
+/// DNS resolver sharing bao's process-wide per-host cache
+/// (`bun_dns::cache`) with the usockets and `node:dns` paths — the fusion
+/// point that makes every stack in one process resolve a host once per TTL
+/// window (stealth parity with a real browser's single resolver).
+///
+/// Cache hit → immediate addresses; miss → blocking `getaddrinfo` on a
+/// tokio worker (same fallback `GaiResolver` uses) with the result written
+/// back into the shared cache. `getaddrinfo` returns no TTL, so entries use
+/// the engine cap `BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS` (default 30 s, the
+/// same lifetime upstream Bun applies to its DNS cache).
+#[derive(Clone, Default)]
+struct SharedCacheDnsResolver;
+
+impl SharedCacheDnsResolver {
+    fn to_std(ip: &bun_dns::cache::IpAddr) -> std::net::IpAddr {
+        match ip {
+            bun_dns::cache::IpAddr::V4(octets) => std::net::IpAddr::V4(
+                std::net::Ipv4Addr::from(*octets),
+            ),
+            bun_dns::cache::IpAddr::V6(octets) => std::net::IpAddr::V6(
+                std::net::Ipv6Addr::from(*octets),
+            ),
+        }
+    }
+
+    fn from_std(ip: &std::net::IpAddr) -> bun_dns::cache::IpAddr {
+        match ip {
+            std::net::IpAddr::V4(v4) => bun_dns::cache::IpAddr::V4(v4.octets()),
+            std::net::IpAddr::V6(v6) => bun_dns::cache::IpAddr::V6(v6.octets()),
+        }
+    }
+}
+
+impl Service<hyper_util::client::legacy::connect::dns::Name> for SharedCacheDnsResolver {
+    // Port 0 addresses: hyper-util's `set_port` applies the destination port
+    // when the address port is 0 (same contract as `GaiResolver`).
+    type Response = std::vec::IntoIter<std::net::SocketAddr>;
+    type Error = io::Error;
+    type Future = std::pin::Pin<
+        Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(
+        &mut self,
+        name: hyper_util::client::legacy::connect::dns::Name,
+    ) -> Self::Future {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            if let Some(addrs) = bun_dns::cache::lookup(host.as_bytes()) {
+                return Ok(addrs
+                    .iter()
+                    .map(|ip| std::net::SocketAddr::new(Self::to_std(ip), 0))
+                    .collect::<Vec<_>>()
+                    .into_iter());
+            }
+            let host_for_cache = host.clone();
+            let resolved = tokio::task::spawn_blocking(move || {
+                // Same lookup GaiResolver performs: (host, 0) with the
+                // system resolver, port applied later by hyper.
+                use std::net::ToSocketAddrs;
+                (host.as_str(), 0)
+                    .to_socket_addrs()
+                    .map(|it| it.map(|sa| sa.ip()).collect::<Vec<_>>())
+            })
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))??;
+            let ips: Vec<bun_dns::cache::IpAddr> =
+                resolved.iter().map(Self::from_std).collect();
+            bun_dns::cache::insert(host_for_cache.as_bytes(), ips, None);
+            Ok(resolved
+                .into_iter()
+                .map(|ip| std::net::SocketAddr::new(ip, 0))
+                .collect::<Vec<_>>()
+                .into_iter())
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct ServoHttpConnector {
-    inner: HyperHttpConnector,
+    inner: HyperHttpConnector<SharedCacheDnsResolver>,
 }
 
 impl ServoHttpConnector {
     fn new() -> ServoHttpConnector {
-        let mut inner = HyperHttpConnector::new();
+        let mut inner = HyperHttpConnector::new_with_resolver(SharedCacheDnsResolver);
         inner.enforce_http(false);
         inner.set_happy_eyeballs_timeout(None);
         inner.set_connect_timeout(Some(Duration::from_secs(pref!(network_connection_timeout))));

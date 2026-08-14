@@ -11,6 +11,10 @@ license = "MIT"
 [dependencies]
 bun_uws_sys = { path = "../uws_sys" }
 bun_sys = { path = "../sys" }
+# Shared per-host DNS cache consumed by the Bun__addrinfo_* seam below.
+# bun_dns is lower-tier than bao_uloop's loop core (no uws/loop deps), so
+# this does not cycle.
+bun_dns = { path = "../dns" }
 libc = "0.2"
 
 [dev-dependencies]

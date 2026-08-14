@@ -507,7 +507,7 @@ fn bump_iteration_nr(loop_: *mut Loop) {
 // The C/C++ library versions resolve at link time. bao_uloop's role is now:
 //   - FilePoll graft (poll.rs - epoll fd sharing)
 //   - us_dispatch_* (socket event routing)
-//   - Bun__addrinfo_* stubs (DNS no-op for plain TCP)
+//   - Bun__addrinfo_* (usockets DNS seam → bun_dns shared cache)
 //
 // CLAUDE.md L13/L26: "禁止手写 C 已实现符号的 Rust 翻译". The previous
 // Rust implementations violated this rule. The fix restores compliance.
@@ -869,50 +869,21 @@ pub unsafe extern "C" fn us_dispatch_ssl_raw_tap(
     s
 }
 
-// ──────────────── Bun__addrinfo_* stubs ────────────────────────────
-// Async DNS resolution API. In Bun upstream, these are implemented in
-// src/runtime/dns_jsc/dns.rs and backed by c-ares. For Bao's current
-// plain-TCP mode without async DNS, we provide no-op stubs that always
-// report "cache miss" (Bun__addrinfo_get returns -1) so the caller
-// falls back to synchronous getaddrinfo.
+// ──────────────── Bun__addrinfo_* (usockets DNS seam) ────────────────────
+// Real implementation (shared bun_dns cache + blocking getaddrinfo worker);
+// contract notes and reference-counting rules live in the module. Replaces
+// the former no-op stubs, whose `Bun__addrinfo_get → -1` left context.c's
+// `ai_req` uninitialized on every hostname connect (UB).
 
-/// Query the DNS cache. Returns -1 (cache miss) so the caller uses
-/// synchronous resolution.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Bun__addrinfo_get(
-    _loop: *mut c_void,
-    _host: *const c_char,
-    _port: u16,
-    _ptr: *mut *mut c_void,
-) -> c_int {
-    -1
-}
+mod addrinfo;
 
-/// Associate a connecting socket with a DNS request. No-op.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Bun__addrinfo_set(_ptr: *mut c_void, _socket: *mut c_void) -> c_int {
-    0
-}
-
-/// Cancel a DNS request association. No-op.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Bun__addrinfo_cancel(_ptr: *mut c_void, _socket: *mut c_void) -> c_int {
-    0
-}
-
-/// Free a DNS request. No-op.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Bun__addrinfo_freeRequest(_req: *mut c_void, _error: c_int) {}
-
-/// Get the result of a DNS request. Returns NULL (no result).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Bun__addrinfo_getRequestResult(_req: *mut c_void) -> *mut c_void {
-    ptr::null_mut()
-}
-
-/// Register QUIC address info callback. No-op.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Bun__addrinfo_registerQuic(_req: *mut c_void, _pc: *mut c_void) {}
+pub use addrinfo::Bun__addrinfo_cancel;
+pub use addrinfo::Bun__addrinfo_freeRequest;
+pub use addrinfo::Bun__addrinfo_get;
+pub use addrinfo::Bun__addrinfo_getRequestResult;
+pub use addrinfo::Bun__addrinfo_registerQuic;
+pub use addrinfo::Bun__addrinfo_registerQuic2;
+pub use addrinfo::Bun__addrinfo_set;
 
 /// Bun HTTP date header timer optimization. No-op in plain TCP mode.
 /// Called from us_internal_enable_sweep_timer in loop.c.
@@ -942,13 +913,15 @@ pub fn force_link() {
     let _ = us_dispatch_handshake as unsafe extern "C" fn(_, _, _);
     let _ = us_dispatch_ssl_raw_tap as unsafe extern "C" fn(_, _, _) -> *mut c_void;
 
-    // Addrinfo stubs
+    // Addrinfo (DNS seam)
     let _ = Bun__addrinfo_get as unsafe extern "C" fn(_, _, _, _) -> c_int;
     let _ = Bun__addrinfo_set as unsafe extern "C" fn(_, _) -> c_int;
     let _ = Bun__addrinfo_cancel as unsafe extern "C" fn(_, _) -> c_int;
     let _ = Bun__addrinfo_freeRequest as unsafe extern "C" fn(_, _);
     let _ = Bun__addrinfo_getRequestResult as unsafe extern "C" fn(_) -> *mut c_void;
     let _ = Bun__addrinfo_registerQuic as unsafe extern "C" fn(_, _);
+    let _ = Bun__addrinfo_registerQuic2
+        as unsafe extern "C" fn(_, _, Option<unsafe extern "C" fn(_)>) -> ();
 
     // Bun internal stubs
     let _ = Bun__internal_ensureDateHeaderTimerIsEnabled as unsafe extern "C" fn(_);
@@ -1090,7 +1063,13 @@ mod hangup_tests {
         let _ = std::fs::remove_file(&path);
 
         let loop_ = unsafe {
-            us_create_loop(ptr::null_mut(), Some(noop_cb), Some(noop_cb), Some(noop_cb), 0)
+            us_create_loop(
+                ptr::null_mut(),
+                Some(noop_cb),
+                Some(noop_cb),
+                Some(noop_cb),
+                0,
+            )
         };
         assert!(!loop_.is_null(), "us_create_loop failed");
 
@@ -1108,7 +1087,13 @@ mod hangup_tests {
         );
         assert!(!ls.is_null(), "listen_unix failed, err = {err}");
 
-        for c in [&OPEN_COUNT, &DATA_COUNT, &DATA_BYTES, &END_COUNT, &CLOSE_COUNT] {
+        for c in [
+            &OPEN_COUNT,
+            &DATA_COUNT,
+            &DATA_BYTES,
+            &END_COUNT,
+            &CLOSE_COUNT,
+        ] {
             c.store(0, Ordering::SeqCst);
         }
 
@@ -1132,7 +1117,11 @@ mod hangup_tests {
 
         assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1, "one accepted socket");
         assert_eq!(DATA_COUNT.load(Ordering::SeqCst), 1, "payload drained once");
-        assert_eq!(DATA_BYTES.load(Ordering::SeqCst), 5, "all 5 bytes delivered");
+        assert_eq!(
+            DATA_BYTES.load(Ordering::SeqCst),
+            5,
+            "all 5 bytes delivered"
+        );
         assert_eq!(
             END_COUNT.load(Ordering::SeqCst),
             1,

@@ -26,6 +26,9 @@ tracing = ["dep:tracing"]
 # source of truth — local mapping copies in connector.rs are forbidden).
 bao_boringssl_bridge = { path = "../../../../src/bao_boringssl_bridge" }
 bao_stealth = { path = "../../../../src/bao_stealth" }
+# Shared per-host DNS cache (Bao fusion: servo/hyper + usockets + node:dns
+# resolve through one cache). Low-tier, std-only surface.
+bun_dns = { path = "../../../../src/dns" }
 bun_boringssl = { path = "../../../../src/boringssl" }
 bun_boringssl_sys = { path = "../../../../src/boringssl_sys" }
 async-compression = { workspace = true, features = ["brotli", "gzip", "tokio", "zlib", "zstd"] }

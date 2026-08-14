@@ -148,10 +148,78 @@ fn test_dns_net_deep() {
         resolve4_result
     );
 
-    // dns.promises — not yet implemented, verify it's undefined
+    // dns.promises — Promise-based namespace
     assert!(
-        !eval_bool(&mut ctx, "typeof require('dns').promises === 'object'"),
-        "dns.promises not yet implemented (expected)"
+        eval_bool(&mut ctx, "typeof require('dns').promises === 'object'"),
+        "dns.promises should be object"
+    );
+    assert!(
+        eval_bool(
+            &mut ctx,
+            r#"
+        var p = require('dns').promises;
+        typeof p.lookup === 'function' && typeof p.lookupService === 'function' &&
+        typeof p.resolve === 'function' && typeof p.resolve4 === 'function' &&
+        typeof p.resolve6 === 'function' && typeof p.reverse === 'function'
+    "#
+        ),
+        "dns.promises should expose lookup/lookupService/resolve/resolve4/resolve6/reverse"
+    );
+    // promises.lookup returns a real Promise
+    assert!(
+        eval_bool(
+            &mut ctx,
+            r#"
+        var result = require('dns').promises.lookup('localhost');
+        result instanceof Promise && typeof result.then === 'function'
+    "#
+        ),
+        "dns.promises.lookup should return a Promise"
+    );
+
+    // promises.resolve must run a real DNS query: the Promise executor must
+    // call the outer dns.resolve, not the executor's own `resolve` callback
+    // (shadowing bug: promise fulfilled with the hostname string, query never
+    // executed). Compare against promises.resolve4 for shape consistency.
+    assert!(
+        eval_bool(
+            &mut ctx,
+            r#"
+        globalThis.__promisesResolveResult = 'pending';
+        globalThis.__promisesResolve4Result = 'pending';
+        require('dns').promises.resolve('localhost').then(function(addr) {
+            globalThis.__promisesResolveResult =
+                Array.isArray(addr) ? 'array:' + addr.join(',') : 'bad_shape:' + String(addr);
+        }, function(err) {
+            globalThis.__promisesResolveResult = 'rejected:' + String((err && err.message) || err);
+        });
+        require('dns').promises.resolve4('localhost').then(function(addr) {
+            globalThis.__promisesResolve4Result =
+                Array.isArray(addr) ? 'array:' + addr.join(',') : 'bad_shape:' + String(addr);
+        }, function(err) {
+            globalThis.__promisesResolve4Result = 'rejected:' + String((err && err.message) || err);
+        });
+        true
+    "#
+        ),
+        "dns.promises.resolve/resolve4 should return Promises"
+    );
+    let mut drain_cx = ctx.cx();
+    bao_engine::job_queue::JobQueue::drain(&mut drain_cx);
+    let promises_resolve_result = eval_string(&mut ctx, "globalThis.__promisesResolveResult");
+    let promises_resolve4_result = eval_string(&mut ctx, "globalThis.__promisesResolve4Result");
+    assert_ne!(
+        promises_resolve_result, "pending",
+        "dns.promises.resolve then-callback should have run after microtask drain"
+    );
+    assert_ne!(
+        promises_resolve_result, "bad_shape:localhost",
+        "dns.promises.resolve fulfilled with the hostname string — executor still shadowing dns.resolve"
+    );
+    assert_eq!(
+        promises_resolve_result, promises_resolve4_result,
+        "dns.promises.resolve('localhost') should match promises.resolve4 behavior, got resolve={} resolve4={}",
+        promises_resolve_result, promises_resolve4_result
     );
 
     // Resolver instance has getServers/setServers
@@ -250,8 +318,12 @@ fn test_dns_net_deep() {
 
     // net.isIPv6
     assert!(
-        !eval_bool(&mut ctx, "require('net').isIPv6('::1')"),
-        "isIPv6('::1') should return false (not implemented yet)"
+        eval_bool(&mut ctx, "require('net').isIPv6('::1')"),
+        "isIPv6('::1') should return true"
+    );
+    assert!(
+        !eval_bool(&mut ctx, "require('net').isIPv6('127.0.0.1')"),
+        "isIPv6('127.0.0.1') should return false"
     );
 
     // createServer returns object
