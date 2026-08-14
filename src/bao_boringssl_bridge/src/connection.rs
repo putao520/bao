@@ -57,6 +57,8 @@ pub struct SslClientHello {
     pub ssl: *mut SSL,
 }
 
+// `TLS_method` is compiled into the vendored library but not yet declared
+// in the hand-rolled bindings (only `TLS_with_buffers_method` is).
 unsafe extern "C" {
     pub(crate) fn SSL_CTX_set_select_certificate_cb(
         ctx: *mut SSL_CTX,
@@ -64,6 +66,7 @@ unsafe extern "C" {
     );
     fn SSL_set_SSL_CTX(ssl: *mut SSL, ctx: *mut SSL_CTX) -> *mut SSL_CTX;
     fn SSL_get_peer_certificate(ssl: *const SSL) -> *mut X509;
+    safe fn TLS_method() -> *const SSL_METHOD;
 }
 
 /// The SNI servername for a raw `SSL*` (server side) — usable inside the
@@ -77,31 +80,54 @@ pub fn ssl_servername(ssl: *const SSL) -> Option<String> {
     cstr.to_str().ok().map(|s| s.to_string())
 }
 
+// ─── Shared SSL_CTX prologue ──────────────────────────────────────────
+
+/// Cipher list shared by client and server sides (same as Bun upstream).
+const CIPHER_LIST: &core::ffi::CStr = c"TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305";
+
+/// Create an `SSL_CTX` on the crypto-X509 method (`TLS_method`) with the
+/// shared cipher list configured.
+///
+/// Both sides must use the X509 method: the trust-store / verify-param
+/// APIs the client calls (`SSL_CTX_get_cert_store`, …) and the X509
+/// certificate loaders the server calls (`SSL_CTX_use_certificate` /
+/// `SSL_CTX_add1_chain_cert` / `SSL_CTX_use_PrivateKey`) all assert on a
+/// buffers-method ctx (`check_ssl_ctx_x509_method`). Wire behavior is
+/// identical to the buffers method; this only selects the certificate
+/// representation inside BoringSSL.
+pub(crate) fn new_tls_ctx() -> Result<*mut SSL_CTX, TlsError> {
+    let ctx = unsafe { SSL_CTX_new(TLS_method()) };
+    if ctx.is_null() {
+        return Err(TlsError::BoringSSL("SSL_CTX_new failed"));
+    }
+    let ok = unsafe { SSL_CTX_set_cipher_list(ctx, CIPHER_LIST.as_ptr()) };
+    if ok == 0 {
+        unsafe { SSL_CTX_free(ctx) };
+        return Err(TlsError::BoringSSL("SSL_CTX_set_cipher_list failed"));
+    }
+    Ok(ctx)
+}
+
 // ─── TlsConnection ───────────────────────────────────────────────────
+
+/// Which side of the handshake this connection drives. The client and
+/// server state machines share the entire I/O / handshake driver; the role
+/// only gates the handshake error arms that can arise on one side (e.g.
+/// pending certificate selection, which requires a server-side
+/// select-certificate callback).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Client,
+    Server,
+}
 
 /// A TLS connection backed by BoringSSL.
 ///
-/// Wraps an `SSL*` with BIO pairs for non-blocking I/O.
-pub enum TlsConnection {
-    Client(ClientConn),
-    Server(ServerConn),
-}
-
-impl core::fmt::Debug for TlsConnection {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Client(_) => f
-                .debug_struct("TlsConnection::Client")
-                .finish_non_exhaustive(),
-            Self::Server(_) => f
-                .debug_struct("TlsConnection::Server")
-                .finish_non_exhaustive(),
-        }
-    }
-}
-
-/// Internal state for a client connection.
-pub struct ClientConn {
+/// Wraps an `SSL*` with BIO pairs for non-blocking I/O. One type serves
+/// both sides; the role (client/server) is fixed at construction and only
+/// varies the handshake setup and the certificate-selection error path.
+pub struct TlsConnection {
+    role: Role,
     ssl: *mut SSL,
     /// Peer-side BIO for feeding incoming ciphertext.
     network_read_bio: *mut BIO,
@@ -111,13 +137,12 @@ pub struct ClientConn {
     saw_peer_closed: bool,
 }
 
-/// Internal state for a server connection.
-pub struct ServerConn {
-    ssl: *mut SSL,
-    network_read_bio: *mut BIO,
-    network_write_bio: *mut BIO,
-    handshake_done: bool,
-    saw_peer_closed: bool,
+impl core::fmt::Debug for TlsConnection {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TlsConnection")
+            .field("role", &self.role)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Result of create_bio_pairs.
@@ -156,243 +181,69 @@ fn create_bio_pairs_v2() -> Result<BioPairResult, TlsError> {
 }
 
 impl TlsConnection {
-    /// Create a new client-side TLS connection.
-    pub fn new_client(tls_client: &TlsClient, hostname: &str) -> Result<Self, TlsError> {
-        let ssl = unsafe { SSL_new(tls_client.ctx()) };
+    /// Wire up the shared connection state: SSL object, BIO pairs, and the
+    /// pending-plaintext bookkeeping. Callers then put the SSL into client
+    /// or server state before returning the connection.
+    fn new_raw(ctx: *mut SSL_CTX, role: Role) -> Result<Self, TlsError> {
+        let ssl = unsafe { SSL_new(ctx) };
         if ssl.is_null() {
             return Err(TlsError::BoringSSL("SSL_new failed"));
         }
 
         let bios = create_bio_pairs_v2()?;
-        unsafe {
-            SSL_set_bio(ssl, bios.internal_rbio, bios.internal_wbio);
-            SSL_set_connect_state(ssl);
+        unsafe { SSL_set_bio(ssl, bios.internal_rbio, bios.internal_wbio) };
 
-            let hostname_c = std::ffi::CString::new(hostname)
-                .map_err(|_| TlsError::InvalidServerName(hostname.to_string()))?;
-            SSL_set_tlsext_host_name(ssl, hostname_c.as_ptr());
-
-            let alpn = b"\x02h2\x08http/1.1";
-            SSL_set_alpn_protos(ssl, alpn.as_ptr(), alpn.len());
-        }
-
-        Ok(Self::Client(ClientConn {
+        Ok(Self {
+            role,
             ssl,
             network_read_bio: bios.network_read_bio,
             network_write_bio: bios.network_write_bio,
             handshake_done: false,
             saw_peer_closed: false,
-        }))
+        })
+    }
+
+    /// Create a new client-side TLS connection.
+    pub fn new_client(tls_client: &TlsClient, hostname: &str) -> Result<Self, TlsError> {
+        let conn = Self::new_raw(tls_client.ctx(), Role::Client)?;
+        unsafe {
+            SSL_set_connect_state(conn.ssl);
+
+            let hostname_c = std::ffi::CString::new(hostname)
+                .map_err(|_| TlsError::InvalidServerName(hostname.to_string()))?;
+            SSL_set_tlsext_host_name(conn.ssl, hostname_c.as_ptr());
+
+            let alpn = b"\x02h2\x08http/1.1";
+            SSL_set_alpn_protos(conn.ssl, alpn.as_ptr(), alpn.len());
+        }
+        Ok(conn)
     }
 
     /// Create a new server-side TLS connection from BoringSSL TlsServer.
     pub fn new_server_boringssl(tls_server: &TlsServer) -> Result<Self, TlsError> {
-        let ssl = unsafe { SSL_new(tls_server.ctx()) };
-        if ssl.is_null() {
-            return Err(TlsError::BoringSSL("SSL_new failed"));
-        }
-
-        let bios = create_bio_pairs_v2()?;
-        unsafe {
-            SSL_set_bio(ssl, bios.internal_rbio, bios.internal_wbio);
-            SSL_set_accept_state(ssl);
-        }
-
-        Ok(Self::Server(ServerConn {
-            ssl,
-            network_read_bio: bios.network_read_bio,
-            network_write_bio: bios.network_write_bio,
-            handshake_done: false,
-            saw_peer_closed: false,
-        }))
+        let conn = Self::new_raw(tls_server.ctx(), Role::Server)?;
+        unsafe { SSL_set_accept_state(conn.ssl) };
+        Ok(conn)
     }
 
     /// Whether the TLS handshake has not yet completed.
     pub fn is_handshaking(&self) -> bool {
-        match self {
-            Self::Client(c) => !c.handshake_done,
-            Self::Server(c) => !c.handshake_done,
-        }
+        !self.handshake_done
     }
 
     /// Feed raw TLS bytes received from the network.
     pub fn feed(&mut self, data: &[u8]) {
-        let bio = match self {
-            Self::Client(c) => c.network_read_bio,
-            Self::Server(c) => c.network_read_bio,
-        };
         unsafe {
-            BIO_write(bio, data.as_ptr() as *const c_void, data.len() as c_int);
+            BIO_write(
+                self.network_read_bio,
+                data.as_ptr() as *const c_void,
+                data.len() as c_int,
+            );
         }
     }
 
     /// Drive the TLS state machine.
     pub fn process(&mut self) -> Result<ProcessResult, TlsError> {
-        match self {
-            Self::Client(c) => c.process(),
-            Self::Server(c) => c.process(),
-        }
-    }
-
-    /// Encrypt application data and queue it for sending.
-    pub fn write(&mut self, plaintext: &[u8]) -> Result<usize, TlsError> {
-        match self {
-            Self::Client(c) => c.write(plaintext),
-            Self::Server(c) => c.write(plaintext),
-        }
-    }
-
-    /// Read decrypted application data (up to `buf.len()` bytes).
-    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, TlsError> {
-        match self {
-            Self::Client(c) => c.read(buf),
-            Self::Server(c) => c.read(buf),
-        }
-    }
-
-    /// Take the outgoing ciphertext buffer for transmission.
-    pub fn take_outgoing(&mut self) -> Vec<u8> {
-        let bio = match self {
-            Self::Client(c) => c.network_write_bio,
-            Self::Server(c) => c.network_write_bio,
-        };
-        let mut outgoing = Vec::new();
-        let mut buf = [0u8; TLS_RECORD_MAX];
-        loop {
-            let n = unsafe { BIO_read(bio, buf.as_mut_ptr() as *mut c_void, buf.len() as c_int) };
-            if n > 0 {
-                outgoing.extend_from_slice(&buf[..n as usize]);
-            } else {
-                break;
-            }
-        }
-        outgoing
-    }
-
-    /// Initiate a clean TLS shutdown.
-    pub fn queue_close_notify(&mut self) -> Result<(), TlsError> {
-        let (ssl, saw_peer_closed) = match self {
-            Self::Client(c) => (c.ssl, &mut c.saw_peer_closed),
-            Self::Server(c) => (c.ssl, &mut c.saw_peer_closed),
-        };
-        let ret = unsafe { SSL_shutdown(ssl) };
-        if ret < 0 {
-            let err = unsafe { SSL_get_error(ssl, ret) };
-            match err {
-                SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => Ok(()),
-                _ => Err(TlsError::BoringSSL("SSL_shutdown failed")),
-            }
-        } else {
-            if ret == 1 {
-                *saw_peer_closed = true;
-            }
-            Ok(())
-        }
-    }
-
-    /// Whether the peer has closed their side.
-    pub fn peer_closed(&self) -> bool {
-        match self {
-            Self::Client(c) => c.saw_peer_closed,
-            Self::Server(c) => c.saw_peer_closed,
-        }
-    }
-
-    /// ALPN protocol negotiated during handshake.
-    pub fn alpn_protocol(&self) -> Option<&[u8]> {
-        let ssl = match self {
-            Self::Client(c) => c.ssl,
-            Self::Server(c) => c.ssl,
-        };
-        let mut data: *const u8 = core::ptr::null();
-        let mut len: u32 = 0;
-        unsafe {
-            SSL_get0_alpn_selected(ssl, &mut data, &mut len);
-        }
-        if data.is_null() || len == 0 {
-            None
-        } else {
-            Some(unsafe { core::slice::from_raw_parts(data, len as usize) })
-        }
-    }
-
-    /// The SNI servername the client sent (server side). Valid inside (and
-    /// after) the select-certificate callback.
-    pub fn servername(&self) -> Option<String> {
-        let ssl = match self {
-            Self::Client(c) => c.ssl,
-            Self::Server(c) => c.ssl,
-        };
-        ssl_servername(ssl)
-    }
-
-    /// Switch this connection's certificate configuration to `ctx` (the
-    /// canonical SNI pattern). Must be called from inside the
-    /// select-certificate callback (or while the handshake is paused from
-    /// it) — see `SSL_set_SSL_CTX` in vendor/boringssl/include/openssl/ssl.h.
-    ///
-    /// # Safety
-    ///
-    /// `ctx` must be a live `SSL_CTX*` from a `TlsServer` (same method /
-    /// x509_method). The caller keeps `ctx` alive for the connection's
-    /// lifetime (SSL_set_SSL_CTX up-refs it internally, but the caller's
-    /// original reference must not be released before the SSL is done if
-    /// it is the only other one).
-    pub unsafe fn switch_ssl_ctx(&mut self, ctx: *mut SSL_CTX) -> bool {
-        let ssl = match self {
-            Self::Client(c) => c.ssl,
-            Self::Server(c) => c.ssl,
-        };
-        let new_ctx = unsafe { SSL_set_SSL_CTX(ssl, ctx) };
-        !new_ctx.is_null()
-    }
-
-    /// The peer's leaf certificate as DER bytes (after handshake).
-    pub fn peer_certificate_der(&self) -> Option<Vec<u8>> {
-        let ssl = match self {
-            Self::Client(c) => c.ssl,
-            Self::Server(c) => c.ssl,
-        };
-        let x509 = unsafe { SSL_get_peer_certificate(ssl) };
-        if x509.is_null() {
-            return None;
-        }
-        let len = unsafe { i2d_X509(x509, core::ptr::null_mut()) };
-        if len <= 0 {
-            unsafe { X509_free(x509) };
-            return None;
-        }
-        let mut buf = vec![0u8; len as usize];
-        let mut p = buf.as_mut_ptr();
-        unsafe {
-            i2d_X509(x509, &mut p);
-            X509_free(x509);
-        }
-        Some(buf)
-    }
-
-    /// Set the curves list on the SSL connection (for profile-specific ordering).
-    pub fn set_curves_list(&mut self, curves: *const i8) -> c_int {
-        let ssl = match self {
-            Self::Client(c) => c.ssl,
-            Self::Server(c) => c.ssl,
-        };
-        unsafe { SSL_set1_curves_list(ssl, curves) }
-    }
-
-    /// Get the raw SSL pointer (for advanced use).
-    pub fn ssl_ptr(&self) -> *mut SSL {
-        match self {
-            Self::Client(c) => c.ssl,
-            Self::Server(c) => c.ssl,
-        }
-    }
-}
-
-// ─── ClientConn ──────────────────────────────────────────────────────
-
-impl ClientConn {
-    fn process(&mut self) -> Result<ProcessResult, TlsError> {
         let mut plaintext = Vec::new();
         let mut state = TlsState::Handshaking;
 
@@ -405,129 +256,13 @@ impl ClientConn {
                 let err = unsafe { SSL_get_error(self.ssl, ret) };
                 match err {
                     SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => {}
-                    SSL_ERROR_ZERO_RETURN => {
-                        self.saw_peer_closed = true;
-                        state = TlsState::PeerClosed;
-                    }
-                    SSL_ERROR_SSL => {
-                        return Err(TlsError::BoringSSL("handshake failed (SSL_ERROR_SSL)"));
-                    }
-                    _ => {
-                        return Err(TlsError::BoringSSL("handshake failed"));
-                    }
-                }
-            }
-        }
-
-        if self.handshake_done {
-            let mut buf = vec![0u8; TLS_RECORD_MAX];
-            loop {
-                let n = unsafe {
-                    SSL_read(
-                        self.ssl,
-                        buf.as_mut_ptr() as *mut c_void,
-                        buf.len() as c_int,
-                    )
-                };
-                if n > 0 {
-                    plaintext.push(buf[..n as usize].to_vec());
-                } else {
-                    let err = unsafe { SSL_get_error(self.ssl, n) };
-                    match err {
-                        SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => break,
-                        SSL_ERROR_ZERO_RETURN => {
-                            self.saw_peer_closed = true;
-                            state = TlsState::PeerClosed;
-                            break;
-                        }
-                        _ => break,
-                    }
-                }
-            }
-            if !self.saw_peer_closed {
-                state = TlsState::Active;
-            }
-        }
-
-        let outgoing_bytes = unsafe { BIO_ctrl_pending(self.network_write_bio) };
-
-        Ok(ProcessResult {
-            plaintext,
-            outgoing_bytes: outgoing_bytes as usize,
-            state,
-        })
-    }
-
-    fn write(&mut self, plaintext: &[u8]) -> Result<usize, TlsError> {
-        if !self.handshake_done {
-            return Err(TlsError::NotReady);
-        }
-        let n = unsafe {
-            SSL_write(
-                self.ssl,
-                plaintext.as_ptr() as *const c_void,
-                plaintext.len() as c_int,
-            )
-        };
-        if n > 0 {
-            Ok(n as usize)
-        } else {
-            let err = unsafe { SSL_get_error(self.ssl, n) };
-            match err {
-                SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => Err(TlsError::NotReady),
-                _ => Err(TlsError::EncryptFailed),
-            }
-        }
-    }
-
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, TlsError> {
-        if !self.handshake_done {
-            return Err(TlsError::NotReady);
-        }
-        let n = unsafe {
-            SSL_read(
-                self.ssl,
-                buf.as_mut_ptr() as *mut c_void,
-                buf.len() as c_int,
-            )
-        };
-        if n > 0 {
-            Ok(n as usize)
-        } else {
-            let err = unsafe { SSL_get_error(self.ssl, n) };
-            match err {
-                SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => Err(TlsError::NotReady),
-                SSL_ERROR_ZERO_RETURN => {
-                    self.saw_peer_closed = true;
-                    Err(TlsError::NotReady)
-                }
-                _ => Err(TlsError::BoringSSL("SSL_read failed")),
-            }
-        }
-    }
-}
-
-// ─── ServerConn ──────────────────────────────────────────────────────
-
-impl ServerConn {
-    fn process(&mut self) -> Result<ProcessResult, TlsError> {
-        let mut plaintext = Vec::new();
-        let mut state = TlsState::Handshaking;
-
-        if !self.handshake_done {
-            let ret = unsafe { SSL_do_handshake(self.ssl) };
-            if ret == 1 {
-                self.handshake_done = true;
-                state = TlsState::Active;
-            } else {
-                let err = unsafe { SSL_get_error(self.ssl, ret) };
-                match err {
-                    SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => {}
-                    SSL_ERROR_PENDING_CERTIFICATE => {
+                    SSL_ERROR_PENDING_CERTIFICATE if self.role == Role::Server => {
                         // Certificate selection (SNI) is pending: the
                         // select-certificate callback returned retry. The
                         // caller resolves the credential asynchronously and
-                        // drives `process` again.
+                        // drives `process` again. (Client-side connections
+                        // never register the select-certificate callback,
+                        // so they fall through to the generic error path.)
                         state = TlsState::PendingCertificate;
                     }
                     SSL_ERROR_ZERO_RETURN => {
@@ -583,7 +318,8 @@ impl ServerConn {
         })
     }
 
-    fn write(&mut self, plaintext: &[u8]) -> Result<usize, TlsError> {
+    /// Encrypt application data and queue it for sending.
+    pub fn write(&mut self, plaintext: &[u8]) -> Result<usize, TlsError> {
         if !self.handshake_done {
             return Err(TlsError::NotReady);
         }
@@ -605,7 +341,8 @@ impl ServerConn {
         }
     }
 
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, TlsError> {
+    /// Read decrypted application data (up to `buf.len()` bytes).
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, TlsError> {
         if !self.handshake_done {
             return Err(TlsError::NotReady);
         }
@@ -630,6 +367,111 @@ impl ServerConn {
             }
         }
     }
+
+    /// Take the outgoing ciphertext buffer for transmission.
+    pub fn take_outgoing(&mut self) -> Vec<u8> {
+        let bio = self.network_write_bio;
+        let mut outgoing = Vec::new();
+        let mut buf = [0u8; TLS_RECORD_MAX];
+        loop {
+            let n = unsafe { BIO_read(bio, buf.as_mut_ptr() as *mut c_void, buf.len() as c_int) };
+            if n > 0 {
+                outgoing.extend_from_slice(&buf[..n as usize]);
+            } else {
+                break;
+            }
+        }
+        outgoing
+    }
+
+    /// Initiate a clean TLS shutdown.
+    pub fn queue_close_notify(&mut self) -> Result<(), TlsError> {
+        let ret = unsafe { SSL_shutdown(self.ssl) };
+        if ret < 0 {
+            let err = unsafe { SSL_get_error(self.ssl, ret) };
+            match err {
+                SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => Ok(()),
+                _ => Err(TlsError::BoringSSL("SSL_shutdown failed")),
+            }
+        } else {
+            if ret == 1 {
+                self.saw_peer_closed = true;
+            }
+            Ok(())
+        }
+    }
+
+    /// Whether the peer has closed their side.
+    pub fn peer_closed(&self) -> bool {
+        self.saw_peer_closed
+    }
+
+    /// ALPN protocol negotiated during handshake.
+    pub fn alpn_protocol(&self) -> Option<&[u8]> {
+        let mut data: *const u8 = core::ptr::null();
+        let mut len: u32 = 0;
+        unsafe {
+            SSL_get0_alpn_selected(self.ssl, &mut data, &mut len);
+        }
+        if data.is_null() || len == 0 {
+            None
+        } else {
+            Some(unsafe { core::slice::from_raw_parts(data, len as usize) })
+        }
+    }
+
+    /// The SNI servername the client sent (server side). Valid inside (and
+    /// after) the select-certificate callback.
+    pub fn servername(&self) -> Option<String> {
+        ssl_servername(self.ssl)
+    }
+
+    /// Switch this connection's certificate configuration to `ctx` (the
+    /// canonical SNI pattern). Must be called from inside the
+    /// select-certificate callback (or while the handshake is paused from
+    /// it) — see `SSL_set_SSL_CTX` in vendor/boringssl/include/openssl/ssl.h.
+    ///
+    /// # Safety
+    ///
+    /// `ctx` must be a live `SSL_CTX*` from a `TlsServer` (same method /
+    /// x509_method). The caller keeps `ctx` alive for the connection's
+    /// lifetime (SSL_set_SSL_CTX up-refs it internally, but the caller's
+    /// original reference must not be released before the SSL is done if
+    /// it is the only other one).
+    pub unsafe fn switch_ssl_ctx(&mut self, ctx: *mut SSL_CTX) -> bool {
+        let new_ctx = unsafe { SSL_set_SSL_CTX(self.ssl, ctx) };
+        !new_ctx.is_null()
+    }
+
+    /// The peer's leaf certificate as DER bytes (after handshake).
+    pub fn peer_certificate_der(&self) -> Option<Vec<u8>> {
+        let x509 = unsafe { SSL_get_peer_certificate(self.ssl) };
+        if x509.is_null() {
+            return None;
+        }
+        let len = unsafe { i2d_X509(x509, core::ptr::null_mut()) };
+        if len <= 0 {
+            unsafe { X509_free(x509) };
+            return None;
+        }
+        let mut buf = vec![0u8; len as usize];
+        let mut p = buf.as_mut_ptr();
+        unsafe {
+            i2d_X509(x509, &mut p);
+            X509_free(x509);
+        }
+        Some(buf)
+    }
+
+    /// Set the curves list on the SSL connection (for profile-specific ordering).
+    pub fn set_curves_list(&mut self, curves: *const i8) -> c_int {
+        unsafe { SSL_set1_curves_list(self.ssl, curves) }
+    }
+
+    /// Get the raw SSL pointer (for advanced use).
+    pub fn ssl_ptr(&self) -> *mut SSL {
+        self.ssl
+    }
 }
 
 // ─── Drop ────────────────────────────────────────────────────────────
@@ -638,14 +480,10 @@ impl Drop for TlsConnection {
     fn drop(&mut self) {
         // SSL_free frees the internal BIOs set via SSL_set_bio.
         // We only need to free the network-side (peer) BIOs.
-        let (ssl, network_read_bio, network_write_bio) = match self {
-            Self::Client(c) => (c.ssl, c.network_read_bio, c.network_write_bio),
-            Self::Server(c) => (c.ssl, c.network_read_bio, c.network_write_bio),
-        };
         unsafe {
-            SSL_free(ssl);
-            BIO_free(network_read_bio);
-            BIO_free(network_write_bio);
+            SSL_free(self.ssl);
+            BIO_free(self.network_read_bio);
+            BIO_free(self.network_write_bio);
         }
     }
 }

@@ -8,7 +8,6 @@ use bun_boringssl_sys::boringssl::*;
 unsafe extern "C" {
     fn SSL_CTX_get_cert_store(ctx: *mut SSL_CTX) -> *mut X509_STORE;
     fn X509_STORE_add_cert(store: *mut X509_STORE, x509: *mut X509) -> core::ffi::c_int;
-    safe fn TLS_method() -> *const SSL_METHOD;
 }
 
 /// BoringSSL-backed TLS client.
@@ -22,32 +21,16 @@ pub struct TlsClient {
 impl TlsClient {
     /// Create a new TLS client with default BoringSSL configuration.
     ///
-    /// Uses the crypto-X509 method (`TLS_method`): the trust-store /
-    /// verify-param APIs (`SSL_CTX_get_cert_store`, …) assert on a
-    /// buffers-method ctx (`check_ssl_ctx_x509_method`), and the client
-    /// verifies peer certificates by default. Wire behavior is identical
-    /// to the buffers method; this only selects the certificate
-    /// representation inside BoringSSL.
+    /// Uses the crypto-X509 method (`TLS_method`) — see
+    /// [`crate::connection::new_tls_ctx`] for why — because the
+    /// trust-store / verify-param APIs (`SSL_CTX_get_cert_store`, …)
+    /// assert on a buffers-method ctx, and the client verifies peer
+    /// certificates by default.
     pub fn new() -> Result<Self, TlsError> {
         // Ensure BoringSSL is initialized
         bun_boringssl::load();
 
-        let ctx = unsafe { SSL_CTX_new(TLS_method()) };
-        if ctx.is_null() {
-            return Err(TlsError::BoringSSL("SSL_CTX_new failed"));
-        }
-
-        // Configure cipher list (same as Bun upstream)
-        let ok = unsafe {
-            SSL_CTX_set_cipher_list(
-                ctx,
-                c"TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305".as_ptr(),
-            )
-        };
-        if ok == 0 {
-            unsafe { SSL_CTX_free(ctx) };
-            return Err(TlsError::BoringSSL("SSL_CTX_set_cipher_list failed"));
-        }
+        let ctx = crate::connection::new_tls_ctx()?;
 
         // Client-side session resumption: enable the new-session callback so
         // connections routed through this client (servo net fetch, node:tls)

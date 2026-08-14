@@ -10,20 +10,8 @@ use core::ffi::{c_long, c_void};
 
 use crate::connection::{
     SSL_CTX_set_select_certificate_cb as ffi_set_select_cert_cb, SslClientHello, TlsConnection,
-    TlsError,
+    TlsError, new_tls_ctx,
 };
-
-// `TLS_method` is compiled into the vendored library but not yet declared
-// in the hand-rolled bindings (only `TLS_with_buffers_method` is).
-//
-// The SERVER ctx must use the crypto-X509 method: the certificate loaders
-// this type calls (`SSL_CTX_use_certificate` / `SSL_CTX_add1_chain_cert` /
-// `SSL_CTX_use_PrivateKey`) are X509-based and assert
-// (`check_ssl_ctx_x509_method`, ssl_x509.cc) on a buffers-method ctx. The
-// buffers method is only legal with the *_ASN1 DER loaders.
-unsafe extern "C" {
-    safe fn TLS_method() -> *const SSL_METHOD;
-}
 
 /// BoringSSL-backed TLS server.
 ///
@@ -36,26 +24,13 @@ impl TlsServer {
     /// Create a new TLS server with PEM-encoded certificate and private key.
     ///
     /// Parses the PEM data using BoringSSL's `PEM_read_bio_X509` and
-    /// `PEM_read_bio_PrivateKey`, then loads them into the SSL_CTX.
+    /// `PEM_read_bio_PrivateKey`, then loads them into the SSL_CTX. The
+    /// ctx uses the crypto-X509 method — see [`new_tls_ctx`] for why the
+    /// PEM loaders require it.
     pub fn new(pem_certs: &str, pem_key: &str) -> Result<Self, TlsError> {
         bun_boringssl::load();
 
-        let ctx = unsafe { SSL_CTX_new(TLS_method()) };
-        if ctx.is_null() {
-            return Err(TlsError::BoringSSL("SSL_CTX_new failed"));
-        }
-
-        // Configure cipher list
-        let ok = unsafe {
-            SSL_CTX_set_cipher_list(
-                ctx,
-                c"TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305".as_ptr(),
-            )
-        };
-        if ok == 0 {
-            unsafe { SSL_CTX_free(ctx) };
-            return Err(TlsError::BoringSSL("SSL_CTX_set_cipher_list failed"));
-        }
+        let ctx = new_tls_ctx()?;
 
         // Load certificate chain from PEM
         let cert_bio = unsafe {
@@ -138,22 +113,7 @@ impl TlsServer {
     pub fn new_from_der(cert_der: &[u8], key_der: &[u8]) -> Result<Self, TlsError> {
         bun_boringssl::load();
 
-        let ctx = unsafe { SSL_CTX_new(TLS_method()) };
-        if ctx.is_null() {
-            return Err(TlsError::BoringSSL("SSL_CTX_new failed"));
-        }
-
-        // Configure cipher list
-        let ok = unsafe {
-            SSL_CTX_set_cipher_list(
-                ctx,
-                c"TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305".as_ptr(),
-            )
-        };
-        if ok == 0 {
-            unsafe { SSL_CTX_free(ctx) };
-            return Err(TlsError::BoringSSL("SSL_CTX_set_cipher_list failed"));
-        }
+        let ctx = new_tls_ctx()?;
 
         // Load certificate from DER
         let ok = unsafe { SSL_CTX_use_certificate_ASN1(ctx, cert_der.len(), cert_der.as_ptr()) };
