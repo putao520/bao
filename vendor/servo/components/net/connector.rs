@@ -111,7 +111,7 @@ pub fn set_stealth_tls_config(config: Option<StealthTlsWireConfig>) {
 }
 
 /// Read the current global stealth TLS/HTTP2 configuration.
-fn get_stealth_tls_config() -> Option<StealthTlsWireConfig> {
+pub(crate) fn get_stealth_tls_config() -> Option<StealthTlsWireConfig> {
     STEALTH_TLS_CONFIG.read().unwrap().clone()
 }
 

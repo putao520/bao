@@ -30,6 +30,10 @@ mod websocket_loader;
 /// An implementation of the [Fetch specification](https://fetch.spec.whatwg.org/)
 pub mod fetch {
     pub mod cors_cache;
+    // Bao fusion (U2 phase 0): raw-pointer ownership protocol with the
+    // bun_http AsyncHTTP heap boxes — same discipline as fetch_async.rs.
+    #[allow(unsafe_code)]
+    pub mod bun_bridge;
     pub mod fetch_params;
     pub mod headers;
     pub mod methods;

@@ -1156,6 +1156,64 @@ impl HttpThread {
         }
         this.wakeup();
     }
+
+    /// Cross-thread abort entry: enqueue a shutdown for the request owning
+    /// `async_http_id`. Port of Zig `HTTPThread.scheduleShutdown` called from
+    /// a non-HTTP thread on AbortSignal; the HTTP-thread tick
+    /// (`drain_queued_shutdowns`) looks the id up in the abort tracker and
+    /// force-closes the socket via `close_and_abort` (`err!(Aborted)`).
+    ///
+    /// Safe to call from any thread, mirroring [`Self::schedule`]: the push
+    /// is guarded by `queued_shutdowns_lock` (shared with
+    /// `drain_queued_shutdowns` on the HTTP thread) and `wakeup()` is
+    /// atomics + raw FFI.
+    pub fn schedule_shutdown_from_any_thread(async_http_id: u32) {
+        if async_http_id == 0 {
+            return;
+        }
+        // Release guard + assertion: same pairing with `init_once` as
+        // `schedule()` above.
+        assert!(
+            crate::HTTP_THREAD_INIT.load(Ordering::Acquire),
+            "HTTPThread::schedule_shutdown_from_any_thread() called before HTTPThread::init()"
+        );
+        // SAFETY: `HTTP_THREAD_INIT == true` ⇒ `HTTP_THREAD` is fully
+        // written. Raw field access (not `ParentRef`): `queued_shutdowns` is
+        // a plain `Vec` needing `&mut` for `push`, but every read/write —
+        // here and in `drain_queued_shutdowns` — happens under
+        // `queued_shutdowns_lock`, so the lock serializes all access and no
+        // aliasing is observable.
+        let this: *mut Self = unsafe {
+            (*crate::HTTP_THREAD.get_unchecked()).as_mut_ptr()
+        };
+        unsafe {
+            let shutdowns = ::std::ptr::addr_of_mut!((*this).queued_shutdowns);
+            let lock = ::std::ptr::addr_of!((*this).queued_shutdowns_lock);
+            {
+                let _guard = (*lock).lock_guard();
+                (*shutdowns).push(ShutdownMessage { async_http_id });
+            }
+        }
+        // Same has_awoken handshake as `schedule()`.
+        // SAFETY: `this` points at the initialized HttpThread; both fields
+        // below are designed for cross-thread shared access.
+        let has_awoken = unsafe { &*::std::ptr::addr_of!((*this).has_awoken) };
+        if !has_awoken.load(Ordering::Acquire) {
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(100);
+            while !has_awoken.load(Ordering::Acquire) {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "HTTPThread::schedule_shutdown_from_any_thread() timed out waiting for HTTPThread::init()"
+                    );
+                }
+                ::std::hint::spin_loop();
+            }
+        }
+        // SAFETY: wakeup only touches atomics + the uws loop pointer, both
+        // valid after on_start() (guaranteed by the has_awoken check above).
+        unsafe { (&*this).wakeup() };
+    }
 }
 
 /// Evict the least-recently-used SSL context cache entry.

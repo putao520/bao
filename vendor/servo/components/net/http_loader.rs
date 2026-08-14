@@ -422,7 +422,7 @@ fn auth_from_cache(
 
 /// Messages from the IPC route to the fetch worker,
 /// used to fill the body with bytes coming-in over IPC.
-enum BodyChunk {
+pub(crate) enum BodyChunk {
     /// A chunk of bytes.
     Chunk(GenericSharedMemory),
     /// Body is done.
@@ -441,7 +441,7 @@ enum BodyStream {
 
 /// The sink side of the body passed to hyper,
 /// used to enqueue chunks.
-enum BodySink {
+pub(crate) enum BodySink {
     /// A Tokio sender used to feed chunks to the network stream.
     Chunked(TokioSender<Result<Frame<Bytes>, hyper::Error>>),
     /// A Crossbeam sender used to send chunks to the fetch worker,
@@ -498,7 +498,7 @@ fn log_fetch_terminated_send_failure(terminated_with_error: bool, context: &str)
     );
 }
 
-const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
+pub(crate) const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
 
 #[allow(clippy::too_many_arguments)]
 #[servo_tracing::instrument(skip_all, fields(url=url.as_str()))]
@@ -697,7 +697,7 @@ async fn obtain_response(
 }
 
 /// Setup the callback mechanism to forward chunks from the request received to the `chunk_requester`.
-fn obtain_response_setup_router_callback(
+pub(crate) fn obtain_response_setup_router_callback(
     devtools_bytes: StdArc<Mutex<Vec<u8>>>,
     chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
     sink: BodySink,
@@ -2197,27 +2197,43 @@ async fn http_network_fetch(
         // Let connection be the result of obtaining a connection, given networkPartitionKey,
         // request’s current URL, includeCredentials, and newConnection.
         _ => {
-            let response_future = obtain_response(
-                &context.state.client,
-                &url,
-                &request.method,
-                &mut request.headers,
-                body,
-                request
-                    .body
-                    .as_ref()
-                    .is_some_and(|body| body.source_is_null()),
-                &request.pipeline_id,
-                Some(&request_id),
-                request.destination,
-                is_xhr,
-                context,
-                fetch_terminated_sender,
-                browsing_context_id,
-            );
+            // Bao fusion (U2 phase 0): flag-gated dispatch to the bun_bridge
+            // fetch driver (bun HTTPThread + stealth TLS). Default OFF — the
+            // hyper path below is byte-for-byte the original behaviour.
+            let response_future = if crate::fetch::bun_bridge::page_net_bun_enabled() {
+                crate::fetch::bun_bridge::obtain_response_bun(
+                    &url,
+                    &request.method,
+                    &mut request.headers,
+                    body,
+                    context,
+                    fetch_terminated_sender,
+                )
+                .await
+            } else {
+                obtain_response(
+                    &context.state.client,
+                    &url,
+                    &request.method,
+                    &mut request.headers,
+                    body,
+                    request
+                        .body
+                        .as_ref()
+                        .is_some_and(|body| body.source_is_null()),
+                    &request.pipeline_id,
+                    Some(&request_id),
+                    request.destination,
+                    is_xhr,
+                    context,
+                    fetch_terminated_sender,
+                    browsing_context_id,
+                )
+                .await
+            };
 
             // This will only get the headers, the body is read later
-            let (res, msg) = match response_future.await {
+            let (res, msg) = match response_future {
                 Ok(wrapped_response) => wrapped_response,
                 Err(error) => return Response::network_error(error),
             };

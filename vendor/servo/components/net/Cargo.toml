@@ -31,6 +31,13 @@ bao_stealth = { path = "../../../../src/bao_stealth" }
 bun_dns = { path = "../../../../src/dns" }
 bun_boringssl = { path = "../../../../src/boringssl" }
 bun_boringssl_sys = { path = "../../../../src/boringssl_sys" }
+# Bao fusion (U2 page-network unification, phase 0): fetch driver on bun's
+# HTTPThread (single epoll thread + stealth TLS), flag-gated behind
+# BAO_PAGE_NET_BUN (default off — hyper path untouched).
+bun_core = { path = "../../../../src/bun_core" }
+bun_http = { path = "../../../../src/http" }
+bun_threading = { path = "../../../../src/threading" }
+bun_url = { path = "../../../../src/url" }
 async-compression = { workspace = true, features = ["brotli", "gzip", "tokio", "zlib", "zstd"] }
 async-recursion = { workspace = true }
 async-tungstenite = { workspace = true }
@@ -105,6 +112,11 @@ webpki-roots = { workspace = true }
 webrender_api = { workspace = true }
 
 [dev-dependencies]
+# Link leg for the bun_bridge tests: the bun_http native seam (uws epoll
+# loop, boringssl, lsquic archives) — same dedicated test-linking provider
+# bun_http's own tests use (force_link called from the tests).
+bao_native_stubs = { path = "../../../../src/bao_native_stubs" }
+bun_io = { path = "../../../../src/io" }
 flate2 = { workspace = true }
 fst = { workspace = true }
 hyper = { workspace = true, features = ["full"] }
