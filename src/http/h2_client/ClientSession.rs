@@ -328,6 +328,17 @@ impl ClientSession {
         socket: Socket,
         client: &HTTPClient,
     ) -> SessionPtr {
+        // HTTP/2 fingerprint (REQ-STL-002-C3): a Firefox-style profile reserves
+        // its priority-tree streams (3/5/7/11) with PRIORITY frames in the
+        // preface; real request streams must start above the highest reserved
+        // id (observed Firefox first request stream = 13). Chrome-style
+        // profiles reserve nothing and keep the canonical start at 1.
+        let next_stream_id = wire::first_request_stream_id(
+            client
+                .tls_props
+                .as_ref()
+                .and_then(|cfg| cfg.h2_priority_frames.as_deref()),
+        );
         let this = bun_core::heap::into_raw(Box::new(ClientSession {
             ref_count: Cell::new(1),
             socket_ref_owed: Cell::new(false),
@@ -343,7 +354,7 @@ impl ClientSession {
             write_buffer: bun_io::StreamBuffer::default(),
             read_buffer: Vec::new(),
             streams: ArrayHashMap::default(),
-            next_stream_id: 1,
+            next_stream_id,
             expecting_continuation: 0,
             pending_attach: Vec::new(),
             preface_sent: false,

@@ -58,6 +58,31 @@ pub fn write_preface(session: &mut ClientSession) {
             }
         });
     session.write_window_update(0, window_size - wire::DEFAULT_WINDOW_SIZE);
+
+    // HTTP/2 fingerprint (REQ-STL-002-C3): Firefox-style profiles emit
+    // explicit PRIORITY frames for their dependency-tree streams right
+    // after the connection window update; Chrome-style profiles send none.
+    if let Some(frames) = session
+        .ssl_config
+        .as_ref()
+        .and_then(|cfg| cfg.h2_priority_frames.as_deref())
+    {
+        // Materialise the ([u8; 5] payload, stream id) pairs before writing:
+        // `frames` borrows `session.ssl_config`, and write_frame needs `&mut`.
+        let wire_frames: Vec<([u8; 5], u32)> = frames
+            .iter()
+            .map(|frame| (wire::priority_payload(frame), frame.stream_id))
+            .collect();
+        for (payload, stream_id) in wire_frames {
+            session.write_frame(
+                wire::FrameType::HTTP_FRAME_PRIORITY,
+                0,
+                stream_id,
+                &payload,
+            );
+        }
+    }
+
     session.preface_sent = true;
 }
 
@@ -147,20 +172,27 @@ pub fn write_request(
         }
     }
 
-    encode_header(session, &mut encoded, b":method", request.method, false)?;
-    encode_header(session, &mut encoded, b":scheme", b"https", false)?;
-    encode_header(session, &mut encoded, b":authority", authority, false)?;
-    encode_header(
-        session,
-        &mut encoded,
-        b":path",
-        if !request.path.is_empty() {
-            request.path
-        } else {
-            b"/"
-        },
-        false,
-    )?;
+    // Pseudo-header order is part of the HTTP/2 fingerprint (REQ-STL-002):
+    // Firefox and Chrome differ, so the HPACK emission order — which is also
+    // the wire order — must follow the profile injected via SSLConfig.
+    let path: &[u8] = if !request.path.is_empty() {
+        request.path
+    } else {
+        b"/"
+    };
+    let pseudo: [(&[u8], &[u8]); 4] = [
+        (b":method", request.method),
+        (b":scheme", b"https"),
+        (b":authority", authority),
+        (b":path", path),
+    ];
+    let order = session
+        .ssl_config
+        .as_ref()
+        .and_then(|cfg| cfg.h2_pseudo_header_order.as_deref());
+    for &(name, value) in wire::pseudo_permutation(order).iter().map(|&i| &pseudo[i]) {
+        encode_header(session, &mut encoded, name, value, false)?;
+    }
 
     for h in request.headers {
         // §8.2.1: field names MUST be lowercase on the wire. copy_lowercase_if_needed

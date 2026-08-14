@@ -10,12 +10,15 @@ pub enum PriorityFrameMode {
     None,
 }
 
-/// One PRIORITY frame payload (RFC 7540 §6.3): stream dependency + weight.  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+/// One PRIORITY frame (RFC 7540 §6.3): stream id + dependency + weight.  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
 ///
 /// `weight` is the wire value (0-255); the effective HTTP/2 weight is `weight + 1`
-/// (1-256), per RFC 7540 §6.3.
+/// (1-256), per RFC 7540 §6.3. `stream_id` is the frame's stream — the
+/// priority-tree node the frame reserves (Firefox reserves 3/5/7/11 on
+/// connection setup, so real request streams start at 13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PriorityFrame {
+    pub stream_id: u32,
     pub stream_dependency: u32,
     pub exclusive: bool,
     pub weight: u8,
@@ -55,21 +58,25 @@ impl Http2Fingerprint {
             // Matches observed Firefox connection-setup traffic.
             priority_frames: vec![
                 PriorityFrame {
+                    stream_id: 3,
                     stream_dependency: 0,
                     exclusive: false,
                     weight: 40,
                 },
                 PriorityFrame {
+                    stream_id: 5,
                     stream_dependency: 0,
                     exclusive: false,
                     weight: 109,
                 },
                 PriorityFrame {
+                    stream_id: 7,
                     stream_dependency: 0,
                     exclusive: false,
                     weight: 138,
                 },
                 PriorityFrame {
+                    stream_id: 11,
                     stream_dependency: 0,
                     exclusive: false,
                     weight: 255,
@@ -383,6 +390,9 @@ mod tests {
         let ff = Http2Fingerprint::firefox();
         for frame in ff.priority_frame_payload() {
             assert!(frame.weight <= 255);
+            // Stream id must be an odd client stream > 0 (or the frame would
+            // target a server-initiated / invalid stream).
+            assert!(frame.stream_id % 2 == 1 && frame.stream_id > 0);
             // Stream dependency references a valid prior stream (0 = root).
         }
     }
@@ -400,5 +410,28 @@ mod tests {
         // REQ-STL-002-C3: Firefox emits its known dependency-tree PRIORITY frames.
         let ff = Http2Fingerprint::firefox();
         assert_eq!(ff.priority_frame_payload().len(), 4);
+    }
+
+    #[test]
+    fn firefox_priority_frames_reserve_streams_3_5_7_11() {
+        // REQ-STL-002-C3: observed Firefox connection-setup traffic reserves
+        // priority-tree nodes on streams 3/5/7/11 (real requests start at 13).
+        let ff = Http2Fingerprint::firefox();
+        let ids: Vec<u32> = ff
+            .priority_frame_payload()
+            .iter()
+            .map(|f| f.stream_id)
+            .collect();
+        assert_eq!(ids, vec![3, 5, 7, 11]);
+        // Weights stay paired with their observed stream id.
+        let by_stream: Vec<(u32, u8)> = ff
+            .priority_frame_payload()
+            .iter()
+            .map(|f| (f.stream_id, f.weight))
+            .collect();
+        assert_eq!(
+            by_stream,
+            vec![(3, 40), (5, 109), (7, 138), (11, 255)]
+        );
     }
 }

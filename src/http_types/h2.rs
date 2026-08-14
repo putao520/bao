@@ -17,11 +17,108 @@ pub const CLIENT_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 pub const MAX_WINDOW_SIZE: u32 = i32::MAX as u32;
 pub const MAX_STREAM_ID: u32 = i32::MAX as u32;
+/// 31-bit stream-id mask — the top bit of a u32 stream field is reserved;
+/// in a PRIORITY payload it carries the exclusive-dependency flag
+/// (RFC 7540 §6.3).
+pub const STREAM_ID_MASK: u32 = 0x7FFF_FFFF;
+/// PRIORITY payload: exclusive-dependency bit (top bit of the 32-bit
+/// stream-dependency field, RFC 7540 §6.3).
+pub const EXCLUSIVE_FLAG: u32 = 0x8000_0000;
 /// `std.math.maxInt(u24)`
 pub const MAX_FRAME_SIZE: u32 = 0x00FF_FFFF;
 pub const DEFAULT_WINDOW_SIZE: u32 = u16::MAX as u32;
 /// PORT NOTE: Zig type was `u24`; Rust has no `u24`, so widened to `u32`.
 pub const DEFAULT_MAX_FRAME_SIZE: u32 = 16384;
+
+// ─── PRIORITY / pseudo-header fingerprint wire logic (REQ-STL-002) ──────
+
+/// One HTTP/2 PRIORITY frame for the connection preface (RFC 7540 §6.3):
+/// 5-byte payload = stream dependency (31-bit) + exclusive bit + weight.
+/// Neutral wire shape shared by `SSLConfig` (bun_http) and the stealth
+/// profile plumbing (bun_runtime) — tier-1 pure data, no crate deps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct H2PriorityFrame {
+    /// Stream this PRIORITY frame reserves/describes (odd, client-side).
+    pub stream_id: u32,
+    /// Stream the above depends on (0 = root of the tree).
+    pub stream_dependency: u32,
+    /// Exclusive-dependency flag (RFC 7540 §5.3.1).
+    pub exclusive: bool,
+    /// Wire weight (0-255); effective weight is `weight + 1`.
+    pub weight: u8,
+}
+
+/// RFC 7540 §6.3 PRIORITY payload: 31-bit stream dependency with the
+/// exclusive flag in the top bit, then the 8-bit wire weight.
+#[inline]
+pub fn priority_payload(frame: &H2PriorityFrame) -> [u8; 5] {
+    let mut dependency = frame.stream_dependency & STREAM_ID_MASK;
+    if frame.exclusive {
+        dependency |= EXCLUSIVE_FLAG;
+    }
+    let mut payload = [0u8; 5];
+    payload[0..4].copy_from_slice(&dependency.to_be_bytes());
+    payload[4] = frame.weight;
+    payload
+}
+
+/// Index of a request pseudo-header name in the canonical
+/// `[":method", ":scheme", ":authority", ":path"]` table.
+#[inline]
+fn pseudo_index(name: &[u8]) -> Option<usize> {
+    Some(match name {
+        b":method" => 0,
+        b":scheme" => 1,
+        b":authority" => 2,
+        b":path" => 3,
+        _ => return None,
+    })
+}
+
+/// Permutation of the canonical pseudo-header table implied by the profile's
+/// `h2_pseudo_header_order`. HPACK preserves emission order on the wire, so
+/// this *is* the fingerprint order (Firefox: method/path/authority/scheme;
+/// Chrome: method/authority/scheme/path). Unknown or missing names fall back
+/// to the canonical relative order (appended after the listed ones);
+/// `None`/empty keeps the fixed default. Pure — unit-testable standalone.
+pub fn pseudo_permutation(order: Option<&[Box<str>]>) -> [usize; 4] {
+    let mut perm = [usize::MAX; 4];
+    let mut filled = 0usize;
+    if let Some(order) = order {
+        for name in order {
+            if let Some(i) = pseudo_index(name.as_bytes()) {
+                if !perm[..filled].contains(&i) {
+                    perm[filled] = i;
+                    filled += 1;
+                }
+            }
+        }
+    }
+    for i in 0..4 {
+        if filled == 4 {
+            break;
+        }
+        if !perm[..filled].contains(&i) {
+            perm[filled] = i;
+            filled += 1;
+        }
+    }
+    perm
+}
+
+/// First stream id a request may use, given the profile's reserved
+/// PRIORITY-tree streams (REQ-STL-002-C3). Reserving streams 3/5/7/11 means
+/// the first HEADERS goes out on 13 (observed Firefox behaviour); no reserved
+/// streams → canonical 1 (Chrome). Pure — unit-testable standalone.
+pub fn first_request_stream_id(frames: Option<&[H2PriorityFrame]>) -> u32 {
+    frames
+        .and_then(|frames| frames.iter().map(|f| f.stream_id).max())
+        .map_or(1, |max_reserved| {
+            // +2 keeps the client-side odd parity; clamp so a hostile
+            // profile can't push allocation past the protocol limit.
+            (max_reserved + 2).min(MAX_STREAM_ID)
+        })
+}
 
 // ─── frame type / flags ─────────────────────────
 //
@@ -392,6 +489,161 @@ mod tests {
     #[test]
     fn max_frame_size_is_u24_max() {
         assert_eq!(MAX_FRAME_SIZE, 0x00FF_FFFF);
+    }
+
+    // ─── PRIORITY / pseudo-header fingerprint wire logic (REQ-STL-002) ──
+
+    const CANONICAL: [&[u8]; 4] = [b":method", b":scheme", b":authority", b":path"];
+
+    fn order(names: &[&str]) -> Option<Box<[Box<str>]>> {
+        Some(
+            names
+                .iter()
+                .map(|n| n.to_string().into_boxed_str())
+                .collect(),
+        )
+    }
+
+    fn perm_names(perm: [usize; 4]) -> Vec<&'static str> {
+        perm.iter()
+            .map(|&i| core::str::from_utf8(CANONICAL[i]).unwrap())
+            .collect()
+    }
+
+    /// None → fixed default order (:method :scheme :authority :path).
+    #[test]
+    fn pseudo_permutation_none_keeps_canonical_order() {
+        assert_eq!(pseudo_permutation(None), [0, 1, 2, 3]);
+    }
+
+    /// Empty profile order behaves like none (defensive fallback).
+    #[test]
+    fn pseudo_permutation_empty_keeps_canonical_order() {
+        let empty: Option<Box<[Box<str>]>> = Some(Vec::new().into_boxed_slice());
+        assert_eq!(pseudo_permutation(empty.as_deref()), [0, 1, 2, 3]);
+    }
+
+    /// Firefox order: :method :path :authority :scheme.
+    #[test]
+    fn pseudo_permutation_firefox() {
+        let ff = order(&[":method", ":path", ":authority", ":scheme"]);
+        assert_eq!(
+            perm_names(pseudo_permutation(ff.as_deref())),
+            vec![":method", ":path", ":authority", ":scheme"]
+        );
+    }
+
+    /// Chrome order: :method :authority :scheme :path.
+    #[test]
+    fn pseudo_permutation_chrome() {
+        let ch = order(&[":method", ":authority", ":scheme", ":path"]);
+        assert_eq!(
+            perm_names(pseudo_permutation(ch.as_deref())),
+            vec![":method", ":authority", ":scheme", ":path"]
+        );
+    }
+
+    /// Firefox and Chrome must never permute identically (that would defeat
+    /// the fingerprint's purpose).
+    #[test]
+    fn pseudo_permutation_profiles_differ() {
+        let ff = order(&[":method", ":path", ":authority", ":scheme"]);
+        let ch = order(&[":method", ":authority", ":scheme", ":path"]);
+        assert_ne!(
+            pseudo_permutation(ff.as_deref()),
+            pseudo_permutation(ch.as_deref())
+        );
+    }
+
+    /// Partial order: listed names first, unlisted keep canonical relative
+    /// order behind them.
+    #[test]
+    fn pseudo_permutation_partial_appends_missing() {
+        let partial = order(&[":path", ":method"]);
+        assert_eq!(pseudo_permutation(partial.as_deref()), [3, 0, 1, 2]);
+    }
+
+    /// Unknown pseudo names in the order list are ignored, not mis-mapped.
+    #[test]
+    fn pseudo_permutation_unknown_names_ignored() {
+        let junk = order(&[":path", ":status", ":method"]);
+        assert_eq!(pseudo_permutation(junk.as_deref()), [3, 0, 1, 2]);
+    }
+
+    /// RFC 7540 §6.3: dependency in the low 31 bits, exclusive in the top
+    /// bit, weight last. Firefox frame (stream 3, root, weight 40).
+    #[test]
+    fn priority_payload_firefox_root_frame() {
+        let frame = H2PriorityFrame {
+            stream_id: 3,
+            stream_dependency: 0,
+            exclusive: false,
+            weight: 40,
+        };
+        assert_eq!(priority_payload(&frame), [0x00, 0x00, 0x00, 0x00, 40]);
+    }
+
+    #[test]
+    fn priority_payload_exclusive_bit_and_weight() {
+        let frame = H2PriorityFrame {
+            stream_id: 5,
+            stream_dependency: 3,
+            exclusive: true,
+            weight: 109,
+        };
+        // dependency 3 | top bit → 0x8000_0003, then weight.
+        assert_eq!(priority_payload(&frame), [0x80, 0x00, 0x00, 0x03, 109]);
+    }
+
+    #[test]
+    fn priority_payload_masks_dependency_above_31_bits() {
+        let frame = H2PriorityFrame {
+            stream_id: 7,
+            // Only 31 bits are representable; garbage above must be masked.
+            stream_dependency: 0xFFFF_FFFF,
+            exclusive: false,
+            weight: 138,
+        };
+        assert_eq!(priority_payload(&frame), [0x7F, 0xFF, 0xFF, 0xFF, 138]);
+    }
+
+    /// No reserved PRIORITY streams → canonical first stream 1 (Chrome).
+    #[test]
+    fn first_request_stream_id_none_is_one() {
+        assert_eq!(first_request_stream_id(None), 1);
+        assert_eq!(first_request_stream_id(Some(&[])), 1);
+    }
+
+    /// Firefox reserves 3/5/7/11 → first request stream is 13.
+    #[test]
+    fn first_request_stream_id_firefox_is_thirteen() {
+        let frames = [
+            H2PriorityFrame {
+                stream_id: 3,
+                stream_dependency: 0,
+                exclusive: false,
+                weight: 40,
+            },
+            H2PriorityFrame {
+                stream_id: 5,
+                stream_dependency: 0,
+                exclusive: false,
+                weight: 109,
+            },
+            H2PriorityFrame {
+                stream_id: 7,
+                stream_dependency: 0,
+                exclusive: false,
+                weight: 138,
+            },
+            H2PriorityFrame {
+                stream_id: 11,
+                stream_dependency: 0,
+                exclusive: false,
+                weight: 255,
+            },
+        ];
+        assert_eq!(first_request_stream_id(Some(&frames)), 13);
     }
 
     // ─── FrameType ────────────────────────────────

@@ -111,6 +111,28 @@ pub fn stealth_profile_to_ssl_config(profile: &Option<StealthProfile>) -> SSLCon
         // Flows through SSLConfig → ClientSession → write_preface() naturally
         config.h2_settings_payload = Some(h2_settings_wire_format(&p.http2).into_boxed_slice());
         config.h2_initial_window_size = p.http2.initial_window_size;
+        // REQ-STL-002: pseudo-header wire order (Firefox/Chrome differ) and
+        // REQ-STL-002-C3: connection-setup PRIORITY frames (Firefox-only).
+        // Same SSLConfig → ClientSession channel as the SETTINGS payload.
+        config.h2_pseudo_header_order = Some(
+            p.http2
+                .pseudo_header_order
+                .iter()
+                .map(|name| name.to_string().into_boxed_str())
+                .collect(),
+        );
+        config.h2_priority_frames = Some(
+            p.http2
+                .priority_frames
+                .iter()
+                .map(|f| bun_http::ssl_config::H2PriorityFrame {
+                    stream_id: f.stream_id,
+                    stream_dependency: f.stream_dependency,
+                    exclusive: f.exclusive,
+                    weight: f.weight,
+                })
+                .collect(),
+        );
     }
     config
 }
@@ -692,6 +714,85 @@ mod tests {
             config.h2_initial_window_size, 0,
             "no profile → h2_initial_window_size=0"
         );
+        assert!(
+            config.h2_pseudo_header_order.is_none(),
+            "no profile → None h2_pseudo_header_order"
+        );
+        assert!(
+            config.h2_priority_frames.is_none(),
+            "no profile → None h2_priority_frames"
+        );
+    }
+
+    // ─── REQ-STL-002: pseudo-header order + PRIORITY frame injection ──
+
+    #[test]
+    fn test_ssl_config_firefox_h2_pseudo_header_order() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let order = config
+            .h2_pseudo_header_order
+            .as_deref()
+            .expect("Firefox profile must set h2_pseudo_header_order");
+        let names: Vec<&str> = order.iter().map(|s| &**s).collect();
+        assert_eq!(
+            names,
+            vec![":method", ":path", ":authority", ":scheme"],
+            "Firefox pseudo-header wire order"
+        );
+    }
+
+    #[test]
+    fn test_ssl_config_chrome_h2_pseudo_header_order() {
+        let profile = StealthProfile::chrome_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let order = config
+            .h2_pseudo_header_order
+            .as_deref()
+            .expect("Chrome profile must set h2_pseudo_header_order");
+        let names: Vec<&str> = order.iter().map(|s| &**s).collect();
+        assert_eq!(
+            names,
+            vec![":method", ":authority", ":scheme", ":path"],
+            "Chrome pseudo-header wire order"
+        );
+    }
+
+    #[test]
+    fn test_ssl_config_firefox_h2_priority_frames() {
+        // REQ-STL-002-C3: Firefox reserves its dependency-tree streams
+        // (3/5/7/11, weights 40/109/138/255, root dependency, non-exclusive).
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let frames = config
+            .h2_priority_frames
+            .as_deref()
+            .expect("Firefox profile must set h2_priority_frames");
+        assert_eq!(frames.len(), 4, "Firefox reserves 4 priority-tree streams");
+        let expected = [
+            (3u32, 0u32, false, 40u8),
+            (5, 0, false, 109),
+            (7, 0, false, 138),
+            (11, 0, false, 255),
+        ];
+        for (frame, want) in frames.iter().zip(expected.iter()) {
+            assert_eq!(
+                (frame.stream_id, frame.stream_dependency, frame.exclusive, frame.weight),
+                *want
+            );
+        }
+    }
+
+    #[test]
+    fn test_ssl_config_chrome_h2_priority_frames_empty() {
+        // REQ-STL-002-C3: Chrome v106+ dropped PRIORITY frames.
+        let profile = StealthProfile::chrome_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let frames = config
+            .h2_priority_frames
+            .as_deref()
+            .expect("Chrome profile must set h2_priority_frames (possibly empty)");
+        assert!(frames.is_empty(), "Chrome sends no PRIORITY frames");
     }
 
     #[test]

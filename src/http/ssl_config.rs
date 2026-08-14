@@ -59,6 +59,15 @@ pub struct SSLConfig {
     /// HTTP/2 fingerprint: initial window size for WINDOW_UPDATE after SETTINGS.
     /// When 0, uses default LOCAL_INITIAL_WINDOW_SIZE.
     pub h2_initial_window_size: u32,
+    /// HTTP/2 fingerprint: pseudo-header emission order (":method" etc.).
+    /// HPACK encodes headers in list order, so this is also the wire order —
+    /// a client-visible fingerprint (Firefox: method/path/authority/scheme;
+    /// Chrome: method/authority/scheme/path). Empty/None = fixed default order.
+    pub h2_pseudo_header_order: Option<Box<[Box<str>]>>,
+    /// HTTP/2 fingerprint: PRIORITY frames emitted after the connection
+    /// preface (Firefox reserves its dependency-tree streams 3/5/7/11; Chrome
+    /// v106+ sends none). Empty/None = no PRIORITY frames.
+    pub h2_priority_frames: Option<Box<[H2PriorityFrame]>>,
     /// Memoized `content_hash()`. Interior-mutable because it's lazily filled
     /// through `Arc<SSLConfig>` (shared ref) by the intern registry's hash
     /// context. Zig used a plain `u64` mutated via `*SSLConfig` (Zig pointers
@@ -68,6 +77,12 @@ pub struct SSLConfig {
 
 /// Casing alias for callers that snake_cased the type name.
 pub type SslConfig = SSLConfig;
+
+/// One HTTP/2 PRIORITY frame for the connection preface (RFC 7540 §6.3).
+/// Wire shape lives in the tier-1 pure wire module (`h2_frame_parser` =
+/// `bun_http_types::h2`) so the payload encoder and stream-reservation
+/// logic are testable without this crate's native link surface.
+pub use crate::h2_frame_parser::H2PriorityFrame;
 
 /// Atomic shared pointer with weak support. Refcounting and allocation are
 /// managed non-intrusively by `Arc`; the `SSLConfig` struct itself has no
@@ -140,6 +155,8 @@ impl SSLConfig {
         tls_sigalgs_list: core::ptr::null(),
         h2_settings_payload: None,
         h2_initial_window_size: 0,
+        h2_pseudo_header_order: None,
+        h2_priority_frames: None,
         cached_hash: AtomicU64::new(0),
     };
 
@@ -334,6 +351,24 @@ impl SSLConfig {
         if self.h2_initial_window_size != other.h2_initial_window_size {
             return false;
         }
+        match (&self.h2_pseudo_header_order, &other.h2_pseudo_header_order) {
+            (Some(a), Some(b)) => {
+                if a.len() != b.len() || a.iter().zip(b.iter()).any(|(x, y)| x != y) {
+                    return false;
+                }
+            }
+            (None, None) => {}
+            _ => return false,
+        }
+        match (&self.h2_priority_frames, &other.h2_priority_frames) {
+            (Some(a), Some(b)) => {
+                if a.len() != b.len() || a.iter().zip(b.iter()).any(|(x, y)| x != y) {
+                    return false;
+                }
+            }
+            (None, None) => {}
+            _ => return false,
+        }
         true
     }
 
@@ -392,6 +427,20 @@ impl SSLConfig {
             hasher.update(payload);
         }
         hasher.update(&self.h2_initial_window_size.to_ne_bytes());
+        if let Some(ref order) = self.h2_pseudo_header_order {
+            for name in order.iter() {
+                hasher.update(name.as_bytes());
+                hasher.update(&[0]);
+            }
+        }
+        hasher.update(&[0]);
+        if let Some(ref frames) = self.h2_priority_frames {
+            for f in frames.iter() {
+                hasher.update(&f.stream_id.to_ne_bytes());
+                hasher.update(&f.stream_dependency.to_ne_bytes());
+                hasher.update(&[u8::from(f.exclusive), f.weight]);
+            }
+        }
         let hash = hasher.final_();
         // Avoid 0 since it's the sentinel for "not computed"
         let hash = if hash == 0 { 1 } else { hash };
@@ -491,6 +540,8 @@ impl Clone for SSLConfig {
             tls_sigalgs_list: clone_string(self.tls_sigalgs_list),
             h2_settings_payload: self.h2_settings_payload.clone(),
             h2_initial_window_size: self.h2_initial_window_size,
+            h2_pseudo_header_order: self.h2_pseudo_header_order.clone(),
+            h2_priority_frames: self.h2_priority_frames.clone(),
             cached_hash: AtomicU64::new(0),
         }
     }
