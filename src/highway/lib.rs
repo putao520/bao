@@ -278,21 +278,15 @@ pub fn copy_ascii_prefix(src: &[u8], dst: &mut [u8]) -> usize {
     if len == 0 {
         return 0;
     }
-    // memchr can fast-scan for the first byte >= 0x80; this serves as the SIMD
-    // "find first high bit" predicate that the C++ version exploited.
-    let copied = match memchr::memchr(b'|', &src[..len]) {
-        // We don't actually look for `|`; we need the first byte with the high
-        // bit set. memchr2 finds a literal; use a manual scan instead so we
-        // stay portable and avoid linking a non-SIMD fast path.
-        _ => {
-            let mut i = 0;
-            while i < len && src[i] < 0x80 {
-                dst[i] = src[i];
-                i += 1;
-            }
-            i
-        }
-    };
+    // We need the first byte with the high bit set; memchr only finds literals,
+    // not predicates, so use a manual scan to stay portable and avoid linking
+    // a non-SIMD fast path.
+    let mut i = 0;
+    while i < len && src[i] < 0x80 {
+        dst[i] = src[i];
+        i += 1;
+    }
+    let copied = i;
     debug_assert!(copied <= len);
     debug_assert!(copied == len || src[copied] >= 0x80);
     copied

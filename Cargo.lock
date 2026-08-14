@@ -657,6 +657,7 @@ version = "0.1.0"
 dependencies = [
  "bao_native_stubs",
  "bun_analytics",
+ "bun_dns",
  "bun_lsquic_sys",
  "bun_sys",
  "bun_threading",
@@ -8508,6 +8509,7 @@ dependencies = [
  "base64 0.23.1",
  "bun_boringssl",
  "bun_boringssl_sys",
+ "bun_dns",
  "bytes",
  "chrono",
  "content-security-policy",
