@@ -346,6 +346,59 @@ async fn run_ws_loop(
     }
 }
 
+/// Resolve a WebSocket host through bao's process-wide shared DNS cache
+/// (`bun_dns::cache`), mirroring the hyper connector's resolver: cache hit →
+/// immediate addresses, miss → blocking `getaddrinfo` on a tokio worker with
+/// the result written back (getaddrinfo returns no TTL, so entries use the
+/// engine cap). Returns the full address list so tokio keeps its
+/// happy-eyeballs interleaving when connecting.
+async fn resolve_via_shared_cache(
+    host: &str,
+    port: u16,
+) -> std::io::Result<Vec<std::net::SocketAddr>> {
+    fn to_std(ip: &bun_dns::cache::IpAddr) -> std::net::IpAddr {
+        match ip {
+            bun_dns::cache::IpAddr::V4(octets) => {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::from(*octets))
+            },
+            bun_dns::cache::IpAddr::V6(octets) => {
+                std::net::IpAddr::V6(std::net::Ipv6Addr::from(*octets))
+            },
+        }
+    }
+
+    fn from_std(ip: &std::net::IpAddr) -> bun_dns::cache::IpAddr {
+        match ip {
+            std::net::IpAddr::V4(v4) => bun_dns::cache::IpAddr::V4(v4.octets()),
+            std::net::IpAddr::V6(v6) => bun_dns::cache::IpAddr::V6(v6.octets()),
+        }
+    }
+
+    if let Some(addrs) = bun_dns::cache::lookup(host.as_bytes()) {
+        return Ok(addrs
+            .iter()
+            .map(|ip| std::net::SocketAddr::new(to_std(ip), port))
+            .collect());
+    }
+    let host_for_cache = host.to_owned();
+    let resolved = tokio::task::spawn_blocking(move || {
+        // Same lookup the hyper resolver performs: (host, 0) with the
+        // system resolver, the destination port applied by the caller.
+        use std::net::ToSocketAddrs;
+        (host_for_cache.as_str(), 0)
+            .to_socket_addrs()
+            .map(|it| it.map(|sa| sa.ip()).collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
+    let ips: Vec<bun_dns::cache::IpAddr> = resolved.iter().map(from_std).collect();
+    bun_dns::cache::insert(host.as_bytes(), ips, None);
+    Ok(resolved
+        .into_iter()
+        .map(|ip| std::net::SocketAddr::new(ip, port))
+        .collect())
+}
+
 /// Initiate a new async WS connection. Returns an error if the connection fails
 /// for any reason, or if the response isn't valid. Otherwise, the endless WS
 /// listening loop will be started.
@@ -376,7 +429,20 @@ pub(crate) async fn start_websocket(
         .port_or_known_default()
         .ok_or_else(|| Error::Url(UrlError::UnableToConnect("Unknown port".into())))?;
 
-    let try_socket = TcpStream::connect((&*domain.to_string(), port)).await;
+    // Bao vendor patch: resolve through the process-wide shared DNS cache
+    // (`bun_dns::cache`) — the same fusion point as the hyper connector's
+    // resolver, so page WebSockets resolve a host once per TTL window like
+    // every other stack in this process, instead of tokio's built-in
+    // getaddrinfo bypassing the cache. IP literals never hit DNS.
+    let try_socket = match domain {
+        url::Host::Ipv4(ip) => TcpStream::connect((ip, port)).await,
+        url::Host::Ipv6(ip) => TcpStream::connect((ip, port)).await,
+        url::Host::Domain(hostname) => {
+            let addrs =
+                resolve_via_shared_cache(hostname, port).await.map_err(Error::Io)?;
+            TcpStream::connect(addrs.as_slice()).await
+        },
+    };
     let socket = try_socket.map_err(Error::Io)?;
 
     // TODO(pylbrecht): move request conversion to a separate function
