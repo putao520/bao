@@ -15,3 +15,15 @@ libc = "0.2"
 
 [dev-dependencies]
 bao_native_stubs = { path = "../bao_native_stubs" }
+# Test-only: referencing force_link propagates liblsquic.a's native link
+# dependency — the C socket closure (loop.c → quic.c) references lsquic
+# symbols, and nothing else in bao_uloop's unit-test graph pulls it in.
+bun_lsquic_sys = { path = "../lsquic_sys" }
+# Test-only: pulls in bun_threading's rlib so its #[no_mangle] Bun__lock /
+# Bun__unlock / Bun__lock__size exports (referenced by loop.c's DNS-result
+# handling) resolve at link time.
+bun_threading = { path = "../threading" }
+# Test-only: pulls in bun_analytics' rlib so its #[no_mangle]
+# Bun__isEpollPwait2SupportedOnLinuxKernel (referenced by epoll_kqueue.c)
+# resolves at link time.
+bun_analytics = { path = "../analytics" }

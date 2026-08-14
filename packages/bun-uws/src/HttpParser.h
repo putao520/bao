@@ -734,9 +734,13 @@ namespace uWS
             }
             postPaddedBuffer = requestLineResult.position;
 
-            if(requestLineResult.isAncientHTTP) {
-                isAncientHTTP = true;
-            }
+            /* Written unconditionally (not just on true): ancientHttp is per-request and
+             * the caller re-enters this function for each pipelined request in the same
+             * recv buffer without clearing it between re-entries, so a stale true from a
+             * prior HTTP/1.0 request would mis-classify a following HTTP/1.1 request.
+             * isConnectRequest below is deliberately latched (tunnel mode persists
+             * across the loop). */
+            isAncientHTTP = requestLineResult.isAncientHTTP;
             if(requestLineResult.isConnect) {
                 isConnectRequest = true;
             }
@@ -926,6 +930,19 @@ namespace uWS
 
             /* Check Transfer-Encoding header validity and conflicts */
             HttpRequest::TransferEncoding transferEncoding = req->getTransferEncoding();
+
+            /* RFC 9112 6.1: Transfer-Encoding was introduced in HTTP/1.1. A server that
+             * receives an HTTP/1.0 message containing a Transfer-Encoding header field
+             * MUST treat the message as if the framing is faulty and close the connection
+             * after processing the message. Rejected outright, consistent with the TE+CL
+             * and non-chunked TE rejections below, so a proxy/backend split on whether
+             * HTTP/1.0 honours Transfer-Encoding cannot desync on the body boundary.
+             * (Bun upstream guards this with !IsNodeHttp for llhttp parity; Bao routes
+             * Bun.serve and node:http through this same parser with no such split, so
+             * the rejection applies to both.) */
+            if (req->ancientHttp && transferEncoding.has) [[unlikely]] {
+                return HttpParserResult::error(HTTP_ERROR_400_BAD_REQUEST, HTTP_PARSER_ERROR_INVALID_TRANSFER_ENCODING);
+            }
 
             transferEncoding.invalid = transferEncoding.invalid || (transferEncoding.has && (contentLengthStringLen || !transferEncoding.chunked));
 

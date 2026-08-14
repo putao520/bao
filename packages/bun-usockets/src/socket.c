@@ -421,6 +421,7 @@ struct us_socket_t *us_socket_from_fd(struct us_socket_group_t *group, unsigned 
     s->flags.is_ipc = ipc;
     s->flags.is_closed = 0;
     s->flags.adopted = 0;
+    s->read_eof = 0;
     s->connect_state = NULL;
 
     /* We always use nodelay */
@@ -670,11 +671,15 @@ void us_socket_resume(struct us_socket_t *s) {
     // closed cannot be resumed
     if (us_socket_is_closed(s)) return;
 
+    /* A half-open socket whose FIN was already dispatched never re-arms the
+     * read side: the peer sent EOF, on_end ran, and re-adding READABLE would
+     * re-surface the EOF event every resume. */
+    int readable = s->read_eof ? 0 : LIBUS_SOCKET_READABLE;
     if (us_socket_is_shut_down(s)) {
         // we already sent FIN so we resume only readable side we are read-only
-        us_poll_change(&s->p, s->group->loop, LIBUS_SOCKET_READABLE);
+        us_poll_change(&s->p, s->group->loop, readable);
         return;
     }
     // we are readable and writable so we resume everything
-    us_poll_change(&s->p, s->group->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
+    us_poll_change(&s->p, s->group->loop, readable | LIBUS_SOCKET_WRITABLE);
 }

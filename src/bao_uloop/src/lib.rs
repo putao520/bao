@@ -956,3 +956,215 @@ pub fn force_link() {
 // Tests removed: they tested the old Rust loop implementation that caused BUG-353.
 // The C/C++ loop implementation is now tested via bao_runtime integration tests
 // (uws_link_verification_tests, bun_api_tests, realworld_http_service_tests).
+
+#[cfg(test)]
+mod hangup_tests {
+    //! Behavioral test for the upstream e5a3fe6dc EPOLLHUP fix: an
+    //! `allow_half_open` AF_UNIX socket whose peer closes first must get
+    //! `on_end` + `on_close` exactly once — pre-fix, the level-triggered
+    //! EPOLLHUP re-fired `on_end` on every tick (one full core per socket).
+    //!
+    //! Drives the C path end-to-end (`us_loop_run_bun_tick` → C
+    //! `us_internal_dispatch_ready_polls` → loop.c hangup semantics). The
+    //! Rust dispatch mapping in `poll::dispatch_ready_polls` is covered by
+    //! the mapping unit tests in poll.rs.
+
+    use super::*;
+    use bun_uws_sys::socket_group::VTable;
+    use bun_uws_sys::{
+        LIBUS_SOCKET_ALLOW_HALF_OPEN, ListenSocket, SocketGroup, SocketKind, us_socket_t,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static OPEN_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static DATA_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static DATA_BYTES: AtomicUsize = AtomicUsize::new(0);
+    static END_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static CLOSE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn t_open(
+        s: *mut us_socket_t,
+        _is_client: c_int,
+        _ip: *mut u8,
+        _ip_len: c_int,
+    ) -> *mut us_socket_t {
+        OPEN_COUNT.fetch_add(1, Ordering::SeqCst);
+        s
+    }
+
+    unsafe extern "C" fn t_data(
+        s: *mut us_socket_t,
+        _data: *mut u8,
+        length: c_int,
+    ) -> *mut us_socket_t {
+        DATA_COUNT.fetch_add(1, Ordering::SeqCst);
+        DATA_BYTES.fetch_add(length as usize, Ordering::SeqCst);
+        s
+    }
+
+    unsafe extern "C" fn t_end(s: *mut us_socket_t) -> *mut us_socket_t {
+        END_COUNT.fetch_add(1, Ordering::SeqCst);
+        s
+    }
+
+    unsafe extern "C" fn t_close(
+        s: *mut us_socket_t,
+        _code: c_int,
+        _reason: *mut c_void,
+    ) -> *mut us_socket_t {
+        CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
+        s
+    }
+
+    static VTABLE: VTable = VTable {
+        on_open: Some(t_open),
+        on_data: Some(t_data),
+        on_fd: None,
+        on_writable: None,
+        on_close: Some(t_close),
+        on_timeout: None,
+        on_long_timeout: None,
+        on_end: Some(t_end),
+        on_connect_error: None,
+        on_connecting_error: None,
+        on_handshake: None,
+    };
+
+    // root_certs.cpp (chained into the link once the C socket symbols are
+    // referenced) calls back into these two Bun-side symbols. bao_native_stubs
+    // provides them in production, but as a dev-dependency it depends on
+    // bao_uloop itself and dual-defines the whole crate in the test binary —
+    // so define the two callbacks locally instead.
+    #[unsafe(no_mangle)]
+    extern "C" fn BUN__warn__extra_ca_load_failed(_filename: *const c_char, _error: *const c_char) {
+    }
+    #[unsafe(no_mangle)]
+    static Bun__Node__UseSystemCA: bool = false;
+    /// BoringSSL CRYPTO_EX_free callback (openssl.c us_ctx_cache_ex_idx).
+    /// Same no-op shape as bao_native_stubs: safe while no SSL_CTX cache is wired.
+    #[unsafe(no_mangle)]
+    extern "C" fn bun_ssl_ctx_cache_on_free(
+        _parent: *mut c_void,
+        _ptr: *mut c_void,
+        _ad: *mut c_void,
+        _index: c_int,
+        _argl: i64,
+        _argp: *mut c_void,
+    ) {
+    }
+    /// FilePoll tagged-pointer dispatch (epoll_kqueue.c). The real one lives
+    /// in bun_io; this test registers no FilePolls, so it is never called —
+    /// the symbol only needs to exist for the link.
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn Bun__internal_dispatch_ready_poll(
+        _loop: *mut Loop,
+        _tagged_pointer: *mut c_void,
+    ) {
+    }
+
+    // loop.c calls data.pre_cb / post_cb / wakeup_cb unconditionally on every
+    // tick — us_create_loop must be handed real (no-op) callbacks.
+    unsafe extern "C" fn noop_cb(_loop: *mut Loop) {}
+
+    #[test]
+    fn unix_half_open_peer_close_ends_once_and_closes() {
+        unsafe extern "C" {
+            fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec);
+        }
+
+        // Propagate liblsquic.a into the test link: loop.c references quic.c,
+        // which references lsquic symbols (same force-link pattern as
+        // bao_native_stubs / bao_runtime).
+        let _ = bun_lsquic_sys::force_link as *const () as usize;
+        let _ = bun_lsquic_sys::force_link_lshpack as *const () as usize;
+        // Pull bun_threading's rlib in so its #[no_mangle] Bun__lock family
+        // (referenced by loop.c) resolves.
+        let _ = bun_threading::Mutex::new as *const () as usize;
+        // Same for bun_analytics' #[no_mangle] epoll_pwait2 kernel probe
+        // (referenced by epoll_kqueue.c).
+        let _ = bun_analytics::is_enabled as *const () as usize;
+
+        let path = format!("/tmp/bao-uloop-hangup-test-{}.sock", std::process::id());
+        let mut path_bytes = path.clone().into_bytes();
+        path_bytes.push(0);
+        let _ = std::fs::remove_file(&path);
+
+        let loop_ = unsafe {
+            us_create_loop(ptr::null_mut(), Some(noop_cb), Some(noop_cb), Some(noop_cb), 0)
+        };
+        assert!(!loop_.is_null(), "us_create_loop failed");
+
+        let group: &'static mut SocketGroup = Box::leak(Box::new(SocketGroup::default()));
+        group.init(loop_, Some(&VTABLE), ptr::null_mut());
+
+        let mut err: c_int = 0;
+        let ls: *mut ListenSocket = group.listen_unix(
+            SocketKind::Dynamic,
+            None,
+            &path_bytes,
+            LIBUS_SOCKET_ALLOW_HALF_OPEN,
+            0,
+            &mut err,
+        );
+        assert!(!ls.is_null(), "listen_unix failed, err = {err}");
+
+        for c in [&OPEN_COUNT, &DATA_COUNT, &DATA_BYTES, &END_COUNT, &CLOSE_COUNT] {
+            c.store(0, Ordering::SeqCst);
+        }
+
+        // Peer goes away first: connect, write a payload, then close. On
+        // AF_UNIX the server side sees EPOLLHUP (not a plain FIN).
+        {
+            let mut client = std::os::unix::net::UnixStream::connect(&path).expect("connect");
+            std::io::Write::write_all(&mut client, b"hello").expect("write");
+            std::io::Write::flush(&mut client).expect("flush");
+        } // drop → close(2)
+
+        let zero = Timespec { sec: 0, nsec: 0 };
+        // Pump the C tick (non-blocking epoll_wait + dispatch) until close.
+        for _ in 0..200 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            if CLOSE_COUNT.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1, "one accepted socket");
+        assert_eq!(DATA_COUNT.load(Ordering::SeqCst), 1, "payload drained once");
+        assert_eq!(DATA_BYTES.load(Ordering::SeqCst), 5, "all 5 bytes delivered");
+        assert_eq!(
+            END_COUNT.load(Ordering::SeqCst),
+            1,
+            "on_end must fire exactly once"
+        );
+        assert_eq!(
+            CLOSE_COUNT.load(Ordering::SeqCst),
+            1,
+            "hangup must close the half-open socket (pre-fix it stayed open)"
+        );
+
+        // Idle window: EPOLLHUP is level-triggered and unmaskable. Pre-fix,
+        // every tick re-delivered it and re-fired on_end (the spin). Post-fix
+        // the fd is closed, so nothing may fire here.
+        for _ in 0..50 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            END_COUNT.load(Ordering::SeqCst),
+            1,
+            "EPOLLHUP re-fired after close — spin regression"
+        );
+        assert_eq!(CLOSE_COUNT.load(Ordering::SeqCst), 1);
+
+        // Teardown.
+        unsafe {
+            (*ls).close();
+            us_loop_run_bun_tick(loop_, &zero);
+            SocketGroup::destroy(group);
+            us_loop_free(loop_);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}

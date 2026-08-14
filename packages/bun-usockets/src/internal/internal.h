@@ -139,6 +139,10 @@ extern struct addrinfo_result *Bun__addrinfo_getRequestResult(struct addrinfo_re
 
 
 /* Loop related */
+/* `eof` values for us_internal_dispatch_ready_poll: nonzero = read-side EOF hint (half-open honored);
+ * LIBUS_POLL_HANGUP = epoll EPOLLHUP, both directions down, re-reported until the fd is closed. */
+#define LIBUS_POLL_EOF 1
+#define LIBUS_POLL_HANGUP 2
 void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, int events);
 void us_internal_timer_sweep(us_loop_r loop);
 void us_internal_enable_sweep_timer(struct us_loop_t *loop);
@@ -265,6 +269,8 @@ struct us_socket_t {
    * Used by Bun's `socket.upgradeTLS()` so the returned [raw, tls] pair's
    * `raw` half can observe ciphertext (node:net Duplex.ondata semantics). */
   unsigned char ssl_raw_tap : 1;
+  /* Peer FIN was dispatched as on_end on a half-open socket; readable interest is never re-added and on_end never re-fires. */
+  unsigned char read_eof : 1;
 
   struct us_socket_group_t *group;
   /* NULL for plain TCP. Direct BoringSSL `SSL*`; set by us_internal_ssl_attach

@@ -149,7 +149,7 @@ unsafe extern "C" {
     /// C dispatch for untagged us_poll_t (socket/semi-socket/callback).
     /// Provided by libusockets.a (epoll_kqueue.c). Symbol confirmed `T` (exported).
     /// Used by the unified Rust epoll_wait → C dispatch path.
-    fn us_internal_dispatch_ready_poll(p: *mut c_void, error: c_int, eof: c_int);
+    fn us_internal_dispatch_ready_poll(p: *mut c_void, error: c_int, eof: c_int, events: c_int);
 }
 
 #[cfg(test)]
@@ -221,6 +221,13 @@ struct BaoInternalCallback {
 /// are stubs that 74-C.3/74-C.4/74-C.5 will wire.
 #[inline]
 unsafe fn dispatch_ready_poll(poll: *mut BaoPoll, error: c_int, eof: c_int, events: c_int) {
+    #[cfg(test)]
+    {
+        // Test-only probe: record the (error, eof, events) triple the dispatch
+        // loop handed down, so unit tests can assert the epoll→libus mapping
+        // (LIBUS_POLL_HANGUP tagging, error normalization, interest masking).
+        tests::DISPATCH_CALLS.lock().unwrap().push((error, eof, events));
+    }
     unsafe {
         let kind = (*poll).kind();
 
@@ -341,6 +348,12 @@ unsafe extern "C" {
 
 // ──────────────── dispatch entry point ────────────────
 
+/// `eof` marker values for `us_internal_dispatch_ready_poll` (internal.h):
+/// nonzero = read-side EOF hint (half-open honored); HANGUP = epoll
+/// EPOLLHUP, both directions down, level-triggered until the fd is closed.
+const LIBUS_POLL_EOF: c_int = 1;
+const LIBUS_POLL_HANGUP: c_int = 2;
+
 /// Dispatch all ready polls from the `ready_polls` array.
 /// Called from `run_epoll` after `epoll_wait` returns.
 ///
@@ -378,15 +391,29 @@ pub(crate) unsafe fn dispatch_ready_polls(loop_: *mut Loop) {
         // handles socket/semi-socket/callback poll types with full vtable logic.
         // The Rust stub `dispatch_ready_poll` is deleted — C dispatch is the
         // single source of truth for untagged poll events.
+        //
+        // Event mapping must mirror upstream epoll_kqueue.c exactly:
+        //   - error normalized to 0/1 (raw EPOLLERR=8 would read as errno 8 /
+        //     ENOEXEC when forwarded as a libus close code);
+        //   - EPOLLHUP tagged LIBUS_POLL_HANGUP (NOT raw 16): a read-side FIN
+        //     is EPOLLIN + recv()==0, while EPOLLHUP means both directions
+        //     down and is level-triggered — loop.c closes on it instead of
+        //     spinning (upstream e5a3fe6dc);
+        //   - events masked to the armed interest before dispatch.
         let poll = poll_ptr;
-        let events = event.events as c_int;
-        let error = events & libc::EPOLLERR;
-        let eof = events & libc::EPOLLHUP;
+        let raw_events = event.events as c_int;
+        let error = ((raw_events & libc::EPOLLERR) != 0) as c_int;
+        let eof = if raw_events & libc::EPOLLHUP != 0 {
+            LIBUS_POLL_HANGUP
+        } else {
+            0
+        };
+        let events = raw_events & unsafe { us_poll_events(poll as *mut BaoPoll) };
 
         if events != 0 || error != 0 || eof != 0 {
             #[cfg(not(test))]
             unsafe {
-                us_internal_dispatch_ready_poll(poll, error, eof);
+                us_internal_dispatch_ready_poll(poll, error, eof, events);
             }
             #[cfg(test)]
             unsafe {
@@ -412,6 +439,13 @@ pub fn force_link_poll() {
 mod tests {
     use super::*;
     use core::ptr;
+
+    /// (error, eof, events) triples captured by the `dispatch_ready_poll` probe.
+    pub(crate) static DISPATCH_CALLS: std::sync::Mutex<Vec<(c_int, c_int, c_int)>> =
+        std::sync::Mutex::new(Vec::new());
+    /// Serializes probe usage across parallel test threads: `dispatch_once`
+    /// must be the only writer between clear and read.
+    static DISPATCH_PROBE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // ──── BaoPoll layout ────
 
@@ -912,5 +946,106 @@ mod tests {
         let tagged: *mut c_void = ((1usize << 49) | (ptr as usize)) as *mut c_void;
         let cleared = clear_pointer_tag(tagged);
         assert_eq!(cleared, ptr);
+    }
+
+    // ──── epoll → libus dispatch mapping (upstream e5a3fe6dc alignment) ────
+
+    /// Build a minimal PosixLoop whose ready_polls[0] carries `raw_events`
+    /// for `poll`, run `dispatch_ready_polls`, and return the
+    /// (error, eof, events) triple the C dispatch entry received.
+    fn dispatch_once(raw_events: u32, poll: &mut BaoPoll) -> (c_int, c_int, c_int) {
+        let _probe_guard = DISPATCH_PROBE_LOCK.lock().unwrap();
+        let mut calls = DISPATCH_CALLS.lock().unwrap();
+        calls.clear();
+        drop(calls);
+
+        let boxed: *mut PosixLoop = Box::into_raw(unsafe { Box::new(core::mem::zeroed::<PosixLoop>()) });
+        unsafe {
+            (*boxed).num_ready_polls = 1;
+            (*boxed).current_ready_poll = 0;
+            (*boxed).ready_polls[0].events = raw_events;
+            (*boxed).ready_polls[0].u64 = poll as *mut BaoPoll as usize as u64;
+        }
+        unsafe {
+            dispatch_ready_polls(boxed as *mut Loop);
+        }
+        drop(unsafe { Box::from_raw(boxed) });
+
+        let calls = DISPATCH_CALLS.lock().unwrap();
+        assert_eq!(calls.len(), 1, "exactly one dispatch expected");
+        calls[0]
+    }
+
+    #[test]
+    fn epollhup_is_tagged_as_libus_poll_hangup() {
+        // AF_UNIX peer close: EPOLLHUP (16) + readable data, armed IN|OUT.
+        // Upstream semantics: eof = LIBUS_POLL_HANGUP (2), NOT the raw 16 —
+        // loop.c closes the socket on it instead of spinning (e5a3fe6dc).
+        let mut poll: BaoPoll = unsafe { core::mem::zeroed() };
+        poll.set_fd(7);
+        poll.set_poll_type(POLL_TYPE_UDP | POLL_TYPE_POLLING_IN | POLL_TYPE_POLLING_OUT);
+
+        let (error, eof, events) = dispatch_once(
+            (libc::EPOLLHUP | libc::EPOLLIN | libc::EPOLLOUT) as u32,
+            &mut poll,
+        );
+        assert_eq!(error, 0);
+        assert_eq!(eof, LIBUS_POLL_HANGUP);
+        assert_eq!(events, libc::EPOLLIN | libc::EPOLLOUT);
+    }
+
+    #[test]
+    fn epollerr_is_normalized_and_events_masked_to_armed_interest() {
+        // EPOLLERR (8) + EPOLLHUP + EPOLLRDHUP + EPOLLOUT arriving on a poll
+        // armed read-only: error must come through as 0/1 (a raw 8 would read
+        // as errno 8/ENOEXEC when forwarded as a libus close code) and events
+        // must be masked to the armed interest — the un-armed EPOLLOUT bit is
+        // stripped, it cannot survive into the dispatch.
+        let mut poll: BaoPoll = unsafe { core::mem::zeroed() };
+        poll.set_fd(9);
+        poll.set_poll_type(POLL_TYPE_UDP | POLL_TYPE_POLLING_IN);
+
+        let (error, eof, events) = dispatch_once(
+            (libc::EPOLLERR
+                | libc::EPOLLHUP
+                | libc::EPOLLRDHUP
+                | libc::EPOLLIN
+                | libc::EPOLLOUT) as u32,
+            &mut poll,
+        );
+        assert_eq!(error, 1);
+        assert_eq!(eof, LIBUS_POLL_HANGUP);
+        assert_eq!(events, libc::EPOLLIN);
+    }
+
+    #[test]
+    fn plain_epollin_drains_without_eof_marker() {
+        // A read-side FIN is EPOLLIN + recv()==0 — the dispatch itself folds
+        // it into LIBUS_POLL_EOF. The epoll layer must pass eof = 0 here.
+        let mut poll: BaoPoll = unsafe { core::mem::zeroed() };
+        poll.set_fd(11);
+        poll.set_poll_type(POLL_TYPE_UDP | POLL_TYPE_POLLING_IN);
+
+        let (error, eof, events) = dispatch_once(libc::EPOLLIN as u32, &mut poll);
+        assert_eq!(error, 0);
+        assert_eq!(eof, 0);
+        assert_eq!(events, libc::EPOLLIN);
+    }
+
+    #[test]
+    fn rdhup_without_hup_is_not_a_hangup() {
+        // EPOLLRDHUP (peer FIN) alone: eof = 0 — only a full EPOLLHUP means
+        // both directions down. The FIN is discovered via the read drain.
+        let mut poll: BaoPoll = unsafe { core::mem::zeroed() };
+        poll.set_fd(12);
+        poll.set_poll_type(POLL_TYPE_UDP | POLL_TYPE_POLLING_IN | POLL_TYPE_POLLING_OUT);
+
+        let (error, eof, events) =
+            dispatch_once((libc::EPOLLRDHUP | libc::EPOLLIN) as u32, &mut poll);
+        assert_eq!(error, 0);
+        assert_eq!(eof, 0);
+        // Masking only removes bits: EPOLLOUT was not in the kernel event,
+        // so the armed writable interest does not fabricate one.
+        assert_eq!(events, libc::EPOLLIN);
     }
 }

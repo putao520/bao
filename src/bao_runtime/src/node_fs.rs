@@ -1962,13 +1962,19 @@ unsafe fn return_string_content(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn throw_fs_error(cx: *mut JSContext, op: &str, path: &str, err: &::std::io::Error) -> bool {
-    let code = match err.kind() {
-        ::std::io::ErrorKind::NotFound => "ENOENT",
-        ::std::io::ErrorKind::PermissionDenied => "EACCES",
-        ::std::io::ErrorKind::AlreadyExists => "EEXIST",
-        ::std::io::ErrorKind::IsADirectory => "EISDIR",
-        ::std::io::ErrorKind::NotADirectory => "ENOTDIR",
-        _ => "ERR",
+    let code = if err.raw_os_error() == Some(libc::EINVAL) {
+        // Raw errno has no ErrorKind mapping; surface it verbatim (Node parity,
+        // e.g. mkdtemp('') must throw code EINVAL).
+        "EINVAL"
+    } else {
+        match err.kind() {
+            ::std::io::ErrorKind::NotFound => "ENOENT",
+            ::std::io::ErrorKind::PermissionDenied => "EACCES",
+            ::std::io::ErrorKind::AlreadyExists => "EEXIST",
+            ::std::io::ErrorKind::IsADirectory => "EISDIR",
+            ::std::io::ErrorKind::NotADirectory => "ENOTDIR",
+            _ => "ERR",
+        }
     };
     let msg = format!("{} '{}': {}", op, path, err);
     let c_msg = ZBox::from_bytes(msg.as_bytes());
@@ -3902,6 +3908,12 @@ unsafe extern "C" fn fs_mkdtemp(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 }
 
 fn mkdtemp_inner(prefix: &str) -> ::std::io::Result<String> {
+    // Node rejects an empty prefix with EINVAL (its snprintf builds a five-X
+    // template here); otherwise we'd create a bare six-random-character
+    // directory in the process cwd.
+    if prefix.is_empty() {
+        return Err(::std::io::Error::from_raw_os_error(libc::EINVAL));
+    }
     let mut template = prefix.to_string();
     template.push_str("XXXXXX");
     let c_template = ::std::ffi::CString::new(template).map_err(|_| {
@@ -9425,4 +9437,17 @@ unsafe extern "C" fn dir_iterator_next(cx: *mut JSContext, argc: u32, vp: *mut J
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mkdtemp_inner;
+
+    // Node parity: an empty prefix must fail with EINVAL before touching the
+    // filesystem, never create a bare random directory in cwd (upstream b7a043103).
+    #[test]
+    fn mkdtemp_empty_prefix_returns_einval() {
+        let err = mkdtemp_inner("").expect_err("empty prefix must be rejected");
+        assert_eq!(err.raw_os_error(), Some(libc::EINVAL));
+    }
 }

@@ -656,7 +656,10 @@ name = "bao_uloop"
 version = "0.1.0"
 dependencies = [
  "bao_native_stubs",
+ "bun_analytics",
+ "bun_lsquic_sys",
  "bun_sys",
+ "bun_threading",
  "bun_uws_sys",
  "libc",
 ]

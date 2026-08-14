@@ -4,7 +4,10 @@ members = [
     "components/media/examples",
     "components/xpath",
     "ports/servoshell",
-    "tests/unit/*",
+    # Bao: upstream also lists "tests/unit/*" — servo's own unit-test crates
+    # are not vendored (Bao builds libservo components via the bao workspace,
+    # it does not run servo's test suite), and the empty glob breaks cargo
+    # manifest loading for the whole vendor workspace.
 ]
 default-members = ["ports/servoshell"]
 exclude = [".cargo", "support/crown"]
