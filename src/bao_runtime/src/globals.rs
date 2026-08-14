@@ -56,9 +56,6 @@ pub unsafe fn install_web_apis(
 
     // Web APIs — safe for page global
     crate::fetch_api::install_fetch_global(cx, global);
-    crate::fetch_api::install_response_constructor(cx, global);
-    crate::fetch_api::install_headers_constructor(cx, global);
-    crate::fetch_api::install_request_constructor(cx, global);
     crate::timers::install_timer_globals(cx, global);
     crate::web_api::install_performance(cx, global);
     crate::web_api::install_websocket_constructor(cx, global);
@@ -68,6 +65,10 @@ pub unsafe fn install_web_apis(
     crate::web_api::install_queue_microtask(cx, global);
     install_structured_clone(cx, global);
     install_web_api_constructors(cx, global);
+    // Full WHATWG Headers/Request/Response classes — installed AFTER the
+    // constructors blob so their lazy deps (Blob/AbortController/
+    // ReadableStream/TextEncoder) are already on the global.
+    crate::web_fetch_classes::install_fetch_classes(cx, global);
 }
 
 /// Install Node.js/Bun APIs — only for privileged CLI/engine context (REQ-SEC-003).
@@ -6637,9 +6638,7 @@ mod tests {
         // Web API installers that MUST appear in install_web_apis
         let web_installers = [
             "fetch_api::install_fetch_global",
-            "fetch_api::install_response_constructor",
-            "fetch_api::install_headers_constructor",
-            "fetch_api::install_request_constructor",
+            "web_fetch_classes::install_fetch_classes",
             "timers::install_timer_globals",
             "web_api::install_performance",
             "web_api::install_websocket_constructor",

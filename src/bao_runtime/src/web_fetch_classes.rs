@@ -1,10 +1,11 @@
 // @trace REQ-ENG-001 [entity:BaoRuntime] [api:fetch]
-// Enhanced Fetch API classes: Headers, Request, Response
+// Full WHATWG Fetch API classes: Headers, Request, Response.
 //
-// These are pure-JS implementations of the WHATWG Fetch spec classes,
-// installed via JS::Evaluate on the SpiderMonkey global. They replace
-// the earlier minimal Rust-native constructors in fetch_api.rs with
-// full-featured JS classes that match the Web API surface.
+// Pure-JS implementations installed via JS::Evaluate on the SpiderMonkey
+// global (globals::install_web_apis). These are the live Headers/Request/
+// Response constructors; fetch_api::fetch_fn consumes their instance shape
+// (url/method/headers/_bodyText/_bodyBytes/_bodyBlob) when given a Request
+// object as input.
 //
 // ## Design decisions
 //
@@ -20,6 +21,13 @@
 // 3. Request/Response body storage: Bodies are stored as _bodyText (string)
 //    or _bodyBytes (Uint8Array) private slots. The text/json/arrayBuffer/blob
 //    methods return Promises per the WHATWG spec.
+//
+// 4. Method handling: the constructor validates init.method against the
+//    bun_http::Method table (IANA method registry) and THROWS on unknown
+//    tokens — no silent GET fallback. WHATWG permits arbitrary method
+//    tokens, but the Rust wire layer (AsyncHTTP takes the closed Method
+//    enum) cannot serialize them; an explicit error is honest where a
+//    silent fallback would misroute the request.
 
 use mozjs::jsapi::*;
 use mozjs::jsval::UndefinedValue;
@@ -53,35 +61,38 @@ pub fn install_fetch_classes(
 
   var _bao_headers_fill = function _bao_headers_fill(headers, init) {
     if (init == null) return;
-    if (typeof init === 'object') {
-      // Sequence of [name, value] pairs
-      if (typeof init[Symbol.iterator] === 'function' && !Array.isArray(init) && !(init instanceof _g.Headers)) {
-        var iter = init[Symbol.iterator]();
-        var step;
-        while (!(step = iter.next()).done) {
-          var pair = step.value;
-          if (!pair || typeof pair[Symbol.iterator] !== 'function') {
-            throw new TypeError('Header pairs must be iterable');
-          }
-          var pIter = pair[Symbol.iterator]();
-          var p1 = pIter.next();
-          var p2 = pIter.next();
-          headers.append(p1.value, p2.value);
+    if (init instanceof _g.Headers) {
+      // Copy from another Headers instance
+      init._map.forEach(function(values, name) {
+        for (var i = 0; i < values.length; i++) {
+          headers.append(name, values[i]);
         }
-      } else if (init instanceof _g.Headers) {
-        // Copy from another Headers instance
-        init._map.forEach(function(values, name) {
-          for (var i = 0; i < values.length; i++) {
-            headers.append(name, values[i]);
-          }
-        });
-      } else {
-        // Plain object
-        var keys = Object.keys(init);
-        for (var i = 0; i < keys.length; i++) {
-          headers.append(keys[i], init[keys[i]]);
+      });
+      return;
+    }
+    // Sequence of [name, value] pairs — arrays and any iterable (Headers
+    // fill per WHATWG: sequence<sequence<ByteString>>). Plain objects fall
+    // through to the record branch below.
+    var isIterable = typeof init[Symbol.iterator] === 'function';
+    if (isIterable) {
+      var iter = init[Symbol.iterator]();
+      var step;
+      while (!(step = iter.next()).done) {
+        var pair = step.value;
+        if (!pair || typeof pair[Symbol.iterator] !== 'function') {
+          throw new TypeError('Header pairs must be iterable');
         }
+        var pIter = pair[Symbol.iterator]();
+        var p1 = pIter.next();
+        var p2 = pIter.next();
+        headers.append(p1.value, p2.value);
       }
+      return;
+    }
+    // Plain object
+    var keys = Object.keys(init);
+    for (var i = 0; i < keys.length; i++) {
+      headers.append(keys[i], init[keys[i]]);
     }
   };
 
@@ -177,7 +188,51 @@ pub fn install_fetch_classes(
   // Request — WHATWG Fetch spec
   // ═══════════════════════════════════════════════════════════════
 
-  var _bao_valid_methods = /^(GET|HEAD|POST|PUT|DELETE|OPTIONS|PATCH|CONNECT|TRACE)$/i;
+  // Method table mirroring bun_http::Method (the IANA HTTP method registry
+  // tokens the Rust wire layer can serialize). A method outside this table
+  // throws instead of silently falling back to GET — the wire layer has no
+  // arbitrary-token passthrough, and a silent GET would misroute the request
+  // (e.g. a WebDAV PROPFIND answered by a GET handler).
+  var _bao_method_table = 'ACL BIND CHECKOUT CONNECT COPY DELETE GET HEAD LINK LOCK M-SEARCH MERGE MKACTIVITY MKADDRESSBOOK MKCALENDAR MKCOL MOVE NOTIFY OPTIONS PATCH POST PROPFIND PROPPATCH PURGE PUT QUERY REBIND REPORT SEARCH SOURCE SUBSCRIBE TRACE UNBIND UNLINK UNLOCK UNSUBSCRIBE'.split(' ');
+  var _bao_method_set = Object.create(null);
+  for (var _mi = 0; _mi < _bao_method_table.length; _mi++) {
+    _bao_method_set[_bao_method_table[_mi]] = true;
+  }
+
+  var _bao_normalise_method = function _bao_normalise_method(m) {
+    var up = String(m).toUpperCase();
+    if (!_bao_method_set[up]) {
+      throw new TypeError('Failed to construct \'Request\': HTTP method "' + up + '" is not supported by the Bao HTTP wire layer (supported: IANA method registry tokens such as GET/POST/PROPFIND/REPORT).');
+    }
+    return up;
+  };
+
+  // URLSearchParams body → application/x-www-form-urlencoded string.
+  // Structural probe: the runtime's URLSearchParams is a native constructor
+  // without a resolvable .prototype, so `instanceof` throws
+  // (JSMSG_BAD_PROTOTYPE: "'prototype' property ... is not an object") and
+  // .constructor identity resolves to Object. The method surface
+  // append+getAll+entries+forEach is the discriminator — FormData lacks
+  // forEach/entries, Map lacks append/getAll, Blob lacks all four.
+  var _bao_is_urlsearchparams = function _bao_is_urlsearchparams(v) {
+    return !!v && typeof v === 'object'
+      && typeof v.append === 'function'
+      && typeof v.getAll === 'function'
+      && typeof v.entries === 'function'
+      && typeof v.forEach === 'function';
+  };
+
+  // FormData body — no multipart encoder exists in the HTTP layer, so this
+  // throws explicitly instead of silently dropping the body.
+  var _bao_is_formdata = function _bao_is_formdata(v) {
+    if (typeof _g.FormData === 'function' && v instanceof _g.FormData) return true;
+    return v && typeof v === 'object' && Array.isArray(v._data) && typeof v.getAll === 'function';
+  };
+
+  var _bao_is_blob = function _bao_is_blob(v) {
+    if (typeof _g.Blob === 'function' && v instanceof _g.Blob) return true;
+    return v && typeof v === 'object' && typeof v.size === 'number' && typeof v.arrayBuffer === 'function';
+  };
 
   var _bao_request_redirect_modes = ['follow', 'error', 'manual'];
   var _bao_request_modes = ['navigate', 'same-origin', 'no-cors', 'cors'];
@@ -191,7 +246,7 @@ pub fn install_fetch_classes(
     // Handle Request object as input
     if (input instanceof _g.Request) {
       this.url = input.url;
-      this.method = init.method || input.method;
+      this.method = (init.method !== undefined) ? _bao_normalise_method(init.method) : input.method;
       this.headers = new _g.Headers(init.headers || input.headers);
       this._bodySource = init.body !== undefined ? init.body : input._bodySource;
       this.redirect = init.redirect || input.redirect;
@@ -206,9 +261,7 @@ pub fn install_fetch_classes(
     } else {
       // String URL
       this.url = String(input);
-      this.method = (init.method && _bao_valid_methods.test(init.method))
-        ? init.method.toUpperCase()
-        : 'GET';
+      this.method = (init.method !== undefined) ? _bao_normalise_method(init.method) : 'GET';
       this.headers = new _g.Headers(init.headers);
       this._bodySource = init.body;
       this.redirect = (_bao_request_redirect_modes.indexOf(init.redirect) !== -1)
@@ -241,12 +294,21 @@ pub fn install_fetch_classes(
           this._bodySource.byteOffset,
           this._bodySource.byteLength
         );
-      } else if (this._bodySource instanceof _g.Blob) {
+      } else if (_bao_is_urlsearchparams(this._bodySource)) {
+        // Serialize eagerly so fetch(Request) can read _bodyText synchronously.
+        this._bodyText = this._bodySource.toString();
+        if (!this.headers.has('content-type')) {
+          this.headers.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');
+        }
+      } else if (_bao_is_formdata(this._bodySource)) {
+        // Fail-closed: no multipart encoder in the HTTP layer. A silently
+        // dropped body would POST an empty payload — worse than an error.
+        throw new TypeError('Failed to construct \'Request\': FormData bodies are not supported (no multipart/form-data encoder in the Bao HTTP layer).');
+      } else if (_bao_is_blob(this._bodySource)) {
         // Blob body — will be read lazily
         this._bodyBlob = this._bodySource;
-      } else if (typeof this._bodySource === 'object' && typeof this._bodySource.text === 'function') {
-        // Blob-like
-        this._bodyBlob = this._bodySource;
+      } else {
+        throw new TypeError('Failed to construct \'Request\': unsupported body type ' + Object.prototype.toString.call(this._bodySource) + ' (expected string / ArrayBuffer / typed array / Blob / URLSearchParams).');
       }
     }
 
@@ -346,6 +408,10 @@ pub fn install_fetch_classes(
         this._bodyBytes = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
       } else if (body instanceof _g.Blob) {
         this._bodyBlob = body;
+      } else if (_bao_is_urlsearchparams(body)) {
+        this._bodyText = body.toString();
+      } else if (_bao_is_formdata(body)) {
+        throw new TypeError('Failed to construct \'Response\': FormData bodies are not supported (no multipart/form-data encoder in the Bao HTTP layer).');
       } else if (typeof body === 'object' && typeof body.text === 'function') {
         this._bodyBlob = body;
       }

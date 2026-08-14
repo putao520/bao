@@ -1229,9 +1229,6 @@ unsafe fn install_all_native(
 
     // Install Web APIs using properly rooted handle
     bun_runtime::fetch_api::install_fetch_global(&mut cx, global_handle);
-    bun_runtime::fetch_api::install_response_constructor(&mut cx, global_handle);
-    bun_runtime::fetch_api::install_headers_constructor(&mut cx, global_handle);
-    bun_runtime::fetch_api::install_request_constructor(&mut cx, global_handle);
     bun_runtime::timers::install_timer_globals(&mut cx, global_handle);
     bun_runtime::web_api::install_performance(&mut cx, global_handle);
     bun_runtime::web_api::install_websocket_constructor(&mut cx, global_handle);
@@ -1241,6 +1238,11 @@ unsafe fn install_all_native(
     bun_runtime::web_api::install_queue_microtask(&mut cx, global_handle);
     bun_runtime::globals::install_structured_clone(&mut cx, global_handle);
     bun_runtime::globals::install_web_api_constructors(&mut cx, global_handle);
+    // Full WHATWG Headers/Request/Response classes — installed AFTER the
+    // constructors blob so their lazy deps (Blob/AbortController/
+    // ReadableStream/TextEncoder) are already on the global (same ordering
+    // as bun_runtime::globals::install_web_apis).
+    bun_runtime::web_fetch_classes::install_fetch_classes(&mut cx, global_handle);
 
     // REQ-ENG-001 criterion 5: Ensure WebAssembly global is available.
     // SpiderMonkey provides WebAssembly as a standard global class. It is lazily

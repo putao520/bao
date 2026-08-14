@@ -90,6 +90,10 @@ pub mod s3_api;
 pub mod stealth_http;
 pub mod timers;
 pub mod web_api;
+// @trace REQ-ENG-001 [entity:BaoRuntime] [api:fetch] — full WHATWG
+// Headers/Request/Response classes (installed on the global by
+// globals::install_web_apis; consumed by fetch_api::fetch_fn).
+pub mod web_fetch_classes;
 // @trace STUB-INVENTORY: product real ProcessExit owners (no link_noop) — residual=0 for PE
 pub mod product_process_exit;
 // @trace STUB-INVENTORY: product real BufferedReaderParentLink owners (no link_noop) — residual=0 for BR

@@ -1467,6 +1467,7 @@ dependencies = [
 name = "bun_http"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "bao_boringssl_bridge",
  "bitflags 2.11.1",
  "bstr",
  "bun_alloc",

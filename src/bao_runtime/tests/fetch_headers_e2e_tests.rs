@@ -133,7 +133,9 @@ fn test_fetch_init_headers_reach_wire_all_forms() {
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
     // Request constructor must also materialize init.headers (was dropped as
-    // an always-empty object before BCE-20260814-FETCH-H).
+    // an always-empty object before BCE-20260814-FETCH-H). Asserted through
+    // the WHATWG Headers#get — bracket access was an artifact of the old
+    // simplified native Headers (own-prop storage), not a spec surface.
     let req_check = eval_string(
         &mut ctx,
         r#"
@@ -142,7 +144,7 @@ fn test_fetch_init_headers_reach_wire_all_forms() {
                 method: "POST",
                 headers: { "X-Req": "rv" }
             });
-            return r.method + "|" + r.headers["X-Req"];
+            return r.method + "|" + r.headers.get("X-Req");
         })()
         "#,
     );

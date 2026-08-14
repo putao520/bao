@@ -1,6 +1,9 @@
 // @trace REQ-ENG-001 [entity:BaoRuntime] [api:fetch]
 // @trace REQ-ENG-006 REQ-STL-001
-// fetch + Response + Headers constructors
+// fetch() entry point. The WHATWG Headers/Request/Response classes live in
+// web_fetch_classes.rs (full JS implementations installed by
+// globals::install_web_apis); this module owns the native fetch() function
+// and its input/init parsing.
 //
 // ## BCE-007/R4 + BCE-20260619-010: FetchTasklet event-driven paradigm
 //
@@ -17,9 +20,9 @@ use bun_core::ZBox;
 
 use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
-use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject};
+use mozjs::rust::wrappers2::JS_DefineFunction;
 
 thread_local! {
     static TL_STEALTH_PROFILE: ::std::cell::RefCell<Option<bao_stealth::StealthProfile>> = const { ::std::cell::RefCell::new(None) };
@@ -72,17 +75,149 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     let args = CallArgs::from_vp(vp, argc);
     let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, c"fetch requires a URL argument".as_ptr());
+        JS_ReportErrorUTF8(cx, c"fetch requires a URL or Request argument".as_ptr());
         return false;
     }
 
-    let url_val = *args.get(0).ptr;
-    if !url_val.is_string() {
-        JS_ReportErrorUTF8(cx, c"fetch requires a string URL".as_ptr());
+    // ── Input: string URL or Request-like object (WHATWG fetch(input, init)) ──
+    // A Request object contributes url/method/headers/body as the base; init
+    // overrides any field it carries. The full classes live in
+    // web_fetch_classes.rs; their instance shape is url (string), method
+    // (uppercased string), headers (Headers instance) and _bodyText /
+    // _bodyBytes / _bodyBlob body slots.
+    let input_val = *args.get(0).ptr;
+    let url: String;
+    let mut method: String = "GET".to_string();
+    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut body: Option<Vec<u8>> = None;
+
+    if input_val.is_string() {
+        url = crate::js_to_rust_string(cx, input_val);
+    } else if input_val.is_object() {
+        // BCE-012: root to_object() result — JS_GetProperty can trigger GC
+        rooted!(&in(wrapped_cx) let req_obj = input_val.to_object());
+        match get_string_prop(cx, req_obj.handle().into(), "url") {
+            ::std::option::Option::Some(u) => url = u,
+            ::std::option::Option::None => {
+                JS_ReportErrorUTF8(
+                    cx,
+                    c"fetch requires a string URL or a Request object".as_ptr(),
+                );
+                return false;
+            }
+        }
+        if let ::std::option::Option::Some(m) = get_string_prop(cx, req_obj.handle().into(), "method")
+        {
+            method = m;
+        }
+        let mut h_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            req_obj.handle().into(),
+            c"headers".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut h_val,
+            },
+        );
+        if h_val.is_object() {
+            headers = parse_headers_init(cx, h_val);
+        }
+        // Body slots, in the order the Request constructor stores them.
+        if let ::std::option::Option::Some(t) = get_string_prop(cx, req_obj.handle().into(), "_bodyText")
+        {
+            body = Some(t.into_bytes());
+        } else {
+            let mut b_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                req_obj.handle().into(),
+                c"_bodyBytes".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut b_val,
+                },
+            );
+            if b_val.is_object() {
+                body = crate::node_buffer::collect_byte_view(cx, b_val);
+            } else {
+                let mut blob_val = UndefinedValue();
+                JS_GetProperty(
+                    cx,
+                    req_obj.handle().into(),
+                    c"_bodyBlob".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut blob_val,
+                    },
+                );
+                if blob_val.is_object() {
+                    match extract_blob_bytes(cx, blob_val) {
+                        Ok(b) => body = b,
+                        Err(msg) => {
+                            let c_msg = ZBox::from_bytes(msg.as_bytes());
+                            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        JS_ReportErrorUTF8(cx, c"fetch requires a string URL or a Request object".as_ptr());
         return false;
     }
 
-    let url = crate::js_to_rust_string(cx, url_val);
+    // ── init overrides (WHATWG: init fields win over the Request base) ──
+    if argc > 1 {
+        let opts = *args.get(1).ptr;
+        if opts.is_object() {
+            // BCE-012: root to_object() result — JS_GetProperty can trigger GC
+            rooted!(&in(wrapped_cx) let opts_obj = opts.to_object());
+            if let ::std::option::Option::Some(m) =
+                get_string_prop(cx, opts_obj.handle().into(), "method")
+            {
+                method = m;
+            }
+            let mut h_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                opts_obj.handle().into(),
+                c"headers".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut h_val,
+                },
+            );
+            if h_val.is_object() {
+                headers = parse_headers_init(cx, h_val);
+            }
+            // body: only an explicitly present init.body overrides (null
+            // clears it), matching the WHATWG "init wins when present" rule.
+            let mut has_body = false;
+            JS_HasProperty(cx, opts_obj.handle().into(), c"body".as_ptr(), &mut has_body);
+            if has_body {
+                let mut b_val = UndefinedValue();
+                JS_GetProperty(
+                    cx,
+                    opts_obj.handle().into(),
+                    c"body".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut b_val,
+                    },
+                );
+                match extract_body_bytes(cx, b_val, &mut headers) {
+                    Ok(b) => body = b,
+                    Err(msg) => {
+                        let c_msg = ZBox::from_bytes(msg.as_bytes());
+                        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                        return false;
+                    }
+                }
+            }
+        }
+    }
 
     if let ::std::option::Option::Some(pos) = url.find("://") {
         let host_part = &url[pos + 3..];
@@ -100,81 +235,22 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         }
     }
 
-    let method = if argc > 1 {
-        let opts = *args.get(1).ptr;
-        if opts.is_object() {
-            // BCE-012: root to_object() result — JS_GetProperty can trigger GC
-            rooted!(&in(wrapped_cx) let obj = opts.to_object());
-            let mut m_val = UndefinedValue();
-            let m_handle = MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut m_val,
-            };
-            JS_GetProperty(cx, obj.handle().into(), c"method".as_ptr(), m_handle);
-            if m_val.is_string() {
-                crate::js_to_rust_string(cx, m_val).to_uppercase()
-            } else {
-                "GET".to_string()
-            }
-        } else {
-            "GET".to_string()
-        }
-    } else {
-        "GET".to_string()
-    };
-
-    // BCE-20260814-FETCH-H: init.headers was previously dropped entirely
-    // (empty Vec) — every custom header silently vanished. Parse the WHATWG
-    // init forms (Headers instance / sequence of pairs / record) instead.
-    let headers: Vec<(String, String)> = if argc > 1 {
-        let opts = *args.get(1).ptr;
-        if opts.is_object() {
-            // BCE-012: root to_object() result — JS_GetProperty can trigger GC
-            rooted!(&in(wrapped_cx) let obj = opts.to_object());
-            let mut h_val = UndefinedValue();
-            let h_handle = MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut h_val,
-            };
-            JS_GetProperty(cx, obj.handle().into(), c"headers".as_ptr(), h_handle);
-            if h_val.is_object() {
-                parse_headers_init(cx, h_val)
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
-
-    // BCE-20260814-FETCH-H: body accepted string only — Buffer/Uint8Array/
-    // TypedArray/DataView/ArrayBuffer bodies were silently dropped. Reuse
-    // node_buffer::collect_byte_view for the byte-view forms.
-    let body = if argc > 1 {
-        let opts = *args.get(1).ptr;
-        if opts.is_object() {
-            // BCE-012: root to_object() result — JS_GetProperty can trigger GC
-            rooted!(&in(wrapped_cx) let obj = opts.to_object());
-            let mut b_val = UndefinedValue();
-            let b_handle = MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut b_val,
-            };
-            JS_GetProperty(cx, obj.handle().into(), c"body".as_ptr(), b_handle);
-            if b_val.is_string() {
-                Some(crate::js_to_rust_string(cx, b_val).into_bytes())
-            } else if b_val.is_object() {
-                crate::node_buffer::collect_byte_view(cx, b_val)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
+    // ── Method resolution ──
+    // The full bun_http::Method table (IANA method registry: PROPFIND,
+    // REPORT, MKCOL, ...). Unknown tokens throw instead of silently falling
+    // back to GET — a PROPFIND answered by a GET handler is a misroute, not
+    // a degradation. Arbitrary (non-registry) tokens would need a
+    // method-as-string plumbing through AsyncHTTP; the closed enum is the
+    // wire contract inherited from upstream Bun.
+    let method_upper = method.to_uppercase();
+    let Some(bun_method) = bun_http::Method::which(method_upper.as_bytes()) else {
+        let msg = format!(
+            "fetch: HTTP method \"{}\" is not supported by the Bao HTTP wire layer (supported: IANA method registry tokens such as GET/POST/PROPFIND/REPORT)",
+            method_upper
+        );
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        return false;
     };
 
     // ── FetchTasklet event-driven: create PENDING Promise, delegate to fetch_async ──
@@ -189,16 +265,6 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     let profile: Option<bao_stealth::StealthProfile> =
         TL_STEALTH_PROFILE.with(|p| p.borrow().clone());
 
-    let bun_method = match method.as_str() {
-        "POST" => bun_http::Method::POST,
-        "PUT" => bun_http::Method::PUT,
-        "DELETE" => bun_http::Method::DELETE,
-        "PATCH" => bun_http::Method::PATCH,
-        "HEAD" => bun_http::Method::HEAD,
-        "OPTIONS" => bun_http::Method::OPTIONS,
-        _ => bun_http::Method::GET,
-    };
-
     let promise_val = ObjectValue(promise);
 
     // SAFETY: cx is live on this thread; promise_val is the pending Promise.
@@ -208,6 +274,314 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 
     args.rval().set(promise_val);
     true
+}
+
+// ── fetch input/init value helpers ─────────────────────────────────────────
+
+/// Read a string-valued property off `obj`; `None` when absent or non-string.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*` on the current thread; `obj` must be
+/// protected from GC by the caller's stack frame.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_string_prop(
+    cx: *mut JSContext,
+    obj: mozjs::rust::Handle<*mut JSObject>,
+    name: &str,
+) -> Option<String> {
+    unsafe {
+        let c_name = ZBox::from_bytes(name.as_bytes());
+        let mut v = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj.into(),
+            c_name.as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut v,
+            },
+        );
+        if v.is_string() {
+            Some(crate::js_to_rust_string(cx, v))
+        } else {
+            None
+        }
+    }
+}
+
+/// True when `constructor_val` is (pointer-identical to) the global
+/// `global_name` constructor — constructor identity check for FormData /
+/// Blob inputs (JS-defined classes whose instances link back to the
+/// constructor through the prototype chain).
+///
+/// NOT usable for URLSearchParams: that constructor is native and its
+/// instances are plain JSClass objects with own method props and no
+/// prototype/constructor linkage, so `.constructor` resolves to Object —
+/// use [`is_url_search_params_shape`] for those.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*` on the current thread; `constructor_val`
+/// must be protected from GC by the caller's stack frame.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn is_global_ctor(cx: *mut JSContext, constructor_val: JSVal, global_name: &str) -> bool {
+    unsafe {
+        if !constructor_val.is_object() {
+            return false;
+        }
+        let global = mozjs_sys::jsapi::JS::CurrentGlobalOrNull(cx);
+        if global.is_null() {
+            return false;
+        }
+        let wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        // BCE-012: root the global across the property read (can trigger GC)
+        rooted!(&in(wrapped_cx) let global_rooted = global);
+        let c_name = ZBox::from_bytes(global_name.as_bytes());
+        let mut g_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            global_rooted.handle().into(),
+            c_name.as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut g_val,
+            },
+        );
+        g_val.is_object() && g_val.to_object() == constructor_val.to_object()
+    }
+}
+
+/// URLSearchParams structural probe (mirrors `_bao_is_urlsearchparams` in
+/// web_fetch_classes.rs). The runtime's URLSearchParams is a native
+/// constructor whose instances are plain JSClass objects with own method
+/// props and no prototype/constructor linkage — `instanceof` against the
+/// prototype-less constructor throws (JSMSG_BAD_PROTOTYPE) and
+/// `.constructor` identity resolves to Object. The method surface
+/// append+getAll+entries+forEach is the discriminator: FormData lacks
+/// forEach/entries, Map lacks append/getAll, Blob lacks all four.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*` on the current thread; `obj` must be
+/// protected from GC by the caller's stack frame.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn is_url_search_params_shape(
+    cx: *mut JSContext,
+    obj: mozjs::rust::Handle<*mut JSObject>,
+) -> bool {
+    unsafe {
+        for name in ["append", "getAll", "entries", "forEach"] {
+            let c_name = ZBox::from_bytes(name.as_bytes());
+            let mut v = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                obj.into(),
+                c_name.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut v,
+                },
+            );
+            if !v.is_object() || !IsCallable(v.to_object()) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Concatenate a Bao Blob's `_chunks` (array of Uint8Array) into owned bytes.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*`; `blob_val` must be a protected object
+/// value whose `_chunks` (when present) is a JS array of byte views.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn extract_blob_bytes(cx: *mut JSContext, blob_val: JSVal) -> ::std::result::Result<Option<Vec<u8>>, String> {
+    unsafe {
+        let wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        // BCE-012: root to_object() result — JS_GetProperty can trigger GC
+        rooted!(&in(wrapped_cx) let blob = blob_val.to_object());
+        let mut chunks_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            blob.handle().into(),
+            c"_chunks".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut chunks_val,
+            },
+        );
+        if !chunks_val.is_object() {
+            // Blob-like without synchronous byte storage (e.g. a DOM Blob
+            // from another realm whose bytes live behind an async
+            // arrayBuffer()). Fail closed — no empty-body substitute.
+            return Err("fetch: Blob bodies without synchronous byte storage are not supported yet (no streaming request-body infrastructure)".to_string());
+        }
+        // BCE-012: root to_object() result — JS_GetElement can trigger GC
+        rooted!(&in(wrapped_cx) let chunks = chunks_val.to_object());
+        let mut is_array = false;
+        rooted!(&in(wrapped_cx) let arr_probe = chunks_val);
+        IsArrayObject(cx, arr_probe.handle().into(), &mut is_array);
+        if !is_array {
+            return Err("fetch: Blob bodies without synchronous byte storage are not supported yet (no streaming request-body infrastructure)".to_string());
+        }
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            chunks.handle().into(),
+            c"length".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            },
+        );
+        let len = if len_val.is_int32() && len_val.to_int32() > 0 {
+            len_val.to_int32() as usize
+        } else {
+            0
+        };
+        let mut out: Vec<u8> = Vec::new();
+        for i in 0..len as u32 {
+            let mut el = UndefinedValue();
+            JS_GetElement(
+                cx,
+                chunks.handle().into(),
+                i,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut el,
+                },
+            );
+            match crate::node_buffer::collect_byte_view(cx, el) {
+                ::std::option::Option::Some(bytes) => out.extend_from_slice(&bytes),
+                ::std::option::Option::None => {
+                    return Err("fetch: Blob chunk is not a byte view".to_string());
+                }
+            }
+        }
+        Ok(Some(out))
+    }
+}
+
+/// Extract fetch `init.body` bytes. Accepted forms: string, byte views
+/// (Buffer/Uint8Array/TypedArray/DataView/ArrayBuffer), Bao Blob (`_chunks`
+/// storage), URLSearchParams (serialized; defaults
+/// `application/x-www-form-urlencoded;charset=UTF-8` when no content-type
+/// header is set). FormData and anything else fail closed with an explicit
+/// error — silently dropping a body turns a POST into an empty POST.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*`; `body_val` must be protected from GC by
+/// the caller's stack frame. `headers` receives the defaulted content-type.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn extract_body_bytes(
+    cx: *mut JSContext,
+    body_val: JSVal,
+    headers: &mut Vec<(String, String)>,
+) -> ::std::result::Result<Option<Vec<u8>>, String> {
+    unsafe {
+        if body_val.is_null_or_undefined() {
+            return Ok(None);
+        }
+        if body_val.is_string() {
+            return Ok(Some(crate::js_to_rust_string(cx, body_val).into_bytes()));
+        }
+        if !body_val.is_object() {
+            return Err(format!(
+                "fetch: unsupported body type (expected string / BufferSource / Blob / URLSearchParams)"
+            ));
+        }
+        let wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        // BCE-012: root to_object() result — the JS calls below can trigger GC
+        rooted!(&in(wrapped_cx) let obj = body_val.to_object());
+
+        // Byte views: Buffer / Uint8Array / TypedArray / DataView / ArrayBuffer.
+        if let ::std::option::Option::Some(bytes) = crate::node_buffer::collect_byte_view(cx, body_val)
+        {
+            return Ok(Some(bytes));
+        }
+
+        // Constructor-identity probes for the class forms.
+        let mut ctor_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"constructor".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ctor_val,
+            },
+        );
+
+        // URLSearchParams → serialize via toString(), default the content-type.
+        if is_url_search_params_shape(cx, obj.handle()) {
+            // BCE-012: root the object across the toString call
+            let mut s_val = UndefinedValue();
+            let called = JS_CallFunctionName(
+                cx,
+                obj.handle().into(),
+                c"toString".as_ptr(),
+                &HandleValueArray::empty(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut s_val,
+                },
+            );
+            if !called || !s_val.is_string() {
+                return Err("fetch: URLSearchParams body could not be serialized".to_string());
+            }
+            let has_ct = headers
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case("content-type"));
+            if !has_ct {
+                headers.push((
+                    "Content-Type".to_string(),
+                    "application/x-www-form-urlencoded;charset=UTF-8".to_string(),
+                ));
+            }
+            return Ok(Some(crate::js_to_rust_string(cx, s_val).into_bytes()));
+        }
+
+        // FormData — explicit unsupported (no multipart encoder in the HTTP
+        // layer). Fail closed instead of posting an empty body.
+        if is_global_ctor(cx, ctor_val, "FormData") {
+            return Err("fetch: FormData request bodies are not supported (no multipart/form-data encoder in the Bao HTTP layer)".to_string());
+        }
+
+        // Blob-ish (numeric size + callable arrayBuffer). The Bao Blob stores
+        // `_chunks` synchronously; realm-foreign Blobs fail closed inside.
+        let mut size_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"size".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut size_val,
+            },
+        );
+        let mut ab_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"arrayBuffer".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ab_val,
+            },
+        );
+        if size_val.is_number() && ab_val.is_object() && IsCallable(ab_val.to_object()) {
+            return extract_blob_bytes(cx, body_val);
+        }
+
+        Err("fetch: unsupported body type (expected string / BufferSource / Blob / URLSearchParams; FormData and streams are not supported)".to_string())
+    }
 }
 
 // ── WHATWG fetch init.headers parsing (BCE-20260814-FETCH-H) ──────────────
@@ -480,597 +854,6 @@ unsafe fn parse_header_entry(cx: *mut JSContext, pair_val: JSVal) -> Option<(Str
         }
         None
     }
-}
-
-pub fn install_response_constructor(
-    cx: &mut mozjs::context::JSContext,
-    global: mozjs::rust::Handle<*mut JSObject>,
-) {
-    unsafe {
-        let ctor = JS_NewFunction(
-            cx.raw_cx(),
-            Some(response_constructor),
-            2,
-            JSFUN_CONSTRUCTOR,
-            c"Response".as_ptr(),
-        );
-        if !ctor.is_null() {
-            let ctor_obj = JS_GetFunctionObject(ctor);
-            if !ctor_obj.is_null() {
-                rooted!(&in(cx) let co = ctor_obj);
-                JS_DefineProperty3(
-                    cx,
-                    global,
-                    c"Response".as_ptr(),
-                    co.handle(),
-                    (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
-                );
-            }
-        }
-    }
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn response_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    // BCE-012: root JS_NewPlainObject result — JS_DefineProperty/JS_SetProperty can trigger GC
-    rooted!(&in(wrapped_cx) let resp_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
-    if resp_obj.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    rooted!(&in(wrapped_cx) let status_val = Int32Value(200));
-    JS_DefineProperty(
-        cx,
-        resp_obj.handle().into(),
-        c"status".as_ptr(),
-        status_val.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-
-    rooted!(&in(wrapped_cx) let ok_val = mozjs::jsval::BooleanValue(true));
-    JS_DefineProperty(
-        cx,
-        resp_obj.handle().into(),
-        c"ok".as_ptr(),
-        ok_val.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-
-    let url_js_str = JS_NewStringCopyZ(cx, c"".as_ptr());
-    if !url_js_str.is_null() {
-        rooted!(&in(wrapped_cx) let url_val = StringValue(&*url_js_str));
-        JS_DefineProperty(
-            cx,
-            resp_obj.handle().into(),
-            c"url".as_ptr(),
-            url_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    let st_js_str = JS_NewStringCopyZ(cx, c"".as_ptr());
-    if !st_js_str.is_null() {
-        rooted!(&in(wrapped_cx) let st_val = StringValue(&*st_js_str));
-        JS_DefineProperty(
-            cx,
-            resp_obj.handle().into(),
-            c"statusText".as_ptr(),
-            st_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    let empty_headers = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-    if !empty_headers.is_null() {
-        // BCE-012: root ObjectValue of GC-managed pointer — JS_DefineProperty can trigger GC
-        rooted!(&in(wrapped_cx) let h_val = mozjs::jsval::ObjectValue(empty_headers));
-        JS_DefineProperty(
-            cx,
-            resp_obj.handle().into(),
-            c"headers".as_ptr(),
-            h_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    if argc > 0 {
-        let body_val = *args.get(0).ptr;
-        if body_val.is_string() {
-            let body_str = crate::js_to_rust_string(cx, body_val);
-            {
-                let c_body = ZBox::from_bytes(body_str.as_bytes());
-                let body_js = JS_NewStringCopyZ(cx, c_body.as_ptr());
-                if !body_js.is_null() {
-                    rooted!(&in(wrapped_cx) let bv = StringValue(&*body_js));
-                    JS_DefineProperty(
-                        cx,
-                        resp_obj.handle().into(),
-                        c"_bodyText".as_ptr(),
-                        bv.handle().into(),
-                        0,
-                    );
-                }
-            }
-        }
-    }
-
-    if argc > 1 {
-        let opts = *args.get(1).ptr;
-        if opts.is_object() {
-            // BCE-012: root to_object() result — JS_GetProperty can trigger GC
-            rooted!(&in(wrapped_cx) let opts_obj = opts.to_object());
-            let mut st_val = UndefinedValue();
-            let st_mh = MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut st_val,
-            };
-            JS_GetProperty(cx, opts_obj.handle().into(), c"status".as_ptr(), st_mh);
-            if st_val.is_int32() {
-                rooted!(&in(wrapped_cx) let st_root = st_val);
-                JS_SetProperty(
-                    cx,
-                    resp_obj.handle().into(),
-                    c"status".as_ptr(),
-                    st_root.handle().into(),
-                );
-                let ok =
-                    mozjs::jsval::BooleanValue(st_val.to_int32() >= 200 && st_val.to_int32() < 300);
-                rooted!(&in(wrapped_cx) let ok_root = ok);
-                JS_SetProperty(
-                    cx,
-                    resp_obj.handle().into(),
-                    c"ok".as_ptr(),
-                    ok_root.handle().into(),
-                );
-            }
-        }
-    }
-
-    let text_fn = JS_NewFunction(cx, Some(response_text), 0, 0, c"text".as_ptr());
-    if !text_fn.is_null() {
-        let fn_ptr = JS_GetFunctionObject(text_fn);
-        // BCE-012: root ObjectValue of GC-managed pointer — JS_DefineProperty can trigger GC
-        rooted!(&in(wrapped_cx) let text_val = mozjs::jsval::ObjectValue(fn_ptr));
-        JS_DefineProperty(
-            cx,
-            resp_obj.handle().into(),
-            c"text".as_ptr(),
-            text_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    let json_fn = JS_NewFunction(cx, Some(response_json), 0, 0, c"json".as_ptr());
-    if !json_fn.is_null() {
-        let fn_ptr = JS_GetFunctionObject(json_fn);
-        // BCE-012: root ObjectValue of GC-managed pointer — JS_DefineProperty can trigger GC
-        rooted!(&in(wrapped_cx) let json_val = mozjs::jsval::ObjectValue(fn_ptr));
-        JS_DefineProperty(
-            cx,
-            resp_obj.handle().into(),
-            c"json".as_ptr(),
-            json_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    args.rval().set(mozjs::jsval::ObjectValue(resp_obj.get()));
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn response_text(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    // BCE-012: root to_object() result — JS_GetProperty can trigger GC
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let obj = this.to_object());
-    let mut body_val = UndefinedValue();
-    let b_handle = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut body_val,
-    };
-    JS_GetProperty(cx, obj.handle().into(), c"_bodyText".as_ptr(), b_handle);
-    args.rval().set(body_val);
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn response_json(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        JS_ReportErrorUTF8(cx, c"response.json(): invalid this".as_ptr());
-        return false;
-    }
-    // BCE-012: root to_object() result — JS_GetProperty can trigger GC
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let obj = this.to_object());
-    let mut body_val = UndefinedValue();
-    let b_handle = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut body_val,
-    };
-    JS_GetProperty(cx, obj.handle().into(), c"_bodyText".as_ptr(), b_handle);
-
-    if !body_val.is_string() {
-        JS_ReportErrorUTF8(cx, c"response.json(): body is not a string".as_ptr());
-        return false;
-    }
-
-    // BCE-012: root JSString — JS_ParseJSON1 can trigger GC
-    let js_str = body_val.to_string();
-    rooted!(&in(wrapped_cx) let str_root = js_str);
-    let mut rval = UndefinedValue();
-    let rval_handle = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut rval,
-    };
-    let ok = mozjs_sys::jsapi::JS_ParseJSON1(cx, str_root.handle().into(), rval_handle);
-
-    if !ok {
-        JS_ClearPendingException(cx);
-        JS_ReportErrorUTF8(cx, c"response.json(): invalid JSON".as_ptr());
-        return false;
-    }
-    args.rval().set(rval);
-    true
-}
-
-pub fn install_headers_constructor(
-    cx: &mut mozjs::context::JSContext,
-    global: mozjs::rust::Handle<*mut JSObject>,
-) {
-    unsafe {
-        let ctor = JS_NewFunction(
-            cx.raw_cx(),
-            Some(headers_constructor),
-            1,
-            JSFUN_CONSTRUCTOR,
-            c"Headers".as_ptr(),
-        );
-        if !ctor.is_null() {
-            let ctor_obj = JS_GetFunctionObject(ctor);
-            if !ctor_obj.is_null() {
-                rooted!(&in(cx) let co = ctor_obj);
-                JS_DefineProperty3(
-                    cx,
-                    global,
-                    c"Headers".as_ptr(),
-                    co.handle(),
-                    (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
-                );
-            }
-        }
-    }
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn headers_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    // BCE-012: root JS_NewPlainObject result — JS_DefineProperty can trigger GC
-    rooted!(&in(wrapped_cx) let headers_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
-    if headers_obj.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    let get_fn = JS_NewFunction(cx, Some(headers_get), 1, 0, c"get".as_ptr());
-    if !get_fn.is_null() {
-        let fn_ptr = JS_GetFunctionObject(get_fn);
-        // BCE-012: root ObjectValue of GC-managed pointer — JS_DefineProperty can trigger GC
-        rooted!(&in(wrapped_cx) let fn_val = mozjs::jsval::ObjectValue(fn_ptr));
-        JS_DefineProperty(
-            cx,
-            headers_obj.handle().into(),
-            c"get".as_ptr(),
-            fn_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    let set_fn = JS_NewFunction(cx, Some(headers_set), 2, 0, c"set".as_ptr());
-    if !set_fn.is_null() {
-        let fn_ptr = JS_GetFunctionObject(set_fn);
-        // BCE-012: root ObjectValue of GC-managed pointer — JS_DefineProperty can trigger GC
-        rooted!(&in(wrapped_cx) let fn_val = mozjs::jsval::ObjectValue(fn_ptr));
-        JS_DefineProperty(
-            cx,
-            headers_obj.handle().into(),
-            c"set".as_ptr(),
-            fn_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    let has_fn = JS_NewFunction(cx, Some(headers_has), 1, 0, c"has".as_ptr());
-    if !has_fn.is_null() {
-        let fn_ptr = JS_GetFunctionObject(has_fn);
-        // BCE-012: root ObjectValue of GC-managed pointer — JS_DefineProperty can trigger GC
-        rooted!(&in(wrapped_cx) let fn_val = mozjs::jsval::ObjectValue(fn_ptr));
-        JS_DefineProperty(
-            cx,
-            headers_obj.handle().into(),
-            c"has".as_ptr(),
-            fn_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    args.rval()
-        .set(mozjs::jsval::ObjectValue(headers_obj.get()));
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn headers_get(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        args.rval().set(mozjs::jsval::NullValue());
-        return true;
-    }
-    let name_val = *args.get(0).ptr;
-    if !name_val.is_string() {
-        args.rval().set(mozjs::jsval::NullValue());
-        return true;
-    }
-    let name_js = name_val.to_string();
-    let name_str = crate::jsstr_to_rust_string(cx, name_js);
-    let c_name = ZBox::from_bytes(name_str.as_bytes());
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(mozjs::jsval::NullValue());
-        return true;
-    }
-    // BCE-012: root to_object() result — JS_GetProperty can trigger GC
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let obj = this.to_object());
-    let mut val = UndefinedValue();
-    let val_handle = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut val,
-    };
-    JS_GetProperty(cx, obj.handle().into(), c_name.as_ptr(), val_handle);
-    if val.is_undefined() || val.is_null() {
-        args.rval().set(mozjs::jsval::NullValue());
-    } else {
-        args.rval().set(val);
-    }
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn headers_set(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 {
-        JS_ReportErrorUTF8(cx, c"Headers.set requires name and value".as_ptr());
-        return false;
-    }
-    let name_val = *args.get(0).ptr;
-    let value_val = *args.get(1).ptr;
-    if !name_val.is_string() || !value_val.is_string() {
-        JS_ReportErrorUTF8(cx, c"Headers.set requires string arguments".as_ptr());
-        return false;
-    }
-    let name_js = name_val.to_string();
-    let name_str = crate::jsstr_to_rust_string(cx, name_js);
-    let c_name = ZBox::from_bytes(name_str.as_bytes());
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    // BCE-012: root to_object() result — JS_SetProperty can trigger GC
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let obj = this.to_object());
-    rooted!(&in(wrapped_cx) let val_root = value_val);
-    JS_SetProperty(
-        cx,
-        obj.handle().into(),
-        c_name.as_ptr(),
-        val_root.handle().into(),
-    );
-    args.rval().set(UndefinedValue());
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn headers_has(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        args.rval().set(mozjs::jsval::BooleanValue(false));
-        return true;
-    }
-    let name_val = *args.get(0).ptr;
-    if !name_val.is_string() {
-        args.rval().set(mozjs::jsval::BooleanValue(false));
-        return true;
-    }
-    let name_js = name_val.to_string();
-    let name_str = crate::jsstr_to_rust_string(cx, name_js);
-    let c_name = ZBox::from_bytes(name_str.as_bytes());
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(mozjs::jsval::BooleanValue(false));
-        return true;
-    }
-    // BCE-012: root to_object() result — JS_GetProperty can trigger GC
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let obj = this.to_object());
-    let mut val = UndefinedValue();
-    let val_handle = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut val,
-    };
-    JS_GetProperty(cx, obj.handle().into(), c_name.as_ptr(), val_handle);
-    args.rval().set(mozjs::jsval::BooleanValue(
-        !val.is_undefined() && !val.is_null(),
-    ));
-    true
-}
-
-pub fn install_request_constructor(
-    cx: &mut mozjs::context::JSContext,
-    global: mozjs::rust::Handle<*mut JSObject>,
-) {
-    unsafe {
-        let ctor = JS_NewFunction(
-            cx.raw_cx(),
-            Some(request_constructor),
-            2,
-            JSFUN_CONSTRUCTOR,
-            c"Request".as_ptr(),
-        );
-        if !ctor.is_null() {
-            let ctor_obj = JS_GetFunctionObject(ctor);
-            if !ctor_obj.is_null() {
-                rooted!(&in(cx) let co = ctor_obj);
-                JS_DefineProperty3(
-                    cx,
-                    global,
-                    c"Request".as_ptr(),
-                    co.handle(),
-                    (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
-                );
-            }
-        }
-    }
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn request_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    // BCE-012: root JS_NewPlainObject result — JS_DefineProperty can trigger GC
-    rooted!(&in(wrapped_cx) let req_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
-    if req_obj.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    // url argument
-    let url_val = if argc > 0 {
-        let v = *args.get(0).ptr;
-        if v.is_string() {
-            v
-        } else {
-            UndefinedValue()
-        }
-    } else {
-        UndefinedValue()
-    };
-    rooted!(&in(wrapped_cx) let url_root = url_val);
-    JS_DefineProperty(
-        cx,
-        req_obj.handle().into(),
-        c"url".as_ptr(),
-        url_root.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-
-    // method from options or default GET
-    let method_str = if argc > 1 {
-        let opts = *args.get(1).ptr;
-        if opts.is_object() {
-            // BCE-012: root to_object() result — JS_GetProperty can trigger GC
-            rooted!(&in(wrapped_cx) let opts_obj = opts.to_object());
-            let mut m_val = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                opts_obj.handle().into(),
-                c"method".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut m_val,
-                },
-            );
-            if m_val.is_string() {
-                crate::js_to_rust_string(cx, m_val)
-            } else {
-                "GET".to_string()
-            }
-        } else {
-            "GET".to_string()
-        }
-    } else {
-        "GET".to_string()
-    };
-    let method_cstr = ZBox::from_bytes(method_str.as_bytes());
-    let method_jsstr = JS_NewStringCopyZ(cx, method_cstr.as_ptr());
-    let method_val = StringValue(&*method_jsstr);
-    rooted!(&in(wrapped_cx) let method_root = method_val);
-    JS_DefineProperty(
-        cx,
-        req_obj.handle().into(),
-        c"method".as_ptr(),
-        method_root.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-
-    // headers — BCE-20260814-FETCH-H: init.headers was dropped entirely
-    // (always-empty object). Parse the WHATWG init forms and materialize the
-    // entries as own props of the Headers-like object — the same storage the
-    // fetch_api Headers class uses (own enumerable string-valued data props).
-    let mut header_entries: Vec<(String, String)> = Vec::new();
-    if argc > 1 {
-        let opts = *args.get(1).ptr;
-        if opts.is_object() {
-            // BCE-012: root to_object() result — JS_GetProperty can trigger GC
-            rooted!(&in(wrapped_cx) let opts_obj = opts.to_object());
-            let mut h_val = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                opts_obj.handle().into(),
-                c"headers".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut h_val,
-                },
-            );
-            if h_val.is_object() {
-                header_entries = parse_headers_init(cx, h_val);
-            }
-        }
-    }
-    rooted!(&in(wrapped_cx) let headers_obj_root = mozjs_sys::jsapi::JS_NewPlainObject(cx));
-    if !headers_obj_root.get().is_null() {
-        // BCE-012: root ObjectValue of GC-managed pointer — JS_DefineProperty can trigger GC
-        rooted!(&in(wrapped_cx) let headers_val =
-            mozjs::jsval::ObjectValue(headers_obj_root.get()));
-        JS_DefineProperty(
-            cx,
-            req_obj.handle().into(),
-            c"headers".as_ptr(),
-            headers_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-        for (name, value) in &header_entries {
-            let c_name = ZBox::from_bytes(name.as_bytes());
-            let c_val = ZBox::from_bytes(value.as_bytes());
-            let v_js = JS_NewStringCopyZ(cx, c_val.as_ptr());
-            if !v_js.is_null() {
-                rooted!(&in(wrapped_cx) let v_root = StringValue(&*v_js));
-                JS_DefineProperty(
-                    cx,
-                    headers_obj_root.handle().into(),
-                    c_name.as_ptr(),
-                    v_root.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-        }
-    }
-
-    args.rval().set(mozjs::jsval::ObjectValue(req_obj.get()));
-    true
 }
 
 #[cfg(test)]
