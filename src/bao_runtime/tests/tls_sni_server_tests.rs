@@ -465,3 +465,245 @@ fn sni_callback_error_fails_handshake_with_tls_client_error() {
     eval_string(&mut ctx, "server.close();");
     drive_event_loop(&mut ctx, 5);
 }
+
+// ─── 5. tls.connect(): real client session + certificate truth ─────────
+//
+// The client path runs a REAL TLS connection on the bao-tls-driver thread
+// (connect worker → driver handshake → live socket). Asserts:
+//   - getProtocol()/getCipher() report the negotiated session (no hardcode)
+//   - getPeerCertificate() returns the server certificate's real fields,
+//     with fingerprint256 cross-checked against SHA-256(leaf DER) computed
+//     independently in Rust
+//   - write() performs real I/O (server echoes, client 'data' receives it)
+//   - server-side socket: same session truth, getPeerCertificate() null
+//     (the test client presents no certificate)
+
+#[test]
+fn client_connect_real_session_info_and_io() {
+    bun_runtime::install_exit_handler();
+    bun_core::output::init_test();
+    bun_runtime::bun_api::init_process_start();
+
+    let (cert, key) = generate_self_signed_pem("server.local", 365).expect("cert");
+    let der = pem_parse_certs(&cert).into_iter().next().expect("DER");
+    // Expected fingerprint256: SHA-256 over the leaf DER, Node's "AA:BB:…" form.
+    let mut digest = [0u8; 32];
+    // SAFETY: no ENGINE selection (null, same as sql/mysql Auth.rs usage).
+    unsafe { bun_sha_hmac::SHA256::hash(&der, &mut digest, core::ptr::null_mut()) };
+    let expected_fp: String = digest
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(":");
+
+    let mut ctx = make_ctx();
+    let setup = format!(
+        r#"
+        var tls = require('tls');
+        globalThis.port = 0;
+        globalThis.srvLog = [];
+        var server = tls.createServer({{
+            key: "{key}",
+            cert: "{cert}"
+        }});
+        server.on('secureConnection', function(s) {{
+            globalThis.srvLog.push('proto=' + s.getProtocol());
+            var c = s.getCipher();
+            globalThis.srvLog.push('cipher=' + (c ? c.name : 'null'));
+            globalThis.srvLog.push('peercert=' + String(s.getPeerCertificate()));
+            s.on('data', function(d) {{ s.write('echo:' + String.fromCharCode.apply(null, new Uint8Array(d))); }});
+        }});
+        server.listen(0, '127.0.0.1', function() {{ globalThis.port = server.address().port; }});
+        "ok"
+        "#,
+        key = js_str(&key),
+        cert = js_str(&cert),
+    );
+    let r = eval_string(&mut ctx, &setup);
+    assert_eq!(r, "ok", "server setup failed: {}", r);
+    drive_event_loop(&mut ctx, 3);
+    let port = match ctx.eval("globalThis.port;", "<p>") {
+        Ok(JsValue::Number(n)) => n as u16,
+        _ => panic!("port not captured after listen"),
+    };
+    assert!(port > 0);
+
+    let connect = format!(
+        r#"
+        tls.connect({{ host: '127.0.0.1', port: {port}, rejectUnauthorized: false }}).then(function(sock) {{
+            globalThis.clientSock = sock;
+            globalThis.proto = sock.getProtocol();
+            var c = sock.getCipher();
+            globalThis.cipherName = c && c.name;
+            globalThis.cipherVersion = c && c.version;
+            var pc = sock.getPeerCertificate();
+            globalThis.certCN = pc && pc.subject && pc.subject.CN;
+            globalThis.certIssuerCN = pc && pc.issuer && pc.issuer.CN;
+            globalThis.validFrom = pc && pc.valid_from;
+            globalThis.validTo = pc && pc.valid_to;
+            globalThis.fp256 = pc && pc.fingerprint256;
+            globalThis.serial = pc && pc.serialNumber;
+            sock.on('data', function(d) {{ globalThis.clientGot = String.fromCharCode.apply(null, new Uint8Array(d)); }});
+            globalThis.writeOk = sock.write('ping');
+        }}, function(err) {{
+            globalThis.clientErr = String(err && err.message || err);
+        }});
+        "connecting"
+        "#,
+        port = port,
+    );
+    let r = eval_string(&mut ctx, &connect);
+    assert_eq!(r, "connecting", "tls.connect eval failed: {}", r);
+
+    // Pump until the echo round-trip lands (or the 5s deadline).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let got = eval_string(&mut ctx, "String(globalThis.clientGot !== undefined)");
+        let err = eval_string(&mut ctx, "String(globalThis.clientErr !== undefined)");
+        if got == "true" || err == "true" || std::time::Instant::now() > deadline {
+            break;
+        }
+        drive_event_loop(&mut ctx, 5);
+    }
+
+    let err = eval_string(&mut ctx, "String(globalThis.clientErr || '')");
+    assert_eq!(err, "", "tls.connect must not reject against a live server, got: {}", err);
+
+    // Session truth — negotiated values, not constants.
+    let proto = eval_string(&mut ctx, "globalThis.proto");
+    assert!(
+        proto.starts_with("TLS"),
+        "getProtocol() must report the negotiated version, got: {}",
+        proto
+    );
+    let cipher_name = eval_string(&mut ctx, "globalThis.cipherName");
+    assert!(
+        !cipher_name.is_empty() && cipher_name != "undefined" && cipher_name != "null",
+        "getCipher().name must be the negotiated cipher, got: {}",
+        cipher_name
+    );
+    let cipher_version = eval_string(&mut ctx, "globalThis.cipherVersion");
+    assert!(
+        !cipher_version.is_empty() && cipher_version != "undefined",
+        "getCipher().version must be present, got: {}",
+        cipher_version
+    );
+
+    // Certificate truth — real fields from the server's leaf certificate.
+    let cn = eval_string(&mut ctx, "globalThis.certCN");
+    assert_eq!(cn, "server.local", "getPeerCertificate().subject.CN");
+    let issuer = eval_string(&mut ctx, "globalThis.certIssuerCN");
+    assert_eq!(issuer, "server.local", "getPeerCertificate().issuer.CN (self-signed)");
+    let valid_from = eval_string(&mut ctx, "globalThis.validFrom");
+    let valid_to = eval_string(&mut ctx, "globalThis.validTo");
+    assert!(
+        valid_from.contains("GMT") && valid_to.contains("GMT"),
+        "valid_from/valid_to must be ASN1_TIME_print dates, got: {:?} / {:?}",
+        valid_from,
+        valid_to
+    );
+    let fp = eval_string(&mut ctx, "globalThis.fp256");
+    assert_eq!(
+        fp, expected_fp,
+        "fingerprint256 must equal SHA-256(leaf DER) in Node's colon-hex form"
+    );
+    let serial = eval_string(&mut ctx, "globalThis.serial");
+    assert!(
+        !serial.is_empty()
+            && serial.chars().all(|c| c.is_ascii_hexdigit())
+            && serial == serial.to_uppercase(),
+        "serialNumber must be uppercase hex, got: {}",
+        serial
+    );
+
+    // Real I/O: write() returned true and the server echo arrived.
+    let write_ok = eval_string(&mut ctx, "String(globalThis.writeOk)");
+    assert_eq!(write_ok, "true", "write() on a live client socket must return true");
+    let got = eval_string(&mut ctx, "globalThis.clientGot");
+    assert_eq!(got, "echo:ping", "client 'data' must receive the server echo");
+
+    // Server-side socket: same session truth; no client cert → null.
+    let srv = eval_string(&mut ctx, "globalThis.srvLog.join('|')");
+    assert!(
+        srv.starts_with("proto=TLS"),
+        "server socket getProtocol() must report the negotiated version, log: {}",
+        srv
+    );
+    assert!(
+        srv.contains("peercert=null"),
+        "server-side getPeerCertificate() must be null (no client certificate), log: {}",
+        srv
+    );
+
+    eval_string(&mut ctx, "globalThis.clientSock.destroy(); server.close();");
+    drive_event_loop(&mut ctx, 10);
+}
+
+// ─── 6. tls.connect() verifies by default (rejectUnauthorized true) ─────
+
+#[test]
+fn client_connect_rejects_untrusted_server_by_default() {
+    bun_runtime::install_exit_handler();
+    bun_core::output::init_test();
+    bun_runtime::bun_api::init_process_start();
+
+    let (cert, key) = generate_self_signed_pem("untrusted.local", 365).expect("cert");
+
+    let mut ctx = make_ctx();
+    let setup = format!(
+        r#"
+        var tls = require('tls');
+        globalThis.port = 0;
+        globalThis.clientErr = '';
+        var server = tls.createServer({{
+            key: "{key}",
+            cert: "{cert}"
+        }});
+        server.listen(0, '127.0.0.1', function() {{ globalThis.port = server.address().port; }});
+        "ok"
+        "#,
+        key = js_str(&key),
+        cert = js_str(&cert),
+    );
+    let r = eval_string(&mut ctx, &setup);
+    assert_eq!(r, "ok", "server setup failed: {}", r);
+    drive_event_loop(&mut ctx, 3);
+    let port = match ctx.eval("globalThis.port;", "<p>") {
+        Ok(JsValue::Number(n)) => n as u16,
+        _ => panic!("port not captured after listen"),
+    };
+    assert!(port > 0);
+
+    // No rejectUnauthorized:false and no `ca` — BoringSSL's default
+    // verification must fail the handshake against the self-signed cert.
+    let connect = format!(
+        r#"
+        tls.connect({{ host: '127.0.0.1', port: {port} }}).then(function(sock) {{
+            globalThis.clientSock = sock;
+        }}, function(err) {{
+            globalThis.clientErr = String(err && err.message || err);
+        }});
+        "connecting"
+        "#,
+        port = port,
+    );
+    let r = eval_string(&mut ctx, &connect);
+    assert_eq!(r, "connecting");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let err = eval_string(&mut ctx, "String(globalThis.clientErr !== '')");
+        if err == "true" || std::time::Instant::now() > deadline {
+            break;
+        }
+        drive_event_loop(&mut ctx, 5);
+    }
+    let err = eval_string(&mut ctx, "globalThis.clientErr");
+    assert!(
+        !err.is_empty(),
+        "tls.connect must reject against an untrusted self-signed server by default"
+    );
+
+    eval_string(&mut ctx, "server.close();");
+    drive_event_loop(&mut ctx, 10);
+}

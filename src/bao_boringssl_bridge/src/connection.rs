@@ -14,7 +14,7 @@
 //!     - network_write_bio: Application BIO_read() to extract outgoing ciphertext
 //! ```
 
-use std::ffi::{c_int, c_void};
+use std::ffi::{c_char, c_int, c_uint, c_void};
 
 use bun_boringssl_sys::boringssl::*;
 
@@ -67,6 +67,189 @@ unsafe extern "C" {
     fn SSL_set_SSL_CTX(ssl: *mut SSL, ctx: *mut SSL_CTX) -> *mut SSL_CTX;
     fn SSL_get_peer_certificate(ssl: *const SSL) -> *mut X509;
     safe fn TLS_method() -> *const SSL_METHOD;
+    // Session-info surface (protocol/cipher/peer-cert fields for the JS
+    // `getProtocol`/`getCipher`/`getPeerCertificate`): compiled into the
+    // vendored library but not yet in the hand-rolled bindings. Ground
+    // truth: vendor/boringssl/include/openssl/{asn1.h,ssl.h}.
+    fn ASN1_TIME_print(out: *mut BIO, a: *const ASN1_TIME) -> c_int;
+    fn SSL_CIPHER_get_version(cipher: *const SSL_CIPHER) -> *const c_char;
+    fn SSL_set1_host(ssl: *mut SSL, hostname: *const c_char) -> c_int;
+}
+
+// ─── Peer-certificate field extraction (Node getPeerCertificate shape) ──
+
+// Standard X.509 NIDs for the RDN attributes surfaced as subject/issuer
+// entries (vendor/boringssl/include/openssl/obj_mac.h). Only these are
+// extracted; anything else is omitted rather than approximated.
+const NID_COUNTRY_NAME: c_int = 14;
+const NID_LOCALITY_NAME: c_int = 15;
+const NID_STATE_OR_PROVINCE_NAME: c_int = 16;
+const NID_ORGANIZATION_NAME: c_int = 17;
+const NID_ORGANIZATIONAL_UNIT_NAME: c_int = 18;
+const NID_PKCS9_EMAIL_ADDRESS: c_int = 48;
+
+/// One RDN attribute of a certificate name: short key ("CN", "O", …) and
+/// its UTF-8 value.
+pub struct CertNameEntry {
+    pub key: &'static str,
+    pub value: String,
+}
+
+/// Parsed leaf-certificate fields for the Node `getPeerCertificate()`
+/// surface. `None` fields are ones BoringSSL could not produce — the JS
+/// layer surfaces those as `undefined`, never as a placeholder.
+pub struct PeerCertInfo {
+    pub subject: Vec<CertNameEntry>,
+    pub issuer: Vec<CertNameEntry>,
+    /// "Aug 14 12:00:00 2026 GMT" (ASN1_TIME_print format — the format
+    /// Node reports).
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+    /// Uppercase SHA-256 digest, colon-separated hex pairs.
+    pub fingerprint256: Option<String>,
+    /// Uppercase hex serial number.
+    pub serial_number: Option<String>,
+}
+
+/// NUL-terminated C string → String (None for NULL / invalid UTF-8).
+fn cstr_to_string(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: ptr is a NUL-terminated C string owned by the caller's source.
+    let bytes = unsafe { std::ffi::CStr::from_ptr(ptr) };
+    bytes.to_str().ok().map(|s| s.to_string())
+}
+
+/// Extract the known RDN attributes from an `X509_NAME` (subject/issuer).
+fn cert_name_entries(name: *const X509_NAME) -> Vec<CertNameEntry> {
+    const NIDS: &[(c_int, &str)] = &[
+        (NID_commonName, "CN"),
+        (NID_COUNTRY_NAME, "C"),
+        (NID_STATE_OR_PROVINCE_NAME, "ST"),
+        (NID_LOCALITY_NAME, "L"),
+        (NID_ORGANIZATION_NAME, "O"),
+        (NID_ORGANIZATIONAL_UNIT_NAME, "OU"),
+        (NID_PKCS9_EMAIL_ADDRESS, "emailAddress"),
+    ];
+    let mut out = Vec::new();
+    for &(nid, key) in NIDS {
+        let mut loc: c_int = -1;
+        loop {
+            // SAFETY: name is a live X509_NAME owned by the certificate
+            // being parsed.
+            loc = unsafe { X509_NAME_get_index_by_NID(name, nid, loc) };
+            if loc < 0 {
+                break;
+            }
+            // SAFETY: loc was just returned by the index lookup on name.
+            let entry = unsafe { X509_NAME_get_entry(name, loc) };
+            if entry.is_null() {
+                break;
+            }
+            // SAFETY: entry is a live X509_NAME_ENTRY owned by name.
+            let data = unsafe { X509_NAME_ENTRY_get_data(entry) };
+            if data.is_null() {
+                continue;
+            }
+            // SAFETY: data is a live ASN1_STRING owned by the entry; the
+            // two accessors are valid reads for its lifetime.
+            let ptr = unsafe { ASN1_STRING_get0_data(data) };
+            let len = unsafe { ASN1_STRING_length(data) };
+            if !ptr.is_null() && len > 0 {
+                // SAFETY: ptr/len delimit the string's raw bytes.
+                let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+                out.push(CertNameEntry {
+                    key,
+                    value: String::from_utf8_lossy(bytes).into_owned(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Render an `ASN1_TIME` in the ASN1_TIME_print format (Node's
+/// valid_from/valid_to format).
+fn asn1_time_string(t: *const ASN1_TIME) -> Option<String> {
+    if t.is_null() {
+        return None;
+    }
+    // SAFETY: BIO_s_mem returns the process-static mem BIO method.
+    let bio = unsafe { BIO_new(BIO_s_mem()) };
+    if bio.is_null() {
+        return None;
+    }
+    // SAFETY: bio is a live mem BIO; t is a live ASN1_TIME from the cert.
+    if unsafe { ASN1_TIME_print(bio, t) } <= 0 {
+        // SAFETY: bio was just created and is no longer needed.
+        unsafe { BIO_free(bio) };
+        return None;
+    }
+    // SAFETY: bio is the live mem BIO just written to.
+    let pending = unsafe { BIO_ctrl_pending(bio) };
+    let mut buf = vec![0u8; pending];
+    // SAFETY: buf is a valid write buffer of `pending` bytes.
+    let n = unsafe { BIO_read(bio, buf.as_mut_ptr().cast::<c_void>(), buf.len() as c_int) };
+    // SAFETY: bio is done.
+    unsafe { BIO_free(bio) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Uppercase colon-separated hex digest of a certificate (Node
+/// fingerprint256 format).
+fn cert_digest_hex(x509: *const X509, md: *const EVP_MD) -> Option<String> {
+    let mut buf = vec![0u8; EVP_MAX_MD_SIZE as usize];
+    let mut len: c_uint = 0;
+    // SAFETY: x509 is a live certificate; buf is EVP_MAX_MD_SIZE bytes.
+    if unsafe { X509_digest(x509, md, buf.as_mut_ptr(), &mut len) } != 1 {
+        return None;
+    }
+    let digest = &buf[..len as usize];
+    let mut out = String::with_capacity(digest.len() * 3);
+    for (i, b) in digest.iter().enumerate() {
+        if i > 0 {
+            out.push(':');
+        }
+        out.push_str(&format!("{:02X}", b));
+    }
+    Some(out)
+}
+
+/// Uppercase hex serial number (Node serialNumber format).
+fn cert_serial_hex(x509: *const X509) -> Option<String> {
+    // SAFETY: serial is owned by the certificate (borrowed for this call).
+    let serial = unsafe { X509_get_serialNumber(x509) };
+    if serial.is_null() {
+        return None;
+    }
+    // SAFETY: BN_new allocates a fresh BIGNUM (freed below).
+    let bn = unsafe { BN_new() };
+    if bn.is_null() {
+        return None;
+    }
+    // SAFETY: serial is a live ASN1_INTEGER; bn is a fresh BIGNUM.
+    let owned = unsafe { ASN1_INTEGER_to_BN(serial, bn) };
+    if owned.is_null() {
+        // SAFETY: bn was just allocated and conversion never took it.
+        unsafe { BN_free(bn) };
+        return None;
+    }
+    // SAFETY: owned is the BIGNUM holding the serial (bn or a new one).
+    let hex = unsafe { BN_bn2hex(owned) };
+    // SAFETY: owned was allocated by BN_new/ASN1_INTEGER_to_BN for us.
+    unsafe { BN_free(owned) };
+    if hex.is_null() {
+        return None;
+    }
+    let s = cstr_to_string(hex).map(|s| s.to_uppercase());
+    // SAFETY: hex is an OPENSSL_malloc'd string.
+    unsafe { OPENSSL_free(hex.cast::<c_void>()) };
+    s
 }
 
 /// The SNI servername for a raw `SSL*` (server side) — usable inside the
@@ -461,6 +644,94 @@ impl TlsConnection {
             X509_free(x509);
         }
         Some(buf)
+    }
+
+    /// Negotiated protocol version ("TLSv1.3", …) — available once the
+    /// handshake has completed.
+    pub fn protocol_version(&self) -> Option<String> {
+        let ssl = self.ssl_ptr();
+        // SAFETY: ssl is a live SSL owned by this connection.
+        cstr_to_string(unsafe { SSL_get_version(ssl) })
+    }
+
+    /// Negotiated cipher name (e.g. "TLS_AES_256_GCM_SHA384") — available
+    /// once the handshake has completed.
+    pub fn cipher_name(&self) -> Option<String> {
+        let ssl = self.ssl_ptr();
+        // SAFETY: ssl is a live SSL owned by this connection.
+        let cipher = unsafe { SSL_get_current_cipher(ssl) };
+        if cipher.is_null() {
+            return None;
+        }
+        // SAFETY: cipher was returned by SSL_get_current_cipher for this SSL.
+        cstr_to_string(unsafe { SSL_CIPHER_get_name(cipher) })
+    }
+
+    /// The cipher's version string (BoringSSL's static "TLSv1/SSLv3").
+    pub fn cipher_version(&self) -> Option<String> {
+        let ssl = self.ssl_ptr();
+        // SAFETY: ssl is a live SSL owned by this connection.
+        let cipher = unsafe { SSL_get_current_cipher(ssl) };
+        if cipher.is_null() {
+            return None;
+        }
+        // SAFETY: cipher was returned by SSL_get_current_cipher for this SSL.
+        cstr_to_string(unsafe { SSL_CIPHER_get_version(cipher) })
+    }
+
+    /// Disable peer-certificate verification (Node `rejectUnauthorized:
+    /// false`). Must be called before the handshake starts.
+    pub fn set_verify_off(&mut self) {
+        // SAFETY: ssl is a live SSL owned by this connection, pre-handshake.
+        unsafe { SSL_set_verify(self.ssl_ptr(), SSL_VERIFY_NONE, None) };
+    }
+
+    /// Enable peer-certificate verification against `hostname` (Node
+    /// `rejectUnauthorized: true`, the `tls.connect` default). A BoringSSL
+    /// client does NOT verify unless this is set — `SSL_VERIFY_PEER` turns
+    /// on chain validation against the ctx trust store and `SSL_set1_host`
+    /// adds the DNS-name check. Returns false when the hostname could not
+    /// be installed (interior NUL) — callers must treat that as failure,
+    /// not silently proceed unverified. Must be called before the handshake
+    /// starts.
+    pub fn set_verify_peer(&mut self, hostname: &str) -> bool {
+        let Ok(name_c) = std::ffi::CString::new(hostname) else {
+            return false;
+        };
+        // SAFETY: ssl is a live SSL owned by this connection, pre-handshake;
+        // name_c outlives both calls.
+        unsafe {
+            SSL_set_verify(self.ssl_ptr(), SSL_VERIFY_PEER, None);
+            SSL_set1_host(self.ssl_ptr(), name_c.as_ptr()) == 1
+        }
+    }
+
+    /// The peer's leaf certificate parsed into the Node
+    /// `getPeerCertificate()` field set (None when the peer presented no
+    /// certificate). Only fields BoringSSL can hand back truthfully are
+    /// filled; absent ones are `None` so the caller surfaces `undefined`
+    /// instead of a placeholder.
+    pub fn peer_cert_info(&self) -> Option<PeerCertInfo> {
+        let ssl = self.ssl_ptr();
+        // SAFETY: ssl is a live SSL owned by this connection; the returned
+        // X509 is owned by us and freed below.
+        let x509 = unsafe { SSL_get_peer_certificate(ssl) };
+        if x509.is_null() {
+            return None;
+        }
+        let info = PeerCertInfo {
+            // SAFETY: x509 is a live certificate; both name accessors return
+            // names owned by it (const access for the lifetime of this block).
+            subject: cert_name_entries(unsafe { X509_get_subject_name(x509) }),
+            issuer: cert_name_entries(unsafe { X509_get_issuer_name(x509) }),
+            valid_from: asn1_time_string(unsafe { X509_get_notBefore(x509) }),
+            valid_to: asn1_time_string(unsafe { X509_get_notAfter(x509) }),
+            fingerprint256: cert_digest_hex(x509, EVP_sha256()),
+            serial_number: cert_serial_hex(x509),
+        };
+        // SAFETY: x509 was returned by SSL_get_peer_certificate (owned).
+        unsafe { X509_free(x509) };
+        Some(info)
     }
 
     /// Set the curves list on the SSL connection (for profile-specific ordering).

@@ -24,8 +24,10 @@ impl TlsClient {
     /// Uses the crypto-X509 method (`TLS_method`) — see
     /// [`crate::connection::new_tls_ctx`] for why — because the
     /// trust-store / verify-param APIs (`SSL_CTX_get_cert_store`, …)
-    /// assert on a buffers-method ctx, and the client verifies peer
-    /// certificates by default.
+    /// assert on a buffers-method ctx. Note: the client does NOT verify by
+    /// default (BoringSSL clients run `SSL_VERIFY_NONE`) — callers opt in
+    /// via `TlsConnection::set_verify_peer` (node:tls does this when
+    /// `rejectUnauthorized` is true, the Node default).
     pub fn new() -> Result<Self, TlsError> {
         // Ensure BoringSSL is initialized
         bun_boringssl::load();
@@ -47,9 +49,9 @@ impl TlsClient {
     }
 
     /// Trust an additional DER-encoded certificate (CA or self-signed leaf)
-    /// for peer verification — the BoringSSL client verifies by default, so
-    /// private-CA / self-signed servers must be anchored here (Node's `ca`
-    /// option equivalent).
+    /// for peer verification — anchors private-CA / self-signed servers
+    /// (Node's `ca` option equivalent). Only takes effect on connections
+    /// that enable verification via `set_verify_peer`.
     pub fn add_trusted_der(&self, der: &[u8]) -> bool {
         let mut p = der.as_ptr();
         // SAFETY: d2i_X509 reads from the DER slice; the returned X509 is
