@@ -17,9 +17,14 @@ use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
+/// Pure worker-id predicate (no env access; testable without global state).
+fn is_worker_env(worker_id: Option<&str>) -> bool {
+    worker_id.is_some()
+}
+
 /// Check if this process is a cluster worker (started with --cluster-worker env).
 fn is_cluster_worker() -> bool {
-    ::std::env::var("BAO_CLUSTER_WORKER_ID").is_ok()
+    is_worker_env(::std::env::var("BAO_CLUSTER_WORKER_ID").ok().as_deref())
 }
 
 // ─── Module install ────────────────────────────────────────────────────────
@@ -1261,21 +1266,20 @@ mod tests {
 
     #[test]
     fn test_is_cluster_worker_default() {
-        // In test environment, no BAO_CLUSTER_WORKER_ID is set.
-        assert!(!is_cluster_worker());
+        // Pure predicate: no env set → not a worker. No env mutation, no race
+        // with parallel tests.
+        assert!(!is_worker_env(None));
     }
 
     #[test]
     fn test_is_cluster_worker_with_env() {
-        // SAFETY: Safe in test context: single-threaded test, no concurrent env access.
-        unsafe { ::std::env::set_var("BAO_CLUSTER_WORKER_ID", "3") };
-        assert!(is_cluster_worker());
-        // SAFETY: Safe in test context: single-threaded test, no concurrent env access.
-        unsafe { ::std::env::remove_var("BAO_CLUSTER_WORKER_ID") };
+        assert!(is_worker_env(Some("3")));
+        assert!(is_worker_env(Some("0")));
     }
 
     #[test]
     fn test_is_primary_default() {
-        assert!(!is_cluster_worker()); // is_primary = !is_worker
+        // is_primary = !is_worker
+        assert!(!is_worker_env(None));
     }
 }
