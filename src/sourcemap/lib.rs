@@ -62,7 +62,7 @@ unsafe extern "C" {
 
 unsafe extern "Rust" {
     /// Link-time-resolved by `bun_runtime::jsc_hooks` (same pattern as
-    /// `__BUN_RUNTIME_HOOKS`). Spec sourcemap_jsc/source_provider.zig:20
+    /// `__bun_regex_*`). Spec sourcemap_jsc/source_provider.zig:20
     /// `BakeSourceProvider.getExternalData` — looks up the bundled `.map`
     /// JSON for `source_filename` via the live `Bake::GlobalObject`'s
     /// `PerThread.source_maps`. Returns `None` if not running under Bake

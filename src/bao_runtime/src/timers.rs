@@ -235,6 +235,62 @@ pub fn install_timer_globals(
     }
 }
 
+/// Deadline-aware wait for the timer-only branches of `drain_and_check` /
+/// `drain_one_pass`. Replaces the former `sleep(1ms)` busy-poll that burned
+/// CPU advancing the wall clock toward the next BAO_REGISTRY deadline.
+///
+/// Model: compute the delta from *now* to the earliest deadline and perform
+/// ONE bounded, interruptible wait via the thread's uWS loop
+/// (`tick_with_timeout` → `bao_loop_tick` → `epoll_wait(timeout=delta)`):
+///
+/// - Pure-timer case (loop `active == 0`): epoll blocks the full delta —
+///   zero polling; the timer wakes exactly at its deadline.
+/// - Interruptible: a ConcurrentTask completion on any thread calls
+///   `us_wakeup_loop`, whose eventfd is registered on the same epoll — the
+///   wait returns immediately instead of sleeping out the slice.
+/// - Busy-loop clamp (`active > 0`): `bao_loop_tick` clamps the timeout to 0
+///   (non-blocking drain, same policy as `tick_without_idle`); the residual
+///   sleep below then paces the iteration at the old 1ms cadence —
+///   behavior-equivalent to the previous poll.
+/// - Fake timers: a mocked clock does not advance while blocked in epoll
+///   (only JS running between iterations advances it via `mock_time::set`),
+///   so keep the legacy 1ms poll when a mock is installed.
+fn wait_for_timer_deadline() {
+    if bun_core::util::mock_time::get().is_some() {
+        // Mocked clock: waiting cannot advance it. Legacy 1ms poll.
+        ::std::thread::sleep(Duration::from_millis(1));
+        return;
+    }
+    let now = Timespec::now_allow_mocked_time();
+    let Some(deadline) = BAO_REGISTRY.with(|r| r.borrow().next_deadline()) else {
+        return;
+    };
+    if deadline.order(&now) != core::cmp::Ordering::Greater {
+        // Already due — let drain_bao_timers fire it without waiting.
+        return;
+    }
+    let delta = deadline.duration(&now);
+    let delta_ns = delta.ns() as i64;
+    let start = ::std::time::Instant::now();
+    with_event_loop(|loop_| {
+        // SAFETY: `loop_ptr()` returns the live thread-lifetime uWS loop
+        // (see `with_event_loop`'s invariant). `tick_with_timeout` performs
+        // a bounded epoll_wait — never the NULL-timeout blocking path that
+        // caused BCE-007-R3.
+        unsafe { (*loop_.loop_ptr()).tick_with_timeout(Some(&delta)) };
+    });
+    let elapsed_ns = start.elapsed().as_nanos() as i64;
+    if elapsed_ns < delta_ns {
+        // Epoll returned before the deadline: either its ms-truncation
+        // (<1ms gap), a wakeup/event arrival, or the active>0 zero-clamp.
+        // Sleep at most the old 1ms quantum — never the full remainder, an
+        // arrived event must not wait out a long timer — so iterations keep
+        // advancing the wall clock exactly like the previous poll did.
+        let residual = (delta_ns - elapsed_ns).min(1_000_000);
+        ::std::thread::sleep(Duration::from_nanos(residual as u64));
+    }
+}
+
 /// P1-B: main event-loop tick. Uses MiniEventLoop::tick_once for I/O
 /// (bao_uloop epoll drives uWS App sockets). Drains BAO_REGISTRY timers
 /// and fires their JS callbacks. Returns `true` if the event loop should
@@ -282,10 +338,10 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
         });
     } else if has_pending_before_tick {
         // Timer-only case: bao's setTimeout lives in BAO_REGISTRY (wall-clock
-        // deadlines), not in uSockets' timer heap. An empty tick_once would
-        // block on epoll_wait with nothing to wake it. A short sleep advances
-        // wall-clock deterministically so drain_bao_timers can pop expired entries.
-        ::std::thread::sleep(::std::time::Duration::from_millis(1));
+        // deadlines), not in uSockets' timer heap. Wait exactly until the
+        // earliest deadline (interruptible by ConcurrentTask wakeups) instead
+        // of polling — see `wait_for_timer_deadline`.
+        wait_for_timer_deadline();
     }
     // BCE-20260619-010: fetch-only busy-poll branch removed. FetchTasklet
     // event-driven paradigm uses ConcurrentTask auto-wakeup via MiniEventLoop;
@@ -323,11 +379,12 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
 ///   - When there are active HTTP servers / I/O, `tick_once` is invoked so
 ///     uSockets-driven I/O (fetch, http.createServer) makes progress.
 ///   - When only timers are pending (typical setTimeout/async test), we
-///     sleep for a short slice instead. bao's `setTimeout` registers in
-///     `BAO_REGISTRY` (not in uSockets' timer heap), so an empty
-///     `tick_once` would block forever on `epoll_wait` with nothing to wake
-///     it. `drain_bao_timers` uses wall-clock deadlines, so a small sleep
-///     advances them deterministically.
+///     wait until the earliest deadline instead. bao's `setTimeout`
+///     registers in `BAO_REGISTRY` (not in uSockets' timer heap), so an
+///     empty `tick_once` would block forever on `epoll_wait` with nothing
+///     to wake it. `drain_bao_timers` uses wall-clock deadlines;
+///     `wait_for_timer_deadline` performs one bounded, wakeup-interruptible
+///     `epoll_wait(delta-to-deadline)` — no polling.
 ///
 /// Returns true if any timer fired this pass.
 ///
@@ -356,10 +413,10 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
             loop_.tick_without_idle(core::ptr::null_mut());
         });
     } else if bao_has_pending_timers() {
-        // Timer-only case: advance wall-clock so `drain_bao_timers` can pop
-        // expired entries. Short sleep keeps test throughput reasonable while
-        // avoiding the epoll_wait-forever trap.
-        ::std::thread::sleep(::std::time::Duration::from_millis(1));
+        // Timer-only case: wait exactly until the earliest deadline
+        // (interruptible by ConcurrentTask wakeups) instead of the former
+        // 1ms poll — see `wait_for_timer_deadline`.
+        wait_for_timer_deadline();
     }
     // BCE-20260619-010: fetch-only busy-poll branch removed.
     // FetchTasklet uses ConcurrentTask auto-wakeup; no sleep polling needed.

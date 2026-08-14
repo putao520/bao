@@ -60,9 +60,6 @@ pub mod js_cell;
 // ─── Event loop ──────────────────────────────────────────────────────────
 pub mod event_loop;
 
-// ─── Runtime hooks (cold-path vtables) ──────────────────────────────────
-pub mod runtime_hooks;
-
 // ─── Concurrent tasks ────────────────────────────────────────────────────
 pub mod concurrent;
 
@@ -149,7 +146,6 @@ pub use hot_reloader::{HotReloader, ImportWatcher};
 pub use module_loader::{
     GlobalSetupFn, JobQueueDrainFn, ModuleLoader, PostEvalHook, ResolverFn, set_job_queue_drain,
 };
-pub use runtime_hooks::{LoaderHooks, RuntimeHooks, SqlRuntimeHooks};
 pub use system_error::SysErrorJsc;
 pub use system_error::SystemError;
 // NOTE: WebWorker re-export removed per DEC-WK-001 BCE-20260627-008.
