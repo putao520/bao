@@ -36,6 +36,23 @@ cd ~/code/tools/servo && git fetch origin && git log --oneline <BASELINE>..origi
 ### 第二铁律:名字 grep 有 ~90% 假阳性
 `JSC`/`jsc` 会命中 `JSContext`/`JSClass`(SpiderMonkey API 名)。任何"残留/缺失"结论必须人工抽样核实命中上下文。
 
+## 1.5 扫描自动化三招(第一道过滤器,先跑再人工)
+
+1. **hash 前置检测**:每个候选先 `grep -rl "<hash>" src packages vendor` —— Bao 有在注释里引用上游 hash 的惯例,命中即"已含"秒判。
+2. **pre-fix 指纹比对**:对 fix 类 commit 取 diff 的**删除行**(pre-fix 形状,如 `value.len() > 1`、`const int eof = events & EPOLLHUP;`),直接 grep Bao 对应目录——命中即"同 bug 确认",比读上下文快一个量级。不命中再看形状差异。
+3. **窗口规模校正**:起手 `git rev-list --count <BASELINE>..origin/main` + 按目录分类 stat 汇总(install/CI/windows 类整批跳过)——禁用"约 N 个提交"的估算规划派工(本轮估算 15 实际 73)。
+
+### 已知路径映射(上游 → Bao,避免每轮考古)
+
+| 上游路径 | Bao 落点 |
+|---|---|
+| `packages/bun-usockets/*` | `packages/bun-usockets/`(`src/uws_sys/build.rs:14` 编译;`src/uws_sys/libuwsockets.cpp` 是另一层桥、无事件循环,非吸收目标) |
+| `src/http_jsc/websocket_client.rs` | 未移植(`src/http/websocket_http_client.rs` 为空) |
+| `src/runtime/server/RequestContext.rs` + `webcore/streams.rs` | 无对应结构(Bao 用 servo 处理网络) |
+| `src/runtime/*`(JSC 钩子层) | 不适用(SM 替代,无 JSC 钩子) |
+
+
+
 ## 2. 分类判定(每项必须落到其一)
 
 | 判定 | 判据 |
