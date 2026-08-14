@@ -2,6 +2,7 @@
 use ::std::fs;
 use ::std::path::Path;
 use ::std::sync::{Arc, Mutex};
+use bao_engine::context::RawValueRootGuard;
 use bun_core::ZBox;
 use bun_sys::fs as bun_fs;
 // @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
@@ -50,12 +51,18 @@ enum FsAsyncResult {
 
 struct FsAsyncCtx {
     cx: *mut JSContext,
+    /// Raw callback pointer captured at spawn. Prefer `cb_root.get(0)` —
+    /// the guard's slot is updated in place by a moving GC; this pointer is
+    /// only the fallback for the rooting-failed path.
     callback: *mut JSObject,
+    /// RAII heap root for the callback value, spanning the worker-thread
+    /// window. Released when this Box drops (defer callback or the
+    /// degenerate no-loop path), liveness-guarded.
+    cb_root: Option<RawValueRootGuard>,
     result: Arc<Mutex<Option<::std::result::Result<FsAsyncResult, (String, String)>>>>,
     encoding: Option<String>,
     op_name: String,
     path: String,
-    rooted: bool,
 }
 
 unsafe fn schedule_defer(ctx: *mut FsAsyncCtx) {
@@ -75,7 +82,12 @@ unsafe fn schedule_defer(ctx: *mut FsAsyncCtx) {
 unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
     let ctx = Box::from_raw(raw_ctx as *mut FsAsyncCtx);
     let cx = ctx.cx;
-    let callback = ctx.callback;
+    // Live callback value: prefer the RAII root's slot (updated in place by
+    // a moving GC) over the raw pointer captured at spawn time.
+    let cb_value = ctx.cb_root.as_ref().map_or_else(
+        || mozjs::jsval::ObjectValue(ctx.callback),
+        |g| g.get(0),
+    );
     let encoding = ctx.encoding.as_deref();
     let _op_name = &ctx.op_name;
 
@@ -87,8 +99,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
-    rooted!(&in(cx_ref) let cb = callback);
-    rooted!(&in(cx_ref) let cb_val = mozjs::jsval::ObjectValue(cb.get()));
+    rooted!(&in(cx_ref) let cb_val = cb_value);
     let global = CurrentGlobalOrNull(cx);
     if global.is_null() {
         return;
@@ -458,10 +469,10 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             JS_ClearPendingException(cx);
         }
     }
-    if ctx.rooted {
-        let mut cb_val = mozjs::jsval::ObjectValue(callback);
-        RemoveRawValueRoot(cx, &mut cb_val);
-    }
+    // Terminal unroot is RAII: `ctx` (Box<FsAsyncCtx>) drops at the end of
+    // this callback, releasing the `cb_root` heap root with the correct
+    // registered address on every exit path (including the null-global
+    // early return above).
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -507,12 +518,13 @@ unsafe fn spawn_fs_async<F>(
 ) where
     F: FnOnce() -> ::std::result::Result<FsAsyncResult, ::std::io::Error> + Send + 'static,
 {
-    let mut cb_val = mozjs::jsval::ObjectValue(callback);
-    let rooted = AddRawValueRoot(
-        cx,
-        &mut cb_val,
-        b"fs_async_cb\0".as_ptr() as *const ::std::os::raw::c_char,
-    );
+    // Heap-root the callback value for the async window via the RAII guard
+    // (stable heap slot the GC updates in place; unrooted when the
+    // FsAsyncCtx Box drops, with the correct registered address).
+    let cb_val = mozjs::jsval::ObjectValue(callback);
+    let cb_root = unsafe {
+        RawValueRootGuard::new(cx, ::std::slice::from_ref(&cb_val), c"fs_async_cb")
+    };
 
     let result_slot: Arc<Mutex<Option<::std::result::Result<FsAsyncResult, (String, String)>>>> =
         Arc::new(Mutex::new(None));
@@ -524,11 +536,11 @@ unsafe fn spawn_fs_async<F>(
     let ctx = Box::new(FsAsyncCtx {
         cx,
         callback,
+        cb_root,
         result: result_slot,
         encoding,
         op_name: op_name.to_string(),
         path,
-        rooted,
     });
     let ctx_ptr = Box::into_raw(ctx) as usize;
 

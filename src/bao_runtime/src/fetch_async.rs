@@ -39,10 +39,10 @@
 //! `h3_fetch.rs` is excluded — it has no `send_sync` path.
 
 use ::std::cell::RefCell;
-use ::std::ffi::c_char;
 use ::std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use ::std::sync::{Arc, Mutex};
 
+use bao_engine::context::RawValueRootGuard;
 use bun_core::ZBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
@@ -81,18 +81,23 @@ thread_local! {
 /// A fetch tasklet: pending Promise + event-driven HTTP integration.
 ///
 /// Invariants (FetchTaskletLifecycle SM):
-/// - `rooted == true` while the Promise is outstanding (heap root held).
-/// - Every terminal transition (resolve/reject) must `RemoveRawValueRoot`.
+/// - `promise_root` holds the heap root while the Promise is outstanding;
+///   it is released RAII-style when the PendingFetch Box drops (every
+///   terminal resolve/reject path ends in that drop).
 /// - `has_schedule_callback` prevents duplicate ConcurrentTask scheduling.
 /// - `outcome` is written by `on_http_done` (HTTPThread) and consumed by
 ///   `resolve_tasklet` (JS thread via ConcurrentTask).
 pub struct PendingFetch {
     /// SpiderMonkey context that owns the Promise. Only touched on the JS thread.
     pub cx: *mut JSContext,
-    /// Heap-rooted pending Promise *value*. Rooted while `outcome.is_none()`.
+    /// RAII heap root (GUARD-A) keeping the pending Promise alive across the
+    /// async window. `None` only when rooting failed at spawn (pre-existing
+    /// degraded path: the unrooted `promise_val` snapshot below is used).
+    pub promise_root: Option<RawValueRootGuard>,
+    /// Promise value snapshot taken at spawn. The live value is
+    /// `promise_root.get(0)` (updated in place by a moving GC); this is the
+    /// fallback when rooting failed.
     pub promise_val: JSVal,
-    /// `true` while `AddRawValueRoot` is in effect.
-    pub rooted: bool,
     /// HTTPThread result slot. `None` until `on_http_done` writes the outcome.
     pub outcome: Arc<Mutex<Option<FetchOutcome>>>,
     /// How to materialize the result on the JS thread.
@@ -245,15 +250,15 @@ unsafe fn start_with_kind(
     kind: ResolveKind,
 ) {
     // GUARD-A (GC root): heap-root the pending Promise value across the async
-    // window. The async window spans ticks, so the stack-rooted!() macro
-    // (whose roots die with the frame) is unsound here -- we use the runtime's
-    // raw root table instead.
-    let mut pv = promise_val;
-    let rooted = unsafe {
-        let name = b"FetchTasklet.promise\0".as_ptr() as *const c_char;
-        AddRawValueRoot(cx, &mut pv, name)
+    // window. The async window spans ticks AND frames (root lives from here
+    // until resolve_tasklet drops the PendingFetch), so the stack-rooted!()
+    // macro (whose roots die with the frame) is unsound here -- the RAII
+    // guard pins the value in a stable heap slot the GC updates in place and
+    // unroots it when the PendingFetch Box drops (liveness-guarded Drop).
+    let promise_root = unsafe {
+        RawValueRootGuard::new(cx, ::std::slice::from_ref(&promise_val), c"FetchTasklet.promise")
     };
-    let rooted_val = if rooted { pv } else { promise_val };
+    let rooted_val = promise_root.as_ref().map_or(promise_val, |g| g.get(0));
 
     let outcome: Arc<Mutex<Option<FetchOutcome>>> = Arc::new(Mutex::new(None));
 
@@ -264,8 +269,8 @@ unsafe fn start_with_kind(
     // the deallocation).
     let pending = Box::new(PendingFetch {
         cx,
+        promise_root,
         promise_val: rooted_val,
-        rooted,
         outcome: Arc::clone(&outcome),
         kind,
         mini_loop_ptr: ::std::ptr::null(), // filled below
@@ -738,10 +743,11 @@ fn resolve_tasklet_shim(ctx: *mut PendingFetch, _parent: *mut ()) {
 ///   1. Resets `has_schedule_callback` (allows future scheduling if needed).
 ///   2. Takes the outcome from the shared slot.
 ///   3. Builds the Response/error JS object and resolves/rejects the Promise.
-///   4. `RemoveRawValueRoot` (terminal cleanup).
-///   5. `unref_concurrently` (keepalive decrement).
-///   6. Deallocates the `PendingFetch` Box.
-///   7. Removes from PENDING registry.
+///   4. `unref_concurrently` (keepalive decrement).
+///   5. Removes from PENDING registry + reclaims the lifted URL/body/headers
+///      buffers.
+///   6. Deallocates the `PendingFetch` Box — the RAII `promise_root` Drop
+///      releases the heap root (liveness-guarded) on every exit path.
 unsafe fn resolve_tasklet(this: *mut PendingFetch) {
     // 1. Reset scheduling flag.
     unsafe { &*this }
@@ -760,9 +766,13 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
     let kind = unsafe { &*this }.kind;
 
     // 3. Build Response/error JS object and resolve/reject the Promise.
-    // We reconstruct the PendingFetch fields needed by resolve_tasklet_inner.
-    let promise_val = unsafe { &*this }.promise_val;
-    let rooted = unsafe { &*this }.rooted;
+    // The live Promise value comes from the RAII root's GC-updated slot; the
+    // spawn-time snapshot is only the fallback for the rooting-failed path.
+    let pending = unsafe { &*this };
+    let promise_val = pending
+        .promise_root
+        .as_ref()
+        .map_or(pending.promise_val, |g| g.get(0));
 
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
@@ -817,11 +827,9 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
         }
     }
 
-    // 4. Terminal cleanup: unroot (every exit path).
-    if rooted {
-        let mut pv = promise_val;
-        RemoveRawValueRoot(cx, &mut pv);
-    }
+    // 4. Terminal unroot is RAII: the `promise_root` Drop below (step 7,
+    //    PendingFetch Box deallocation) removes the heap root with the
+    //    correct registered address on every exit path.
 
     // 5. unref_concurrently: decrement keepalive (must balance ref_concurrently
     //    in start_with_kind). Only valid for JS-VM-backed loops.
@@ -1185,8 +1193,8 @@ mod tests {
     fn has_schedule_callback_atomic_roundtrip() {
         let pf = PendingFetch {
             cx: ::std::ptr::null_mut(),
+            promise_root: None,
             promise_val: UndefinedValue(),
-            rooted: false,
             outcome: Arc::new(Mutex::new(None)),
             kind: ResolveKind::Response,
             mini_loop_ptr: ::std::ptr::null(),

@@ -92,9 +92,17 @@ impl Drop for PersistentGlobal {
     }
 }
 
+/// Liveness check shared by the extra-roots guards: the captured context is
+/// only safe to touch if the current thread's `Runtime::get()` still
+/// resolves to it. `false` covers both "runtime destroyed" (root table gone)
+/// and "dropped from a foreign thread" (root table alive but not ours).
+fn raw_cx_alive(cx: *mut RawJSContext) -> bool {
+    !cx.is_null() && mozjs::rust::Runtime::get().map(|c| c.as_ptr()) == Some(cx)
+}
+
 impl PersistentGlobal {
     fn cx_alive(cx: *mut RawJSContext) -> bool {
-        !cx.is_null() && mozjs::rust::Runtime::get().map(|c| c.as_ptr()) == Some(cx)
+        raw_cx_alive(cx)
     }
 
     fn global_ptr(&self) -> *mut mozjs::jsapi::JSObject {
@@ -102,6 +110,121 @@ impl PersistentGlobal {
             self.global_val.to_object()
         } else {
             ::std::ptr::null_mut()
+        }
+    }
+}
+
+/// RAII guard for one or more heap `JSVal` slots registered with the GC
+/// extra-roots table (`AddRawValueRoot`) — the general form of
+/// `PersistentGlobal`'s rooting, for values that must survive across an
+/// async window (pending fetch promises, fs/crypto callbacks, ...).
+///
+/// ## Why the slots live in a `Box<[JSVal]>`
+///
+/// `AddRawValueRoot` registers the slot's *address*: the GC scans and
+/// updates that memory in place for as long as the root is registered, and
+/// `RemoveRawValueRoot` removes by pointer — the registered address must
+/// therefore stay both valid and identical until removal. Rooting a stack
+/// local whose frame then returns leaves the GC tracing dead stack memory,
+/// and removing with a different address is a silent no-op (the root table
+/// is keyed by pointer), leaking the dangling root. The `Box` pins the
+/// slots at a stable heap address for the guard's whole life; moving the
+/// guard only moves the `Box` pointer, never the rooted memory.
+///
+/// ## Drop semantics (liveness-guarded, leak-on-foreign)
+///
+/// On drop, when the current thread's `Runtime::get()` still resolves to
+/// the captured context, every slot is unrooted and the values freed.
+/// Otherwise (dropped from a foreign thread while the context is alive, or
+/// after the runtime went away) the rooted slots are *leaked*, never freed —
+/// freeing memory the root table may still point at would leave the GC a
+/// dangling scan address, which is strictly worse than a bounded leak.
+pub struct RawValueRootGuard {
+    cx: *mut RawJSContext,
+    vals: Box<[mozjs::jsval::JSVal]>,
+}
+
+impl RawValueRootGuard {
+    /// Root `vals` for an async window that spans ticks/frames.
+    ///
+    /// Returns `None` if any registration failed (OOM): slots registered
+    /// before the failure are unrooted before returning, so a `None` carries
+    /// no leaked roots and the caller keeps its own rooting (the
+    /// pre-existing degraded path at the call sites).
+    ///
+    /// # Safety
+    /// - `cx` must be a live `JSContext` on the current thread.
+    /// - Each value must be a valid `JSVal`. After this call the guard's
+    ///   slots are the live copies — read them via [`Self::get`], not via
+    ///   pre-existing snapshots.
+    pub unsafe fn new(
+        cx: *mut RawJSContext,
+        vals: &[mozjs::jsval::JSVal],
+        name: &'static ::std::ffi::CStr,
+    ) -> Option<Self> {
+        let mut slots: Box<[mozjs::jsval::JSVal]> = vals.to_vec().into_boxed_slice();
+        let mut rooted = 0usize;
+        for slot in slots.iter_mut() {
+            let ok =
+                unsafe { mozjs::jsapi::AddRawValueRoot(cx, slot, name.as_ptr()) };
+            if !ok {
+                // Roll back the prefix so a failed `new` leaves no roots.
+                for s in slots[..rooted].iter_mut() {
+                    unsafe { mozjs::jsapi::RemoveRawValueRoot(cx, s) };
+                }
+                return None;
+            }
+            rooted += 1;
+        }
+        Some(RawValueRootGuard { cx, vals: slots })
+    }
+
+    /// The live (GC-updated) value at `i`. After any window in which a GC
+    /// may have run, this — not a snapshot taken at spawn time — is the
+    /// value to use (a moving GC updates the guard's slot in place).
+    pub fn get(&self, i: usize) -> mozjs::jsval::JSVal {
+        self.vals[i]
+    }
+
+    /// Number of rooted slots.
+    pub fn len(&self) -> usize {
+        self.vals.len()
+    }
+
+    /// Release the roots and take ownership of the values (explicit
+    /// ownership transfer before the guard's natural drop site).
+    ///
+    /// Returns `None` when the roots could not be released (foreign thread
+    /// or dead runtime): the rooted memory is then leaked by the guard —
+    /// the caller must NOT receive memory the GC root table still points
+    /// at.
+    pub fn into_inner(mut self) -> Option<Box<[mozjs::jsval::JSVal]>> {
+        if !raw_cx_alive(self.cx) {
+            // Leak instead of handing out rooted memory.
+            let leaked = ::std::mem::take(&mut self.vals);
+            ::std::mem::forget(leaked);
+            return None;
+        }
+        let mut vals = ::std::mem::take(&mut self.vals);
+        for slot in vals.iter_mut() {
+            unsafe { mozjs::jsapi::RemoveRawValueRoot(self.cx, slot) };
+        }
+        Some(vals)
+    }
+}
+
+impl Drop for RawValueRootGuard {
+    fn drop(&mut self) {
+        if raw_cx_alive(self.cx) {
+            for slot in self.vals.iter_mut() {
+                unsafe { mozjs::jsapi::RemoveRawValueRoot(self.cx, slot) };
+            }
+        } else {
+            // Foreign thread / dead runtime: leak the rooted slots — the
+            // root table may still hold their addresses, so the memory must
+            // outlive it (a bounded leak beats a dangling GC scan address).
+            let leaked = ::std::mem::take(&mut self.vals);
+            ::std::mem::forget(leaked);
         }
     }
 }

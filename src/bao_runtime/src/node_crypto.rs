@@ -1,6 +1,7 @@
 // @trace REQ-ENG-007 [entity:BaoRuntime]
 use ::std::cell::RefCell;
 use ::std::ptr::NonNull;
+use bao_engine::context::RawValueRootGuard;
 use bun_core::ZBox;
 
 use bun_sha_hmac;
@@ -3885,11 +3886,17 @@ unsafe fn rsa_private_decrypt_inner(
 
 struct CryptoAsyncCtx {
     cx: *mut JSContext,
+    /// Raw callback pointer captured at spawn. Prefer `cb_root.get(0)` —
+    /// the guard's slot is updated in place by a moving GC; this pointer is
+    /// only the fallback for the rooting-failed path.
     callback: *mut JSObject,
+    /// RAII heap root for the callback value, spanning the worker-thread
+    /// window. Released when this Box drops (defer callback or the
+    /// degenerate no-loop path), liveness-guarded.
+    cb_root: Option<RawValueRootGuard>,
     result: ::std::sync::Arc<::std::sync::Mutex<Option<::std::result::Result<Vec<u8>, String>>>>,
     #[allow(dead_code)]
     op_name: String,
-    rooted: bool,
 }
 
 unsafe fn schedule_crypto_defer(ctx_ptr: usize) {
@@ -3909,7 +3916,12 @@ unsafe fn schedule_crypto_defer(ctx_ptr: usize) {
 unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
     let ctx = Box::from_raw(raw_ctx as *mut CryptoAsyncCtx);
     let cx = ctx.cx;
-    let callback = ctx.callback;
+    // Live callback value: prefer the RAII root's slot (updated in place by
+    // a moving GC) over the raw pointer captured at spawn time.
+    let cb_value = ctx.cb_root.as_ref().map_or_else(
+        || mozjs::jsval::ObjectValue(ctx.callback),
+        |g| g.get(0),
+    );
 
     let mut result_guard = ctx.result.lock().unwrap();
     let result_opt = result_guard.take();
@@ -3919,8 +3931,7 @@ unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_voi
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
-    rooted!(&in(cx_ref) let cb = callback);
-    rooted!(&in(cx_ref) let cb_val = mozjs::jsval::ObjectValue(cb.get()));
+    rooted!(&in(cx_ref) let cb_val = cb_value);
     let global = CurrentGlobalOrNull(cx);
     if global.is_null() {
         return;
@@ -3991,10 +4002,10 @@ unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_voi
         }
         None => {}
     }
-    if ctx.rooted {
-        let mut cb_val = mozjs::jsval::ObjectValue(callback);
-        RemoveRawValueRoot(cx, &mut cb_val);
-    }
+    // Terminal unroot is RAII: `ctx` (Box<CryptoAsyncCtx>) drops at the end
+    // of this callback, releasing the `cb_root` heap root with the correct
+    // registered address on every exit path (including the null-global
+    // early return above).
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -4002,12 +4013,13 @@ unsafe fn spawn_crypto_async<F>(cx: *mut JSContext, op_name: &str, callback: *mu
 where
     F: FnOnce() -> ::std::result::Result<Vec<u8>, String> + Send + 'static,
 {
-    let mut cb_val = mozjs::jsval::ObjectValue(callback);
-    let rooted = AddRawValueRoot(
-        cx,
-        &mut cb_val,
-        b"crypto_async_cb\0".as_ptr() as *const ::std::os::raw::c_char,
-    );
+    // Heap-root the callback value for the async window via the RAII guard
+    // (stable heap slot the GC updates in place; unrooted when the
+    // CryptoAsyncCtx Box drops, with the correct registered address).
+    let cb_val = mozjs::jsval::ObjectValue(callback);
+    let cb_root = unsafe {
+        RawValueRootGuard::new(cx, ::std::slice::from_ref(&cb_val), c"crypto_async_cb")
+    };
 
     let result_slot: ::std::sync::Arc<
         ::std::sync::Mutex<Option<::std::result::Result<Vec<u8>, String>>>,
@@ -4019,9 +4031,9 @@ where
     let ctx = Box::new(CryptoAsyncCtx {
         cx,
         callback,
+        cb_root,
         result: result_slot,
         op_name: op_name_owned,
-        rooted,
     });
     let ctx_ptr = Box::into_raw(ctx) as usize;
 
