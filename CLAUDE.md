@@ -200,6 +200,39 @@ make bce-check
 
 如果 SIGSEGV 复现,第一步 `nm libmozjs_sys-*.rlib | grep MutexImplD1` 查 rlib 是否包含旧代码。
 
+#### mozjs fork BAO patch 清单(5 项,0.21.4 全部在位)
+
+上游同步 mozjs 时必须逐项重放(参照 git 历史 `git show <old>:vendor/mozjs/...`):
+
+| # | Patch | 位置 | 语义 |
+|---|-------|------|------|
+| 1 | EBUSY 激进版 | `mozjs-sys/mozjs/mozglue/misc/Mutex_posix.cpp` | `MutexImpl` 析构整体 `return;`(进程退出期 TLS 可能已 unmap,EBUSY 时原版 MOZ_CRASH) |
+| 2 | JSEngine init race | `mozjs/src/rust.rs` | `PROCESS_ENGINE_OUTSTANDING` OnceLock + `process_handle()`:多 BaoRuntime 二次 init 从 `Err(AlreadyInitialized)` 恢复而非 panic |
+| 3 | set_hide_script_from_debugger | `mozjs/src/rust.rs`(BCE-20260622-004) | CompileOptions 的 `hideScriptFromDebugger_` setter:抑制 `onNewScript` → AtomCacheHashTable SIGSEGV 路径 |
+| 4 | BaselineFrame NULL activation guard | `mozjs-sys/mozjs/js/src/jit/BaselineFrame.cpp`(BCE-20260621-002) | OSR 入口 `cx->activation()`/`prev()` NULL 检查,bail 回 interpreter |
+| 5 | JS_NewEmulatesUndefinedFunction | `mozjs-sys/mozjs/js/src/jsapi.cpp` + `js/src/jsapi.h` + `mozjs/src/jsapi2_wrappers.in.rs` | callable NativeObject 且 `typeof` 为 "undefined"(镜像 Bun `Buffer.transcode` stub)。**注意:jsapi.h 声明必须在 `namespace JS` 外(全局作用域),否则 bindgen 生成 `JS::` 前缀 mangled link_name 与 cpp 全局定义不匹配 → 链接失败** |
+
+另:`mozjs-sys/build.rs` 有 2 个 BAO patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)。
+
+#### servo 定制文件清单(10 个,上游同步时逐个重放)
+
+上游同步 servo 时,先 `grep -rln "BCE-\|BAO " vendor/servo/components/` 重建清单,再按"upstream 基底 + patch 精确重放"迁移(patch 锚点与完整记录见 git log 各 stage commit message):
+
+| 文件 | Patch 概要 |
+|------|-----------|
+| `script/event_loop/script_thread.rs` | embedder 脚本/Worker-scope 回调注册(drain 于 handle_evaluate_javascript / run_worker_scope)、router_proxy 安装(BCE-20260627-009)、disable_script_debugger 门控(BCE-20260621-002) |
+| `script/script_runtime.rs` | JSEngineSetup 幂等 init + engine leak(多 BaoRuntime 生命周期) |
+| `script/dom/workers/dedicatedworkerglobalscope.rs` | worker-scope 回调 drain + clear_js_runtime 前 realm flush(UAF 防护) |
+| `script_bindings/lock.rs` | ThreadUnsafeOnceLock 等(Bao 扩展) |
+| `shared/base/id.rs` | Bao ID 类型(+ AtomicOptionScrollTreeNodeId 从上游增补) |
+| `shared/base/lib.rs` + `ipc_router.rs` | per-instance RouterProxy(BCE-20260628-002) |
+| `shared/net/lib.rs` | ipc_router 路由 + per-instance FetchThread + ProcessContentLength 等上游增补合并 |
+| `shared/script/lib.rs` | ScriptThreadInit.router_proxy 字段(BCE-20260627-009) |
+| `constellation/constellation.rs` + `event_loop.rs` | per-Constellation RouterProxy 全生命周期 |
+| `net/connector.rs` + `websocket_loader.rs` 等 | **boringssl stealth TLS connector**(JA3/JA4 全面:cipher/curves/sigalgs 重排 + ALPN + H2 SETTINGS,REQ-STL-001;上游 rustls 迁移被回滚) |
+
+`components/servo/lib.rs` 另有 Bao embedder API 面(register_script_thread_callback / register_worker_scope_callback / set_canvas_noise_seed / set_stealth_tls_config)。`config/prefs.rs`、`config/opts.rs`、`allocator/`、`net/async_runtime.rs` 有小 patch。
+
 ## 复用映射(Phase 1 关键)
 
 | 功能 | 复用 crate | 替代手写代码 |
@@ -228,8 +261,8 @@ make bce-check
 |------|------|---------|
 | Bun | `~/code/rust/bun/src/` | ~85 个纯 Rust crate(零修改复用);`jsc/` 是 JSC→SM 迁移目标;`runtime/` 是 Bun API 实现来源 |
 | Bun SPEC | `~/code/rust/bun/CLAUDE.md` | 构建命令、测试规范、crate 组织 |
-| Servo | `~/code/tools/servo/`(vendor 快照见 `vendor/servo/`,2026-05-29 基线) | `libservo` 嵌入入口;`script/` DOM(每 ScriptThread 一个 thread-local SM JSContext);`script_bindings/` SM↔DOM 桥接 |
-| mozjs | `vendor/mozjs/`(vendor 进本仓库;含 EBUSY patch) | SM FFI 绑定源码 |
+| Servo | `~/code/tools/servo/`(vendor 快照见 `vendor/servo/`,2026-08-13 上游 HEAD,10 个 Bao 定制文件见上文清单) | `libservo` 嵌入入口;`script/` DOM(每 ScriptThread 一个 thread-local SM JSContext);`script_bindings/` SM↔DOM 桥接 |
+| mozjs | `vendor/mozjs/`(0.21.4,vendor 进本仓库;5 项 BAO patch 见上文清单) | SM FFI 绑定源码 |
 | blitz | `~/code/rust/blitz/` | DioxusLabs 模块化浏览器参考架构 |
 
 Bun / Servo SPEC 测绘成果:`.spec/02-SYSTEM.html` §2(Bun Crate DAG)+ §3(Servo 36 组件分层)。
