@@ -6,25 +6,29 @@
 //   - SpiderMonkey's JSEngine is process-global (OnceLock<JSEngineHandle>).
 //   - Each Worker spawns a std::thread that calls Runtime::new(handle) to get
 //     its own thread-local JSContext. No cross-thread JSObject sharing.
-//   - Messages are serialized as JSON strings via mpsc channels.
+//   - Messages cross threads as SpiderMonkey structured-clone bytes via mpsc
+//     channels (Node semantics: postMessage = structured clone, NOT JSON —
+//     TypedArray/Map/Set/Date/BigInt/cyclic objects keep their types).
 //   - Worker JS objects (postMessage/terminate/threadId) are native host fns.
 
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
-use ::std::sync::OnceLock;
 use ::std::sync::atomic::{AtomicU32, Ordering};
 use ::std::sync::mpsc::{self, Receiver, Sender};
+use ::std::sync::OnceLock;
 
 use dashmap::DashMap;
 use mozjs::conversions::unsafe_jsstr_to_string;
-use mozjs::jsapi::*;
-use mozjs::jsval::{
-    BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue,
+use mozjs::glue::{
+    CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData, WriteBytesToJSStructuredCloneData,
 };
+use mozjs::jsapi::*;
+use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
+use mozjs::rust::JSAutoStructuredCloneBufferWrapper;
 
 use crate::require::cache_builtin;
 
@@ -48,6 +52,10 @@ struct WorkerHandle {
     sender: Sender<WorkerMessage>,
     /// JoinHandle for the worker OS thread, taken on terminate/join.
     thread: Option<::std::thread::JoinHandle<()>>,
+    /// Receiver for worker → main messages, drained non-blockingly by
+    /// `worker_try_recv` (the main-side receive primitive). Mutex-wrapped:
+    /// mpsc::Receiver is !Sync but the registry is a process-global static.
+    main_rx: Option<::std::sync::Mutex<Receiver<WorkerToMainMessage>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -55,19 +63,143 @@ struct WorkerHandle {
 // ---------------------------------------------------------------------------
 
 enum WorkerMessage {
-    /// JSON-serialized data from main → worker.
-    Data(String),
+    /// Structured-clone bytes from main → worker.
+    Data(Vec<u8>),
     /// Signal the worker thread to exit.
     Terminate,
 }
 
 /// Messages from worker thread → main thread.
-#[allow(dead_code)]
 enum WorkerToMainMessage {
-    /// JSON-serialized data.
-    Data(String),
+    /// Structured-clone bytes.
+    Data(Vec<u8>),
     /// Error message.
     Error(String),
+}
+
+// ---------------------------------------------------------------------------
+// Structured clone (SpiderMonkey engine, no host callbacks)
+// ---------------------------------------------------------------------------
+//
+// Node semantics: postMessage uses the structured clone algorithm. We use
+// SpiderMonkey's own JS_WriteStructuredClone / JS_ReadStructuredClone — the
+// same engine servo's DOM postMessage builds on — with NO host callbacks:
+// every plain JS value type is covered natively (Map/Set/Date/RegExp/
+// TypedArray/ArrayBuffer/BigInt/cyclic object graphs preserve identity), and
+// anything the engine cannot clone (functions, WeakMap, ...) fails the write,
+// which the callers surface as a DataCloneError. `DifferentProcess` scope
+// keeps the serialized form a flat byte buffer, safe to move across threads
+// via mpsc. Both ends live in the same binary, so no protocol versioning is
+// needed beyond the engine's own JS_STRUCTURED_CLONE_VERSION header.
+
+/// Clone data policy: shared-memory objects are rejected (cross-thread SAB
+/// semantics are not provided); everything else clones.
+fn sc_clone_policy() -> CloneDataPolicy {
+    CloneDataPolicy {
+        allowIntraClusterClonableSharedObjects_: false,
+        allowSharedMemoryObjects_: false,
+    }
+}
+
+/// Serialize `value` into structured-clone bytes. `Err(())` when the value
+/// contains anything the structured clone algorithm cannot clone — the caller
+/// must report a DataCloneError (Node ERR_DATACLONE_ERROR semantics).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sc_serialize(raw_cx: *mut JSContext, value: JSVal) -> ::std::result::Result<Vec<u8>, ()> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    let cx = &mut wrapped_cx;
+
+    rooted!(&in(cx) let val = value);
+    rooted!(&in(cx) let mut no_transfer = UndefinedValue());
+
+    // SAFETY: scbuf owns the clone buffer until the bytes are copied out
+    // below; null callbacks = no host custom types (unsupported → write
+    // fails, which is the DataCloneError path).
+    let scbuf = unsafe {
+        JSAutoStructuredCloneBufferWrapper::new(
+            StructuredCloneScope::DifferentProcess,
+            ::std::ptr::null(),
+        )
+    };
+    let scdata = unsafe { &mut ((*scbuf.as_raw_ptr()).data_) };
+
+    let ok = unsafe {
+        w2::JS_WriteStructuredClone(
+            cx,
+            val.handle(),
+            scdata,
+            StructuredCloneScope::DifferentProcess,
+            &sc_clone_policy(),
+            ::std::ptr::null(),
+            ::std::ptr::null_mut(),
+            no_transfer.handle(),
+        )
+    };
+    if !ok {
+        return Err(());
+    }
+
+    let nbytes = unsafe { GetLengthOfJSStructuredCloneData(scdata) };
+    let mut bytes = Vec::with_capacity(nbytes);
+    unsafe {
+        CopyJSStructuredCloneData(scdata, bytes.as_mut_ptr());
+        bytes.set_len(nbytes);
+    }
+    Ok(bytes)
+}
+
+/// Deserialize structured-clone bytes into `rval`. The caller must have
+/// entered the realm the resulting objects should live in (objects are
+/// created in the current realm).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sc_deserialize(
+    raw_cx: *mut JSContext,
+    bytes: &[u8],
+    rval: mozjs::gc::MutableHandleValue<'_>,
+) -> bool {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    let cx = &mut wrapped_cx;
+
+    let scbuf = unsafe {
+        JSAutoStructuredCloneBufferWrapper::new(
+            StructuredCloneScope::DifferentProcess,
+            ::std::ptr::null(),
+        )
+    };
+    let scdata = unsafe { &mut ((*scbuf.as_raw_ptr()).data_) };
+
+    if !bytes.is_empty()
+        && !unsafe { WriteBytesToJSStructuredCloneData(bytes.as_ptr(), bytes.len(), scdata) }
+    {
+        return false;
+    }
+
+    unsafe {
+        w2::JS_ReadStructuredClone(
+            cx,
+            scdata,
+            JS_STRUCTURED_CLONE_VERSION,
+            StructuredCloneScope::DifferentProcess,
+            rval,
+            &sc_clone_policy(),
+            ::std::ptr::null(),
+            ::std::ptr::null_mut(),
+        )
+    }
+}
+
+/// Report a DataCloneError (Node message shape) and clear any pending
+/// engine exception so the thrown error is deterministic.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn report_data_clone_error(raw_cx: *mut JSContext) {
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    if w2::JS_IsExceptionPending(&wrapped_cx) {
+        JS_ClearPendingException(raw_cx);
+    }
+    JS_ReportErrorUTF8(
+        raw_cx,
+        c"DataCloneError: The object could not be cloned.".as_ptr(),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +211,7 @@ fn worker_entry(
     thread_id: u32,
     receiver: Receiver<WorkerMessage>,
     main_sender: Sender<WorkerToMainMessage>,
-    worker_data_json: Option<String>,
+    worker_data_bytes: Option<Vec<u8>>,
 ) {
     // 1. Obtain process-global JSEngine handle.
     let engine_handle = match bao_engine::context::ensure_engine_handle() {
@@ -126,32 +258,25 @@ fn worker_entry(
     //    then evaluates the worker source.
     //
     //    The worker script can use:
-    //      - self.onmessage = function(e) { ... }  (e.data = parsed JSON)
-    //      - self.postMessage(data)  (serializes to JSON, sends to main thread)
-    //      - workerData (from options)
-    let worker_data_decl = match &worker_data_json {
-        Some(json) => format!("var workerData = JSON.parse({});", escape_js_string(json)),
-        None => "var workerData = null;".to_string(),
-    };
-
+    //      - self.onmessage = function(e) { ... }  (e.data = structured-clone value)
+    //      - self.postMessage(data)  (structured-clones data, sends to main thread)
+    //      - workerData (from options, also structured-cloned)
     let bootstrap = format!(
         r#"(function() {{
-  {worker_data_decl}
+  // workerData — deserialized from structured-clone bytes by the host before
+  // this script runs; non-enumerable raw value is deleted after capture.
+  var workerData = (typeof __baoWorkerDataRaw === 'undefined') ? null : __baoWorkerDataRaw;
+  delete self.__baoWorkerDataRaw;
+
   var __pendingMessages = [];
 
-  // self.postMessage — serialize data to JSON, send to main thread
-  self.postMessage = function(data) {{
-    try {{
-      var json = JSON.stringify(data);
-      __baoPostToMain(json);
-    }} catch(e) {{
-      // silently fail on non-serializable data
-    }}
-  }};
+  // self.postMessage — structured clone via native host fn; uncloneable
+  // values (functions, ...) throw DataCloneError, matching Node.
+  self.postMessage = __baoPostToMain;
 
-  // Queue messages until onmessage handler is set
-  self.__baoDeliverMessage = function(jsonStr) {{
-    var data = JSON.parse(jsonStr);
+  // Queue messages until onmessage handler is set. `data` arrives already
+  // deserialized from structured-clone bytes by the host.
+  self.__baoDeliverMessage = function(data) {{
     if (typeof self.onmessage === 'function') {{
       self.onmessage({{ data: data }});
     }} else {{
@@ -191,7 +316,6 @@ fn worker_entry(
   // Execute the worker script
   {source}
 }})();"#,
-        worker_data_decl = worker_data_decl,
         thread_id = thread_id,
         source = source,
     );
@@ -219,6 +343,33 @@ fn worker_entry(
         }
     };
     rooted!(&in(cx) let global = global_ptr);
+
+    // 7a. Deserialize workerData (structured-clone bytes produced on the main
+    //     thread) and publish it on the worker global as a non-enumerable
+    //     raw value; the bootstrap captures it into `var workerData` and
+    //     deletes the global property.
+    if let Some(wd_bytes) = worker_data_bytes.as_ref() {
+        let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+        rooted!(&in(realm_cx) let mut wd_val = UndefinedValue());
+        let wd_ok = unsafe { sc_deserialize(realm_cx.raw_cx(), wd_bytes, wd_val.handle_mut()) };
+        if !wd_ok {
+            let _ = main_sender.send(WorkerToMainMessage::Error(
+                "Worker: workerData structured-clone deserialization failed".into(),
+            ));
+            return;
+        }
+        unsafe {
+            JS_DefineProperty(
+                realm_cx.raw_cx(),
+                global.handle().into(),
+                c"__baoWorkerDataRaw".as_ptr(),
+                wd_val.handle().into(),
+                0u32, // not enumerable
+            );
+        }
+    }
+
     let eval_result = bao_engine::module_loader::ModuleLoader::eval_module_in_realm(
         &mut cx,
         &bootstrap,
@@ -247,9 +398,10 @@ fn worker_entry(
     // 10. Message receive loop: wait for messages from main thread.
     loop {
         match receiver.recv() {
-            Ok(WorkerMessage::Data(json_str)) => {
-                // Call self.__baoDeliverMessage(jsonStr) on the worker's global.
-                deliver_message_to_worker(raw_cx, &json_str);
+            Ok(WorkerMessage::Data(sc_bytes)) => {
+                // Deserialize structured-clone bytes and call
+                // self.__baoDeliverMessage(data) on the worker's global.
+                deliver_message_to_worker(raw_cx, &sc_bytes);
                 bao_engine::job_queue::JobQueue::drain(&mut cx);
             }
             Ok(WorkerMessage::Terminate) | Err(_) => {
@@ -264,7 +416,7 @@ unsafe fn worker_global_setup(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
-    // Install __baoPostToMain(dataJsonStr) on the global object.
+    // Install __baoPostToMain(data) on the global object.
     // This is called by self.postMessage() to send data to the main thread.
     w2::JS_DefineFunction(
         cx,
@@ -274,35 +426,48 @@ unsafe fn worker_global_setup(
         1,
         JSPROP_ENUMERATE as u32,
     );
+
+    // Node / WorkerGlobalScope semantics: `self` is an alias of the worker
+    // global. SpiderMonkey does not provide it on a bare embedding global,
+    // and without it every worker bootstrap that touches `self` throws a
+    // ReferenceError that module evaluation silently captures in its
+    // evaluation promise — the worker then runs its message loop with none
+    // of its globals installed.
+    rooted!(&in(cx) let global_val = ObjectValue(global.get()));
+    JS_DefineProperty(
+        cx.raw_cx(),
+        global.into(),
+        c"self".as_ptr(),
+        global_val.handle().into(),
+        (JSPROP_ENUMERATE | JSPROP_READONLY | JSPROP_PERMANENT) as u32,
+    );
 }
 
-/// Native function: __baoPostToMain(jsonStr) — called from worker JS to post
-/// a message to the main thread. The argument is already a JSON string.
+/// Native function: __baoPostToMain(data) — called from worker JS to post a
+/// message to the main thread. The argument is structured-cloned; uncloneable
+/// values throw DataCloneError (Node semantics).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn worker_post_to_main(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, c"__baoPostToMain requires a string argument".as_ptr());
+        JS_ReportErrorUTF8(cx, c"__baoPostToMain requires a value argument".as_ptr());
         return false;
     }
 
-    let json_val = *args.get(0).ptr;
-    if !json_val.is_string() {
-        JS_ReportErrorUTF8(cx, c"__baoPostToMain argument must be a string".as_ptr());
-        return false;
-    }
-
-    let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
-    let rust_str = unsafe_jsstr_to_string(
-        wrapped_cx.raw_cx(),
-        NonNull::new_unchecked(json_val.to_string()),
-    );
+    let data_val = *args.get(0).ptr;
+    let sc_bytes = match unsafe { sc_serialize(cx, data_val) } {
+        Ok(bytes) => bytes,
+        Err(()) => {
+            unsafe { report_data_clone_error(cx) };
+            return false;
+        }
+    };
 
     // Find this worker's main-sender from a thread-local.
     WORKER_MAIN_SENDER.with(|sender| {
         if let Some(tx) = sender.borrow().as_ref() {
-            let _ = tx.send(WorkerToMainMessage::Data(rust_str));
+            let _ = tx.send(WorkerToMainMessage::Data(sc_bytes));
         }
     });
 
@@ -316,8 +481,9 @@ thread_local! {
         RefCell::new(None);
 }
 
-/// Call self.__baoDeliverMessage(jsonStr) in the worker's JSContext.
-fn deliver_message_to_worker(raw_cx: *mut JSContext, json_str: &str) {
+/// Deserialize structured-clone bytes and call self.__baoDeliverMessage(data)
+/// in the worker's JSContext.
+fn deliver_message_to_worker(raw_cx: *mut JSContext, sc_bytes: &[u8]) {
     unsafe {
         // Realm-per-context: the message loop runs after the bootstrap
         // eval's AutoRealm popped — no realm is entered, so
@@ -333,10 +499,27 @@ fn deliver_message_to_worker(raw_cx: *mut JSContext, json_str: &str) {
         let cx = &mut wrapped_cx;
 
         rooted!(&in(cx) let global_root = global);
-        // All JS below (property lookup, string creation, call) must run in
-        // the realm that owns the global.
+        // All JS below (deserialization, property lookup, call) must run in
+        // the realm that owns the global — objects created by the clone
+        // reader land in the current realm.
         let mut realm = AutoRealm::new_from_handle(cx, global_root.handle());
         let cx: &mut mozjs::context::JSContext = &mut realm;
+
+        rooted!(&in(cx) let mut data_val = UndefinedValue());
+        if !sc_deserialize(raw_cx, sc_bytes, data_val.handle_mut()) {
+            // Explicit error path: corrupt bytes must not be silently
+            // dropped (same-binary serialization makes this unreachable in
+            // practice; report it to the main thread instead).
+            WORKER_MAIN_SENDER.with(|sender| {
+                if let Some(tx) = sender.borrow().as_ref() {
+                    let _ = tx.send(WorkerToMainMessage::Error(
+                        "Worker: message structured-clone deserialization failed".into(),
+                    ));
+                }
+            });
+            return;
+        }
+
         rooted!(&in(cx) let mut fn_val = UndefinedValue());
         JS_GetProperty(
             raw_cx,
@@ -351,15 +534,7 @@ fn deliver_message_to_worker(raw_cx: *mut JSContext, json_str: &str) {
 
         rooted!(&in(cx) let fn_obj = fn_val.to_object());
 
-        // Create JS string from the JSON string.
-        let c_str = CString::new(json_str).unwrap_or_default();
-        rooted!(&in(cx) let js_str = JS_NewStringCopyZ(raw_cx, c_str.as_ptr()));
-        if js_str.get().is_null() {
-            return;
-        }
-        rooted!(&in(cx) let json_str_val = StringValue(&*js_str.get()));
-
-        let call_args_elements = [json_str_val.get()];
+        let call_args_elements = [data_val.get()];
         let call_args = HandleValueArray {
             length_: 1,
             elements_: call_args_elements.as_ptr() as *const Value,
@@ -437,7 +612,7 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     }
 
     // Parse options (second argument, optional object).
-    let mut worker_data_json: Option<String> = None;
+    let mut worker_data_bytes: Option<Vec<u8>> = None;
     if argc > 1 {
         let opts_val = *args.get(1).ptr;
         if opts_val.is_object() {
@@ -455,14 +630,15 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
                 },
             );
             if !wd_val.is_undefined() {
-                // Serialize workerData to JSON using JSON.stringify.
-                rooted!(&in(cx_ref) let mut json_val = UndefinedValue());
-                let json_ok = json_stringify(cx, wd_val, json_val.handle_mut());
-                if json_ok && json_val.is_string() {
-                    worker_data_json = Some(unsafe_jsstr_to_string(
-                        cx_ref.raw_cx(),
-                        NonNull::new_unchecked(json_val.get().to_string()),
-                    ));
+                // Serialize workerData with the structured clone algorithm
+                // (Node semantics). Uncloneable workerData is a constructor
+                // error, not a silent null.
+                match unsafe { sc_serialize(cx, wd_val) } {
+                    Ok(bytes) => worker_data_bytes = Some(bytes),
+                    Err(()) => {
+                        unsafe { report_data_clone_error(cx) };
+                        return false;
+                    }
                 }
             }
         }
@@ -481,7 +657,6 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
 
     // Spawn the worker OS thread.
     let worker_filename = abs_filename.clone();
-    let worker_wd_json = worker_data_json.clone();
     let join_handle = ::std::thread::Builder::new()
         .name(format!("bao-worker-{}", thread_id))
         .spawn(move || {
@@ -490,7 +665,7 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
                 thread_id,
                 main_to_worker_rx,
                 worker_to_main_tx,
-                worker_wd_json,
+                worker_data_bytes,
             );
         });
 
@@ -504,12 +679,14 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
         }
     };
 
-    // Register the worker handle.
+    // Register the worker handle. The worker → main receiver lives here and
+    // is drained via `worker_try_recv` (main-side receive primitive).
     worker_registry().insert(
         thread_id,
         WorkerHandle {
             sender: main_to_worker_tx,
             thread: Some(join_handle),
+            main_rx: Some(::std::sync::Mutex::new(worker_to_main_rx)),
         },
     );
 
@@ -531,19 +708,8 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
         0u32, // not enumerable
     );
 
-    // Store the worker_to_main receiver as a private property so the main thread
-    // can poll it for incoming messages.
-    // We box the receiver and store the raw pointer (leaked, cleaned up on terminate).
-    let rx_box = Box::new(worker_to_main_rx);
-    let rx_ptr = Box::into_raw(rx_box) as u64;
-    rooted!(&in(cx_ref) let rx_val = DoubleValue(rx_ptr as f64));
-    JS_DefineProperty(
-        cx,
-        worker_obj.handle().into(),
-        c"__mainRx".as_ptr(),
-        rx_val.handle().into(),
-        0u32,
-    );
+    // Store the worker_to_main receiver on the registry handle — drained via
+    // `worker_try_recv` instead of a boxed raw pointer on the JS object.
 
     // Install methods on the instance.
     w2::JS_DefineFunction(
@@ -630,26 +796,59 @@ unsafe extern "C" fn worker_post_message(cx: *mut JSContext, argc: u32, vp: *mut
     }
     let thread_id = tid_val.to_int32() as u32;
 
-    // Serialize the argument to JSON.
-    let json_str = if argc > 0 {
+    // Transfer list (second argument): explicitly rejected until transfer
+    // infrastructure exists (Node accepts an empty list, which is a no-op).
+    if argc > 1 {
+        let transfer_val = *args.get(1).ptr;
+        if transfer_val.is_object() {
+            let transfer_obj = transfer_val.to_object();
+            rooted!(&in(cx_ref) let transfer_root = transfer_obj);
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                transfer_root.handle().into(),
+                c"length".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut len_val,
+                },
+            );
+            if len_val.is_int32() && len_val.to_int32() > 0 {
+                JS_ReportErrorUTF8(
+                    cx,
+                    c"DataCloneError: postMessage transfer list is not supported in Bao".as_ptr(),
+                );
+                return false;
+            }
+        }
+    }
+
+    // Serialize the argument with the structured clone algorithm.
+    // Uncloneable values (functions, WeakMap, ...) throw DataCloneError —
+    // the old JSON path silently degraded them to null.
+    let sc_bytes = if argc > 0 {
         let data_val = *args.get(0).ptr;
-        rooted!(&in(cx_ref) let mut json_val = UndefinedValue());
-        let ok = json_stringify(cx, data_val, json_val.handle_mut());
-        if ok && json_val.is_string() {
-            unsafe_jsstr_to_string(
-                cx_ref.raw_cx(),
-                NonNull::new_unchecked(json_val.get().to_string()),
-            )
-        } else {
-            "null".to_string()
+        match unsafe { sc_serialize(cx, data_val) } {
+            Ok(bytes) => bytes,
+            Err(()) => {
+                unsafe { report_data_clone_error(cx) };
+                return false;
+            }
         }
     } else {
-        "null".to_string()
+        // No payload: postMessage() — clone `undefined` (SC supports it).
+        match unsafe { sc_serialize(cx, UndefinedValue()) } {
+            Ok(bytes) => bytes,
+            Err(()) => {
+                unsafe { report_data_clone_error(cx) };
+                return false;
+            }
+        }
     };
 
     // Send to the worker thread.
     if let Some(handle) = worker_registry().get_mut(&thread_id) {
-        let _ = handle.sender.send(WorkerMessage::Data(json_str));
+        let _ = handle.sender.send(WorkerMessage::Data(sc_bytes));
     }
 
     args.rval().set(UndefinedValue());
@@ -689,25 +888,8 @@ unsafe extern "C" fn worker_terminate(cx: *mut JSContext, _argc: u32, vp: *mut J
     }
     let thread_id = tid_val.to_int32() as u32;
 
-    // Clean up the mainRx boxed receiver.
-    let mut rx_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        this_root.handle().into(),
-        c"__mainRx".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut rx_val,
-        },
-    );
-    if rx_val.is_double() {
-        let rx_ptr = rx_val.to_double() as u64 as *mut Receiver<WorkerToMainMessage>;
-        if !rx_ptr.is_null() {
-            drop(Box::from_raw(rx_ptr));
-        }
-    }
-
-    // Remove from registry and join the thread.
+    // Remove from registry and join the thread (dropping the handle also
+    // drops the worker → main receiver).
     if let Some((_, mut handle)) = worker_registry().remove(&thread_id) {
         let _ = handle.sender.send(WorkerMessage::Terminate);
         if let Some(join) = handle.thread.take() {
@@ -731,87 +913,72 @@ unsafe extern "C" fn worker_noop(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// JSON.stringify a JS value. Returns true on success, false on failure.
-fn json_stringify(
-    cx: *mut JSContext,
-    value: JSVal,
-    out: mozjs::rust::MutableHandle<Value>,
-) -> bool {
-    unsafe {
-        let global = CurrentGlobalOrNull(cx);
-        if global.is_null() {
-            return false;
-        }
+// ---------------------------------------------------------------------------
+// Main-side receive primitive (worker → main)
+// ---------------------------------------------------------------------------
 
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-
-        // Get JSON object from global.
-        rooted!(&in(cx_ref) let global_root = global);
-        rooted!(&in(cx_ref) let mut json_obj_val = UndefinedValue());
-        JS_GetProperty(
-            cx,
-            global_root.handle().into(),
-            c"JSON".as_ptr(),
-            json_obj_val.handle_mut().into(),
-        );
-        if !json_obj_val.is_object() {
-            return false;
-        }
-
-        rooted!(&in(cx_ref) let json_obj = json_obj_val.to_object());
-
-        rooted!(&in(cx_ref) let mut stringify_val = UndefinedValue());
-        JS_GetProperty(
-            cx,
-            json_obj.handle().into(),
-            c"stringify".as_ptr(),
-            stringify_val.handle_mut().into(),
-        );
-        if !stringify_val.is_object() {
-            return false;
-        }
-
-        rooted!(&in(cx_ref) let stringify_fn = stringify_val.to_object());
-        rooted!(&in(cx_ref) let arg_val = value);
-
-        let call_args_elements = [arg_val.get()];
-        let call_args = HandleValueArray {
-            length_: 1,
-            elements_: call_args_elements.as_ptr() as *const Value,
-        };
-
-        rooted!(&in(cx_ref) let fn_val = ObjectValue(stringify_fn.get()));
-        let raw_out: mozjs::jsapi::MutableHandle<Value> = out.into();
-        JS_CallFunctionValue(
-            cx,
-            json_obj.handle().into(),
-            fn_val.handle().into(),
-            &call_args,
-            raw_out,
-        );
-
-        raw_out.get().is_string()
-    }
+/// Outcome of a non-blocking poll of a worker's main-thread inbox.
+#[derive(Debug, PartialEq)]
+pub enum WorkerIncoming {
+    /// A data message was deserialized into the caller-provided `rval`
+    /// (inside the current thread's realm).
+    Data,
+    /// The worker reported an error (message text included).
+    Error(String),
+    /// No message pending (or the worker is no longer registered).
+    Empty,
 }
 
-/// Escape a string for embedding inside JS single-quoted string literal.
-fn escape_js_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\'' => out.push_str("\\'"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+/// Try to receive ONE pending worker → main message and, for data messages,
+/// deserialize the structured-clone bytes into `rval` inside the current
+/// thread's persistent realm. Non-blocking; call from the main JS thread
+/// only. This is the primitive a `worker.onmessage` event-loop integration
+/// builds on.
+pub fn worker_try_recv(
+    cx: &mut mozjs::context::JSContext,
+    thread_id: u32,
+    rval: mozjs::gc::MutableHandleValue<'_>,
+) -> WorkerIncoming {
+    // Take one message out of the channel while holding the registry guard
+    // only for the try_recv (no JS runs under the DashMap borrow).
+    let msg = {
+        let handle = match worker_registry().get_mut(&thread_id) {
+            Some(h) => h,
+            None => return WorkerIncoming::Empty,
+        };
+        match handle.main_rx.as_ref() {
+            Some(rx) => rx.lock().ok().and_then(|rx| rx.try_recv().ok()),
+            None => return WorkerIncoming::Empty,
         }
+    };
+
+    match msg {
+        Some(WorkerToMainMessage::Data(bytes)) => unsafe {
+            // Objects created by the clone reader land in the current realm —
+            // enter this thread's persistent realm, same as
+            // deliver_message_to_worker does on the worker side.
+            let global = match bao_engine::context::thread_realm_global() {
+                Some(g) if !g.is_null() => g,
+                _ => {
+                    return WorkerIncoming::Error(
+                        "worker_try_recv: main thread realm not initialized".into(),
+                    )
+                }
+            };
+            rooted!(&in(cx) let global_root = global);
+            let mut realm = AutoRealm::new_from_handle(cx, global_root.handle());
+            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+            if sc_deserialize(realm_cx.raw_cx(), &bytes, rval) {
+                WorkerIncoming::Data
+            } else {
+                WorkerIncoming::Error(
+                    "worker_try_recv: structured-clone deserialization failed".into(),
+                )
+            }
+        },
+        Some(WorkerToMainMessage::Error(msg)) => WorkerIncoming::Error(msg),
+        None => WorkerIncoming::Empty,
     }
-    out.push('\'');
-    out
 }
 
 // ---------------------------------------------------------------------------
