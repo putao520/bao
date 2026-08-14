@@ -252,6 +252,21 @@ impl WsConn {
                     bun_http::AlpnOffer::H1,
                     Some(&ssl_config),
                 );
+
+                // TLS session resumption: offer the cached session for this
+                // origin before the handshake starts (same precondition as
+                // the stealth config above — the ClientHello has not been
+                // serialized yet). Salt semantics match the bun_http fetch
+                // path: no stealth profile → salt 0 (the default-profile
+                // pool shared across stacks); a profile → the SSLConfig
+                // content hash, so sessions that short-circuit parameter
+                // negotiation never cross profiles.
+                let profile_salt = if profile.is_some() {
+                    ssl_config.content_hash()
+                } else {
+                    0
+                };
+                bao_boringssl_bridge::session_cache::offer_session(ssl, host, port, profile_salt);
             }
         }
 

@@ -247,6 +247,32 @@ fn on_open(ctx: *mut HTTPClient) {
     if let Some(ssl_ptr) = ProxyTunnel::wrapper_ssl(proxy_nn) {
         let _hostname = this.hostname.unwrap_or(this.url.hostname);
 
+        // TLS session resumption: offer the cached session for the TARGET
+        // origin (the inner TLS endpoint through the CONNECT tunnel) before
+        // the handshake starts — `start()`/`start_with_payload()` fire this
+        // callback before the first `handle_traffic()` drive, so the
+        // ClientHello has not been serialized yet. The key strips the Host
+        // header's port suffix (`strip_port_from_host`) and pairs it with
+        // the target URL port, matching the direct-fetch origin key so a
+        // direct connection and a tunnelled connection to the same origin
+        // resume each other's sessions. Salt semantics identical to the
+        // fetch `on_open` wiring (lib.rs): custom `tls_props` segregate,
+        // default shares salt 0 across stacks.
+        let target_host = crate::strip_port_from_host(_hostname);
+        if let Some(host_str) = core::str::from_utf8(target_host).ok() {
+            let profile_salt = this
+                .tls_props
+                .as_deref()
+                .map(|props| props.content_hash())
+                .unwrap_or(0);
+            bao_boringssl_bridge::session_cache::offer_session(
+                ssl_ptr.as_ptr(),
+                host_str,
+                this.url.get_port_auto(),
+                profile_salt,
+            );
+        }
+
         // PORT NOTE: Zig `configureHTTPClient` is `configureHTTPClientWithALPN(ssl, host, .h1)`;
         // the Rust port already exposes the ALPN form in `crate::configure_http_client_with_alpn`.
         // SAFETY: `ssl_ptr` is the live SSL handle from the tunnel's SSLWrapper.
@@ -664,6 +690,16 @@ impl ProxyTunnel {
         // `addr_of!` (see ALIASING NOTE), so the `&SSLWrapper` formed here is
         // never aliased by a `&mut`.
         let wrapper = ProxyTunnel::wrapper_mut(proxy_ptr).unwrap();
+        // TLS session resumption: enable the client new-session callback on
+        // the tunnel's inner-TLS ctx before `start()` drives the handshake.
+        // The ctx is a fresh `SSL_CTX` per tunnel (created inside
+        // `init_from_options` via `create_ssl_context`) — the HTTPContext
+        // ctxs never flow through here, so this is the one wiring point for
+        // the CONNECT-tunnel stack. The offer side runs in `on_open` above.
+        // See bao_boringssl_bridge::session_cache.
+        if let Some(ctx) = wrapper.ctx {
+            bao_boringssl_bridge::session_cache::enable_client(ctx.as_ptr());
+        }
         if !start_payload.is_empty() {
             scoped_log!(http_proxy_tunnel, "proxy tunnel start with payload");
             wrapper.start_with_payload(start_payload);

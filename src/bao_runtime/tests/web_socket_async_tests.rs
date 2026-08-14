@@ -240,8 +240,13 @@ impl Write for ServerTlsIo {
 /// Serve one wss:// connection: TLS handshake (self-signed), WS handshake,
 /// echo text frames, reply to close frames. Runs the full server-side TLS
 /// state machine — the client's stealth-configured ClientHello must be
-/// acceptable to this peer for the test to pass.
-fn serve_tls_connection(mut tcp: TcpStream, server: &TlsServer) {
+/// acceptable to this peer for the test to pass. Records whether the TLS
+/// handshake resumed a cached session (server-side view) into `resumed`.
+fn serve_tls_connection(
+    mut tcp: TcpStream,
+    server: &TlsServer,
+    resumed: &std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+) {
     tcp.set_read_timeout(Some(Duration::from_secs(5))).ok();
     let mut tls = match server.accept() {
         Ok(t) => t,
@@ -254,6 +259,10 @@ fn serve_tls_connection(mut tcp: TcpStream, server: &TlsServer) {
         eprintln!("[wss-server] tls handshake failed: {:?}", e);
         return;
     }
+    resumed
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(bao_boringssl_bridge::session_cache::session_reused(tls.ssl_ptr()));
     let mut io = ServerTlsIo {
         tcp,
         tls,
@@ -310,21 +319,26 @@ fn spawn_plain_ws_server() -> u16 {
     port
 }
 
-fn spawn_tls_ws_server() -> u16 {
+/// Spawn the TLS WS echo server; returns its port plus the shared log of
+/// per-connection server-side resumption flags (one entry per completed TLS
+/// handshake, in connection order).
+fn spawn_tls_ws_server() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<bool>>>) {
     let (cert, key) =
         bao_boringssl_bridge::generate_self_signed_pem("localhost", 365).expect("self-signed cert");
     let server = std::sync::Arc::new(TlsServer::new(&cert, &key).expect("TlsServer"));
+    let resumed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
+    let resumed_clone = resumed.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             match stream {
-                Ok(s) => serve_tls_connection(s, &server),
+                Ok(s) => serve_tls_connection(s, &server, &resumed_clone),
                 Err(_) => return,
             }
         }
     });
-    port
+    (port, resumed)
 }
 
 /// Accept one TCP connection and never speak (the non-blocking proof server).
@@ -475,7 +489,7 @@ fn ws_constructor_does_not_block_js_thread() {
 /// green test proves the stealth-configured ClientHello is accepted.
 #[test]
 fn wss_async_roundtrip_with_stealth_profile() {
-    let port = spawn_tls_ws_server();
+    let (port, _resumed) = spawn_tls_ws_server();
     let mut ctx = new_test_ctx();
 
     // install_all installs the default Firefox stealth profile — the exact
@@ -512,6 +526,54 @@ fn wss_async_roundtrip_with_stealth_profile() {
         log
     );
     assert!(!log.contains("error"), "no onerror expected: {}", log);
+}
+
+/// TLS session resumption for the wss:// client path: two sequential wss
+/// connections to the same origin — the first performs a full handshake and
+/// its new-session callback populates the process-wide cache; the second
+/// must be offered (and accept) the cached session (1-RTT / PSK resume).
+/// Asserted server-side per connection (both ends agree on resumption).
+/// Proves the `offer_session` wiring in `WsConn::connect_tls` plus the
+/// `TlsClient::new` ctx callback (the exact production path a page's
+/// `new WebSocket("wss://…")` drives).
+#[test]
+fn wss_second_connection_resumes_session() {
+    let (port, resumed) = spawn_tls_ws_server();
+    let mut ctx = new_test_ctx();
+
+    for i in 0..2 {
+        let setup = format!(
+            r#"
+            var wsLog = [];
+            var ws = new WebSocket("wss://127.0.0.1:{}/secure");
+            ws.onopen = function() {{ wsLog.push("open"); ws.send("ping"); }};
+            ws.onmessage = function(ev) {{ wsLog.push("msg:" + ev.data); if (ev.data.indexOf("ECHO:") === 0) {{ ws.close(); }} }};
+            ws.onerror = function(ev) {{ wsLog.push("error:" + (ev.data || "?")); }};
+            ws.onclose = function() {{ wsLog.push("close"); }};
+            "done"
+            "#,
+            port
+        );
+        assert_eq!(
+            eval_str(&mut ctx, &setup),
+            "done",
+            "constructor eval failed"
+        );
+        let done = pump_until(&mut ctx, "wsLog.indexOf('close') >= 0", 8_000);
+        let log = eval_str(&mut ctx, "wsLog.join('|')");
+        assert!(
+            done,
+            "wss round-trip #{} did not finish in budget; log: {}",
+            i + 1,
+            log
+        );
+        assert!(!log.contains("error"), "no onerror expected: {}", log);
+    }
+
+    let flags = resumed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(flags.len(), 2, "exactly two TLS connections expected");
+    assert!(!flags[0], "first connection must be a full handshake");
+    assert!(flags[1], "second connection to the same origin must resume");
 }
 
 /// Connect failure must surface explicitly: refused port → onerror (with the
@@ -615,7 +677,7 @@ fn wss_raw_handshake_isolation() {
         }
     }
 
-    let port = spawn_tls_ws_server();
+    let (port, _resumed) = spawn_tls_ws_server();
     let plain = try_handshake(port, false);
     eprintln!("[raw] no-stealth result: {:?}", plain);
     let stealth = try_handshake(port, true);
