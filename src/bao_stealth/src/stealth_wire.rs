@@ -11,8 +11,10 @@
 // BoringSSL supports full JA3/JA4 fingerprint configuration including cipher
 // suite reordering, curves/groups ordering, and signature algorithm ordering.
 //
-// This type is redeclared in servo's `net::connector` (no dependency on `bao_stealth`
-// from servo's net crate) and kept in sync via field-matching.
+// This type is redeclared in servo's `net::connector` and kept in sync via
+// field-matching (servo's net crate depends on `bao_stealth` for the shared
+// IANA→OpenSSL name mapping; the type redeclaration avoids coupling servo's
+// global-config plumbing to this crate's constructors).
 
 /// Wire-level TLS/HTTP2 configuration for servo's network layer.
 ///

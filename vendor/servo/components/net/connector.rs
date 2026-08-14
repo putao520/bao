@@ -33,6 +33,7 @@ use tokio::net::TcpStream;
 use tower::Service;
 
 use bao_boringssl_bridge::{TlsClient, TlsConnection, TlsProfile, TlsError};
+use bao_stealth::{boringssl_cipher_list_string, boringssl_curves_list_string, boringssl_sigalgs_list_string};
 use bao_boringssl_bridge::connection::TlsState;
 use bun_boringssl_sys::boringssl::*;
 
@@ -114,73 +115,21 @@ fn get_stealth_tls_config() -> Option<StealthTlsWireConfig> {
     STEALTH_TLS_CONFIG.read().unwrap().clone()
 }
 
-// ── IANA cipher suite ID → OpenSSL cipher name mapping ─────────────────
+// ── IANA cipher/group/sigalg ID → OpenSSL name mapping ────────────────
 //
-// BoringSSL uses OpenSSL-style cipher list strings, not IANA IDs.
-// We map the IANA IDs from StealthTlsWireConfig to the corresponding
-// OpenSSL cipher names that BoringSSL understands.
-
-/// Map a TLS 1.2 IANA cipher suite ID to its OpenSSL cipher name.
-fn iana_to_openssl_cipher_12(id: u16) -> Option<&'static str> {
-    match id {
-        0x002F => Some("ECDHE-RSA-AES128-GCM-SHA256"),   // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-        0x0035 => Some("RSA-AES256-GCM-SHA384"),          // TLS_RSA_WITH_AES_256_GCM_SHA384
-        0x009E => Some("ECDHE-RSA-AES256-GCM-SHA384"),   // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-        0xC02F => Some("ECDHE-ECDSA-AES128-GCM-SHA256"), // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-        0xC030 => Some("ECDHE-ECDSA-AES256-GCM-SHA384"), // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-        0xC027 => Some("ECDHE-RSA-AES128-GCM-SHA256"),   // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-        0xC028 => Some("ECDHE-RSA-AES256-GCM-SHA384"),   // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-        0xCC13 => Some("ECDHE-ECDSA-CHACHA20-POLY1305"), // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
-        0xCC14 => Some("ECDHE-RSA-CHACHA20-POLY1305"),   // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
-        0xCC15 => Some("ECDHE-ECDSA-CHACHA20-POLY1305"), // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
-        0xCC16 => Some("ECDHE-RSA-CHACHA20-POLY1305"),   // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
-        _ => None,
-    }
-}
-
-/// Map a TLS 1.3 IANA cipher suite ID to its OpenSSL cipher name.
-fn iana_to_openssl_cipher_13(id: u16) -> Option<&'static str> {
-    match id {
-        0x1301 => Some("TLS_AES_128_GCM_SHA256"),
-        0x1302 => Some("TLS_AES_256_GCM_SHA384"),
-        0x1303 => Some("TLS_CHACHA20_POLY1305_SHA256"),
-        _ => None,
-    }
-}
-
-/// Map an IANA supported group ID to its OpenSSL group name.
-fn iana_to_openssl_group(id: u16) -> Option<&'static str> {
-    match id {
-        0x001D => Some("X25519"),
-        0x0017 => Some("P-256"),
-        0x0018 => Some("P-384"),
-        0x0019 => Some("P-521"),
-        0x0100 => Some("ffdhe2048"),
-        0x0101 => Some("ffdhe3072"),
-        _ => None,
-    }
-}
-
-/// Map an IANA signature algorithm ID to its OpenSSL sigalg name.
-fn iana_to_openssl_sigalg(id: u16) -> Option<&'static str> {
-    match id {
-        0x0401 => Some("rsa_pkcs1_sha256"),
-        0x0501 => Some("rsa_pkcs1_sha384"),
-        0x0601 => Some("rsa_pkcs1_sha512"),
-        0x0403 => Some("ecdsa_secp256r1_sha256"),
-        0x0503 => Some("ecdsa_secp384r1_sha384"),
-        0x0603 => Some("ecdsa_secp521r1_sha512"),
-        0x0804 => Some("rsa_pss_rsae_sha256"),
-        0x0805 => Some("rsa_pss_rsae_sha384"),
-        0x0806 => Some("rsa_pss_rsae_sha512"),
-        0x0809 => Some("rsa_pss_pss_sha256"),
-        0x080A => Some("rsa_pss_pss_sha384"),
-        0x080B => Some("rsa_pss_pss_sha512"),
-        0x0201 => Some("rsa_pkcs1_sha1"),
-        0x0203 => Some("ecdsa_sha1"),
-        _ => None,
-    }
-}
+// SINGLE SOURCE OF TRUTH: `bao_stealth` (src/bao_stealth/src/tls.rs),
+// cross-verified against the vendored BoringSSL (`tls1.h` TLS1_TXT_* and
+// the kCiphers/kNamedGroups/kSignatureAlgorithmNames tables). Local copies
+// of this mapping are forbidden — the previous local table had nearly
+// every entry wrong (0x009E→ECDHE-RSA-AES256-GCM-SHA384, 0xC02F/0xC030
+// RSA/ECDSA swapped, 0x002F/0x0035 RSA suites mapped to ECDHE names) and
+// dropped 9 of the 13 profile suites.
+//
+// The `boringssl_*_list_string` builders also encode engine limits:
+//  - TLS 1.3 suite order is built into BoringSSL (ssl.h: "TLS 1.3 ciphers
+//    do not participate in this mechanism");
+//  - DHE_RSA ciphers and FFDHE groups have no BoringSSL implementation,
+//    and an unrecognized GROUP name fails the whole set1_groups_list call.
 
 // ── HTTP connector ────────────────────────────────────────────────────
 
@@ -286,6 +235,20 @@ impl BoringsslTlsStream {
                         TlsState::Handshaking => {
                             // Need more data from the network
                             self.read_from_tcp().await?;
+                        }
+                        // BAO: SNI-driven certificate selection parked the
+                        // handshake. The connector registers no
+                        // select-certificate callback (that is node:tls
+                        // server machinery), so this state is structurally
+                        // unreachable here. Fail the handshake explicitly
+                        // rather than waiting silently — the state only
+                        // clears via an external credential resolver that
+                        // this path does not have.
+                        TlsState::PendingCertificate => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                "TLS certificate selection pending without a resolver",
+                            ));
                         }
                     }
                 }
@@ -478,6 +441,18 @@ impl hyper::rt::Read for BoringsslTlsStream {
                         TlsState::Handshaking => {
                             // Still handshaking, need more data
                             break;
+                        }
+                        // BAO: SNI-driven certificate selection parked the
+                        // handshake. Unreachable on the connector path (no
+                        // select-certificate callback is registered here —
+                        // that is node:tls server machinery). Fail closed
+                        // instead of waiting: the state only clears via an
+                        // external credential resolver this path lacks.
+                        TlsState::PendingCertificate => {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                "TLS certificate selection pending without a resolver",
+                            )));
                         }
                     }
                 }
@@ -703,6 +678,18 @@ impl tokio::io::AsyncRead for BoringsslTlsStream {
                         TlsState::Handshaking => {
                             // Still handshaking, need more data
                             break;
+                        }
+                        // BAO: SNI-driven certificate selection parked the
+                        // handshake. Unreachable on the connector path (no
+                        // select-certificate callback is registered here —
+                        // that is node:tls server machinery). Fail closed
+                        // instead of waiting: the state only clears via an
+                        // external credential resolver this path lacks.
+                        TlsState::PendingCertificate => {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                "TLS certificate selection pending without a resolver",
+                            )));
                         }
                     }
                 }
@@ -1152,25 +1139,13 @@ pub fn create_tls_config(
                 .expect("Failed to create BoringSSL TlsClient");
             let ctx = client.ctx();
 
-            // Build cipher list string from stealth config (TLS 1.3 + TLS 1.2)
-            // SSL_CTX_set_cipher_list is available and sets the default for all connections.
-            let mut cipher_names: Vec<&str> = Vec::new();
+            // Build the TLS 1.2 cipher list string from the stealth config.
+            // SSL_CTX_set_cipher_list sets the default for all connections.
+            // TLS 1.3 suites are omitted: their order is built into BoringSSL
+            // (no set_ciphersuites API in this build).
+            let cipher_str = boringssl_cipher_list_string(&stealth.tls12_cipher_suites);
 
-            // TLS 1.3 ciphers first
-            for id in &stealth.tls13_cipher_suites {
-                if let Some(name) = iana_to_openssl_cipher_13(*id) {
-                    cipher_names.push(name);
-                }
-            }
-            // TLS 1.2 ciphers
-            for id in &stealth.tls12_cipher_suites {
-                if let Some(name) = iana_to_openssl_cipher_12(*id) {
-                    cipher_names.push(name);
-                }
-            }
-
-            if !cipher_names.is_empty() {
-                let cipher_str = cipher_names.join(":");
+            if !cipher_str.is_empty() {
                 let cipher_c = std::ffi::CString::new(cipher_str)
                     .expect("invalid cipher string");
                 // SAFETY: SSL_CTX_set_cipher_list sets the cipher list on the SSL_CTX.
@@ -1184,12 +1159,9 @@ pub fn create_tls_config(
 
             // Prepare per-connection settings (BoringSSL only has SSL_set_* for these)
             let sigalg_list = if !stealth.signature_algorithms.is_empty() {
-                let sigalg_names: Vec<&str> = stealth.signature_algorithms
-                    .iter()
-                    .filter_map(|id| iana_to_openssl_sigalg(*id))
-                    .collect();
-                if !sigalg_names.is_empty() {
-                    Some(sigalg_names.join(":"))
+                let sigalgs = boringssl_sigalgs_list_string(&stealth.signature_algorithms);
+                if !sigalgs.is_empty() {
+                    Some(sigalgs)
                 } else {
                     None
                 }
@@ -1208,13 +1180,13 @@ pub fn create_tls_config(
                 None
             };
 
+            // FFDHE groups are filtered by the shared builder: a single
+            // unrecognized group name makes SSL_set1_curves_list fail the
+            // whole call, silently discarding the groups fingerprint.
             let curves_list = if !stealth.supported_groups.is_empty() {
-                let curves: Vec<&str> = stealth.supported_groups
-                    .iter()
-                    .filter_map(|g| iana_to_openssl_group(*g))
-                    .collect();
+                let curves = boringssl_curves_list_string(&stealth.supported_groups);
                 if !curves.is_empty() {
-                    Some(curves.join(":"))
+                    Some(curves)
                 } else {
                     None
                 }

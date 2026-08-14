@@ -24,6 +24,16 @@ pub use profile::{
 pub use stealth_wire::StealthTlsWireConfig;
 pub use tls::TlsFingerprint;
 pub use tls::TlsFingerprintConfig;
+// IANA → OpenSSL/BoringSSL name mapping — single source of truth shared by
+// every TLS stack in Bao (servo `net::connector`, `bao_runtime`/`bun_http`).
+pub use tls::boringssl_cipher_list_string;
+pub use tls::boringssl_curves_list_string;
+pub use tls::boringssl_sigalgs_list_string;
+pub use tls::cipher_suite_boringssl_supported;
+pub use tls::cipher_suite_openssl_name;
+pub use tls::group_boringssl_supported;
+pub use tls::group_openssl_name;
+pub use tls::sigalg_openssl_name;
 pub use webgl_audio::{AudioProfile, WebGLProfile};
 
 pub struct StealthEngine {

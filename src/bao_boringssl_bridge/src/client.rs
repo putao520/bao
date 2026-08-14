@@ -3,6 +3,14 @@
 
 use bun_boringssl_sys::boringssl::*;
 
+// Trust-store symbols compiled into the vendored library but not yet in
+// the hand-rolled bindings (ground truth: vendor/boringssl/include/openssl).
+unsafe extern "C" {
+    fn SSL_CTX_get_cert_store(ctx: *mut SSL_CTX) -> *mut X509_STORE;
+    fn X509_STORE_add_cert(store: *mut X509_STORE, x509: *mut X509) -> core::ffi::c_int;
+    safe fn TLS_method() -> *const SSL_METHOD;
+}
+
 /// BoringSSL-backed TLS client.
 ///
 /// Wraps an `SSL_CTX` configured for client-side TLS connections.
@@ -14,12 +22,17 @@ pub struct TlsClient {
 impl TlsClient {
     /// Create a new TLS client with default BoringSSL configuration.
     ///
-    /// Uses the same cipher/kx setup as `bun_boringssl::init_client()`.
+    /// Uses the crypto-X509 method (`TLS_method`): the trust-store /
+    /// verify-param APIs (`SSL_CTX_get_cert_store`, …) assert on a
+    /// buffers-method ctx (`check_ssl_ctx_x509_method`), and the client
+    /// verifies peer certificates by default. Wire behavior is identical
+    /// to the buffers method; this only selects the certificate
+    /// representation inside BoringSSL.
     pub fn new() -> Result<Self, TlsError> {
         // Ensure BoringSSL is initialized
         bun_boringssl::load();
 
-        let ctx = unsafe { SSL_CTX_new(TLS_with_buffers_method()) };
+        let ctx = unsafe { SSL_CTX_new(TLS_method()) };
         if ctx.is_null() {
             return Err(TlsError::BoringSSL("SSL_CTX_new failed"));
         }
@@ -42,6 +55,33 @@ impl TlsClient {
     /// Get the underlying `SSL_CTX` pointer.
     pub fn ctx(&self) -> *mut SSL_CTX {
         self.ctx
+    }
+
+    /// Trust an additional DER-encoded certificate (CA or self-signed leaf)
+    /// for peer verification — the BoringSSL client verifies by default, so
+    /// private-CA / self-signed servers must be anchored here (Node's `ca`
+    /// option equivalent).
+    pub fn add_trusted_der(&self, der: &[u8]) -> bool {
+        let mut p = der.as_ptr();
+        // SAFETY: d2i_X509 reads from the DER slice; the returned X509 is
+        // owned by us and freed after adding to the store (X509_STORE_add_cert
+        // up-refs internally).
+        let x509 = unsafe { d2i_X509(core::ptr::null_mut(), &mut p, der.len() as core::ffi::c_long) };
+        if x509.is_null() {
+            return false;
+        }
+        // SAFETY: self.ctx is a live SSL_CTX; its cert store outlives the ctx.
+        let ok = unsafe {
+            let store = SSL_CTX_get_cert_store(self.ctx);
+            let r = if store.is_null() {
+                0
+            } else {
+                X509_STORE_add_cert(store, x509)
+            };
+            X509_free(x509);
+            r
+        };
+        ok == 1
     }
 }
 

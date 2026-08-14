@@ -1172,7 +1172,7 @@ pub async fn http_redirect_fetch(
         // Step 5. If locationURL is failure, then return a network error.
         Some(Err(err)) => {
             return Response::network_error(NetworkError::ResourceLoadError(
-                "Location URL parse failure: ".to_owned() + &err,
+                format!("Location URL parse failure: {err}"),
             ));
         },
         // Step 6. If locationURL’s scheme is not an HTTP(S) scheme, then return a network error.

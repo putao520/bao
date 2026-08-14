@@ -115,36 +115,11 @@ pub fn stealth_profile_to_ssl_config(profile: &Option<StealthProfile>) -> SSLCon
     config
 }
 
-#[allow(dead_code)]
-fn tls_cipher_name(suite: u16) -> Option<&'static str> {
-    match suite {
-        0x1301 => Some("TLS_AES_128_GCM_SHA256"),
-        0x1302 => Some("TLS_AES_256_GCM_SHA384"),
-        0x1303 => Some("TLS_CHACHA20_POLY1305_SHA256"),
-        0xC02B => Some("ECDHE_ECDSA_AES_128_GCM_SHA256"),
-        0xC02F => Some("ECDHE_RSA_AES_128_GCM_SHA256"),
-        0xC02C => Some("ECDHE_ECDSA_AES_256_GCM_SHA384"),
-        0xC030 => Some("ECDHE_RSA_AES_256_GCM_SHA384"),
-        0x009E => Some("DHE_RSA_AES_128_GCM_SHA256"),
-        0x009C => Some("DHE_RSA_AES_256_GCM_SHA384"),
-        0xCCA9 => Some("ECDHE_ECDSA_CHACHA20_POLY1305_SHA256"),
-        0xCCA8 => Some("ECDHE_RSA_CHACHA20_POLY1305_SHA256"),
-        0xC013 => Some("ECDHE_ECDSA_AES_128_CBC_SHA"),
-        0xC009 => Some("ECDHE_ECDSA_AES_256_CBC_SHA"),
-        0x0033 => Some("DHE_RSA_AES_128_CBC_SHA256"),
-        0x0067 => Some("DHE_RSA_AES_256_CBC_SHA256"),
-        _ => None,
-    }
-}
-
-#[allow(dead_code)]
-fn cipher_list_string(fp: &TlsFingerprint) -> String {
-    fp.cipher_suites
-        .iter()
-        .filter_map(|&id| tls_cipher_name(id))
-        .collect::<Vec<&str>>()
-        .join(":")
-}
+// IANA→OpenSSL cipher name resolution lives in `bao_stealth::tls` (single
+// source of truth) — the former local `tls_cipher_name`/`cipher_list_string`
+// copies here had diverged (wrong names for 0xC009/0x0033/0x0067) and were
+// removed; use `bao_stealth::{cipher_suite_openssl_name,
+// boringssl_cipher_list_string}` instead.
 
 #[allow(dead_code)]
 fn alpn_wire_format(fp: &TlsFingerprint) -> Vec<u8> {
@@ -372,35 +347,10 @@ mod tests {
     }
 
     #[test]
-    fn test_cipher_list_firefox() {
-        let profile = StealthProfile::firefox_default();
-        let s = cipher_list_string(&profile.tls);
-        assert!(!s.is_empty());
-        assert!(s.contains("ECDHE"));
-    }
-
-    #[test]
-    fn test_cipher_list_chrome() {
-        let profile = StealthProfile::chrome_default();
-        let s = cipher_list_string(&profile.tls);
-        assert!(!s.is_empty());
-    }
-
-    #[test]
     fn test_alpn_wire_firefox() {
         let profile = StealthProfile::firefox_default();
         let wire = alpn_wire_format(&profile.tls);
         assert!(!wire.is_empty());
-    }
-
-    #[test]
-    fn test_tls_cipher_name_known() {
-        assert_eq!(tls_cipher_name(0x1301), Some("TLS_AES_128_GCM_SHA256"));
-        assert_eq!(
-            tls_cipher_name(0xC02B),
-            Some("ECDHE_ECDSA_AES_128_GCM_SHA256")
-        );
-        assert_eq!(tls_cipher_name(0xFFFF), None);
     }
 
     #[test]
@@ -415,13 +365,6 @@ mod tests {
         let profile = StealthProfile::chrome_default();
         let wire = h2_settings_wire_format(&profile.http2);
         assert_eq!(wire.len(), 36);
-    }
-
-    #[test]
-    fn test_cipher_lists_differ() {
-        let ff = StealthProfile::firefox_default();
-        let ch = StealthProfile::chrome_default();
-        assert_ne!(cipher_list_string(&ff.tls), cipher_list_string(&ch.tls));
     }
 
     // ─── stealth_http extended edge case tests ────────────────
@@ -530,26 +473,33 @@ mod tests {
         assert_ne!(ff_hash, ch_hash, "Firefox and Chrome JA3 must differ");
     }
 
+    // ─── single-source cipher mapping through the live SSLConfig path ──
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+
     #[test]
-    fn test_tls_cipher_name_all_known_suites() {
-        let known = [
-            0x1301, 0x1302, 0x1303, 0xC02B, 0xC02F, 0xC02C, 0xC030, 0x009E, 0x009C, 0xCCA9, 0xCCA8,
-            0xC013, 0xC009, 0x0033, 0x0067,
-        ];
-        for suite in known {
-            assert!(
-                tls_cipher_name(suite).is_some(),
-                "0x{:04X} should be a known suite",
-                suite
-            );
-        }
+    fn test_ssl_config_tls12_list_matches_single_source() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile.clone()));
+        let expected = bao_stealth::boringssl_cipher_list_string(&profile.tls.cipher_suites);
+        let got = unsafe { std::ffi::CStr::from_ptr(config.tls12_cipher_list) }
+            .to_str()
+            .expect("utf8");
+        assert_eq!(got, expected);
+        // No DHE names (entry prefix — "DHE-" is also a substring of
+        // "ECDHE-...") and no TLS 1.3 names reach the BoringSSL cipher list.
+        assert!(!got.split(':').any(|n| n.starts_with("DHE-")));
+        assert!(!got.contains("TLS_AES"));
     }
 
     #[test]
-    fn test_tls_cipher_name_unknown_returns_none() {
-        assert!(tls_cipher_name(0x0000).is_none());
-        assert!(tls_cipher_name(0xFFFF).is_none());
-        assert!(tls_cipher_name(0x0100).is_none());
+    fn test_ssl_config_curves_list_excludes_ffdhe() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let curves = unsafe { std::ffi::CStr::from_ptr(config.tls_curves_list) }
+            .to_str()
+            .expect("utf8");
+        assert_eq!(curves, "X25519:P-256:P-384:P-521");
+        assert!(!curves.contains("ffdhe"));
     }
 
     #[test]
@@ -569,15 +519,6 @@ mod tests {
         let profile = StealthProfile::chrome_default();
         let wire = alpn_wire_format(&profile.tls);
         assert_eq!(wire.len(), 12); // same ALPN as Firefox
-    }
-
-    #[test]
-    fn test_cipher_list_all_known() {
-        let profile = StealthProfile::firefox_default();
-        let s = cipher_list_string(&profile.tls);
-        // Every cipher in Firefox's list should resolve
-        assert!(s.contains("TLS_AES_128_GCM_SHA256"));
-        assert!(s.contains("ECDHE_RSA_AES_128_GCM_SHA256"));
     }
 
     #[test]
@@ -686,7 +627,13 @@ mod tests {
     }
 
     #[test]
-    fn test_ssl_config_firefox_chrome_different_ciphers() {
+    fn test_ssl_config_firefox_chrome_tls12_converge_curves_differ() {
+        // Firefox/Chrome TLS 1.2 sets differ only in DHE suites, which
+        // BoringSSL cannot offer — the lists exposed to BoringSSL converge
+        // (design result, see bao_stealth/src/tls.rs DHE-filter comment and
+        // the profile suite counts: FF 4 DHE / Chrome 2 DHE → both offer 8).
+        // Fingerprint differentiation comes from offered groups (Firefox
+        // keeps P-521), sigalgs, extensions and H2 SETTINGS instead.
         let ff = StealthProfile::firefox_default();
         let ch = StealthProfile::chrome_default();
         let ff_config = stealth_profile_to_ssl_config(&Some(ff));
@@ -697,7 +644,30 @@ mod tests {
         let ch_s = unsafe { std::ffi::CStr::from_ptr(ch_config.tls12_cipher_list) }
             .to_str()
             .unwrap();
-        assert_ne!(ff_s, ch_s, "Firefox and Chrome TLS 1.2 ciphers must differ");
+        // Both lists converge AND each equals its profile's DHE-filtered set.
+        assert_eq!(
+            ff_s, ch_s,
+            "Firefox/Chrome TLS 1.2 lists must converge after DHE filtering"
+        );
+        assert_eq!(
+            ff_s,
+            TlsFingerprint::firefox().tls12_cipher_list_string(),
+            "exposed list must equal Firefox DHE-filtered set"
+        );
+        assert_eq!(
+            ch_s,
+            TlsFingerprint::chrome().tls12_cipher_list_string(),
+            "exposed list must equal Chrome DHE-filtered set"
+        );
+        // Differentiation survives via offered groups (Firefox keeps P-521),
+        // mirroring the bao_stealth-side profile distinction test.
+        let ff_c = unsafe { std::ffi::CStr::from_ptr(ff_config.tls_curves_list) }
+            .to_str()
+            .unwrap();
+        let ch_c = unsafe { std::ffi::CStr::from_ptr(ch_config.tls_curves_list) }
+            .to_str()
+            .unwrap();
+        assert_ne!(ff_c, ch_c, "Firefox/Chrome curves must differ (P-521)");
     }
 
     #[test]

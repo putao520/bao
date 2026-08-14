@@ -8,7 +8,22 @@
 use bun_boringssl_sys::boringssl::*;
 use core::ffi::{c_long, c_void};
 
-use crate::connection::{TlsConnection, TlsError};
+use crate::connection::{
+    SSL_CTX_set_select_certificate_cb as ffi_set_select_cert_cb, SslClientHello, TlsConnection,
+    TlsError,
+};
+
+// `TLS_method` is compiled into the vendored library but not yet declared
+// in the hand-rolled bindings (only `TLS_with_buffers_method` is).
+//
+// The SERVER ctx must use the crypto-X509 method: the certificate loaders
+// this type calls (`SSL_CTX_use_certificate` / `SSL_CTX_add1_chain_cert` /
+// `SSL_CTX_use_PrivateKey`) are X509-based and assert
+// (`check_ssl_ctx_x509_method`, ssl_x509.cc) on a buffers-method ctx. The
+// buffers method is only legal with the *_ASN1 DER loaders.
+unsafe extern "C" {
+    safe fn TLS_method() -> *const SSL_METHOD;
+}
 
 /// BoringSSL-backed TLS server.
 ///
@@ -25,7 +40,7 @@ impl TlsServer {
     pub fn new(pem_certs: &str, pem_key: &str) -> Result<Self, TlsError> {
         bun_boringssl::load();
 
-        let ctx = unsafe { SSL_CTX_new(TLS_with_buffers_method()) };
+        let ctx = unsafe { SSL_CTX_new(TLS_method()) };
         if ctx.is_null() {
             return Err(TlsError::BoringSSL("SSL_CTX_new failed"));
         }
@@ -123,7 +138,7 @@ impl TlsServer {
     pub fn new_from_der(cert_der: &[u8], key_der: &[u8]) -> Result<Self, TlsError> {
         bun_boringssl::load();
 
-        let ctx = unsafe { SSL_CTX_new(TLS_with_buffers_method()) };
+        let ctx = unsafe { SSL_CTX_new(TLS_method()) };
         if ctx.is_null() {
             return Err(TlsError::BoringSSL("SSL_CTX_new failed"));
         }
@@ -166,6 +181,25 @@ impl TlsServer {
     /// Accept a TLS connection.
     pub fn accept(&self) -> Result<TlsConnection, TlsError> {
         TlsConnection::new_server_boringssl(self)
+    }
+
+    /// Register the BoringSSL select-certificate callback on this server's
+    /// `SSL_CTX`. The callback fires early in the server handshake (before
+    /// most ClientHello processing); it may inspect the SNI servername via
+    /// [`TlsConnection::servername`], switch the connection's certificate
+    /// configuration via [`TlsConnection::switch_ssl_ctx`], and defer the
+    /// decision by returning retry (the handshake then suspends with
+    /// `TlsState::PendingCertificate` until the caller resolves the
+    /// credential and drives `process` again).
+    ///
+    /// This is the injection seam for node:tls `SNICallback` support.
+    pub fn set_select_certificate_callback(
+        &self,
+        cb: Option<
+            unsafe extern "C" fn(client_hello: *const SslClientHello) -> core::ffi::c_int,
+        >,
+    ) {
+        unsafe { ffi_set_select_cert_cb(self.ctx, cb) }
     }
 
     /// Get the underlying `SSL_CTX` pointer.

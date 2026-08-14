@@ -21,8 +21,11 @@ test-util = ["hyper-util/server-graceful", "dep:servo-default-resources", "net_t
 tracing = ["dep:tracing"]
 
 [dependencies]
-# Bao vendor deps: boringssl-backed stealth TLS connector (REQ-STL-001)
+# Bao vendor deps: boringssl-backed stealth TLS connector (REQ-STL-001).
+# bao_stealth: shared IANA→OpenSSL cipher/group/sigalg name mapping (single
+# source of truth — local mapping copies in connector.rs are forbidden).
 bao_boringssl_bridge = { path = "../../../../src/bao_boringssl_bridge" }
+bao_stealth = { path = "../../../../src/bao_stealth" }
 bun_boringssl = { path = "../../../../src/boringssl" }
 bun_boringssl_sys = { path = "../../../../src/boringssl_sys" }
 async-compression = { workspace = true, features = ["brotli", "gzip", "tokio", "zlib", "zstd"] }

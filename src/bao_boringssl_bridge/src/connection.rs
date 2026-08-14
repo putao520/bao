@@ -24,6 +24,59 @@ use crate::server::TlsServer;
 /// Maximum TLS record size (16 KiB + header overhead).
 const TLS_RECORD_MAX: usize = 17_000;
 
+// ─── SNI / async certificate-selection FFI surface ────────────────────
+//
+// These symbols are compiled into the vendored BoringSSL library (see
+// `src/boringssl_sys/build.rs` — all of `ssl/*.cc` is in the build list)
+// but are not yet declared in the hand-rolled `bun_boringssl_sys` bindings.
+// They are declared here locally (same pattern as `node_net.rs`'s local
+// `inet_ntop` declaration) until the bindgen pipeline replaces the bindings
+// module wholesale.
+//
+// Ground truth: vendor/boringssl/include/openssl/ssl.h.
+
+/// `#define SSL_ERROR_PENDING_CERTIFICATE 12` — the operation failed because
+/// certificate selection (e.g. SNI-driven) is pending; retry later.
+const SSL_ERROR_PENDING_CERTIFICATE: c_int = 12;
+
+/// `enum ssl_select_cert_result_t` — return values for the
+/// select-certificate callback (ssl.h). Consumed by the node:tls
+/// SNICallback dispatch in `bun_runtime`.
+pub const SSL_SELECT_CERT_SUCCESS: c_int = 1;
+pub const SSL_SELECT_CERT_RETRY: c_int = 0;
+pub const SSL_SELECT_CERT_ERROR: c_int = -1;
+
+/// `#define TLSEXT_NAMETYPE_host_name 0` — the SNI server_name type.
+const TLSEXT_NAMETYPE_HOST_NAME: c_int = 0;
+
+/// `SSL_CLIENT_HELLO` — only the fields we consume. Layout ground truth:
+/// `struct ssl_early_callback_ctx` in vendor/boringssl/include/openssl/ssl.h
+/// (`SSL *ssl` is the first member).
+#[repr(C)]
+pub struct SslClientHello {
+    pub ssl: *mut SSL,
+}
+
+unsafe extern "C" {
+    pub(crate) fn SSL_CTX_set_select_certificate_cb(
+        ctx: *mut SSL_CTX,
+        cb: Option<unsafe extern "C" fn(client_hello: *const SslClientHello) -> c_int>,
+    );
+    fn SSL_set_SSL_CTX(ssl: *mut SSL, ctx: *mut SSL_CTX) -> *mut SSL_CTX;
+    fn SSL_get_peer_certificate(ssl: *const SSL) -> *mut X509;
+}
+
+/// The SNI servername for a raw `SSL*` (server side) — usable inside the
+/// select-certificate callback. `TLSEXT_NAMETYPE_host_name` only.
+pub fn ssl_servername(ssl: *const SSL) -> Option<String> {
+    let name = unsafe { SSL_get_servername(ssl, TLSEXT_NAMETYPE_HOST_NAME) };
+    if name.is_null() {
+        return None;
+    }
+    let cstr = unsafe { std::ffi::CStr::from_ptr(name) };
+    cstr.to_str().ok().map(|s| s.to_string())
+}
+
 // ─── TlsConnection ───────────────────────────────────────────────────
 
 /// A TLS connection backed by BoringSSL.
@@ -263,6 +316,61 @@ impl TlsConnection {
         }
     }
 
+    /// The SNI servername the client sent (server side). Valid inside (and
+    /// after) the select-certificate callback.
+    pub fn servername(&self) -> Option<String> {
+        let ssl = match self {
+            Self::Client(c) => c.ssl,
+            Self::Server(c) => c.ssl,
+        };
+        ssl_servername(ssl)
+    }
+
+    /// Switch this connection's certificate configuration to `ctx` (the
+    /// canonical SNI pattern). Must be called from inside the
+    /// select-certificate callback (or while the handshake is paused from
+    /// it) — see `SSL_set_SSL_CTX` in vendor/boringssl/include/openssl/ssl.h.
+    ///
+    /// # Safety
+    ///
+    /// `ctx` must be a live `SSL_CTX*` from a `TlsServer` (same method /
+    /// x509_method). The caller keeps `ctx` alive for the connection's
+    /// lifetime (SSL_set_SSL_CTX up-refs it internally, but the caller's
+    /// original reference must not be released before the SSL is done if
+    /// it is the only other one).
+    pub unsafe fn switch_ssl_ctx(&mut self, ctx: *mut SSL_CTX) -> bool {
+        let ssl = match self {
+            Self::Client(c) => c.ssl,
+            Self::Server(c) => c.ssl,
+        };
+        let new_ctx = unsafe { SSL_set_SSL_CTX(ssl, ctx) };
+        !new_ctx.is_null()
+    }
+
+    /// The peer's leaf certificate as DER bytes (after handshake).
+    pub fn peer_certificate_der(&self) -> Option<Vec<u8>> {
+        let ssl = match self {
+            Self::Client(c) => c.ssl,
+            Self::Server(c) => c.ssl,
+        };
+        let x509 = unsafe { SSL_get_peer_certificate(ssl) };
+        if x509.is_null() {
+            return None;
+        }
+        let len = unsafe { i2d_X509(x509, core::ptr::null_mut()) };
+        if len <= 0 {
+            unsafe { X509_free(x509) };
+            return None;
+        }
+        let mut buf = vec![0u8; len as usize];
+        let mut p = buf.as_mut_ptr();
+        unsafe {
+            i2d_X509(x509, &mut p);
+            X509_free(x509);
+        }
+        Some(buf)
+    }
+
     /// Set the curves list on the SSL connection (for profile-specific ordering).
     pub fn set_curves_list(&mut self, curves: *const i8) -> c_int {
         let ssl = match self {
@@ -415,6 +523,13 @@ impl ServerConn {
                 let err = unsafe { SSL_get_error(self.ssl, ret) };
                 match err {
                     SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => {}
+                    SSL_ERROR_PENDING_CERTIFICATE => {
+                        // Certificate selection (SNI) is pending: the
+                        // select-certificate callback returned retry. The
+                        // caller resolves the credential asynchronously and
+                        // drives `process` again.
+                        state = TlsState::PendingCertificate;
+                    }
                     SSL_ERROR_ZERO_RETURN => {
                         self.saw_peer_closed = true;
                         state = TlsState::PeerClosed;
@@ -555,6 +670,11 @@ pub struct ProcessResult {
 pub enum TlsState {
     /// Handshake in progress.
     Handshaking,
+    /// Handshake paused: certificate selection (SNI) is pending. The
+    /// select-certificate callback returned `ssl_select_cert_retry`; the
+    /// caller must resolve the credential out-of-band and drive `process`
+    /// again.
+    PendingCertificate,
     /// Handshake complete, ready for application data.
     Active,
     /// Peer sent close_notify.

@@ -187,12 +187,11 @@ impl TlsFingerprint {
 
     /// Convert TLS 1.2 cipher suite IDs to BoringSSL OpenSSL name string
     /// (colon-separated, e.g. "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256")
+    ///
+    /// DHE suites are dropped: BoringSSL has no DHE_RSA implementation, so
+    /// they can never be offered (see [`cipher_suite_boringssl_supported`]).
     pub fn tls12_cipher_list_string(&self) -> String {
-        self.tls12_suites()
-            .iter()
-            .filter_map(|&id| cipher_suite_openssl_name(id))
-            .collect::<Vec<_>>()
-            .join(":")
+        boringssl_cipher_list_string(&self.tls12_suites())
     }
 
     /// Convert TLS 1.3 cipher suite IDs to BoringSSL name string
@@ -207,55 +206,92 @@ impl TlsFingerprint {
 
     /// Convert supported group IDs to BoringSSL curves list string
     /// (colon-separated, e.g. "X25519:P-256:P-384")
+    ///
+    /// FFDHE groups are dropped: `SSL_(CTX_)set1_groups_list` fails the
+    /// WHOLE call on any unrecognized name and BoringSSL implements no FFDHE
+    /// group — an unfiltered Firefox list would silently discard the entire
+    /// groups fingerprint (see [`group_boringssl_supported`]).
     pub fn curves_list_string(&self) -> String {
-        self.supported_groups
-            .iter()
-            .filter_map(|&id| group_openssl_name(id))
-            .collect::<Vec<_>>()
-            .join(":")
+        boringssl_curves_list_string(&self.supported_groups)
     }
 
     /// Convert signature algorithm IDs to BoringSSL sigalgs list string
     /// (colon-separated, e.g. "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256")
     pub fn sigalgs_list_string(&self) -> String {
-        self.signature_algorithms
-            .iter()
-            .filter_map(|&id| sigalg_openssl_name(id))
-            .collect::<Vec<_>>()
-            .join(":")
+        boringssl_sigalgs_list_string(&self.signature_algorithms)
     }
 }
 
-/// Map IANA cipher suite ID to BoringSSL OpenSSL name.
-/// Covers TLS 1.3 + common TLS 1.2 suites used in browser fingerprints.
-fn cipher_suite_openssl_name(id: u16) -> Option<&'static str> {
+// ── IANA → OpenSSL/BoringSSL name mapping — SINGLE SOURCE OF TRUTH ────
+//
+// Every TLS stack in Bao (servo `net::connector`, `bao_runtime`/`bun_http`
+// via [`TlsFingerprintConfig`]) MUST resolve IANA cipher/group/sigalg IDs
+// through these functions. Local copies of this table are forbidden — the
+// servo connector copy diverged to the point where nearly every entry was
+// wrong (0x009E mapped to ECDHE-RSA-AES256-GCM-SHA384, 0xC02F/0xC030 had
+// RSA/ECDSA swapped, RSA suites 0x002F/0x0035 mapped to ECDHE names).
+//
+// Every entry is cross-verified against BOTH:
+//  - the IANA TLS cipher suite registry (decimal IDs appear in the JA3
+//    hash strings of each profile, e.g. 158 = 0x009E),
+//  - the BoringSSL actually compiled into Bao: `TLS1_TXT_*` OpenSSL-name
+//    constants in `vendor/boringssl/include/openssl/tls1.h` and the
+//    `kCiphers` / `kNamedGroups` / `kSignatureAlgorithmNames` tables.
+
+/// Map IANA cipher suite ID to its OpenSSL cipher name (the
+/// `TLS1_TXT_*`-style short name BoringSSL's cipher-list parser accepts).
+///
+/// This is the complete IANA truth table — including suites BoringSSL
+/// cannot offer (see [`cipher_suite_boringssl_supported`]).
+pub fn cipher_suite_openssl_name(id: u16) -> Option<&'static str> {
     match id {
-        // TLS 1.3
+        // TLS 1.3 (RFC 8446)
         0x1301 => Some("TLS_AES_128_GCM_SHA256"),
         0x1302 => Some("TLS_AES_256_GCM_SHA384"),
         0x1303 => Some("TLS_CHACHA20_POLY1305_SHA256"),
-        // TLS 1.2 ECDHE
+        // TLS 1.2 ECDHE AEAD (RFC 5289 / RFC 7905)
         0xC02B => Some("ECDHE-ECDSA-AES128-GCM-SHA256"),
         0xC02F => Some("ECDHE-RSA-AES128-GCM-SHA256"),
         0xC02C => Some("ECDHE-ECDSA-AES256-GCM-SHA384"),
         0xC030 => Some("ECDHE-RSA-AES256-GCM-SHA384"),
-        // TLS 1.2 DHE
-        0x009E => Some("DHE-RSA-AES128-GCM-SHA256"),
-        0x009C => Some("DHE-RSA-AES256-GCM-SHA384"),
-        // TLS 1.2 ECDHE CBC
         0xCCA9 => Some("ECDHE-ECDSA-CHACHA20-POLY1305"),
         0xCCA8 => Some("ECDHE-RSA-CHACHA20-POLY1305"),
-        // TLS 1.2 legacy CBC
-        0xC013 => Some("ECDHE-RSA-AES128-SHA"),
-        0xC009 => Some("ECDHE-ECDSA-AES128-SHA"),
+        // TLS 1.2 DHE (IANA-correct names; NO BoringSSL implementation —
+        // see `cipher_suite_boringssl_supported`)
+        0x009E => Some("DHE-RSA-AES128-GCM-SHA256"),
+        0x009C => Some("DHE-RSA-AES256-GCM-SHA384"),
         0x0033 => Some("DHE-RSA-AES128-SHA"),
         0x0067 => Some("DHE-RSA-AES256-SHA256"),
+        // TLS 1.2 ECDHE CBC (RFC 5289)
+        0xC013 => Some("ECDHE-RSA-AES128-SHA"),
+        0xC009 => Some("ECDHE-ECDSA-AES128-SHA"),
+        0xC027 => Some("ECDHE-RSA-AES128-SHA256"),
+        0xC028 => Some("ECDHE-RSA-AES256-SHA384"),
+        // TLS 1.2 static RSA (RFC 5246)
+        0x002F => Some("AES128-SHA"),
+        0x0035 => Some("AES256-SHA"),
         _ => None,
     }
 }
 
-/// Map IANA supported group ID to BoringSSL group name.
-fn group_openssl_name(id: u16) -> Option<&'static str> {
+/// Whether the BoringSSL vendored in Bao implements this cipher suite.
+///
+/// BoringSSL has NO DHE_RSA cipher suites — `kCiphers`
+/// (vendor/boringssl/ssl/ssl_cipher.cc) contains no DHE entry, so the four
+/// DHE suites of the Firefox profile cannot be offered by a BoringSSL
+/// client. This is an engine limitation, not a mapping error:
+/// `SSL_(CTX_)set_cipher_list` silently skips unknown names (non-strict),
+/// but a list made solely of unsupported names fails the call.
+pub fn cipher_suite_boringssl_supported(id: u16) -> bool {
+    !matches!(id, 0x009E | 0x009C | 0x0033 | 0x0067)
+}
+
+/// Map IANA supported group ID to its OpenSSL group name
+/// (`kNamedGroups`, vendor/boringssl/ssl/ssl_key_share.cc).
+///
+/// Complete IANA truth — FFDHE groups have no BoringSSL implementation
+/// (see [`group_boringssl_supported`]).
+pub fn group_openssl_name(id: u16) -> Option<&'static str> {
     match id {
         0x001D => Some("X25519"),
         0x0017 => Some("P-256"),
@@ -267,8 +303,21 @@ fn group_openssl_name(id: u16) -> Option<&'static str> {
     }
 }
 
-/// Map IANA signature algorithm ID to BoringSSL sigalg name.
-fn sigalg_openssl_name(id: u16) -> Option<&'static str> {
+/// Whether the BoringSSL vendored in Bao implements this named group.
+///
+/// `kNamedGroups` has no FFDHE entry. Unlike cipher lists,
+/// `SSL_(CTX_)set1_groups_list` FAILS THE WHOLE CALL on any unrecognized
+/// name (`ssl_str_to_group_id` → error), so an unfiltered Firefox curves
+/// list ("…:ffdhe2048:ffdhe3072") silently discards the entire groups
+/// fingerprint. Builders must filter through this predicate.
+pub fn group_boringssl_supported(id: u16) -> bool {
+    !matches!(id, 0x0100 | 0x0101)
+}
+
+/// Map IANA signature algorithm ID to its BoringSSL sigalg name
+/// (`kSignatureAlgorithmNames`, vendor/boringssl/ssl/ssl_privkey.cc).
+/// Every mapped algorithm is implemented by BoringSSL.
+pub fn sigalg_openssl_name(id: u16) -> Option<&'static str> {
     match id {
         0x0403 => Some("ecdsa_secp256r1_sha256"),
         0x0503 => Some("ecdsa_secp384r1_sha384"),
@@ -283,6 +332,52 @@ fn sigalg_openssl_name(id: u16) -> Option<&'static str> {
         0x0201 => Some("rsa_pkcs1_sha1"),
         _ => None,
     }
+}
+
+// ── BoringSSL list builders (shared by every TLS stack) ────────────────
+
+/// Build a colon-separated OpenSSL cipher-name string for BoringSSL's
+/// `SSL_(CTX_)set_cipher_list`, preserving profile order and keeping only
+/// suites the engine can actually configure.
+///
+/// TLS 1.3 suites (0x1301-0x1303) are excluded: per BoringSSL's ssl.h,
+/// "TLS 1.3 ciphers do not participate in this mechanism and instead have
+/// a built-in preference order" — their names in a cipher list are silent
+/// no-ops. DHE suites are excluded via [`cipher_suite_boringssl_supported`].
+pub fn boringssl_cipher_list_string(suites: &[u16]) -> String {
+    suites
+        .iter()
+        .copied()
+        .filter(|&id| cipher_suite_boringssl_supported(id) && !(0x1301..=0x1303).contains(&id))
+        .filter_map(cipher_suite_openssl_name)
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// Build a colon-separated group-name string for BoringSSL's
+/// `SSL_(CTX_)set1_groups_list`, preserving profile order.
+///
+/// FFDHE groups are dropped via [`group_boringssl_supported`] — a single
+/// unrecognized name fails the whole engine call.
+pub fn boringssl_curves_list_string(groups: &[u16]) -> String {
+    groups
+        .iter()
+        .copied()
+        .filter(|&id| group_boringssl_supported(id))
+        .filter_map(group_openssl_name)
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// Build a colon-separated sigalg-name string for BoringSSL's
+/// `SSL_(CTX_)set1_sigalgs_list`, preserving profile order.
+pub fn boringssl_sigalgs_list_string(sigalgs: &[u16]) -> String {
+    sigalgs
+        .iter()
+        .copied()
+        .filter_map(sigalg_openssl_name)
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// Pre-computed BoringSSL configuration strings derived from a [`TlsFingerprint`].
@@ -793,11 +888,16 @@ mod tests {
     }
 
     #[test]
-    fn test_firefox_chrome_different_tls12_cipher_lists() {
+    fn test_firefox_chrome_tls12_lists_converge_on_boringssl() {
+        // The Firefox/Chrome TLS 1.2 sets differ only in DHE suites, which
+        // BoringSSL cannot offer — the offered lists converge. Fingerprint
+        // differentiation on BoringSSL comes from groups, sigalgs,
+        // extensions and H2 SETTINGS instead.
         let ff = TlsFingerprint::firefox();
         let ch = TlsFingerprint::chrome();
-        // Firefox has more TLS 1.2 suites than Chrome
-        assert_ne!(ff.tls12_cipher_list_string(), ch.tls12_cipher_list_string());
+        assert_eq!(ff.tls12_cipher_list_string(), ch.tls12_cipher_list_string());
+        // The full profiles still differ (DHE suites present in IANA truth):
+        assert_ne!(ff.cipher_suites, ch.cipher_suites);
     }
 
     #[test]
@@ -879,7 +979,10 @@ mod tests {
     fn test_fingerprint_config_firefox_chrome_different() {
         let ff_config = TlsFingerprintConfig::from_fingerprint(&TlsFingerprint::firefox());
         let ch_config = TlsFingerprintConfig::from_fingerprint(&TlsFingerprint::chrome());
-        assert_ne!(ff_config.tls12_cipher_list, ch_config.tls12_cipher_list);
+        // TLS 1.2 lists converge on BoringSSL (DHE-only difference — see
+        // test_firefox_chrome_tls12_lists_converge_on_boringssl); the
+        // profiles still differ in offered groups (Firefox keeps P-521).
+        assert_ne!(ff_config.curves_list, ch_config.curves_list);
     }
 
     #[test]
@@ -900,5 +1003,199 @@ mod tests {
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("TlsFingerprintConfig"));
         assert!(debug_str.contains("tls12_cipher_list"));
+    }
+
+    // ─── Single-source mapping table: exhaustive per-code assertions ──
+    // Every value cross-verified against vendor/boringssl tls1.h TLS1_TXT_*
+    // constants and the IANA registry. Any change here must cite both.
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+
+    #[test]
+    fn test_cipher_table_exhaustive_iana_truth() {
+        // TLS 1.3
+        assert_eq!(cipher_suite_openssl_name(0x1301), Some("TLS_AES_128_GCM_SHA256"));
+        assert_eq!(cipher_suite_openssl_name(0x1302), Some("TLS_AES_256_GCM_SHA384"));
+        assert_eq!(cipher_suite_openssl_name(0x1303), Some("TLS_CHACHA20_POLY1305_SHA256"));
+        // TLS 1.2 ECDHE AEAD
+        assert_eq!(cipher_suite_openssl_name(0xC02B), Some("ECDHE-ECDSA-AES128-GCM-SHA256"));
+        assert_eq!(cipher_suite_openssl_name(0xC02F), Some("ECDHE-RSA-AES128-GCM-SHA256"));
+        assert_eq!(cipher_suite_openssl_name(0xC02C), Some("ECDHE-ECDSA-AES256-GCM-SHA384"));
+        assert_eq!(cipher_suite_openssl_name(0xC030), Some("ECDHE-RSA-AES256-GCM-SHA384"));
+        assert_eq!(cipher_suite_openssl_name(0xCCA9), Some("ECDHE-ECDSA-CHACHA20-POLY1305"));
+        assert_eq!(cipher_suite_openssl_name(0xCCA8), Some("ECDHE-RSA-CHACHA20-POLY1305"));
+        // TLS 1.2 DHE — the 0x009E regression guard (was mis-mapped to
+        // ECDHE-RSA-AES256-GCM-SHA384 in the old servo-local table copy)
+        assert_eq!(cipher_suite_openssl_name(0x009E), Some("DHE-RSA-AES128-GCM-SHA256"));
+        assert_eq!(cipher_suite_openssl_name(0x009C), Some("DHE-RSA-AES256-GCM-SHA384"));
+        assert_eq!(cipher_suite_openssl_name(0x0033), Some("DHE-RSA-AES128-SHA"));
+        assert_eq!(cipher_suite_openssl_name(0x0067), Some("DHE-RSA-AES256-SHA256"));
+        // TLS 1.2 ECDHE CBC
+        assert_eq!(cipher_suite_openssl_name(0xC013), Some("ECDHE-RSA-AES128-SHA"));
+        assert_eq!(cipher_suite_openssl_name(0xC009), Some("ECDHE-ECDSA-AES128-SHA"));
+        assert_eq!(cipher_suite_openssl_name(0xC027), Some("ECDHE-RSA-AES128-SHA256"));
+        assert_eq!(cipher_suite_openssl_name(0xC028), Some("ECDHE-RSA-AES256-SHA384"));
+        // TLS 1.2 static RSA (were mis-mapped to ECDHE names in the old copy)
+        assert_eq!(cipher_suite_openssl_name(0x002F), Some("AES128-SHA"));
+        assert_eq!(cipher_suite_openssl_name(0x0035), Some("AES256-SHA"));
+        // Unknown
+        assert_eq!(cipher_suite_openssl_name(0xFFFF), None);
+    }
+
+    #[test]
+    fn test_group_table_exhaustive_iana_truth() {
+        assert_eq!(group_openssl_name(0x001D), Some("X25519"));
+        assert_eq!(group_openssl_name(0x0017), Some("P-256"));
+        assert_eq!(group_openssl_name(0x0018), Some("P-384"));
+        assert_eq!(group_openssl_name(0x0019), Some("P-521"));
+        assert_eq!(group_openssl_name(0x0100), Some("ffdhe2048"));
+        assert_eq!(group_openssl_name(0x0101), Some("ffdhe3072"));
+        assert_eq!(group_openssl_name(0xFFFF), None);
+    }
+
+    #[test]
+    fn test_sigalg_table_exhaustive_iana_truth() {
+        assert_eq!(sigalg_openssl_name(0x0403), Some("ecdsa_secp256r1_sha256"));
+        assert_eq!(sigalg_openssl_name(0x0503), Some("ecdsa_secp384r1_sha384"));
+        assert_eq!(sigalg_openssl_name(0x0603), Some("ecdsa_secp521r1_sha512"));
+        assert_eq!(sigalg_openssl_name(0x0804), Some("rsa_pss_rsae_sha256"));
+        assert_eq!(sigalg_openssl_name(0x0805), Some("rsa_pss_rsae_sha384"));
+        assert_eq!(sigalg_openssl_name(0x0806), Some("rsa_pss_rsae_sha512"));
+        assert_eq!(sigalg_openssl_name(0x0401), Some("rsa_pkcs1_sha256"));
+        assert_eq!(sigalg_openssl_name(0x0501), Some("rsa_pkcs1_sha384"));
+        assert_eq!(sigalg_openssl_name(0x0601), Some("rsa_pkcs1_sha512"));
+        assert_eq!(sigalg_openssl_name(0x0203), Some("ecdsa_sha1"));
+        assert_eq!(sigalg_openssl_name(0x0201), Some("rsa_pkcs1_sha1"));
+        assert_eq!(sigalg_openssl_name(0xFFFF), None);
+    }
+
+    // ─── BoringSSL support predicates + filtered builders ─────────────
+
+    #[test]
+    fn test_cipher_boringssl_support_dhe_excluded() {
+        for id in [0x009E, 0x009C, 0x0033, 0x0067] {
+            assert!(
+                !cipher_suite_boringssl_supported(id),
+                "0x{id:04X} has no BoringSSL implementation"
+            );
+            // Truth table still knows the IANA name — engine limit, not gap.
+            assert!(cipher_suite_openssl_name(id).is_some());
+        }
+        for id in [0x1301, 0xC02B, 0xC02F, 0xC02C, 0xC030, 0xCCA9, 0xCCA8, 0xC013, 0xC009] {
+            assert!(cipher_suite_boringssl_supported(id), "0x{id:04X}");
+        }
+    }
+
+    #[test]
+    fn test_group_boringssl_support_ffdhe_excluded() {
+        for id in [0x0100, 0x0101] {
+            assert!(!group_boringssl_supported(id));
+            assert!(group_openssl_name(id).is_some());
+        }
+        for id in [0x001D, 0x0017, 0x0018, 0x0019] {
+            assert!(group_boringssl_supported(id));
+        }
+    }
+
+    #[test]
+    fn test_boringssl_cipher_list_filters_dhe_and_tls13() {
+        let ff = TlsFingerprint::firefox();
+        let list = boringssl_cipher_list_string(&ff.cipher_suites);
+        // NB: match on entry prefix — the *substring* "DHE-" also occurs
+        // inside "ECDHE-...".
+        assert!(
+            !list.split(':').any(|n| n.starts_with("DHE-")),
+            "DHE names must not reach BoringSSL: {list}"
+        );
+        assert!(!list.contains("TLS_AES"), "TLS 1.3 is engine-builtin: {list}");
+        assert_eq!(
+            list,
+            "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:\
+             ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:\
+             ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:\
+             ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA"
+        );
+    }
+
+    #[test]
+    fn test_firefox_curves_list_excludes_ffdhe() {
+        // Regression: SSL_set1_groups_list fails the WHOLE call on any
+        // unknown name — an unfiltered Firefox list silently discarded the
+        // entire groups fingerprint.
+        let ff = TlsFingerprint::firefox();
+        let list = ff.curves_list_string();
+        assert_eq!(list, "X25519:P-256:P-384:P-521");
+        assert!(!list.contains("ffdhe"), "FFDHE would poison the whole list: {list}");
+    }
+
+    #[test]
+    fn test_chrome_curves_list_unchanged_by_filter() {
+        let ch = TlsFingerprint::chrome();
+        assert_eq!(ch.curves_list_string(), "X25519:P-256:P-384");
+    }
+
+    #[test]
+    fn test_boringssl_sigalgs_list_full_profile() {
+        let ff = TlsFingerprint::firefox();
+        let list = boringssl_sigalgs_list_string(&ff.signature_algorithms);
+        assert_eq!(
+            list,
+            "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:\
+             ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:\
+             rsa_pss_rsae_sha512:rsa_pkcs1_sha512:ecdsa_sha1:rsa_pkcs1_sha1"
+        );
+    }
+
+    // ─── Profile completeness: no suite silently unmapped ─────────────
+
+    #[test]
+    fn test_all_profile_cipher_suites_have_names() {
+        for (name, fp) in [
+            ("firefox", TlsFingerprint::firefox()),
+            ("chrome", TlsFingerprint::chrome()),
+            ("chrome_120", TlsFingerprint::chrome_120()),
+            ("chrome_latest", TlsFingerprint::chrome_latest()),
+        ] {
+            for &id in &fp.cipher_suites {
+                assert!(
+                    cipher_suite_openssl_name(id).is_some(),
+                    "{name} suite 0x{id:04X} has no OpenSSL name — silent fingerprint loss"
+                );
+            }
+            for &g in &fp.supported_groups {
+                assert!(
+                    group_openssl_name(g).is_some(),
+                    "{name} group 0x{g:04X} has no name"
+                );
+            }
+            for &s in &fp.signature_algorithms {
+                assert!(
+                    sigalg_openssl_name(s).is_some(),
+                    "{name} sigalg 0x{s:04X} has no name"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_profile_suite_counts() {
+        // Firefox: 15 suites (3×TLS1.3 + 12×TLS1.2, of which 4 DHE → 8 offered).
+        let ff = TlsFingerprint::firefox();
+        assert_eq!(ff.cipher_suites.len(), 15);
+        assert_eq!(ff.tls12_cipher_list_string().matches(':').count() + 1, 8);
+        // Chrome: 13 suites (3×TLS1.3 + 10×TLS1.2, of which 2 DHE → 8 offered).
+        let ch = TlsFingerprint::chrome();
+        assert_eq!(ch.cipher_suites.len(), 13);
+        assert_eq!(ch.tls12_cipher_list_string().matches(':').count() + 1, 8);
+    }
+
+    #[test]
+    fn test_boringssl_builders_preserve_order_and_dedupe_none() {
+        // Order preservation: input order must survive the filter.
+        let list = boringssl_cipher_list_string(&[0xC030, 0xC02B, 0x009E, 0x1301]);
+        assert_eq!(list, "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256");
+        // Empty input → empty string (callers gate on is_empty before FFI).
+        assert_eq!(boringssl_cipher_list_string(&[]), "");
+        assert_eq!(boringssl_curves_list_string(&[]), "");
+        assert_eq!(boringssl_sigalgs_list_string(&[]), "");
     }
 }
