@@ -16,6 +16,7 @@ use mozjs::jsval::{
     BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue,
     UndefinedValue,
 };
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{
     JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject, NewArrayObject1,
@@ -29,7 +30,9 @@ use bun_uws_sys::socket_context::BunSocketContextOptions;
 use bun_uws_sys::web_socket::{NewWebSocket, RawWebSocket, WebSocketBehavior};
 use bun_uws_sys::{Opcode, SendStatus, WebSocketUpgradeContext, uws_res};
 
-use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove};
+use crate::gc_store::{
+    gc_store_get, gc_store_get_with_global, gc_store_insert, gc_store_remove,
+};
 
 /// Install Bun.* namespace on a target object (REQ-SEC-002 parameter injection).
 ///
@@ -2500,12 +2503,14 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         }
 
         // @trace REQ-ENG-006 [api:Bun.serve default response] [level:design]
-        // When no `fetch` handler is registered, fall back to the reflective
-        // default response `{"method":"...","url":"..."}`. This preserves the
-        // pre-fix behavior expected by callers like `test_http_depth.js` that
-        // use `Bun.serve({ port: 0 })` (no fetch option) as a diagnostic
-        // echo server. A registered-but-uncallable handler (cx null, GC'd,
-        // or returning a non-Response value) also lands here.
+        // The reflective default response `{"method":"...","url":"..."}` is
+        // used ONLY when the caller created the server with no `fetch`
+        // handler (e.g. `Bun.serve({ port: 0 })` as a diagnostic echo
+        // server). A registered-but-unresolvable handler is a dispatch
+        // failure and must surface as an explicit 500 (BCE: the old
+        // behavior masked the lost-handler gap by impersonating the
+        // handler's response with a default echo — see the dispatch-after-eval
+        // fix in gc_store.rs).
         if ud.fetch_cb_key.is_none() {
             serve_write_default_response(&mut *res_mut, &*req_ref);
             return;
@@ -2513,31 +2518,43 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 
         let cx = ud.cx;
         if cx.is_null() {
-            // No JSContext — fall back to default response. Should not happen
-            // for a server created on the JS thread; defensive only.
-            serve_write_default_response(&mut *res_mut, &*req_ref);
+            eprintln!("[bun:serve] fetch handler registered but cx is null — responding 500");
+            (*res_mut).write_status(b"500 Internal Server Error");
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
+            (*res_mut).end(b"no JS context", true);
             return;
         }
 
         // @trace REQ-ENG-006 [api:Bun.serve fetch handler] [level:design]
-        // Resolve the user-supplied `fetch` JS function from GcStore. If the
-        // GC swept it (defensive — shouldn't happen while the server is
-        // referenced from JS), fall back to the default response so the HTTP
-        // request still completes (no hang).
-        let Some(fetch_handler) = ud.fetch_handler() else {
-            serve_write_default_response(&mut *res_mut, &*req_ref);
-            return;
+        // BCE(dispatch-after-eval): resolve the user-supplied `fetch` JS
+        // function AND its owning global from the persistent-rooted store.
+        // Realm-independent lookup — works after the registering eval's
+        // realm was popped (async dispatch via drain_and_check). A registered
+        // handler that fails to resolve is a dispatch failure → explicit 500.
+        let (fetch_handler, global) = match ud.fetch_handler_with_global() {
+            Some((h, g)) if !h.is_null() && !g.is_null() => (h, g),
+            _ => {
+                eprintln!("[bun:serve] fetch handler registered but unresolvable — responding 500");
+                (*res_mut).write_status(b"500 Internal Server Error");
+                (*res_mut).write_header(b"Content-Type", b"text/plain");
+                (*res_mut).end(b"fetch handler unavailable", true);
+                return;
+            }
         };
-        if fetch_handler.is_null() {
-            serve_write_default_response(&mut *res_mut, &*req_ref);
-            return;
-        }
 
         // Build a JS Request object from the uWS Request (method/url/headers).
         // SAFETY: cx is live on this thread (server created on JS thread,
         // route handler dispatched by `drain_and_check` on the same thread).
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
+
+        // Root the persistent-store pointers, then enter the handler's realm
+        // (BCE dispatch-after-eval): CurrentGlobalOrNull is NULL once the
+        // registering eval's realm was popped.
+        rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
+        rooted!(&in(cx_ref) let global_root = global);
+        let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+        let cx_ref: &mut mozjs::context::JSContext = &mut realm;
 
         rooted!(&in(cx_ref) let req_obj = serve_build_request_object(cx_ref, &*req_ref));
         if req_obj.get().is_null() {
@@ -2546,15 +2563,6 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         }
 
         // Call the JS fetch handler: `fetch_handler(request)`.
-        // SAFETY: fetch_handler is a live JSObject (function) rooted by GcStore
-        // for the duration of this synchronous route handler. The cx is live.
-        rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
-        rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
-        if global.get().is_null() {
-            serve_write_default_response(&mut *res_mut, &*req_ref);
-            return;
-        }
-
         rooted!(&in(cx_ref) let req_val_elem = ObjectValue(req_obj.get()));
         let call_args = HandleValueArray {
             length_: 1,
@@ -2568,7 +2576,7 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         };
         let ok = JS_CallFunctionValue(
             cx,
-            global.handle().into(),
+            global_root.handle().into(),
             handler_val.handle().into(),
             &call_args,
             rval_h,
@@ -2899,16 +2907,15 @@ struct BunServeUserData {
 }
 
 impl BunServeUserData {
-    /// Resolve the fetch handler JS function from GcStore.
+    /// Resolve the fetch handler AND its owning global from the
+    /// persistent-rooted store (realm-independent).
     /// @trace REQ-ENG-006 [api:Bun.serve fetch handler]
-    /// Returns None when: no handler registered, cx is null, or the
-    /// handler was GC'd (gc_store_get returns None — defensive).
-    fn fetch_handler(&self) -> Option<*mut JSObject> {
+    fn fetch_handler_with_global(&self) -> Option<(*mut JSObject, *mut JSObject)> {
         let key = self.fetch_cb_key.as_ref()?;
         if self.cx.is_null() {
             return None;
         }
-        gc_store_get(self.cx, key)
+        gc_store_get_with_global(self.cx, key)
     }
 }
 
@@ -3422,10 +3429,13 @@ unsafe extern "C" fn ws_on_open(raw_ws: *mut RawWebSocket) {
 
     // Retrieve the JS WebSocket wrapper from GcStore and update its
     // RawWebSocket pointer now that the socket actually exists.
-    let Some(ws_obj) = gc_store_get(cx, &ws_ud.ws_obj_key) else {
+    // BCE(dispatch-after-eval): fetch the owning global too (realm-independent)
+    // and enter its realm — WS callbacks fire from the pump long after the
+    // registering eval's realm was popped.
+    let Some((ws_obj, global)) = gc_store_get_with_global(cx, &ws_ud.ws_obj_key) else {
         return;
     };
-    if ws_obj.is_null() {
+    if ws_obj.is_null() || global.is_null() {
         return;
     }
 
@@ -3433,6 +3443,10 @@ unsafe extern "C" fn ws_on_open(raw_ws: *mut RawWebSocket) {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
     let ptr_bits = raw_ws as u64;
     let ptr_hi = (ptr_bits >> 32) as i32;
     let ptr_lo = (ptr_bits & 0xFFFFFFFF) as i32;
@@ -3490,14 +3504,9 @@ unsafe extern "C" fn ws_on_open(raw_ws: *mut RawWebSocket) {
         return;
     }
 
-    rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
-    if global.get().is_null() {
-        return;
-    }
-
     // Call open(ws) with the JS WebSocket wrapper object.
     rooted!(&in(cx_ref) let open_fn_val = ObjectValue(open_fn.get()));
-    rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj));
+    rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj_root.get()));
     let call_args = HandleValueArray {
         length_: 1,
         elements_: &*ws_arg.handle(),
@@ -3509,7 +3518,7 @@ unsafe extern "C" fn ws_on_open(raw_ws: *mut RawWebSocket) {
     };
     let _ok = JS_CallFunctionValue(
         cx,
-        global.handle().into(),
+        global_root.handle().into(),
         open_fn_val.handle().into(),
         &call_args,
         rval_h,
@@ -3538,13 +3547,13 @@ unsafe extern "C" fn ws_on_message(
         return;
     }
 
-    let Some(ws_obj) = gc_store_get(cx, &ws_ud.ws_obj_key) else {
+    let Some((ws_obj, global)) = gc_store_get_with_global(cx, &ws_ud.ws_obj_key) else {
         return;
     };
     let Some(ws_handler) = ws_ud.ws_handler() else {
         return;
     };
-    if ws_obj.is_null() || ws_handler.is_null() {
+    if ws_obj.is_null() || ws_handler.is_null() || global.is_null() {
         return;
     }
 
@@ -3552,6 +3561,12 @@ unsafe extern "C" fn ws_on_message(
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let ws_handler_root = ws_handler);
+    rooted!(&in(cx_ref) let global_root = global);
+    // BCE(dispatch-after-eval): enter the handler's realm — message
+    // callbacks fire from the pump after the registering eval returned.
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
     let mut msg_val = UndefinedValue();
     JS_GetProperty(
         cx,
@@ -3565,15 +3580,8 @@ unsafe extern "C" fn ws_on_message(
     if !msg_val.is_object() {
         return;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let msg_fn = msg_val.to_object());
     if !JS_ObjectIsFunction(msg_fn.get()) {
-        return;
-    }
-
-    rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
-    if global.get().is_null() {
         return;
     }
 
@@ -3618,7 +3626,7 @@ unsafe extern "C" fn ws_on_message(
     };
     let _ok = JS_CallFunctionValue(
         cx,
-        global.handle().into(),
+        global_root.handle().into(),
         msg_fn_val.handle().into(),
         &call_args,
         rval_h,
@@ -3649,41 +3657,51 @@ unsafe extern "C" fn ws_on_close(
         return;
     }
 
-    let Some(ws_obj) = gc_store_get(cx, &ws_ud.ws_obj_key) else {
-        let _ = Box::from_raw(ud_ptr as *mut BunWsUserData);
-        return;
+    // BCE(dispatch-after-eval): fetch the owning global too (realm-independent)
+    // and enter its realm — close callbacks fire from the pump after the
+    // registering eval returned.
+    let ws_obj_and_global = gc_store_get_with_global(cx, &ws_ud.ws_obj_key);
+    let (ws_obj, global) = match ws_obj_and_global {
+        Some((o, g)) if !o.is_null() && !g.is_null() => (o, g),
+        _ => {
+            let _ = Box::from_raw(ud_ptr as *mut BunWsUserData);
+            return;
+        }
     };
 
+    // Enter the ws_obj's realm for all JS property operations below.
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
     // Update readyState to CLOSED (3) and clear the raw pointer on the JS object.
-    if !ws_obj.is_null() {
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-        rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
-        let closed_val = Int32Value(3);
-        rooted!(&in(cx_ref) let cv = closed_val);
-        JS_SetProperty(
-            cx,
-            ws_obj_root.handle().into(),
-            c"readyState".as_ptr(),
-            cv.handle().into(),
-        );
-        let zero_hi = Int32Value(0);
-        rooted!(&in(cx_ref) let zh = zero_hi);
-        JS_SetProperty(
-            cx,
-            ws_obj_root.handle().into(),
-            c"_wsPtrHi".as_ptr(),
-            zh.handle().into(),
-        );
-        let zero_lo = Int32Value(0);
-        rooted!(&in(cx_ref) let zl = zero_lo);
-        JS_SetProperty(
-            cx,
-            ws_obj_root.handle().into(),
-            c"_wsPtrLo".as_ptr(),
-            zl.handle().into(),
-        );
-    }
+    let closed_val = Int32Value(3);
+    rooted!(&in(cx_ref) let cv = closed_val);
+    JS_SetProperty(
+        cx,
+        ws_obj_root.handle().into(),
+        c"readyState".as_ptr(),
+        cv.handle().into(),
+    );
+    let zero_hi = Int32Value(0);
+    rooted!(&in(cx_ref) let zh = zero_hi);
+    JS_SetProperty(
+        cx,
+        ws_obj_root.handle().into(),
+        c"_wsPtrHi".as_ptr(),
+        zh.handle().into(),
+    );
+    let zero_lo = Int32Value(0);
+    rooted!(&in(cx_ref) let zl = zero_lo);
+    JS_SetProperty(
+        cx,
+        ws_obj_root.handle().into(),
+        c"_wsPtrLo".as_ptr(),
+        zl.handle().into(),
+    );
 
     // Call the user's close handler if available.
     let Some(ws_handler) = ws_ud.ws_handler() else {
@@ -3692,8 +3710,6 @@ unsafe extern "C" fn ws_on_close(
         return;
     };
     if !ws_handler.is_null() {
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let ws_handler_root = ws_handler);
         let mut close_val = UndefinedValue();
         JS_GetProperty(
@@ -3708,52 +3724,49 @@ unsafe extern "C" fn ws_on_close(
         if close_val.is_object() {
             rooted!(&in(cx_ref) let close_fn = close_val.to_object());
             if JS_ObjectIsFunction(close_fn.get()) {
-                rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
-                if !global.get().is_null() && !ws_obj.is_null() {
-                    // Build close code and reason.
-                    let code_arg = Int32Value(code);
-                    let reason_bytes = if !message.is_null() && length > 0 {
-                        ::std::slice::from_raw_parts(message, length).to_vec()
-                    } else {
-                        Vec::new()
-                    };
-                    let reason_str = String::from_utf8_lossy(&reason_bytes).into_owned();
-                    let c_reason = ZBox::from_bytes(reason_str.as_bytes());
-                    let js_reason = JS_NewStringCopyZ(cx, c_reason.as_ptr());
+                // Build close code and reason.
+                let code_arg = Int32Value(code);
+                let reason_bytes = if !message.is_null() && length > 0 {
+                    ::std::slice::from_raw_parts(message, length).to_vec()
+                } else {
+                    Vec::new()
+                };
+                let reason_str = String::from_utf8_lossy(&reason_bytes).into_owned();
+                let c_reason = ZBox::from_bytes(reason_str.as_bytes());
+                let js_reason = JS_NewStringCopyZ(cx, c_reason.as_ptr());
 
-                    rooted!(&in(cx_ref) let close_fn_val = ObjectValue(close_fn.get()));
-                    rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj));
-                    rooted!(&in(cx_ref) let code_root = code_arg);
-                    let reason_arg = if !js_reason.is_null() {
-                        StringValue(&*js_reason)
-                    } else {
-                        UndefinedValue()
-                    };
-                    rooted!(&in(cx_ref) let reason_root = reason_arg);
-                    let args = [
-                        ws_arg.handle().get(),
-                        code_root.handle().get(),
-                        reason_root.handle().get(),
-                    ];
-                    let call_args = HandleValueArray {
-                        length_: 3,
-                        elements_: args.as_ptr(),
-                    };
-                    let mut rval = UndefinedValue();
-                    let rval_h = MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut rval,
-                    };
-                    let _ok = JS_CallFunctionValue(
-                        cx,
-                        global.handle().into(),
-                        close_fn_val.handle().into(),
-                        &call_args,
-                        rval_h,
-                    );
-                    if !_ok {
-                        JS_ClearPendingException(cx);
-                    }
+                rooted!(&in(cx_ref) let close_fn_val = ObjectValue(close_fn.get()));
+                rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj_root.get()));
+                rooted!(&in(cx_ref) let code_root = code_arg);
+                let reason_arg = if !js_reason.is_null() {
+                    StringValue(&*js_reason)
+                } else {
+                    UndefinedValue()
+                };
+                rooted!(&in(cx_ref) let reason_root = reason_arg);
+                let args = [
+                    ws_arg.handle().get(),
+                    code_root.handle().get(),
+                    reason_root.handle().get(),
+                ];
+                let call_args = HandleValueArray {
+                    length_: 3,
+                    elements_: args.as_ptr(),
+                };
+                let mut rval = UndefinedValue();
+                let rval_h = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                };
+                let _ok = JS_CallFunctionValue(
+                    cx,
+                    global_root.handle().into(),
+                    close_fn_val.handle().into(),
+                    &call_args,
+                    rval_h,
+                );
+                if !_ok {
+                    JS_ClearPendingException(cx);
                 }
             }
         }

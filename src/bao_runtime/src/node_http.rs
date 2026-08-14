@@ -8,6 +8,7 @@ use bun_core::ZBox;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -16,7 +17,9 @@ use bun_uws_sys::request::Request;
 use bun_uws_sys::response::Response;
 use bun_uws_sys::socket_context::BunSocketContextOptions;
 
-use crate::gc_store::{gc_store_get_ns, gc_store_insert_ns, gc_store_remove_ns};
+use crate::gc_store::{
+    gc_store_get_ns, gc_store_get_ns_with_global, gc_store_insert_ns, gc_store_remove_ns,
+};
 use crate::require::cache_builtin;
 
 /// Monotonic server ID for GcStore key namespacing.
@@ -553,14 +556,16 @@ impl ServerUserData {
         }
     }
 
-    /// Retrieve the global object from GcStore.
-    fn global(&self) -> Option<*mut JSObject> {
-        gc_store_get_ns(self.cx, "http", &self.global_key)
-    }
-
-    /// Retrieve the handler object from GcStore.
-    fn handler(&self) -> Option<*mut JSObject> {
-        gc_store_get_ns(self.cx, "http", &self.handler_key)
+    /// Resolve the request handler AND its owning global from the
+    /// persistent-rooted GcStore.
+    ///
+    /// BCE(dispatch-after-eval): route handlers fire from
+    /// `drain_and_check` after the registering eval's realm was popped —
+    /// `CurrentGlobalOrNull` is NULL there. This lookup is realm-independent
+    /// and returns the handler's own global so the caller can `AutoRealm`
+    /// into the handler's realm before building req/res objects and calling it.
+    fn handler_with_global(&self) -> Option<(*mut JSObject, *mut JSObject)> {
+        gc_store_get_ns_with_global(self.cx, "http", &self.handler_key)
     }
 
     /// Retrieve the server object from GcStore.
@@ -599,15 +604,30 @@ unsafe extern "C" fn uws_route_handler(
     }
 
     let raw_cx = cx;
-    let Some(global) = ud.global() else { return };
-    if global.is_null() {
-        return;
-    }
+    let res_mut = Response::<false>::cast_res(res);
 
-    let Some(handler) = ud.handler() else { return };
-    if handler.is_null() {
-        return;
-    }
+    // BCE(dispatch-after-eval, crash class): resolve the handler and its
+    // owning global from the persistent-rooted GcStore. The old
+    // CurrentGlobalOrNull-based lookup returned NULL once the registering
+    // eval's realm was popped (async dispatch via drain_and_check), the
+    // handler was "lost", and this handler returned WITHOUT responding —
+    // uWS treats that as ill-use and calls std::terminate (SIGABRT).
+    let handler_and_global = ud.handler_with_global();
+    let (handler, global) = match handler_and_global {
+        Some((h, g)) if !h.is_null() && !g.is_null() => (h, g),
+        _ => {
+            // Registered-but-unresolvable handler must fail explicitly —
+            // never a silent return (crash) and never a fake response.
+            eprintln!(
+                "[node:http] request handler unavailable (key {}) — responding 500",
+                ud.handler_key
+            );
+            (*res_mut).write_status(b"500 Internal Server Error");
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
+            (*res_mut).end(b"no request handler", true);
+            return;
+        }
+    };
 
     // Read method/url from uWS Request (C++ already parsed).
     let req_ref = bun_opaque::opaque_deref_mut(req);
@@ -618,6 +638,14 @@ unsafe extern "C" fn uws_route_handler(
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
+
+    // Root the persistent store's pointers, then enter the handler's realm:
+    // every JS object below (req/res/strings) must be created in the realm
+    // the handler belongs to, and the call itself must run in it.
+    rooted!(&in(cx_ref) let global_root = global);
+    rooted!(&in(cx_ref) let handler_val_root = ObjectValue(handler));
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
 
     // Build JS request object.
     rooted!(&in(cx_ref) let req_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
@@ -746,7 +774,8 @@ unsafe extern "C" fn uws_route_handler(
             if let Some(server_obj) = ud.server_obj() {
                 if !server_obj.is_null() {
                     rooted!(&in(cx_ref) let server_root = server_obj);
-                    rooted!(&in(cx_ref) let global_root = global);
+                    // `global_root` was rooted at the top of the route handler
+                    // (handler's owning global); reuse it for the call below.
                     // Get the emit function from the server object.
                     let mut emit_val = UndefinedValue();
                     JS_GetProperty(
@@ -852,10 +881,9 @@ unsafe extern "C" fn uws_route_handler(
         0,
     );
 
-    // Call the JS request handler: handler(req, res)
-    rooted!(&in(cx_ref) let handler_root = ObjectValue(handler));
-    rooted!(&in(cx_ref) let global_root = global);
-
+    // Call the JS request handler: handler(req, res). Runs in the handler's
+    // own realm (AutoRealm scope above). The handler was already rooted at
+    // realm entry as `handler_val_root`; reuse that root.
     let args_vals = [ObjectValue(req_obj.get()), ObjectValue(res_obj.get())];
     let call_args = HandleValueArray {
         length_: 2,
@@ -867,14 +895,31 @@ unsafe extern "C" fn uws_route_handler(
         _phantom_0: ::std::marker::PhantomData,
         ptr: &mut rval,
     };
-    JS_CallFunctionValue(
+    let ok = JS_CallFunctionValue(
         raw_cx,
         global_root.handle().into(),
-        handler_root.handle().into(),
+        handler_val_root.handle().into(),
         &call_args,
         rval_h,
     );
-    JS_ClearPendingException(raw_cx);
+    if !ok {
+        // Handler threw — explicit 500 (never silent terminate).
+        JS_ClearPendingException(raw_cx);
+        eprintln!("[node:http] request handler threw — responding 500");
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).write_header(b"Content-Type", b"text/plain");
+        (*res_mut).end(b"request handler threw", true);
+        return;
+    }
+    // Handler returned without ending the response. uWS would
+    // std::terminate (returning from a request handler without responding);
+    // fail explicitly instead of crashing the process.
+    if !(*res_mut).state().is_http_end_called() {
+        eprintln!("[node:http] request handler returned without responding — responding 500");
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).write_header(b"Content-Type", b"text/plain");
+        (*res_mut).end(b"handler did not respond", true);
+    }
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -1943,7 +1988,8 @@ mod tests {
 
     #[test]
     fn server_user_data_global_handler_retrieve_without_cx() {
-        // With null cx, gc_store_get returns None — the GC-safe path.
+        // The persistent-rooted store resolves by key alone; with no entry
+        // registered (and a null cx), retrieval returns None — fail-closed.
         let ud = ServerUserData {
             cx: ::std::ptr::null_mut(),
             global_key: "http_server_999_global".to_string(),
@@ -1951,16 +1997,16 @@ mod tests {
             server_obj_key: "http_server_999_server_obj".to_string(),
         };
         assert!(
-            ud.global().is_none(),
-            "gc_store_get with null cx returns None"
+            gc_store_get_ns(::std::ptr::null_mut(), "http", &ud.global_key).is_none(),
+            "gc_store_get_ns with null cx returns None"
         );
         assert!(
-            ud.handler().is_none(),
-            "gc_store_get with null cx returns None"
+            gc_store_get_ns(::std::ptr::null_mut(), "http", &ud.handler_key).is_none(),
+            "gc_store_get_ns with null cx returns None"
         );
         assert!(
             ud.server_obj().is_none(),
-            "gc_store_get with null cx returns None"
+            "gc_store_get_ns with null cx returns None"
         );
     }
 

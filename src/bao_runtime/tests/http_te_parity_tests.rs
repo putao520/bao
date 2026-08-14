@@ -73,6 +73,35 @@ fn raw_roundtrip(ctx: &mut JsContext, port: u16, request: &[u8]) -> String {
 const SMUGGLED_10_TE: &[u8] =
     b"POST /a HTTP/1.0\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
 
+/// Like `raw_roundtrip`, but keeps reading past the response head until the
+/// peer closes or the budget is exhausted — used where the response BODY is
+/// the assertion target (real JS handler output vs default echo).
+fn raw_roundtrip_full(ctx: &mut JsContext, port: u16, request: &[u8]) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("tcp connect");
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("read timeout");
+    stream.write_all(request).expect("write request");
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    for _ in 0..50 {
+        pump(ctx, 2);
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::Interrupted =>
+            {
+                continue;
+            }
+            Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
 /// node:http `listen(0)` must surface the OS-assigned ephemeral port through
 /// `address()` (mirrors Bun.serve BCE-005 `actual_port`). This is the
 /// runnable half of the node:http parity story: without it the ignored
@@ -113,26 +142,13 @@ fn test_node_http_listen_ephemeral_port() {
 /// Transfer-Encoding is PARSED AND ROUTED (no 400) — the isNodeHttp=false
 /// rejection never fires on this path.
 ///
-/// #[ignore]d: dispatching the request end-to-end is currently blocked by a
-/// pre-existing architectural gap OUTSIDE this parity change — see the report
-/// note on `CurrentGlobalOrNull` below. What is already verified by the
-/// ephemeral-port test below + the serve-side pair:
-///   * the flag split compiles into the shared C++ parser and
-///     `set_is_node_http(true)` is applied at node:http App creation;
-///   * instrumented runs (temporary eprintln, since removed) proved the
-///     1.0+TE request reaches `uws_route_handler` on the node:http app —
-///     i.e. the parser dispatched it instead of 400-rejecting (a 400 would
-///     have aborted routing before the handler was ever entered);
-///   * the crash that follows is uWS's "returning from a request handler
-///     without responding" terminate, triggered because GcStore-backed
-///     handler resolution (`CurrentGlobalOrNull`) returns null when the
-///     route handler runs outside an active script (drain_and_check pump).
-///     Bun.serve hides the same gap behind its default-response fallback
-///     (`serve_write_default_response`); node:http has no such fallback and
-///     returns without responding. Fixing that requires persistent rooting +
-///     realm entry at dispatch time — a separate work item, not parity.
+/// Dispatch-after-eval is REAL here: the request is pumped through
+/// `drain_and_check` AFTER the setup eval returned (its realm is popped),
+/// so this exercises the persistent-rooted GcStore + AutoRealm dispatch
+/// path end-to-end (BCE: handler used to be unresolvable via
+/// CurrentGlobalOrNull → route handler returned without responding →
+/// uWS std::terminate).
 #[test]
-#[ignore = "node:http JS-handler dispatch outside an active script hits the GcStore/CurrentGlobalOrNull gap → uWS ill-use terminate (pre-existing, not parity)"]
 fn test_node_http_dispatches_http10_transfer_encoding_llhttp_parity() {
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
@@ -156,7 +172,7 @@ fn test_node_http_dispatches_http10_transfer_encoding_llhttp_parity() {
         panic!("node:http listen(0) did not report the bound ephemeral port: {}", port_str)
     });
 
-    let response = raw_roundtrip(&mut ctx, port, SMUGGLED_10_TE);
+    let response = raw_roundtrip_full(&mut ctx, port, SMUGGLED_10_TE);
     assert!(
         !response.is_empty(),
         "node:http server produced no response for HTTP/1.0+TE"
@@ -171,10 +187,14 @@ fn test_node_http_dispatches_http10_transfer_encoding_llhttp_parity() {
         "node:http response missing status line: {:?}",
         response
     );
-
-    // Cross-eval handler-hit accounting is impossible here (realm-per-eval,
-    // see the note in test_bun_serve_rejects_http10_transfer_encoding) — the
-    // assertion above on the raw status line carries the parity verdict.
+    // The JS handler's body is the handler-hit proof: dispatch happened
+    // after the eval returned (realm popped), so 'ok' can only come from the
+    // real `res.end('ok')` call inside the registered JS handler.
+    assert!(
+        response.ends_with("ok") || response.contains("\r\n\r\nok"),
+        "node:http JS handler must have run and ended with 'ok' (dispatch-after-eval); got: {:?}",
+        response
+    );
 }
 
 #[test]
@@ -213,6 +233,13 @@ fn test_bun_serve_rejects_http10_transfer_encoding() {
 
 /// Control: the same chunked request on HTTP/1.1 is valid framing and must
 /// flow through Bun.serve untouched (guards against an over-broad guard).
+///
+/// The body assertion carries the dispatch-after-eval verdict: the request
+/// is pumped via `drain_and_check` AFTER the setup eval returned (realm
+/// popped), so a 200 with the handler's real body ("hello") proves the
+/// persistent-rooted GcStore + AutoRealm dispatch reached the JS fetch
+/// handler — the default echo (`{"method":...}`) is now reserved for
+/// servers with NO registered handler and must not appear here.
 #[test]
 fn test_bun_serve_accepts_http11_chunked_control() {
     bun_runtime::install_exit_handler();
@@ -234,7 +261,7 @@ fn test_bun_serve_accepts_http11_chunked_control() {
         panic!("Bun.serve did not report the bound ephemeral port: {}", port_str)
     });
 
-    let response = raw_roundtrip(
+    let response = raw_roundtrip_full(
         &mut ctx,
         port,
         b"POST /a HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
@@ -244,5 +271,14 @@ fn test_bun_serve_accepts_http11_chunked_control() {
         "HTTP/1.1 + chunked is valid framing and must be served; got: {:?}",
         response.split("\r\n").next().unwrap_or("")
     );
-
+    assert!(
+        response.ends_with("hello") || response.contains("\r\n\r\nhello"),
+        "real JS fetch handler must have produced the body 'hello' (dispatch-after-eval); got: {:?}",
+        response
+    );
+    assert!(
+        !response.contains("\"method\""),
+        "default echo response must not impersonate the JS handler; got: {:?}",
+        response
+    );
 }
