@@ -4,7 +4,10 @@
 //   2. URLSearchParams body serializes with the x-www-form-urlencoded
 //      content-type default,
 //   3. fetch(new Request(...)) round-trips url/method/headers/body,
-//   4. FormData body fails closed (explicit error, not a silent empty POST),
+//   4. FormData bodies serialize to multipart/form-data (upstream Bun
+//      Blob.zig fromDOMFormData framing: WebKitFormBoundary, per-part
+//      Content-Disposition/Content-Type, explicit/File/blob filename,
+//      boundary uniqueness across requests),
 //   5. unknown method tokens fail closed (no silent GET fallback).
 //
 // Wire-level: a local TCP capture server asserts the raw request bytes.
@@ -121,6 +124,16 @@ fn assert_contains(haystack: &str, needle: &str, ctx_msg: &str) {
     );
 }
 
+/// Extract the multipart boundary from a captured (lowercased) request —
+/// the token after `boundary=` up to the header-terminating CRLF.
+fn extract_boundary(req: &str) -> String {
+    let Some(pos) = req.find("boundary=") else {
+        return String::new();
+    };
+    let rest = &req[pos + "boundary=".len()..];
+    rest.split("\r\n").next().unwrap_or("").to_string()
+}
+
 #[test]
 fn test_fetch_init_face_batch1_wire() {
     bun_core::output::init_test();
@@ -156,21 +169,36 @@ fn test_fetch_init_face_batch1_wire() {
             var threw = null;
             try { new Request("http://example.com", { method: "BREW" }); } catch (e) { threw = e.message; }
             out.push(threw !== null ? "req-method-throw-ok" : "req-method-throw-bad");
-            // FormData body fails closed at Request construction.
-            var fdThrew = null;
+            // FormData surface: WHATWG append/get/getAll/has/set + iteration.
+            var fd = new FormData();
+            fd.append("k1", "v1");
+            fd.append("k1", "v1b");
+            fd.append("k2", new Blob([new Uint8Array([1, 2])]), "explicit.bin");
+            fd.set("k3", "v3");
+            out.push(fd.get("k1") === "v1" && fd.getAll("k1").length === 2 ? "fd-get-ok" : "fd-get-bad");
+            out.push(fd.has("k3") && !fd.has("nope") ? "fd-has-ok" : "fd-has-bad");
+            var fdSeen = [];
+            fd.forEach(function(v, k) { fdSeen.push(k); });
+            out.push(fdSeen.join(",") === "k1,k1,k2,k3" ? "fd-foreach-ok" : "fd-foreach-bad:" + fdSeen.join(","));
+            var fdPairs = [];
+            for (var pair of fd) fdPairs.push(pair[0]);
+            out.push(fdPairs.join(",") === "k1,k1,k2,k3" ? "fd-iter-ok" : "fd-iter-bad:" + fdPairs.join(","));
+            // Request with a FormData body constructs (no fail-closed throw).
+            var fdReqThrew = null;
             try { new Request("http://example.com", { method: "POST", body: new FormData() }); }
-            catch (e) { fdThrew = e.message || String(e); }
-            out.push(fdThrew !== null ? "req-formdata-throw-ok" : "req-formdata-throw-bad");
+            catch (e) { fdReqThrew = e.message || String(e); }
+            out.push(fdReqThrew === null ? "fd-request-ok" : "fd-request-bad:" + fdReqThrew);
+            // Response with a FormData body still fails closed (send-path-only
+            // serialization; a toString() fallback would corrupt the body).
+            var fdRespThrew = null;
+            try { new Response(new FormData()); }
+            catch (e) { fdRespThrew = e.message || String(e); }
+            out.push(fdRespThrew !== null ? "fd-response-throw-ok" : "fd-response-throw-bad");
             // fetch() unknown method fails closed synchronously.
             var fetchThrew = null;
             try { fetch("http://127.0.0.1:1/x", { method: "BREW" }); }
             catch (e) { fetchThrew = e.message || String(e); }
             out.push(fetchThrew !== null ? "fetch-method-throw-ok" : "fetch-method-throw-bad");
-            // fetch() FormData body fails closed synchronously.
-            var fetchFd = null;
-            try { fetch("http://127.0.0.1:1/x", { method: "POST", body: new FormData() }); }
-            catch (e) { fetchFd = e.message || String(e); }
-            out.push(fetchFd !== null ? "fetch-formdata-throw-ok" : "fetch-formdata-throw-bad");
             return out.join("|");
         })()
         "#,
@@ -181,9 +209,13 @@ fn test_fetch_init_face_batch1_wire() {
         "hdr-iter-ok",
         "req-method-ext",
         "req-method-throw-ok",
-        "req-formdata-throw-ok",
+        "fd-get-ok",
+        "fd-has-ok",
+        "fd-foreach-ok",
+        "fd-iter-ok",
+        "fd-request-ok",
+        "fd-response-throw-ok",
         "fetch-method-throw-ok",
-        "fetch-formdata-throw-ok",
     ];
     for part in &expected_sync {
         assert!(
@@ -212,6 +244,17 @@ fn test_fetch_init_face_batch1_wire() {
                 method: "POST",
                 body: usp
             }});
+            // FormData bodies: text field + typed File + untyped Blob +
+            // explicit-filename Blob. Covers both fetch entry paths.
+            var fd = new FormData();
+            fd.append("greeting", "hello form");
+            fd.append("upload", new File(["FILE-CONTENT-123"], "upload.txt", {{ type: "text/plain" }}));
+            fd.append("raw", new Blob([new Uint8Array([9, 8, 7])]));
+            fd.append("named", new Blob(["named-bytes"], {{ type: "application/json" }}), "explicit.json");
+            var fdReq = new Request(base + "/m-fd2", {{
+                method: "POST",
+                body: fd
+            }});
             Promise.all([
                 fetch(base + "/m-propfind", {{ method: "PROPFIND" }})
                     .then(function(r) {{ return r.text(); }}).then(function() {{ done++; }}),
@@ -220,6 +263,10 @@ fn test_fetch_init_face_batch1_wire() {
                 fetch(req)
                     .then(function(r) {{ return r.text(); }}).then(function() {{ done++; }}),
                 fetch(uspReq)
+                    .then(function(r) {{ return r.text(); }}).then(function() {{ done++; }}),
+                fetch(base + "/m-fd", {{ method: "POST", body: fd }})
+                    .then(function(r) {{ return r.text(); }}).then(function() {{ done++; }}),
+                fetch(fdReq)
                     .then(function(r) {{ return r.text(); }}).then(function() {{ done++; }})
             ]).then(function() {{ globalThis.__all_done = true; }})
             .catch(function(e) {{ err = (e && e.message) || String(e); globalThis.__all_done = true; }});
@@ -266,7 +313,7 @@ fn test_fetch_init_face_batch1_wire() {
         r#"globalThis.__all_done ? ("DONE:" + globalThis.__done_count()) : ("PENDING:" + globalThis.__done_count())"#,
     );
     assert!(
-        final_status.starts_with("DONE:4"),
+        final_status.starts_with("DONE:6"),
         "fetch promises did not all settle: {}",
         final_status
     );
@@ -278,7 +325,8 @@ fn test_fetch_init_face_batch1_wire() {
     );
 
     // PROPFIND reaches the request line (was silently GET before the fix).
-    let req = request_for(&captured, "/m-propfind");
+    // The " http" suffix disambiguates prefix paths (/m-usp vs /m-usp2).
+    let req = request_for(&captured, "/m-propfind http");
     assert!(!req.is_empty(), "no captured request for /m-propfind");
     assert_contains(
         &req,
@@ -287,7 +335,7 @@ fn test_fetch_init_face_batch1_wire() {
     );
 
     // URLSearchParams body: serialized form + defaulted content-type.
-    let req = request_for(&captured, "/m-usp");
+    let req = request_for(&captured, "/m-usp http");
     assert!(!req.is_empty(), "no captured request for /m-usp");
     assert_contains(&req, "post /m-usp", "/m-usp method not POST");
     assert_contains(
@@ -306,7 +354,7 @@ fn test_fetch_init_face_batch1_wire() {
 
     // fetch(new Request(..., { body: URLSearchParams })): eager serialization
     // in the Request constructor carries the content-type default through.
-    let req = request_for(&captured, "/m-usp2");
+    let req = request_for(&captured, "/m-usp2 http");
     assert!(!req.is_empty(), "no captured request for /m-usp2");
     assert_contains(&req, "post /m-usp2", "/m-usp2 method not POST");
     assert_contains(
@@ -316,8 +364,91 @@ fn test_fetch_init_face_batch1_wire() {
     );
     assert_contains(&req, "a=1&b=hello+world", "/m-usp2 Request USP body lost");
 
+    // ── FormData multipart wire assertions ────────────────────────────────
+    // Both entry paths (fetch init.body and fetch(new Request(...))) must
+    // produce upstream-Bun-shaped multipart/form-data.
+    let fd_req = request_for(&captured, "/m-fd http");
+    let fd_req2 = request_for(&captured, "/m-fd2 http");
+    assert!(!fd_req.is_empty(), "no captured request for /m-fd");
+    assert!(!fd_req2.is_empty(), "no captured request for /m-fd2");
+    for (path, req) in [("/m-fd", &fd_req), ("/m-fd2", &fd_req2)] {
+        assert_contains(req, &format!("post {}", path), &format!("{} method not POST", path));
+        assert_contains(
+            req,
+            "content-type: multipart/form-data; boundary=----webkitformboundary",
+            &format!("{} multipart content-type + WebKit boundary prefix missing", path),
+        );
+        // Text field.
+        assert_contains(
+            req,
+            "content-disposition: form-data; name=\"greeting\"",
+            &format!("{} text field Content-Disposition missing", path),
+        );
+        assert_contains(req, "hello form", &format!("{} text field value lost", path));
+        // Typed File: File.name + Blob.type per part.
+        assert_contains(
+            req,
+            "content-disposition: form-data; name=\"upload\"; filename=\"upload.txt\"",
+            &format!("{} File filename missing", path),
+        );
+        assert_contains(
+            req,
+            "content-type: text/plain\r\n\r\nfile-content-123",
+            &format!("{} File per-part content-type/value framing broken", path),
+        );
+        // Untyped Blob: filename "blob" + application/octet-stream default.
+        assert_contains(
+            req,
+            "filename=\"blob\"",
+            &format!("{} plain-Blob default filename missing", path),
+        );
+        assert_contains(
+            req,
+            "content-type: application/octet-stream\r\n\r\n\t",
+            &format!("{} plain-Blob default content-type missing (before bytes 09 08 07)", path),
+        );
+        // Explicit filename wins over the blob default.
+        assert_contains(
+            req,
+            "filename=\"explicit.json\"",
+            &format!("{} explicit filename override missing", path),
+        );
+        assert_contains(
+            req,
+            "content-type: application/json\r\n\r\nnamed-bytes",
+            &format!("{} typed-Blob content-type/value framing broken", path),
+        );
+        // Terminator: final --{boundary}--.
+        let boundary = extract_boundary(req);
+        assert!(
+            !boundary.is_empty(),
+            "{} boundary could not be extracted",
+            path
+        );
+        assert!(
+            req.contains(&format!("--{}--", boundary)),
+            "{} multipart terminator missing",
+            path
+        );
+        // Exactly one boundary parameter in the header (no duplicates).
+        assert_eq!(
+            req.matches("boundary=").count(),
+            1,
+            "{} duplicate boundary parameters",
+            path
+        );
+    }
+    // Boundary uniqueness across the two sends (fresh 128-bit generation).
+    let b1 = extract_boundary(&fd_req);
+    let b2 = extract_boundary(&fd_req2);
+    assert_ne!(
+        b1, b2,
+        "multipart boundary repeated across requests (must be per-send random)"
+    );
+    assert_eq!(b1.len(), 22 + 32, "boundary must be prefix + 32 hex chars");
+
     eprintln!(
-        "[PASS] TEST-ENG-FETCH-INIT e2e: PROPFIND wire + USP body + Request roundtrip + fail-closed errors"
+        "[PASS] TEST-ENG-FETCH-INIT e2e: PROPFIND wire + USP body + Request roundtrip + FormData multipart (both entry paths) + fail-closed errors"
     );
 
     // Mirror fetch_api_tests exit strategy: park HTTPThread, force-exit.

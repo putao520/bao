@@ -5995,13 +5995,22 @@ if (typeof _g.File === 'undefined') {
   _g.File.prototype.constructor = _g.File;
 }
 
-// FormData
+// FormData — entries are stored as { name, value, filename } records; the
+// native fetch layer (fetch_api.rs extract_formdata_multipart) serializes
+// them to multipart/form-data with a WebKit-style boundary (upstream Bun
+// Blob.zig fromDOMFormData semantics).
 if (typeof _g.FormData === 'undefined') {
   _g.FormData = function FormData() {
     this._data = [];
   };
   _g.FormData.prototype.append = function(name, value, filename) {
-    this._data.push({ name: name, value: value, filename: filename });
+    // WHATWG: filename only applies to Blob values; string values ignore it.
+    var isBlob = value && typeof value === 'object' && typeof value.size === 'number';
+    this._data.push({
+      name: String(name),
+      value: value,
+      filename: isBlob ? (filename !== undefined ? String(filename) : undefined) : undefined
+    });
   };
   _g.FormData.prototype.get = function(name) {
     for (var i = 0; i < this._data.length; i++) {
@@ -6026,15 +6035,66 @@ if (typeof _g.FormData === 'undefined') {
     this._data = this._data.filter(function(entry) { return entry.name !== name; });
   };
   _g.FormData.prototype.set = function(name, value, filename) {
+    var isBlob = value && typeof value === 'object' && typeof value.size === 'number';
+    var entry = {
+      name: String(name),
+      value: value,
+      filename: isBlob ? (filename !== undefined ? String(filename) : undefined) : undefined
+    };
     var found = false;
     for (var i = 0; i < this._data.length; i++) {
       if (this._data[i].name === name) {
-        if (!found) { this._data[i] = { name: name, value: value, filename: filename }; found = true; }
+        if (!found) { this._data[i] = entry; found = true; }
         else { this._data.splice(i, 1); i--; }
       }
     }
-    if (!found) this._data.push({ name: name, value: value, filename: filename });
+    if (!found) this._data.push(entry);
   };
+  // WHATWG iteration surface. NOTE: this makes FormData satisfy the
+  // append+getAll+entries+forEach structural probe used for URLSearchParams
+  // detection — every body classifier MUST probe FormData BEFORE
+  // URLSearchParams (see web_fetch_classes.rs and fetch_api.rs ordering).
+  _g.FormData.prototype.entries = function() {
+    var out = [];
+    for (var i = 0; i < this._data.length; i++) {
+      out.push([this._data[i].name, this._data[i].value]);
+    }
+    var idx = 0;
+    return {
+      next: function() {
+        return idx < out.length
+          ? { value: out[idx++], done: false }
+          : { value: undefined, done: true };
+      },
+      [Symbol.iterator]: function() { return this; }
+    };
+  };
+  _g.FormData.prototype.keys = function() {
+    var entries = this.entries();
+    return {
+      next: function() {
+        var r = entries.next();
+        return r.done ? r : { value: r.value[0], done: false };
+      },
+      [Symbol.iterator]: function() { return this; }
+    };
+  };
+  _g.FormData.prototype.values = function() {
+    var entries = this.entries();
+    return {
+      next: function() {
+        var r = entries.next();
+        return r.done ? r : { value: r.value[1], done: false };
+      },
+      [Symbol.iterator]: function() { return this; }
+    };
+  };
+  _g.FormData.prototype.forEach = function(callback, thisArg) {
+    for (var i = 0; i < this._data.length; i++) {
+      callback.call(thisArg === undefined ? null : thisArg, this._data[i].value, this._data[i].name, this);
+    }
+  };
+  _g.FormData.prototype[Symbol.iterator] = _g.FormData.prototype.entries;
 }
 
 // @trace REQ-ENG-006 [api:DOMException] — Web/Node.js global DOMException.

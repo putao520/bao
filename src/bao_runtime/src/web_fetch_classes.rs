@@ -212,18 +212,22 @@ pub fn install_fetch_classes(
   // without a resolvable .prototype, so `instanceof` throws
   // (JSMSG_BAD_PROTOTYPE: "'prototype' property ... is not an object") and
   // .constructor identity resolves to Object. The method surface
-  // append+getAll+entries+forEach is the discriminator — FormData lacks
-  // forEach/entries, Map lacks append/getAll, Blob lacks all four.
+  // append+getAll+entries+forEach is the discriminator — FormData ALSO has
+  // all four since gaining its WHATWG iteration surface, so any classifier
+  // MUST probe FormData (_bao_is_formdata) BEFORE this predicate; Map lacks
+  // append/getAll, Blob lacks all four.
   var _bao_is_urlsearchparams = function _bao_is_urlsearchparams(v) {
     return !!v && typeof v === 'object'
       && typeof v.append === 'function'
       && typeof v.getAll === 'function'
       && typeof v.entries === 'function'
-      && typeof v.forEach === 'function';
+      && typeof v.forEach === 'function'
+      && !Array.isArray(v._data);
   };
 
-  // FormData body — no multipart encoder exists in the HTTP layer, so this
-  // throws explicitly instead of silently dropping the body.
+  // FormData body — the live object is parked on _bodyFormData; the native
+  // fetch layer (fetch_api.rs extract_formdata_multipart) serializes it to
+  // multipart/form-data at send time (the boundary is generated there).
   var _bao_is_formdata = function _bao_is_formdata(v) {
     if (typeof _g.FormData === 'function' && v instanceof _g.FormData) return true;
     return v && typeof v === 'object' && Array.isArray(v._data) && typeof v.getAll === 'function';
@@ -294,16 +298,18 @@ pub fn install_fetch_classes(
           this._bodySource.byteOffset,
           this._bodySource.byteLength
         );
+      } else if (_bao_is_formdata(this._bodySource)) {
+        // BEFORE the URLSearchParams probe: FormData's WHATWG iteration
+        // surface (entries/forEach) also satisfies _bao_is_urlsearchparams.
+        // The live object is parked here; fetch() serializes it (boundary
+        // generated at send time by the native multipart encoder).
+        this._bodyFormData = this._bodySource;
       } else if (_bao_is_urlsearchparams(this._bodySource)) {
         // Serialize eagerly so fetch(Request) can read _bodyText synchronously.
         this._bodyText = this._bodySource.toString();
         if (!this.headers.has('content-type')) {
           this.headers.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');
         }
-      } else if (_bao_is_formdata(this._bodySource)) {
-        // Fail-closed: no multipart encoder in the HTTP layer. A silently
-        // dropped body would POST an empty payload — worse than an error.
-        throw new TypeError('Failed to construct \'Request\': FormData bodies are not supported (no multipart/form-data encoder in the Bao HTTP layer).');
       } else if (_bao_is_blob(this._bodySource)) {
         // Blob body — will be read lazily
         this._bodyBlob = this._bodySource;
@@ -352,6 +358,9 @@ pub fn install_fetch_classes(
     if (this._bodyText !== undefined) return Promise.resolve(this._bodyText);
     if (this._bodyBytes) return Promise.resolve(new TextDecoder().decode(this._bodyBytes));
     if (this._bodyBlob) return this._bodyBlob.text();
+    if (this._bodyFormData) {
+      return Promise.reject(new TypeError('Request body is FormData: multipart consumption via text()/json()/arrayBuffer()/blob() is not wired (fetch() sends FormData bodies).'));
+    }
     return Promise.resolve('');
   };
 
@@ -408,10 +417,14 @@ pub fn install_fetch_classes(
         this._bodyBytes = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
       } else if (body instanceof _g.Blob) {
         this._bodyBlob = body;
+      } else if (_bao_is_formdata(body)) {
+        // BEFORE the URLSearchParams probe (FormData's iteration surface
+        // satisfies it). Fail-closed: Response-side multipart consumption
+        // (text()/json()) is not wired; only fetch/Request send paths
+        // serialize FormData. A toString() fallback would corrupt the body.
+        throw new TypeError('Failed to construct \'Response\': FormData response bodies are not supported (multipart serialization is wired for fetch/Request send paths only).');
       } else if (_bao_is_urlsearchparams(body)) {
         this._bodyText = body.toString();
-      } else if (_bao_is_formdata(body)) {
-        throw new TypeError('Failed to construct \'Response\': FormData bodies are not supported (no multipart/form-data encoder in the Bao HTTP layer).');
       } else if (typeof body === 'object' && typeof body.text === 'function') {
         this._bodyBlob = body;
       }

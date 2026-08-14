@@ -20,7 +20,7 @@ use bun_core::ZBox;
 
 use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
+use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2::JS_DefineFunction;
 
@@ -158,6 +158,31 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                             let c_msg = ZBox::from_bytes(msg.as_bytes());
                             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                             return false;
+                        }
+                    }
+                } else {
+                    // FormData slot: web_fetch_classes Request parks the live
+                    // object on _bodyFormData; the multipart serialization
+                    // (boundary generated here, at send time) happens in
+                    // extract_formdata_multipart.
+                    let mut fd_val = UndefinedValue();
+                    JS_GetProperty(
+                        cx,
+                        req_obj.handle().into(),
+                        c"_bodyFormData".as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut fd_val,
+                        },
+                    );
+                    if fd_val.is_object() {
+                        match extract_formdata_multipart(cx, fd_val, &mut headers) {
+                            Ok(b) => body = b,
+                            Err(msg) => {
+                                let c_msg = ZBox::from_bytes(msg.as_bytes());
+                                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                                return false;
+                            }
                         }
                     }
                 }
@@ -467,12 +492,307 @@ unsafe fn extract_blob_bytes(cx: *mut JSContext, blob_val: JSVal) -> ::std::resu
     }
 }
 
+// ── FormData multipart serialization ────────────────────────────────────────
+//
+// Mirrors upstream Bun `Blob.zig fromDOMFormData` byte-for-byte:
+//   boundary:   "----WebKitFormBoundary" + hex of 16 random bytes (Bun prints
+//               its VM's nextUUID() bytes as hex; zero-padded here so the
+//               boundary is always 22+32 chars)
+//   per entry:  "--{b}\r\n"
+//               "Content-Disposition: form-data; name=\"{name}\""
+//               string:  "\"\r\n\r\n{value}\r\n"
+//               file:    "\"; filename=\"{filename}\"\r\n"
+//                        "Content-Type: {ct}\r\n\r\n{bytes}\r\n"
+//               (ct = Blob.type when non-empty, else application/octet-stream)
+//   terminator: "--{b}--\r\n"
+//   header:     "multipart/form-data; boundary={b}"
+// Upstream Bun performs no quote escaping in name/filename — aligned.
+// Default filename follows the WHATWG/servo rule (dom/formdata.rs
+// create_an_entry): explicit filename > File.name > "blob".
+
+/// One classified FormData entry value.
+enum MultipartValue {
+    /// String field.
+    Text(String),
+    /// Blob/File field: filename, per-part content-type, raw bytes.
+    File {
+        filename: String,
+        content_type: String,
+        bytes: Vec<u8>,
+    },
+}
+
+/// Generate the multipart boundary (WebKit-style, upstream Bun shape).
+fn generate_multipart_boundary() -> ::std::result::Result<String, String> {
+    let mut raw = [0u8; 16];
+    getrandom::fill(&mut raw)
+        .map_err(|e| format!("fetch: multipart boundary randomness unavailable: {}", e))?;
+    let mut s = String::with_capacity("----WebKitFormBoundary".len() + 32);
+    s.push_str("----WebKitFormBoundary");
+    for b in raw {
+        s.push_str(&format!("{:02x}", b));
+    }
+    Ok(s)
+}
+
+/// Pure encoder: entries + boundary → multipart/form-data body bytes.
+/// Kept free of JS interaction so the wire format is unit-testable.
+fn encode_multipart(entries: &[(String, MultipartValue)], boundary: &str) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    for (name, value) in entries {
+        out.extend_from_slice(b"--");
+        out.extend_from_slice(boundary.as_bytes());
+        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(b"Content-Disposition: form-data; name=\"");
+        out.extend_from_slice(name.as_bytes());
+        match value {
+            MultipartValue::Text(text) => {
+                out.extend_from_slice(b"\"\r\n\r\n");
+                out.extend_from_slice(text.as_bytes());
+            }
+            MultipartValue::File {
+                filename,
+                content_type,
+                bytes,
+            } => {
+                out.extend_from_slice(b"\"; filename=\"");
+                out.extend_from_slice(filename.as_bytes());
+                out.extend_from_slice(b"\"\r\n");
+                out.extend_from_slice(b"Content-Type: ");
+                out.extend_from_slice(content_type.as_bytes());
+                out.extend_from_slice(b"\r\n\r\n");
+                out.extend_from_slice(bytes);
+            }
+        }
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"--");
+    out.extend_from_slice(boundary.as_bytes());
+    out.extend_from_slice(b"--\r\n");
+    out
+}
+
+/// Convert an arbitrary JSVal to a Rust String via ToString (names, string
+/// field values, filenames).
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*` on the current thread; `v` must be
+/// protected from GC by the caller's stack frame.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn val_to_rust_string(
+    cx: *mut JSContext,
+    v: JSVal,
+) -> ::std::result::Result<String, String> {
+    unsafe {
+        if v.is_string() {
+            return Ok(crate::js_to_rust_string(cx, v));
+        }
+        if v.is_null_or_undefined() {
+            return Ok(String::new());
+        }
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let root = v);
+        let jsstr = mozjs::rust::ToString(&mut wrapped_cx, root.handle());
+        if jsstr.is_null() {
+            return Err(
+                "fetch: FormData entry name/value could not be converted to string".to_string(),
+            );
+        }
+        let str_val = StringValue(&*jsstr);
+        Ok(crate::js_to_rust_string(cx, str_val))
+    }
+}
+
+/// Read a property off `obj` as a raw JSVal.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*`; `obj` must be GC-protected by the caller.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_val_prop(
+    cx: *mut JSContext,
+    obj: mozjs::rust::Handle<*mut JSObject>,
+    name: &str,
+) -> JSVal {
+    unsafe {
+        let c_name = ZBox::from_bytes(name.as_bytes());
+        let mut v = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj.into(),
+            c_name.as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut v,
+            },
+        );
+        v
+    }
+}
+
+/// FormData structural probe: `_data` array + callable getAll (mirrors
+/// `_bao_is_formdata` in web_fetch_classes.rs). Runs BEFORE the
+/// URLSearchParams probe — FormData's WHATWG iteration surface
+/// (entries/forEach) also satisfies that predicate.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*`; `obj` must be GC-protected by the caller.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn is_formdata_shape(cx: *mut JSContext, obj: mozjs::rust::Handle<*mut JSObject>) -> bool {
+    unsafe {
+        let data_val = get_val_prop(cx, obj, "_data");
+        if !data_val.is_object() {
+            return false;
+        }
+        let wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let data_probe = data_val);
+        let mut is_array = false;
+        IsArrayObject(cx, data_probe.handle().into(), &mut is_array);
+        if !is_array {
+            return false;
+        }
+        let get_all = get_val_prop(cx, obj, "getAll");
+        get_all.is_object() && IsCallable(get_all.to_object())
+    }
+}
+
+/// Serialize a FormData object (globals.rs class: `_data` array of
+/// `{ name, value, filename }` records) into multipart/form-data bytes and
+/// default the Content-Type header. Blob/File values are read through their
+/// synchronous `_chunks` storage; anything else fails closed.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*`; `formdata_val` must be protected from
+/// GC by the caller's stack frame. `headers` receives the defaulted
+/// content-type.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn extract_formdata_multipart(
+    cx: *mut JSContext,
+    formdata_val: JSVal,
+    headers: &mut Vec<(String, String)>,
+) -> ::std::result::Result<Option<Vec<u8>>, String> {
+    unsafe {
+        let wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        // BCE-012: root to_object() result — the JS reads below can trigger GC
+        rooted!(&in(wrapped_cx) let form = formdata_val.to_object());
+
+        let data_val = get_val_prop(cx, form.handle(), "_data");
+        if !data_val.is_object() {
+            return Err("fetch: FormData body has no _data entries array".to_string());
+        }
+        // BCE-012: root the entries array across element reads
+        rooted!(&in(wrapped_cx) let data = data_val.to_object());
+        let mut is_array = false;
+        rooted!(&in(wrapped_cx) let arr_probe = data_val);
+        IsArrayObject(cx, arr_probe.handle().into(), &mut is_array);
+        if !is_array {
+            return Err("fetch: FormData body has no _data entries array".to_string());
+        }
+        let len_val = get_val_prop(cx, data.handle(), "length");
+        let len = if len_val.is_int32() && len_val.to_int32() > 0 {
+            len_val.to_int32() as usize
+        } else {
+            0
+        };
+
+        let boundary = generate_multipart_boundary()?;
+        let mut entries: Vec<(String, MultipartValue)> = Vec::new();
+        for i in 0..len as u32 {
+            let mut el = UndefinedValue();
+            JS_GetElement(
+                cx,
+                data.handle().into(),
+                i,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut el,
+                },
+            );
+            if !el.is_object() {
+                return Err("fetch: FormData entry is not an object".to_string());
+            }
+            // BCE-012: root the entry across its property reads
+            rooted!(&in(wrapped_cx) let entry = el.to_object());
+            let name_val = get_val_prop(cx, entry.handle(), "name");
+            let name = val_to_rust_string(cx, name_val)?;
+            let value_val = get_val_prop(cx, entry.handle(), "value");
+
+            if value_val.is_object() {
+                // Blob/File field. Filename: explicit > File.name > "blob".
+                // Content-type: Blob.type > application/octet-stream.
+                rooted!(&in(wrapped_cx) let blob = value_val.to_object());
+                let filename_val = get_val_prop(cx, entry.handle(), "filename");
+                let mut filename = if filename_val.is_string() {
+                    ::std::option::Option::Some(crate::js_to_rust_string(cx, filename_val))
+                } else {
+                    ::std::option::Option::None
+                };
+                if filename.as_deref().map_or(true, |f| f.is_empty()) {
+                    let name_prop = get_val_prop(cx, blob.handle(), "name");
+                    filename = if name_prop.is_string() {
+                        ::std::option::Option::Some(crate::js_to_rust_string(cx, name_prop))
+                    } else {
+                        ::std::option::Option::Some("blob".to_string())
+                    };
+                }
+                let type_prop = get_val_prop(cx, blob.handle(), "type");
+                let content_type = if type_prop.is_string() {
+                    let t = crate::js_to_rust_string(cx, type_prop);
+                    if t.is_empty() {
+                        "application/octet-stream".to_string()
+                    } else {
+                        t
+                    }
+                } else {
+                    "application/octet-stream".to_string()
+                };
+                let bytes = extract_blob_bytes(cx, value_val)?
+                    .ok_or_else(|| {
+                        "fetch: FormData file entry without synchronous byte storage is not supported yet (no streaming request-body infrastructure)".to_string()
+                    })?;
+                entries.push((
+                    name,
+                    MultipartValue::File {
+                        filename: filename.unwrap_or_else(|| "blob".to_string()),
+                        content_type,
+                        bytes,
+                    },
+                ));
+            } else {
+                entries.push((
+                    name,
+                    MultipartValue::Text(val_to_rust_string(cx, value_val)?),
+                ));
+            }
+        }
+
+        let body = encode_multipart(&entries, &boundary);
+        let has_ct = headers
+            .iter()
+            .any(|(n, _)| n.eq_ignore_ascii_case("content-type"));
+        if !has_ct {
+            headers.push((
+                "Content-Type".to_string(),
+                format!("multipart/form-data; boundary={}", boundary),
+            ));
+        }
+        Ok(Some(body))
+    }
+}
+
 /// Extract fetch `init.body` bytes. Accepted forms: string, byte views
 /// (Buffer/Uint8Array/TypedArray/DataView/ArrayBuffer), Bao Blob (`_chunks`
 /// storage), URLSearchParams (serialized; defaults
 /// `application/x-www-form-urlencoded;charset=UTF-8` when no content-type
-/// header is set). FormData and anything else fail closed with an explicit
-/// error — silently dropping a body turns a POST into an empty POST.
+/// header is set), FormData (multipart/form-data with a generated boundary).
+/// Anything else fails closed with an explicit error — silently dropping a
+/// body turns a POST into an empty POST.
 ///
 /// # Safety
 ///
@@ -493,7 +813,7 @@ unsafe fn extract_body_bytes(
         }
         if !body_val.is_object() {
             return Err(format!(
-                "fetch: unsupported body type (expected string / BufferSource / Blob / URLSearchParams)"
+                "fetch: unsupported body type (expected string / BufferSource / Blob / URLSearchParams / FormData)"
             ));
         }
         let wrapped_cx =
@@ -507,7 +827,7 @@ unsafe fn extract_body_bytes(
             return Ok(Some(bytes));
         }
 
-        // Constructor-identity probes for the class forms.
+        // Constructor-identity probe for the class forms.
         let mut ctor_val = UndefinedValue();
         JS_GetProperty(
             cx,
@@ -518,6 +838,13 @@ unsafe fn extract_body_bytes(
                 ptr: &mut ctor_val,
             },
         );
+
+        // FormData → multipart/form-data. BEFORE the URLSearchParams probe:
+        // FormData's WHATWG iteration surface (entries/forEach) also
+        // satisfies that predicate.
+        if is_formdata_shape(cx, obj.handle()) || is_global_ctor(cx, ctor_val, "FormData") {
+            return extract_formdata_multipart(cx, body_val, headers);
+        }
 
         // URLSearchParams → serialize via toString(), default the content-type.
         if is_url_search_params_shape(cx, obj.handle()) {
@@ -548,12 +875,6 @@ unsafe fn extract_body_bytes(
             return Ok(Some(crate::js_to_rust_string(cx, s_val).into_bytes()));
         }
 
-        // FormData — explicit unsupported (no multipart encoder in the HTTP
-        // layer). Fail closed instead of posting an empty body.
-        if is_global_ctor(cx, ctor_val, "FormData") {
-            return Err("fetch: FormData request bodies are not supported (no multipart/form-data encoder in the Bao HTTP layer)".to_string());
-        }
-
         // Blob-ish (numeric size + callable arrayBuffer). The Bao Blob stores
         // `_chunks` synchronously; realm-foreign Blobs fail closed inside.
         let mut size_val = UndefinedValue();
@@ -580,7 +901,7 @@ unsafe fn extract_body_bytes(
             return extract_blob_bytes(cx, body_val);
         }
 
-        Err("fetch: unsupported body type (expected string / BufferSource / Blob / URLSearchParams; FormData and streams are not supported)".to_string())
+        Err("fetch: unsupported body type (expected string / BufferSource / Blob / URLSearchParams / FormData; streams are not supported)".to_string())
     }
 }
 
@@ -858,6 +1179,8 @@ unsafe fn parse_header_entry(cx: *mut JSContext, pair_val: JSVal) -> Option<(Str
 
 #[cfg(test)]
 mod tests {
+    use super::{encode_multipart, generate_multipart_boundary, MultipartValue};
+
     // ── REQ-SEC-001: CORS Bypass Unit Tests ──────────────────────────────
     // @trace TEST-SEC-001 [req:REQ-SEC-001] [level:unit]
 
@@ -936,6 +1259,93 @@ mod tests {
         assert!(
             source.contains(&seq_form),
             "BCE-20260814-FETCH-H: sequence pair form must be documented/parseable"
+        );
+    }
+
+    // ── FormData multipart serialization unit tests ─────────────────────
+    // @trace TEST-ENG-FETCH-FORMDATA [req:REQ-ENG-001 REQ-ENG-006] [level:unit]
+
+    const TEST_BOUNDARY: &str = "----WebKitFormBoundary0123456789abcdef0123456789abcdef";
+
+    /// Upstream Bun Blob.zig fromDOMFormData wire format: per-entry framing,
+    /// Content-Disposition, per-file Content-Type, terminator.
+    #[test]
+    fn multipart_encode_text_and_file_entries() {
+        let entries = vec![
+            (
+                "field".to_string(),
+                MultipartValue::Text("hello world".to_string()),
+            ),
+            (
+                "upload".to_string(),
+                MultipartValue::File {
+                    filename: "a.txt".to_string(),
+                    content_type: "text/plain".to_string(),
+                    bytes: b"file-bytes".to_vec(),
+                }),
+            (
+                "noType".to_string(),
+                MultipartValue::File {
+                    filename: "blob".to_string(),
+                    content_type: "application/octet-stream".to_string(),
+                    bytes: vec![0u8, 1, 2],
+                }),
+        ];
+        let body = encode_multipart(&entries, TEST_BOUNDARY);
+        let text = String::from_utf8_lossy(&body).to_string();
+        let expected = concat!(
+            "------WebKitFormBoundary0123456789abcdef0123456789abcdef\r\n",
+            "Content-Disposition: form-data; name=\"field\"\r\n",
+            "\r\n",
+            "hello world\r\n",
+            "------WebKitFormBoundary0123456789abcdef0123456789abcdef\r\n",
+            "Content-Disposition: form-data; name=\"upload\"; filename=\"a.txt\"\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "file-bytes\r\n",
+            "------WebKitFormBoundary0123456789abcdef0123456789abcdef\r\n",
+            "Content-Disposition: form-data; name=\"noType\"; filename=\"blob\"\r\n",
+            "Content-Type: application/octet-stream\r\n",
+            "\r\n",
+        );
+        assert!(
+            text.starts_with(expected),
+            "multipart per-entry framing mismatch:\n{}",
+            text
+        );
+        assert!(
+            text.ends_with("------WebKitFormBoundary0123456789abcdef0123456789abcdef--\r\n"),
+            "multipart terminator missing:\n{}",
+            text
+        );
+        // Binary file bytes survive verbatim (no lossy transform).
+        assert!(body.windows(3).any(|w| w == [0u8, 1, 2]));
+    }
+
+    /// Empty FormData → boundary terminator only (RFC 7578 permits an empty
+    /// parts list; Bun emits the same shape).
+    #[test]
+    fn multipart_encode_empty_formdata() {
+        let body = encode_multipart(&[], TEST_BOUNDARY);
+        assert_eq!(
+            body,
+            format!("{}--\r\n", format!("--{}", TEST_BOUNDARY)).into_bytes()
+        );
+    }
+
+    /// Boundary uniqueness: two generations must differ (random 128-bit).
+    #[test]
+    fn multipart_boundary_unique_per_generation() {
+        let a = generate_multipart_boundary().expect("boundary gen");
+        let b = generate_multipart_boundary().expect("boundary gen");
+        assert_ne!(a, b, "multipart boundary repeated across generations");
+        assert!(a.starts_with("----WebKitFormBoundary"));
+        assert_eq!(a.len(), 22 + 32, "boundary must be prefix + 32 hex chars");
+        assert!(
+            a["----WebKitFormBoundary".len()..]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit()),
+            "boundary suffix must be hex"
         );
     }
 }
