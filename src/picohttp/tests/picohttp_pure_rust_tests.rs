@@ -340,6 +340,9 @@ fn chunked_decode_raw_ffi_compatible() {
     let mut buf = b"5\r\nhello\r\n0\r\n\r\n".to_vec();
     let mut len = buf.len();
     let rc = unsafe { ChunkedDecoder::decode_raw(&mut decoder, buf.as_mut_ptr(), &mut len) };
+    // Exact-end input: fully consumed (this state machine consumes the
+    // final CRLF, unlike C which reports it as leftover — see
+    // decode_ex's TrailerFinalCrlf note). rc > 0 only for pipelined data.
     assert_eq!(rc, 0);
     assert_eq!(&buf[..len], b"hello");
 }
@@ -351,6 +354,8 @@ fn chunked_decode_raw_ffi_via_phr_decode_chunked() {
     let mut buf = b"5\r\nhello\r\n0\r\n\r\n".to_vec();
     let mut len = buf.len();
     let rc = unsafe { bun_picohttp::phr_decode_chunked(&mut decoder, buf.as_mut_ptr(), &mut len) };
+    // Same contract as decode_raw: exact-end input is fully consumed
+    // (rc == 0); len = decoded payload size.
     assert_eq!(rc, 0);
     assert_eq!(&buf[..len], b"hello");
 }

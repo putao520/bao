@@ -73,7 +73,146 @@ unsafe extern "C" {
     // truth: vendor/boringssl/include/openssl/{asn1.h,ssl.h}.
     fn ASN1_TIME_print(out: *mut BIO, a: *const ASN1_TIME) -> c_int;
     fn SSL_CIPHER_get_version(cipher: *const SSL_CIPHER) -> *const c_char;
+    fn SSL_CIPHER_get_bits(cipher: *const SSL_CIPHER, out_alg_bits: *mut c_int) -> c_int;
     fn SSL_set1_host(ssl: *mut SSL, hostname: *const c_char) -> c_int;
+}
+
+// ─── Standalone SSL session extraction (raw-SSL consumers) ──
+//
+// Same extraction surface as the `TlsConnection` methods below, but as
+// free functions over a bare `*const SSL` so consumers that own their SSL
+// through another binding layer (e.g. `bun_http`'s uSockets TLS sockets,
+// which hand back the native `SSL*`) get the identical snapshot without
+// wrapping it in a `TlsConnection`. The `SSL` type is the one true
+// `bun_boringssl_sys::boringssl::SSL` — both crates link the same vendored
+// BoringSSL.
+
+/// Negotiated protocol version ("TLSv1.3", …) — only meaningful once the
+/// handshake has completed. `None` when BoringSSL could not produce a
+/// version string.
+pub fn ssl_protocol_version(ssl: *const SSL) -> Option<String> {
+    if ssl.is_null() {
+        return None;
+    }
+    // SAFETY: caller contract — ssl is a live SSL after (or during) a handshake.
+    cstr_to_string(unsafe { SSL_get_version(ssl) })
+}
+
+/// Negotiated cipher suite name (e.g. "TLS_AES_256_GCM_SHA384") — only
+/// meaningful once the handshake has completed.
+pub fn ssl_cipher_name(ssl: *const SSL) -> Option<String> {
+    let cipher = current_cipher(ssl)?;
+    // SAFETY: cipher was returned by SSL_get_current_cipher for a live SSL.
+    cstr_to_string(unsafe { SSL_CIPHER_get_name(cipher) })
+}
+
+/// The cipher's protocol version string (BoringSSL's static "TLSv1/SSLv3").
+pub fn ssl_cipher_version(ssl: *const SSL) -> Option<String> {
+    let cipher = current_cipher(ssl)?;
+    // SAFETY: cipher was returned by SSL_get_current_cipher for a live SSL.
+    cstr_to_string(unsafe { SSL_CIPHER_get_version(cipher) })
+}
+
+/// Symmetric-key strength of the negotiated cipher: `(bits, alg_bits)` —
+/// `bits` is the effective cipher strength, `alg_bits` the maximum
+/// strength of the algorithm (they differ for export ciphers). This is the
+/// "encryption strength" surface; authentication is integral to the AEAD
+/// suites BoringSSL negotiates, so there is no separate MAC strength to
+/// report.
+pub fn ssl_cipher_bits(ssl: *const SSL) -> Option<(c_int, c_int)> {
+    let cipher = current_cipher(ssl)?;
+    let mut alg_bits: c_int = 0;
+    // SAFETY: cipher was returned by SSL_get_current_cipher for a live SSL;
+    // alg_bits is a valid out-pointer.
+    let bits = unsafe { SSL_CIPHER_get_bits(cipher, &raw mut alg_bits) };
+    if bits < 0 {
+        return None;
+    }
+    Some((bits, alg_bits))
+}
+
+/// The peer's leaf certificate parsed into the Node `getPeerCertificate()`
+/// field set (None when the peer presented no certificate). Absent fields
+/// are `None` so callers surface `undefined` instead of a placeholder.
+pub fn ssl_peer_cert_info(ssl: *const SSL) -> Option<PeerCertInfo> {
+    if ssl.is_null() {
+        return None;
+    }
+    // SAFETY: caller contract — ssl is a live SSL; the returned X509 is
+    // owned by us and freed below.
+    let x509 = unsafe { SSL_get_peer_certificate(ssl) };
+    if x509.is_null() {
+        return None;
+    }
+    // SAFETY: x509 is a live certificate owned by us and freed below.
+    let info = unsafe { peer_cert_info_from_x509(x509) };
+    // SAFETY: x509 was returned by SSL_get_peer_certificate (owned).
+    unsafe { X509_free(x509) };
+    Some(info)
+}
+
+/// The full peer certificate chain as DER bytes, leaf first — the shape
+/// `SSL_get0_peer_certificates` returns. Empty when the peer presented no
+/// chain (the buffers are owned by the SSL session; copied out here).
+pub fn ssl_peer_certificates_der(ssl: *const SSL) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    if ssl.is_null() {
+        return out;
+    }
+    // SAFETY: caller contract — ssl is a live SSL; the returned stack is
+    // borrowed from the session for the duration of this call.
+    let chain = unsafe { SSL_get0_peer_certificates(ssl) };
+    if chain.is_null() {
+        return out;
+    }
+    // SAFETY: chain is a live STACK_OF(CRYPTO_BUFFER) owned by the session.
+    let count = unsafe { sk_CRYPTO_BUFFER_num(chain) };
+    for i in 0..count {
+        // SAFETY: i < count just returned by sk_CRYPTO_BUFFER_num on chain.
+        let buf = unsafe { sk_CRYPTO_BUFFER_value(chain, i) };
+        if buf.is_null() {
+            continue;
+        }
+        // SAFETY: buf is a live CRYPTO_BUFFER in the chain.
+        let (data, len) = unsafe { (CRYPTO_BUFFER_data(buf), CRYPTO_BUFFER_len(buf)) };
+        if !data.is_null() && len > 0 {
+            // SAFETY: data/len delimit the certificate DER bytes.
+            out.push(unsafe { core::slice::from_raw_parts(data, len) }.to_vec());
+        }
+    }
+    out
+}
+
+#[inline]
+fn current_cipher(ssl: *const SSL) -> Option<*const SSL_CIPHER> {
+    if ssl.is_null() {
+        return None;
+    }
+    // SAFETY: caller contract — ssl is a live SSL.
+    let cipher = unsafe { SSL_get_current_cipher(ssl) };
+    if cipher.is_null() {
+        None
+    } else {
+        Some(cipher)
+    }
+}
+
+/// Field extraction shared by [`ssl_peer_cert_info`] and
+/// [`TlsConnection::peer_cert_info`]: parse a live, owned leaf `X509`.
+///
+/// # Safety
+/// `x509` must be a live certificate the caller owns and will free.
+unsafe fn peer_cert_info_from_x509(x509: *mut X509) -> PeerCertInfo {
+    PeerCertInfo {
+        // SAFETY: x509 is a live certificate; both name accessors return
+        // names owned by it (const access for the lifetime of this fn).
+        subject: cert_name_entries(unsafe { X509_get_subject_name(x509) }),
+        issuer: cert_name_entries(unsafe { X509_get_issuer_name(x509) }),
+        valid_from: asn1_time_string(unsafe { X509_get_notBefore(x509) }),
+        valid_to: asn1_time_string(unsafe { X509_get_notAfter(x509) }),
+        fingerprint256: cert_digest_hex(x509, EVP_sha256()),
+        serial_number: cert_serial_hex(x509),
+    }
 }
 
 // ─── Peer-certificate field extraction (Node getPeerCertificate shape) ──
@@ -90,6 +229,7 @@ const NID_PKCS9_EMAIL_ADDRESS: c_int = 48;
 
 /// One RDN attribute of a certificate name: short key ("CN", "O", …) and
 /// its UTF-8 value.
+#[derive(Clone, Debug)]
 pub struct CertNameEntry {
     pub key: &'static str,
     pub value: String,
@@ -98,6 +238,7 @@ pub struct CertNameEntry {
 /// Parsed leaf-certificate fields for the Node `getPeerCertificate()`
 /// surface. `None` fields are ones BoringSSL could not produce — the JS
 /// layer surfaces those as `undefined`, never as a placeholder.
+#[derive(Clone, Debug)]
 pub struct PeerCertInfo {
     pub subject: Vec<CertNameEntry>,
     pub issuer: Vec<CertNameEntry>,
@@ -649,34 +790,18 @@ impl TlsConnection {
     /// Negotiated protocol version ("TLSv1.3", …) — available once the
     /// handshake has completed.
     pub fn protocol_version(&self) -> Option<String> {
-        let ssl = self.ssl_ptr();
-        // SAFETY: ssl is a live SSL owned by this connection.
-        cstr_to_string(unsafe { SSL_get_version(ssl) })
+        ssl_protocol_version(self.ssl_ptr())
     }
 
     /// Negotiated cipher name (e.g. "TLS_AES_256_GCM_SHA384") — available
     /// once the handshake has completed.
     pub fn cipher_name(&self) -> Option<String> {
-        let ssl = self.ssl_ptr();
-        // SAFETY: ssl is a live SSL owned by this connection.
-        let cipher = unsafe { SSL_get_current_cipher(ssl) };
-        if cipher.is_null() {
-            return None;
-        }
-        // SAFETY: cipher was returned by SSL_get_current_cipher for this SSL.
-        cstr_to_string(unsafe { SSL_CIPHER_get_name(cipher) })
+        ssl_cipher_name(self.ssl_ptr())
     }
 
     /// The cipher's version string (BoringSSL's static "TLSv1/SSLv3").
     pub fn cipher_version(&self) -> Option<String> {
-        let ssl = self.ssl_ptr();
-        // SAFETY: ssl is a live SSL owned by this connection.
-        let cipher = unsafe { SSL_get_current_cipher(ssl) };
-        if cipher.is_null() {
-            return None;
-        }
-        // SAFETY: cipher was returned by SSL_get_current_cipher for this SSL.
-        cstr_to_string(unsafe { SSL_CIPHER_get_version(cipher) })
+        ssl_cipher_version(self.ssl_ptr())
     }
 
     /// Disable peer-certificate verification (Node `rejectUnauthorized:
@@ -712,26 +837,7 @@ impl TlsConnection {
     /// filled; absent ones are `None` so the caller surfaces `undefined`
     /// instead of a placeholder.
     pub fn peer_cert_info(&self) -> Option<PeerCertInfo> {
-        let ssl = self.ssl_ptr();
-        // SAFETY: ssl is a live SSL owned by this connection; the returned
-        // X509 is owned by us and freed below.
-        let x509 = unsafe { SSL_get_peer_certificate(ssl) };
-        if x509.is_null() {
-            return None;
-        }
-        let info = PeerCertInfo {
-            // SAFETY: x509 is a live certificate; both name accessors return
-            // names owned by it (const access for the lifetime of this block).
-            subject: cert_name_entries(unsafe { X509_get_subject_name(x509) }),
-            issuer: cert_name_entries(unsafe { X509_get_issuer_name(x509) }),
-            valid_from: asn1_time_string(unsafe { X509_get_notBefore(x509) }),
-            valid_to: asn1_time_string(unsafe { X509_get_notAfter(x509) }),
-            fingerprint256: cert_digest_hex(x509, EVP_sha256()),
-            serial_number: cert_serial_hex(x509),
-        };
-        // SAFETY: x509 was returned by SSL_get_peer_certificate (owned).
-        unsafe { X509_free(x509) };
-        Some(info)
+        ssl_peer_cert_info(self.ssl_ptr())
     }
 
     /// Set the curves list on the SSL connection (for profile-specific ordering).

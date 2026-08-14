@@ -26,7 +26,9 @@ pub mod socket;
 pub use client::TlsClient;
 pub use connection::{
     CertNameEntry, PeerCertInfo, ProcessResult, SslClientHello, TlsConnection, TlsError, TlsState,
-    SSL_SELECT_CERT_ERROR, SSL_SELECT_CERT_RETRY, SSL_SELECT_CERT_SUCCESS, ssl_servername,
+    SSL_SELECT_CERT_ERROR, SSL_SELECT_CERT_RETRY, SSL_SELECT_CERT_SUCCESS, ssl_cipher_bits,
+    ssl_cipher_name, ssl_cipher_version, ssl_peer_cert_info, ssl_peer_certificates_der,
+    ssl_protocol_version, ssl_servername,
 };
 pub use profile::TlsProfile;
 pub use server::TlsServer;

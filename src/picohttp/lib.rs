@@ -815,15 +815,12 @@ impl ChunkedDecoder {
         unsafe {
             let decoder = &mut *decoder;
             let buf_slice = core::slice::from_raw_parts_mut(buf, *len);
-            let result = decoder.decode(buf_slice);
-            match result {
-                Ok(decoded_len) => {
-                    *len = decoded_len;
-                    0
-                }
-                Err(ChunkedError::Invalid) => -1,
-                Err(ChunkedError::NeedMore) => -2,
-            }
+            let (ret, dst) = decoder.decode_ex(buf_slice);
+            // C semantics: `*_bufsz = dst` at Exit unconditionally — the
+            // decoded length is reported even on partial (-2) / invalid
+            // (-1) input so callers can consume the progress made.
+            *len = dst;
+            ret
         }
     }
 
@@ -833,219 +830,270 @@ impl ChunkedDecoder {
     /// body length. Returns `Ok(decoded_len)` on success, `Err(ChunkedError)`
     /// on failure.
     pub fn decode(&mut self, buf: &mut [u8]) -> Result<usize, ChunkedError> {
+        let (ret, dst) = self.decode_ex(buf);
+        match ret {
+            -1 => Err(ChunkedError::Invalid),
+            -2 => Err(ChunkedError::NeedMore),
+            _ => Ok(dst),
+        }
+    }
+
+    /// C-faithful decode core (picohttpparser `phr_decode_chunked`).
+    ///
+    /// Decodes chunk framing in place and — on EVERY exit, partial or not —
+    /// leaves `buf` as `[decoded bytes][unconsumed raw tail]` (the C `Exit:`
+    /// memmove) and reports the decoded length. Returns `(ret, dst)`:
+    /// `ret` mirrors the C return value (-1 invalid, -2 incomplete, >=0 =
+    /// unconsumed bytes after the terminal CRLF), `dst` = decoded length.
+    ///
+    /// BCE-20260815-PHR-DECODE: the previous port only wrote the decoded
+    /// length on the all-done path; on -2 (incomplete) the caller's
+    /// `*len` stayed at the input size, so the single-packet/multi-packet
+    /// arms computed `new_len = in_len` and delivered the in-place-decoded
+    /// payload plus its stale framing tail as body bytes ("alpha-ha-\r\n"
+    /// for chunk "alpha-"). The C ground truth (h2o/picohttpparser @
+    /// 066d2b1e, the exact commit Bun pins) sets `*_bufsz = dst` at `Exit:`
+    /// unconditionally.
+    fn decode_ex(&mut self, buf: &mut [u8]) -> (isize, usize) {
         let mut src = 0usize;
         let mut dst = 0usize;
         let total = buf.len();
 
-        while src < total {
-            match self._state {
-                ChunkedState::ChunkSize => {
-                    // Parse hex chunk size.
-                    let mut found_cr = false;
-                    while src < total {
-                        let b = buf[src];
-                        if b == b'\r' {
-                            found_cr = true;
-                            src += 1;
-                            break;
-                        }
-                        if b == b';' {
-                            // Chunk extension follows.
-                            self._state = ChunkedState::ChunkExtension;
-                            src += 1;
-                            break;
-                        }
-                        let digit = match b {
-                            b'0'..=b'9' => b - b'0',
-                            b'a'..=b'f' => b - b'a' + 10,
-                            b'A'..=b'F' => b - b'A' + 10,
-                            _ => {
-                                // Could be part of extension or invalid.
-                                // Check if we already have a hex count.
-                                if self._hex_count > 0 {
-                                    self._state = ChunkedState::ChunkExtension;
-                                    break;
+        // ret defaults to -2 (incomplete), mirroring the C prologue.
+        let ret: isize = 'exit: {
+            let mut ret: isize = -2;
+            'state_machine: while src < total {
+                match self._state {
+                    ChunkedState::ChunkSize => {
+                        // Parse hex chunk size.
+                        let mut found_cr = false;
+                        while src < total {
+                            let b = buf[src];
+                            if b == b'\r' {
+                                found_cr = true;
+                                src += 1;
+                                break;
+                            }
+                            if b == b';' {
+                                // Chunk extension follows.
+                                self._state = ChunkedState::ChunkExtension;
+                                src += 1;
+                                break;
+                            }
+                            let digit = match b {
+                                b'0'..=b'9' => b - b'0',
+                                b'a'..=b'f' => b - b'a' + 10,
+                                b'A'..=b'F' => b - b'A' + 10,
+                                _ => {
+                                    // Could be part of extension or invalid.
+                                    // Check if we already have a hex count.
+                                    if self._hex_count > 0 {
+                                        self._state = ChunkedState::ChunkExtension;
+                                        break;
+                                    }
+                                    ret = -1;
+                                    break 'exit ret;
                                 }
-                                return Err(ChunkedError::Invalid);
-                            }
-                        };
-                        self.bytes_left_in_chunk =
-                            self.bytes_left_in_chunk.wrapping_mul(16).wrapping_add(digit as usize);
-                        self._hex_count += 1;
-                        src += 1;
-                    }
-
-                    if self._state == ChunkedState::ChunkExtension {
-                        continue;
-                    }
-
-                    if !found_cr {
-                        // Need more data for chunk size line.
-                        return Err(ChunkedError::NeedMore);
-                    }
-
-                    // Expect \n after \r.
-                    if src >= total {
-                        return Err(ChunkedError::NeedMore);
-                    }
-                    if buf[src] != b'\n' {
-                        return Err(ChunkedError::Invalid);
-                    }
-                    src += 1;
-
-                    // Check for terminal chunk (size 0).
-                    if self.bytes_left_in_chunk == 0 {
-                        if self.consume_trailer != 0 {
-                            self._state = ChunkedState::TrailerLineHead;
-                        } else {
-                            self._state = ChunkedState::TrailerFinalCrlf;
-                        }
-                        continue;
-                    }
-
-                    self._state = ChunkedState::ChunkData;
-                }
-
-                ChunkedState::ChunkExtension => {
-                    // Skip until \r\n after chunk extension.
-                    while src < total {
-                        if buf[src] == b'\r' {
+                            };
+                            self.bytes_left_in_chunk = self
+                                .bytes_left_in_chunk
+                                .wrapping_mul(16)
+                                .wrapping_add(digit as usize);
+                            self._hex_count += 1;
                             src += 1;
-                            if src >= total {
-                                return Err(ChunkedError::NeedMore);
-                            }
-                            if buf[src] != b'\n' {
-                                return Err(ChunkedError::Invalid);
-                            }
-                            src += 1;
-
-                            if self.bytes_left_in_chunk == 0 {
-                                if self.consume_trailer != 0 {
-                                    self._state = ChunkedState::TrailerLineHead;
-                                } else {
-                                    self._state = ChunkedState::TrailerFinalCrlf;
-                                }
-                            } else {
-                                self._state = ChunkedState::ChunkData;
-                            }
-                            break;
                         }
-                        src += 1;
-                    }
-                    if src >= total && self._state == ChunkedState::ChunkExtension {
-                        return Err(ChunkedError::NeedMore);
-                    }
-                }
 
-                ChunkedState::ChunkData => {
-                    let to_copy = self.bytes_left_in_chunk.min(total - src);
-                    // Move data to decoded position.
-                    if dst != src {
-                        buf.copy_within(src..src + to_copy, dst);
-                    }
-                    dst += to_copy;
-                    src += to_copy;
-                    self.bytes_left_in_chunk -= to_copy;
+                        if self._state == ChunkedState::ChunkExtension {
+                            continue 'state_machine;
+                        }
 
-                    if self.bytes_left_in_chunk == 0 {
-                        self._state = ChunkedState::ChunkCrlf;
-                    }
-                }
+                        if !found_cr {
+                            // Need more data for chunk size line.
+                            break 'exit ret;
+                        }
 
-                ChunkedState::ChunkCrlf => {
-                    if src >= total {
-                        return Err(ChunkedError::NeedMore);
-                    }
-                    if buf[src] != b'\r' {
-                        return Err(ChunkedError::Invalid);
-                    }
-                    src += 1;
-                    if src >= total {
-                        return Err(ChunkedError::NeedMore);
-                    }
-                    if buf[src] != b'\n' {
-                        return Err(ChunkedError::Invalid);
-                    }
-                    src += 1;
-                    self._hex_count = 0;
-                    self._state = ChunkedState::ChunkSize;
-                }
-
-                ChunkedState::TrailerLineHead => {
-                    if src >= total {
-                        return Err(ChunkedError::NeedMore);
-                    }
-                    if buf[src] == b'\r' {
-                        src += 1;
+                        // Expect \n after \r.
                         if src >= total {
-                            return Err(ChunkedError::NeedMore);
+                            break 'exit ret;
                         }
                         if buf[src] != b'\n' {
-                            return Err(ChunkedError::Invalid);
+                            ret = -1;
+                            break 'exit ret;
                         }
-                        // End of trailers — the empty line marks completion.
-                        self._state = ChunkedState::Done;
-                        continue;
-                    }
-                    self._state = ChunkedState::TrailerLineMiddle;
-                }
+                        src += 1;
 
-                ChunkedState::TrailerLineMiddle => {
-                    // Skip until end of trailer line.
-                    while src < total {
+                        // Check for terminal chunk (size 0).
+                        if self.bytes_left_in_chunk == 0 {
+                            if self.consume_trailer != 0 {
+                                self._state = ChunkedState::TrailerLineHead;
+                            } else {
+                                self._state = ChunkedState::TrailerFinalCrlf;
+                            }
+                            continue 'state_machine;
+                        }
+
+                        self._state = ChunkedState::ChunkData;
+                    }
+
+                    ChunkedState::ChunkExtension => {
+                        // Skip until \r\n after chunk extension.
+                        while src < total {
+                            if buf[src] == b'\r' {
+                                src += 1;
+                                if src >= total {
+                                    break 'exit ret;
+                                }
+                                if buf[src] != b'\n' {
+                                    ret = -1;
+                                    break 'exit ret;
+                                }
+                                src += 1;
+
+                                if self.bytes_left_in_chunk == 0 {
+                                    if self.consume_trailer != 0 {
+                                        self._state = ChunkedState::TrailerLineHead;
+                                    } else {
+                                        self._state = ChunkedState::TrailerFinalCrlf;
+                                    }
+                                } else {
+                                    self._state = ChunkedState::ChunkData;
+                                }
+                                break;
+                            }
+                            src += 1;
+                        }
+                        if src >= total && self._state == ChunkedState::ChunkExtension {
+                            break 'exit ret;
+                        }
+                    }
+
+                    ChunkedState::ChunkData => {
+                        let to_copy = self.bytes_left_in_chunk.min(total - src);
+                        // Move data to decoded position.
+                        if dst != src {
+                            buf.copy_within(src..src + to_copy, dst);
+                        }
+                        dst += to_copy;
+                        src += to_copy;
+                        self.bytes_left_in_chunk -= to_copy;
+
+                        if self.bytes_left_in_chunk == 0 {
+                            self._state = ChunkedState::ChunkCrlf;
+                        }
+                    }
+
+                    ChunkedState::ChunkCrlf => {
+                        if src >= total {
+                            break 'exit ret;
+                        }
+                        if buf[src] != b'\r' {
+                            ret = -1;
+                            break 'exit ret;
+                        }
+                        src += 1;
+                        if src >= total {
+                            break 'exit ret;
+                        }
+                        if buf[src] != b'\n' {
+                            ret = -1;
+                            break 'exit ret;
+                        }
+                        src += 1;
+                        self._hex_count = 0;
+                        self._state = ChunkedState::ChunkSize;
+                    }
+
+                    ChunkedState::TrailerLineHead => {
+                        if src >= total {
+                            break 'exit ret;
+                        }
                         if buf[src] == b'\r' {
                             src += 1;
                             if src >= total {
-                                return Err(ChunkedError::NeedMore);
+                                break 'exit ret;
                             }
                             if buf[src] != b'\n' {
-                                return Err(ChunkedError::Invalid);
+                                ret = -1;
+                                break 'exit ret;
+                            }
+                            // End of trailers — the empty line marks completion.
+                            self._state = ChunkedState::Done;
+                            continue 'state_machine;
+                        }
+                        self._state = ChunkedState::TrailerLineMiddle;
+                    }
+
+                    ChunkedState::TrailerLineMiddle => {
+                        // Skip until end of trailer line.
+                        while src < total {
+                            if buf[src] == b'\r' {
+                                src += 1;
+                                if src >= total {
+                                    break 'exit ret;
+                                }
+                                if buf[src] != b'\n' {
+                                    ret = -1;
+                                    break 'exit ret;
+                                }
+                                src += 1;
+                                self._state = ChunkedState::TrailerLineHead;
+                                break;
                             }
                             src += 1;
-                            self._state = ChunkedState::TrailerLineHead;
-                            break;
+                        }
+                        if src >= total && self._state == ChunkedState::TrailerLineMiddle {
+                            break 'exit ret;
+                        }
+                    }
+
+                    ChunkedState::TrailerFinalCrlf => {
+                        // Consume the final \r\n after the terminal chunk.
+                        if src >= total {
+                            break 'exit ret;
+                        }
+                        if buf[src] != b'\r' {
+                            ret = -1;
+                            break 'exit ret;
                         }
                         src += 1;
+                        if src >= total {
+                            break 'exit ret;
+                        }
+                        if buf[src] != b'\n' {
+                            ret = -1;
+                            break 'exit ret;
+                        }
+                        src += 1;
+                        // Fully consumed — unlike the C (which reports the
+                        // unconsumed final CRLF as leftover via `Complete:`),
+                        // this state machine consumes it, so the leftover
+                        // count at Done reflects only genuinely pipelined
+                        // bytes.
+                        self._state = ChunkedState::Done;
+                        break 'state_machine;
                     }
-                    if src >= total && self._state == ChunkedState::TrailerLineMiddle {
-                        return Err(ChunkedError::NeedMore);
-                    }
-                }
 
-                ChunkedState::TrailerFinalCrlf => {
-                    // Consume the final \r\n after the terminal chunk.
-                    if src >= total {
-                        return Err(ChunkedError::NeedMore);
+                    ChunkedState::Done => {
+                        break 'state_machine;
                     }
-                    if buf[src] != b'\r' {
-                        return Err(ChunkedError::Invalid);
-                    }
-                    src += 1;
-                    if src >= total {
-                        return Err(ChunkedError::NeedMore);
-                    }
-                    if buf[src] != b'\n' {
-                        return Err(ChunkedError::Invalid);
-                    }
-                    // No need to advance src further — we're done.
-                    self._state = ChunkedState::Done;
-                    break;
-                }
-
-                ChunkedState::Done => {
-                    break;
                 }
             }
-        }
 
-        // If we exited the loop because we ran out of data, and the decoder
-        // is not in a terminal state, signal that more data is needed.
-        // This matches phr_decode_chunked's behavior of returning -2 when
-        // the input is incomplete.
-        match self._state {
-            ChunkedState::Done => Ok(dst),
-            _ => Err(ChunkedError::NeedMore),
+            // C `Complete:` — the whole chunked body (incl. terminal CRLF)
+            // was consumed; report the leftover unconsumed bytes (pipelined
+            // data after the body) the same way the C return value does.
+            if self._state == ChunkedState::Done {
+                ret = (total - src) as isize;
+            }
+            ret
+        };
+
+        // C `Exit:` — move the unconsumed raw tail behind the decoded
+        // payload so the buffer layout is [decoded][unconsumed].
+        if dst != src && src < total {
+            buf.copy_within(src..total, dst);
         }
+        (ret, dst)
     }
 }
 
@@ -1097,3 +1145,111 @@ pub fn phr_decode_chunked_is_in_data(decoder: *mut phr_chunked_decoder) -> core:
 }
 
 // ported from: src/picohttp/picohttp.zig
+
+// ──────────────────────────────────────────────────────────────────────────
+// ChunkedDecoder::decode — C-faithfulness tests (BCE-20260815-PHR-DECODE)
+// ──────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod chunked_decode_tests {
+    use super::ChunkedDecoder;
+
+    /// One whole chunked body in a single call: full decode, exact payload.
+    #[test]
+    fn decodes_whole_body_in_one_call() {
+        let mut d = ChunkedDecoder::default();
+        let mut buf = b"6\r\nalpha-\r\n4\r\nbeta\r\n0\r\n\r\n".to_vec();
+        let n = d.decode(&mut buf).expect("complete body decodes");
+        assert_eq!(&buf[..n], b"alpha-beta");
+    }
+
+    /// BCE-20260815-PHR-DECODE regression: on incomplete input (-2) the
+    /// decoded length MUST still be reported — the C `Exit:` path sets
+    /// `*_bufsz = dst` unconditionally. The old port left the caller's
+    /// length at the input size, so the HTTP client delivered the decoded
+    /// payload plus its stale in-place framing tail as body bytes.
+    #[test]
+    fn partial_decode_reports_decoded_length() {
+        let mut d = ChunkedDecoder::default();
+        let mut buf = b"6\r\nalpha-\r\n".to_vec();
+        let err = d.decode(&mut buf).expect_err("needs the next chunk");
+        assert_eq!(err, super::ChunkedError::NeedMore);
+        // The payload decoded so far is at the front of the buffer.
+        assert_eq!(&buf[..6], b"alpha-");
+    }
+
+    /// Fragment feeding via the raw API, mirroring the HTTP client's
+    /// multi-packet arm exactly: append the fragment, decode the fragment's
+    /// region, then truncate by the consumed framing bytes. The accumulated
+    /// buffer must converge to the exact payload.
+    #[test]
+    fn fragment_feeding_accumulates_exact_payload() {
+        let mut d = ChunkedDecoder::default();
+        let fragments: [&[u8]; 4] = [
+            b"5\r\nhello",
+            b"\r\n6\r\n world",
+            b"\r\n4\r\nbye!",
+            b"\r\n0\r\n\r\n",
+        ];
+        let mut acc: Vec<u8> = Vec::new();
+        for frag in fragments {
+            acc.extend_from_slice(frag);
+            let region = frag.len();
+            let mut len = region;
+            // SAFETY: acc outlives the call; the offset lands the region at
+            // the just-appended fragment; len is a live local.
+            let pret = unsafe {
+                super::phr_decode_chunked(
+                    &raw mut d,
+                    acc.as_mut_ptr().add(acc.len() - region),
+                    &raw mut len,
+                )
+            };
+            let new_len = acc.len() - (region - len);
+            acc.truncate(new_len);
+            if pret >= 0 {
+                break;
+            }
+            assert_eq!(pret, -2, "mid-stream fragments are incomplete, not invalid");
+        }
+        assert_eq!(acc, b"hello worldbye!");
+    }
+
+    /// The raw FFI surface must mirror C exactly: `*len` is set to the
+    /// decoded byte count on EVERY exit (-2 included), and the buffer is
+    /// left as [decoded][unconsumed tail].
+    #[test]
+    fn raw_api_sets_len_on_partial_exit() {
+        let mut d = ChunkedDecoder::default();
+        let mut buf = b"6\r\nalpha-\r\n".to_vec();
+        let mut len = buf.len();
+        // SAFETY: decoder/buf/len are live locals valid for the call.
+        let pret = unsafe { super::phr_decode_chunked(&raw mut d, buf.as_mut_ptr(), &raw mut len) };
+        assert_eq!(pret, -2, "incomplete input");
+        assert_eq!(len, 6, "decoded length must be written on partial exit");
+        assert_eq!(&buf[..len], b"alpha-");
+    }
+
+    /// A chunk split mid-payload across two calls: the Exit memmove keeps
+    /// the unconsumed tail contiguous behind the decoded prefix.
+    #[test]
+    fn chunk_split_mid_payload() {
+        let mut d = ChunkedDecoder::default();
+        let mut buf = b"6\r\nalp".to_vec();
+        let e = d.decode(&mut buf).expect_err("payload continues");
+        assert_eq!(e, super::ChunkedError::NeedMore);
+        assert_eq!(&buf[..3], b"alp");
+        // Second fragment carries the rest of the chunk + framing.
+        let mut buf2 = b"ha-\r\n0\r\n\r\n".to_vec();
+        let n = d.decode(&mut buf2).expect("body completes");
+        assert_eq!(&buf2[..n], b"ha-");
+    }
+
+    /// Invalid framing is rejected without panic.
+    #[test]
+    fn invalid_input_is_rejected() {
+        let mut d = ChunkedDecoder::default();
+        let mut buf = b"zz\r\nnope".to_vec();
+        let e = d.decode(&mut buf).expect_err("bad chunk size line");
+        assert_eq!(e, super::ChunkedError::Invalid);
+    }
+}

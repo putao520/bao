@@ -219,6 +219,7 @@ fn make_client<'a>(
         async_http_id,
         hostname,
         unix_socket_path: ZigStringSlice::EMPTY,
+        tls_info: None,
     }
 }
 

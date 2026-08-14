@@ -8,6 +8,9 @@
 pub mod async_http;
 #[path = "CertificateInfo.rs"]
 pub mod certificate_info;
+
+#[path = "TlsInfo.rs"]
+pub mod tls_info;
 #[path = "Decompressor.rs"]
 pub mod decompressor;
 #[path = "H2Client.rs"]
@@ -53,6 +56,7 @@ pub mod zlib;
 // ── crate-root re-exports (real types from un-gated modules) ──
 pub use async_http::AsyncHTTP;
 pub use certificate_info::CertificateInfo;
+pub use tls_info::BunTlsInfo;
 pub use decompressor::Decompressor;
 pub use header_builder::HeaderBuilder;
 pub use headers::{Headers, HeadersExt};
@@ -434,6 +438,11 @@ pub struct HTTPClientResult<'a> {
     /// If is not chunked encoded and Content-Length is not provided this will be unknown
     pub body_size: BodySize,
     pub certificate_info: Option<CertificateInfo>,
+    /// TLS security snapshot of the connection that produced this result
+    /// (protocol/cipher/ALPN/peer-cert chain). `None` for plaintext or
+    /// not-yet-snapshotted connections. Cloned per delivery; the client
+    /// keeps its copy until the request completes.
+    pub tls_info: Option<BunTlsInfo>,
 }
 
 impl<'a> HTTPClientResult<'a> {
@@ -484,6 +493,7 @@ impl<'a> HTTPClientResult<'a> {
             metadata: self.metadata,
             body_size: self.body_size,
             certificate_info: self.certificate_info,
+            tls_info: self.tls_info,
         }
     }
 }
@@ -654,6 +664,12 @@ pub struct HTTPClient<'a> {
     pub async_http_id: u32,
     pub hostname: Option<&'a [u8]>,
     pub unix_socket_path: ZigStringSlice,
+    /// TLS security facts of the current connection, snapshotted at
+    /// handshake completion (`first_call`) or — for a request adopted onto
+    /// a pooled socket, where no fresh handshake runs — at first result
+    /// delivery (`send_progress_update_without_stage_check`). Overwritten
+    /// per new handshake (redirects re-connect). Survives `state.reset()`.
+    pub tls_info: Option<BunTlsInfo>,
 }
 
 impl<'a> HTTPClient<'a> {
@@ -1795,6 +1811,16 @@ impl<'a> HTTPClient<'a> {
                 .get_native_handle()
                 .map(|p| p.cast())
                 .unwrap_or(core::ptr::null_mut());
+            // Handshake-completion snapshot of the connection's TLS security
+            // facts (protocol/cipher/ALPN/peer-cert chain). Runs before the
+            // ALPN dispatch below so the h2 session path snapshots too —
+            // the session owns the socket from `attach_leader` on, and the
+            // multiplexed progress path has no socket handle to read.
+            if !ssl_ptr.is_null() {
+                // SAFETY: ssl_ptr is the live native SSL of this socket;
+                // `first_call` runs post-handshake (`Handler::on_handshake`).
+                self.tls_info = Some(unsafe { BunTlsInfo::from_ssl(ssl_ptr) });
+            }
             let mut proto: *const u8 = core::ptr::null();
             let mut proto_len: c_uint = 0;
             // SAFETY: ssl_ptr is a live *mut SSL for this socket; out-params are
@@ -3677,6 +3703,24 @@ impl<'a> HTTPClient<'a> {
         ctx: *mut GenHttpContext<IS_SSL>,
         socket: HttpSocket<IS_SSL>,
     ) {
+        // Pooled-socket adoption fallback: a request reusing a parked TLS
+        // socket never runs a fresh handshake, so `first_call`'s snapshot
+        // point was skipped. The SSL is still live here (the socket is
+        // released to the pool only further below), so snapshot lazily on
+        // first delivery. One-shot per request (`is_none` gate).
+        if IS_SSL && self.tls_info.is_none() {
+            let ssl_ptr: *mut boringssl::c::SSL = socket
+                .get_native_handle()
+                .map(|p| p.cast())
+                .unwrap_or(core::ptr::null_mut());
+            if !ssl_ptr.is_null()
+                && unsafe { boringssl::c::SSL_is_init_finished(ssl_ptr) } == 1
+            {
+                // SAFETY: ssl_ptr is the live native SSL of this socket and
+                // the handshake is finished (checked above).
+                self.tls_info = Some(unsafe { BunTlsInfo::from_ssl(ssl_ptr) });
+            }
+        }
         if self.flags.protocol != Protocol::Http1_1 {
             return self.send_progress_update_multiplexed();
         }
@@ -3706,6 +3750,7 @@ impl<'a> HTTPClient<'a> {
             metadata,
             body_size,
             certificate_info,
+            tls_info,
         ) = {
             let r = self.to_result();
             (
@@ -3717,6 +3762,7 @@ impl<'a> HTTPClient<'a> {
                 r.metadata,
                 r.body_size,
                 r.certificate_info,
+                r.tls_info,
             )
         }; // r (and its &mut borrow of self) dropped here
         let is_done = !has_more;
@@ -3841,6 +3887,7 @@ impl<'a> HTTPClient<'a> {
             metadata,
             body_size,
             certificate_info,
+            tls_info,
         };
         callback.run(async_http, result);
 
@@ -3881,6 +3928,7 @@ impl<'a> HTTPClient<'a> {
             metadata,
             body_size,
             certificate_info,
+            tls_info,
         ) = {
             let r = self.to_result();
             (
@@ -3892,6 +3940,7 @@ impl<'a> HTTPClient<'a> {
                 r.metadata,
                 r.body_size,
                 r.certificate_info,
+                r.tls_info,
             )
         }; // r (and its &mut borrow of self) dropped here
         let is_done = !has_more;
@@ -3919,6 +3968,7 @@ impl<'a> HTTPClient<'a> {
             metadata,
             body_size,
             certificate_info,
+            tls_info,
         };
         callback.run(async_http, result);
     }
@@ -4090,6 +4140,7 @@ impl<'a> HTTPClient<'a> {
                     || self.state.request_stage == RequestStage::ProxyBody)
                     && self.flags.is_streaming_request_body,
                 is_http2: self.flags.protocol != Protocol::Http1_1,
+                tls_info: self.tls_info.clone(),
             };
         }
         HTTPClientResult {
@@ -4107,6 +4158,7 @@ impl<'a> HTTPClient<'a> {
                 || self.state.request_stage == RequestStage::ProxyBody)
                 && self.flags.is_streaming_request_body,
             is_http2: self.flags.protocol != Protocol::Http1_1,
+            tls_info: self.tls_info.clone(),
         }
     }
 
