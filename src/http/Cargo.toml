@@ -23,6 +23,7 @@ bitflags.workspace = true
 bytemuck = "1"
 bun_analytics.workspace = true
 bun_base64.workspace = true
+bao_boringssl_bridge.workspace = true
 bun_boringssl.workspace = true
 bun_boringssl_sys.workspace = true
 bun_brotli.workspace = true

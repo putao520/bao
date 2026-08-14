@@ -1659,6 +1659,32 @@ impl<'a> HTTPClient<'a> {
                     self.alpn_offer(),
                     self.tls_props.as_deref(),
                 );
+
+                // TLS session resumption: offer the cached session for this
+                // TLS endpoint. Same precondition as the ALPN/SNI config
+                // above — ClientHello has not been serialized yet. The
+                // profile salt segregates custom SSLConfig connections
+                // (sessions short-circuit parameter negotiation); the
+                // endpoint is the proxy when tunnelling, matching
+                // `get_tls_hostname`.
+                if let Some(host_str) = core::str::from_utf8(raw_hostname).ok() {
+                    let port = if let Some(proxy) = &self.http_proxy {
+                        proxy.get_port_auto()
+                    } else {
+                        self.url.get_port_auto()
+                    };
+                    let profile_salt = self
+                        .tls_props
+                        .as_deref()
+                        .map(|props| props.content_hash())
+                        .unwrap_or(0);
+                    bao_boringssl_bridge::session_cache::offer_session(
+                        ssl_ptr,
+                        host_str,
+                        port,
+                        profile_salt,
+                    );
+                }
             }
         } else {
             self.first_call::<IS_SSL>(socket);

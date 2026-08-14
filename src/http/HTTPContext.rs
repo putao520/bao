@@ -559,6 +559,10 @@ impl<const SSL: bool> HTTPContext<SSL> {
         };
         // SAFETY: secure was just set to Some.
         unsafe { ssl_ctx_setup(self.ssl_ctx()) };
+        // TLS session resumption: enable the client new-session callback on
+        // this outbound-TLS ctx (default HTTPS and per-config custom ctxs
+        // both funnel through here). See bao_boringssl_bridge::session_cache.
+        bao_boringssl_bridge::session_cache::enable_client(self.ssl_ctx());
         let owner_ptr = std::ptr::from_mut::<Self>(self).cast::<c_void>();
         // BCE-007-R2: install the per-kind dispatch vtable. Without this,
         // `us_dispatch_open`/`us_dispatch_writable`/`us_dispatch_data` route
@@ -622,6 +626,8 @@ impl<const SSL: bool> HTTPContext<SSL> {
             );
             // SAFETY: secure was just set to Some.
             unsafe { ssl_ctx_setup(self.ssl_ctx()) };
+            // TLS session resumption — same rationale as init_with_opts.
+            bao_boringssl_bridge::session_cache::enable_client(self.ssl_ctx());
         }
     }
 

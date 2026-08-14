@@ -20,6 +20,7 @@ pub mod client;
 pub mod connection;
 pub mod profile;
 pub mod server;
+pub mod session_cache;
 pub mod socket;
 
 pub use client::TlsClient;
@@ -29,6 +30,7 @@ pub use connection::{
 };
 pub use profile::TlsProfile;
 pub use server::TlsServer;
+pub use session_cache::{ClientSessionCache, SslSession, offer_session, session_reused};
 
 // ─── BoringSSL PEM parsing helpers ───────────────────────────────────
 //

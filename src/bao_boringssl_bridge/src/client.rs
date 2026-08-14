@@ -49,6 +49,12 @@ impl TlsClient {
             return Err(TlsError::BoringSSL("SSL_CTX_set_cipher_list failed"));
         }
 
+        // Client-side session resumption: enable the new-session callback so
+        // connections routed through this client (servo net fetch, node:tls)
+        // populate the process-wide per-origin session cache. See
+        // `session_cache` for the wire semantics.
+        crate::session_cache::enable_client(ctx);
+
         Ok(Self { ctx })
     }
 

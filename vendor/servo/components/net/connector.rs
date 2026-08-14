@@ -940,6 +940,9 @@ impl Service<Destination> for BoringsslHttpsConnector {
                 .map(|h| h.to_string())
                 .unwrap_or_else(|| "unknown".to_string());
 
+            // TLS endpoint port for the session-resumption origin key.
+            let port = dst.port_u16().unwrap_or(443);
+
             let future = self.http.call(dst);
             Box::pin(async move {
                 let tcp_stream = future.await.map_err(|e| BoxError::from(e.to_string()))?;
@@ -996,6 +999,22 @@ impl Service<Destination> for BoringsslHttpsConnector {
                         SSL_set_verify(tls_conn.ssl_ptr(), 0, None);
                     }
                 }
+
+                // TLS session resumption: offer the cached session for this
+                // origin (shared with the bun_http stack via
+                // bao_boringssl_bridge::session_cache) before the handshake
+                // starts. The profile salt segregates stealth-profile
+                // sessions from default-profile ones — offering a session
+                // short-circuits parameter negotiation, so a stealth
+                // connection must not resume a default-profile session
+                // (and vice versa).
+                let profile_salt = stealth_pc.as_ref().map(stealth_pc_salt).unwrap_or(0);
+                bao_boringssl_bridge::session_cache::offer_session(
+                    tls_conn.ssl_ptr(),
+                    &host,
+                    port,
+                    profile_salt,
+                );
 
                 let mut stream = BoringsslTlsStream::new(tcp, tls_conn);
 
@@ -1114,6 +1133,22 @@ pub struct StealthPerConnection {
     pub alpn_wire: Option<Vec<u8>>,
     /// Supported groups as OpenSSL name strings (e.g., "X25519:P-256:P-384").
     pub curves_list: Option<String>,
+}
+
+/// Stable in-process discriminator for a [`StealthPerConnection`]: used to
+/// salt the TLS session-resumption origin key so sessions established under
+/// one TLS parameter set are never offered under another (offering a
+/// session short-circuits parameter negotiation — see
+/// bao_boringssl_bridge::session_cache). `DefaultHasher` values are not
+/// stable across compiler versions, which is fine: the salt only needs to be
+/// consistent within one process.
+fn stealth_pc_salt(pc: &StealthPerConnection) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    pc.sigalg_list.hash(&mut h);
+    pc.alpn_wire.hash(&mut h);
+    pc.curves_list.hash(&mut h);
+    h.finish()
 }
 
 /// Create a [`TlsConfig`] to use for managing an HTTP connection.
