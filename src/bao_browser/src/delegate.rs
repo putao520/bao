@@ -5088,6 +5088,7 @@ mod tests {
             (ConsoleLogLevel::Warn, "warning"),
             (ConsoleLogLevel::Error, "error"),
             (ConsoleLogLevel::Trace, "verbose"),
+            (ConsoleLogLevel::Dir, "info"),
         ];
         for (level, expected_str) in cases {
             let mapped = match level {
@@ -5097,6 +5098,7 @@ mod tests {
                 ConsoleLogLevel::Warn => "warning",
                 ConsoleLogLevel::Error => "error",
                 ConsoleLogLevel::Trace => "verbose",
+                ConsoleLogLevel::Dir => "info",
             };
             assert_eq!(
                 mapped, expected_str,

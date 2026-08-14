@@ -37,6 +37,21 @@ use bao_stealth::{boringssl_cipher_list_string, boringssl_curves_list_string, bo
 use bao_boringssl_bridge::connection::TlsState;
 use bun_boringssl_sys::boringssl::*;
 
+// Verification symbols compiled into the vendored BoringSSL library but not
+// declared in the hand-rolled bindings (same pattern as
+// bao_boringssl_bridge/src/client.rs). Ground truth: vendor/boringssl/include/openssl.
+unsafe extern "C" {
+    /// Final verification result of the peer chain (`X509_V_*` code; valid
+    /// after a handshake attempt, including a failed one).
+    fn SSL_get_verify_result(ssl: *const SSL) -> core::ffi::c_long;
+    /// Load the system default trust paths (OPENSSLDIR bundle + hash dir)
+    /// into the ctx's store.
+    fn SSL_CTX_set_default_verify_paths(ctx: *mut SSL_CTX) -> core::ffi::c_int;
+}
+
+/// `X509_V_OK` (vendor/boringssl/include/openssl/x509.h).
+const X509_V_OK: core::ffi::c_long = 0;
+
 use crate::async_runtime::spawn_task;
 use crate::hosts::replace_host;
 
@@ -515,14 +530,12 @@ impl hyper::rt::Read for BoringsslTlsStream {
                     match result.state {
                         TlsState::Active => {
                             // No plaintext available, need more ciphertext from TCP
-                            break;
                         }
                         TlsState::PeerClosed | TlsState::Closed => {
                             return Poll::Ready(Ok(())); // EOF
                         }
                         TlsState::Handshaking => {
                             // Still handshaking, need more data
-                            break;
                         }
                         // BAO: SNI-driven certificate selection parked the
                         // handshake. Unreachable on the connector path (no
@@ -538,7 +551,7 @@ impl hyper::rt::Read for BoringsslTlsStream {
                         }
                     }
                 }
-                Err(TlsError::NotReady) => break,
+                Err(TlsError::NotReady) => {},
                 Err(TlsError::BoringSSL(msg)) => {
                     return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, msg)));
                 }
@@ -546,47 +559,32 @@ impl hyper::rt::Read for BoringsslTlsStream {
                     return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e.to_string())));
                 }
             }
-        }
 
-        // Need more data from TCP — read from TCP and feed into TLS
-        let mut tcp_buf = [0u8; BUF_SIZE];
-        let mut read_buf = tokio::io::ReadBuf::new(&mut tcp_buf);
-        match std::pin::Pin::new(&mut this.tcp).poll_read(cx, &mut read_buf) {
-            Poll::Ready(Ok(())) => {
-                let n = read_buf.filled().len();
-                if n == 0 {
-                    // TCP EOF
-                    return Poll::Ready(Ok(()));
-                }
-                this.tls.feed(read_buf.filled());
-                // Try to process once more
-                match this.tls.process() {
-                    Ok(result) => {
-                        // Flush outgoing
-                        if result.outgoing_bytes > 0 {
-                            let outgoing = this.tls.take_outgoing();
-                            this.outgoing.extend_from_slice(&outgoing);
-                        }
-
-                        if !result.plaintext.is_empty() {
-                            for chunk in &result.plaintext {
-                                let remaining = buf.remaining();
-                                let to_copy = remaining.min(chunk.len());
-                                if to_copy > 0 {
-                                    buf.put_slice(&chunk[..to_copy]);
-                                }
-                            }
-                            return Poll::Ready(Ok(()));
-                        }
-                        // No data yet, tell caller to poll again
-                        Poll::Pending
+            // Need more data from TCP — read from TCP and feed into TLS.
+            //
+            // `Poll::Pending` may ONLY be returned from this arm: a
+            // successful TCP read consumes the socket's readiness event, so
+            // returning Pending after one (without re-polling the socket,
+            // which is what registers the waker) parks the task forever when
+            // the rest of the TLS flight is already sitting in the kernel
+            // receive queue — no new arrival ever fires the edge-triggered
+            // wakeup. Feed and loop instead.
+            let mut tcp_buf = [0u8; BUF_SIZE];
+            let mut read_buf = tokio::io::ReadBuf::new(&mut tcp_buf);
+            match std::pin::Pin::new(&mut this.tcp).poll_read(cx, &mut read_buf) {
+                Poll::Ready(Ok(())) => {
+                    let n = read_buf.filled().len();
+                    if n == 0 {
+                        // TCP EOF
+                        return Poll::Ready(Ok(()));
                     }
-                    Err(TlsError::NotReady) => Poll::Pending,
-                    Err(e) => Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e.to_string()))),
+                    this.tls.feed(read_buf.filled());
+                    // Loop: re-process the fed ciphertext. Never return
+                    // Pending directly from this arm.
                 }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
             }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -986,15 +984,22 @@ pub struct BoringsslHttpsConnector {
     tls_client: TlsClient,
     ignore_certificate_errors: bool,
     stealth_per_connection: Option<StealthPerConnection>,
+    override_manager: CertificateErrorOverrideManager,
 }
 
 impl BoringsslHttpsConnector {
-    fn new(tls_client: TlsClient, ignore_certificate_errors: bool, stealth_per_connection: Option<StealthPerConnection>) -> Self {
+    fn new(
+        tls_client: TlsClient,
+        ignore_certificate_errors: bool,
+        stealth_per_connection: Option<StealthPerConnection>,
+        override_manager: CertificateErrorOverrideManager,
+    ) -> Self {
         Self {
             http: ServoHttpConnector::new(),
             tls_client,
             ignore_certificate_errors,
             stealth_per_connection,
+            override_manager,
         }
     }
 }
@@ -1025,84 +1030,145 @@ impl Service<Destination> for BoringsslHttpsConnector {
             // TLS endpoint port for the session-resumption origin key.
             let port = dst.port_u16().unwrap_or(443);
 
-            let future = self.http.call(dst);
+            let future = self.http.call(dst.clone());
+            let mut http_retry = self.http.clone();
+            let dst_retry = dst;
+            let override_manager = self.override_manager.clone();
             Box::pin(async move {
                 let tcp_stream = future.await.map_err(|e| BoxError::from(e.to_string()))?;
                 // tcp_stream is TokioIo<TcpStream>, extract the inner TcpStream
                 let tcp = tcp_stream.into_inner();
 
-                // Create a BoringSSL TLS connection
-                let mut tls_conn = TlsConnection::new_client(&tls_client, &host)
-                    .map_err(|e| BoxError::from(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+                // Build a fresh TLS connection: stealth per-connection
+                // settings, verification mode, and the resumption offer. A
+                // closure because the certificate-override retry needs a
+                // second, identically-configured connection.
+                let prepare = |verify_peer: bool| -> Result<TlsConnection, BoxError> {
+                    let mut tls_conn = TlsConnection::new_client(&tls_client, &host)
+                        .map_err(|e| BoxError::from(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
 
-                // Apply per-connection stealth settings via SSL_set_* functions
-                if let Some(ref pc) = stealth_pc {
-                    let ssl = tls_conn.ssl_ptr();
+                    // Apply per-connection stealth settings via SSL_set_* functions
+                    if let Some(ref pc) = stealth_pc {
+                        let ssl = tls_conn.ssl_ptr();
 
-                    // Set signature algorithms
-                    if let Some(ref sigalg_str) = pc.sigalg_list {
-                        let sigalg_c = std::ffi::CString::new(sigalg_str.as_str())
-                            .map_err(|e| BoxError::from(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
-                        // SAFETY: SSL_set1_sigalgs_list sets the signature algorithms on the SSL
-                        // object. The CString is valid for the duration of this call. The ssl
-                        // pointer is valid because we just created the TlsConnection.
-                        let ok = unsafe { SSL_set1_sigalgs_list(ssl, sigalg_c.as_ptr()) };
-                        if ok == 0 {
-                            warn!("BoringSSL: SSL_set1_sigalgs_list failed");
+                        // Set signature algorithms
+                        if let Some(ref sigalg_str) = pc.sigalg_list {
+                            let sigalg_c = std::ffi::CString::new(sigalg_str.as_str())
+                                .map_err(|e| BoxError::from(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+                            // SAFETY: SSL_set1_sigalgs_list sets the signature algorithms on the SSL
+                            // object. The CString is valid for the duration of this call. The ssl
+                            // pointer is valid because we just created the TlsConnection.
+                            let ok = unsafe { SSL_set1_sigalgs_list(ssl, sigalg_c.as_ptr()) };
+                            if ok == 0 {
+                                warn!("BoringSSL: SSL_set1_sigalgs_list failed");
+                            }
+                        }
+
+                        // Set ALPN protocols
+                        if let Some(ref alpn_wire) = pc.alpn_wire {
+                            // SAFETY: SSL_set_alpn_protos sets ALPN on the SSL object. The alpn_wire
+                            // buffer is valid for the duration of this call. The ssl pointer is valid
+                            // because we just created the TlsConnection.
+                            let ok = unsafe {
+                                SSL_set_alpn_protos(ssl, alpn_wire.as_ptr(), alpn_wire.len())
+                            };
+                            if ok != 0 {
+                                warn!("BoringSSL: SSL_set_alpn_protos failed");
+                            }
+                        }
+
+                        // Set curves/groups
+                        if let Some(ref curves_str) = pc.curves_list {
+                            let curves_c = std::ffi::CString::new(curves_str.as_str())
+                                .map_err(|e| BoxError::from(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+                            let _ = tls_conn.set_curves_list(curves_c.as_ptr());
                         }
                     }
 
-                    // Set ALPN protocols
-                    if let Some(ref alpn_wire) = pc.alpn_wire {
-                        // SAFETY: SSL_set_alpn_protos sets ALPN on the SSL object. The alpn_wire
-                        // buffer is valid for the duration of this call. The ssl pointer is valid
-                        // because we just created the TlsConnection.
-                        let ok = unsafe {
-                            SSL_set_alpn_protos(ssl, alpn_wire.as_ptr(), alpn_wire.len())
-                        };
-                        if ok != 0 {
-                            warn!("BoringSSL: SSL_set_alpn_protos failed");
+                    // Verification: on unless the embedder opted out
+                    // (`ignore_certificate_errors`, WPT). BoringSSL clients
+                    // do NOT verify unless told to — enabling it here is what
+                    // makes `SslValidation` errors (and overrides) possible.
+                    if verify_peer {
+                        if !tls_conn.set_verify_peer(&host) {
+                            return Err(BoxError::from(io::Error::new(
+                                io::ErrorKind::Other,
+                                "TLS: hostname verification could not be installed",
+                            )));
+                        }
+                    } else {
+                        // SAFETY: SSL_set_verify disables certificate verification on the SSL
+                        // object. The ssl pointer is valid because we just created the TlsConnection.
+                        unsafe {
+                            SSL_set_verify(tls_conn.ssl_ptr(), 0, None);
                         }
                     }
 
-                    // Set curves/groups
-                    if let Some(ref curves_str) = pc.curves_list {
-                        let curves_c = std::ffi::CString::new(curves_str.as_str())
-                            .map_err(|e| BoxError::from(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
-                        let _ = tls_conn.set_curves_list(curves_c.as_ptr());
-                    }
-                }
+                    // TLS session resumption: offer the cached session for this
+                    // origin (shared with the bun_http stack via
+                    // bao_boringssl_bridge::session_cache) before the handshake
+                    // starts. The profile salt segregates stealth-profile
+                    // sessions from default-profile ones — offering a session
+                    // short-circuits parameter negotiation, so a stealth
+                    // connection must not resume a default-profile session
+                    // (and vice versa).
+                    let profile_salt = stealth_pc.as_ref().map(stealth_pc_salt).unwrap_or(0);
+                    bao_boringssl_bridge::session_cache::offer_session(
+                        tls_conn.ssl_ptr(),
+                        &host,
+                        port,
+                        profile_salt,
+                    );
+                    Ok(tls_conn)
+                };
 
-                // If ignoring certificate errors, disable verification per-connection
-                if ignore_cert_errors {
-                    // SAFETY: SSL_set_verify disables certificate verification on the SSL
-                    // object. The ssl pointer is valid because we just created the TlsConnection.
-                    unsafe {
-                        SSL_set_verify(tls_conn.ssl_ptr(), 0, None);
-                    }
-                }
-
-                // TLS session resumption: offer the cached session for this
-                // origin (shared with the bun_http stack via
-                // bao_boringssl_bridge::session_cache) before the handshake
-                // starts. The profile salt segregates stealth-profile
-                // sessions from default-profile ones — offering a session
-                // short-circuits parameter negotiation, so a stealth
-                // connection must not resume a default-profile session
-                // (and vice versa).
-                let profile_salt = stealth_pc.as_ref().map(stealth_pc_salt).unwrap_or(0);
-                bao_boringssl_bridge::session_cache::offer_session(
-                    tls_conn.ssl_ptr(),
-                    &host,
-                    port,
-                    profile_salt,
-                );
-
+                let verify_peer = !ignore_cert_errors;
+                let tls_conn = prepare(verify_peer)?;
                 let mut stream = BoringsslTlsStream::new(tcp, tls_conn);
 
                 // Drive the TLS handshake
-                stream.handshake().await
-                    .map_err(|e| -> BoxError { BoxError::from(e) })?;
+                if let Err(e) = stream.handshake().await {
+                    if verify_peer {
+                        // SAFETY: ssl is a live SSL owned by the stream's
+                        // TlsConnection, reachable after the failed handshake.
+                        let verify_failed =
+                            unsafe { SSL_get_verify_result(stream.tls.ssl_ptr()) } != X509_V_OK;
+                        if verify_failed {
+                            if let Some(der) = stream.tls.peer_certificate_der() {
+                                if override_manager.has_override(&der) {
+                                    // This exact certificate was explicitly
+                                    // accepted (cert-error override).
+                                    // Reconnect without verification — the
+                                    // failed attempt consumed the TCP stream.
+                                    // Drop the abandoned stream FIRST: holding
+                                    // it open parks sequential test servers
+                                    // (and real ones) on a connection whose
+                                    // TLS engine will never send Finished,
+                                    // starving the retry connection behind it.
+                                    drop(stream);
+                                    let tcp_stream = http_retry
+                                        .call(dst_retry)
+                                        .await
+                                        .map_err(|e| BoxError::from(e.to_string()))?;
+                                    let tcp = tcp_stream.into_inner();
+                                    let tls_conn = prepare(false)?;
+                                    let mut stream = BoringsslTlsStream::new(tcp, tls_conn);
+                                    stream.handshake().await
+                                        .map_err(|e| -> BoxError { BoxError::from(e) })?;
+                                    let tls_info = stream.tls_info();
+                                    return Ok(InstrumentedStream {
+                                        inner: MaybeTlsStream::Https(stream),
+                                        tls_info: Some(tls_info),
+                                    });
+                                }
+                                // Not overridden: record it so the fetch error
+                                // path surfaces `SslValidation` with the cert.
+                                override_manager.record_certificate_failing_verification(&host, &der);
+                            }
+                        }
+                    }
+                    return Err(BoxError::from(e));
+                }
 
                 let tls_info = stream.tls_info();
                 Ok(InstrumentedStream {
@@ -1163,6 +1229,22 @@ impl CertificateErrorOverrideManager {
             .certificates_failing_to_verify
             .remove(host)
     }
+
+    /// Record a certificate that failed verification, keyed by hostname, so
+    /// the fetch error path (`NetworkError::from_hyper_error`) can surface it
+    /// as `SslValidation` instead of a generic connection error.
+    pub(crate) fn record_certificate_failing_verification(&self, host: &str, der: &[u8]) {
+        self.0
+            .lock()
+            .certificates_failing_to_verify
+            .insert(host.to_string(), der.to_vec());
+    }
+
+    /// Whether `der` was explicitly overridden (user accepted this exact
+    /// certificate despite the verification failure).
+    pub(crate) fn has_override(&self, der: &[u8]) -> bool {
+        self.0.lock().overrides.iter().any(|o| o == der)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1185,6 +1267,10 @@ pub struct TlsConfig {
     /// Per-connection settings from stealth profile (applied on each new TLS connection
     /// because BoringSSL only provides SSL_set_* variants, not SSL_CTX_set_*).
     pub stealth_per_connection: Option<StealthPerConnection>,
+    /// Certificate-override bookkeeping shared with the fetch error path:
+    /// failing certificates are recorded per host (→ `SslValidation` errors)
+    /// and previously accepted certificates bypass verification.
+    pub override_manager: CertificateErrorOverrideManager,
 }
 
 impl TlsConfig {
@@ -1244,9 +1330,9 @@ fn stealth_pc_salt(pc: &StealthPerConnection) -> u64 {
 /// is used when running the WPT tests, because BoringSSL currently rejects the WPT certificate.
 #[servo_tracing::instrument(skip_all)]
 pub fn create_tls_config(
-    _ca_certificates: CACertificates,
+    ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
-    _override_manager: CertificateErrorOverrideManager,
+    override_manager: CertificateErrorOverrideManager,
 ) -> TlsConfig {
     // Build the BoringSSL TlsClient
     let (client, stealth_per_connection) = match get_stealth_tls_config() {
@@ -1324,10 +1410,35 @@ pub fn create_tls_config(
         }
     };
 
+    // Trust store for peer verification. `Default` = system roots (what a
+    // real browser trusts); an explicit override list (WPT / embedder-supplied
+    // CAs) replaces it. Connections opt into verification in the connector
+    // (`SSL_VERIFY_PEER` per connection); the store must be populated here,
+    // on the shared ctx.
+    match ca_certificates {
+        CACertificates::Default => {
+            // SAFETY: client.ctx() is a live SSL_CTX; the call only mutates
+            // its cert store. Errors leave the store as-is — verification
+            // then fails closed against an empty store, never open.
+            let ok = unsafe { SSL_CTX_set_default_verify_paths(client.ctx()) };
+            if ok != 1 {
+                warn!("BoringSSL: SSL_CTX_set_default_verify_paths failed — HTTPS verification will fail closed");
+            }
+        },
+        CACertificates::Override(certificates) => {
+            for der in certificates {
+                if !client.add_trusted_der(&der) {
+                    warn!("BoringSSL: embedder CA certificate could not be parsed (DER) — skipped");
+                }
+            }
+        },
+    }
+
     TlsConfig {
         client,
         ignore_certificate_errors,
         stealth_per_connection,
+        override_manager,
     }
 }
 
@@ -1447,6 +1558,7 @@ pub fn create_http_client(tls_config: TlsConfig) -> ServoClient {
         tls_config.client,
         tls_config.ignore_certificate_errors,
         tls_config.stealth_per_connection,
+        tls_config.override_manager,
     );
 
     let mut builder = Client::builder(TokioExecutor {});
