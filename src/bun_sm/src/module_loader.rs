@@ -11,7 +11,10 @@ use mozjs::jsapi::*;
 use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
-use mozjs::rust::wrappers2::{CompileModule1, JS_GetRuntime, ModuleEvaluate, ModuleLink};
+use mozjs::rust::wrappers2::{
+    CompileModule1, GetPromiseState, IsPromiseObject, JS_GetRuntime, ModuleEvaluate, ModuleLink,
+    ThrowOnModuleEvaluationFailure,
+};
 use mozjs::rust::{
     CompileOptionsWrapper, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS, transform_str_to_source_text,
 };
@@ -439,6 +442,10 @@ impl ModuleLoader {
             }
         }
 
+        // Surface a top-level throw / rejected top-level await to the caller
+        // (Node semantics: `node foo.mjs` with a top-level throw exits 1).
+        check_module_evaluation_promise(realm_cx, rval.handle())?;
+
         ::std::result::Result::Ok(unsafe { jsval_to_jsvalue(realm_cx.raw_cx_no_gc(), rval.get()) })
     }
 
@@ -553,6 +560,12 @@ impl ModuleLoader {
             }
         }
 
+        // Surface a top-level throw / rejected top-level await BEFORE
+        // `after_eval` runs: a failed module must not proceed to downstream
+        // work (e.g. `bao test` must not run suites registered by a module
+        // whose evaluation failed).
+        check_module_evaluation_promise(realm_cx, rval.handle())?;
+
         ::std::result::Result::Ok(after_eval(realm_cx))
     }
 
@@ -658,6 +671,10 @@ impl ModuleLoader {
             }
         }
 
+        // Surface a top-level throw / rejected top-level await to the caller
+        // (Node semantics: `node foo.mjs` with a top-level throw exits 1).
+        check_module_evaluation_promise(realm_cx, rval.handle())?;
+
         ::std::result::Result::Ok(unsafe {
             jsval_to_jsvalue(realm_cx.raw_cx_no_gc(), rval.get())
         })
@@ -758,6 +775,12 @@ impl ModuleLoader {
                 drain_job_queue(realm_cx);
             }
         }
+
+        // Surface a top-level throw / rejected top-level await BEFORE
+        // `after_eval` runs: a failed module must not proceed to downstream
+        // work (e.g. `bao test` must not run suites registered by a module
+        // whose evaluation failed).
+        check_module_evaluation_promise(realm_cx, rval.handle())?;
 
         ::std::result::Result::Ok(after_eval(realm_cx))
     }
@@ -3326,6 +3349,56 @@ fn extract_json_string_field(json: &str, field: &str) -> ::std::option::Option<S
     let value_start = &trimmed[1..];
     let end = value_start.find('"')?;
     Some(value_start[..end].to_string())
+}
+
+/// Surface a module evaluation failure hidden inside the evaluation promise.
+///
+/// SM contract (`js/src/vm/Modules.cpp`, `ModuleEvaluate`): the out-value is
+/// ALWAYS the module's top-level capability promise. A top-level `throw` (or
+/// a top-level-await rejection settling during the job-queue drain) makes
+/// `ModuleEvaluate` return `true` with a REJECTED promise — the error is
+/// captured into the module record and cleared from the context. Without this
+/// check the error is silently swallowed and callers see a successful
+/// evaluation (module_loader defect: `bao run foo.mjs` exit 0 on throw,
+/// worker bootstrap failures invisible, test files passing vacuously).
+///
+/// Rejection is unwrapped via `ThrowOnModuleEvaluationFailure`
+/// (`ThrowModuleErrorsSync`), which moves the rejection reason onto the
+/// context as a pending exception and marks the settled promise handled (so
+/// the rejection tracker does not double-report), then extracted through the
+/// same path as compile/link errors. A still-pending promise (a top-level
+/// await that outlives the drains) is NOT an error — the evaluation simply
+/// outlives this call.
+///
+/// Must be called after the job queue has been drained (post-evaluate and
+/// post post-eval-hook), while `rval` — the evaluation promise — is still
+/// rooted and we are still inside the module's realm.
+fn check_module_evaluation_promise(
+    realm_cx: &mut mozjs::context::JSContext,
+    rval: mozjs::rust::Handle<Value>,
+) -> ::std::result::Result<(), JsError> {
+    if !rval.get().is_object() {
+        return ::std::result::Result::Ok(());
+    }
+    rooted!(&in(realm_cx) let promise = rval.get().to_object());
+    unsafe {
+        if !IsPromiseObject(promise.handle()) {
+            return ::std::result::Result::Ok(());
+        }
+        match GetPromiseState(promise.handle()) {
+            PromiseState::Rejected => {
+                // ThrowModuleErrorsSync: rejected promise → the rejection
+                // reason becomes the pending exception, return value false.
+                ThrowOnModuleEvaluationFailure(
+                    realm_cx,
+                    promise.handle(),
+                    ModuleErrorBehaviour::ThrowModuleErrorsSync,
+                );
+                ::std::result::Result::Err(extract_module_error(realm_cx))
+            }
+            _ => ::std::result::Result::Ok(()),
+        }
+    }
 }
 
 fn extract_module_error(cx: &mut mozjs::context::JSContext) -> JsError {
