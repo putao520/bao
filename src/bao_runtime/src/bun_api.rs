@@ -703,6 +703,18 @@ unsafe fn populate_process_object(
         JSPROP_ENUMERATE as u32,
     );
 
+    // process.exitCode — accessor backed by the orderly-exit EXIT_CODE slot.
+    // Assignment only changes the final code (no immediate exit); the value
+    // is what 'exit' listeners receive and what the CLI main loop returns.
+    JS_DefineProperty1(
+        cx.raw_cx(),
+        proc_obj.into(),
+        c"exitCode".as_ptr(),
+        ::std::option::Option::Some(process_exitcode_get),
+        ::std::option::Option::Some(process_exitcode_set),
+        JSPROP_ENUMERATE as u32,
+    );
+
     // process.argv
     {
         let args: Vec<::std::string::String> = ::std::env::args().collect();
@@ -2417,6 +2429,10 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 
     // Create uWS App (C++ HTTP server). Gracefully degrade when uSockets
     // backend is unavailable (stub mode) — JS API contract is preserved.
+    // Note: HttpFlags::isNodeHttp stays at its default `false` — Bun.serve
+    // semantics: RFC 9112 6.1 rejects an HTTP/1.0 request bearing
+    // Transfer-Encoding with 400 (node_http::server_listen opts into llhttp
+    // parity via set_is_node_http(true)).
     let opts = BunSocketContextOptions::default();
     let app_ptr = App::<false>::create(&opts).unwrap_or(::std::ptr::null_mut());
 
@@ -5395,42 +5411,139 @@ unsafe extern "C" fn tty_wrap_is_tty(_cx: *mut JSContext, argc: u32, vp: *mut JS
     true
 }
 
-thread_local! {
-    static EXIT_HANDLER_KEYS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+// ── process 'exit' dispatch (Node semantics, upstream 18391f652) ──
+//
+// `process.on('exit', cb)` registers through the real EventEmitter path
+// (`node_events::ee_on` → EmitterState on the process object). The dispatch
+// below invokes `process.emit('exit', code)` at orderly exit: listeners run
+// in registration order, each receiving the exit code; a throwing listener
+// does not stop subsequent ones (ee_emit clears the pending exception after
+// every call). Setting `process.exitCode` inside a listener is respected —
+// the CLI main loop returns `crate::exit_code()` after this dispatch.
+
+/// process.exitCode getter — the orderly-exit EXIT_CODE slot.
+/// process.exit(code) / Bun.exit(code) / exitCode assignments all land here.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_exitcode_get(
+    _cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(Int32Value(crate::exit_code()));
+    true
 }
 
-/// Global counter for generating unique GcStore keys for exit handler callbacks.
-#[allow(dead_code)]
-static EXIT_CB_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-#[allow(dead_code, unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn process_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+/// process.exitCode setter — sets the final code without requesting exit
+/// (Node semantics: the property alone steers the exit code; the process
+/// keeps running until the event loop drains or process.exit() is called).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_exitcode_set(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 {
-        args.rval().set(UndefinedValue());
-        return true;
+    if argc > 0 {
+        let v = *args.get(0).ptr;
+        let code = if v.is_int32() {
+            v.to_int32()
+        } else if v.is_double() {
+            v.to_double() as i32
+        } else if v.is_null_or_undefined() {
+            0
+        } else if v.is_string() {
+            crate::js_to_rust_string(_cx, v)
+                .trim()
+                .parse::<i32>()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        crate::set_exit_code(code);
     }
-    let event_val = *args.get(0).ptr;
-    let handler_val = *args.get(1).ptr;
-
-    if !event_val.is_string() || !handler_val.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    let event = crate::js_to_rust_string(cx, event_val);
-    let mut wrapped_cx_on = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref_on = &mut wrapped_cx_on;
-    rooted!(&in(cx_ref_on) let handler_obj = handler_val.to_object());
-
-    if event == "exit" {
-        let cb_id = EXIT_CB_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let key = format!("exit_cb_{}", cb_id);
-        gc_store_insert(cx, &key, handler_obj.get());
-        EXIT_HANDLER_KEYS.with(|h| h.borrow_mut().push(key));
-    }
-    args.rval().set(UndefinedValue());
+    args.rval().set(BooleanValue(true));
     true
+}
+
+/// Invoke 'exit' listeners on the process object.
+///
+/// Must be called on the JS thread, inside the realm where `process` was
+/// installed — the post-eval hook provides exactly this context (the hook
+/// runs inside the eval realm, before AutoRealm drops).
+///
+/// Returns `true` when at least one listener was registered (the boolean
+/// result of `process.emit`), so callers/tests can observe the dispatch.
+pub fn dispatch_exit_handlers(cx: *mut JSContext) -> bool {
+    let global = unsafe { CurrentGlobalOrNull(cx) };
+    if global.is_null() {
+        return false;
+    }
+    let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+
+    // The process object installed on the global by install_process_global.
+    let mut proc_val = UndefinedValue();
+    unsafe {
+        JS_GetProperty(
+            cx,
+            global_root.handle().into(),
+            c"process".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut proc_val,
+            },
+        );
+    }
+    if !proc_val.is_object() {
+        return false;
+    }
+    rooted!(&in(cx_ref) let proc_obj = proc_val.to_object());
+
+    let code = crate::exit_code();
+    let exit_str = unsafe { JS_NewStringCopyZ(cx, c"exit".as_ptr()) };
+    if exit_str.is_null() {
+        return false;
+    }
+    rooted!(&in(cx_ref) let exit_str_val = unsafe { StringValue(&*exit_str) });
+    let args_vals = [*exit_str_val.handle(), Int32Value(code)];
+    let call_args = HandleValueArray {
+        length_: 2,
+        elements_: args_vals.as_ptr(),
+    };
+
+    let mut rval = UndefinedValue();
+    let ok = unsafe {
+        JS_CallFunctionName(
+            cx,
+            proc_obj.handle().into(),
+            c"emit".as_ptr(),
+            &call_args,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            },
+        )
+    };
+    if !ok {
+        // emit itself failed (not a listener throw — ee_emit swallows those).
+        unsafe { JS_ClearPendingException(cx) };
+        return false;
+    }
+    rval.is_boolean() && rval.to_boolean()
+}
+
+/// PostEvalHook: drain the event loop (timers + I/O); when it is done —
+/// natural end or process.exit() requested — dispatch 'exit' listeners.
+///
+/// Ordering matches Node: microtasks/jobs run first (RunJobs executes before
+/// the hook in both `JsContext::eval` and `ModuleLoader::eval_module`), the
+/// event loop drains next, and 'exit' listeners fire only after the loop is
+/// finished. When the hook returns false both eval loops break without
+/// calling it again, so dispatch happens exactly once per eval.
+pub fn post_eval_drain_then_exit(cx: &mut mozjs::context::JSContext) -> bool {
+    let more = crate::timers::drain_and_check(cx);
+    if !more {
+        dispatch_exit_handlers(unsafe { cx.raw_cx() });
+    }
+    more
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

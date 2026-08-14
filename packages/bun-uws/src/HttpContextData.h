@@ -34,6 +34,12 @@ struct HttpFlags {
     bool requireHostHeader: 1 = true;
     bool isAuthorized: 1 = false;
     bool useStrictMethodValidation: 1 = false;
+    /* Bun upstream routes Bun.serve and node:http through distinct
+     * HttpContext<SSL, IsNodeHttp> template instantiations; Bao shares one
+     * parser, so this runtime flag carries the same split: node:http follows
+     * llhttp (e.g. dispatches an HTTP/1.0 request bearing Transfer-Encoding
+     * and closes), Bun.serve keeps the RFC 9112 6.1 outright rejection. */
+    bool isNodeHttp: 1 = false;
 };
 
 template <bool SSL>

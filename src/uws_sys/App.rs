@@ -131,6 +131,14 @@ impl<const SSL: bool> App<SSL> {
         )
     }
 
+    /// node:http parity split (Bun upstream's `IsNodeHttp` template parameter as a
+    /// runtime flag). `true` = llhttp-compatible framing lenience (e.g. an HTTP/1.0
+    /// request bearing Transfer-Encoding is dispatched, connection closed after);
+    /// `false` (default) = Bun.serve semantics (RFC 9112 6.1 outright 400 rejection).
+    pub fn set_is_node_http(&mut self, is_node_http: bool) {
+        c::uws_app_set_is_node_http(Self::SSL_FLAG, self.as_raw(), is_node_http)
+    }
+
     pub fn set_max_http_header_size(&mut self, max_header_size: u64) {
         c::uws_app_set_max_http_header_size(Self::SSL_FLAG, self.as_raw(), max_header_size)
     }
@@ -533,6 +541,7 @@ pub mod c {
             require_host_header: bool,
             use_strict_method_validation: bool,
         );
+        pub(crate) safe fn uws_app_set_is_node_http(ssl: i32, app: &mut uws_app_t, is_node_http: bool);
         pub(crate) safe fn uws_app_set_max_http_header_size(
             ssl: i32,
             app: &mut uws_app_t,

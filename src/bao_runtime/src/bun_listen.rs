@@ -347,6 +347,10 @@ fn build_http_server(
     crate::timers::with_event_loop(|_| {});
 
     // Create uWS App
+    // Note: HttpFlags::isNodeHttp stays at its default `false` here — Bun.listen
+    // is serve semantics: RFC 9112 6.1 rejects an HTTP/1.0 request bearing
+    // Transfer-Encoding with 400 (node_http::server_listen opts into llhttp
+    // parity via set_is_node_http(true)).
     let opts = BunSocketContextOptions::default();
     let app_ptr = App::<false>::create(&opts).unwrap_or(ptr::null_mut());
 

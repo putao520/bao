@@ -156,7 +156,10 @@ fn run_eval(code: &str) -> ::std::result::Result<(), i32> {
             Err(1)
         }
     };
-    if bun_runtime::should_exit() {
+    // Orderly exit: explicit process.exit() / Bun.exit(), or an exitCode
+    // steered by the script / 'exit' listeners (Node: natural exit honours
+    // process.exitCode).
+    if bun_runtime::should_exit() || bun_runtime::exit_code() != 0 {
         return Err(bun_runtime::exit_code());
     }
     eval_result
@@ -186,7 +189,10 @@ fn run_file(path: &str, force_module: bool) -> ::std::result::Result<(), i32> {
             Err(1)
         }
     };
-    if bun_runtime::should_exit() {
+    // Orderly exit: explicit process.exit() / Bun.exit(), or an exitCode
+    // steered by the script / 'exit' listeners (Node: natural exit honours
+    // process.exitCode).
+    if bun_runtime::should_exit() || bun_runtime::exit_code() != 0 {
         return Err(bun_runtime::exit_code());
     }
     eval_result
@@ -204,7 +210,10 @@ fn run_module_eval(code: &str) -> ::std::result::Result<(), i32> {
             Err(1)
         }
     };
-    if bun_runtime::should_exit() {
+    // Orderly exit: explicit process.exit() / Bun.exit(), or an exitCode
+    // steered by the script / 'exit' listeners (Node: natural exit honours
+    // process.exitCode).
+    if bun_runtime::should_exit() || bun_runtime::exit_code() != 0 {
         return Err(bun_runtime::exit_code());
     }
     eval_result

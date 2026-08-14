@@ -7,7 +7,6 @@ use bao_engine::value::JsValue;
 
 use crate::globals;
 use crate::require;
-use crate::timers;
 
 pub struct BaoRuntime {
     ctx: JsContext,
@@ -31,7 +30,11 @@ impl BaoRuntime {
         crate::bun_api::init_process_start();
         let (mut ctx, guard) = JsContext::init_runtime()?;
         ctx.set_global_setup(globals::install_all);
-        ctx.set_post_eval_hook(timers::drain_and_check);
+        // Drain the event loop first; once it is done (natural end or
+        // process.exit()), dispatch process 'exit' listeners inside the live
+        // realm. Node semantics: registration order, exit code argument,
+        // exitCode set by a listener is respected by the CLI main loop.
+        ctx.set_post_eval_hook(crate::bun_api::post_eval_drain_then_exit);
         ::std::result::Result::Ok(BaoRuntime { ctx, _guard: guard })
     }
 

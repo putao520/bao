@@ -127,6 +127,15 @@ pub fn exit_code() -> i32 {
     EXIT_CODE.with(|c| c.get())
 }
 
+/// Set only the exit code without requesting an exit.
+/// Backs the `process.exitCode` property setter: assigning the property alone
+/// steers the final exit code (honoured on natural exit and by 'exit'
+/// listeners), while the process keeps running until the event loop drains
+/// or process.exit() is called — Node semantics.
+pub fn set_exit_code(code: i32) {
+    EXIT_CODE.with(|c| c.set(code));
+}
+
 /// Clear the exit flag. Used by test runner between test files
 /// so one file's process.exit() doesn't affect subsequent files.
 pub fn clear_exit() {

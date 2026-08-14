@@ -550,6 +550,15 @@ extern "C"
       uwsApp->setFlags(require_host_header, use_strict_method_validation);
     }
   }
+  void uws_app_set_is_node_http(int ssl, uws_app_t *app, bool is_node_http) {
+    if (ssl) {
+      uWS::SSLApp *uwsApp = (uWS::SSLApp *)app;
+      uwsApp->setIsNodeHttp(is_node_http);
+    } else {
+      uWS::App *uwsApp = (uWS::App *)app;
+      uwsApp->setIsNodeHttp(is_node_http);
+    }
+  }
 
   void uws_app_destroy(int ssl, uws_app_t *app)
   {

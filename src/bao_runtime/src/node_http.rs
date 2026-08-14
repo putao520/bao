@@ -1301,16 +1301,6 @@ unsafe extern "C" fn http_create_server(
     true
 }
 
-/// uWS listen callback — called when the server starts listening.
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn uws_listen_callback(
-    _listen_socket: *mut bun_uws_sys::listen_socket::ListenSocket,
-    _user_data: *mut ::std::ffi::c_void,
-) {
-    // No-op: listening is confirmed by uWS. Port is read from ListenSocket
-    // if needed, but we already know the port from the JS call.
-}
-
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn server_listen(
     cx: *mut JSContext,
@@ -1367,6 +1357,15 @@ unsafe extern "C" fn server_listen(
             return false;
         }
     };
+
+    // node:http keeps Node llhttp framing semantics (upstream `IsNodeHttp`
+    // template split, runtime flag here): an HTTP/1.0 request bearing
+    // Transfer-Encoding is dispatched and the connection closed after, not
+    // 400-rejected as Bun.serve does per RFC 9112 6.1. Must be set before
+    // any traffic reaches the app.
+    // Safety: app_ptr is a live `*mut App<false>` from `App::create` above,
+    // valid until `App::<false>::destroy`.
+    unsafe { (*app_ptr).set_is_node_http(true) };
 
     // Get the JS request handler from the server object.
 
@@ -1439,20 +1438,46 @@ unsafe extern "C" fn server_listen(
     }
 
     // Listen on the specified port.
+    // The listen callback captures the OS-assigned port for `listen(0)`
+    // dynamic binds (mirrors Bun.serve BCE-005 `actual_port`): uWS fires it
+    // synchronously inside `App::listen`, so `actual_port` is populated by
+    // the time `listen` returns below.
     // SAFETY: same ABI transmute rationale as above.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe extern "C" fn node_http_listen_cb(
+        listen_socket: *mut bun_uws_sys::listen_socket::ListenSocket,
+        user_data: *mut ::std::ffi::c_void,
+    ) {
+        if !listen_socket.is_null() && !user_data.is_null() {
+            let ls_ref = bun_opaque::opaque_deref_mut(listen_socket);
+            let ls_port = ls_ref.get_local_port();
+            if ls_port > 0 {
+                *(user_data as *mut u16) = ls_port as u16;
+            }
+        }
+    }
     let safe_listen_cb: extern "C" fn(
         *mut bun_uws_sys::listen_socket::ListenSocket,
         *mut ::std::ffi::c_void,
     ) = unsafe {
         ::std::mem::transmute(
-            uws_listen_callback
+            node_http_listen_cb
                 as unsafe extern "C" fn(
                     *mut bun_uws_sys::listen_socket::ListenSocket,
                     *mut ::std::ffi::c_void,
                 ),
         )
     };
-    (*app_ptr).listen(port as i32, safe_listen_cb, core::ptr::null_mut());
+    let mut actual_port: u16 = 0;
+    (*app_ptr).listen(
+        port as i32,
+        safe_listen_cb,
+        &mut actual_port as *mut u16 as *mut ::std::ffi::c_void,
+    );
+    // For `listen(0)` the ephemeral port comes from the listen socket; a zero
+    // here means the bind failed (no listen callback port) — keep the
+    // requested value so address() stays honest either way.
+    let effective_port: u16 = if port == 0 { actual_port } else { port };
 
     // Store app pointer on server object for close/destroy.
     {
@@ -1467,7 +1492,7 @@ unsafe extern "C" fn server_listen(
         );
     }
 
-    rooted!(&in(cx_ref) let port_root = Int32Value(port as i32));
+    rooted!(&in(cx_ref) let port_root = Int32Value(effective_port as i32));
     JS_DefineProperty(
         cx,
         server_obj.handle().into(),

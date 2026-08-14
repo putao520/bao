@@ -218,4 +218,32 @@ fn main() {
     println!("cargo:rerun-if-changed={}", usockets_src.join("eventing/epoll_kqueue.c").display());
     println!("cargo:rerun-if-changed={}", usockets_src.join("internal/internal.h").display());
     println!("cargo:rerun-if-changed={}", usockets_src.join("libusockets.h").display());
+
+    // ── Rebuild hints: C++ wrapper TU ─────────────────────────────────────
+    // libuwsockets.cpp is one translation unit that #includes the uWS headers
+    // (App.h → HttpContext.h → HttpParser.h → HttpContextData.h …), so an edit
+    // to any of them must rerun this script. `cc` only emits rerun-if-changed
+    // for the compiled .cpp file itself, never for headers — without these
+    // lines a header-only change (e.g. an absorbed upstream parser fix)
+    // silently links the stale archive.
+    println!("cargo:rerun-if-changed={}", crate_dir.join("libuwsockets.cpp").display());
+    println!("cargo:rerun-if-changed={}", crate_dir.join("libuwsockets_h3.cpp").display());
+    println!("cargo:rerun-if-changed={}", crate_dir.join("_libusockets.h").display());
+    if let Ok(entries) = std::fs::read_dir(&uws_src) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "h" || ext == "cpp") {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+    }
+    // wtf/ helpers are included as <wtf/*.h> from the crate's src dir.
+    if let Ok(entries) = std::fs::read_dir(crate_dir.join("src").join("wtf")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "h") {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+    }
 }

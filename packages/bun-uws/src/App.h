@@ -742,6 +742,11 @@ public:
         return std::move(*this);
     }
 
+    TemplatedApp &&setIsNodeHttp(bool isNodeHttp) {
+        httpContext->getSocketContextData()->flags.isNodeHttp = isNodeHttp;
+        return std::move(*this);
+    }
+
     TemplatedApp &&setMaxHTTPHeaderSize(uint64_t maxHeaderSize) {
         httpContext->getSocketContextData()->maxHeaderSize = maxHeaderSize;
         return std::move(*this);
