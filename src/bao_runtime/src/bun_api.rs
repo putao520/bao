@@ -5196,38 +5196,71 @@ unsafe extern "C" fn process_chdir(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     true
 }
 
+/// Extract the chunk bytes for process.stdout/stderr.write. Node accepts
+/// string | Buffer | Uint8Array; any other value is coerced via ToString
+/// (`write(v)` ≡ `write(String(v))`) so no chunk is silently dropped.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn process_stdout_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        args.rval().set(mozjs::jsval::BooleanValue(true));
-        return true;
-    }
-    let val = *args.get(0).ptr;
+unsafe fn process_write_chunk(cx: *mut JSContext, val: mozjs::jsval::JSVal) -> Vec<u8> {
     if val.is_string() {
-        let s = crate::js_to_rust_string(cx, val);
-        ::std::io::Write::write_all(&mut ::std::io::stdout(), s.as_bytes()).ok();
-        ::std::io::Write::flush(&mut ::std::io::stdout()).ok();
+        crate::js_to_rust_string(cx, val).into_bytes()
+    } else if let Some(bytes) = extract_bytes_from_jsval(cx, val) {
+        bytes
+    } else {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let val_root = val);
+        let jsstr = mozjs::rust::ToString(cx_ref, val_root.handle());
+        if jsstr.is_null() {
+            return Vec::new();
+        }
+        let str_val = StringValue(&*jsstr);
+        crate::js_to_rust_string(cx, str_val).into_bytes()
+    }
+}
+
+/// Shared sink for process.stdout.write / process.stderr.write: route through
+/// the unified `bun_core::output` layer (same buffering/TTY/flush semantics as
+/// console.* and the rest of the runtime), then flush so piped consumers see
+/// chunk order — this preserves the previous write-all+flush contract.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn process_write(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+    dest: bun_core::output::Destination,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc > 0 {
+        let val = *args.get(0).ptr;
+        let chunk = process_write_chunk(cx, val);
+        if !chunk.is_empty() {
+            bun_core::output::Source::ensure_thread_source();
+            bun_core::output::write_bytes(dest, &chunk);
+            bun_core::output::flush();
+        }
     }
     args.rval().set(mozjs::jsval::BooleanValue(true));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_stdout_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    process_write(
+        cx,
+        argc,
+        vp,
+        bun_core::output::Destination::Stdout,
+    )
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn process_stderr_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        args.rval().set(mozjs::jsval::BooleanValue(true));
-        return true;
-    }
-    let val = *args.get(0).ptr;
-    if val.is_string() {
-        let s = crate::js_to_rust_string(cx, val);
-        ::std::io::Write::write_all(&mut ::std::io::stderr(), s.as_bytes()).ok();
-        ::std::io::Write::flush(&mut ::std::io::stderr()).ok();
-    }
-    args.rval().set(mozjs::jsval::BooleanValue(true));
-    true
+    process_write(
+        cx,
+        argc,
+        vp,
+        bun_core::output::Destination::Stderr,
+    )
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

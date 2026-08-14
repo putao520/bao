@@ -455,6 +455,26 @@ impl Source {
         Self::configure_thread_no_js();
     }
 
+    /// Idempotent per-thread output bring-up for JS sink paths (console.*,
+    /// `process.stdout.write`). Adopts the global stream slots on the current
+    /// thread, publishing them from the real stdio fds on first use in the
+    /// process. Unlike [`init_test`] it does NOT force colours off (safe for
+    /// late bring-up on worker threads of an already-initialized CLI), and
+    /// unlike [`Source::configure_thread`] it does not touch the JS
+    /// StackCheck FFI — a console write never executes JavaScript.
+    pub fn ensure_thread_source() {
+        if SOURCE_SET.get() {
+            return;
+        }
+        if !STDOUT_STREAM_SET.load(Ordering::Relaxed) {
+            let stdout = File::from(Fd::stdout());
+            let stderr = File::from(Fd::stderr());
+            Source::set_init(stdout, stderr);
+            return;
+        }
+        Self::configure_thread_no_js();
+    }
+
     pub fn is_no_color() -> bool {
         // Zig output.zig:99 — parsed bool, default false. NO_COLOR=0 → false.
         env_var::NO_COLOR.get().unwrap_or(false)
@@ -1357,9 +1377,12 @@ unsafe fn write_fmt_raw(w: *mut io::Writer, args: fmt::Arguments<'_>) {
     let _ = fmt::Write::write_fmt(&mut Raw(w), args);
 }
 
-/// Single shared write path for pre-formatted bytes.
+/// Single shared write path for pre-formatted bytes. Public so JS-facing
+/// sinks (console.*, process.stdout/stderr.write) route through the same
+/// buffering/TTY/flush semantics as the rest of the runtime instead of
+/// bypassing to raw stdio — byte-exact for non-UTF-8 chunks (Buffer writes).
 #[inline(never)]
-fn write_bytes(dest: Destination, bytes: &[u8]) {
+pub fn write_bytes(dest: Destination, bytes: &[u8]) {
     with_dest_writer(dest, |w| {
         // SAFETY: `w` is valid per `with_dest_writer`; call the vtable fn
         // directly with the raw pointer so no `&mut Writer` is formed.

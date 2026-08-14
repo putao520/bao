@@ -1,6 +1,5 @@
 // @trace REQ-ENG-003
 use ::std::ptr::NonNull;
-use log::{debug, error, info, trace, warn};
 
 use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::glue::JS_GetReservedSlot;
@@ -549,6 +548,14 @@ impl JsValue {
 // ---------------------------------------------------------------------------
 // Console implementation
 // ---------------------------------------------------------------------------
+//
+// Stream routing (Node semantics) through the unified `bun_core::output`
+// layer — same single path as `bao_runtime`'s full console and
+// `process.stdout.write`: log/info/debug/dir/table/timeEnd/count → stdout;
+// warn/error/trace/assert (+ timer/counter warnings) → stderr. The previous
+// implementation printed error/warn via `print!` (stdout!) and routed
+// timer/count/assert output into the `log` crate macros, where it was
+// invisible to script users.
 
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
@@ -559,54 +566,84 @@ thread_local! {
     static CONSOLE_COUNTERS: RefCell<HashMap<String, u32>> = RefCell::new(HashMap::new());
 }
 
+/// Bring up this thread's `bun_core::output::Source` if not yet configured.
+/// Idempotent; publishes the global stream slots from the real stdio fds on
+/// first use, so bare embedders that never ran a startup init still get
+/// correct routing (no debug_assert trap, no colour clobbering, no JS
+/// StackCheck FFI — a console write never executes JavaScript).
+fn ensure_output_source() {
+    bun_core::output::Source::ensure_thread_source();
+}
+
+/// Console stdout line (trailing `\n` appended here).
+fn console_out(line: &str) {
+    ensure_output_source();
+    let mut bytes = Vec::with_capacity(line.len() + 1);
+    bytes.extend_from_slice(line.as_bytes());
+    bytes.push(b'\n');
+    bun_core::output::write_bytes(bun_core::output::Destination::Stdout, &bytes);
+}
+
+/// Console stderr line (trailing `\n` appended here).
+fn console_err(line: &str) {
+    ensure_output_source();
+    let mut bytes = Vec::with_capacity(line.len() + 1);
+    bytes.extend_from_slice(line.as_bytes());
+    bytes.push(b'\n');
+    bun_core::output::write_bytes(bun_core::output::Destination::Stderr, &bytes);
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn console_log(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let args_slice = ::std::slice::from_raw_parts(args.argv_, argc as usize);
-    for (i, val) in args_slice.iter().enumerate() {
-        if i > 0 {
-            print!(" ");
-        }
-        print_value(cx, *val);
-    }
-    // Node.js / Bun: console.log terminates the line with a newline. Use
-    // `println!` so the line buffer is flushed even when stdout is a pipe —
-    // Rust's `print!` is block-buffered on non-TTYs, which would silently
-    // drop output captured via `Bun.spawn({stdout: "pipe"})` when the child
-    // exits without an explicit flush.
-    println!();
-    info!("console.log");
+    let line = format_args_line(cx, args_slice);
+    console_out(&line);
     args.rval().set(UndefinedValue());
     true
 }
 
+/// Render call arguments space-separated into one line (Node util.format-ish
+/// for the primitives this bootstrap console supports).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn print_value(cx: *mut JSContext, val: JSVal) {
+unsafe fn format_args_line(cx: *mut JSContext, args_slice: &[JSVal]) -> String {
+    let mut parts = Vec::with_capacity(args_slice.len());
+    for val in args_slice {
+        parts.push(format_value(cx, *val));
+    }
+    parts.join(" ")
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn format_value(cx: *mut JSContext, val: JSVal) -> String {
     if val.is_undefined() {
-        print!("undefined");
+        "undefined".into()
     } else if val.is_null() {
-        print!("null");
+        "null".into()
     } else if val.is_boolean() {
-        print!("{}", val.to_boolean());
+        format!("{}", val.to_boolean())
     } else if val.is_int32() {
-        print!("{}", val.to_int32());
+        format!("{}", val.to_int32())
     } else if val.is_double() {
         let d = val.to_double();
         if d.is_nan() {
-            print!("NaN");
+            "NaN".into()
         } else if d.is_infinite() {
-            print!("{}", if d > 0.0 { "Infinity" } else { "-Infinity" });
+            format!("{}", if d > 0.0 { "Infinity" } else { "-Infinity" })
         } else {
-            print!("{}", d);
+            format!("{}", d)
         }
     } else if val.is_string() {
         let s = val.to_string();
         if !s.is_null() {
-            let rust_str = unsafe_jsstr_to_string(cx, NonNull::new(s).expect("null-checked JSString"));
-            print!("{}", rust_str);
+            unsafe_jsstr_to_string(cx, NonNull::new(s).expect("null-checked JSString"))
+        } else {
+            String::new()
         }
     } else if val.is_object() {
-        print!("[object Object]");
+        "[object Object]".into()
+    } else {
+        String::new()
     }
 }
 
@@ -614,13 +651,8 @@ unsafe fn print_value(cx: *mut JSContext, val: JSVal) {
 unsafe extern "C" fn console_error(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let args_slice = ::std::slice::from_raw_parts(args.argv_, argc as usize);
-    for (i, val) in args_slice.iter().enumerate() {
-        if i > 0 {
-            print!(" ");
-        }
-        print_value(cx, *val);
-    }
-    error!("console.error");
+    let line = format_args_line(cx, args_slice);
+    console_err(&line);
     args.rval().set(UndefinedValue());
     true
 }
@@ -629,13 +661,8 @@ unsafe extern "C" fn console_error(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 unsafe extern "C" fn console_warn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let args_slice = ::std::slice::from_raw_parts(args.argv_, argc as usize);
-    for (i, val) in args_slice.iter().enumerate() {
-        if i > 0 {
-            print!(" ");
-        }
-        print_value(cx, *val);
-    }
-    warn!("console.warn");
+    let line = format_args_line(cx, args_slice);
+    console_err(&line);
     args.rval().set(UndefinedValue());
     true
 }
@@ -652,9 +679,9 @@ unsafe extern "C" fn console_debug(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 unsafe extern "C" fn console_dir(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc > 0 {
-        print_value(cx, *args.get(0).ptr);
+        let s = format_value(cx, *args.get(0).ptr);
+        console_out(&s);
     }
-    info!("console.dir");
     args.rval().set(UndefinedValue());
     true
 }
@@ -676,9 +703,13 @@ unsafe extern "C" fn console_time_end(cx: *mut JSContext, argc: u32, vp: *mut JS
         .with(|t| t.borrow_mut().remove(&label))
         .map(|start| start.elapsed());
     if let Some(d) = elapsed {
-        debug!("{}: {:.3}ms", label, d.as_secs_f64() * 1000.0);
+        console_out(&format!("{}: {:.3}ms", label, d.as_secs_f64() * 1000.0));
     } else {
-        debug!("Timer '{}' does not exist", label);
+        // Node routes this diagnostic through console.warn → stderr.
+        console_err(&format!(
+            "Warning: No such label '{}' for console.timeEnd()",
+            label
+        ));
     }
     args.rval().set(UndefinedValue());
     true
@@ -688,13 +719,14 @@ unsafe extern "C" fn console_time_end(cx: *mut JSContext, argc: u32, vp: *mut JS
 unsafe extern "C" fn console_trace(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let args_slice = ::std::slice::from_raw_parts(args.argv_, argc as usize);
-    for (i, val) in args_slice.iter().enumerate() {
-        if i > 0 {
-            print!(" ");
-        }
-        print_value(cx, *val);
-    }
-    trace!("\n    at <anonymous>");
+    let label = if args_slice.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", format_args_line(cx, args_slice))
+    };
+    // Node: console.trace prints "Trace:" + stack to stderr.
+    console_err(&format!("Trace{}:", label));
+    console_err("    at <anonymous>");
     args.rval().set(UndefinedValue());
     true
 }
@@ -706,13 +738,17 @@ unsafe extern "C" fn console_assert(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         let cond = *args.get(0).ptr;
         if !cond.is_boolean() || !cond.to_boolean() {
             let args_slice = ::std::slice::from_raw_parts(args.argv_, argc as usize);
-            for (i, val) in args_slice.iter().enumerate().skip(1) {
-                if i > 1 {
-                    print!(" ");
-                }
-                print_value(cx, *val);
+            let mut msg = String::from("Assertion failed");
+            let extra: Vec<String> = args_slice
+                .iter()
+                .skip(1)
+                .map(|val| format_value(cx, *val))
+                .collect();
+            if !extra.is_empty() {
+                msg.push_str(": ");
+                msg.push_str(&extra.join(" "));
             }
-            debug!("\nAssertion failed");
+            console_err(&msg);
         }
     }
     args.rval().set(UndefinedValue());
@@ -722,6 +758,13 @@ unsafe extern "C" fn console_assert(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn console_clear(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
+    // ANSI clear screen + move cursor home on stdout, no trailing newline
+    // (Node writes the escape sequence verbatim).
+    ensure_output_source();
+    bun_core::output::write_bytes(
+        bun_core::output::Destination::Stdout,
+        b"\x1b[2J\x1b[H",
+    );
     args.rval().set(UndefinedValue());
     true
 }
@@ -736,7 +779,7 @@ unsafe extern "C" fn console_count(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         *entry += 1;
         *entry
     });
-    info!("{}: {}", label, count);
+    console_out(&format!("{}: {}", label, count));
     args.rval().set(UndefinedValue());
     true
 }
@@ -745,9 +788,19 @@ unsafe extern "C" fn console_count(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 unsafe extern "C" fn console_count_reset(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let label = extract_label(cx, argc, &args);
-    CONSOLE_COUNTERS.with(|c| {
-        c.borrow_mut().insert(label.clone(), 0);
+    let existed = CONSOLE_COUNTERS.with(|c| {
+        let mut map = c.borrow_mut();
+        if map.contains_key(&label) {
+            map.insert(label.clone(), 0);
+            true
+        } else {
+            false
+        }
     });
+    if !existed {
+        // Node routes this diagnostic through console.warn → stderr.
+        console_err(&format!("Warning: Count for '{}' does not exist", label));
+    }
     args.rval().set(UndefinedValue());
     true
 }

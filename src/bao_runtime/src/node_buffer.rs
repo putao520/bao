@@ -494,8 +494,9 @@ unsafe extern "C" fn buffer_is_utf8(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 // @trace REQ-ENG-005 — Extracts a byte slice from a Buffer/Uint8Array/
 // TypedArray/DataView/ArrayBuffer input. Returns None on null/undefined or
 // unrecognized input. The returned Vec is a copy that survives GC.
+// pub(crate): also reused by fetch_api for WHATWG fetch body byte forms.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn collect_byte_view(cx: *mut JSContext, v: JSVal) -> Option<Vec<u8>> {
+pub(crate) unsafe fn collect_byte_view(cx: *mut JSContext, v: JSVal) -> Option<Vec<u8>> {
     use ::std::ptr;
     if v.is_null_or_undefined() {
         return None;

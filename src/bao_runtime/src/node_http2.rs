@@ -44,6 +44,22 @@ pub fn has_active_servers() -> bool {
         || ACTIVE_H2_SSL_APPS.with(|s| !s.borrow().is_empty())
 }
 
+// BCE-007 registration gap (node_http2 variant): `drain_and_check`
+// (timers.rs) keeps the JS-thread uWS `Loop` ticking ONLY while
+// `node_http::has_active_servers()` is true — the h2-local registries above
+// were never consulted there, so an h2 App's listen socket never `accept()`ed
+// (requests connected, then sat unanswered; route handler never invoked).
+// Same disease Bun.serve had before the unified `register_active_app` fix
+// (bun_api.rs). Close the class: every h2 register/unregister ALSO keeps the
+// unified node_http liveness registry in sync, so the single source of truth
+// drives the loop tick for h2 Apps too.
+//
+// The SSL registration passes an `*mut App<true>` through the `App<false>`
+// registry API: `App<SSL>` is a `#[repr(C)]` zero-sized opaque token with
+// identical layout for both instantiations, and the unified registry uses
+// pointers ONLY for liveness bookkeeping (len / ptr-eq / retain — never
+// dereferences), so the cast is a representation-preserving token alias.
+
 pub unsafe fn register_active_h2_app(app: *mut App<false>) {
     if app.is_null() {
         return;
@@ -54,6 +70,7 @@ pub unsafe fn register_active_h2_app(app: *mut App<false>) {
             apps.push(app);
         }
     });
+    crate::node_http::register_active_app(app);
 }
 
 pub unsafe fn unregister_active_h2_app(app: *mut App<false>) {
@@ -63,6 +80,7 @@ pub unsafe fn unregister_active_h2_app(app: *mut App<false>) {
     ACTIVE_H2_APPS.with(|s| {
         s.borrow_mut().retain(|&p| !::std::ptr::eq(p, app));
     });
+    crate::node_http::unregister_active_app(app);
 }
 
 pub unsafe fn register_active_h2_ssl_app(app: *mut App<true>) {
@@ -75,6 +93,8 @@ pub unsafe fn register_active_h2_ssl_app(app: *mut App<true>) {
             apps.push(app);
         }
     });
+    // Liveness token only — see the safety note above the register fns.
+    crate::node_http::register_active_app(app as *mut App<false>);
 }
 
 pub unsafe fn unregister_active_h2_ssl_app(app: *mut App<true>) {
@@ -84,6 +104,8 @@ pub unsafe fn unregister_active_h2_ssl_app(app: *mut App<true>) {
     ACTIVE_H2_SSL_APPS.with(|s| {
         s.borrow_mut().retain(|&p| !::std::ptr::eq(p, app));
     });
+    // Liveness token only — see the safety note above the register fns.
+    crate::node_http::unregister_active_app(app as *mut App<false>);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1099,13 +1121,72 @@ unsafe extern "C" fn uws_h2_route_handler(
         return;
     }
 
-    let Some(global) = ud.global() else { return };
+    let raw_cx = cx;
+    let res_mut = Response::<false>::cast_res(res);
+
+    // Enter the context's persistent realm before any JS resolution (same
+    // rationale as node_http::uws_route_handler): async dispatch runs with no
+    // realm entered, and the GcStore properties backing ud.global()/handler()
+    // live on this realm's global — without the AutoRealm the lookups fail
+    // and the handler silently never runs (uWS then std::terminates on the
+    // unanswered request). First-principles realm model: one realm per
+    // JsContext, held for the context's lifetime.
+    let realm_global = match bao_engine::context::thread_realm_global() {
+        Some(g) if !g.is_null() => g,
+        _ => {
+            // No realm on this thread → no JS server should exist here.
+            // Explicit 500 (never a silent return → uWS std::terminate).
+            eprintln!("[node:http2] no JS realm on this thread — responding 500");
+            (*res_mut).write_status(b"500 Internal Server Error");
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
+            (*res_mut).end(b"no JS realm", true);
+            return;
+        }
+    };
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let realm_global_root = realm_global);
+    let mut realm = mozjs::realm::AutoRealm::new_from_handle(cx_ref, realm_global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+    // Now inside the realm: CurrentGlobalOrNull = persistent global, so the
+    // GcStore lookups resolve the registered server global and stream handler.
+    let Some(global) = ud.global() else {
+        eprintln!(
+            "[node:http2] server global unavailable (key {}) — responding 500",
+            ud.global_key
+        );
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).write_header(b"Content-Type", b"text/plain");
+        (*res_mut).end(b"no server global", true);
+        return;
+    };
     if global.is_null() {
+        eprintln!("[node:http2] server global null — responding 500");
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).write_header(b"Content-Type", b"text/plain");
+        (*res_mut).end(b"no server global", true);
         return;
     }
 
-    let Some(handler) = ud.handler() else { return };
+    let Some(handler) = ud.handler() else {
+        // Registered-but-unresolvable handler must fail explicitly — never a
+        // silent return (crash) and never a fake response.
+        eprintln!(
+            "[node:http2] stream handler unavailable (key {}) — responding 500",
+            ud.handler_key
+        );
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).write_header(b"Content-Type", b"text/plain");
+        (*res_mut).end(b"no stream handler", true);
+        return;
+    };
     if handler.is_null() {
+        eprintln!("[node:http2] stream handler null — responding 500");
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).write_header(b"Content-Type", b"text/plain");
+        (*res_mut).end(b"no stream handler", true);
         return;
     }
 
@@ -1114,10 +1195,6 @@ unsafe extern "C" fn uws_h2_route_handler(
     let url_bytes = req_ref.url();
     let method_str = ::std::str::from_utf8_unchecked(method_bytes);
     let url_str = ::std::str::from_utf8_unchecked(url_bytes);
-
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    let raw_cx = cx;
 
     // Build JS stream object (Http2Stream-like)
     rooted!(&in(cx_ref) let stream_obj = w2::JS_NewPlainObject(cx_ref));
@@ -1161,6 +1238,9 @@ unsafe extern "C" fn uws_h2_route_handler(
     // Build headers object
     rooted!(&in(cx_ref) let headers_obj = w2::JS_NewPlainObject(cx_ref));
     if !headers_obj.get().is_null() {
+        // HTTP/1.x header names only. h2 pseudo-headers (`:authority`,
+        // `:scheme`) never exist on this wire path, and probing them trips
+        // uWS's lowercase-ASCII header-name assertion (Request.rs).
         let common_headers: &[&[u8]] = &[
             b"host",
             b"content-type",
@@ -1170,8 +1250,6 @@ unsafe extern "C" fn uws_h2_route_handler(
             b"connection",
             b"authorization",
             b"cookie",
-            b":authority",
-            b":scheme",
         ];
         for &name in common_headers {
             if let Some(value) = req_ref.header(name) {
@@ -1859,6 +1937,19 @@ unsafe extern "C" fn http2_server_listen(cx: *mut JSContext, argc: u32, vp: *mut
         }
     };
 
+    // node:http2 rides the same uWS HTTP/1.x parser as node:http, so it
+    // keeps node-family framing parity (upstream `IsNodeHttp` split, BCE
+    // bdb738222): an HTTP/1.0 request bearing Transfer-Encoding is
+    // dispatched and the connection closed after (ancientHttp already
+    // marks close), not 400-rejected as Bun.serve does per RFC 9112 6.1.
+    // Real-Node http2 would GOAWAY any HTTP/1.x text outright, but this
+    // surface is an HTTP/1.x-adapted compat server by design — rejecting
+    // only the 1.0+TE pair would match neither Node shape. Must be set
+    // before any traffic reaches the app.
+    // Safety: app_ptr is a live `*mut App<false>` from `App::create` above,
+    // valid until `App::<false>::destroy`.
+    unsafe { (*app_ptr).set_is_node_http(true) };
+
     // Get the JS stream handler from the server object
     let mut handler_val = UndefinedValue();
     let handler_mh = MutableHandle::<Value> {
@@ -2235,6 +2326,12 @@ unsafe extern "C" fn http2_secure_server_listen(
         }
     };
 
+    // node:http2 framing parity — see the matching comment at the
+    // `App::<false>` listen site (node-family `IsNodeHttp` semantics).
+    // Safety: app_ptr is a live `*mut App<true>` from `App::create` above,
+    // valid until `App::<true>::destroy`.
+    unsafe { (*app_ptr).set_is_node_http(true) };
+
     // Allocate H2ServerUserData (reuse same struct for SSL)
     rooted!(&in(cx_ref) let handler_root = handler_val.to_object());
     let ud = Box::new(H2ServerUserData::new(cx, global.get(), handler_root.get()));
@@ -2504,6 +2601,12 @@ unsafe extern "C" fn http2_server_listen_js(cx: *mut JSContext, argc: u32, vp: *
         }
     };
 
+    // node:http2 framing parity — see the matching comment at the
+    // `App::<false>` listen site (node-family `IsNodeHttp` semantics).
+    // Safety: app_ptr is a live `*mut App<false>` from `App::create` above,
+    // valid until `App::<false>::destroy`.
+    unsafe { (*app_ptr).set_is_node_http(true) };
+
     // Get handler
     let mut handler_val = UndefinedValue();
     JS_GetProperty(
@@ -2760,6 +2863,12 @@ unsafe extern "C" fn http2_secure_server_listen_js(
             return false;
         }
     };
+
+    // node:http2 framing parity — see the matching comment at the
+    // `App::<false>` listen site (node-family `IsNodeHttp` semantics).
+    // Safety: app_ptr is a live `*mut App<true>` from `App::create` above,
+    // valid until `App::<true>::destroy`.
+    unsafe { (*app_ptr).set_is_node_http(true) };
 
     rooted!(&in(cx_ref) let handler_root = handler_val.to_object());
     let ud = Box::new(H2ServerUserData::new(cx, global.get(), handler_root.get()));

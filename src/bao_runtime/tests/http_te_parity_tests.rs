@@ -139,6 +139,120 @@ fn raw_roundtrip_full(ctx: &mut JsContext, port: u16, request: &[u8]) -> String 
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// node:http2 rides the same uWS HTTP/1.x parser as node:http (all four App
+/// construction sites in node_http2.rs set `set_is_node_http(true)`), so it
+/// keeps the same node-family framing parity: an HTTP/1.0 request bearing
+/// Transfer-Encoding is PARSED AND ROUTED to the stream handler (llhttp
+/// parity), not 400-rejected as Bun.serve does per RFC 9112 6.1.
+///
+/// Why dispatch and not reject: real Node http2 GOAWAYs any HTTP/1.x text
+/// outright (verified against node v24.5.0: SETTINGS+GOAWAY, stream handler
+/// never invoked) — but Bao's http2 server is an HTTP/1.x-adapted compat
+/// surface by design (it already dispatches plain HTTP/1.x requests as
+/// pseudo-streams), so rejecting only the 1.0+TE pair would match neither
+/// Node shape. The coherent split is: Bun.serve rejects at the parser,
+/// node:* dispatches.
+#[test]
+fn test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext init");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    // http2's address() echoes the requested port (no ephemeral surfacing),
+    // so reserve a free port in Rust and pass it explicitly.
+    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve free port");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let setup = eval_str(
+        &mut ctx,
+        &format!(
+            r#"
+            var http2 = require('http2');
+            var srv = http2.createServer(function(stream, headers) {{
+                stream.respond({{ ':status': 200 }}, {{ endStream: false }});
+                stream.end('ok');
+            }});
+            srv.listen({port}, '127.0.0.1');
+            'setup-ok'
+            "#
+        ),
+    );
+    assert_eq!(setup, "setup-ok", "http2 server setup eval failed: {}", setup);
+
+    let response = raw_roundtrip_full(&mut ctx, port, SMUGGLED_10_TE);
+    assert!(
+        !response.is_empty(),
+        "node:http2 server produced no response for HTTP/1.0+TE"
+    );
+    assert!(
+        !response.starts_with("HTTP/1.1 400") && !response.starts_with("HTTP/1.0 400"),
+        "node:http2 must keep node-family llhttp parity (dispatch, not 400); got: {:?}",
+        response.split("\r\n").next().unwrap_or("")
+    );
+    assert!(
+        response.starts_with("HTTP/"),
+        "node:http2 response missing status line: {:?}",
+        response
+    );
+    // The JS stream handler's body is the handler-hit proof: dispatch
+    // happened after the eval returned, so 'ok' can only come from the real
+    // `stream.end('ok')` call inside the registered JS handler.
+    assert!(
+        response.ends_with("ok") || response.contains("\r\n\r\nok"),
+        "node:http2 JS stream handler must have run and ended with 'ok'; got: {:?}",
+        response
+    );
+}
+
+/// Control: the same chunked request on HTTP/1.1 is valid framing and must
+/// flow through the node:http2 stream handler untouched (guards against an
+/// over-broad rejection that would also swallow legitimate 1.1 traffic).
+#[test]
+fn test_node_http2_accepts_http11_chunked_control() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext init");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve free port");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let setup = eval_str(
+        &mut ctx,
+        &format!(
+            r#"
+            var http2 = require('http2');
+            var srv = http2.createServer(function(stream, headers) {{
+                stream.respond({{ ':status': 200 }}, {{ endStream: false }});
+                stream.end('ok11');
+            }});
+            srv.listen({port}, '127.0.0.1');
+            'setup-ok'
+            "#
+        ),
+    );
+    assert_eq!(setup, "setup-ok", "http2 server setup eval failed: {}", setup);
+
+    let response = raw_roundtrip_full(
+        &mut ctx,
+        port,
+        b"POST /a HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+    );
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "HTTP/1.1 + chunked is valid framing and must be served by the http2 compat layer; got: {:?}",
+        response.split("\r\n").next().unwrap_or("")
+    );
+    assert!(
+        response.ends_with("ok11") || response.contains("\r\n\r\nok11"),
+        "node:http2 JS stream handler must have produced the body 'ok11'; got: {:?}",
+        response
+    );
+}
+
 /// node:http `listen(0)` must surface the OS-assigned ephemeral port through
 /// `address()` (mirrors Bun.serve BCE-005 `actual_port`). This is the
 /// runnable half of the node:http parity story: without it the ignored
