@@ -27,8 +27,12 @@ use http::HeaderValue;
 use net_traits::NetworkError;
 
 use net::async_runtime::{spawn_blocking_task, spawn_task};
-use net::fetch::bun_bridge::{BunCancelHandle, BridgeError, BunHttpResponse, fetch_core, map_bun_error};
+use net::fetch::bun_bridge::{
+    BunCancelHandle, BridgeError, BunHttpResponse, PageNetBunMode, fetch_core, map_bun_error,
+    parse_page_net_bun_spec,
+};
 use net::test_util::{make_body, make_server};
+use net_traits::request::Destination;
 
 /// bun's HTTP client resolves through its own resolver; pin the loopback
 /// literal (the test server binds 0.0.0.0, not ::1).
@@ -79,6 +83,7 @@ fn bridge_get_roundtrip() {
             &cancel,
             None::<fn() -> bool>,
             None,
+            false,
             true,
         )
         .await
@@ -123,6 +128,7 @@ fn bridge_manual_redirect_returns_original_3xx() {
             &cancel,
             None::<fn() -> bool>,
             None,
+            false,
             true,
         )
         .await
@@ -165,6 +171,7 @@ fn bridge_abort_yields_load_cancelled() {
             &worker_cancel,
             None::<fn() -> bool>,
             None,
+            false,
             true,
         )
         .await;
@@ -238,4 +245,60 @@ fn bridge_error_mapping_table() {
     for (name, expected) in cases {
         assert_eq!(map_bun_error(bun_core::Error::intern(name)), expected);
     }
+}
+
+/// `BAO_PAGE_NET_BUN` value semantics (U2 phase 1): off / all / destination
+/// list, aliases (`img`→image, `css`→style, `js`→script, `xhr`→None),
+/// canonical fetch-spec names, unknown tokens ignored, empty parse → off.
+/// Exercises the pure parser — no process-global flag mutation.
+#[test]
+fn bridge_flag_spec_parsing() {
+    // Off family.
+    for value in ["", "0", "false", "FALSE", "  0  ", "bogus,,", ",,"] {
+        assert_eq!(
+            parse_page_net_bun_spec(value),
+            PageNetBunMode::Off,
+            "value '{value}' must parse to Off"
+        );
+    }
+
+    // All family (phase 2 posture).
+    for value in ["1", "true", "TRUE", "all", " 1 "] {
+        assert_eq!(
+            parse_page_net_bun_spec(value),
+            PageNetBunMode::All,
+            "value '{value}' must parse to All"
+        );
+    }
+
+    // Pilot list: aliases.
+    assert_eq!(
+        parse_page_net_bun_spec("img,css"),
+        PageNetBunMode::Destinations(vec![Destination::Image, Destination::Style])
+    );
+    // Canonical fetch-spec names, whitespace + duplicate tolerant.
+    assert_eq!(
+        parse_page_net_bun_spec(" style , image ,style"),
+        PageNetBunMode::Destinations(vec![Destination::Style, Destination::Image])
+    );
+    // Unknown tokens are ignored, valid ones survive.
+    assert_eq!(
+        parse_page_net_bun_spec("img, nonsense ,css"),
+        PageNetBunMode::Destinations(vec![Destination::Image, Destination::Style])
+    );
+    // `xhr` alias → Destination::None (XHR requests carry the None dest).
+    assert_eq!(
+        parse_page_net_bun_spec("xhr"),
+        PageNetBunMode::Destinations(vec![Destination::None])
+    );
+    // `js` alias → script.
+    assert_eq!(
+        parse_page_net_bun_spec("js"),
+        PageNetBunMode::Destinations(vec![Destination::Script])
+    );
+    // Full canonical coverage: every FromStr-valid name round-trips.
+    assert_eq!(
+        parse_page_net_bun_spec("document"),
+        PageNetBunMode::Destinations(vec![Destination::Document])
+    );
 }

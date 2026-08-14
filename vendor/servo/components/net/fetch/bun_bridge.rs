@@ -4,6 +4,9 @@
 //
 // Gate: `BAO_PAGE_NET_BUN` (default OFF — the hyper path in
 // `http_loader.rs:obtain_response` is untouched unless the flag is enabled).
+// `1`/`true` routes every request destination through the bridge (phase 2
+// posture); a comma list (`img,css`) routes only matching request
+// destinations (phase 1 pilot) — everything else keeps the hyper path.
 //
 // Threading model (mirrors `fetch_async.rs` FetchTasklet, rehosted on tokio):
 //   - servo's fetch runs on a tokio net thread; this bridge schedules the
@@ -33,9 +36,10 @@
 // (needs the full StealthProfile, not just the wire config).
 
 use std::pin::pin;
+use std::str::FromStr;
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Once;
 use std::time::Duration;
 
@@ -47,10 +51,11 @@ use http_body_util::{BodyExt, StreamBody};
 use hyper::Response as HyperResponse;
 use hyper::body::Frame;
 use ipc_channel::ipc::IpcSender;
+use log::warn;
 use net_traits::NetworkError;
 use net_traits::ResourceAttribute;
-use net_traits::request::BodyChunkRequest;
-use parking_lot::Mutex;
+use net_traits::request::{BodyChunkRequest, Destination};
+use parking_lot::{Mutex, RwLock};
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_url::ServoUrl;
 use tokio::sync::Notify;
@@ -74,29 +79,148 @@ const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 // ──────────────────────────────────────────────────────────────────────────
 // Flag (default OFF)
+//
+// `BAO_PAGE_NET_BUN`:
+//   - unset / `0` / `false`      → hyper path for every destination;
+//   - `1` / `true` / `all`       → every destination through the bridge
+//                                  (phase 2 posture);
+//   - comma list, e.g. `img,css` → only matching request destinations
+//                                  through the bridge (phase 1 pilot).
+//
+// List tokens are fetch-spec destination names (`image`, `style`,
+// `document`, …) plus the pilot aliases `img`, `css`, `js` and `xhr` (XHR
+// requests carry `Destination::None`). Unknown tokens warn and are ignored;
+// a list that parses to the empty set leaves the bridge off.
 // ──────────────────────────────────────────────────────────────────────────
 
-static PAGE_NET_BUN_ENABLED: AtomicBool = AtomicBool::new(false);
-static PAGE_NET_BUN_ENV_READ: Once = Once::new();
-
-/// Is the bun page-network bridge enabled? Reads `BAO_PAGE_NET_BUN` (values
-/// `1`/`true`) once, then uses the in-process override from
-/// [`set_page_net_bun_enabled`]. Default: `false` (hyper path).
-pub fn page_net_bun_enabled() -> bool {
-    PAGE_NET_BUN_ENV_READ.call_once(|| {
-        if let Ok(value) = std::env::var("BAO_PAGE_NET_BUN") &&
-            (value == "1" || value.eq_ignore_ascii_case("true"))
-        {
-            PAGE_NET_BUN_ENABLED.store(true, Ordering::Relaxed);
-        }
-    });
-    PAGE_NET_BUN_ENABLED.load(Ordering::Relaxed)
+/// Effective bridge scope. `Destinations` is the phase 1 pilot shape
+/// (`img,css`); `All` is the phase 2 end state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PageNetBunMode {
+    Off,
+    All,
+    Destinations(Vec<Destination>),
 }
 
-/// Override the bridge flag at runtime (embedder / tests). Does not affect
-/// already-in-flight requests.
+static PAGE_NET_BUN_MODE: RwLock<Option<PageNetBunMode>> = RwLock::new(None);
+static PAGE_NET_BUN_ENV_READ: Once = Once::new();
+
+/// Number of requests dispatched through the bridge (incremented at
+/// `obtain_response_bun` entry, before any I/O). Diagnostics / e2e pilot
+/// assertions: proves which requests actually took the bun path.
+static PAGE_NET_BUN_REQUESTS: AtomicU64 = AtomicU64::new(0);
+
+/// Parse a comma-separated destination list. Aliases map to fetch-spec
+/// names first, then `Destination::from_str` (the csp crate's closed table)
+/// decides validity — no bespoke name matching to drift out of sync.
+fn parse_destination_list(value: &str) -> Vec<Destination> {
+    let mut destinations = Vec::new();
+    for raw in value.split(',') {
+        let token = raw.trim().to_ascii_lowercase();
+        if token.is_empty() {
+            continue;
+        }
+        let canonical = match token.as_str() {
+            "img" => "image",
+            "css" => "style",
+            "js" => "script",
+            "xhr" => "",
+            other => other,
+        };
+        match Destination::from_str(canonical) {
+            Ok(destination) => {
+                if !destinations.contains(&destination) {
+                    destinations.push(destination);
+                }
+            },
+            Err(_) => warn!("BAO_PAGE_NET_BUN: unknown destination token '{raw}' (ignored)"),
+        }
+    }
+    destinations
+}
+
+/// Parse one `BAO_PAGE_NET_BUN` value (env string or runtime-override
+/// spec): `0`/`false` → off, `1`/`true`/`all` → every destination, anything
+/// else → a destination list. Pure — no global state, directly unit-testable.
+pub fn parse_page_net_bun_spec(value: &str) -> PageNetBunMode {
+    let trimmed = value.trim();
+    if trimmed.is_empty() ||
+        trimmed.eq_ignore_ascii_case("0") ||
+        trimmed.eq_ignore_ascii_case("false")
+    {
+        return PageNetBunMode::Off;
+    }
+    if trimmed == "1" || trimmed.eq_ignore_ascii_case("true") || trimmed.eq_ignore_ascii_case("all")
+    {
+        return PageNetBunMode::All;
+    }
+    let destinations = parse_destination_list(value);
+    if destinations.is_empty() {
+        warn!("BAO_PAGE_NET_BUN='{value}' parsed to an empty destination set — bridge stays off");
+        return PageNetBunMode::Off;
+    }
+    PageNetBunMode::Destinations(destinations)
+}
+
+fn parse_env_mode() -> PageNetBunMode {
+    match std::env::var("BAO_PAGE_NET_BUN") {
+        Ok(value) => parse_page_net_bun_spec(&value),
+        Err(_) => PageNetBunMode::Off,
+    }
+}
+
+/// Resolve the effective mode: the runtime override wins; otherwise the env
+/// value is read exactly once (first call). Default: [`PageNetBunMode::Off`]
+/// (hyper path).
+fn effective_mode() -> PageNetBunMode {
+    PAGE_NET_BUN_ENV_READ.call_once(|| {
+        let mut guard = PAGE_NET_BUN_MODE.write();
+        if guard.is_none() {
+            *guard = Some(parse_env_mode());
+        }
+    });
+    PAGE_NET_BUN_MODE
+        .read()
+        .clone()
+        .unwrap_or(PageNetBunMode::Off)
+}
+
+/// Dispatch predicate for the `http_network_fetch` cut point: does this
+/// request destination go through the bun bridge?
+pub fn page_net_bun_enabled_for(destination: Destination) -> bool {
+    match effective_mode() {
+        PageNetBunMode::Off => false,
+        PageNetBunMode::All => true,
+        PageNetBunMode::Destinations(destinations) => destinations.contains(&destination),
+    }
+}
+
+/// The current mode (diagnostics).
+pub fn page_net_bun_mode() -> PageNetBunMode {
+    effective_mode()
+}
+
+/// Override the bridge flag at runtime (embedder / tests): `true` = every
+/// destination, `false` = off. Does not affect already-in-flight requests.
 pub fn set_page_net_bun_enabled(enabled: bool) {
-    PAGE_NET_BUN_ENABLED.store(enabled, Ordering::Relaxed);
+    *PAGE_NET_BUN_MODE.write() = Some(if enabled {
+        PageNetBunMode::All
+    } else {
+        PageNetBunMode::Off
+    });
+}
+
+/// Override the bridge flag with a destination list at runtime (embedder /
+/// tests) — same token syntax as the env value (e.g. `"img,css"`; `1`/`true`
+/// also accepted). An empty/invalid parse leaves the bridge off.
+pub fn set_page_net_bun_destinations(spec: &str) {
+    *PAGE_NET_BUN_MODE.write() = Some(parse_page_net_bun_spec(spec));
+}
+
+/// How many requests have been dispatched through the bridge (see
+/// [`PAGE_NET_BUN_REQUESTS`]).
+pub fn page_net_bun_request_count() -> u64 {
+    PAGE_NET_BUN_REQUESTS.load(Ordering::Relaxed)
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -301,8 +425,11 @@ pub fn map_bun_error(error: bun_core::Error) -> BridgeError {
 /// cipher/curves/sigalgs fingerprint and the same HTTP/2 SETTINGS payload.
 ///
 /// IANA→OpenSSL name resolution goes through `bao_stealth` (single source of
-/// truth). Phase 2: ALPN order + h2 pseudo-header order / priority frames
-/// need the full `StealthProfile`, not just this wire config.
+/// truth). The ALPN offer is policy-driven via `Flags::is_page_egress`
+/// (caller passes whether the profile's ALPN list contains `h2`) — the
+/// page egress keeps hyper's `h2,http/1.1` offer. Phase 2: h2 pseudo-header
+/// order / priority frames need the full `StealthProfile`, not just this
+/// wire config.
 fn stealth_wire_to_ssl_config(wire: &StealthTlsWireConfig) -> bun_http::ssl_config::SSLConfig {
     let mut config = bun_http::ssl_config::SSLConfig::default();
     config.tls12_cipher_list = bun_core::dupe_z(
@@ -356,6 +483,7 @@ pub async fn fetch_core(
     cancel: &BunCancelHandle,
     should_cancel: Option<impl Fn() -> bool>,
     tls_props: Option<bun_http::ssl_config::SharedPtr>,
+    page_egress_h2: bool,
     reject_unauthorized: bool,
 ) -> Result<BunHttpResponse, BridgeError> {
     // Phase A — build, schedule. Every non-Send local (raw pointers, the
@@ -445,6 +573,9 @@ pub async fn fetch_core(
             // through.
             disable_decompression: Some(true),
             reject_unauthorized: Some(reject_unauthorized),
+            // Page egress keeps hyper's h2 ALPN offer (stealth-profile
+            // driven; see `Flags::is_page_egress` in bun_http).
+            is_page_egress: Some(page_egress_h2),
             ..Default::default()
         };
 
@@ -713,6 +844,8 @@ pub(crate) async fn obtain_response_bun(
     context: &FetchContext,
     fetch_terminated: UnboundedSender<bool>,
 ) -> Result<(HyperResponse<Decoder>, Option<ChromeToDevtoolsControlMsg>), NetworkError> {
+    PAGE_NET_BUN_REQUESTS.fetch_add(1, Ordering::Relaxed);
+
     // Phase 2: devtools request/response messages (always None until then).
 
     // https://url.spec.whatwg.org/#percent-encoded-bytes — same encode set as
@@ -786,11 +919,19 @@ pub(crate) async fn obtain_response_bun(
     // Stealth TLS: same global wire config the embedder derived from the page
     // profile (single source: connector's STEALTH_TLS_CONFIG, kept in sync
     // with the profile window.fetch uses). Plain default config when no
-    // profile is active. Phase 2: per-request CA certificates from
+    // profile is active. The profile's ALPN list drives the h2 offer
+    // (`is_page_egress`): the page egress migrated from hyper-h2 and must
+    // keep offering `h2,http/1.1` — downgrading to h1 would change the
+    // page's TLS fingerprint. Phase 2: per-request CA certificates from
     // context.ca_certificates.
-    let ssl_config = match crate::connector::get_stealth_tls_config() {
-        Some(ref wire) => stealth_wire_to_ssl_config(wire),
-        None => bun_http::ssl_config::SSLConfig::default(),
+    let (ssl_config, profile_offers_h2) = match crate::connector::get_stealth_tls_config() {
+        Some(ref wire) => (
+            stealth_wire_to_ssl_config(wire),
+            wire.alpn_protocols
+                .iter()
+                .any(|proto| proto.as_slice() == b"h2".as_slice()),
+        ),
+        None => (bun_http::ssl_config::SSLConfig::default(), false),
     };
     let tls_props = Some(bun_http::ssl_config::SharedPtr::new(ssl_config));
 
@@ -808,6 +949,7 @@ pub(crate) async fn obtain_response_bun(
         &cancel,
         Some(should_cancel),
         tls_props,
+        profile_offers_h2,
         !context.ignore_certificate_errors,
     )
     .await;

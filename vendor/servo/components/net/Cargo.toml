@@ -31,9 +31,10 @@ bao_stealth = { path = "../../../../src/bao_stealth" }
 bun_dns = { path = "../../../../src/dns" }
 bun_boringssl = { path = "../../../../src/boringssl" }
 bun_boringssl_sys = { path = "../../../../src/boringssl_sys" }
-# Bao fusion (U2 page-network unification, phase 0): fetch driver on bun's
+# Bao fusion (U2 page-network unification): fetch driver on bun's
 # HTTPThread (single epoll thread + stealth TLS), flag-gated behind
-# BAO_PAGE_NET_BUN (default off — hyper path untouched).
+# BAO_PAGE_NET_BUN (default off — hyper path untouched; `1` = all
+# destinations, `img,css` = phase 1 destination pilot).
 bun_core = { path = "../../../../src/bun_core" }
 bun_http = { path = "../../../../src/http" }
 bun_threading = { path = "../../../../src/threading" }

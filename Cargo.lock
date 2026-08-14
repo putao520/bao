@@ -508,6 +508,7 @@ dependencies = [
  "serde",
  "serde_json",
  "servo",
+ "servo-net",
  "servo-url",
  "url",
 ]

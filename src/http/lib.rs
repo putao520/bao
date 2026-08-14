@@ -216,6 +216,14 @@ pub struct Flags {
     /// once on a fresh connection but never loops.
     pub h3_retried: bool,
     pub is_node_http_client: bool,
+    /// Bao fusion (U2): page-egress request (servo's page-network bridge).
+    /// Set from the stealth profile's ALPN list — the page egress migrated
+    /// from hyper-h2 and must keep offering `h2,http/1.1`, so
+    /// [`HTTPClient::can_offer_h2`] returns true for these requests
+    /// regardless of `EXPERIMENTAL_HTTP2_CLIENT` (that flag gates the Node
+    /// fetch path only; downgrading page egress to h1 would change the
+    /// page's TLS fingerprint).
+    pub is_page_egress: bool,
 }
 
 impl Default for Flags {
@@ -239,6 +247,7 @@ impl Default for Flags {
             force_http3: false,
             h3_retried: false,
             is_node_http_client: false,
+            is_page_egress: false,
         }
     }
 }
@@ -1737,6 +1746,11 @@ impl<'a> HTTPClient<'a> {
             HTTPRequestBody::Sendfile(_)
         ) {
             return false;
+        }
+        // Bao fusion (U2): see `Flags::is_page_egress` — page egress keeps
+        // hyper's h2 offer (stealth-profile driven, not feature-flag gated).
+        if self.flags.is_page_egress {
+            return true;
         }
         self.flags.force_http2
             || EXPERIMENTAL_HTTP2_CLIENT_FROM_CLI.load(Ordering::Relaxed)

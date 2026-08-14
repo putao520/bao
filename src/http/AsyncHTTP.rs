@@ -279,6 +279,10 @@ pub struct Options<'a> {
     pub max_redirects: Option<u8>,
     pub reject_unauthorized: Option<bool>,
     pub tls_props: Option<SSLConfigSharedPtr>,
+    /// Bao fusion (U2): mark this request as servo page egress so the h2
+    /// ALPN offer is stealth-profile driven (hyper parity) instead of
+    /// `EXPERIMENTAL_HTTP2_CLIENT` gated. See `Flags::is_page_egress`.
+    pub is_page_egress: Option<bool>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -545,6 +549,9 @@ impl<'a> AsyncHTTP<'a> {
         }
         if let Some(val) = options.reject_unauthorized {
             this.client.flags.reject_unauthorized = val;
+        }
+        if let Some(val) = options.is_page_egress {
+            this.client.flags.is_page_egress = val;
         }
         if let Some(val) = options.tls_props {
             this.client.tls_props = Some(val);

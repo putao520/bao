@@ -33,3 +33,6 @@ bao_engine = { path = "../bao_engine" }
 # bun_uws RFC 6455 codec) driving the page wss path end-to-end.
 bao_boringssl_bridge.workspace = true
 bun_uws.workspace = true
+# page_net_bun_fingerprint_e2e_tests: drives servo-net's bun_bridge flag /
+# request counter from the e2e harness (same path dep servo uses — unified).
+servo-net = { path = "../../vendor/servo/components/net" }

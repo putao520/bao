@@ -2197,20 +2197,23 @@ async fn http_network_fetch(
         // Let connection be the result of obtaining a connection, given networkPartitionKey,
         // request’s current URL, includeCredentials, and newConnection.
         _ => {
-            // Bao fusion (U2 phase 0): flag-gated dispatch to the bun_bridge
-            // fetch driver (bun HTTPThread + stealth TLS). Default OFF — the
-            // hyper path below is byte-for-byte the original behaviour.
-            let response_future = if crate::fetch::bun_bridge::page_net_bun_enabled() {
-                crate::fetch::bun_bridge::obtain_response_bun(
-                    &url,
-                    &request.method,
-                    &mut request.headers,
-                    body,
-                    context,
-                    fetch_terminated_sender,
-                )
-                .await
-            } else {
+            // Bao fusion (U2 phase 1): flag-gated dispatch to the bun_bridge
+            // fetch driver (bun HTTPThread + stealth TLS). `BAO_PAGE_NET_BUN`
+            // is either all-destinations (`1`/`true`) or a destination list
+            // (`img,css`); unmatched destinations keep the hyper path below,
+            // byte-for-byte the original behaviour.
+            let response_future =
+                if crate::fetch::bun_bridge::page_net_bun_enabled_for(request.destination) {
+                    crate::fetch::bun_bridge::obtain_response_bun(
+                        &url,
+                        &request.method,
+                        &mut request.headers,
+                        body,
+                        context,
+                        fetch_terminated_sender,
+                    )
+                    .await
+                } else {
                 obtain_response(
                     &context.state.client,
                     &url,
