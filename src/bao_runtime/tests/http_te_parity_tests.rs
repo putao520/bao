@@ -73,6 +73,43 @@ fn raw_roundtrip(ctx: &mut JsContext, port: u16, request: &[u8]) -> String {
 const SMUGGLED_10_TE: &[u8] =
     b"POST /a HTTP/1.0\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
 
+/// First-principles realm model (ECMA-262/Node semantics): a Realm belongs to
+/// the agent (JsContext) for its whole lifetime, NOT to a single script. State
+/// installed by one `eval` (e.g. `globalThis.x = 1`) MUST be visible to a later
+/// `eval` on the same context. The previous `eval`-per-global implementation
+/// violated this (each eval got a fresh realm → eval B read `undefined`), which
+/// is the same root disease as dispatch-after-eval handler loss. This test
+/// pins the single-realm-per-context invariant.
+#[test]
+fn test_cross_eval_state_visibility() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext init");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    // eval A: install state on the shared global.
+    let a = eval_str(
+        &mut ctx,
+        "globalThis.__realm_probe = 42; typeof globalThis.__realm_probe",
+    );
+    assert_eq!(a, "number", "eval A: setup write returned wrong type: {}", a);
+
+    // eval B: the state MUST survive — same realm (Node semantics).
+    let b = eval_str(&mut ctx, "globalThis.__realm_probe");
+    assert_eq!(
+        b, "42",
+        "eval B: cross-eval state visibility broken (got {:?}); \
+         single-realm-per-context invariant violated",
+        b
+    );
+
+    // eval C: a function defined in eval A is callable from eval C.
+    let c_def = eval_str(&mut ctx, "globalThis.__add = function(a,b){return a+b}; 'defined'");
+    assert_eq!(c_def, "defined");
+    let c_call = eval_str(&mut ctx, "globalThis.__add(40, 2)");
+    assert_eq!(c_call, "42", "cross-eval function call broken");
+}
+
 /// Like `raw_roundtrip`, but keeps reading past the response head until the
 /// peer closes or the budget is exhausted — used where the response BODY is
 /// the assertion target (real JS handler output vs default echo).

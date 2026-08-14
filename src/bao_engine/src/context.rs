@@ -46,10 +46,87 @@ pub use crate::module_loader::{GlobalSetupFn, PostEvalHook};
 ///
 /// 铁律: Bao 始终寄生 servo 的 JSContext，不存在独立 JSContext。
 /// 所有模式（CLI/browser/CDP）共享 servo 的唯一 JSContext。
+///
+/// Realm model (first-principles, ECMA-262/Node semantics): a Realm belongs
+/// to the agent (= this JsContext) for the latter's whole lifetime, NOT to a
+/// single script execution. Scripts execute inside the realm; the realm
+/// persists across `eval` calls. This is what lets `setTimeout`/server
+/// handlers registered by one script fire after that script returns, and
+/// what makes `globalThis.x` set by eval A visible to eval B.
+///
+/// Concretely `JsContext` lazily owns ONE global object (`realm_global`),
+/// created on the first `eval`/`eval_module_setup` and reused by every
+/// subsequent eval (which merely `AutoRealm`s into it). The global is
+/// persistent-rooted via `JS_AddExtraRoot` for the context's lifetime —
+/// SpiderMonkey does not auto-root globals.
 pub struct JsContext {
     cx: NonNull<RawJSContext>,
     global_setup: Option<GlobalSetupFn>,
     post_eval_hook: Option<PostEvalHook>,
+    /// The persistent realm's global object for this context. `None` until
+    /// the first eval lazily creates it (applying `global_setup`). Once
+    /// `Some`, every eval reuses it.
+    realm_global: Option<Box<PersistentGlobal>>,
+}
+
+/// A heap `Value` slot registered with `JS_AddExtraRoot` (`AddRawValueRoot`)
+/// — the mozjs 0.21.4 equivalent of `JS::PersistentRooted`. Holds the
+/// context's single realm global alive for the context's lifetime.
+///
+/// The box pins the `Value` at a stable address (the GC scans/updates that
+/// memory in place); on drop the registration is removed (guarded by a
+/// liveness check so test teardown that destroys the context first does not
+/// unroot into a freed extra-roots table).
+struct PersistentGlobal {
+    cx: *mut RawJSContext,
+    global_val: mozjs::jsval::JSVal,
+}
+
+impl Drop for PersistentGlobal {
+    fn drop(&mut self) {
+        if Self::cx_alive(self.cx) {
+            unsafe {
+                mozjs::jsapi::RemoveRawValueRoot(self.cx, &mut self.global_val);
+            }
+        }
+    }
+}
+
+impl PersistentGlobal {
+    fn cx_alive(cx: *mut RawJSContext) -> bool {
+        !cx.is_null() && mozjs::rust::Runtime::get().map(|c| c.as_ptr()) == Some(cx)
+    }
+
+    fn global_ptr(&self) -> *mut mozjs::jsapi::JSObject {
+        if self.global_val.is_object() {
+            self.global_val.to_object()
+        } else {
+            ::std::ptr::null_mut()
+        }
+    }
+}
+
+thread_local! {
+    /// The current thread's JsContext persistent realm global. Set the first
+    /// time a JsContext on this thread creates its realm. Read by async
+    /// dispatch sites (node:http route handlers, Bun.serve, timers, ...) that
+    /// must `AutoRealm` into the persistent realm before touching JS — they
+    /// only have a raw `*mut JSContext`, not a `&JsContext`.
+    static THREAD_REALM_GLOBAL: ::std::cell::Cell<*mut mozjs::jsapi::JSObject> =
+        const { ::std::cell::Cell::new(::std::ptr::null_mut()) };
+}
+
+/// The current thread's persistent realm global, if a JsContext on this
+/// thread has created its realm. Used by dispatch sites to `AutoRealm`.
+pub fn thread_realm_global() -> Option<*mut mozjs::jsapi::JSObject> {
+    THREAD_REALM_GLOBAL.with(|c| {
+        let p = c.get();
+        if p.is_null() {
+            None
+        } else {
+            Some(p)
+        }
+    })
 }
 
 /// Owns the SM Runtime for CLI/test mode.
@@ -308,6 +385,7 @@ impl JsContext {
                 cx,
                 global_setup: None,
                 post_eval_hook: None,
+                realm_global: None,
             },
             Some(guard),
         ))
@@ -346,6 +424,7 @@ impl JsContext {
             cx,
             global_setup: None,
             post_eval_hook: None,
+            realm_global: None,
         })
     }
 
@@ -416,6 +495,7 @@ impl JsContext {
             cx,
             global_setup: None,
             post_eval_hook: None,
+            realm_global: None,
         })
     }
 
@@ -535,13 +615,14 @@ impl JsContext {
         let post_eval_hook = self.post_eval_hook;
         let mut cx = self.cx();
         let cx = &mut cx;
-        let options = RealmOptions::default();
 
-        rooted!(&in(cx) let global = unsafe {
-            JS_NewGlobalObject(cx, &SIMPLE_GLOBAL_CLASS, ptr::null_mut(),
-                               OnNewGlobalHookOption::FireOnNewGlobalHook,
-                               &*options)
-        });
+        // Lazily create the persistent realm global on the first eval, then
+        // reuse it for every subsequent eval (first-principles realm model:
+        // one realm per context, not per script). `ensure_realm_global`
+        // applies `global_setup` exactly once and publishes the global to the
+        // thread-local so async dispatch sites can `AutoRealm` into it.
+        let global_ptr = self.ensure_realm_global(cx, global_setup)?;
+        rooted!(&in(cx) let global = global_ptr);
 
         let c_filename = std::ffi::CString::new(filename)
             .unwrap_or_else(|_| std::ffi::CString::new("<eval>").unwrap());
@@ -552,11 +633,6 @@ impl JsContext {
         {
             let mut realm = AutoRealm::new_from_handle(cx, global.handle());
             let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-
-            host_fn::install_console(realm_cx, global.handle());
-            if let Some(setup) = global_setup {
-                unsafe { setup(realm_cx, global.handle()) };
-            }
 
             let result = mozjs::rust::evaluate_script(
                 realm_cx,
@@ -586,6 +662,85 @@ impl JsContext {
         }
 
         Ok(unsafe { jsval_to_jsvalue(cx.raw_cx_no_gc(), rval.get()) })
+    }
+
+    /// Lazily create this context's single persistent realm global on the
+    /// first call, applying `global_setup` (install_console + the caller's
+    /// globals like `Bun`/`process`/`require`). On every subsequent call the
+    /// stored global is returned verbatim — setup is NOT re-applied (the
+    /// realm already has those globals). Returns the realm's global pointer;
+    /// also published to `THREAD_REALM_GLOBAL` for async dispatch.
+    ///
+    /// Rooting: the global is `AddRawValueRoot`-ed inside `PersistentGlobal`
+    /// for the context's lifetime — SpiderMonkey does not auto-root globals.
+    ///
+    /// `pub` so the module path (`ModuleLoader::eval_module` / worker
+    /// bootstrap) can proactively initialize the persistent realm when the
+    /// FIRST execution on the context is a module rather than a script —
+    /// there is no prior `eval` to lazily trigger it, and an empty-eval
+    /// workaround would be unsafe (it would route through
+    /// `post_eval_drain_then_exit` and misfire `process 'exit'` dispatch).
+    pub fn ensure_realm_global(
+        &mut self,
+        cx: &mut mozjs::context::JSContext,
+        global_setup: Option<GlobalSetupFn>,
+    ) -> Result<*mut mozjs::jsapi::JSObject, JsError> {
+        if let Some(ref pg) = self.realm_global {
+            return Ok(pg.global_ptr());
+        }
+        let options = RealmOptions::default();
+        rooted!(&in(cx) let global = unsafe {
+            JS_NewGlobalObject(
+                cx,
+                &SIMPLE_GLOBAL_CLASS,
+                ptr::null_mut(),
+                OnNewGlobalHookOption::FireOnNewGlobalHook,
+                &*options,
+            )
+        });
+        if global.get().is_null() {
+            return Err(JsError {
+                message: "Failed to create realm global".into(),
+                filename: "<engine>".into(),
+                line: 0,
+                column: 0,
+                stack: None,
+            });
+        }
+        {
+            let mut realm = AutoRealm::new_from_handle(cx, global.handle());
+            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+            host_fn::install_console(realm_cx, global.handle());
+            if let Some(setup) = global_setup {
+                unsafe { setup(realm_cx, global.handle()) };
+            }
+        }
+        let global_ptr = global.get();
+        let mut pg = Box::new(PersistentGlobal {
+            cx: self.cx.as_ptr(),
+            global_val: mozjs::jsval::ObjectValue(global_ptr),
+        });
+        let rooted = unsafe {
+            mozjs::jsapi::AddRawValueRoot(
+                self.cx.as_ptr(),
+                &mut pg.global_val,
+                b"jscontext_realm_global\0".as_ptr() as *const ::std::os::raw::c_char,
+            )
+        };
+        if !rooted {
+            return Err(JsError {
+                message: "AddRawValueRoot failed for realm global".into(),
+                filename: "<engine>".into(),
+                line: 0,
+                column: 0,
+                stack: None,
+            });
+        }
+        // Publish to the thread-local so async dispatch (route handlers,
+        // timers, ...) can AutoRealm into this realm.
+        THREAD_REALM_GLOBAL.with(|c| c.set(global_ptr));
+        self.realm_global = Some(pg);
+        Ok(global_ptr)
     }
 }
 

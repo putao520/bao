@@ -17,9 +17,7 @@ use bun_uws_sys::request::Request;
 use bun_uws_sys::response::Response;
 use bun_uws_sys::socket_context::BunSocketContextOptions;
 
-use crate::gc_store::{
-    gc_store_get_ns, gc_store_get_ns_with_global, gc_store_insert_ns, gc_store_remove_ns,
-};
+use crate::gc_store::{gc_store_get_ns, gc_store_insert_ns, gc_store_remove_ns};
 use crate::require::cache_builtin;
 
 /// Monotonic server ID for GcStore key namespacing.
@@ -556,16 +554,10 @@ impl ServerUserData {
         }
     }
 
-    /// Resolve the request handler AND its owning global from the
-    /// persistent-rooted GcStore.
-    ///
-    /// BCE(dispatch-after-eval): route handlers fire from
-    /// `drain_and_check` after the registering eval's realm was popped —
-    /// `CurrentGlobalOrNull` is NULL there. This lookup is realm-independent
-    /// and returns the handler's own global so the caller can `AutoRealm`
-    /// into the handler's realm before building req/res objects and calling it.
-    fn handler_with_global(&self) -> Option<(*mut JSObject, *mut JSObject)> {
-        gc_store_get_ns_with_global(self.cx, "http", &self.handler_key)
+    /// Retrieve the handler object from GcStore. Must be called inside the
+    /// realm (dispatch sites `AutoRealm` into the persistent realm first).
+    fn handler(&self) -> Option<*mut JSObject> {
+        gc_store_get_ns(self.cx, "http", &self.handler_key)
     }
 
     /// Retrieve the server object from GcStore.
@@ -606,15 +598,35 @@ unsafe extern "C" fn uws_route_handler(
     let raw_cx = cx;
     let res_mut = Response::<false>::cast_res(res);
 
-    // BCE(dispatch-after-eval, crash class): resolve the handler and its
-    // owning global from the persistent-rooted GcStore. The old
-    // CurrentGlobalOrNull-based lookup returned NULL once the registering
-    // eval's realm was popped (async dispatch via drain_and_check), the
-    // handler was "lost", and this handler returned WITHOUT responding —
-    // uWS treats that as ill-use and calls std::terminate (SIGABRT).
-    let handler_and_global = ud.handler_with_global();
-    let (handler, global) = match handler_and_global {
-        Some((h, g)) if !h.is_null() && !g.is_null() => (h, g),
+    // Enter the context's persistent realm. Async dispatch (drain_and_check
+    // pump) runs with no realm entered; the handler lives as a property on
+    // this realm's global (GcStore), so we must be in the realm to resolve
+    // it. First-principles realm model: one realm per JsContext, held for
+    // the context's lifetime — handlers registered by an earlier eval are
+    // structurally reachable here.
+    let global = match bao_engine::context::thread_realm_global() {
+        Some(g) if !g.is_null() => g,
+        _ => {
+            // No realm on this thread → no JS server should exist here.
+            // Explicit 500 (never a silent return → uWS std::terminate).
+            eprintln!("[node:http] no JS realm on this thread — responding 500");
+            (*res_mut).write_status(b"500 Internal Server Error");
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
+            (*res_mut).end(b"no JS realm", true);
+            return;
+        }
+    };
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+    // Now inside the realm: CurrentGlobalOrNull = persistent global, so the
+    // GcStore property lookup resolves the registered handler.
+    let handler = match ud.handler() {
+        Some(h) if !h.is_null() => h,
         _ => {
             // Registered-but-unresolvable handler must fail explicitly —
             // never a silent return (crash) and never a fake response.
@@ -628,6 +640,7 @@ unsafe extern "C" fn uws_route_handler(
             return;
         }
     };
+    rooted!(&in(cx_ref) let handler_val_root = ObjectValue(handler));
 
     // Read method/url from uWS Request (C++ already parsed).
     let req_ref = bun_opaque::opaque_deref_mut(req);
@@ -635,17 +648,6 @@ unsafe extern "C" fn uws_route_handler(
     let url_bytes = req_ref.url();
     let method_str = ::std::str::from_utf8_unchecked(method_bytes);
     let url_str = ::std::str::from_utf8_unchecked(url_bytes);
-
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-
-    // Root the persistent store's pointers, then enter the handler's realm:
-    // every JS object below (req/res/strings) must be created in the realm
-    // the handler belongs to, and the call itself must run in it.
-    rooted!(&in(cx_ref) let global_root = global);
-    rooted!(&in(cx_ref) let handler_val_root = ObjectValue(handler));
-    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
-    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
 
     // Build JS request object.
     rooted!(&in(cx_ref) let req_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });

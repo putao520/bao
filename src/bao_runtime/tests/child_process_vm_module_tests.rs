@@ -93,17 +93,19 @@ fn test_child_process_vm_module_zlib_deep() {
         "spawn child should have stdout/stderr stream objects"
     );
 
-    // spawn has wait/kill methods
+    // spawn returns a ChildProcess with kill (Node/Bun ChildProcess API).
+    // Note: there is no `.wait()` — Node waits via 'exit'/'close' events and
+    // streams; the previous assertion here checked a non-existent method.
     assert!(
         eval_bool(
             &mut ctx,
             r#"
         var cp = require('child_process');
         var child = cp.spawn('echo', ['test']);
-        typeof child.wait === 'function' && typeof child.kill === 'function'
+        typeof child.kill === 'function'
     "#
         ),
-        "spawn child should have wait/kill"
+        "spawn child should have kill"
     );
 
     // execSync returns output

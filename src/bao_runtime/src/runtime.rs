@@ -4,6 +4,7 @@ use bao_engine::context::{JsContext, SmRuntimeGuard};
 use bao_engine::error::JsError;
 use bao_engine::module_loader::ModuleLoader;
 use bao_engine::value::JsValue;
+use mozjs::rooted;
 
 use crate::globals;
 use crate::require;
@@ -59,15 +60,36 @@ impl BaoRuntime {
         self.ctx.eval(source, filename)
     }
 
+    /// Ensure this context's persistent realm exists (realm-per-context,
+    /// ECMA-262/Node semantics: one realm per agent for its whole lifetime).
+    ///
+    /// Delegates to `JsContext::ensure_realm_global` (idempotent — first call
+    /// lazily creates the global, applies `global_setup` exactly once,
+    /// publishes `thread_realm_global` for async dispatch; later calls return
+    /// the stored global). No eval runs here, so no post-eval hook / exit
+    /// dispatch — safe to call before any user code.
+    fn ensure_realm(
+        &mut self,
+    ) -> ::std::result::Result<*mut mozjs::jsapi::JSObject, JsError> {
+        let setup = self.ctx.global_setup();
+        let mut cx = self.ctx.cx();
+        self.ctx.ensure_realm_global(&mut cx, setup)
+    }
+
     pub fn eval_module(
         &mut self,
         source: &str,
         filename: &str,
     ) -> ::std::result::Result<JsValue, JsError> {
-        let setup = self.ctx.global_setup();
         let hook = self.ctx.post_eval_hook();
         let mut cx = self.ctx.cx();
-        ModuleLoader::eval_module(&mut cx, source, filename, setup, hook)
+        // Realm-per-context: evaluate the module in this context's single
+        // persistent realm — the same realm every script `eval` uses (Node
+        // semantics: `globalThis` and `require` singletons are shared across
+        // script and module evals). No new global, no global_setup re-run.
+        let global_ptr = self.ensure_realm()?;
+        rooted!(&in(cx) let global = global_ptr);
+        ModuleLoader::eval_module_in_realm(&mut cx, source, filename, hook, global.handle())
     }
 
     pub fn run_file(&mut self, path: &str) -> ::std::result::Result<JsValue, JsError> {
@@ -123,9 +145,10 @@ impl BaoRuntime {
     /// suites while the realm that registered them is still alive. Returns
     /// a full report (counters + named passes/failures).
     ///
-    /// Files that don't look like modules fall back to plain `eval`, but in
-    /// that case `bun:test` registration happens in a different realm and the
-    /// report will be empty — test files should use ESM/TS syntax.
+    /// Files that don't look like modules fall back to plain `eval` in the
+    /// same persistent realm; a plain script cannot register bun:test suites
+    /// via the module loader, so the report is empty — test files should use
+    /// ESM/TS syntax.
     //
     // @trace REQ-ENG-006 [entity:BaoRuntime] — bao test runner execution
     pub fn run_test_file(
@@ -169,15 +192,24 @@ impl BaoRuntime {
             || source.trim_start().starts_with("import ");
 
         if is_module {
-            let setup = self.ctx.global_setup();
             let hook = self.ctx.post_eval_hook();
             let mut cx = self.ctx.cx();
-            ModuleLoader::eval_module_then(&mut cx, &source, path, setup, hook, |realm_cx| unsafe {
-                crate::bun_test::run_bun_tests_report(realm_cx.raw_cx())
-            })
+            // Realm-per-context: run the test module in the same persistent
+            // realm as every script eval on this context.
+            let global_ptr = self.ensure_realm()?;
+            rooted!(&in(cx) let global = global_ptr);
+            ModuleLoader::eval_module_in_realm_then(
+                &mut cx,
+                &source,
+                path,
+                hook,
+                global.handle(),
+                |realm_cx| unsafe { crate::bun_test::run_bun_tests_report(realm_cx.raw_cx()) },
+            )
         } else {
-            // Non-module file: bun:test registration won't survive eval's separate realm.
-            // Run as plain script and produce an empty report (no bun:test suites collected).
+            // Non-module file: run as a plain script in the persistent realm.
+            // A plain script (no import/export) cannot register bun:test
+            // suites via the module loader, so the report is empty.
             self.eval(&source, path)?;
             ::std::result::Result::Ok(crate::bun_test::TestReport::default())
         }

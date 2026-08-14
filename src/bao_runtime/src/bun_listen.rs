@@ -29,10 +29,7 @@ use bun_uws_sys::udp::PacketBuffer;
 use bun_uws_sys::udp::Socket as UdpSocket;
 use bun_uws_sys::{CloseCode, ConnectResult, Loop, SocketKind, us_socket_t};
 
-use crate::gc_store::{
-    gc_store_get, gc_store_get_with_global, gc_store_insert, gc_store_remove,
-    gc_store_unique_key,
-};
+use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove, gc_store_unique_key};
 
 // ──────────────────── ID counters ────────────────────
 
@@ -84,10 +81,10 @@ fn extract_js_callback(
 /// Call a JS callback stored in GcStore under the given key.
 /// Passes `args` as arguments to the JS function. Returns `true` on success.
 ///
-/// BCE(dispatch-after-eval): resolves the callback AND its owning global from
-/// the persistent-rooted store (realm-independent) and enters the callback's
-/// realm before invoking it — the callback may fire from a pump long after the
-/// registering eval's realm was popped.
+/// Enters the context's persistent realm before resolving/invoking the
+/// callback: the callback may fire from a pump long after the registering
+/// eval returned, and GcStore stores the callback as a property on the
+/// realm's global (so the realm must be current for the lookup to resolve).
 /// @trace REQ-BAO-API-017 [api:Bun.listen/connect/udpSocket]
 unsafe fn invoke_js_callback(cx: *mut JSContext, cb_key: &Option<String>, args: &[JSVal]) -> bool {
     let key = match cb_key {
@@ -98,18 +95,27 @@ unsafe fn invoke_js_callback(cx: *mut JSContext, cb_key: &Option<String>, args: 
         return false;
     }
 
-    let Some((cb_obj, global)) = gc_store_get_with_global(cx, key) else {
+    let Some(global) = bao_engine::context::thread_realm_global() else {
         return false;
     };
-    if cb_obj.is_null() || global.is_null() {
+    if global.is_null() {
         return false;
     }
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-
-    rooted!(&in(cx_ref) let handler_val = ObjectValue(cb_obj));
     rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+    // Inside the persistent realm: GcStore resolves the registered callback.
+    let Some(cb_obj) = gc_store_get(cx, key) else {
+        return false;
+    };
+    if cb_obj.is_null() {
+        return false;
+    }
+    rooted!(&in(realm_cx) let handler_val = ObjectValue(cb_obj));
 
     // Build HandleValueArray from args slice
     let mut rooted_args: Vec<JSVal> = args.to_vec();
@@ -117,9 +123,6 @@ unsafe fn invoke_js_callback(cx: *mut JSContext, cb_key: &Option<String>, args: 
         length_: rooted_args.len(),
         elements_: rooted_args.as_mut_ptr(),
     };
-
-    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
-    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
 
     let mut rval = UndefinedValue();
     let rval_h = MutableHandle::<Value> {
@@ -167,14 +170,14 @@ struct ListenHttpUserData {
 }
 
 impl ListenHttpUserData {
-    /// Resolve the fetch handler AND its owning global from the
-    /// persistent-rooted store (realm-independent).
-    fn fetch_handler_with_global(&self) -> Option<(*mut JSObject, *mut JSObject)> {
+    /// Resolve the fetch handler from GcStore. Must be called inside the
+    /// realm (dispatch sites `AutoRealm` into the persistent realm first).
+    fn fetch_handler(&self) -> Option<*mut JSObject> {
         let key = self.fetch_cb_key.as_ref()?;
         if self.cx.is_null() {
             return None;
         }
-        gc_store_get_with_global(self.cx, key)
+        gc_store_get(self.cx, key)
     }
 }
 
@@ -401,9 +404,6 @@ fn build_http_server(
         }
 
         let cx = ud.cx;
-        // BCE(dispatch-after-eval): a registered-but-unresolvable handler
-        // must fail explicitly — never a silent default echo (that masked
-        // the lost-handler gap and impersonated a real handler response).
         if cx.is_null() {
             eprintln!("[bun:listen] fetch handler registered but cx is null — responding 500");
             (*res_mut).write_status(b"500 Internal Server Error");
@@ -412,8 +412,33 @@ fn build_http_server(
             return;
         }
 
-        let (fetch_handler, global) = match ud.fetch_handler_with_global() {
-            Some((h, g)) if !h.is_null() && !g.is_null() => (h, g),
+        // Enter the context's persistent realm (first-principles realm model:
+        // one realm per JsContext, held for the context's lifetime). Async
+        // dispatch runs with no realm entered; the fetch handler is stored as
+        // a property on this realm's global (GcStore), so we must be in the
+        // realm to resolve it.
+        let global = match bao_engine::context::thread_realm_global() {
+            Some(g) if !g.is_null() => g,
+            _ => {
+                eprintln!("[bun:listen] no JS realm on this thread — responding 500");
+                (*res_mut).write_status(b"500 Internal Server Error");
+                (*res_mut).write_header(b"Content-Type", b"text/plain");
+                (*res_mut).end(b"no JS realm", true);
+                return;
+            }
+        };
+
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let global_root = global);
+        let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+        let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+        // Inside the persistent realm: GcStore resolves the fetch handler.
+        // Registered-but-unresolvable is an explicit dispatch failure (never
+        // a silent default echo that impersonates the handler's response).
+        let fetch_handler = match ud.fetch_handler() {
+            Some(h) if !h.is_null() => h,
             _ => {
                 eprintln!("[bun:listen] fetch handler registered but unresolvable — responding 500");
                 (*res_mut).write_status(b"500 Internal Server Error");
@@ -422,17 +447,7 @@ fn build_http_server(
                 return;
             }
         };
-
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-
-        // Root the persistent-store pointers, then enter the handler's realm
-        // (BCE dispatch-after-eval): CurrentGlobalOrNull is NULL once the
-        // registering eval's realm was popped.
         rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
-        rooted!(&in(cx_ref) let global_root = global);
-        let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
-        let cx_ref: &mut mozjs::context::JSContext = &mut realm;
 
         // Build JS Request object
         rooted!(&in(cx_ref) let req_obj = build_request_object(cx_ref, &*req_ref));

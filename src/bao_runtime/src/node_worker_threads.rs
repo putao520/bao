@@ -22,6 +22,7 @@ use mozjs::jsapi::*;
 use mozjs::jsval::{
     BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue,
 };
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -89,23 +90,29 @@ fn worker_entry(
     // 2. Create a new Runtime on this thread — gets its own JSContext.
     let _runtime = mozjs::rust::Runtime::new(engine_handle);
 
-    let cx_ptr = match mozjs::rust::Runtime::get() {
-        Some(p) => p,
-        None => return,
+    // 3. Wrap the worker's Runtime in a JsContext (parasitic — Runtime::new
+    //    above already set the TLS) with the worker global setup.
+    //    Realm-per-context: the worker's single realm is created lazily by
+    //    the realm-init eval below and persists for the worker's whole
+    //    lifetime, published to thread_realm_global so the message loop and
+    //    async dispatch can AutoRealm into it.
+    let mut ctx = match unsafe { bao_engine::context::JsContext::from_servo_runtime() } {
+        Ok(c) => c,
+        Err(_) => return,
     };
+    ctx.set_global_setup(worker_global_setup);
 
-    // Safety: Runtime::get() returned a valid JSContext pointer for this thread.
-    let mut cx = unsafe { mozjs::context::JSContext::from_ptr(cx_ptr) };
-    let raw_cx = unsafe { cx.raw_cx() };
+    let mut cx = ctx.cx();
+    let raw_cx = ctx.raw_cx();
 
-    // 3. Init JobQueue + ModuleLoader on this thread's JSContext.
+    // 4. Init JobQueue + ModuleLoader on this thread's JSContext.
     if !bao_engine::job_queue::JobQueue::init(&cx) {
         return;
     }
     bao_engine::module_loader::ModuleLoader::init_thread_local(&cx);
     bao_engine::module_loader::set_job_queue_drain(bao_engine::job_queue::JobQueue::drain);
 
-    // 4. Read the worker script from disk.
+    // 5. Read the worker script from disk.
     let source = match ::std::fs::read_to_string(&filename) {
         Ok(s) => s,
         Err(e) => {
@@ -115,7 +122,7 @@ fn worker_entry(
         }
     };
 
-    // 5. Build a bootstrap script that sets up self.onmessage / self.postMessage
+    // 6. Build a bootstrap script that sets up self.onmessage / self.postMessage
     //    then evaluates the worker source.
     //
     //    The worker script can use:
@@ -189,13 +196,35 @@ fn worker_entry(
         source = source,
     );
 
-    // 6. Evaluate the bootstrap script.
-    let eval_result = bao_engine::module_loader::ModuleLoader::eval_module(
+    // 7. Initialize the worker's persistent realm (lazily creates the
+    //     global, applies worker_global_setup exactly once, publishes
+    //     thread_realm_global). Idempotent + no eval runs, so no exit
+    //     dispatch. Then evaluate the bootstrap module INSIDE that realm —
+    //     the same realm every later dispatch on this worker (message
+    //     delivery, timers, job queue) uses.
+    let global_ptr = match ctx.ensure_realm_global(&mut cx, Some(worker_global_setup)) {
+        Ok(g) if !g.is_null() => g,
+        Ok(_) => {
+            let _ = main_sender.send(WorkerToMainMessage::Error(
+                "Worker realm global null after ensure_realm_global".into(),
+            ));
+            return;
+        }
+        Err(e) => {
+            let _ = main_sender.send(WorkerToMainMessage::Error(format!(
+                "Worker realm init failed: {}",
+                e.message
+            )));
+            return;
+        }
+    };
+    rooted!(&in(cx) let global = global_ptr);
+    let eval_result = bao_engine::module_loader::ModuleLoader::eval_module_in_realm(
         &mut cx,
         &bootstrap,
         &filename,
-        Some(worker_global_setup),
         None,
+        global.handle(),
     );
 
     if let Err(e) = eval_result {
@@ -207,15 +236,15 @@ fn worker_entry(
         return;
     }
 
-    // 7. Drain the job queue (process any microtasks from the script).
+    // 8. Drain the job queue (process any microtasks from the script).
     bao_engine::job_queue::JobQueue::drain(&mut cx);
 
-    // 8. Store the main_sender in TLS for __baoPostToMain to access.
+    // 9. Store the main_sender in TLS for __baoPostToMain to access.
     WORKER_MAIN_SENDER.with(|s| {
         *s.borrow_mut() = Some(main_sender);
     });
 
-    // 9. Message receive loop: wait for messages from main thread.
+    // 10. Message receive loop: wait for messages from main thread.
     loop {
         match receiver.recv() {
             Ok(WorkerMessage::Data(json_str)) => {
@@ -290,15 +319,24 @@ thread_local! {
 /// Call self.__baoDeliverMessage(jsonStr) in the worker's JSContext.
 fn deliver_message_to_worker(raw_cx: *mut JSContext, json_str: &str) {
     unsafe {
-        let global = CurrentGlobalOrNull(raw_cx);
-        if global.is_null() {
-            return;
-        }
+        // Realm-per-context: the message loop runs after the bootstrap
+        // eval's AutoRealm popped — no realm is entered, so
+        // CurrentGlobalOrNull is NULL here (under the old eval-per-global
+        // model every message was silently dropped at this point). Enter the
+        // worker's persistent realm, published by the realm-init eval.
+        let global = match bao_engine::context::thread_realm_global() {
+            Some(g) if !g.is_null() => g,
+            _ => return,
+        };
 
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
         let cx = &mut wrapped_cx;
 
         rooted!(&in(cx) let global_root = global);
+        // All JS below (property lookup, string creation, call) must run in
+        // the realm that owns the global.
+        let mut realm = AutoRealm::new_from_handle(cx, global_root.handle());
+        let cx: &mut mozjs::context::JSContext = &mut realm;
         rooted!(&in(cx) let mut fn_val = UndefinedValue());
         JS_GetProperty(
             raw_cx,

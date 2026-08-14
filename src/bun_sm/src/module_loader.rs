@@ -555,6 +555,212 @@ impl ModuleLoader {
 
         ::std::result::Result::Ok(after_eval(realm_cx))
     }
+
+    /// Evaluate `source` as an ES module INSIDE AN EXISTING realm's global.
+    ///
+    /// Realm-per-context variant (ECMA-262/Node semantics): the caller passes
+    /// the persistent realm global — obtained from
+    /// `JsContext::ensure_realm_global` / `bao_engine::context::thread_realm_global`
+    /// — and this fn does NOT create a new global and does NOT apply
+    /// `global_setup`. The realm already has its globals installed (by the
+    /// first `eval` / `ensure_realm_global`); a module evaluated here shares
+    /// `globalThis`, `require` singletons, and registered handlers with every
+    /// script eval on the same context.
+    ///
+    /// Module compile/link/evaluate + microtask drain + post_eval_hook all run
+    /// inside `AutoRealm(global)`, matching `eval_module` exactly minus the
+    /// realm-creation block. Returns the module evaluation result.
+    pub fn eval_module_in_realm(
+        cx: &mut mozjs::context::JSContext,
+        source: &str,
+        filename: &str,
+        post_eval_hook: Option<PostEvalHook>,
+        global: mozjs::rust::Handle<*mut JSObject>,
+    ) -> ::std::result::Result<JsValue, JsError> {
+        let abs_filename = if Path::new(filename).is_absolute() {
+            PathBuf::from(filename)
+        } else {
+            ::std::env::current_dir().unwrap_or_default().join(filename)
+        };
+        let base_dir = abs_filename
+            .parent()
+            .map(|p| p.to_path_buf())
+            .or_else(|| ::std::env::current_dir().ok());
+
+        CURRENT_DIR.with(|d| *d.borrow_mut() = base_dir.clone());
+        // @trace REQ-ENG-006 [entity:JSContext] — entry module path is used to
+        // set import.meta.main = true on this module (Bun semantics).
+        ENTRY_MODULE.with(|e| *e.borrow_mut() = Some(abs_filename.clone()));
+
+        let mut realm = AutoRealm::new_from_handle(cx, global);
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+        let c_filename =
+            CString::new(filename).unwrap_or_else(|_| CString::new("<module>").unwrap());
+        let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
+
+        // REQ-ENG-005 criterion 3: TypeScript/JSX transpilation before SM compilation.
+        let transpiled = if needs_transpile(&abs_filename) {
+            strip_typescript(source, &abs_filename)
+        } else {
+            source.to_string()
+        };
+
+        let mut src = transform_str_to_source_text(&transpiled);
+
+        rooted!(&in(realm_cx) let mut module_obj = unsafe {
+            CompileModule1(realm_cx, compile_opts.ptr, &mut src)
+        });
+
+        if module_obj.get().is_null() {
+            let mut detail = extract_module_error(realm_cx);
+            if detail.line == 0 && detail.column == 0 {
+                detail.message = format!("Failed to compile module: {}", detail.message);
+            } else {
+                detail.message = format!(
+                    "Failed to compile module: {} ({}:{}:{})",
+                    detail.message, detail.filename, detail.line, detail.column
+                );
+            }
+            return ::std::result::Result::Err(detail);
+        }
+
+        // BUG-ENG-365: attach module private value (file:// URL) BEFORE linking.
+        let entry_url = path_to_file_url(&abs_filename);
+        unsafe {
+            set_module_private(
+                realm_cx.raw_cx_no_gc(),
+                module_obj.handle().get(),
+                &entry_url,
+            )
+        };
+
+        rooted!(&in(realm_cx) let mut rval = UndefinedValue());
+
+        if !unsafe { ModuleLink(realm_cx, module_obj.handle()) } {
+            return ::std::result::Result::Err(extract_module_error(realm_cx));
+        }
+
+        if !unsafe { ModuleEvaluate(realm_cx, module_obj.handle(), rval.handle_mut()) } {
+            return ::std::result::Result::Err(extract_module_error(realm_cx));
+        }
+
+        drain_job_queue(realm_cx);
+
+        if let Some(hook) = post_eval_hook {
+            for _ in 0..1000 {
+                if !hook(realm_cx) {
+                    break;
+                }
+                ::std::thread::sleep(::std::time::Duration::from_millis(1));
+                hook(realm_cx);
+                drain_job_queue(realm_cx);
+            }
+        }
+
+        ::std::result::Result::Ok(unsafe {
+            jsval_to_jsvalue(realm_cx.raw_cx_no_gc(), rval.get())
+        })
+    }
+
+    /// Realm-per-context variant of `eval_module_then`: evaluate `source` as
+    /// an ES module inside the existing realm's `global`, then invoke
+    /// `after_eval` while that realm is still entered. Used by `bao test` so
+    /// `globalThis.__run_bun_tests()` executes against the same realm that
+    /// registered the suites (which, in realm-per-context, is also the same
+    /// realm as every prior script eval).
+    ///
+    /// See [`eval_module_in_realm`] for the realm contract (caller-supplied
+    /// global; no JS_NewGlobalObject; no global_setup).
+    pub fn eval_module_in_realm_then<R>(
+        cx: &mut mozjs::context::JSContext,
+        source: &str,
+        filename: &str,
+        post_eval_hook: Option<PostEvalHook>,
+        global: mozjs::rust::Handle<*mut JSObject>,
+        after_eval: impl FnOnce(&mut mozjs::context::JSContext) -> R,
+    ) -> ::std::result::Result<R, JsError> {
+        let abs_filename = if Path::new(filename).is_absolute() {
+            PathBuf::from(filename)
+        } else {
+            ::std::env::current_dir().unwrap_or_default().join(filename)
+        };
+        let base_dir = abs_filename
+            .parent()
+            .map(|p| p.to_path_buf())
+            .or_else(|| ::std::env::current_dir().ok());
+
+        CURRENT_DIR.with(|d| *d.borrow_mut() = base_dir.clone());
+        // @trace REQ-ENG-006 [entity:JSContext] — entry module path is used to
+        // set import.meta.main = true on this module (Bun semantics).
+        ENTRY_MODULE.with(|e| *e.borrow_mut() = Some(abs_filename.clone()));
+
+        let mut realm = AutoRealm::new_from_handle(cx, global);
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+        let c_filename =
+            CString::new(filename).unwrap_or_else(|_| CString::new("<module>").unwrap());
+        let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
+
+        let transpiled = if needs_transpile(&abs_filename) {
+            strip_typescript(source, &abs_filename)
+        } else {
+            source.to_string()
+        };
+
+        let mut src = transform_str_to_source_text(&transpiled);
+
+        rooted!(&in(realm_cx) let mut module_obj = unsafe {
+            CompileModule1(realm_cx, compile_opts.ptr, &mut src)
+        });
+
+        if module_obj.get().is_null() {
+            let mut detail = extract_module_error(realm_cx);
+            if detail.line == 0 && detail.column == 0 {
+                detail.message = format!("Failed to compile module: {}", detail.message);
+            } else {
+                detail.message = format!(
+                    "Failed to compile module: {} ({}:{}:{})",
+                    detail.message, detail.filename, detail.line, detail.column
+                );
+            }
+            return ::std::result::Result::Err(detail);
+        }
+
+        let entry_url = path_to_file_url(&abs_filename);
+        unsafe {
+            set_module_private(
+                realm_cx.raw_cx_no_gc(),
+                module_obj.handle().get(),
+                &entry_url,
+            )
+        };
+
+        rooted!(&in(realm_cx) let mut rval = UndefinedValue());
+
+        if !unsafe { ModuleLink(realm_cx, module_obj.handle()) } {
+            return ::std::result::Result::Err(extract_module_error(realm_cx));
+        }
+
+        if !unsafe { ModuleEvaluate(realm_cx, module_obj.handle(), rval.handle_mut()) } {
+            return ::std::result::Result::Err(extract_module_error(realm_cx));
+        }
+
+        drain_job_queue(realm_cx);
+
+        if let Some(hook) = post_eval_hook {
+            for _ in 0..1000 {
+                if !hook(realm_cx) {
+                    break;
+                }
+                ::std::thread::sleep(::std::time::Duration::from_millis(1));
+                hook(realm_cx);
+                drain_job_queue(realm_cx);
+            }
+        }
+
+        ::std::result::Result::Ok(after_eval(realm_cx))
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

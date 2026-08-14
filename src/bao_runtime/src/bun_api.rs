@@ -30,9 +30,7 @@ use bun_uws_sys::socket_context::BunSocketContextOptions;
 use bun_uws_sys::web_socket::{NewWebSocket, RawWebSocket, WebSocketBehavior};
 use bun_uws_sys::{Opcode, SendStatus, WebSocketUpgradeContext, uws_res};
 
-use crate::gc_store::{
-    gc_store_get, gc_store_get_with_global, gc_store_insert, gc_store_remove,
-};
+use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove};
 
 /// Install Bun.* namespace on a target object (REQ-SEC-002 parameter injection).
 ///
@@ -2526,13 +2524,33 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         }
 
         // @trace REQ-ENG-006 [api:Bun.serve fetch handler] [level:design]
-        // BCE(dispatch-after-eval): resolve the user-supplied `fetch` JS
-        // function AND its owning global from the persistent-rooted store.
-        // Realm-independent lookup — works after the registering eval's
-        // realm was popped (async dispatch via drain_and_check). A registered
-        // handler that fails to resolve is a dispatch failure → explicit 500.
-        let (fetch_handler, global) = match ud.fetch_handler_with_global() {
-            Some((h, g)) if !h.is_null() && !g.is_null() => (h, g),
+        // Enter the context's persistent realm (first-principles realm model:
+        // one realm per JsContext, held for the context's lifetime). Async
+        // dispatch runs with no realm entered; the fetch handler is stored as
+        // a property on this realm's global (GcStore), so we must be in the
+        // realm to resolve it.
+        let global = match bao_engine::context::thread_realm_global() {
+            Some(g) if !g.is_null() => g,
+            _ => {
+                eprintln!("[bun:serve] no JS realm on this thread — responding 500");
+                (*res_mut).write_status(b"500 Internal Server Error");
+                (*res_mut).write_header(b"Content-Type", b"text/plain");
+                (*res_mut).end(b"no JS realm", true);
+                return;
+            }
+        };
+
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let global_root = global);
+        let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+        let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+        // Inside the persistent realm: GcStore resolves the fetch handler.
+        // Registered-but-unresolvable is an explicit dispatch failure → 500
+        // (never a silent default echo that impersonates the handler response).
+        let fetch_handler = match ud.fetch_handler() {
+            Some(h) if !h.is_null() => h,
             _ => {
                 eprintln!("[bun:serve] fetch handler registered but unresolvable — responding 500");
                 (*res_mut).write_status(b"500 Internal Server Error");
@@ -2542,20 +2560,6 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             }
         };
 
-        // Build a JS Request object from the uWS Request (method/url/headers).
-        // SAFETY: cx is live on this thread (server created on JS thread,
-        // route handler dispatched by `drain_and_check` on the same thread).
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-
-        // Root the persistent-store pointers, then enter the handler's realm
-        // (BCE dispatch-after-eval): CurrentGlobalOrNull is NULL once the
-        // registering eval's realm was popped.
-        rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
-        rooted!(&in(cx_ref) let global_root = global);
-        let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
-        let cx_ref: &mut mozjs::context::JSContext = &mut realm;
-
         rooted!(&in(cx_ref) let req_obj = serve_build_request_object(cx_ref, &*req_ref));
         if req_obj.get().is_null() {
             serve_write_default_response(&mut *res_mut, &*req_ref);
@@ -2563,6 +2567,7 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         }
 
         // Call the JS fetch handler: `fetch_handler(request)`.
+        rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
         rooted!(&in(cx_ref) let req_val_elem = ObjectValue(req_obj.get()));
         let call_args = HandleValueArray {
             length_: 1,
@@ -2907,15 +2912,15 @@ struct BunServeUserData {
 }
 
 impl BunServeUserData {
-    /// Resolve the fetch handler AND its owning global from the
-    /// persistent-rooted store (realm-independent).
+    /// Resolve the fetch handler JS function from GcStore. Must be called
+    /// inside the realm (dispatch sites `AutoRealm` into the persistent realm).
     /// @trace REQ-ENG-006 [api:Bun.serve fetch handler]
-    fn fetch_handler_with_global(&self) -> Option<(*mut JSObject, *mut JSObject)> {
+    fn fetch_handler(&self) -> Option<*mut JSObject> {
         let key = self.fetch_cb_key.as_ref()?;
         if self.cx.is_null() {
             return None;
         }
-        gc_store_get_with_global(self.cx, key)
+        gc_store_get(self.cx, key)
     }
 }
 
@@ -3427,25 +3432,29 @@ unsafe extern "C" fn ws_on_open(raw_ws: *mut RawWebSocket) {
         return;
     }
 
-    // Retrieve the JS WebSocket wrapper from GcStore and update its
-    // RawWebSocket pointer now that the socket actually exists.
-    // BCE(dispatch-after-eval): fetch the owning global too (realm-independent)
-    // and enter its realm — WS callbacks fire from the pump long after the
-    // registering eval's realm was popped.
-    let Some((ws_obj, global)) = gc_store_get_with_global(cx, &ws_ud.ws_obj_key) else {
+    // Enter the context's persistent realm before touching JS — WS callbacks
+    // fire from the pump with no realm entered, and the JS WebSocket wrapper
+    // is stored as a property on this realm's global (GcStore).
+    let Some(global) = bao_engine::context::thread_realm_global() else {
         return;
     };
-    if ws_obj.is_null() || global.is_null() {
+    if global.is_null() {
         return;
     }
-
-    // Update the RawWebSocket pointer on the JS object.
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
     rooted!(&in(cx_ref) let global_root = global);
     let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
     let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+    // Inside the persistent realm: GcStore resolves the WS wrapper.
+    let Some(ws_obj) = gc_store_get(cx, &ws_ud.ws_obj_key) else {
+        return;
+    };
+    if ws_obj.is_null() {
+        return;
+    }
+    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
 
     let ptr_bits = raw_ws as u64;
     let ptr_hi = (ptr_bits >> 32) as i32;
@@ -3547,25 +3556,31 @@ unsafe extern "C" fn ws_on_message(
         return;
     }
 
-    let Some((ws_obj, global)) = gc_store_get_with_global(cx, &ws_ud.ws_obj_key) else {
+    // Enter the context's persistent realm before touching JS — message
+    // callbacks fire from the pump with no realm entered.
+    let Some(global) = bao_engine::context::thread_realm_global() else {
+        return;
+    };
+    if global.is_null() {
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+    // Inside the persistent realm: GcStore resolves ws_obj + ws_handler.
+    let Some(ws_obj) = gc_store_get(cx, &ws_ud.ws_obj_key) else {
         return;
     };
     let Some(ws_handler) = ws_ud.ws_handler() else {
         return;
     };
-    if ws_obj.is_null() || ws_handler.is_null() || global.is_null() {
+    if ws_obj.is_null() || ws_handler.is_null() {
         return;
     }
-
-    // Get the `message` method from the websocket handler.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let ws_handler_root = ws_handler);
-    rooted!(&in(cx_ref) let global_root = global);
-    // BCE(dispatch-after-eval): enter the handler's realm — message
-    // callbacks fire from the pump after the registering eval returned.
-    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
-    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
 
     let mut msg_val = UndefinedValue();
     JS_GetProperty(
@@ -3657,25 +3672,30 @@ unsafe extern "C" fn ws_on_close(
         return;
     }
 
-    // BCE(dispatch-after-eval): fetch the owning global too (realm-independent)
-    // and enter its realm — close callbacks fire from the pump after the
-    // registering eval returned.
-    let ws_obj_and_global = gc_store_get_with_global(cx, &ws_ud.ws_obj_key);
-    let (ws_obj, global) = match ws_obj_and_global {
-        Some((o, g)) if !o.is_null() && !g.is_null() => (o, g),
+    // Enter the context's persistent realm before touching JS — close
+    // callbacks fire from the pump with no realm entered.
+    let global = match bao_engine::context::thread_realm_global() {
+        Some(g) if !g.is_null() => g,
         _ => {
             let _ = Box::from_raw(ud_ptr as *mut BunWsUserData);
             return;
         }
     };
-
-    // Enter the ws_obj's realm for all JS property operations below.
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
     rooted!(&in(cx_ref) let global_root = global);
     let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
     let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+    // Inside the persistent realm: GcStore resolves the WS wrapper.
+    let ws_obj = match gc_store_get(cx, &ws_ud.ws_obj_key) {
+        Some(o) if !o.is_null() => o,
+        _ => {
+            let _ = Box::from_raw(ud_ptr as *mut BunWsUserData);
+            return;
+        }
+    };
+    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
 
     // Update readyState to CLOSED (3) and clear the raw pointer on the JS object.
     let closed_val = Int32Value(3);
