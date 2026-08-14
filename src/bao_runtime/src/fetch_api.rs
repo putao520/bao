@@ -16,11 +16,14 @@
 // This replaced the `thread::spawn` + `drain_pending` polling model which
 // had three flaws (O(N) OS threads, busy-poll sleep, fragile drain coupling).
 // See `fetch_async.rs` module-level doc for the full BCE analysis.
+use ::std::sync::Arc;
+use ::std::sync::atomic::AtomicBool;
+
 use bun_core::ZBox;
 
 use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2::JS_DefineFunction;
 
@@ -90,12 +93,25 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     let mut method: String = "GET".to_string();
     let mut headers: Vec<(String, String)> = Vec::new();
     let mut body: Option<Vec<u8>> = None;
+    // WHATWG fetch signal: init.signal wins over the Request base. Snapshot
+    // of the raw JSVal here (the object stays reachable through args —
+    // init/Request object on the argv stack); rooted where consumed below.
+    let mut signal_val: Option<JSVal> = None;
 
     if input_val.is_string() {
         url = crate::js_to_rust_string(cx, input_val);
     } else if input_val.is_object() {
         // BCE-012: root to_object() result — JS_GetProperty can trigger GC
         rooted!(&in(wrapped_cx) let req_obj = input_val.to_object());
+        // Request base signal: read the raw `_signal` slot, not the `signal`
+        // getter (which lazily allocates a fresh AbortController signal per
+        // read — wrong object to wire and needless allocation per fetch).
+        {
+            let sv = get_val_prop(cx, req_obj.handle(), "_signal");
+            if sv.is_object() {
+                signal_val = Some(sv);
+            }
+        }
         match get_string_prop(cx, req_obj.handle().into(), "url") {
             ::std::option::Option::Some(u) => url = u,
             ::std::option::Option::None => {
@@ -106,7 +122,8 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                 return false;
             }
         }
-        if let ::std::option::Option::Some(m) = get_string_prop(cx, req_obj.handle().into(), "method")
+        if let ::std::option::Option::Some(m) =
+            get_string_prop(cx, req_obj.handle().into(), "method")
         {
             method = m;
         }
@@ -124,7 +141,8 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             headers = parse_headers_init(cx, h_val);
         }
         // Body slots, in the order the Request constructor stores them.
-        if let ::std::option::Option::Some(t) = get_string_prop(cx, req_obj.handle().into(), "_bodyText")
+        if let ::std::option::Option::Some(t) =
+            get_string_prop(cx, req_obj.handle().into(), "_bodyText")
         {
             body = Some(t.into_bytes());
         } else {
@@ -189,7 +207,10 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             }
         }
     } else {
-        JS_ReportErrorUTF8(cx, c"fetch requires a string URL or a Request object".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"fetch requires a string URL or a Request object".as_ptr(),
+        );
         return false;
     }
 
@@ -220,7 +241,12 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             // body: only an explicitly present init.body overrides (null
             // clears it), matching the WHATWG "init wins when present" rule.
             let mut has_body = false;
-            JS_HasProperty(cx, opts_obj.handle().into(), c"body".as_ptr(), &mut has_body);
+            JS_HasProperty(
+                cx,
+                opts_obj.handle().into(),
+                c"body".as_ptr(),
+                &mut has_body,
+            );
             if has_body {
                 let mut b_val = UndefinedValue();
                 JS_GetProperty(
@@ -239,6 +265,14 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                         return false;
                     }
+                }
+            }
+            // init.signal wins over the Request base signal (WHATWG
+            // "init wins when present" — same rule as body/method/headers).
+            {
+                let sv = get_val_prop(cx, opts_obj.handle(), "signal");
+                if sv.is_object() {
+                    signal_val = Some(sv);
                 }
             }
         }
@@ -278,6 +312,36 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         return false;
     };
 
+    // ── AbortSignal triage (WHATWG fetch init.signal / Request.signal) ──────
+    // Pre-aborted: reject immediately, no request is scheduled. Live signal:
+    // wire the cancellation channel and register the abort listener. Shape
+    // probe: boolean `aborted` + callable `addEventListener` (holds for the
+    // globals.rs shim AND servo's native DOM AbortSignal).
+    let mut signal_active: Option<JSVal> = None;
+    let mut signal_pre_aborted = false;
+    if let Some(sv) = signal_val {
+        if sv.is_object() {
+            rooted!(&in(wrapped_cx) let sig_obj = sv.to_object());
+            if is_abort_signal_shape(cx, sig_obj.handle()) {
+                let mut ab_val = UndefinedValue();
+                JS_GetProperty(
+                    cx,
+                    sig_obj.handle().into(),
+                    c"aborted".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut ab_val,
+                    },
+                );
+                if ab_val.is_boolean() && ab_val.to_boolean() {
+                    signal_pre_aborted = true;
+                } else {
+                    signal_active = Some(sv);
+                }
+            }
+        }
+    }
+
     // ── FetchTasklet event-driven: create PENDING Promise, delegate to fetch_async ──
     // @trace REQ-ENG-010 [entity:FetchTasklet] — O(1) OS threads
     rooted!(&in(wrapped_cx) let null_global = ::std::ptr::null_mut::<JSObject>());
@@ -287,10 +351,48 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         return true;
     }
 
+    let promise_val = ObjectValue(promise);
+
+    if signal_pre_aborted {
+        // Pre-aborted signal: the fetch never reaches the network. Reject
+        // with DOMException AbortError ("The operation was aborted").
+        rooted!(&in(wrapped_cx) let promise_obj = promise);
+        // SAFETY: cx is live on this thread; promise_obj is a pending Promise.
+        unsafe {
+            crate::fetch_async::reject_promise_with_abort_error(cx, promise_obj.handle().into());
+        }
+        args.rval().set(promise_val);
+        return true;
+    }
+
     let profile: Option<bao_stealth::StealthProfile> =
         TL_STEALTH_PROFILE.with(|p| p.borrow().clone());
 
-    let promise_val = ObjectValue(promise);
+    if let Some(sv) = signal_active {
+        // Live signal: wire the cancellation channel (flag → AsyncHTTP
+        // Signals.aborted) and register the JS abort listener.
+        let abort_id = crate::fetch_async::new_abort_id();
+        let flag = Arc::new(AtomicBool::new(false));
+        // SAFETY: cx is live on this thread; promise_val is the pending Promise.
+        unsafe {
+            crate::fetch_async::start_with_signal(
+                cx,
+                promise_val,
+                profile,
+                bun_method,
+                url,
+                headers,
+                body,
+                crate::fetch_async::AbortRequest {
+                    id: abort_id,
+                    flag: ::std::sync::Arc::clone(&flag),
+                },
+            );
+            register_abort_listener(cx, sv, abort_id);
+        }
+        args.rval().set(promise_val);
+        return true;
+    }
 
     // SAFETY: cx is live on this thread; promise_val is the pending Promise.
     unsafe {
@@ -299,6 +401,150 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 
     args.rval().set(promise_val);
     true
+}
+
+// ── AbortSignal listener wiring ─────────────────────────────────────────────
+
+/// Native `abort` event trampoline. The abort id is stamped onto the
+/// function object itself (`_abortId`, permanent + readonly); the callee is
+/// recovered via `args.calleev()` so no global lookup is needed (works in
+/// any realm, page or CLI).
+#[allow(non_snake_case)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bao_abort_listener_native(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let callee_v = args.calleev();
+    if callee_v.is_object() {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        // BCE-012: root the callee across the property read (can trigger GC)
+        rooted!(&in(cx_ref) let callee_obj = callee_v.to_object());
+        let mut id_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            callee_obj.handle().into(),
+            c"_abortId".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut id_val,
+            },
+        );
+        if id_val.is_int32() {
+            crate::fetch_async::trigger_abort(id_val.to_int32() as u32);
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// Register the abort listener on a live AbortSignal:
+/// `signal.addEventListener('abort', trampoline)`. The trampoline carries
+/// the abort id; when the signal fires it calls
+/// [`crate::fetch_async::trigger_abort`], which sets the shared flag and
+/// schedules the HTTPThread shutdown for the in-flight request.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*` on the current thread; `signal_val`
+/// must be an object value protected from GC by the caller's stack frame.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn register_abort_listener(cx: *mut JSContext, signal_val: JSVal, abort_id: u32) {
+    unsafe {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        // BCE-012: root the signal across the addEventListener call
+        rooted!(&in(cx_ref) let signal_obj = signal_val.to_object());
+
+        let listener_fn = JS_NewFunction(
+            cx,
+            Some(bao_abort_listener_native),
+            1,
+            0,
+            c"__baoFetchAbort".as_ptr(),
+        );
+        let listener_fn = JS_NewFunction(
+            cx,
+            Some(bao_abort_listener_native),
+            1,
+            0,
+            c"__baoFetchAbort".as_ptr(),
+        );
+        if listener_fn.is_null() {
+            return;
+        }
+        let listener_obj = JS_GetFunctionObject(listener_fn);
+        if listener_obj.is_null() {
+            return;
+        }
+        // BCE-012: root the listener function object across the calls below
+        rooted!(&in(cx_ref) let listener = listener_obj);
+
+        // Stamp the abort id as the listener's identity (permanent +
+        // readonly: JS must not be able to repoint one fetch's abort at
+        // another's channel).
+        rooted!(&in(cx_ref) let id_val = Int32Value(abort_id as i32));
+        JS_DefineProperty(
+            cx,
+            listener.handle().into(),
+            c"_abortId".as_ptr(),
+            id_val.handle().into(),
+            (JSPROP_PERMANENT | JSPROP_READONLY) as u32,
+        );
+
+        // signal.addEventListener('abort', listener)
+        let c_type = ZBox::from_bytes(b"abort");
+        let type_js = JS_NewStringCopyZ(cx, c_type.as_ptr());
+        if type_js.is_null() {
+            return;
+        }
+        rooted!(&in(cx_ref) let type_val = StringValue(&*type_js));
+        rooted!(&in(cx_ref) let listener_val = ObjectValue(listener.get()));
+        let call_args_arr = [type_val.get(), listener_val.get()];
+        let call_args = HandleValueArray {
+            length_: call_args_arr.len(),
+            elements_: call_args_arr.as_ptr(),
+        };
+        let mut rval = UndefinedValue();
+        JS_CallFunctionName(
+            cx,
+            signal_obj.handle().into(),
+            c"addEventListener".as_ptr(),
+            &call_args,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            },
+        );
+    }
+}
+
+/// AbortSignal structural probe: boolean `aborted` property + callable
+/// `addEventListener` (the globals.rs shim has both as own/prototype
+/// members; servo's DOM AbortSignal satisfies the same surface).
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*` on the current thread; `obj` must be
+/// GC-protected by the caller.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn is_abort_signal_shape(
+    cx: *mut JSContext,
+    obj: mozjs::rust::Handle<*mut JSObject>,
+) -> bool {
+    unsafe {
+        let ab_val = get_val_prop(cx, obj, "aborted");
+        if !ab_val.is_boolean() {
+            return false;
+        }
+        let ael_val = get_val_prop(cx, obj, "addEventListener");
+        ael_val.is_object() && IsCallable(ael_val.to_object())
+    }
 }
 
 // ── fetch input/init value helpers ─────────────────────────────────────────
@@ -424,7 +670,10 @@ unsafe fn is_url_search_params_shape(
 /// `cx` must be a live `JSContext*`; `blob_val` must be a protected object
 /// value whose `_chunks` (when present) is a JS array of byte views.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn extract_blob_bytes(cx: *mut JSContext, blob_val: JSVal) -> ::std::result::Result<Option<Vec<u8>>, String> {
+unsafe fn extract_blob_bytes(
+    cx: *mut JSContext,
+    blob_val: JSVal,
+) -> ::std::result::Result<Option<Vec<u8>>, String> {
     unsafe {
         let wrapped_cx =
             mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
@@ -822,7 +1071,8 @@ unsafe fn extract_body_bytes(
         rooted!(&in(wrapped_cx) let obj = body_val.to_object());
 
         // Byte views: Buffer / Uint8Array / TypedArray / DataView / ArrayBuffer.
-        if let ::std::option::Option::Some(bytes) = crate::node_buffer::collect_byte_view(cx, body_val)
+        if let ::std::option::Option::Some(bytes) =
+            crate::node_buffer::collect_byte_view(cx, body_val)
         {
             return Ok(Some(bytes));
         }
@@ -1179,7 +1429,7 @@ unsafe fn parse_header_entry(cx: *mut JSContext, pair_val: JSVal) -> Option<(Str
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_multipart, generate_multipart_boundary, MultipartValue};
+    use super::{MultipartValue, encode_multipart, generate_multipart_boundary};
 
     // ── REQ-SEC-001: CORS Bypass Unit Tests ──────────────────────────────
     // @trace TEST-SEC-001 [req:REQ-SEC-001] [level:unit]
@@ -1282,14 +1532,16 @@ mod tests {
                     filename: "a.txt".to_string(),
                     content_type: "text/plain".to_string(),
                     bytes: b"file-bytes".to_vec(),
-                }),
+                },
+            ),
             (
                 "noType".to_string(),
                 MultipartValue::File {
                     filename: "blob".to_string(),
                     content_type: "application/octet-stream".to_string(),
                     bytes: vec![0u8, 1, 2],
-                }),
+                },
+            ),
         ];
         let body = encode_multipart(&entries, TEST_BOUNDARY);
         let text = String::from_utf8_lossy(&body).to_string();

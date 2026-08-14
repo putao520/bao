@@ -39,7 +39,8 @@
 //! `h3_fetch.rs` is excluded — it has no `send_sync` path.
 
 use ::std::cell::RefCell;
-use ::std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use ::std::collections::HashMap;
+use ::std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
 use ::std::sync::{Arc, Mutex};
 
 use bao_engine::context::RawValueRootGuard;
@@ -76,6 +77,51 @@ pub enum ResolveKind {
 // Rust strings across and let the JS-thread resolver look them up by index.
 thread_local! {
     static HOST_STRINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// AbortSignal cancellation channel (WHATWG fetch init.signal)
+//
+// The JS side (fetch_api) hands an `AbortRequest` to `start_with_signal`;
+// the flag is wired into the AsyncHTTP's `Signals.aborted` backref at init
+// time, so every abort-aware path in bun_http observes it: in-flight sockets
+// via `drain_queued_shutdowns` → `close_and_abort`, queued/deferred tasks
+// via the fail-fast scan in `drain_events`, h2 waiters via
+// `abort_pending_h2_waiter`. `trigger_abort` (called from the JS-thread
+// abort listener) stores the flag and schedules the HTTPThread shutdown for
+// the fetch's `async_http_id` — the same `queued_shutdowns` + `wakeup`
+// cross-thread pattern `HTTPThread::schedule` uses.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Process-global monotonic id for abort-capable fetches. Doubles as the JS
+/// listener identity: fetch_api stamps it onto the native trampoline function
+/// and looks the entry back up here when the signal fires.
+static NEXT_ABORT_ID: AtomicU32 = AtomicU32::new(1);
+
+/// One abort wiring request handed to [`start_with_signal`].
+pub struct AbortRequest {
+    /// Registry id (from [`new_abort_id`]).
+    pub id: u32,
+    /// Shared cancellation flag. BACKREF contract (Signals.rs): the `Arc`
+    /// keeps the `AtomicBool` allocation alive past the AsyncHTTP drop; the
+    /// PendingFetch and ABORT_REGISTRY entries hold the remaining refs.
+    pub flag: Arc<AtomicBool>,
+}
+
+/// Registry payload: what `trigger_abort` needs to cancel one fetch.
+#[derive(Clone)]
+struct AbortEntry {
+    flag: Arc<AtomicBool>,
+    async_http_id: u32,
+}
+
+thread_local! {
+    static ABORT_REGISTRY: RefCell<HashMap<u32, AbortEntry>> = RefCell::new(HashMap::new());
+}
+
+/// Allocate a fresh abort registry id (JS-thread, at fetch() call time).
+pub fn new_abort_id() -> u32 {
+    NEXT_ABORT_ID.fetch_add(1, AtomicOrdering::Relaxed)
 }
 
 /// A fetch tasklet: pending Promise + event-driven HTTP integration.
@@ -127,6 +173,12 @@ pub struct PendingFetch {
     /// `StringBuilder::move_to_slice` + `Box::into_raw`, reclaimed by
     /// `resolve_tasklet`. `None` when there are no headers.
     headers_owned: Option<*mut [u8]>,
+    /// AbortSignal cancellation flag shared with the AsyncHTTP's
+    /// `Signals.aborted` backref. `None` for signal-less fetches — the
+    /// no-signal path is byte-for-byte the previous behaviour.
+    abort_flag: Option<Arc<AtomicBool>>,
+    /// ABORT_REGISTRY key; the entry is removed by `resolve_tasklet` cleanup.
+    abort_id: Option<u32>,
 }
 
 // SAFETY: `cx`/`promise_val` are only ever dereferenced on the JS thread that
@@ -194,6 +246,42 @@ pub unsafe fn start(
             headers,
             body,
             ResolveKind::Response,
+            None,
+        )
+    }
+}
+
+/// Signal-aware variant used by `fetch(input, { signal })`. Same contract as
+/// [`start`]; additionally wires the abort flag into the AsyncHTTP's
+/// `Signals.aborted` so a later `trigger_abort` cancels the in-flight
+/// request and fails the task with `Aborted`.
+///
+/// # Safety
+///
+/// - `cx` must be a live `JSContext*` on the current thread.
+/// - `promise_val` must be an Object JSVal holding a *pending* Promise.
+pub unsafe fn start_with_signal(
+    cx: *mut JSContext,
+    promise_val: JSVal,
+    profile: Option<crate::stealth_http::StealthProfile>,
+    method: bun_http::Method,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+    abort: AbortRequest,
+) {
+    // SAFETY: delegate with the default Response form and the abort channel.
+    unsafe {
+        start_with_kind(
+            cx,
+            promise_val,
+            profile,
+            method,
+            url,
+            headers,
+            body,
+            ResolveKind::Response,
+            Some(abort),
         )
     }
 }
@@ -228,6 +316,7 @@ pub unsafe fn start_tls_probe(cx: *mut JSContext, promise_val: JSVal, host: Stri
             Vec::new(),
             None,
             ResolveKind::TlsSocket { host_idx },
+            None,
         )
     }
 }
@@ -248,6 +337,7 @@ unsafe fn start_with_kind(
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
     kind: ResolveKind,
+    abort: Option<AbortRequest>,
 ) {
     // GUARD-A (GC root): heap-root the pending Promise value across the async
     // window. The async window spans ticks AND frames (root lives from here
@@ -256,7 +346,11 @@ unsafe fn start_with_kind(
     // guard pins the value in a stable heap slot the GC updates in place and
     // unroots it when the PendingFetch Box drops (liveness-guarded Drop).
     let promise_root = unsafe {
-        RawValueRootGuard::new(cx, ::std::slice::from_ref(&promise_val), c"FetchTasklet.promise")
+        RawValueRootGuard::new(
+            cx,
+            ::std::slice::from_ref(&promise_val),
+            c"FetchTasklet.promise",
+        )
     };
     let rooted_val = promise_root.as_ref().map_or(promise_val, |g| g.get(0));
 
@@ -280,6 +374,8 @@ unsafe fn start_with_kind(
         url_owned: None,     // filled after url lift below
         body_owned: None,    // filled after body lift below
         headers_owned: None, // filled after headers_buf lift below
+        abort_flag: abort.as_ref().map(|req| Arc::clone(&req.flag)),
+        abort_id: abort.as_ref().map(|req| req.id),
     });
     let pending_ptr = Box::into_raw(pending);
 
@@ -392,9 +488,22 @@ unsafe fn start_with_kind(
         Some(bun_http::ssl_config::SharedPtr::new(ssl_config))
     };
 
-    // Build AsyncHTTP::Options with TLS props.
+    // AbortSignal wiring: flag → Signals.aborted backref. Wiring `aborted`
+    // also makes AsyncHTTP::init allocate a unique `async_http_id` (the id is
+    // the HTTPThread's handle for shutdown routing). BACKREF contract: the
+    // Arc-owned AtomicBool outlives every Signals copy (the PendingFetch and
+    // ABORT_REGISTRY entries are dropped after the AsyncHTTP).
+    let signals = abort.as_ref().map(|req| bun_http::Signals {
+        aborted: Some(unsafe {
+            core::ptr::NonNull::new_unchecked(Arc::as_ptr(&req.flag).cast_mut())
+        }),
+        ..Default::default()
+    });
+
+    // Build AsyncHTTP::Options with TLS props (+ abort signals when wired).
     let options = bun_http::async_http::Options {
         tls_props,
+        signals,
         ..Default::default()
     };
 
@@ -438,6 +547,24 @@ unsafe fn start_with_kind(
             bun_http::FetchRedirect::Follow,
             options,
         )));
+
+    // Abort registry: publish the flag + async_http_id so the JS-side abort
+    // listener can cancel this fetch. Registration happens before scheduling
+    // (and before fetch_api installs the listener), so an abort can never
+    // race a half-registered entry.
+    if let Some(req) = &abort {
+        // SAFETY: async_http_box is a live heap allocation just created above.
+        let async_http_id = unsafe { (*async_http_box).async_http_id };
+        ABORT_REGISTRY.with(|r| {
+            r.borrow_mut().insert(
+                req.id,
+                AbortEntry {
+                    flag: Arc::clone(&req.flag),
+                    async_http_id,
+                },
+            );
+        });
+    }
 
     // Capture the MiniEventLoop pointer for concurrent-task scheduling.
     // SAFETY: with_event_loop borrows the MiniEventLoop on the current thread;
@@ -502,6 +629,56 @@ unsafe fn start_with_kind(
     PENDING.with(|p| {
         p.borrow_mut().push(pending_ptr);
     });
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Abort trigger — JS-thread entry (called from fetch_api's listener)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Fire the cancellation channel for the fetch registered under `abort_id`.
+/// Called on the JS thread when the AbortSignal's `abort` event fires (and
+/// is idempotent: a second call finds the entry either still present —
+/// flag already true — or already removed by `resolve_tasklet`).
+pub fn trigger_abort(abort_id: u32) {
+    let entry = ABORT_REGISTRY.with(|r| r.borrow().get(&abort_id).cloned());
+    let Some(entry) = entry else {
+        // Fetch already settled (late abort) — nothing to cancel.
+        return;
+    };
+    // Flag first (Release), then the shutdown schedule: the HTTPThread
+    // observes the flag either via the shutdown drain or on its next
+    // queue/h2/h3 scan, and every fail path lands in `on_http_done` with
+    // `Aborted`, which rejects the promise.
+    entry.flag.store(true, AtomicOrdering::Release);
+    schedule_abort_shutdown(entry.async_http_id);
+}
+
+/// Cross-thread HTTPThread shutdown scheduling — the same fields
+/// `HTTPThread::schedule` touches from foreign threads (`queued_shutdowns`
+/// under its Mutex + `wakeup`), so no HTTP-thread-confined state is read.
+/// The HTTPThread's `drain_queued_shutdowns` then routes by
+/// `async_http_id`: live socket → `close_and_abort`, h2 waiter/h3 → abort,
+/// queued/deferred task → fail-fast with `AbortedBeforeConnecting`.
+fn schedule_abort_shutdown(async_http_id: u32) {
+    // Guarantee HTTP_THREAD is written before we read it cross-thread: init
+    // is idempotent (Once-backed) and was already called by start_with_kind
+    // before the fetch was scheduled, but re-running it keeps this entry
+    // self-contained against future call-order changes.
+    bun_http::http_thread::init(&Default::default());
+    // SAFETY: HTTP_THREAD is fully written (init above); only the
+    // cross-thread-safe fields are touched (mirrors HTTPThread::schedule's
+    // documented contract). `get_unchecked` skips the HTTP-thread owner
+    // assert by design for exactly this shared-field access pattern.
+    let ht = unsafe { (*bun_http::HTTP_THREAD.get_unchecked()).as_mut_ptr() };
+    unsafe {
+        {
+            let _guard = (*ht).queued_shutdowns_lock.lock_guard();
+            (*ht)
+                .queued_shutdowns
+                .push(bun_http::http_thread::ShutdownMessage { async_http_id });
+        }
+        (*ht).wakeup();
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -762,6 +939,18 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
         .and_then(|mut slot| slot.take())
         .unwrap_or_else(|| Err("fetch: result slot was empty".into()));
 
+    // 2b. Abort check (WHATWG fetch init.signal): if the signal fired before
+    // the outcome was consumed — whether the HTTPThread failed the task with
+    // `Aborted` or a late response raced the abort — the outcome is discarded
+    // and the Promise rejects with DOMException AbortError ("The operation
+    // was aborted"). The flag was stored (Release) before the shutdown was
+    // scheduled, and the ConcurrentTask enqueue orders the HTTPThread writes
+    // before this JS-thread read, so no abort can be missed here.
+    let aborted = unsafe { &*this }
+        .abort_flag
+        .as_ref()
+        .is_some_and(|f| f.load(AtomicOrdering::Acquire));
+
     let cx = unsafe { &*this }.cx;
     let kind = unsafe { &*this }.kind;
 
@@ -794,35 +983,43 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
         let mut realm = AutoRealm::new_from_handle(cx_ref, promise_obj.handle());
         let realm_cx: &mut mozjs::context::JSContext = &mut realm;
 
-        match (outcome, kind) {
-            (Ok(resp), ResolveKind::Response) => {
-                let resp_obj = build_response_js(cx, &resp);
-                if !resp_obj.is_null() {
-                    rooted!(&in(realm_cx) let resp_val = ObjectValue(resp_obj));
-                    JS::ResolvePromise(cx, promise_h, resp_val.handle().into());
-                } else {
-                    reject_with_message(cx, promise_h, "http: failed to build Response");
-                }
-            }
-            (Ok(_resp), ResolveKind::TlsSocket { host_idx }) => {
-                let host = HOST_STRINGS
-                    .with(|h| h.borrow().get(host_idx).cloned())
-                    .unwrap_or_default();
-                let tls_obj = build_tls_socket_js(cx, &host);
-                if !tls_obj.is_null() {
-                    rooted!(&in(realm_cx) let tls_val = ObjectValue(tls_obj));
-                    JS::ResolvePromise(cx, promise_h, tls_val.handle().into());
-                } else {
-                    reject_with_message(cx, promise_h, "tls: failed to build socket object");
-                }
-                HOST_STRINGS.with(|h| {
-                    if host_idx < h.borrow().len() {
-                        h.borrow_mut()[host_idx].clear();
+        if aborted {
+            // AbortError rejection: `new DOMException("The operation was
+            // aborted", "AbortError")` in the Promise's realm (falls back to
+            // a plain name/message error object only in realms where the
+            // DOMException constructor is genuinely absent).
+            reject_promise_with_abort_error(cx, promise_h);
+        } else {
+            match (outcome, kind) {
+                (Ok(resp), ResolveKind::Response) => {
+                    let resp_obj = build_response_js(cx, &resp);
+                    if !resp_obj.is_null() {
+                        rooted!(&in(realm_cx) let resp_val = ObjectValue(resp_obj));
+                        JS::ResolvePromise(cx, promise_h, resp_val.handle().into());
+                    } else {
+                        reject_with_message(cx, promise_h, "http: failed to build Response");
                     }
-                });
-            }
-            (Err(msg), _) => {
-                reject_with_message(cx, promise_h, &msg);
+                }
+                (Ok(_resp), ResolveKind::TlsSocket { host_idx }) => {
+                    let host = HOST_STRINGS
+                        .with(|h| h.borrow().get(host_idx).cloned())
+                        .unwrap_or_default();
+                    let tls_obj = build_tls_socket_js(cx, &host);
+                    if !tls_obj.is_null() {
+                        rooted!(&in(realm_cx) let tls_val = ObjectValue(tls_obj));
+                        JS::ResolvePromise(cx, promise_h, tls_val.handle().into());
+                    } else {
+                        reject_with_message(cx, promise_h, "tls: failed to build socket object");
+                    }
+                    HOST_STRINGS.with(|h| {
+                        if host_idx < h.borrow().len() {
+                            h.borrow_mut()[host_idx].clear();
+                        }
+                    });
+                }
+                (Err(msg), _) => {
+                    reject_with_message(cx, promise_h, &msg);
+                }
             }
         }
     }
@@ -849,6 +1046,16 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
             guard.swap_remove(pos);
         }
     });
+
+    // 6a. Drop the abort registry entry: the fetch has settled, so a later
+    // abort event is a no-op (trigger_abort misses and returns). Releasing
+    // the Arc also lets the Signals backref storage retire once the
+    // PendingFetch Box below drops the other ref.
+    if let Some(abort_id) = unsafe { (*this).abort_id } {
+        ABORT_REGISTRY.with(|r| {
+            r.borrow_mut().remove(&abort_id);
+        });
+    }
 
     // 6b. BUG-ENG-369 / BCE-007-R5: Reclaim the leaked 'static URL, body and
     // headers backing buffers. The AsyncHTTP was dropped in on_http_done
@@ -1119,6 +1326,142 @@ unsafe extern "C" fn response_text_fn(cx: *mut JSContext, argc: u32, vp: *mut JS
     true
 }
 
+/// Reject a Promise with a DOMException AbortError — the WHATWG fetch
+/// signal-abort rejection value: `name` "AbortError", `message` "The
+/// operation was aborted". Constructs the realm's real `DOMException`
+/// (globals.rs class or servo's native one, whichever the realm carries) so
+/// `instanceof DOMException` holds; a plain name/message error object is
+/// used only when the realm genuinely has no DOMException constructor.
+///
+/// Must run inside the Promise's realm (the caller's `AutoRealm` window) —
+/// the constructor lookup walks the current global.
+///
+/// # Safety
+///
+/// `cx` must be live on the current thread with the target realm entered;
+/// `promise_h` a live pending Promise handle.
+#[allow(unsafe_op_in_unsafe_fn)]
+pub unsafe fn reject_promise_with_abort_error(
+    cx: *mut JSContext,
+    promise_h: Handle<*mut JSObject>,
+) {
+    unsafe {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+
+        // The realm's real DOMException (instanceof DOMException holds).
+        rooted!(&in(cx_ref) let err_obj = build_abort_error_js(cx));
+        if !err_obj.is_null() {
+            rooted!(&in(cx_ref) let ev = ObjectValue(err_obj.get()));
+            JS::RejectPromise(cx, promise_h, ev.handle().into());
+            return;
+        }
+
+        // Degraded shape (realm without DOMException): still carries the
+        // contract's name/message instead of an empty rejection.
+        rooted!(&in(cx_ref) let obj = JS_NewPlainObject(cx));
+        if obj.is_null() {
+            reject_with_message(cx, promise_h, "The operation was aborted");
+            return;
+        }
+        let c_msg = ZBox::from_bytes(b"The operation was aborted");
+        let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+        if !msg_js.is_null() {
+            rooted!(&in(cx_ref) let msg_val = StringValue(&*msg_js));
+            JS_DefineProperty(
+                cx,
+                obj.handle().into(),
+                c"message".as_ptr(),
+                msg_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        let c_name = ZBox::from_bytes(b"AbortError");
+        let name_js = JS_NewStringCopyZ(cx, c_name.as_ptr());
+        if !name_js.is_null() {
+            rooted!(&in(cx_ref) let name_val = StringValue(&*name_js));
+            JS_DefineProperty(
+                cx,
+                obj.handle().into(),
+                c"name".as_ptr(),
+                name_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        rooted!(&in(cx_ref) let ev = ObjectValue(obj.get()));
+        JS::RejectPromise(cx, promise_h, ev.handle().into());
+    }
+}
+
+/// Build the AbortError rejection value via the realm's DOMException
+/// constructor. Returns null when the constructor is missing/unconstructable
+/// (caller falls back to the plain error shape).
+///
+/// # Safety
+///
+/// `cx` must be live on the current thread with the target realm entered.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn build_abort_error_js(cx: *mut JSContext) -> *mut JSObject {
+    unsafe {
+        let global = mozjs_sys::jsapi::JS::CurrentGlobalOrNull(cx);
+        if global.is_null() {
+            return ::std::ptr::null_mut();
+        }
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        // BCE-012: root the global across the property read (can trigger GC)
+        rooted!(&in(cx_ref) let global_rooted = global);
+        let mut ctor_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            global_rooted.handle().into(),
+            c"DOMException".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ctor_val,
+            },
+        );
+        if !ctor_val.is_object() {
+            return ::std::ptr::null_mut();
+        }
+        // BCE-012: root the constructor + argument values across the
+        // construct call (allocation, can trigger GC)
+        rooted!(&in(cx_ref) let ctor = ctor_val);
+        let c_msg = ZBox::from_bytes(b"The operation was aborted");
+        let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+        if msg_js.is_null() {
+            return ::std::ptr::null_mut();
+        }
+        rooted!(&in(cx_ref) let msg_val = StringValue(&*msg_js));
+        let c_name = ZBox::from_bytes(b"AbortError");
+        let name_js = JS_NewStringCopyZ(cx, c_name.as_ptr());
+        if name_js.is_null() {
+            return ::std::ptr::null_mut();
+        }
+        rooted!(&in(cx_ref) let name_val = StringValue(&*name_js));
+        let args = [msg_val.get(), name_val.get()];
+        let call_args = HandleValueArray {
+            length_: args.len(),
+            elements_: args.as_ptr(),
+        };
+        let mut err_obj: *mut JSObject = ::std::ptr::null_mut();
+        if !mozjs_sys::jsapi::JS::Construct1(
+            cx,
+            ctor.handle().into(),
+            &call_args,
+            MutableHandle::<*mut JSObject> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut err_obj,
+            },
+        ) {
+            return ::std::ptr::null_mut();
+        }
+        err_obj
+    }
+}
+
 /// Reject a Promise with a plain Error-like object carrying `.message`.
 ///
 /// # Safety
@@ -1203,6 +1546,8 @@ mod tests {
             url_owned: None,
             body_owned: None,
             headers_owned: None,
+            abort_flag: None,
+            abort_id: None,
         };
         assert!(!pf.has_schedule_callback.load(AtomicOrdering::Relaxed));
         assert!(
@@ -1214,6 +1559,21 @@ mod tests {
         pf.has_schedule_callback
             .store(false, AtomicOrdering::Release);
         assert!(!pf.has_schedule_callback.load(AtomicOrdering::Relaxed));
+    }
+
+    #[test]
+    fn abort_registry_miss_is_silent_noop() {
+        // A late abort (fetch already settled, registry entry removed by
+        // resolve_tasklet) must be a no-op — and must NOT initialize the
+        // HTTPThread (the miss path returns before schedule_abort_shutdown).
+        trigger_abort(u32::MAX);
+    }
+
+    #[test]
+    fn abort_ids_are_monotonic_and_unique() {
+        let a = new_abort_id();
+        let b = new_abort_id();
+        assert_ne!(a, b, "abort ids must be unique per fetch");
     }
 
     fn stealth_result_for_test() -> StealthSyncResult {
