@@ -47,3 +47,25 @@ bun_uws.workspace = true
 bun_wyhash.workspace = true
 bun_zlib.workspace = true
 bun_zstd.workspace = true
+# websocket_http_client: async TLS stream (tokio AsyncRead/AsyncWrite) that
+# servo's websocket_loader consumes for page wss. Same major version as the
+# servo workspace's tokio = "1", so the final binary links one tokio.
+# Minimal feature set (io traits + TcpStream) — no runtime, no macros.
+tokio = { version = "1", default-features = false, features = ["net"] }
+
+[dev-dependencies]
+# Link leg for the pure-Rust AsyncHTTP integration tests: the test binary
+# needs the C-seam symbols (StackCheck, addrinfo, lsquic native archives)
+# that the product binary gets from bun_runtime's product_native_symbols;
+# bao_native_stubs is the dedicated test-linking provider (ctor auto-calls
+# force_link, dragging in bao_uloop / lsquic / boringssl native archives).
+bao_native_stubs.workspace = true
+# websocket_http_client tests drive the async WsTlsStream on a real tokio
+# runtime (rt + io-util for AsyncReadExt/AsyncWriteExt). Test-target only:
+# the product feature set stays minimal ("net").
+tokio = { version = "1", default-features = false, features = [
+    "rt",
+    "macros",
+    "time",
+    "io-util",
+] }

@@ -30,7 +30,6 @@ use servo_url::ServoUrl;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-use bao_boringssl_bridge::TlsConnection;
 use tungstenite::error::{Error, ProtocolError, UrlError};
 use tungstenite::handshake::client::Response;
 use tungstenite::protocol::CloseFrame;
@@ -207,7 +206,10 @@ fn setup_dom_listener(
 ///
 /// Bao vendor patch (REQ-STL-001): wraps `WebSocketStream` over either a plain
 /// TCP socket or a BoringSSL TLS stream, dispatching `send`/`close`/`poll_next`
-/// to the appropriate variant.
+/// to the appropriate variant. The TLS stream is bun_http's
+/// `WsTlsStream` (bao BoringSSL stack + stealth per-connection fingerprint +
+/// process-wide session cache) — hyper-ecosystem connector machinery is no
+/// longer involved in the WS path.
 enum WsStream {
     Plain(
         WebSocketStream<
@@ -216,7 +218,7 @@ enum WsStream {
     ),
     Tls(
         WebSocketStream<
-            async_tungstenite::tokio::TokioAdapter<crate::connector::BoringsslTlsStream>,
+            async_tungstenite::tokio::TokioAdapter<bun_http::websocket_http_client::WsTlsStream>,
         >,
     ),
 }
@@ -463,18 +465,45 @@ pub(crate) async fn start_websocket(
 
     let is_secure = url.scheme() == "wss" || url.scheme() == "https";
     let (stream, response) = if is_secure {
-        // Bao vendor patch (REQ-STL-001): BoringSSL TLS handshake directly, then pass
-        // the established stream to tungstenite for the WebSocket handshake.
+        // Bao vendor patch (REQ-STL-001): TLS on the bao stack —
+        // `bun_http::websocket_http_client::WsTlsStream` (BoringSSL bridge +
+        // stealth per-connection fingerprint [sigalgs / ALPN(http/1.1) /
+        // curves] + process-wide TLS session-cache offer, salted so wss
+        // shares the servo fetch session pool under identical parameter
+        // sets). This replaces the servo connector's BoringsslTlsStream,
+        // decoupling the WS path from the hyper-ecosystem connector; the
+        // `tls_config` parameter remains only as the http_loader call-site
+        // contract (data passthrough — its TlsClient and per-connection
+        // stealth fields are consumed here, no connector machinery).
         let host_str = domain.to_string();
-        let tls_conn = TlsConnection::new_client(&tls_config.client, &host_str).map_err(|e| {
-            Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-        })?;
-
-        // Wrap the TCP stream + BoringSSL connection into an async stream
-        let tls_stream = crate::connector::BoringsslTlsStream::new(socket, tls_conn);
+        let opts = bun_http::websocket_http_client::WsTlsOptions {
+            sigalg_list: tls_config
+                .stealth_per_connection
+                .as_ref()
+                .and_then(|pc| pc.sigalg_list.clone()),
+            alpn_wire: tls_config
+                .stealth_per_connection
+                .as_ref()
+                .and_then(|pc| pc.alpn_wire.clone()),
+            curves_list: tls_config
+                .stealth_per_connection
+                .as_ref()
+                .and_then(|pc| pc.curves_list.clone()),
+            ignore_certificate_errors: tls_config.ignore_certificate_errors,
+        };
+        let mut tls_stream =
+            bun_http::websocket_http_client::WsTlsStream::new(
+                socket,
+                &tls_config.client,
+                &host_str,
+                port,
+                &opts,
+            )
+            .map_err(|e| {
+                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })?;
 
         // Perform TLS handshake
-        let mut tls_stream = tls_stream;
         tls_stream.handshake().await.map_err(Error::Io)?;
 
         // WS handshake over the established TLS stream

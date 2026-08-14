@@ -29,3 +29,7 @@ euclid = "0.22"
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine" }
+# page_wss_bao_tls_e2e_tests: local TLS WS fixture (BoringSSL server +
+# bun_uws RFC 6455 codec) driving the page wss path end-to-end.
+bao_boringssl_bridge.workspace = true
+bun_uws.workspace = true

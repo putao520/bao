@@ -486,6 +486,7 @@ dependencies = [
 name = "bao_browser"
 version = "0.1.0"
 dependencies = [
+ "bao_boringssl_bridge",
  "bao_cdp",
  "bao_cdp_client",
  "bao_engine",
@@ -495,6 +496,7 @@ dependencies = [
  "bun_http",
  "bun_runtime",
  "bun_sys",
+ "bun_uws",
  "cdp-server",
  "cookie 0.18.1",
  "dashmap",
@@ -1469,6 +1471,7 @@ name = "bun_http"
 version = "0.1.0-alpha.1"
 dependencies = [
  "bao_boringssl_bridge",
+ "bao_native_stubs",
  "bitflags 2.11.1",
  "bstr",
  "bun_alloc",
@@ -1505,6 +1508,7 @@ dependencies = [
  "scopeguard",
  "strum 0.26.3",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -8509,7 +8513,11 @@ dependencies = [
  "base64 0.23.1",
  "bun_boringssl",
  "bun_boringssl_sys",
+ "bun_core",
  "bun_dns",
+ "bun_http",
+ "bun_threading",
+ "bun_url",
  "bytes",
  "chrono",
  "content-security-policy",
