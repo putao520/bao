@@ -142,6 +142,48 @@ impl BufferedReaderVTable {
     }
 }
 
+// The per-loop `pipe_read_buffer` scratch is handed to `on_read_chunk` as the
+// chunk itself, and a consumer may keep parsing it while running user code
+// that starts a *second* reader synchronously (re-entrant `read()` from a
+// chunk handler, `FileReader.on_pull`, etc.). A nested read loop must not
+// refill the scratch under the outer one, so only the outermost loop on the
+// thread borrows it; nested ones read into their `_buffer`.
+// PORT NOTE(upstream ada2a67ef): Bao has no `ParentKeepAlive`/`ref_parent`
+// GC-edge machinery — the reader is an inline field of its parent with the
+// `BufferedReaderParent` liveness contract — so only the scratch-claim half
+// of that hunk applies here.
+thread_local! {
+    static READ_SCRATCH_IN_USE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+pub(crate) struct ReadScratchClaim;
+
+impl ReadScratchClaim {
+    pub(crate) fn try_claim() -> Option<Self> {
+        READ_SCRATCH_IN_USE.with(|in_use| {
+            // PORT NOTE(upstream ada2a67ef hardening): upstream wrote
+            // `(!in_use.replace(true)).then_some(Self)` — but `then_some`
+            // eagerly constructs the value, and on the already-claimed path
+            // the `None` branch drops it, running `Drop` and RELEASING the
+            // outer frame's claim (a second nested attempt could then claim
+            // the scratch under the still-parsing outer one — exactly the
+            // corruption this guard exists to prevent). Construct only on
+            // success; proven by `scratch_claim_is_reentrancy_guarded`.
+            if in_use.replace(true) {
+                None
+            } else {
+                Some(Self)
+            }
+        })
+    }
+}
+
+impl Drop for ReadScratchClaim {
+    fn drop(&mut self) {
+        READ_SCRATCH_IN_USE.with(|in_use| in_use.set(false));
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // PosixBufferedReader
 // ──────────────────────────────────────────────────────────────────────────
@@ -634,11 +676,20 @@ impl PosixBufferedReader {
         // re-entry calls `done()`/`close()`.
         let parent = unsafe { &mut *this };
         let mut received_hup = received_hup_initially;
+        // PORT NOTE(upstream ada2a67ef + 0b041cba1): only the outermost read
+        // loop on the thread may refills the per-loop scratch; a re-entrant
+        // nested frame (e.g. `FileReader.on_pull` inside `on_read_chunk`)
+        // falls to its `_buffer` below.
+        let scratch = ReadScratchClaim::try_claim();
         loop {
             let streaming = parent.vtable.is_streaming_enabled();
             let mut got_retry = false;
 
-            if parent._buffer.capacity() == 0 {
+            // PORT NOTE(upstream 0b041cba1): `is_empty()`, not `capacity() == 0`
+            // — one nested pull leaves `_buffer` with capacity forever, which
+            // would permanently demote this reader from scratch reads to 16 KB
+            // buffered ones.
+            if scratch.is_some() && parent._buffer.is_empty() {
                 // Use stack buffer for streaming — per-loop scratch buffer;
                 // single-threaded event loop (see `EventLoopCtx::pipe_read_buffer_mut`).
                 let stack_buffer = parent.vtable.event_loop().pipe_read_buffer_mut();
@@ -712,17 +763,30 @@ impl PosixBufferedReader {
                             }
 
                             if streaming {
-                                // PORT NOTE: reshaped for borrowck — re-slice from _buffer.
-                                let new_len = parent._buffer.len();
-                                let chunk = &parent._buffer[new_len - bytes_read..new_len];
-                                if !parent.vtable.on_read_chunk(
-                                    chunk,
+                                // PORT NOTE(upstream 0b041cba1): move the buffer
+                                // out for the dispatch so re-entrant access to
+                                // the reader cannot alias or reallocate it
+                                // under the chunk slice.
+                                let mut buffer = core::mem::take(&mut parent._buffer);
+                                let new_len = buffer.len();
+                                let keep_going = parent.vtable.on_read_chunk(
+                                    &buffer[new_len - bytes_read..new_len],
                                     if received_hup && bytes_read < buf_len {
                                         ReadState::Eof
                                     } else {
                                         ReadState::Progress
                                     },
-                                ) {
+                                );
+                                // Delivered bytes are consumed by `on_read_chunk`;
+                                // keep only what re-entry buffered. Without the
+                                // clear the delivered slice stayed installed, every
+                                // later top-level read was demoted to this branch,
+                                // and the final HUP drain handed the retained bytes
+                                // to the stream a second time.
+                                buffer.clear();
+                                buffer.extend_from_slice(&parent._buffer);
+                                parent._buffer = buffer;
+                                if !keep_going {
                                     return;
                                 }
                             }
@@ -824,13 +888,18 @@ impl PosixBufferedReader {
         // mid-call), so `*this` stays a valid place across re-entry.
         let parent = unsafe { &mut *this };
         let streaming = parent.vtable.is_streaming_enabled();
+        // PORT NOTE(upstream ada2a67ef + 0b041cba1): nested read frames can't
+        // claim the per-loop scratch; they fall through to the `_buffer` loops
+        // below. `is_empty()` keys the scratch/`_buffer` choice so one nested
+        // pull doesn't permanently demote this reader to 16 KB buffered reads.
+        let scratch = ReadScratchClaim::try_claim();
 
-        if streaming {
+        if streaming && scratch.is_some() {
             // Per-loop scratch buffer; single-threaded event loop (see
             // `EventLoopCtx::pipe_read_buffer_mut`).
             let event_loop = parent.vtable.event_loop();
             let stack_buffer_len = event_loop.pipe_read_buffer_mut().len();
-            while parent._buffer.capacity() == 0 {
+            while parent._buffer.is_empty() {
                 let stack_buffer_cutoff = stack_buffer_len / 2;
                 let mut head_start = 0usize; // index into stack_buffer where the unwritten head begins
                 while stack_buffer_len - head_start > 16 * 1024 {
@@ -939,7 +1008,8 @@ impl PosixBufferedReader {
                     break;
                 }
             }
-        } else if parent._buffer.capacity() == 0 && parent._offset == 0 {
+        } else if !streaming && scratch.is_some() && parent._buffer.is_empty() && parent._offset == 0
+        {
             // Avoid a 16 KB dynamic memory allocation when the buffer might very well be empty.
             // Per-loop scratch buffer; single-threaded event loop (see
             // `EventLoopCtx::pipe_read_buffer_mut`).
@@ -1972,3 +2042,27 @@ pub type BufferedReader = WindowsBufferedReader;
 compile_error!("Unsupported platform");
 
 // ported from: src/io/PipeReader.zig
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Upstream ada2a67ef: only the outermost read loop on the thread may
+    // borrow the per-loop scratch; a nested frame must fall to `_buffer`.
+    // The full re-entrant read regression lives in
+    // `tests/pipe_reader_reentrancy.rs` (needs the link dispatch externs).
+    #[test]
+    fn scratch_claim_is_reentrancy_guarded() {
+        let outer = ReadScratchClaim::try_claim().expect("outer claim");
+        assert!(
+            ReadScratchClaim::try_claim().is_none(),
+            "nested frame must not claim the scratch under the outer one"
+        );
+        assert!(ReadScratchClaim::try_claim().is_none());
+        drop(outer);
+        assert!(
+            ReadScratchClaim::try_claim().is_some(),
+            "claim must be releasable after the outer frame drops it"
+        );
+    }
+}

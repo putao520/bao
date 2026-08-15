@@ -330,8 +330,11 @@ unsafe extern "C" {
     /// Provided by libusockets.a.
     pub unsafe fn us_poll_start_rc(p: *mut BaoPoll, loop_: *mut Loop, events: c_int) -> c_int;
 
-    /// Modify the events a poll is registered for. Provided by libusockets.a.
-    pub unsafe fn us_poll_change(p: *mut BaoPoll, loop_: *mut Loop, events: c_int);
+    /// Modify the events a poll is registered for. Returns 0 unless the fd had
+    /// to be registered anew (a poll parked by the dispatcher while paused)
+    /// and that registration failed; errno is set then. Provided by
+    /// libusockets.a (upstream 088da62b6).
+    pub unsafe fn us_poll_change(p: *mut BaoPoll, loop_: *mut Loop, events: c_int) -> c_int;
 
     /// Remove a poll from the epoll set. Provided by libusockets.a.
     pub unsafe fn us_poll_stop(p: *mut BaoPoll, loop_: *mut Loop);

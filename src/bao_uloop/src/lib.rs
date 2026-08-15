@@ -1195,3 +1195,531 @@ mod hangup_tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+#[cfg(test)]
+mod paused_eof_tests {
+    //! Behavioral test for upstream 088da62b6: a socket that already sent its
+    //! FIN (`end()`), then pauses under backpressure, must defer the eof hint
+    //! until resume — pre-fix, the `is_shut_down` exemption in loop.c closed
+    //! the socket while the tail of the peer's stream was still queued in the
+    //! kernel (truncated stream). Drives the C path end-to-end
+    //! (`us_loop_run_bun_tick` → C `us_internal_dispatch_ready_poll`).
+
+    use super::*;
+    use bun_uws_sys::socket_group::VTable;
+    use bun_uws_sys::{ListenSocket, SocketGroup, SocketKind, us_socket_t};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static OPEN_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static DATA_BYTES: AtomicUsize = AtomicUsize::new(0);
+    static END_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static CLOSE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    /// Raw pointer stash of the accepted socket (test thread is the only loop
+    /// thread; touched only between ticks).
+    static SOCKET_PTR: std::sync::atomic::AtomicPtr<us_socket_t> =
+        std::sync::atomic::AtomicPtr::new(ptr::null_mut());
+
+    unsafe extern "C" {
+        fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec);
+        fn us_internal_socket_raw_shutdown(s: *mut us_socket_t);
+        fn us_socket_get_fd(s: *mut us_socket_t) -> c_int;
+        fn us_socket_pause(s: *mut us_socket_t);
+        fn us_socket_resume(s: *mut us_socket_t);
+    }
+
+    unsafe extern "C" fn t_open(
+        s: *mut us_socket_t,
+        _is_client: c_int,
+        _ip: *mut u8,
+        _ip_len: c_int,
+    ) -> *mut us_socket_t {
+        OPEN_COUNT.fetch_add(1, Ordering::SeqCst);
+        SOCKET_PTR.store(s, Ordering::SeqCst);
+        // Enlarge the receive buffer so the client's 1 MiB write completes
+        // without blocking (a blocked writer never drops → no FIN → the
+        // eof-while-paused moment this test needs would never happen).
+        unsafe {
+            let fd = us_socket_get_fd(s);
+            let sz: c_int = 4 * 1024 * 1024;
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
+                &sz as *const _ as *const c_void,
+                core::mem::size_of::<c_int>() as u32,
+            );
+        }
+        s
+    }
+
+    unsafe extern "C" fn t_data(
+        s: *mut us_socket_t,
+        _data: *mut u8,
+        length: c_int,
+    ) -> *mut us_socket_t {
+        let first = DATA_BYTES.fetch_add(length as usize, Ordering::SeqCst) == 0;
+        if first {
+            // Backpressure: stop reading after the first chunk. us_socket_pause
+            // drops READABLE interest; the unread tail stays in the kernel.
+            // Only the first burst pauses — post-resume on_data must let the
+            // read loop drain to recv()==0 so the eof path can close.
+            unsafe { us_socket_pause(s) };
+        }
+        s
+    }
+
+    unsafe extern "C" fn t_end(s: *mut us_socket_t) -> *mut us_socket_t {
+        END_COUNT.fetch_add(1, Ordering::SeqCst);
+        s
+    }
+
+    unsafe extern "C" fn t_close(
+        s: *mut us_socket_t,
+        _code: c_int,
+        _reason: *mut c_void,
+    ) -> *mut us_socket_t {
+        CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
+        s
+    }
+
+    static VTABLE: VTable = VTable {
+        on_open: Some(t_open),
+        on_data: Some(t_data),
+        on_fd: None,
+        on_writable: None,
+        on_close: Some(t_close),
+        on_timeout: None,
+        on_long_timeout: None,
+        on_end: Some(t_end),
+        on_connect_error: None,
+        on_connecting_error: None,
+        on_handshake: None,
+    };
+
+    unsafe extern "C" fn noop_cb(_loop: *mut Loop) {}
+
+    #[test]
+    fn shutdown_paused_socket_defers_eof_and_keeps_tail() {
+        // Same link pulls as the hangup test (C archive deps).
+        let _ = bun_lsquic_sys::force_link as *const () as usize;
+        let _ = bun_lsquic_sys::force_link_lshpack as *const () as usize;
+        let _ = bun_threading::Mutex::new as *const () as usize;
+        let _ = bun_analytics::is_enabled as *const () as usize;
+
+        const TOTAL: usize = 1024 * 1024;
+
+        let path = format!("/tmp/bao-uloop-paused-eof-test-{}.sock", std::process::id());
+        let mut path_bytes = path.clone().into_bytes();
+        path_bytes.push(0);
+        let _ = std::fs::remove_file(&path);
+
+        let loop_ = unsafe {
+            us_create_loop(
+                ptr::null_mut(),
+                Some(noop_cb),
+                Some(noop_cb),
+                Some(noop_cb),
+                0,
+            )
+        };
+        assert!(!loop_.is_null(), "us_create_loop failed");
+
+        let group: &'static mut SocketGroup = Box::leak(Box::new(SocketGroup::default()));
+        group.init(loop_, Some(&VTABLE), ptr::null_mut());
+
+        let mut err: c_int = 0;
+        let ls: *mut ListenSocket = group.listen_unix(
+            SocketKind::Dynamic,
+            None,
+            &path_bytes,
+            0,
+            0,
+            &mut err,
+        );
+        assert!(!ls.is_null(), "listen_unix failed, err = {err}");
+
+        for c in [&OPEN_COUNT, &DATA_BYTES, &END_COUNT, &CLOSE_COUNT] {
+            c.store(0, Ordering::SeqCst);
+        }
+
+        let zero = Timespec { sec: 0, nsec: 0 };
+        let mut client = std::os::unix::net::UnixStream::connect(&path).expect("connect");
+        // Pump until the server side accepted (on_open ran, socket known).
+        for _ in 0..200 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            if OPEN_COUNT.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1, "accept never ran");
+
+        let sock = SOCKET_PTR.load(Ordering::SeqCst);
+        assert!(!sock.is_null());
+
+        // Send our FIN first: the truncated case is a socket that already
+        // end()ed and then pauses (`!us_socket_is_shut_down` exemption).
+        unsafe { us_internal_socket_raw_shutdown(sock) };
+
+        // Peer writes 1 MiB (fits in the enlarged buffers, so the write and
+        // the subsequent close → FIN both complete) then goes away.
+        let writer = std::thread::spawn(move || {
+            let sz: c_int = 4 * 1024 * 1024;
+            unsafe {
+                libc::setsockopt(
+                    client.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    &sz as *const _ as *const c_void,
+                    core::mem::size_of::<c_int>() as u32,
+                );
+            }
+            let payload = vec![b'x'; TOTAL];
+            let _ = std::io::Write::write_all(&mut client, &payload);
+            drop(client); // close → FIN behind the data
+        });
+
+        // First readable dispatch: one on_data (≤ LIBUS_RECV_BUFFER_LENGTH),
+        // which pauses. The rest of the payload stays queued.
+        for _ in 0..200 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            if DATA_BYTES.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            DATA_BYTES.load(Ordering::SeqCst) > 0,
+            "first data chunk never arrived"
+        );
+
+        // Parked phase: the peer's FIN (EPOLLHUP, both directions down) must
+        // be deferred — no close, no end, tail undelivered. Pre-fix the
+        // is_shut_down exemption closed here and lost the tail.
+        for _ in 0..50 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            CLOSE_COUNT.load(Ordering::SeqCst),
+            0,
+            "eof closed a paused shut-down socket instead of deferring (tail lost)"
+        );
+        assert_eq!(END_COUNT.load(Ordering::SeqCst), 0);
+        assert!(
+            DATA_BYTES.load(Ordering::SeqCst) < TOTAL,
+            "paused socket must not have drained the whole stream"
+        );
+
+        // Resume: the poll is re-registered (the parked fd was DELed), the
+        // read loop drains the tail to recv()==0, and only then does the
+        // shut-down socket close — clean, with every byte delivered.
+        unsafe { us_socket_resume(sock) };
+        for _ in 0..400 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            if CLOSE_COUNT.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        writer.join().expect("writer thread");
+
+        assert_eq!(
+            DATA_BYTES.load(Ordering::SeqCst),
+            TOTAL,
+            "stream truncated: paused shut-down socket lost part of the peer's data"
+        );
+        assert_eq!(
+            END_COUNT.load(Ordering::SeqCst),
+            0,
+            "shut-down sockets close without on_end"
+        );
+        assert_eq!(
+            CLOSE_COUNT.load(Ordering::SeqCst),
+            1,
+            "socket must close after the drain (recv()==0 → eof → clean close)"
+        );
+
+        // Teardown.
+        unsafe {
+            (*ls).close();
+            us_loop_run_bun_tick(loop_, &zero);
+            SocketGroup::destroy(group);
+            us_loop_free(loop_);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    use std::os::fd::AsRawFd;
+}
+
+#[cfg(test)]
+mod ipc_recvmsg_tests {
+    //! Behavioral test for upstream 3753c8bfc (the usockets part): the
+    //! recvmsg control buffer must be sized with CMSG_SPACE (full aligned
+    //! buffer — FreeBSD truncates and drops the fd with CMSG_LEN), received
+    //! descriptors must be CLOEXEC (MSG_CMSG_CLOEXEC), and any extra
+    //! descriptors a peer packed into one message must be closed, not leaked.
+    //! On Linux the CMSG_LEN short buffer was tolerated, so the red/green
+    //! discriminators here are CLOEXEC and extra-fd closing.
+
+    use super::*;
+    use bun_uws_sys::socket_group::VTable;
+    use bun_uws_sys::{SocketGroup, SocketKind, us_socket_t};
+    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+
+    static OPEN_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static FD_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static RECEIVED_FD: AtomicI32 = AtomicI32::new(-1);
+    static DATA_BYTES: AtomicUsize = AtomicUsize::new(0);
+    static CLOSE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" {
+        fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec);
+        fn us_socket_from_fd(
+            group: *mut SocketGroup,
+            kind: u8,
+            ssl_ctx: *mut c_void,
+            socket_ext_size: c_int,
+            fd: c_int,
+            ipc: c_int,
+        ) -> *mut us_socket_t;
+    }
+
+    unsafe extern "C" fn t_open(
+        s: *mut us_socket_t,
+        _is_client: c_int,
+        _ip: *mut u8,
+        _ip_len: c_int,
+    ) -> *mut us_socket_t {
+        OPEN_COUNT.fetch_add(1, Ordering::SeqCst);
+        s
+    }
+
+    unsafe extern "C" fn t_data(
+        s: *mut us_socket_t,
+        _data: *mut u8,
+        length: c_int,
+    ) -> *mut us_socket_t {
+        DATA_BYTES.fetch_add(length as usize, Ordering::SeqCst);
+        s
+    }
+
+    unsafe extern "C" fn t_fd(s: *mut us_socket_t, fd: c_int) -> *mut us_socket_t {
+        FD_COUNT.fetch_add(1, Ordering::SeqCst);
+        RECEIVED_FD.store(fd, Ordering::SeqCst);
+        s
+    }
+
+    unsafe extern "C" fn t_close(
+        s: *mut us_socket_t,
+        _code: c_int,
+        _reason: *mut c_void,
+    ) -> *mut us_socket_t {
+        CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
+        s
+    }
+
+    static VTABLE: VTable = VTable {
+        on_open: Some(t_open),
+        on_data: Some(t_data),
+        on_fd: Some(t_fd),
+        on_writable: None,
+        on_close: Some(t_close),
+        on_timeout: None,
+        on_long_timeout: None,
+        on_end: None,
+        on_connect_error: None,
+        on_connecting_error: None,
+        on_handshake: None,
+    };
+
+    unsafe extern "C" fn noop_cb(_loop: *mut Loop) {}
+
+    /// Count open fds in /proc/self/fd referring to `inode` (0 or more).
+    /// Inode-keyed so other test threads opening/closing their own fds
+    /// cannot perturb the count. Pipes have per-fd unique inodes (unlike
+    /// anon_inode-backed fds such as eventfd/epoll, which all share one).
+    fn count_fds_for_inode(inode: u64) -> usize {
+        let mut n = 0;
+        let dir = std::fs::read_dir("/proc/self/fd").expect("read /proc/self/fd");
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if let Ok(fd_num) = path.file_name().unwrap().to_string_lossy().parse::<i32>() {
+                let mut st: libc::stat = unsafe { core::mem::zeroed() };
+                if unsafe { libc::fstat(fd_num, &mut st) } == 0 && st.st_ino == inode {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn ipc_recvmsg_delivers_fd_cloexec_and_closes_extras() {
+        let _ = bun_lsquic_sys::force_link as *const () as usize;
+        let _ = bun_lsquic_sys::force_link_lshpack as *const () as usize;
+        let _ = bun_threading::Mutex::new as *const () as usize;
+        let _ = bun_analytics::is_enabled as *const () as usize;
+
+        let mut sv: [c_int; 2] = [-1, -1];
+        assert_eq!(
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sv.as_mut_ptr()) },
+            0,
+            "socketpair failed"
+        );
+
+        let loop_ = unsafe {
+            us_create_loop(
+                ptr::null_mut(),
+                Some(noop_cb),
+                Some(noop_cb),
+                Some(noop_cb),
+                0,
+            )
+        };
+        assert!(!loop_.is_null(), "us_create_loop failed");
+
+        let group: &'static mut SocketGroup = Box::leak(Box::new(SocketGroup::default()));
+        group.init(loop_, Some(&VTABLE), ptr::null_mut());
+
+        // Adopt sv[0] as an IPC socket (is_ipc → loop.c recvmsg path).
+        let sock = unsafe {
+            us_socket_from_fd(
+                group,
+                SocketKind::Dynamic as u8,
+                ptr::null_mut(),
+                0,
+                sv[0],
+                1,
+            )
+        };
+        assert!(!sock.is_null(), "us_socket_from_fd failed");
+
+        for c in [&OPEN_COUNT, &FD_COUNT, &DATA_BYTES, &CLOSE_COUNT] {
+            c.store(0, Ordering::SeqCst);
+        }
+        RECEIVED_FD.store(-1, Ordering::SeqCst);
+
+        // First passed fd: a pipe read end carrying one known byte.
+        let mut pipe_fds: [c_int; 2] = [-1, -1];
+        assert_eq!(
+            unsafe { libc::pipe(pipe_fds.as_mut_ptr()) },
+            0,
+            "pipe failed"
+        );
+        let z = b'Z';
+        assert_eq!(
+            unsafe { libc::write(pipe_fds[1], &z as *const u8 as *const c_void, 1) },
+            1
+        );
+        // Extra fd packed into the same message: a second pipe's read end
+        // (pipes have unique per-fifo inodes, unlike anon_inode-backed fds).
+        let mut extra_pipe: [c_int; 2] = [-1, -1];
+        assert_eq!(
+            unsafe { libc::pipe(extra_pipe.as_mut_ptr()) },
+            0,
+            "extra pipe failed"
+        );
+        let extra_fd = extra_pipe[0];
+        let mut extra_st: libc::stat = unsafe { core::mem::zeroed() };
+        assert_eq!(unsafe { libc::fstat(extra_fd, &mut extra_st) }, 0);
+        let extra_ino = extra_st.st_ino;
+
+        // Send "x" + SCM_RIGHTS carrying [pipe_read, extra_fd] in ONE cmsghdr.
+        #[repr(C, align(8))]
+        struct Control([u8; 64]);
+        let mut control = Control([0u8; 64]);
+        let nfds: usize = 2;
+        let sent = unsafe {
+            let cm = control.0.as_mut_ptr() as *mut libc::cmsghdr;
+            (*cm).cmsg_level = libc::SOL_SOCKET;
+            (*cm).cmsg_type = libc::SCM_RIGHTS;
+            (*cm).cmsg_len = libc::CMSG_LEN((nfds * core::mem::size_of::<c_int>()) as u32) as usize;
+            let data = libc::CMSG_DATA(cm) as *mut c_int;
+            *data = pipe_fds[0];
+            *data.add(1) = extra_fd;
+
+            let mut iov = libc::iovec {
+                iov_base: b"x".as_ptr() as *mut c_void,
+                iov_len: 1,
+            };
+            let mut msg: libc::msghdr = core::mem::zeroed();
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = control.0.as_mut_ptr() as *mut c_void;
+            msg.msg_controllen =
+                libc::CMSG_SPACE((nfds * core::mem::size_of::<c_int>()) as u32) as usize;
+            libc::sendmsg(sv[1], &msg, 0)
+        };
+        assert_eq!(sent, 1, "sendmsg failed");
+
+        let zero = Timespec { sec: 0, nsec: 0 };
+        for _ in 0..200 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            if FD_COUNT.load(Ordering::SeqCst) == 1 && DATA_BYTES.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        assert_eq!(FD_COUNT.load(Ordering::SeqCst), 1, "on_fd never fired");
+        assert_eq!(DATA_BYTES.load(Ordering::SeqCst), 1, "payload byte lost");
+        let received = RECEIVED_FD.load(Ordering::SeqCst);
+        assert!(received >= 0, "no fd delivered");
+
+        // The delivered fd is the first passed one and carries the byte.
+        let mut buf: [u8; 1] = [0];
+        assert_eq!(
+            unsafe { libc::read(received, buf.as_mut_ptr() as *mut c_void, 1) },
+            1,
+            "delivered fd is not the pipe read end"
+        );
+        assert_eq!(buf[0], b'Z');
+
+        // MSG_CMSG_CLOEXEC: received descriptors must not leak into children
+        // (pre-fix: plain recvmsg, no CLOEXEC → red).
+        let flags = unsafe { libc::fcntl(received, libc::F_GETFD) };
+        assert!(
+            flags & libc::FD_CLOEXEC != 0,
+            "received fd lacks FD_CLOEXEC (MSG_CMSG_CLOEXEC not applied)"
+        );
+
+        // The extra descriptor packed into the same message must have been
+        // closed by the receiver, not leaked. We hold no reference to the
+        // received dup ourselves: close our originals first, then no open fd
+        // in the process may reference the extra pipe's inode.
+        unsafe {
+            libc::close(extra_fd);
+            libc::close(extra_pipe[1]);
+        }
+        assert_eq!(
+            count_fds_for_inode(extra_ino),
+            0,
+            "extra SCM_RIGHTS descriptor leaked (receiver must close beyond the first)"
+        );
+
+        // Teardown: close the peer so the IPC socket gets eof → close, then
+        // free the loop and group (owner of the adopted socket).
+        unsafe {
+            libc::close(sv[1]);
+        }
+        for _ in 0..100 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            if CLOSE_COUNT.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // Teardown: close the peer so the IPC socket gets eof → close, then
+        // free the loop and group (owner of the adopted socket). extra_fd and
+        // extra_pipe[1] were already closed above, before the inode scan.
+        unsafe {
+            libc::close(received);
+            libc::close(pipe_fds[0]);
+            libc::close(pipe_fds[1]);
+            SocketGroup::destroy(group);
+            us_loop_free(loop_);
+        }
+    }
+}

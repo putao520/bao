@@ -76,6 +76,8 @@ pub struct ClientSession {
     pub next_stream_id: u31,
     /// Stream id whose CONTINUATION sequence is in progress; 0 = none.
     pub expecting_continuation: u31,
+    /// CONTINUATION frames seen so far in the current header block.
+    pub continuation_count: u8,
 
     /// Cold-start coalesced requests parked until the server's first SETTINGS
     /// frame arrives so the real MAX_CONCURRENT_STREAMS cap can be honoured.
@@ -356,6 +358,7 @@ impl ClientSession {
             streams: ArrayHashMap::default(),
             next_stream_id,
             expecting_continuation: 0,
+            continuation_count: 0,
             pending_attach: Vec::new(),
             preface_sent: false,
             settings_received: false,
