@@ -584,7 +584,10 @@ fn handle_runtime(
                 .as_ref()
                 .and_then(|p| p.get("returnByValue"))
                 .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+                // Chrome's default is false (RemoteObject by reference); the
+                // utility-script evaluateHandle that boots Playwright's
+                // evaluate pipeline omits the flag and needs the objectId.
+                .unwrap_or(false);
             if bridge.is_some() && !expression.is_empty() {
                 bridge_send(
                     bridge,
@@ -617,15 +620,31 @@ fn handle_runtime(
                 .as_ref()
                 .and_then(|p| p.get("returnByValue"))
                 .and_then(|v| v.as_bool());
+            let execution_context_id = params
+                .as_ref()
+                .and_then(|p| p.get("executionContextId"))
+                .and_then(|v| v.as_i64());
+            let await_promise = params
+                .as_ref()
+                .and_then(|p| p.get("awaitPromise"))
+                .and_then(|v| v.as_bool());
+            let object_group = params
+                .as_ref()
+                .and_then(|p| p.get("objectGroup"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             if bridge.is_some() {
                 bridge_send(
                     bridge,
                     BridgeCommand::RuntimeCallFunctionOn {
                         target_id: tid,
                         object_id,
+                        execution_context_id,
                         function_declaration,
                         arguments,
                         return_by_value,
+                        await_promise,
+                        object_group,
                     },
                 )
             } else {
@@ -659,7 +678,45 @@ fn handle_runtime(
         "evaluateAsync" | "runScript" => {
             Ok(serde_json::json!({ "result": { "type": "undefined" } }))
         }
-        "releaseObject" | "releaseObjectGroup" | "compileScript" | "callArgument" => ok_empty(),
+        "releaseObject" => {
+            let object_id = params
+                .as_ref()
+                .and_then(|p| p.get("objectId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if bridge.is_some() && !object_id.is_empty() {
+                bridge_send(
+                    bridge,
+                    BridgeCommand::RuntimeReleaseObject {
+                        target_id: tid,
+                        object_id,
+                    },
+                )
+            } else {
+                ok_empty()
+            }
+        }
+        "releaseObjectGroup" => {
+            let object_group = params
+                .as_ref()
+                .and_then(|p| p.get("objectGroup"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if bridge.is_some() && !object_group.is_empty() {
+                bridge_send(
+                    bridge,
+                    BridgeCommand::RuntimeReleaseObjectGroup {
+                        target_id: tid,
+                        object_group,
+                    },
+                )
+            } else {
+                ok_empty()
+            }
+        }
+        "compileScript" | "callArgument" => ok_empty(),
         // Ack for the waitForDebuggerOnStart auto-attach flow: bao does not
         // actually pause new targets (no debugger gating exists), so this
         // ack simply unblocks the client's init sequence.

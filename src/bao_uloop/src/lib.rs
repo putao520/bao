@@ -1454,6 +1454,252 @@ mod paused_eof_tests {
 }
 
 #[cfg(test)]
+mod write_rearm_paused_tests {
+    //! Behavioral test for the `us_internal_rearm_writable` fix: a write that
+    //! fails to send everything on a read-paused socket must re-arm WRITABLE
+    //! only. The old unconditional `READABLE | WRITABLE` re-arm in
+    //! us_socket_write/raw_write/write2/ipc_write_fd silently undid
+    //! us_socket_pause mid-backpressure and delivered inbound data the caller
+    //! asked to defer. Drives the C path end-to-end.
+
+    use super::*;
+    use bun_uws_sys::socket_group::VTable;
+    use bun_uws_sys::{ListenSocket, SocketGroup, SocketKind, us_socket_t};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static OPEN_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static DATA_BYTES: AtomicUsize = AtomicUsize::new(0);
+    static CLOSE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    /// Raw pointer stash of the accepted socket (test thread is the only loop
+    /// thread; touched only between ticks).
+    static SOCKET_PTR: std::sync::atomic::AtomicPtr<us_socket_t> =
+        std::sync::atomic::AtomicPtr::new(ptr::null_mut());
+
+    unsafe extern "C" {
+        fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec);
+        fn us_socket_get_fd(s: *mut us_socket_t) -> c_int;
+        fn us_socket_write(s: *mut us_socket_t, data: *const u8, length: c_int) -> c_int;
+        fn us_socket_pause(s: *mut us_socket_t);
+        fn us_socket_resume(s: *mut us_socket_t);
+    }
+
+    unsafe extern "C" fn t_open(
+        s: *mut us_socket_t,
+        _is_client: c_int,
+        _ip: *mut u8,
+        _ip_len: c_int,
+    ) -> *mut us_socket_t {
+        OPEN_COUNT.fetch_add(1, Ordering::SeqCst);
+        SOCKET_PTR.store(s, Ordering::SeqCst);
+        // Shrink the send buffer so outbound backpressure (write < length)
+        // hits after a few hundred KiB instead of filling defaults.
+        unsafe {
+            let fd = us_socket_get_fd(s);
+            let sz: c_int = 8 * 1024;
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                &sz as *const _ as *const c_void,
+                core::mem::size_of::<c_int>() as u32,
+            );
+        }
+        s
+    }
+
+    unsafe extern "C" fn t_data(
+        s: *mut us_socket_t,
+        _data: *mut u8,
+        length: c_int,
+    ) -> *mut us_socket_t {
+        let first = DATA_BYTES.fetch_add(length as usize, Ordering::SeqCst) == 0;
+        if first {
+            // Read pause mid-stream: the rest of the peer's writes stay in
+            // the kernel until resume.
+            unsafe { us_socket_pause(s) };
+        }
+        s
+    }
+
+    unsafe extern "C" fn t_close(
+        s: *mut us_socket_t,
+        _code: c_int,
+        _reason: *mut c_void,
+    ) -> *mut us_socket_t {
+        CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
+        s
+    }
+
+    static VTABLE: VTable = VTable {
+        on_open: Some(t_open),
+        on_data: Some(t_data),
+        on_fd: None,
+        on_writable: None,
+        on_close: Some(t_close),
+        on_timeout: None,
+        on_long_timeout: None,
+        on_end: None,
+        on_connect_error: None,
+        on_connecting_error: None,
+        on_handshake: None,
+    };
+
+    unsafe extern "C" fn noop_cb(_loop: *mut Loop) {}
+
+    #[test]
+    fn failed_write_does_not_resume_paused_socket() {
+        // Same link pulls as the hangup test (C archive deps).
+        let _ = bun_lsquic_sys::force_link as *const () as usize;
+        let _ = bun_lsquic_sys::force_link_lshpack as *const () as usize;
+        let _ = bun_threading::Mutex::new as *const () as usize;
+        let _ = bun_analytics::is_enabled as *const () as usize;
+
+        let path = format!("/tmp/bao-uloop-write-rearm-test-{}.sock", std::process::id());
+        let mut path_bytes = path.clone().into_bytes();
+        path_bytes.push(0);
+        let _ = std::fs::remove_file(&path);
+
+        let loop_ = unsafe {
+            us_create_loop(
+                ptr::null_mut(),
+                Some(noop_cb),
+                Some(noop_cb),
+                Some(noop_cb),
+                0,
+            )
+        };
+        assert!(!loop_.is_null(), "us_create_loop failed");
+
+        let group: &'static mut SocketGroup = Box::leak(Box::new(SocketGroup::default()));
+        group.init(loop_, Some(&VTABLE), ptr::null_mut());
+
+        let mut err: c_int = 0;
+        let ls: *mut ListenSocket = group.listen_unix(
+            SocketKind::Dynamic,
+            None,
+            &path_bytes,
+            0,
+            0,
+            &mut err,
+        );
+        assert!(!ls.is_null(), "listen_unix failed, err = {err}");
+
+        for c in [&OPEN_COUNT, &DATA_BYTES, &CLOSE_COUNT] {
+            c.store(0, Ordering::SeqCst);
+        }
+
+        let zero = Timespec { sec: 0, nsec: 0 };
+        let mut client = std::os::unix::net::UnixStream::connect(&path).expect("connect");
+        // Pump until the server side accepted (on_open ran, socket known).
+        for _ in 0..200 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            if OPEN_COUNT.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1, "accept never ran");
+
+        let sock = SOCKET_PTR.load(Ordering::SeqCst);
+        assert!(!sock.is_null());
+
+        // Inbound: first chunk delivers one on_data and pauses the read side.
+        let first_chunk = vec![b'a'; 64 * 1024];
+        std::io::Write::write_all(&mut client, &first_chunk).expect("first write");
+        for _ in 0..200 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            if DATA_BYTES.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let paused_bytes = DATA_BYTES.load(Ordering::SeqCst);
+        assert!(paused_bytes > 0, "first data chunk never arrived");
+
+        // Queue an inbound tail behind the pause (enlarged client SNDBUF so
+        // the write completes into the kernel without blocking the test).
+        let tail = vec![b'b'; 256 * 1024];
+        unsafe {
+            let sz: c_int = 4 * 1024 * 1024;
+            libc::setsockopt(
+                client.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                &sz as *const _ as *const c_void,
+                core::mem::size_of::<c_int>() as u32,
+            );
+        }
+        std::io::Write::write_all(&mut client, &tail).expect("tail write");
+
+        // Outbound backpressure on the paused socket: keep writing until a
+        // write fails to send everything — this is the rearm path under test.
+        let out = vec![b'x'; 64 * 1024];
+        let mut backpressured = false;
+        for _ in 0..128 {
+            let written =
+                unsafe { us_socket_write(sock, out.as_ptr(), out.len() as c_int) };
+            if written < out.len() as c_int {
+                backpressured = true;
+                break;
+            }
+        }
+        assert!(
+            backpressured,
+            "never hit a partial write: backpressure path not exercised"
+        );
+
+        // Discriminator: pump the loop. Pre-fix, the write-failure re-arm was
+        // READABLE | WRITABLE, which undid the pause and delivered the queued
+        // inbound tail (DATA_BYTES grows). Post-fix only WRITABLE is armed
+        // and the paused read side stays deferred.
+        for _ in 0..100 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            DATA_BYTES.load(Ordering::SeqCst),
+            paused_bytes,
+            "failed write re-armed READABLE and undid the read pause"
+        );
+        assert_eq!(CLOSE_COUNT.load(Ordering::SeqCst), 0);
+
+        // Resume: READABLE comes back and the queued tail drains.
+        unsafe { us_socket_resume(sock) };
+        for _ in 0..400 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            if DATA_BYTES.load(Ordering::SeqCst) >= first_chunk.len() + tail.len() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            DATA_BYTES.load(Ordering::SeqCst),
+            first_chunk.len() + tail.len(),
+            "resume did not deliver the inbound tail"
+        );
+
+        // Teardown.
+        drop(client);
+        for _ in 0..100 {
+            unsafe { us_loop_run_bun_tick(loop_, &zero) };
+            if CLOSE_COUNT.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        unsafe {
+            (*ls).close();
+            us_loop_run_bun_tick(loop_, &zero);
+            SocketGroup::destroy(group);
+            us_loop_free(loop_);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    use std::os::fd::AsRawFd;
+}
+
+#[cfg(test)]
 mod ipc_recvmsg_tests {
     //! Behavioral test for upstream 3753c8bfc (the usockets part): the
     //! recvmsg control buffer must be sized with CMSG_SPACE (full aligned

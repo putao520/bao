@@ -384,6 +384,15 @@ struct us_socket_t *us_socket_pair(struct us_socket_group_t *group, unsigned cha
 #endif
 }
 
+/* Re-arm writable for a backpressured write without resuming the read side of
+ * a paused socket: us_poll_change sets absolute flags, so including READABLE
+ * unconditionally would silently undo us_socket_pause mid-backpressure and
+ * deliver data the caller asked to defer. (Upstream #33974 follow-up.) */
+static void us_internal_rearm_writable(struct us_socket_t *s) {
+    us_poll_change(&s->p, s->group->loop,
+                   LIBUS_SOCKET_WRITABLE | ((s->flags.is_paused || s->read_eof) ? 0 : LIBUS_SOCKET_READABLE));
+}
+
 int us_socket_write2(struct us_socket_t *s, const char *header, int header_length, const char *payload, int payload_length) {
     if (us_socket_is_closed(s) || us_socket_is_shut_down(s)) {
         return 0;
@@ -391,7 +400,7 @@ int us_socket_write2(struct us_socket_t *s, const char *header, int header_lengt
 
     int written = bsd_write2(us_poll_fd(&s->p), header, header_length, payload, payload_length);
     if (written != header_length + payload_length) {
-        us_poll_change(&s->p, s->group->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
+        us_internal_rearm_writable(s);
     }
 
     return written < 0 ? 0 : written;
@@ -464,7 +473,7 @@ int us_socket_write(struct us_socket_t *s, const char *data, int length) {
     int written = bsd_send(us_poll_fd(&s->p), data, length);
     if (written != length) {
         s->flags.last_write_failed = 1;
-        us_poll_change(&s->p, s->group->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
+        us_internal_rearm_writable(s);
     }
 
     return written < 0 ? 0 : written;
@@ -483,7 +492,7 @@ int us_socket_raw_write(struct us_socket_t *s, const char *data, int length) {
     int written = bsd_send(us_poll_fd(&s->p), data, length);
     if (written != length) {
         s->flags.last_write_failed = 1;
-        us_poll_change(&s->p, s->group->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
+        us_internal_rearm_writable(s);
     }
 
     return written < 0 ? 0 : written;
@@ -520,7 +529,7 @@ int us_socket_ipc_write_fd(struct us_socket_t *s, const char *data, int length, 
 
     if (sent != length) {
         s->flags.last_write_failed = 1;
-        us_poll_change(&s->p, s->group->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
+        us_internal_rearm_writable(s);
     }
 
     return sent < 0 ? 0 : sent;

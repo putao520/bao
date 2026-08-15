@@ -289,9 +289,23 @@ pub enum BridgeCommand {
     RuntimeCallFunctionOn {
         target_id: String,
         object_id: Option<String>,
+        execution_context_id: Option<i64>,
         function_declaration: String,
         arguments: Option<Value>,
         return_by_value: Option<bool>,
+        await_promise: Option<bool>,
+        object_group: Option<String>,
+    },
+    // Runtime.releaseObject / releaseObjectGroup — drop object-registry
+    // entries so repeated evaluateHandle roundtrips cannot leak (each
+    // RemoteObject objectId pins a strong ref in the page registry).
+    RuntimeReleaseObject {
+        target_id: String,
+        object_id: String,
+    },
+    RuntimeReleaseObjectGroup {
+        target_id: String,
+        object_group: String,
     },
     // Worker target observability — CDP Target domain exposes Worker as sub-targets  @trace REQ-BRW-004 [criterion:19]
     ListWorkerTargets {

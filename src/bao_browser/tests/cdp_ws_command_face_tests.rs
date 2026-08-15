@@ -198,6 +198,197 @@ fn client_phase(ws_url: String, page_id: usize, done: Arc<AtomicBool>) {
     done.store(true, Ordering::Relaxed);
 }
 
+/// REQ-CDP Runtime object protocol e2e: the callFunctionOn/objectId/release
+/// surface Playwright's page.evaluate drives — evaluateHandle (rbv=false)
+/// mints objectIds, callFunctionOn calls a stringized function on/with those
+/// objects ({value}/{objectId}/{unserializableValue} args), awaitPromise
+/// resolves, getProperties roundtrips nested objectIds, and releaseObject/
+/// releaseObjectGroup drop registry entries.
+fn object_protocol_phase(ws_url: String, done: Arc<AtomicBool>) {
+    let mut cdp = WsCdp::connect(&ws_url);
+
+    // Navigate to a stable document first (evaluate needs a live realm).
+    let html = "<html><body><div id='d'>ok</div></body></html>";
+    let url = format!("data:text/html;charset=utf-8,{html}");
+    let resp = cdp.send("Page.navigate", json!({ "url": url }));
+    assert!(resp.get("error").is_none(), "navigate must succeed: {resp}");
+
+    // Wait for the document to exist (mid-navigation evaluates are flaky).
+    let mut ready = false;
+    for _ in 0..200 {
+        let r = cdp.send(
+            "Runtime.evaluate",
+            json!({ "expression": "!!document.body", "returnByValue": true }),
+        );
+        if r["result"]["result"]["value"] == json!(true) {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(ready, "document never became ready");
+
+    // 1. evaluateHandle (returnByValue=false) → RemoteObject with objectId.
+    let resp = cdp.send(
+        "Runtime.evaluate",
+        json!({ "expression": "({answer: 42})", "returnByValue": false }),
+    );
+    assert!(resp.get("error").is_none(), "evaluateHandle: {resp}");
+    let oid1 = resp["result"]["result"]["objectId"]
+        .as_str()
+        .expect("evaluateHandle must return an objectId")
+        .to_string();
+    assert_eq!(resp["result"]["result"]["type"], "object");
+    assert_eq!(resp["result"]["result"]["className"], "Object");
+    assert!(resp["result"]["exceptionDetails"].is_null());
+
+    // 2. callFunctionOn with objectId `this` + {value} arg, returnByValue.
+    let resp = cdp.send(
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId": oid1,
+            "functionDeclaration": "function(bump) { return this.answer + bump; }",
+            "arguments": [{ "value": 10 }],
+            "returnByValue": true,
+        }),
+    );
+    assert!(resp.get("error").is_none(), "callFunctionOn value arg: {resp}");
+    assert_eq!(resp["result"]["result"]["value"], 52);
+    assert!(resp["result"]["exceptionDetails"].is_null());
+
+    // 3. {objectId} argument roundtrip: a second handle passed as an arg.
+    let resp = cdp.send(
+        "Runtime.evaluate",
+        json!({ "expression": "({x: 100})", "returnByValue": false }),
+    );
+    let oid2 = resp["result"]["result"]["objectId"]
+        .as_str()
+        .expect("second objectId")
+        .to_string();
+    let resp = cdp.send(
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId": oid1,
+            "functionDeclaration": "function(other) { return this.answer + other.x; }",
+            "arguments": [{ "objectId": oid2 }],
+            "returnByValue": true,
+        }),
+    );
+    assert!(
+        resp.get("error").is_none(),
+        "callFunctionOn objectId arg: {resp}"
+    );
+    assert_eq!(resp["result"]["result"]["value"], 142);
+
+    // 4. unserializableValue arg (NaN).
+    let resp = cdp.send(
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId": oid1,
+            "functionDeclaration": "function(v) { return v !== v ? 'nan' : 'not-nan'; }",
+            "arguments": [{ "unserializableValue": "NaN" }],
+            "returnByValue": true,
+        }),
+    );
+    assert!(resp.get("error").is_none(), "NaN arg: {resp}");
+    assert_eq!(resp["result"]["result"]["value"], "nan");
+
+    // 5. awaitPromise (executionContextId form, this=undefined).
+    let resp = cdp.send(
+        "Runtime.callFunctionOn",
+        json!({
+            "functionDeclaration": "function() { return Promise.resolve(7).then(function(v) { return v * 6; }); }",
+            "arguments": [],
+            "returnByValue": true,
+            "awaitPromise": true,
+        }),
+    );
+    assert!(resp.get("error").is_none(), "awaitPromise: {resp}");
+    assert_eq!(resp["result"]["result"]["value"], 42);
+
+    // 6. Thrown exception → exceptionDetails, never a fake ok.
+    let resp = cdp.send(
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId": oid1,
+            "functionDeclaration": "function() { throw new Error('boom-cdp'); }",
+            "returnByValue": true,
+        }),
+    );
+    assert!(resp.get("error").is_none(), "throw path: {resp}");
+    let text = resp["result"]["exceptionDetails"]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        text.contains("boom-cdp"),
+        "exceptionDetails must carry the message, got: {resp}"
+    );
+
+    // 7. getProperties roundtrip: nested object values carry real objectIds.
+    let resp = cdp.send(
+        "Runtime.getProperties",
+        json!({ "objectId": oid1, "ownProperties": true }),
+    );
+    assert!(resp.get("error").is_none(), "getProperties: {resp}");
+    let props = resp["result"]["result"]
+        .as_array()
+        .expect("properties array");
+    let answer = props
+        .iter()
+        .find(|p| p["name"] == json!("answer"))
+        .expect("answer property present");
+    assert_eq!(answer["value"]["type"], "number");
+    assert_eq!(answer["value"]["value"], 42);
+
+    // 8. releaseObject drops the entry: a follow-up getProperties sees an
+    //    unregistered object (empty result), proving the release landed.
+    let resp = cdp.send(
+        "Runtime.releaseObject",
+        json!({ "objectId": oid2 }),
+    );
+    assert!(resp.get("error").is_none(), "releaseObject: {resp}");
+    let resp = cdp.send(
+        "Runtime.getProperties",
+        json!({ "objectId": oid2, "ownProperties": true }),
+    );
+    assert!(resp.get("error").is_none());
+    assert_eq!(
+        resp["result"]["result"], json!([]),
+        "released objectId must no longer resolve"
+    );
+
+    // 9. releaseObjectGroup: entries minted under objectGroup are freed
+    //    together (the Playwright context-teardown path).
+    let resp = cdp.send(
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId": oid1,
+            "functionDeclaration": "function() { return {tag: 'grouped'}; }",
+            "returnByValue": false,
+            "objectGroup": "e2e-group",
+        }),
+    );
+    let grouped_oid = resp["result"]["result"]["objectId"]
+        .as_str()
+        .expect("grouped objectId")
+        .to_string();
+    let resp = cdp.send(
+        "Runtime.releaseObjectGroup",
+        json!({ "objectGroup": "e2e-group" }),
+    );
+    assert!(resp.get("error").is_none(), "releaseObjectGroup: {resp}");
+    let resp = cdp.send(
+        "Runtime.getProperties",
+        json!({ "objectId": grouped_oid, "ownProperties": true }),
+    );
+    assert_eq!(
+        resp["result"]["result"], json!([]),
+        "released group entries must no longer resolve"
+    );
+
+    done.store(true, Ordering::Relaxed);
+}
+
 #[test]
 fn ws_command_face_page_navigate_and_evaluate_roundtrip() {
     let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
@@ -258,6 +449,74 @@ fn ws_command_face_page_navigate_and_evaluate_roundtrip() {
     assert!(
         done.load(Ordering::Relaxed),
         "client phase must have completed all assertions"
+    );
+}
+
+/// Same dual-thread harness as the navigate/evaluate roundtrip, driving the
+/// Runtime object-protocol client phase (evaluateHandle / callFunctionOn /
+/// getProperties / releaseObject / releaseObjectGroup over live WS).
+#[test]
+fn ws_runtime_object_protocol_roundtrip() {
+    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("initial page");
+
+    let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
+    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
+    runtime.set_event_channel(event_subscriber.sender());
+
+    let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
+    let port = pick_free_port();
+    let server_config = ServerConfig::builder()
+        .host("127.0.0.1")
+        .port(port)
+        .build();
+    let mut server = CdpServer::with_registry(server_config, registry);
+    server.set_target_provider(Arc::new(ServoTargetProvider::new(
+        bridge_tx,
+        page.id().to_string(),
+        "127.0.0.1".into(),
+        port,
+    )));
+    let broadcaster = server.broadcaster();
+    std::thread::spawn(move || {
+        let _ = server.run();
+    });
+
+    let ws_url = format!("ws://127.0.0.1:{port}/devtools/page/{}", page.id());
+
+    let done = Arc::new(AtomicBool::new(false));
+    let client = {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || object_protocol_phase(ws_url, done))
+    };
+
+    // Main thread: the run_with_bridge loop shape (servo spin + bridge drain
+    // + event translation), bounded by the client's done flag. The await-
+    // Promise path polls from inside the bridge handler; each poll's
+    // evaluate spins this same servo loop via spin_servo, so pending promise
+    // chains progress even while the drain call is blocked.
+    use bao_cdp_client::bridge::translate;
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while !done.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+        runtime.spin_event_loop();
+        bridge_rx.drain(|cmd| handle_bridge_command(cmd, runtime.page_pool()));
+        while let Ok(servo_event) = servo_event_rx.try_recv() {
+            for cdp_event in translate(servo_event) {
+                broadcaster.send_event(&cdp_event.method, cdp_event.params);
+            }
+        }
+        std::thread::yield_now();
+    }
+
+    client.join().expect("object protocol phase must not panic");
+    assert!(
+        done.load(Ordering::Relaxed),
+        "object protocol phase must have completed all assertions"
     );
 }
 

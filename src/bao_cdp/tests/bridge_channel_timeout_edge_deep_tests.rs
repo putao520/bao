@@ -1761,7 +1761,7 @@ fn test_runtime_evaluate_nonempty_expression_uses_bridge_when_present() {
 }
 
 #[test]
-fn test_runtime_evaluate_return_by_value_defaults_true() {
+fn test_runtime_evaluate_return_by_value_defaults_false() {
     let (tx, rx) = bridge_channel(Duration::from_millis(200));
     let captured = Arc::new(std::sync::Mutex::new(None::<bool>));
     let captured2 = captured.clone();
@@ -1794,7 +1794,10 @@ fn test_runtime_evaluate_return_by_value_defaults_true() {
     );
     done.store(1, Ordering::Relaxed);
     let rbv = captured.lock().unwrap().take().unwrap();
-    assert!(rbv, "returnByValue default must be true");
+    // Chrome's default: returnByValue omitted → false (RemoteObject by
+    // reference). Playwright's utility-script evaluateHandle omits the flag
+    // and requires the objectId this default produces.
+    assert!(!rbv, "returnByValue default must be false");
 }
 
 #[test]

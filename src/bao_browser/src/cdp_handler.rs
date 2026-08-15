@@ -330,17 +330,35 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::RuntimeCallFunctionOn {
             target_id,
             object_id,
+            execution_context_id,
             function_declaration,
             arguments,
             return_by_value,
+            await_promise,
+            object_group,
         } => with_page(pool, &target_id, |page| {
             cmd_runtime_call_function_on(
                 page,
                 object_id.as_deref(),
+                execution_context_id,
                 &function_declaration,
                 arguments.as_ref(),
                 return_by_value,
+                await_promise,
+                object_group.as_deref(),
             )
+        }),
+        BridgeCommand::RuntimeReleaseObject {
+            target_id,
+            object_id,
+        } => with_page(pool, &target_id, |page| {
+            cmd_runtime_release_object(page, &object_id)
+        }),
+        BridgeCommand::RuntimeReleaseObjectGroup {
+            target_id,
+            object_group,
+        } => with_page(pool, &target_id, |page| {
+            cmd_runtime_release_object_group(page, &object_group)
         }),
 
         // ServiceWorker domain — terminate a registered ServiceWorker
@@ -585,13 +603,28 @@ fn cmd_evaluate(
             "exceptionDetails": null
         }))
     } else {
-        Ok(serde_json::json!({
-            "result": {
-                "type": json_type_string(&result),
-                "description": result,
-            },
-            "exceptionDetails": null
-        }))
+        // returnByValue=false: hand back a full RemoteObject with a
+        // registry-pinned objectId. This is the Playwright evaluateHandle
+        // path — the utilityScript handle is minted here and then driven via
+        // Runtime.callFunctionOn (objectId roundtrip).
+        page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
+            .map_err(to_browser_error)?;
+        let expr_json = serde_json::to_string(expression).unwrap_or_default();
+        let js = format!(
+            r#"(function() {{
+                try {{
+                    var r = eval({expr_json});
+                    return JSON.stringify({{ result: window.__bao_cdp.wrap(r, false, ''), exceptionDetails: null }});
+                }} catch (e) {{
+                    var exObj = (e !== null && typeof e === 'object') ? window.__bao_cdp.wrap(e, false, '') : undefined;
+                    return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: String((e && e.message) || e), exception: exObj, exceptionId: 0 }} }});
+                }}
+            }})()"#,
+        );
+        let out = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+        serde_json::from_str(&out).map_err(|e| {
+            format!("Runtime.evaluate: handle wrapper unparseable: {e} (got: {out:.200})")
+        })
     }
 }
 
@@ -938,7 +971,7 @@ fn cmd_debugger_set_breakpoint(
         (None, None) => format!("s.startLine <= {line} && {line} <= s.startLine + s.lineCount - 1"),
     };
     let js = format!(
-        "(function() {{ try {{ if (!window.__bao_dbg) return {{}}; var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ var s = scripts[i]; if ({url_filter}) {{ var offset = s.offsetLine ? s.offsetLine({line}, {col}) : 0; var bpId = 'bp-' + String(s.id) + '-' + {line} + '-' + {col}; s.setBreakpoint(offset, {{ hit: function(frame) {{ console.log('__BAO_EVT__Debugger.paused\\n' + JSON.stringify({{ callFrames: [], reason: 'breakpoint', hitBreakpoints: [bpId] }})); }} }}); if (!window.__bao_bps) window.__bao_bps = {{}}; window.__bao_bps[bpId] = {{ scriptId: String(s.id), offset: offset }}; return {{ breakpointId: bpId, actualLocation: {{ scriptId: String(s.id), lineNumber: {line}, columnNumber: {col} }} }}; }} }} }} catch(e) {{}} return {{}}; }})()",
+        "(function() {{ try {{ if (!window.__bao_dbg) return '{{}}'; var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ var s = scripts[i]; if ({url_filter}) {{ var offset = s.offsetLine ? s.offsetLine({line}, {col}) : 0; var bpId = 'bp-' + String(s.id) + '-' + {line} + '-' + {col}; s.setBreakpoint(offset, {{ hit: function(frame) {{ console.log('__BAO_EVT__Debugger.paused\\n' + JSON.stringify({{ callFrames: [], reason: 'breakpoint', hitBreakpoints: [bpId] }})); }} }}); if (!window.__bao_bps) window.__bao_bps = {{}}; window.__bao_bps[bpId] = {{ scriptId: String(s.id), offset: offset }}; return JSON.stringify({{ breakpointId: bpId, actualLocation: {{ scriptId: String(s.id), lineNumber: {line}, columnNumber: {col} }} }}); }} }} }} catch(e) {{}} return '{{}}'; }})()",
         url_filter = url_filter, line = line, col = col
     );
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
@@ -1205,12 +1238,92 @@ fn cmd_css_get_inline_styles(page: &PageHandle, node_id: i64) -> Result<Value, S
 // Runtime domain commands — JS evaluate for object inspection and function calls
 // ---------------------------------------------------------------------------
 
+/// JS prelude that installs the page-realm object registry backing the CDP
+/// Runtime object protocol (evaluate-handle / callFunctionOn / getProperties /
+/// releaseObject). Idempotent — a second run is a no-op.
+///
+/// The registry IS the CDP object reference table: every RemoteObject objectId
+/// pins a strong reference until `Runtime.releaseObject`/`releaseObjectGroup`
+/// drops it, which is what keeps handed-out objects GC-alive across
+/// evaluations. DEVIATION (documented): Chrome keeps this table debugger-side;
+/// the servo embedder exposes no JSObject egress through the evaluate bridge,
+/// so the strong refs live in a page-realm `Object.create(null)` map and the
+/// table is page-visible (acceptable for an automation-facing CDP face).
+const CDP_REGISTRY_PRELUDE: &str = r#"(function() {
+  if (window.__bao_cdp) return 'ok';
+  var objs = Object.create(null);
+  var seq = 0;
+  function alloc(v, group) {
+    seq++;
+    var oid = 'obj-' + seq + '-' + Math.floor(Math.random() * 1e9).toString(36);
+    objs[oid] = { v: v, g: group || '' };
+    return oid;
+  }
+  function get(oid) { return (oid in objs) ? objs[oid].v : undefined; }
+  function release(oid) { delete objs[oid]; }
+  function releaseGroup(g) { for (var k in objs) { if (objs[k].g === g) delete objs[k]; } }
+  function wrap(v, byValue, group) {
+    var ro;
+    if (v === null) {
+      ro = { type: 'object', subtype: 'null', description: 'null' };
+    } else if (v === undefined) {
+      ro = { type: 'undefined' };
+    } else {
+      var t = typeof v;
+      if (t === 'number') {
+        var us = null;
+        if (v !== v) us = 'NaN';
+        else if (v === Infinity) us = 'Infinity';
+        else if (v === -Infinity) us = '-Infinity';
+        else if (v === 0 && 1 / v < 0) us = '-0';
+        ro = us
+          ? { type: 'number', unserializableValue: us, description: us }
+          : { type: 'number', value: v, description: String(v) };
+      } else if (t === 'string') {
+        ro = { type: 'string', value: v };
+      } else if (t === 'boolean') {
+        ro = { type: 'boolean', value: v };
+      } else if (t === 'bigint') {
+        ro = { type: 'bigint', unserializableValue: String(v), description: String(v) + 'n' };
+      } else if (t === 'symbol') {
+        ro = { type: 'symbol', description: String(v) };
+      } else if (t === 'function') {
+        ro = { type: 'function', className: 'Function', description: (v.name ? 'function ' + v.name + '()' : 'function ()'), objectId: alloc(v, group) };
+      } else {
+        var sub;
+        if (Array.isArray(v)) sub = 'array';
+        else if (v instanceof Date) sub = 'date';
+        else if (v instanceof RegExp) sub = 'regexp';
+        else if (v instanceof Error) sub = 'error';
+        else if (v === window) sub = 'window';
+        else if (typeof Node !== 'undefined' && v instanceof Node) sub = 'node';
+        var desc;
+        if (sub === 'array') desc = 'Array(' + v.length + ')';
+        else if (sub === 'date') desc = String(v);
+        else if (sub === 'regexp') desc = String(v);
+        else if (sub === 'error') desc = ((v.constructor && v.constructor.name) ? (v.constructor.name + ': ') : '') + (v.message || '');
+        else if (sub === 'node') { try { desc = v.nodeName.toLowerCase() + (v.id ? '#' + v.id : ''); } catch (e2) { desc = String(v.nodeName); } }
+        else { try { desc = String(v); } catch (e2) { desc = 'Object'; } }
+        var cn = 'Object';
+        try { if (v.constructor && v.constructor.name) cn = v.constructor.name; } catch (e2) {}
+        ro = { type: 'object', className: cn, description: desc, objectId: alloc(v, group) };
+        if (sub) ro.subtype = sub;
+      }
+    }
+    if (byValue && v !== null && v !== undefined && (typeof v === 'object' || typeof v === 'function')) {
+      try { ro.value = v; } catch (e) {}
+    }
+    return ro;
+  }
+  window.__bao_cdp = { alloc: alloc, get: get, release: release, releaseGroup: releaseGroup, wrap: wrap };
+  return 'ok';
+})()"#;
+
 /// Resolve a CDP objectId to a JS expression that references the object.
-/// objectId format: "injected-script-N" where N is a node or object reference.
+/// objectId formats:
+/// "node-N" → DOM node reference (legacy DOM-domain mapping)
+/// "obj-*"  → page-realm registry entry (CDP_REGISTRY_PRELUDE table)
 fn resolve_object_by_id(object_id: &str) -> String {
-    // objectId patterns from Runtime.evaluate when returnByValue=false:
-    // "node-N" → DOM node reference
-    // "obj-N" → stored object reference via __bao_objs map
     if object_id.starts_with("node-") {
         let idx: i64 = object_id[5..].parse().unwrap_or(0);
         match idx {
@@ -1218,15 +1331,10 @@ fn resolve_object_by_id(object_id: &str) -> String {
             2 => "document.documentElement".to_string(),
             _ => format!("document.body.childNodes[{}]", idx - 3),
         }
-    } else if object_id.starts_with("obj-") {
-        format!(
-            "(window.__bao_objs && window.__bao_objs['{}']) || null",
-            object_id
-        )
     } else {
         format!(
-            "(window.__bao_objs && window.__bao_objs['{}']) || null",
-            object_id
+            "window.__bao_cdp.get({})",
+            serde_json::to_string(object_id).unwrap_or_default()
         )
     }
 }
@@ -1236,193 +1344,248 @@ fn cmd_runtime_get_properties(
     object_id: &str,
     own_properties: Option<bool>,
 ) -> Result<Value, String> {
+    page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
+        .map_err(to_browser_error)?;
     let obj_ref = resolve_object_by_id(object_id);
     let own = own_properties.unwrap_or(true);
-    // When own_properties is true, only list own properties (getOwnPropertyNames).
-    // When false, include inherited properties via for-in (enumerable on prototype chain).
-    let js = if own {
-        format!(
-            r#"(function() {{
+    // Property enumeration: own=true → getOwnPropertyNames (own properties,
+    // data + accessors); own=false → for-in (own + inherited enumerables).
+    // Every property value becomes a real RemoteObject — object/function
+    // values are registered in the page registry, so the returned objectIds
+    // roundtrip through callFunctionOn/getProperties (the previous code
+    // fabricated ids it never stored, and resolving them always gave null).
+    // Web-scope evaluation per REQ-SEC-002/003 (registry is page-realm).
+    let js = format!(
+        r#"(function() {{
+            try {{
                 var obj = {obj_ref};
-                if (obj === null || obj === undefined) return JSON.stringify({{"result": []}});
-                try {{
-                    var names = Object.getOwnPropertyNames(obj);
-                    var result = [];
-                    for (var i = 0; i < names.length; i++) {{
-                        var name = names[i];
-                        try {{
-                            var desc = Object.getOwnPropertyDescriptor(obj, name);
-                            var value = desc.value;
-                            var valueType = typeof value;
-                            var valueDesc = '';
-                            if (value === null) {{ valueType = 'object'; valueDesc = 'null'; }}
-                            else if (value === undefined) {{ valueType = 'undefined'; }}
-                            else {{ valueDesc = String(value); }}
-                            if (valueType === 'object' && value !== null) {{
-                                result.push({{
-                                    name: name,
-                                    value: {{ type: 'object', objectId: 'obj-' + Date.now() + '-' + i, description: valueDesc || valueType }},
-                                    configurable: desc.configurable || false,
-                                    enumerable: desc.enumerable || false
-                                }});
-                            }} else {{
-                                result.push({{
-                                    name: name,
-                                    value: {{ type: valueType, value: valueType === 'number' ? Number(value) : valueType === 'boolean' ? Boolean(value) : String(value), description: valueDesc }},
-                                    configurable: desc.configurable || false,
-                                    enumerable: desc.enumerable || false
-                                }});
-                            }}
-                        }} catch(e2) {{
-                            result.push({{ name: name, value: {{ type: 'undefined' }}, configurable: false, enumerable: false }});
-                        }}
-                    }}
-                    return JSON.stringify({{"result": result}});
-                }} catch(e) {{
-                    return JSON.stringify({{"result": []}});
+                if (obj === null || obj === undefined) return JSON.stringify({{ "result": [] }});
+                var names;
+                if ({own}) {{
+                    names = Object.getOwnPropertyNames(obj);
+                }} else {{
+                    names = [];
+                    for (var n in obj) names.push(n);
                 }}
-            }})()"#,
-            obj_ref = obj_ref,
-        )
-    } else {
-        // own_properties=false: include inherited properties from prototype chain.
-        // Use for-in to enumerate all enumerable properties (own + inherited),
-        // plus Object.getOwnPropertyNames for non-enumerable own properties.
-        format!(
-            r#"(function() {{
-                var obj = {obj_ref};
-                if (obj === null || obj === undefined) return JSON.stringify({{"result": []}});
-                try {{
-                    var seen = {{}};
-                    var result = [];
-                    // Enumerate enumerable properties (own + inherited) via for-in
-                    for (var name in obj) {{
-                        if (seen[name]) continue;
-                        seen[name] = true;
-                        try {{
-                            var desc = Object.getOwnPropertyDescriptor(obj, name);
-                            // If not own property, walk prototype chain
-                            if (!desc) {{
-                                var proto = Object.getPrototypeOf(obj);
-                                while (proto && !desc) {{
-                                    desc = Object.getOwnPropertyDescriptor(proto, name);
-                                    proto = Object.getPrototypeOf(proto);
-                                }}
-                            }}
-                            if (!desc) continue;
-                            var value = desc.value;
-                            var valueType = typeof value;
-                            var valueDesc = '';
-                            if (value === null) {{ valueType = 'object'; valueDesc = 'null'; }}
-                            else if (value === undefined) {{ valueType = 'undefined'; }}
-                            else {{ valueDesc = String(value); }}
-                            if (valueType === 'object' && value !== null) {{
-                                result.push({{
-                                    name: name,
-                                    value: {{ type: 'object', objectId: 'obj-' + Date.now() + '-' + result.length, description: valueDesc || valueType }},
-                                    configurable: desc.configurable || false,
-                                    enumerable: desc.enumerable || false
-                                }});
-                            }} else {{
-                                result.push({{
-                                    name: name,
-                                    value: {{ type: valueType, value: valueType === 'number' ? Number(value) : valueType === 'boolean' ? Boolean(value) : String(value), description: valueDesc }},
-                                    configurable: desc.configurable || false,
-                                    enumerable: desc.enumerable || false
-                                }});
-                            }}
-                        }} catch(e2) {{
-                            result.push({{ name: name, value: {{ type: 'undefined' }}, configurable: false, enumerable: false }});
+                var result = [];
+                for (var i = 0; i < names.length; i++) {{
+                    var name = names[i];
+                    try {{
+                        var desc = Object.getOwnPropertyDescriptor(obj, name);
+                        if (!desc) continue;
+                        var entry = {{ name: name, configurable: !!desc.configurable, enumerable: !!desc.enumerable, isOwn: {own} }};
+                        if ('value' in desc) {{
+                            entry.value = window.__bao_cdp.wrap(desc.value, false, '');
+                            entry.writable = !!desc.writable;
+                        }} else {{
+                            if (desc.get) entry.get = window.__bao_cdp.wrap(desc.get, false, '');
+                            if (desc.set) entry.set = window.__bao_cdp.wrap(desc.set, false, '');
                         }}
+                        result.push(entry);
+                    }} catch (e2) {{
+                        result.push({{ name: name, value: {{ type: 'undefined' }}, configurable: false, enumerable: false }});
                     }}
-                    return JSON.stringify({{"result": result}});
-                }} catch(e) {{
-                    return JSON.stringify({{"result": []}});
                 }}
-            }})()"#,
-            obj_ref = obj_ref,
-        )
-    };
-    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+                return JSON.stringify({{ "result": result }});
+            }} catch (e) {{
+                return JSON.stringify({{ "result": [] }});
+            }}
+        }})()"#,
+        obj_ref = obj_ref,
+        own = own,
+    );
+    let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
     parse_js_result(&result)
+}
+
+/// Materialize one CDP CallArgument as a JS expression: `{value}` (JSON
+/// literal), `{unserializableValue}` (NaN/±Infinity/-0/BigInt) or `{objectId}`
+/// resolved through the page-realm registry (or the DOM node mapping).
+fn call_argument_expr(arg: &Value) -> Result<String, String> {
+    let Some(obj) = arg.as_object() else {
+        return Err("callFunctionOn arguments entries must be CallArgument objects".into());
+    };
+    if let Some(v) = obj.get("value") {
+        return Ok(serde_json::to_string(v).unwrap_or_else(|_| "undefined".into()));
+    }
+    if let Some(us) = obj.get("unserializableValue").and_then(|v| v.as_str()) {
+        return match us {
+            "NaN" | "Infinity" | "-Infinity" | "-0" => Ok(us.to_string()),
+            _ if us.ends_with('n') && us.len() >= 2 => {
+                let digits = us[..us.len() - 1]
+                    .strip_prefix('-')
+                    .unwrap_or(&us[..us.len() - 1]);
+                if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                    // BigInt literal ("123n" / "-5n")
+                    Ok(us.to_string())
+                } else {
+                    Err(format!("unsupported unserializableValue: {us}"))
+                }
+            }
+            _ => Err(format!("unsupported unserializableValue: {us}")),
+        };
+    }
+    if let Some(oid) = obj.get("objectId").and_then(|v| v.as_str()) {
+        return Ok(resolve_object_by_id(oid));
+    }
+    Ok("undefined".to_string())
 }
 
 fn cmd_runtime_call_function_on(
     page: &PageHandle,
     object_id: Option<&str>,
+    execution_context_id: Option<i64>,
     function_declaration: &str,
     arguments: Option<&Value>,
     return_by_value: Option<bool>,
+    await_promise: Option<bool>,
+    object_group: Option<&str>,
 ) -> Result<Value, String> {
-    let obj_ref = object_id
-        .map(resolve_object_by_id)
-        .unwrap_or_else(|| "undefined".to_string());
-    let rbv = return_by_value.unwrap_or(true);
+    // The page realm's security contract (REQ-SEC-002/003): page-facing CDP
+    // evaluation runs web-scope — evaluate_js_web, never the Node-realm
+    // privileged face. The registry must exist before any object reference
+    // is resolved; installing is idempotent.
+    page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
+        .map_err(to_browser_error)?;
 
-    // Parse arguments array from CDP params
-    let args_js = match arguments {
-        Some(Value::Array(arr)) => {
-            let args: Vec<String> = arr
-                .iter()
-                .map(|a| match a {
-                    Value::String(s) => serde_json::to_string(s).unwrap_or_default(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    Value::Null => "null".to_string(),
-                    v => serde_json::to_string(v).unwrap_or_default(),
-                })
-                .collect();
-            format!("[{}]", args.join(", "))
-        }
-        _ => "[]".to_string(),
+    // `this` for the call: objectId wins. executionContextId alone means
+    // this=undefined (single page-realm context — DEVIATION: the servo
+    // embedder exposes no isolated worlds, so all context ids evaluate
+    // against the page realm).
+    let _ctx = execution_context_id; // single-realm: routing is the page itself
+    let this_expr = match object_id {
+        Some(oid) => resolve_object_by_id(oid),
+        None => "undefined".to_string(),
     };
 
-    // functionDeclaration is typically "function(arg1,arg2) { ... }"
-    // We wrap it to call on the object with provided arguments
+    // CDP CallArgument materialization ({value} / {unserializableValue} /
+    // {objectId}).
+    let mut args_js = String::from("[");
+    if let Some(Value::Array(arr)) = arguments {
+        let parts: Vec<String> = arr
+            .iter()
+            .map(call_argument_expr)
+            .collect::<Result<_, _>>()?;
+        args_js.push_str(&parts.join(", "));
+    } else if let Some(other) = arguments {
+        return Err(format!(
+            "callFunctionOn arguments must be an array, got: {other:.200}"
+        ));
+    }
+    args_js.push(']');
+
+    let rbv = return_by_value.unwrap_or(false);
+    let await_js = await_promise.unwrap_or(false);
+    let group_json =
+        serde_json::to_string(object_group.unwrap_or("")).unwrap_or_else(|_| "\"..\"".into());
+    let func_json = serde_json::to_string(function_declaration).unwrap_or_default();
+
+    // functionDeclaration is a stringized function ("function(a, b) { ... }");
+    // it is called with the materialized arguments on the resolved `this`.
     let js = format!(
         r#"(function() {{
             try {{
-                var obj = {obj_ref};
-                var args = {args_js};
                 var fn = Function('return (' + {func_json} + ')')();
-                if (typeof fn !== 'function') return JSON.stringify({{"result": {{ type: 'undefined' }}, "exceptionDetails": null}});
-                var callResult = fn.apply(obj, args);
-                if ({rbv}) {{
-                    var valueType = typeof callResult;
-                    if (callResult === null) valueType = 'object';
-                    if (callResult === undefined) valueType = 'undefined';
-                    if (valueType === 'object' && callResult !== null) {{
-                        // Store object for later reference
-                        if (!window.__bao_objs) window.__bao_objs = {{}};
-                        var oid = 'obj-' + Date.now();
-                        window.__bao_objs[oid] = callResult;
-                        return JSON.stringify({{"result": {{ type: 'object', objectId: oid, description: String(callResult) }}, "exceptionDetails": null}});
-                    }}
-                    return JSON.stringify({{"result": {{ type: valueType, value: valueType === 'number' ? Number(callResult) : valueType === 'boolean' ? Boolean(callResult) : String(callResult), description: String(callResult) }}, "exceptionDetails": null}});
-                }} else {{
-                    if (!window.__bao_objs) window.__bao_objs = {{}};
-                    var oid = 'obj-' + Date.now();
-                    window.__bao_objs[oid] = callResult;
-                    var valueType = typeof callResult;
-                    if (callResult === null) valueType = 'object';
-                    if (callResult === undefined) valueType = 'undefined';
-                    return JSON.stringify({{"result": {{ type: valueType, objectId: oid, description: String(callResult) }}, "exceptionDetails": null}});
+                if (typeof fn !== 'function') {{
+                    return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: 'functionDeclaration did not evaluate to a function', exceptionId: 0 }} }});
                 }}
-            }} catch(e) {{
-                return JSON.stringify({{"result": {{ type: 'undefined' }}, "exceptionDetails": {{ text: e.message || String(e), exceptionId: 0 }}}});
+                var r = fn.apply({this_expr}, {args_js});
+                if ({await_js} && r !== null && typeof r === 'object' && typeof r.then === 'function') {{
+                    window.__bao_async = {{ state: 'pending' }};
+                    Promise.resolve(r).then(
+                        function(v) {{ window.__bao_async = {{ state: 'ok', v: v }}; }},
+                        function(e) {{ window.__bao_async = {{ state: 'err', e: e }}; }}
+                    );
+                    return JSON.stringify({{ __baoAsync: true }});
+                }}
+                return JSON.stringify({{ result: window.__bao_cdp.wrap(r, {rbv}, {group_json}), exceptionDetails: null }});
+            }} catch (e) {{
+                var exObj = (e !== null && typeof e === 'object') ? window.__bao_cdp.wrap(e, false, {group_json}) : undefined;
+                return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: String((e && e.message) || e), exception: exObj, exceptionId: 0 }} }});
             }}
         }})()"#,
-        obj_ref = obj_ref,
+        this_expr = this_expr,
         args_js = args_js,
-        func_json = serde_json::to_string(function_declaration).unwrap_or_default(),
+        func_json = func_json,
         rbv = rbv,
+        await_js = await_js,
+        group_json = group_json,
     );
-    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
     // The wrapper always returns JSON.stringify({result/exceptionDetails}) —
     // an unparseable output is a real failure, never a silent {}.
-    serde_json::from_str(&result).map_err(|e| {
+    let parsed: Value = serde_json::from_str(&result).map_err(|e| {
         format!("Runtime.callFunctionOn: page did not return the wrapper JSON: {e} (got: {result:.200})")
-    })
+    })?;
+    if parsed.get("__baoAsync").and_then(|v| v.as_bool()) == Some(true) {
+        return wait_bao_async_promise(page, rbv, &group_json);
+    }
+    Ok(parsed)
+}
+
+/// awaitPromise resolution: the call wrapper parked a pending Promise's
+/// continuation in `window.__bao_async`; poll it. Every `evaluate_js_web`
+/// spins the servo event loop itself, so microtask/timer/fetch chains keep
+/// making progress between polls. Bounded — a never-settling promise
+/// surfaces as an error instead of hanging the bridge worker.
+fn wait_bao_async_promise(
+    page: &PageHandle,
+    return_by_value: bool,
+    group_json: &str,
+) -> Result<Value, String> {
+    let poll = format!(
+        r#"(function() {{
+            var a = window.__bao_async;
+            if (!a || a.state === 'pending') return JSON.stringify({{ pending: true }});
+            if (a.state === 'ok') return JSON.stringify({{ result: window.__bao_cdp.wrap(a.v, {rbv}, {group_json}), exceptionDetails: null }});
+            var exObj = (a.e !== null && typeof a.e === 'object') ? window.__bao_cdp.wrap(a.e, false, {group_json}) : undefined;
+            return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: String((a.e && a.e.message) || a.e), exception: exObj, exceptionId: 0 }} }});
+        }})()"#,
+        rbv = return_by_value,
+        group_json = group_json,
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let out = page.evaluate_js_web(&poll).map_err(to_browser_error)?;
+        let parsed: Value = serde_json::from_str(&out).map_err(|e| {
+            format!("Runtime.callFunctionOn: async poll wrapper unparseable: {e} (got: {out:.200})")
+        })?;
+        if parsed.get("pending").and_then(|v| v.as_bool()) != Some(true) {
+            return Ok(parsed);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "Runtime.callFunctionOn: awaitPromise did not settle within 20s".into(),
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Runtime.releaseObject — drop one registry entry (frees the strong ref the
+/// handed-out objectId pinned; guards against evaluateHandle leak loops).
+fn cmd_runtime_release_object(page: &PageHandle, object_id: &str) -> Result<Value, String> {
+    let oid_json = serde_json::to_string(object_id).unwrap_or_default();
+    let js = format!(
+        r#"(function() {{ if (window.__bao_cdp) window.__bao_cdp.release({oid_json}); return 'ok'; }})()"#
+    );
+    page.evaluate_js_web(&js).map_err(to_browser_error)?;
+    Ok(serde_json::json!({}))
+}
+
+/// Runtime.releaseObjectGroup — drop every registry entry minted under the
+/// objectGroup (Playwright releases its "utility"/"console" groups on
+/// context teardown with exactly this call).
+fn cmd_runtime_release_object_group(
+    page: &PageHandle,
+    object_group: &str,
+) -> Result<Value, String> {
+    let group_json = serde_json::to_string(object_group).unwrap_or_default();
+    let js = format!(
+        r#"(function() {{ if (window.__bao_cdp) window.__bao_cdp.releaseGroup({group_json}); return 'ok'; }})()"#
+    );
+    page.evaluate_js_web(&js).map_err(to_browser_error)?;
+    Ok(serde_json::json!({}))
 }
 
 fn json_type(v: &Value) -> &'static str {
@@ -1438,7 +1601,13 @@ fn json_type(v: &Value) -> &'static str {
 
 /// Parse a JS evaluate_js string result into a serde_json::Value.
 fn parse_js_result(result: &str) -> Result<Value, String> {
-    serde_json::from_str(result).unwrap_or(Ok(serde_json::json!({})))
+    // Fail-closed: an unparseable wrapper output is a real failure, never a
+    // silent {}. (The previous `.unwrap_or(Ok(json!({})))` had a type-level
+    // bug — serde deserialized into an externally-tagged Result<Value,String>
+    // envelope, which never matches normal JSON, so EVERY caller silently
+    // got {} back. BCE: silent-fallback masquerading as delivery.)
+    serde_json::from_str(result)
+        .map_err(|e| format!("unparseable JS wrapper output: {e} (got: {result:.200})"))
 }
 
 fn json_type_string(s: &str) -> &'static str {

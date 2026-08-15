@@ -692,7 +692,7 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
         "hyper-path fixture did not receive script+xhr (paths so far: {:?})",
         fixture.paths()
     );
-    eprintln!("[fp-e2e] hyper fixture got script+xhr: {:?}", fixture.paths());
+    eprintln!("[fp-e2e] fixture got script+xhr: {:?}", fixture.paths());
     let fetch_hello = fetch_capture
         .parsed()
         .into_iter()
