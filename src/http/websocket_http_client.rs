@@ -18,28 +18,21 @@
 //    NO thread bridge: it drives the (memory-BIO) TlsConnection state
 //    machine directly inside tokio's read/write readiness model.
 //
-// 2. `WsHttpClient` — a complete blocking WebSocket client (TCP + TLS +
-//    RFC 6455 handshake + masked client framing), reusing `bun_uws`'s
-//    codec/handshake primitives (`ws_codec` / `ws_handshake`). Ported from
-//    the `WsConn` pattern in `bao_runtime::web_api` (which stays in place
-//    until its domain reopens; both consume the same bun_uws primitives,
-//    the same stealth application entry and the same session-cache salt
-//    semantics and must not drift).
+// 2. `TlsIoStream` — a blocking `std::io::{Read, Write}` adapter over a
+//    `TlsConnection`, used by the loopback-test server sides (this file's
+//    Layer 1 test and bao_browser's wss e2e) to run `bun_uws`
+//    `ws_handshake` / `ws_codec` over the bao TLS stack.
 //
-// Session-cache salting is stack-specific BY DESIGN — each stack shares
-// sessions with its own fetch path and never across parameter sets
-// (offering a session short-circuits parameter negotiation, which would
-// corrupt the advertised TLS fingerprint):
-//   - servo stack (`WsTlsStream`): `stealth_pc_salt` — a byte-identical
-//     twin of servo connector.rs's private fn, so a wss connection resumes
-//     a session cached by a servo fetch connection with the same parameter
-//     set (same key scheme = "wss 同键").
-//   - bun stack (`WsHttpClient`): `SSLConfig::content_hash()` / 0 — the
-//     same salting as `WsConn` and the bun_http fetch `attach()` path.
+// Session-cache salting (`stealth_pc_salt`) is parameter-set-specific BY
+// DESIGN — offering a session short-circuits parameter negotiation, which
+// would corrupt the advertised TLS fingerprint. It is a byte-identical
+// twin of servo connector.rs's private fn, so a wss connection resumes a
+// session cached by a servo fetch connection with the same parameter set
+// (same key scheme = "wss 同键").
 
 use std::ffi::CString;
 use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -475,15 +468,15 @@ impl tokio::io::AsyncWrite for WsTlsStream {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Layer 2: blocking full-stack RFC 6455 client (WsConn pattern)
+// Blocking std::io TLS adapter (loopback-test server side)
 // ─────────────────────────────────────────────────────────────────────────
 
-/// A TLS-over-TCP adapter implementing `std::io::{Read, Write}` — the same
-/// shape as `WsConn`'s adapter in `bao_runtime::web_api`, so
-/// `bun_uws::ws_handshake` and `ws_codec` consume it directly and the wss
-/// path reuses the exact same RFC 6455 code as the ws:// path. Works for
-/// both client and server `TlsConnection` roles (`drive_handshake` just
-/// pumps the state machine), which the loopback tests rely on.
+/// A TLS-over-TCP adapter implementing `std::io::{Read, Write}`, so
+/// `bun_uws::ws_handshake` and `ws_codec` consume it directly. Product WS
+/// traffic runs over Layer 1 (`WsTlsStream`, servo websocket_loader);
+/// this adapter serves the loopback-test server sides — this file's
+/// Layer 1 test and bao_browser's wss e2e — driving server-role
+/// `TlsConnection`s through the RFC 6455 handshake and echo loop.
 pub struct TlsIoStream {
     tcp: TcpStream,
     tls: TlsConnection,
@@ -641,248 +634,6 @@ impl io::Write for TlsIoStream {
     }
 }
 
-/// An inbound WebSocket message (RFC 6455 §5.6, assembled by
-/// [`WsHttpClient::read_message`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WsMessage {
-    Text(String),
-    Binary(Vec<u8>),
-    /// Peer-initiated close: status code (parsed from the close-frame
-    /// payload when present) and UTF-8 reason.
-    Close(Option<(u16, String)>),
-    /// Peer ping — the caller must reply via [`WsHttpClient::send_pong`].
-    Ping(Vec<u8>),
-}
-
-/// Errors from the blocking client's connect/send/read paths.
-#[derive(Debug, thiserror::Error)]
-pub enum WsClientError {
-    #[error("io: {0}")]
-    Io(#[from] io::Error),
-    #[error("tls: {0}")]
-    Tls(#[from] TlsError),
-    /// RFC 6455 opening-handshake failure (`HandshakeError` implements no
-    /// `Display`, so the payload is only reachable via `Debug`).
-    #[error("ws handshake failed")]
-    Handshake(bun_uws::ws_handshake::HandshakeError),
-    #[error("ws connect: {0}")]
-    Connect(String),
-}
-
-/// A complete blocking WebSocket client over the bao TLS stack: TCP +
-/// BoringSSL TLS (stealth fingerprint + session-cache offer, same
-/// application path as the bun fetch stack) + RFC 6455 handshake and
-/// masked client framing via `bun_uws` primitives.
-///
-/// Thread contract: created and driven on one thread (the caller's —
-/// e.g. a background worker); the SSL handle never crosses threads.
-pub struct WsHttpClient {
-    stream: TlsIoStream,
-    decoder: bun_uws::ws_codec::FrameDecoder,
-    encoder: bun_uws::ws_codec::FrameEncoder,
-    closed: bool,
-}
-
-impl WsHttpClient {
-    /// Connect to `wss://host:port<path>`: resolve, TCP connect, TLS
-    /// handshake (stealth via `tls_props` — the same
-    /// `configure_http_client_with_alpn` entry the fetch stack uses —
-    /// plus session-cache offer with the bun-stack salting), then the
-    /// RFC 6455 opening handshake.
-    pub fn connect(
-        host: &str,
-        port: u16,
-        path: &str,
-        tls_props: Option<&crate::ssl_config::SSLConfig>,
-    ) -> Result<Self, WsClientError> {
-        let addr = format!("{}:{}", host, port);
-        let socket_addr = addr
-            .to_socket_addrs()
-            .map_err(|e| WsClientError::Connect(format!("invalid address: {}", e)))?
-            .next()
-            .ok_or_else(|| WsClientError::Connect(format!("no address for {}", addr)))?;
-        let tcp = TcpStream::connect_timeout(&socket_addr, std::time::Duration::from_secs(10))
-            .map_err(|e| WsClientError::Connect(format!("connect failed: {}", e)))?;
-        tcp.set_nonblocking(false)
-            .map_err(|e| WsClientError::Connect(format!("tcp setup: {}", e)))?;
-        tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
-            .map_err(|e| WsClientError::Connect(format!("tcp setup: {}", e)))?;
-
-        let tls_client = TlsClient::new()?;
-        let tls = TlsConnection::new_client(&tls_client, host)?;
-
-        // STEALTH (REQ-STL-001) + session resumption — same application
-        // path as WsConn / bun fetch: SNI (null for IP literals, RFC 6066)
-        // + ALPN(http/1.1) + fingerprint fields, then offer the cached
-        // session. All BEFORE the first `process()` so the config lands in
-        // the ClientHello. Salt: no stealth props → 0 (default-profile
-        // pool shared across stacks); props → the SSLConfig content hash,
-        // so sessions that short-circuit parameter negotiation never cross
-        // profiles.
-        let host_z: *const core::ffi::c_char = if host.parse::<std::net::IpAddr>().is_err() {
-            let host_c = CString::new(host)
-                .map_err(|_| WsClientError::Connect(format!("invalid host: {}", host)))?;
-            host_c.into_raw()
-        } else {
-            core::ptr::null()
-        };
-        // SAFETY: `tls.ssl_ptr()` is the live SSL handle of this
-        // connection; `configure_http_client_with_alpn` only issues
-        // SSL_set_* configuration calls on it. host_z (when non-null) is
-        // leaked into the `CString::into_raw` allocation above so the
-        // pointer outlives this call the same way the fetch path's
-        // NUL-terminated buffer does.
-        unsafe {
-            crate::configure_http_client_with_alpn(
-                &mut *tls.ssl_ptr(),
-                host_z,
-                crate::AlpnOffer::H1,
-                tls_props,
-            );
-        }
-        let profile_salt = tls_props.map(|props| props.content_hash()).unwrap_or(0);
-        session_cache::offer_session(tls.ssl_ptr(), host, port, profile_salt);
-
-        let mut stream = TlsIoStream::new(tcp, tls);
-        stream
-            .drive_handshake()
-            .map_err(|e| WsClientError::Connect(format!("tls handshake: {}", e)))?;
-
-        // RFC 6455 client handshake over the TLS stream (bun_uws-owned).
-        bun_uws::ws_handshake::client_handshake(&mut stream, host, path)
-            .map_err(WsClientError::Handshake)?;
-
-        Ok(Self {
-            stream,
-            decoder: bun_uws::ws_codec::FrameDecoder::new(),
-            encoder: bun_uws::ws_codec::FrameEncoder::new(),
-            closed: false,
-        })
-    }
-
-    /// Negotiated ALPN protocol, once handshaken.
-    pub fn alpn_protocol(&self) -> Option<&[u8]> {
-        self.stream.alpn_protocol()
-    }
-
-    /// Send a masked text frame (client→server frames are always masked,
-    /// RFC 6455 §5.1; `FrameEncoder::encode_frame` with a generated key
-    /// appends the masked payload in one piece — the BCE-20260814-WS-TLS
-    /// header-only-send class cannot recur here).
-    pub fn send_text(&mut self, text: &str) -> io::Result<()> {
-        let key = bun_uws::ws_codec::gen_mask_key();
-        let frame = self
-            .encoder
-            .encode_frame(bun_uws::ws_codec::Opcode::Text, text.as_bytes(), Some(key));
-        let owned = frame.to_vec();
-        self.stream.write_all(&owned)
-    }
-
-    /// Send a masked binary frame.
-    pub fn send_binary(&mut self, payload: &[u8]) -> io::Result<()> {
-        let key = bun_uws::ws_codec::gen_mask_key();
-        let frame = self
-            .encoder
-            .encode_frame(bun_uws::ws_codec::Opcode::Binary, payload, Some(key));
-        let owned = frame.to_vec();
-        self.stream.write_all(&owned)
-    }
-
-    /// Reply to a [`WsMessage::Ping`] with a masked pong carrying the
-    /// ping payload back (RFC 6455 §5.5.3).
-    pub fn send_pong(&mut self, payload: &[u8]) -> io::Result<()> {
-        let key = bun_uws::ws_codec::gen_mask_key();
-        let frame = self
-            .encoder
-            .encode_frame(bun_uws::ws_codec::Opcode::Pong, payload, Some(key));
-        let owned = frame.to_vec();
-        self.stream.write_all(&owned)
-    }
-
-    /// Send a masked close frame with status code and reason, then mark
-    /// the client closed (RFC 6455 §5.5.1).
-    pub fn close(&mut self, code: u16, reason: &str) -> io::Result<()> {
-        let key = bun_uws::ws_codec::gen_mask_key();
-        let mut payload = Vec::with_capacity(2 + reason.len());
-        payload.extend_from_slice(&code.to_be_bytes());
-        payload.extend_from_slice(reason.as_bytes());
-        let frame = self
-            .encoder
-            .encode_frame(bun_uws::ws_codec::Opcode::Close, &payload, Some(key));
-        let owned = frame.to_vec();
-        self.closed = true;
-        self.stream.write_all(&owned)
-    }
-
-    /// Read the next assembled message. Control frames surface as
-    /// [`WsMessage::Ping`] / [`WsMessage::Close`]; text/binary data frames
-    /// are unmasked and returned. EOF from the peer maps to
-    /// [`WsMessage::Close`] (idempotent once `closed`).
-    pub fn read_message(&mut self) -> io::Result<WsMessage> {
-        if self.closed {
-            return Ok(WsMessage::Close(None));
-        }
-        let header = match self.decoder.decode_frame(&mut self.stream) {
-            Ok(Some(h)) => h,
-            Ok(None) => {
-                return Err(io::Error::from(io::ErrorKind::WouldBlock));
-            },
-            Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
-            {
-                return Err(io::Error::from(io::ErrorKind::WouldBlock));
-            },
-            Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                self.closed = true;
-                return Ok(WsMessage::Close(None));
-            },
-            Err(e) => return Err(e),
-        };
-        let payload = if header.mask {
-            let mask_key = self.decoder.take_mask();
-            let mut p = self.decoder.take_payload(&header);
-            bun_uws::ws_codec::apply_mask(&mut p, &mask_key);
-            p
-        } else {
-            self.decoder.take_payload(&header)
-        };
-        match header.opcode {
-            bun_uws::ws_codec::Opcode::Text => {
-                // A non-UTF-8 text frame is a protocol error (RFC 6455
-                // §8.1) — surface it rather than silently lossy-converting.
-                let text = String::from_utf8(payload).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "ws text frame not UTF-8")
-                })?;
-                Ok(WsMessage::Text(text))
-            },
-            bun_uws::ws_codec::Opcode::Binary => Ok(WsMessage::Binary(payload)),
-            bun_uws::ws_codec::Opcode::Close => {
-                self.closed = true;
-                let frame = if payload.len() >= 2 {
-                    let code = u16::from_be_bytes([payload[0], payload[1]]);
-                    let reason = String::from_utf8_lossy(&payload[2..]).into_owned();
-                    Some((code, reason))
-                } else {
-                    None
-                };
-                Ok(WsMessage::Close(frame))
-            },
-            bun_uws::ws_codec::Opcode::Ping => Ok(WsMessage::Ping(payload)),
-            bun_uws::ws_codec::Opcode::Pong => {
-                // Unsolicited pong (reply to our implicit pings) carries no
-                // message content — read on for the next data frame.
-                let _ = payload;
-                self.read_message()
-            },
-            // Fragmented messages: per-frame decoding (WsConn parity) does
-            // not reassemble continuation fragments — deliver the fragment
-            // payload as binary so the caller still sees the bytes.
-            bun_uws::ws_codec::Opcode::Continuation => Ok(WsMessage::Binary(payload)),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -919,69 +670,6 @@ mod tests {
             stealth_pc_salt(None, Some(&[2, b'h', b'2', 8, b'h']), None),
             stealth_pc_salt(None, Some(&[8, b'h']), None)
         );
-    }
-
-    /// Loopback TLS WS roundtrip: a blocking server (TlsServer +
-    /// server_handshake + unmasked FrameEncoder) echoes text frames;
-    /// WsHttpClient connects, sends, and receives. Exercises Layer 2
-    /// end-to-end including the TLS handshake pump and RFC 6455
-    /// handshake/masking on both sides.
-    #[test]
-    fn ws_http_client_tls_roundtrip() {
-        use bun_uws::ws_codec::{FrameDecoder, Opcode};
-        use std::net::TcpListener;
-
-        // C-seam link leg (addrinfo/StackCheck natives) for the test binary.
-        bao_native_stubs::force_link();
-
-        let (cert_pem, key_pem) =
-            bao_boringssl_bridge::generate_self_signed_pem("localhost", 1)
-                .expect("generate self-signed cert");
-        let tls_server =
-            bao_boringssl_bridge::TlsServer::new(&cert_pem, &key_pem).expect("TlsServer::new");
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().unwrap().port();
-
-        let server = std::thread::spawn(move || {
-            let (tcp, _) = listener.accept().expect("accept");
-            let tls_conn = tls_server.accept().expect("tls accept");
-            let mut io = TlsIoStream::new(tcp, tls_conn);
-            io.drive_handshake().expect("server tls handshake");
-
-            bun_uws::ws_handshake::server_handshake(&mut io).expect("server ws handshake");
-
-            let mut decoder = FrameDecoder::new();
-            let mut encoder = bun_uws::ws_codec::FrameEncoder::new();
-            // echo loop: one masked text frame in, unmasked text frame out
-            let header = decoder.decode_frame(&mut io).expect("decode").expect("frame");
-            assert_eq!(header.opcode, Opcode::Text);
-            let payload = if header.mask {
-                let key = decoder.take_mask();
-                let mut p = decoder.take_payload(&header);
-                bun_uws::ws_codec::apply_mask(&mut p, &key);
-                p
-            } else {
-                decoder.take_payload(&header)
-            };
-            let text = String::from_utf8(payload).expect("utf8");
-            let reply = encoder.encode_text(&format!("echo:{}", text)).to_vec();
-            io.write_all(&reply).expect("server write");
-        });
-
-        let mut client =
-            WsHttpClient::connect("127.0.0.1", port, "/", None).expect("client connect");
-        // No ALPN assertion: negotiation requires the SERVER to run a
-        // select callback, which bao_boringssl_bridge::TlsServer does not
-        // expose — a server that ignores ALPN yields no negotiated
-        // protocol on the client. The client-side advertisement
-        // (http/1.1 only) is structural: configure_http_client_with_alpn
-        // sets exactly that wire list.
-        client.send_text("ping").expect("client send");
-        match client.read_message().expect("client read") {
-            WsMessage::Text(t) => assert_eq!(t, "echo:ping"),
-            other => panic!("expected text, got {:?}", other),
-        }
-        server.join().expect("server thread");
     }
 
     /// Async Layer-1 roundtrip on a real tokio runtime — the exact segment

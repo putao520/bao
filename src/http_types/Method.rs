@@ -411,19 +411,29 @@ pub enum HeaderName {
 mod tests {
     use super::Method;
 
-    /// Exhaustive parity check for `Method::which`: every variant round-trips
-    /// via its uppercase wire form and the all-lower convenience form, and
-    /// nothing else slips through. Guards the length-gated match against
-    /// transcription mistakes (the previous `phf::Map` build would have
-    /// rejected typos at compile time; the open-coded match does not).
+    /// Exhaustive parity check for `Method::which`: every registered variant
+    /// round-trips via its uppercase wire form and the all-lower convenience
+    /// form, and nothing else slips through. Guards the length-gated match
+    /// against transcription mistakes (the previous `phf::Map` build would
+    /// have rejected typos at compile time; the open-coded match does not).
+    ///
+    /// `EXTENSION` is a sentinel, not a registered method (S3): `which()`
+    /// deliberately does not resolve it — extension tokens live outside the
+    /// closed registry and round-trip via the per-client intern path
+    /// (`HTTPClient::extension_method`, exercised in the `bun_http` crate's
+    /// tests; not reachable from `bun_http_types` without a circular dep).
     #[test]
     fn which_roundtrip() {
-        for m in enumset::EnumSet::<Method>::all() {
+        for m in enumset::EnumSet::<Method>::all() - Method::EXTENSION {
             let upper = m.as_str();
             assert_eq!(Method::which(upper.as_bytes()), Some(m), "upper {upper}");
             let lower = upper.to_ascii_lowercase();
             assert_eq!(Method::which(lower.as_bytes()), Some(m), "lower {lower}");
         }
+        // The EXTENSION sentinel never participates in `which`: "EXTENSION"
+        // is a marker, not a wire token. Extension methods resolve through
+        // `intern_extension_method`, never through the closed registry.
+        assert_eq!(Method::which(Method::EXTENSION.as_str().as_bytes()), None);
         // Mixed case must reject (Zig table has only all-upper / all-lower).
         assert_eq!(Method::which(b"Get"), None);
         assert_eq!(Method::which(b"OPtions"), None);

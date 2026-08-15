@@ -9,10 +9,11 @@
 // capture server records each ClientHello before anything else happens on
 // the wire, then the test asserts:
 //
-//   1. ALPN parity with hyper: with EXPERIMENTAL_HTTP2_CLIENT OFF, the
-//      bridge captures still advertise `h2,http/1.1` (the page egress
-//      migrated from hyper-h2 and must not downgrade to h1 — the
-//      `Flags::is_page_egress` bypass).
+//   1. ALPN parity with hyper: the bridge captures advertise
+//      `h2,http/1.1` regardless of the Node-fetch h2 gate — the page
+//      egress migrated from hyper-h2 and must not downgrade to h1 (the
+//      `Flags::is_page_egress` bypass; the gate itself is the single
+//      source `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT`, default ON).
 //   2. Same-page same-fingerprint: the canonicalized ClientHello bytes
 //      (client_random / session_id zeroed — per-connection randomness) are
 //      IDENTICAL for bridge-img, bridge-css and window.fetch. This covers
@@ -640,17 +641,16 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
     assert_eq!(
         img_hello.alpn_protocols(),
         h2_h1,
-        "bridge (img) ALPN must be h2,http/1.1 with EXPERIMENTAL_HTTP2_CLIENT off — hyper parity"
+        "bridge (img) ALPN must be h2,http/1.1 regardless of the Node h2 gate — hyper parity"
     );
     assert_eq!(
         css_hello.alpn_protocols(),
         vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-        "bridge (css) ALPN must be h2,http/1.1 with EXPERIMENTAL_HTTP2_CLIENT off — hyper parity"
+        "bridge (css) ALPN must be h2,http/1.1 regardless of the Node h2 gate — hyper parity"
     );
 
-    // ── Phase B: Node fetch h2 posture on; script/xhr stay on hyper ──────
-
-    bun_http::EXPERIMENTAL_HTTP2_CLIENT_FROM_CLI.store(true, Ordering::Relaxed);
+    // ── Phase B: Node fetch (h2 gate = env flag, default ON); script/xhr
+    //    stay on hyper ────────────────────────────────────────────────────
 
     // window.fetch — same page, Node fetch stack (bun HTTPThread, stealth
     // SSLConfig from the page profile via stealth_http).
@@ -798,12 +798,11 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
     );
 
     // ── Phase C (U2 stage 3): EXPERIMENTAL_HTTP2_CLIENT default-ON smoke ──
-    // Reset the CLI atomic to false — no flag anywhere — and prove the env
-    // var's flipped default alone makes Node fetch offer h2: the ClientHello
-    // ALPN list must still be `h2,http/1.1`. (Pre-flip this posture offered
-    // http/1.1 only; the bridge bypass `is_page_egress` is NOT involved —
-    // this is the Node fetch stack's own gate.)
-    bun_http::EXPERIMENTAL_HTTP2_CLIENT_FROM_CLI.store(false, Ordering::Relaxed);
+    // No flag is set anywhere (the h2 gate's single source is the env flag,
+    // whose default is ON) and Node fetch must offer h2 on its own: the
+    // ClientHello ALPN list must still be `h2,http/1.1`. (Pre-flip this
+    // posture offered http/1.1 only; the bridge bypass `is_page_egress` is
+    // NOT involved — this is the Node fetch stack's own gate.)
     let default_capture = CaptureServer::spawn();
     inject(
         "fetch-default-h2",
@@ -825,7 +824,7 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
     assert_eq!(
         default_hello.alpn_protocols(),
         vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-        "with no flag set anywhere, Node fetch must offer h2 by default (EXPERIMENTAL_HTTP2_CLIENT flip)"
+        "with no flag set anywhere, Node fetch must offer h2 by default (BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT default ON)"
     );
     default_capture.shutdown.store(true, Ordering::SeqCst);
     eprintln!("[fp-e2e] default-flag fetch offers h2 (EXPERIMENTAL_HTTP2_CLIENT default ON)");

@@ -263,11 +263,10 @@ impl Default for Flags {
 
 pub static ASYNC_HTTP_ID_MONOTONIC: AtomicU32 = AtomicU32::new(0);
 
-/// Set once at startup from `--experimental-http2-fetch` (before the HTTP
-/// thread spawns) and then only read on that thread.
-pub static EXPERIMENTAL_HTTP2_CLIENT_FROM_CLI: AtomicBool = AtomicBool::new(false);
-/// Set once at startup from `--experimental-http3-fetch`. Same threading
-/// rules as the http2 flag.
+/// Set once at startup (before the HTTP thread spawns) and then only read on
+/// that thread. The h2 counterpart was removed when
+/// `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT` became the single source of
+/// truth for the Node-fetch h2 gate.
 pub static EXPERIMENTAL_HTTP3_CLIENT_FROM_CLI: AtomicBool = AtomicBool::new(false);
 
 const MAX_REDIRECT_URL_LENGTH: usize = 128 * 1024;
@@ -1844,7 +1843,6 @@ impl<'a> HTTPClient<'a> {
             return true;
         }
         self.flags.force_http2
-            || EXPERIMENTAL_HTTP2_CLIENT_FROM_CLI.load(Ordering::Relaxed)
             || bun_core::env_var::feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT
                 .get()
                 .unwrap_or(false)

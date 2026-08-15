@@ -136,6 +136,13 @@ fn test_07_eval_throw_error(ctx: &mut JsContext) {
 }
 
 fn test_08_global_setup_hook(ctx: &mut JsContext) {
+    // Realm-per-context contract (c943b1cc): global_setup is realm *birth*
+    // configuration — applied exactly once when `ensure_realm_global` creates
+    // the context's persistent realm on its FIRST eval, never re-applied to
+    // an already-born realm. `ctx` here has already eval'd (tests 01-07), so
+    // its realm exists; a setup registered now must NOT fire. Exercise the
+    // contract on a fresh context (second `for_test()` parasitizes the same
+    // thread Runtime and starts with `realm_global: None`).
     static CALLED: AtomicBool = AtomicBool::new(false);
 
     unsafe fn setup_hook(
@@ -145,14 +152,36 @@ fn test_08_global_setup_hook(ctx: &mut JsContext) {
         CALLED.store(true, Ordering::SeqCst);
     }
 
-    ctx.set_global_setup(setup_hook);
-    assert!(ctx.global_setup().is_some());
+    // Negative direction: late registration on an already-born realm is a
+    // silent no-op for that realm — documented behavior, locked here.
+    static LATE_CALLED: AtomicBool = AtomicBool::new(false);
 
-    let result = ctx.eval("1", "setup_test.js");
+    unsafe fn late_setup_hook(
+        _cx: &mut mozjs::context::JSContext,
+        _global: mozjs::rust::Handle<*mut mozjs::jsapi::JSObject>,
+    ) {
+        LATE_CALLED.store(true, Ordering::SeqCst);
+    }
+
+    ctx.set_global_setup(late_setup_hook);
+    assert!(ctx.global_setup().is_some());
+    assert!(ctx.eval("1", "setup_late.js").is_ok());
+    assert!(
+        !LATE_CALLED.load(Ordering::SeqCst),
+        "setup registered after the realm's first eval must NOT re-fire"
+    );
+
+    // Positive direction: setup registered before a context's first eval is
+    // applied when that context's realm is born.
+    let mut fresh = JsContext::for_test().expect("second for_test on same thread");
+    fresh.set_global_setup(setup_hook);
+    assert!(fresh.global_setup().is_some());
+
+    let result = fresh.eval("1", "setup_test.js");
     assert!(result.is_ok());
     assert!(
         CALLED.load(Ordering::SeqCst),
-        "global_setup should have been called"
+        "global_setup should have been called at the fresh realm's birth"
     );
 }
 
@@ -208,13 +237,24 @@ fn test_extra_object_and_array(ctx: &mut JsContext) {
 }
 
 fn test_extra_eval_isolation(ctx: &mut JsContext) {
+    // Realm-per-context contract (c943b1cc): one persistent realm per
+    // JsContext — `var` state on the realm global PERSISTS across evals on
+    // the same context (that persistence is the point of the model: it fixed
+    // post-script handler / cross-eval state loss). Isolation is between
+    // CONTEXTS, not between evals.
     ctx.eval("var x = 100;", "state1.js").unwrap();
-    // Each eval creates a new global — variables do NOT persist across evals
-    let result = ctx.eval("typeof x === 'undefined'", "state2.js").unwrap();
-    // x should be undefined in the new global
+    let result = ctx.eval("x === 100", "state2.js").unwrap();
     assert!(
         result.as_bool().unwrap_or(false),
-        "each eval should be isolated (new global)"
+        "var state must persist across evals on the same context (one realm)"
+    );
+
+    // A separate context gets a separate realm — its global does not see x.
+    let mut other = JsContext::for_test().expect("for_test for isolation check");
+    let result = other.eval("typeof x === 'undefined'", "state3.js").unwrap();
+    assert!(
+        result.as_bool().unwrap_or(false),
+        "contexts are isolated (each has its own realm global)"
     );
 }
 
