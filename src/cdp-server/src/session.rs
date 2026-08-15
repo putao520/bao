@@ -1,9 +1,10 @@
 // @trace REQ-CDS-003 [entity:CdpSessionGeneric] [sm:SM-CDP-SESSION]
 // CDP Session lifecycle management.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::{Cursor, Read, Write};
 use std::net::TcpStream;
+use std::sync::{Arc, Mutex};
 
 use tungstenite::protocol::WebSocket;
 
@@ -50,6 +51,37 @@ impl Write for ReplayStream {
     }
     fn flush(&mut self) -> std::io::Result<()> {
         self.stream.flush()
+    }
+}
+
+/// A queued outbound event. Domain gating and the browser-only flag are
+/// applied at drain time (the server loop holds the session then).
+#[derive(Debug, Clone)]
+pub struct OutboxEvent {
+    /// Pre-serialized event JSON (may carry a `sessionId` routing tag).
+    pub json: String,
+    /// Domain the event belongs to ("Page" for Page.loadEventFired).
+    pub domain: String,
+    /// Deliver to browser-endpoint sessions only (flat-session events).
+    pub browser_only: bool,
+}
+
+/// Shared session handle: the session itself plus its outbound event queue.
+///
+/// The outbox exists so the EventBroadcaster can queue events for a session
+/// whose mutex is currently held by the server loop (a command dispatch
+/// emitting events for its own session) without self-deadlocking.
+pub struct SessionHandle {
+    pub session: Mutex<CdpSession>,
+    pub outbox: Mutex<VecDeque<OutboxEvent>>,
+}
+
+impl SessionHandle {
+    pub fn new(session: CdpSession) -> Arc<Self> {
+        Arc::new(SessionHandle {
+            session: Mutex::new(session),
+            outbox: Mutex::new(VecDeque::new()),
+        })
     }
 }
 
@@ -126,9 +158,22 @@ impl CdpSession {
                 return Ok(());
             }
         };
+        let flattened_session_id = cdp_msg.session_id.clone();
 
         let response = self.route_command(cdp_msg, registry, event_sender);
-        let _ = self.send_text(&protocol::serialize_response(&response));
+        let mut text = protocol::serialize_response(&response);
+        // Flattened-session routing: responses to messages carrying a
+        // sessionId must echo it (clients like Playwright route by the tag;
+        // an untagged response lands on the root session and is dropped).
+        if let Some(sid) = &flattened_session_id {
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if v.is_object() {
+                    v["sessionId"] = serde_json::Value::String(sid.clone());
+                    text = v.to_string();
+                }
+            }
+        }
+        let _ = self.send_text(&text);
         Ok(())
     }
 

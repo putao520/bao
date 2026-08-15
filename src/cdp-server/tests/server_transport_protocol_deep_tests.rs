@@ -418,7 +418,7 @@ fn test_cdp_message_params_array() {
 
 #[test]
 fn test_cdp_message_session_id() {
-    let raw = r#"{"id":1,"method":"Test.run","session_id":"sess-abc"}"#;
+    let raw = r#"{"id":1,"method":"Test.run","sessionId":"sess-abc"}"#;
     let msg: CdpMessage = serde_json::from_str(raw).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some("sess-abc"));
 }
@@ -563,7 +563,7 @@ fn test_event_broadcaster_clone() {
     use std::collections::HashMap;
     use std::sync::Arc;
     let sessions: Arc<
-        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>,
+        std::sync::Mutex<HashMap<String, Arc<cdp_server::SessionHandle>>>,
     > = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let bc1 = EventBroadcaster::new(sessions);
     let bc2 = bc1.clone();
@@ -575,7 +575,7 @@ fn test_event_broadcaster_sender_returns_boxed() {
     use std::collections::HashMap;
     use std::sync::Arc;
     let sessions: Arc<
-        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>,
+        std::sync::Mutex<HashMap<String, Arc<cdp_server::SessionHandle>>>,
     > = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let bc = EventBroadcaster::new(sessions);
     let sender = bc.sender();
@@ -588,7 +588,7 @@ fn test_event_broadcaster_send_event_no_sessions() {
     use std::collections::HashMap;
     use std::sync::Arc;
     let sessions: Arc<
-        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>,
+        std::sync::Mutex<HashMap<String, Arc<cdp_server::SessionHandle>>>,
     > = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let bc = EventBroadcaster::new(sessions);
     // Should not panic with no active sessions
@@ -995,7 +995,7 @@ fn adversarial_broadcaster_no_dot_method_does_not_panic() {
     use std::collections::HashMap;
     use std::sync::Arc;
     let sessions: Arc<
-        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>,
+        std::sync::Mutex<HashMap<String, Arc<cdp_server::SessionHandle>>>,
     > = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let bc = EventBroadcaster::new(sessions);
     bc.send_event("noDotMethod", json!({}));
@@ -1459,7 +1459,7 @@ fn adversarial_broadcaster_sender_shares_session_arc() {
     use std::collections::HashMap;
     use std::sync::Arc;
     let sessions: Arc<
-        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>,
+        std::sync::Mutex<HashMap<String, Arc<cdp_server::SessionHandle>>>,
     > = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let bc = EventBroadcaster::new(Arc::clone(&sessions));
     let sender = bc.sender();

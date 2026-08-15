@@ -92,17 +92,18 @@ fn test_page_add_script_requires_bridge_for_identifier() {
 
 #[test]
 fn test_page_add_script_empty_source() {
+    // Chrome-compatible: an empty init script (Playwright's placeholder
+    // registration) registers as a no-op with a fresh identifier.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let err = session
+    let result = session
         .send(
             &router,
             "Page.addScriptToEvaluateOnNewDocument",
             Some(json!({"source": ""})),
         )
-        .unwrap_err();
-    assert_eq!(err.code, -32602);
-    assert!(err.message.contains("source"));
+        .unwrap();
+    assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
 }
 
 #[test]
@@ -897,28 +898,26 @@ fn test_log_unknown_command_error_code() {
 
 #[test]
 fn test_fetch_enable_no_patterns() {
+    // REQ-CDP contract: no request interception facility — explicit
+    // error through the internal backend, never a canned success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session.send(&router, "Fetch.enable", None).unwrap();
-    assert_eq!(result["enabled"], true);
-    assert_eq!(result["patternCount"], 0);
+    let err = session.send(&router, "Fetch.enable", None).unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_enable_with_patterns() {
+    // REQ-CDP contract: no request interception facility — explicit
+    // error through the internal backend, never a canned success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
-        .send(
-            &router,
-            "Fetch.enable",
-            Some(json!({
-                "patterns": [{"urlPattern": "*"}, {"urlPattern": "*.js"}]
-            })),
-        )
-        .unwrap();
-    assert_eq!(result["enabled"], true);
-    assert_eq!(result["patternCount"], 2);
+    let err = session.send(&router, "Fetch.enable", None).unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
@@ -933,110 +932,100 @@ fn test_fetch_disable_response_empty() {
 
 #[test]
 fn test_fetch_continue_request_fields() {
+    // REQ-CDP contract: no request interception facility — the
+    // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
-        .send(
-            &router,
-            "Fetch.continueRequest",
-            Some(json!({"requestId": "r1"})),
-        )
-        .unwrap();
-    assert_eq!(result["requestId"], "r1");
-    assert_eq!(result["continued"], true);
+    let err = session
+        .send(&router, "Fetch.continueRequest", Some(json!({"requestId": "r1"})))
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_continue_with_response_fields() {
+    // REQ-CDP contract: no request interception facility — the
+    // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
-        .send(
-            &router,
-            "Fetch.continueWithResponse",
-            Some(json!({"requestId": "r2"})),
-        )
-        .unwrap();
-    assert_eq!(result["requestId"], "r2");
-    assert_eq!(result["continued"], true);
+    let err = session
+        .send(&router, "Fetch.continueWithResponse", Some(json!({"requestId": "r2"})))
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fail_request_fields() {
+    // REQ-CDP contract: no request interception facility — the
+    // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
-        .send(
-            &router,
-            "Fetch.failRequest",
-            Some(json!({"requestId": "r3", "reason": "Aborted"})),
-        )
-        .unwrap();
-    assert_eq!(result["requestId"], "r3");
-    assert_eq!(result["failed"], true);
-    assert_eq!(result["reason"], "Aborted");
+    let err = session
+        .send(&router, "Fetch.failRequest", Some(json!({"requestId": "r3", "reason": "Aborted"})))
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fulfill_request_fields() {
+    // REQ-CDP contract: no request interception facility — the
+    // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
-        .send(
-            &router,
-            "Fetch.fulfillRequest",
-            Some(json!({
-                "requestId": "r4", "responseCode": 200, "body": "hello"
-            })),
-        )
-        .unwrap();
-    assert_eq!(result["requestId"], "r4");
-    assert_eq!(result["fulfilled"], true);
-    assert_eq!(result["responseCode"], 200);
-    assert_eq!(result["bodyLength"], 5);
+    let err = session
+        .send(&router, "Fetch.fulfillRequest", Some(json!({"requestId": "r4", "responseCode": 200, "body": "hi"})))
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_get_request_post_data_fields() {
+    // REQ-CDP contract: no request interception facility — the
+    // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
-        .send(
-            &router,
-            "Fetch.getRequestPostData",
-            Some(json!({"requestId": "r5"})),
-        )
-        .unwrap();
-    assert_eq!(result["requestId"], "r5");
-    assert!(result.get("postData").is_some());
+    let err = session
+        .send(&router, "Fetch.getRequestPostData", Some(json!({"requestId": "r5"})))
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_continue_with_auth_fields() {
+    // REQ-CDP contract: no request interception facility — the
+    // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
-        .send(
-            &router,
-            "Fetch.continueWithAuth",
-            Some(json!({"requestId": "r6"})),
-        )
-        .unwrap();
-    assert_eq!(result["requestId"], "r6");
+    let err = session
+        .send(&router, "Fetch.continueWithAuth", Some(json!({"requestId": "r6"})))
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_take_response_body_as_stream_fields() {
+    // REQ-CDP contract: no request interception facility — the
+    // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
-        .send(
-            &router,
-            "Fetch.takeResponseBodyAsStream",
-            Some(json!({"requestId": "r7"})),
-        )
-        .unwrap();
-    assert!(result["stream"].as_str().unwrap().starts_with("stream-"));
+    let err = session
+        .send(&router, "Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r7"})))
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]

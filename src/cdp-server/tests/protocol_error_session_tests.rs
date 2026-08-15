@@ -129,7 +129,7 @@ fn test_parse_message_basic() {
 
 #[test]
 fn test_parse_message_with_session() {
-    let msg = parse(r#"{"id":1,"method":"Test.run","session_id":"abc"}"#).unwrap();
+    let msg = parse(r#"{"id":1,"method":"Test.run","sessionId":"abc"}"#).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some("abc"));
 }
 

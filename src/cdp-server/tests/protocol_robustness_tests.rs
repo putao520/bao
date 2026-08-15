@@ -378,7 +378,7 @@ fn test_c5_target_handler_registered_serves_builtin_commands() {
 
 #[test]
 fn test_c6_session_id_roundtrip_preserved() {
-    let raw = r#"{"id":1,"method":"Runtime.evaluate","session_id":"flat-1"}"#;
+    let raw = r#"{"id":1,"method":"Runtime.evaluate","sessionId":"flat-1"}"#;
     let m = parse_message(raw).unwrap();
     assert_eq!(m.session_id.as_deref(), Some("flat-1"));
 }
@@ -398,7 +398,7 @@ fn test_c6_session_id_extremes_roundtrip() {
         "日本語セッション", // unicode
     ];
     for sid in cases {
-        let raw = json!({"id":1, "method":"Runtime.evaluate", "session_id": sid}).to_string();
+        let raw = json!({"id":1, "method":"Runtime.evaluate", "sessionId": sid}).to_string();
         let m = parse_message(&raw).unwrap_or_else(|| panic!("parse failed for sid={sid:?}"));
         assert_eq!(m.session_id.as_deref(), Some(sid), "sid={sid:?}");
     }
@@ -414,7 +414,7 @@ fn test_c6_dispatch_independent_of_session_id() {
     reg.register(Observed::new(Arc::clone(&spy))).unwrap();
 
     for sid in ["flat-A", "flat-B", "flat-C"] {
-        let raw = json!({"id":1, "method":"Runtime.evaluate", "session_id": sid}).to_string();
+        let raw = json!({"id":1, "method":"Runtime.evaluate", "sessionId": sid}).to_string();
         let m = parse_message(&raw).unwrap();
         let dispatched = reg.dispatch_command(&m.method, m.params.unwrap_or_default(), noop());
         assert!(dispatched.is_some(), "must route for session {sid}");
@@ -637,7 +637,7 @@ fn test_cdp_message_notification_no_id() {
 
 #[test]
 fn test_cdp_message_with_session_id() {
-    let raw = r#"{"id": 1, "method": "Runtime.evaluate", "session_id": "sess-abc123"}"#;
+    let raw = r#"{"id": 1, "method": "Runtime.evaluate", "sessionId": "sess-abc123"}"#;
     let msg: CdpMessage = serde_json::from_str(raw).unwrap();
     assert_eq!(msg.session_id, Some("sess-abc123".into()));
 }

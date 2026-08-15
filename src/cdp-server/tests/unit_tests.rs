@@ -156,7 +156,7 @@ fn test_parse_invalid_json_returns_none() {
 
 #[test]
 fn test_parse_with_session_id() {
-    let msg = parse_msg(r#"{"id":1,"method":"Runtime.evaluate","session_id":"abc123"}"#).unwrap();
+    let msg = parse_msg(r#"{"id":1,"method":"Runtime.evaluate","sessionId":"abc123"}"#).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some("abc123"));
 }
 

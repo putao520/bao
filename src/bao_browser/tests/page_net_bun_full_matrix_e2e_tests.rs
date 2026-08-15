@@ -1,7 +1,7 @@
-// @trace REQ-STL-001 [level:e2e] — U2 stage 2: full-destination page-network
-// matrix through the bun bridge.
+// @trace REQ-STL-001 [level:e2e] — full-destination page-network matrix
+// through the bun bridge (U2 terminal: the bridge is the only path).
 //
-// `BAO_PAGE_NET_BUN` = all destinations. One test process (mozjs Runtime and
+// One test process (mozjs Runtime and
 // servo Opts are per-process singletons), three blocks:
 //
 //   1. H1 destination matrix: a page loads img / script / css / xhr / fetch
@@ -250,14 +250,8 @@ fn create_page(pool: &PagePool, url: String) -> bao_browser::PageHandle {
 #[test]
 fn page_net_bun_full_destination_matrix() {
     bun_core::Output::init_test();
-    // Phase 2 posture: EVERY destination through the bun bridge.
-    // (BAO_MATRIX_HYPER_CONTROL=1 runs the identical matrix on servo's hyper
-    // path — differential control for bridge-vs-page behavior questions.)
-    let hyper_control = std::env::var("BAO_MATRIX_HYPER_CONTROL").is_ok();
-    net::fetch::bun_bridge::set_page_net_bun_enabled(!hyper_control);
-    if hyper_control {
-        eprintln!("[matrix-e2e] HYPER CONTROL RUN (bridge off)");
-    }
+    // U2 terminal posture: EVERY destination through the bun bridge (the
+    // hyper escape hatch was removed — the bridge is the only path).
 
     let config = BaoConfig {
         ignore_certificate_errors: true,
@@ -470,17 +464,14 @@ fn page_net_bun_full_destination_matrix() {
     }
 
     // Four subresources through the bridge (img + script + css + xhr); the
-    // window.fetch probe rides the Node stack and must NOT count. (Skipped
-    // in the hyper control run — there is no bridge counter to assert.)
+    // window.fetch probe rides the Node stack and must NOT count.
     let counter_after_subs = net::fetch::bun_bridge::page_net_bun_request_count();
-    if !hyper_control {
-        assert_eq!(
-            counter_after_subs - counter_before,
-            4,
-            "img+script+css+xhr must all go through the bridge, window.fetch must not \
-             (recorded: {recorded:?})"
-        );
-    }
+    assert_eq!(
+        counter_after_subs - counter_before,
+        4,
+        "img+script+css+xhr must all go through the bridge, window.fetch must not \
+         (recorded: {recorded:?})"
+    );
 
     // Document destination: navigate a second page to an http document.
     // Success = the fixture served /doc.html AND the page PARSED it (title
@@ -513,14 +504,12 @@ fn page_net_bun_full_destination_matrix() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let counter_after_doc = net::fetch::bun_bridge::page_net_bun_request_count();
-    if !hyper_control {
-        assert_eq!(
-            counter_after_doc - counter_after_subs,
-            1,
-            "the document navigation must ride the bridge exactly once (recorded: {:?})",
-            h1.recorded()
-        );
-    }
+    assert_eq!(
+        counter_after_doc - counter_after_subs,
+        1,
+        "the document navigation must ride the bridge exactly once (recorded: {:?})",
+        h1.recorded()
+    );
     eprintln!("[matrix-e2e] h1 document served through the bridge");
     let _ = doc_page.close();
 
@@ -591,14 +580,12 @@ fn page_net_bun_full_destination_matrix() {
     );
     // Redirect = 2 bridge hops (302 + final); cors + nosniff = 1 each.
     let semantic_counter_after = net::fetch::bun_bridge::page_net_bun_request_count();
-    if !hyper_control {
-        assert_eq!(
-            semantic_counter_after - semantic_counter_before,
-            4,
-            "redirect(2) + cors(1) + nosniff(1) must ride the bridge (recorded: {:?})",
-            h1.recorded()
-        );
-    }
+    assert_eq!(
+        semantic_counter_after - semantic_counter_before,
+        4,
+        "redirect(2) + cors(1) + nosniff(1) must ride the bridge (recorded: {:?})",
+        h1.recorded()
+    );
     eprintln!("[matrix-e2e] redirect/CORS/nosniff semantics passed through the bridge");
 
     // ── Block 3: H2 matrix ────────────────────────────────────────────────
@@ -686,19 +673,17 @@ fn page_net_bun_full_destination_matrix() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let h2_counter_after = net::fetch::bun_bridge::page_net_bun_request_count();
-    if !hyper_control {
-        assert_eq!(
-            h2_counter_after - h2_counter_before,
-            4,
-            "h2 img+script+css+xhr must all ride the bridge (streams: {:?})",
-            h2.streams.lock().unwrap()
-        );
-        // Document navigation was also through the bridge (doc2 + 4 subres).
-        assert_eq!(
-            h2_counter_after - h2_counter_before + 1, // +1: the document itself
-            5,
-        );
-    }
+    assert_eq!(
+        h2_counter_after - h2_counter_before,
+        4,
+        "h2 img+script+css+xhr must all ride the bridge (streams: {:?})",
+        h2.streams.lock().unwrap()
+    );
+    // Document navigation was also through the bridge (doc2 + 4 subres).
+    assert_eq!(
+        h2_counter_after - h2_counter_before + 1, // +1: the document itself
+        5,
+    );
     // Five h2 request streams total (document + 4 subresources), ALL on ONE
     // connection (stage 3 coalescing): the bridge interns its per-request
     // SSLConfig through the global registry, so content-equal configs resolve
@@ -708,25 +693,21 @@ fn page_net_bun_full_destination_matrix() {
     // profile's PRIORITY reservations 3/5/7/11 — REQ-STL-002-C3 on the wire).
     let streams = h2.streams.lock().unwrap().clone();
     assert_eq!(streams.len(), 5, "five h2 request streams: {streams:?}");
-    if !hyper_control {
-        // Bridge + interned SSLConfig: one ALPN-h2 connection for the whole
-        // matrix; stream ids 13,15,17,19,21 (each +2 on the shared session).
-        // The hyper control multiplexes too, but with hyper's own client
-        // stream numbering (1,3,5,7,9) — the id-13 shape is bridge-only.
-        assert_eq!(
-            h2.alpn_h2_count.load(Ordering::SeqCst),
-            1,
-            "all five h2 requests must coalesce onto ONE connection (interned SSLConfig → single pool key), got {}",
-            h2.alpn_h2_count.load(Ordering::SeqCst)
-        );
-        let mut ids: Vec<u32> = streams.iter().map(|(id, _)| *id).collect();
-        ids.sort_unstable();
-        assert_eq!(
-            ids,
-            vec![13, 15, 17, 19, 21],
-            "one shared session: first stream 13 (PRIORITY reservations), then +2 per request: {streams:?}"
-        );
-    }
+    // Bridge + interned SSLConfig: one ALPN-h2 connection for the whole
+    // matrix; stream ids 13,15,17,19,21 (each +2 on the shared session).
+    assert_eq!(
+        h2.alpn_h2_count.load(Ordering::SeqCst),
+        1,
+        "all five h2 requests must coalesce onto ONE connection (interned SSLConfig → single pool key), got {}",
+        h2.alpn_h2_count.load(Ordering::SeqCst)
+    );
+    let mut ids: Vec<u32> = streams.iter().map(|(id, _)| *id).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec![13, 15, 17, 19, 21],
+        "one shared session: first stream 13 (PRIORITY reservations), then +2 per request: {streams:?}"
+    );
     eprintln!(
         "[matrix-e2e] h2 matrix complete: {} streams, {} h2 connections",
         streams.len(),

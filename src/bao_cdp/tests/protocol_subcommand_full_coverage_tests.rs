@@ -97,14 +97,13 @@ fn test_invariant_all_ok_responses() {
     for method in [
         "Target.getTargets",
         "Target.getTargetTargets",
-        "Target.createTarget",
-        "Target.closeTarget",
         "Target.setAutoAttach",
         "Target.setDiscoverTargets",
         "Target.getTargetInfo",
-        "Target.attachToTarget",
-        "Target.detachFromTarget",
-        "Target.sendMessageToTarget",
+        // NOTE: Target.createTarget/closeTarget require the servo bridge and
+        // Target.attachToTarget/detachFromTarget/sendMessageToTarget require
+        // the WS session registry — all explicit errors without them (pinned
+        // by the dedicated tests below), excluded from this ok-sweep.
         "Page.enable",
         "Page.disable",
         "Runtime.enable",
@@ -186,15 +185,9 @@ fn test_invariant_all_ok_responses() {
         "Log.clear",
         "Log.startViolationsReport",
         "Log.stopViolationsReport",
-        "Fetch.enable",
-        "Fetch.disable",
-        "Fetch.continueRequest",
-        "Fetch.continueWithResponse",
-        "Fetch.failRequest",
-        "Fetch.fulfillRequest",
-        "Fetch.getRequestPostData",
-        "Fetch.continueWithAuth",
-        "Fetch.takeResponseBodyAsStream",
+        // NOTE: the Fetch domain is excluded from the ok-sweep — it is an
+        // explicit-error domain (no request interception facility; only
+        // Fetch.disable is an ok).
     ] {
         let r = dispatch(method, None);
         assert_jsonrpc_invariant(&r, method);
@@ -228,7 +221,6 @@ fn test_invariant_bridge_dependent_errors() {
         ("Page.close", NO_BRIDGE),
         ("Page.bringToFront", NO_BRIDGE),
         ("Page.getLayoutMetrics", NO_BRIDGE),
-        ("Page.addScriptToEvaluateOnNewDocument", INVALID_PARAMS),
         ("Page.removeScriptToEvaluateOnNewDocument", INVALID_PARAMS),
         ("DOM.getOuterHTML", NO_BRIDGE),
         ("Network.getResponseBody", NO_BRIDGE),
@@ -516,48 +508,53 @@ fn test_target_get_targets_and_get_target_targets_equivalent_schema() {
 
 #[test]
 fn test_target_create_target() {
+    // Real page creation requires the servo bridge — explicit error without
+    // one, never an echo of the current target id.
     let r = dispatch("Target.createTarget", Some(json!({"url":"http://test"})));
     assert_jsonrpc_invariant(&r, "Target.createTarget");
-    let result = r.result.unwrap();
-    assert_eq!(result["targetId"], "test-target");
-    // createTarget returns ONLY targetId (no extra fields that could confuse clients).
-    let obj = result.as_object().unwrap();
-    assert_eq!(
-        obj.len(),
-        1,
-        "createTarget result must contain only targetId"
-    );
-    assert!(obj.contains_key("targetId"));
+    let err = r.error.expect("must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]
 fn test_target_create_target_default_url() {
-    // Adversarial: createTarget without url params — still returns targetId.
     let r = dispatch("Target.createTarget", None);
-    assert_eq!(r.result.unwrap()["targetId"], "test-target");
+    let err = r.error.expect("must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]
 fn test_target_create_target_target_id_echoes() {
     let r = dispatch_target("page-99", "Target.createTarget", None);
-    assert_eq!(r.result.unwrap()["targetId"], "page-99");
+    let err = r.error.expect("must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]
 fn test_target_close_target() {
+    // Closing a page is a blocking bridge round-trip — explicit error
+    // without a bridge, never a fake success.
     let r = dispatch("Target.closeTarget", Some(json!({"targetId":"t1"})));
     assert_jsonrpc_invariant(&r, "Target.closeTarget");
-    let result = r.result.unwrap();
-    assert_eq!(result["success"], true);
-    let obj = result.as_object().unwrap();
-    assert_eq!(obj.len(), 1, "closeTarget result must contain only success");
+    let err = r.error.expect("must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]
 fn test_target_close_target_no_params() {
-    // Adversarial: closeTarget without targetId param — fire-and-forget still succeeds.
     let r = dispatch("Target.closeTarget", None);
-    assert_eq!(r.result.unwrap()["success"], true);
+    let err = r.error.expect("must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]
@@ -586,11 +583,12 @@ fn test_target_get_target_info() {
     assert_eq!(info["title"], "Bao");
     assert_eq!(info["url"], "about:blank");
     assert_eq!(info["attached"], true);
-    // targetInfo must have exactly these 5 fields.
+    // targetInfo must have exactly these 6 fields (browserContextId is
+    // required by Playwright's CRBrowser assert).
     let keys: std::collections::BTreeSet<String> =
         info.as_object().unwrap().keys().cloned().collect();
     let expected: std::collections::BTreeSet<String> =
-        ["targetId", "type", "title", "url", "attached"]
+        ["targetId", "type", "title", "url", "attached", "browserContextId"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -602,60 +600,57 @@ fn test_target_get_target_info() {
 
 #[test]
 fn test_target_attach_to_target() {
-    let r = dispatch("Target.attachToTarget", None);
-    assert_jsonrpc_invariant(&r, "Target.attachToTarget");
-    let sid = r.result.unwrap()["sessionId"]
-        .as_str()
-        .expect("sessionId must be string")
-        .to_string();
-    assert!(!sid.is_empty(), "sessionId must be non-empty");
-    // sessionId is a hex string of length 16 (format!("{:016x}", ...)).
-    assert_eq!(sid.len(), 16, "sessionId must be 16-char hex");
-    assert!(
-        sid.chars().all(|c| c.is_ascii_hexdigit()),
-        "sessionId must be hex: {}",
-        sid
-    );
+    // Session minting lives in the WS session registry — explicit error.
+    let resp = dispatch("Target.attachToTarget", Some(json!({"targetId": "t1"})));
+    let err = resp.error.expect("must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }
 
 #[test]
 fn test_target_attach_to_target_deterministic_per_target_id() {
-    // Adversarial: same target_id → same sessionId (deterministic hash of chars).
-    let a = dispatch_target("abc", "Target.attachToTarget", None)
-        .result
-        .unwrap()["sessionId"]
-        .clone();
-    let b = dispatch_target("abc", "Target.attachToTarget", None)
-        .result
-        .unwrap()["sessionId"]
-        .clone();
-    assert_eq!(
-        a, b,
-        "sessionId must be deterministic for the same target_id"
-    );
-    // Different target_id → different sessionId.
-    let c = dispatch_target("xyz", "Target.attachToTarget", None)
-        .result
-        .unwrap()["sessionId"]
-        .clone();
-    assert_ne!(a, c, "sessionId must differ for different target_id");
+    // Session minting lives in the WS session registry — the stateless
+    // dispatch refuses explicitly for every target (the deterministic
+    // char-hash sessionId is eradicated).
+    for t in ["abc", "xyz"] {
+        let r = dispatch_target(t, "Target.attachToTarget", None);
+        let err = r.error.expect("must fail without the WS registry");
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("WS session registry"));
+    }
+
 }
 
 #[test]
 fn test_target_attach_to_target_empty_target_id() {
-    // Adversarial: empty target_id → sum of chars = 0 → "0000000000000000".
+    // Boundary preserved: empty target_id also refuses explicitly (the
+    // all-zeros fabricated sessionId is eradicated).
     let r = dispatch_target("", "Target.attachToTarget", None);
-    assert_eq!(r.result.unwrap()["sessionId"], "0000000000000000");
+    let err = r.error.expect("must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }
 
 #[test]
 fn test_target_detach_from_target() {
-    assert!(ok_resp("Target.detachFromTarget", None));
+    let resp = dispatch("Target.detachFromTarget", Some(json!({"sessionId": "s1"})));
+    let err = resp.error.expect("must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }
 
 #[test]
 fn test_target_send_message_to_target() {
-    assert!(ok_resp("Target.sendMessageToTarget", None));
+    // Session-table command: requires the WS session registry — explicit
+    // error, never an ok without servo routing.
+    let r = dispatch("Target.sendMessageToTarget", None);
+    let err = r.error.expect("must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }
 
 #[test]
@@ -884,22 +879,24 @@ fn test_page_add_script() {
 
 #[test]
 fn test_page_add_script_empty_source() {
-    // Adversarial: empty source — rejected with -32602 before dispatch.
-    let r = dispatch(
+    // Chrome-compatible: an empty init script (Playwright's placeholder
+    // registration) registers as a no-op with a fresh identifier.
+    let resp = dispatch(
         "Page.addScriptToEvaluateOnNewDocument",
-        Some(json!({"source":""})),
+        Some(json!({"source": ""})),
     );
-    let e = r.error.unwrap();
-    assert_eq!(e.code, -32602);
-    assert!(e.message.contains("source"));
+    let result = resp.result.expect("empty source registers as a no-op");
+    assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
+
 }
 
 #[test]
 fn test_page_add_script_no_source_key() {
-    // Adversarial: missing source key — same -32602 invalid params.
+    // Chrome-compatible: a missing/empty source registers as a no-op with a
+    // fresh identifier (Playwright's placeholder registration).
     let r = dispatch("Page.addScriptToEvaluateOnNewDocument", None);
-    let e = r.error.unwrap();
-    assert_eq!(e.code, -32602);
+    let id = r.result.unwrap()["identifier"].as_str().unwrap().to_string();
+    assert!(id.starts_with("script-"));
 }
 
 #[test]
@@ -1744,49 +1741,57 @@ fn test_log_unknown() {
 
 #[test]
 fn test_fetch_enable() {
-    let r = dispatch("Fetch.enable", None);
-    assert_jsonrpc_invariant(&r, "Fetch.enable");
-    let result = r.result.unwrap();
-    assert_eq!(result["enabled"], true);
-    assert_eq!(result["patternCount"], 0, "no patterns → patternCount 0");
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.enable", None);
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_enable_with_patterns() {
-    let r = dispatch(
-        "Fetch.enable",
-        Some(json!({"patterns":[{"urlPattern":"*"}]})),
-    );
-    assert_jsonrpc_invariant(&r, "Fetch.enable");
-    let result = r.result.unwrap();
-    assert_eq!(result["patternCount"], 1);
-    assert_eq!(result["enabled"], true);
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}]})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_enable_with_multiple_patterns() {
-    // Adversarial: multiple patterns → patternCount reflects array length.
-    let r = dispatch(
-        "Fetch.enable",
-        Some(json!({
-            "patterns":[{"urlPattern":"*.js"},{"urlPattern":"*.css"},{"urlPattern":"*.png"}]
-        })),
-    );
-    assert_eq!(r.result.unwrap()["patternCount"], 3);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}, {"urlPattern": "*.js"}]})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_enable_with_empty_patterns_array() {
-    // Adversarial: empty patterns array → patternCount 0.
-    let r = dispatch("Fetch.enable", Some(json!({"patterns":[]})));
-    assert_eq!(r.result.unwrap()["patternCount"], 0);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.enable", Some(json!({"patterns": []})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_enable_with_patterns_wrong_type() {
-    // Adversarial: patterns as string (not array) → unwrap_or(0) → patternCount 0.
-    let r = dispatch("Fetch.enable", Some(json!({"patterns":"not-an-array"})));
-    assert_eq!(r.result.unwrap()["patternCount"], 0);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.enable", Some(json!({"patterns": "bogus"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
@@ -1796,150 +1801,156 @@ fn test_fetch_disable() {
 
 #[test]
 fn test_fetch_continue_request() {
-    let r = dispatch("Fetch.continueRequest", Some(json!({"requestId":"req-1"})));
-    assert_jsonrpc_invariant(&r, "Fetch.continueRequest");
-    let result = r.result.unwrap();
-    assert_eq!(result["requestId"], "req-1");
-    assert_eq!(result["continued"], true);
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.continueRequest", Some(json!({"requestId": "r1"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_continue_request_no_request_id() {
-    // Adversarial: missing requestId → empty string.
-    let r = dispatch("Fetch.continueRequest", None);
-    let result = r.result.unwrap();
-    assert_eq!(result["requestId"], "");
-    assert_eq!(result["continued"], true);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.continueRequest", Some(json!({})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_continue_with_response() {
-    let r = dispatch(
-        "Fetch.continueWithResponse",
-        Some(json!({"requestId":"r2"})),
-    );
-    assert_jsonrpc_invariant(&r, "Fetch.continueWithResponse");
-    let result = r.result.unwrap();
-    assert_eq!(result["continued"], true);
-    // continueWithResponse shares the continueRequest schema: requestId + continued.
-    assert_eq!(result["requestId"], "r2");
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.continueWithResponse", Some(json!({"requestId": "r-1"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fail_request() {
-    let r = dispatch(
-        "Fetch.failRequest",
-        Some(json!({"requestId":"r3","reason":"Aborted"})),
-    );
-    assert_jsonrpc_invariant(&r, "Fetch.failRequest");
-    let result = r.result.unwrap();
-    assert_eq!(result["failed"], true);
-    assert_eq!(result["reason"], "Aborted");
-    assert_eq!(result["requestId"], "r3");
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.failRequest", Some(json!({"requestId": "r2", "reason": "Aborted"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fail_request_default_reason() {
-    // Adversarial: missing reason → empty string.
+    // No request interception facility — explicit error regardless of the
+    // reason param (the "" default is gone with the canned face).
     let r = dispatch("Fetch.failRequest", Some(json!({"requestId":"r3"})));
-    let result = r.result.unwrap();
-    assert_eq!(result["reason"], "");
-    assert_eq!(result["failed"], true);
+    let err = r.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fulfill_request() {
-    let r = dispatch(
-        "Fetch.fulfillRequest",
-        Some(json!({"requestId":"r4","responseCode":200,"body":"hello"})),
-    );
-    assert_jsonrpc_invariant(&r, "Fetch.fulfillRequest");
-    let result = r.result.unwrap();
-    assert_eq!(result["fulfilled"], true);
-    assert_eq!(result["responseCode"], 200);
-    assert_eq!(result["bodyLength"], 5, "body 'hello' is 5 bytes");
-    assert_eq!(result["requestId"], "r4");
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "r3", "responseCode": 200, "body": "hi"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fulfill_request_default_response_code() {
-    // Adversarial: missing responseCode → defaults to 200.
-    let r = dispatch(
-        "Fetch.fulfillRequest",
-        Some(json!({"requestId":"r4","body":"abc"})),
-    );
-    let result = r.result.unwrap();
-    assert_eq!(result["responseCode"], 200);
-    assert_eq!(result["bodyLength"], 3);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f4", "body": "x"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fulfill_request_empty_body() {
-    // Adversarial: empty body → bodyLength 0.
-    let r = dispatch(
-        "Fetch.fulfillRequest",
-        Some(json!({"requestId":"r4","body":""})),
-    );
-    assert_eq!(r.result.unwrap()["bodyLength"], 0);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f5", "body": ""})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fulfill_request_missing_body() {
-    // Adversarial: missing body → body defaults to "" → bodyLength 0.
-    let r = dispatch("Fetch.fulfillRequest", Some(json!({"requestId":"r4"})));
-    assert_eq!(r.result.unwrap()["bodyLength"], 0);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f6"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fulfill_request_unicode_body() {
-    // Adversarial: unicode body — bodyLength is byte length (not char count).
-    // "你好" = 6 bytes in UTF-8, 2 chars. params_str returns String; .len() is bytes.
-    let r = dispatch(
-        "Fetch.fulfillRequest",
-        Some(json!({"requestId":"r4","body":"你好"})),
-    );
-    let result = r.result.unwrap();
-    // Note: String::len() counts bytes, so "你好" → 6.
-    assert_eq!(result["bodyLength"], 6);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f3", "body": "héllo"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_get_request_post_data() {
-    let r = dispatch("Fetch.getRequestPostData", Some(json!({"requestId":"r5"})));
-    assert_jsonrpc_invariant(&r, "Fetch.getRequestPostData");
-    let result = r.result.unwrap();
-    assert_eq!(result["requestId"], "r5");
-    assert_eq!(result["postData"], "", "default postData is empty string");
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.getRequestPostData", Some(json!({"requestId": "r4"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_continue_with_auth() {
-    let r = dispatch("Fetch.continueWithAuth", Some(json!({"requestId":"r6"})));
-    assert_jsonrpc_invariant(&r, "Fetch.continueWithAuth");
-    let result = r.result.unwrap();
-    assert_eq!(result["requestId"], "r6");
-    // continueWithAuth returns ONLY requestId (no extra fields).
-    assert_eq!(result.as_object().unwrap().len(), 1);
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.continueWithAuth", Some(json!({"requestId": "r5"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_take_response_body() {
-    let r = dispatch(
-        "Fetch.takeResponseBodyAsStream",
-        Some(json!({"requestId":"r7"})),
-    );
-    assert_jsonrpc_invariant(&r, "Fetch.takeResponseBodyAsStream");
-    let result = r.result.unwrap();
-    assert!(result["stream"].is_string());
-    // stream = format!("stream-{}", request_id).
-    assert_eq!(result["stream"], "stream-r7");
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r6"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_take_response_body_no_request_id() {
-    // Adversarial: missing requestId → stream = "stream-".
-    let r = dispatch("Fetch.takeResponseBodyAsStream", None);
-    assert_eq!(r.result.unwrap()["stream"], "stream-");
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
@@ -2191,12 +2202,12 @@ fn test_dispatch_is_deterministic() {
 
 #[test]
 fn test_attach_session_id_is_hex_of_char_sum() {
-    // Adversarial: verify the documented sessionId derivation.
-    // sessionId = format!("{:016x}", target_id.chars().map(|c| c as u64).sum::<u64>()).
-    // "test-target" chars sum: verify against actual.
-    let target = "test-target";
-    let expected_sum: u64 = target.chars().map(|c| c as u64).sum();
-    let expected_sid = format!("{:016x}", expected_sum);
-    let r = dispatch_target(target, "Target.attachToTarget", None);
-    assert_eq!(r.result.unwrap()["sessionId"], expected_sid);
+    // Session minting lives in the WS session registry (bao_browser) —
+    // the stateless dispatch refuses explicitly; the fabricated
+    // char-sum hex sessionId formula is eradicated.
+    let resp = dispatch("Target.attachToTarget", Some(json!({"targetId": "t1"})));
+    let err = resp.error.expect("must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }

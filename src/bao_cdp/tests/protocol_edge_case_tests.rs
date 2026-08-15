@@ -160,12 +160,18 @@ fn parse_message_params_with_all_json_types() {
 
 #[test]
 fn parse_message_session_id_as_number_fails() {
-    assert!(parse_message(r#"{"id":1,"method":"Test.run","session_id":123}"#).is_none());
+    // A NUMBER under the real camelCase key is a type error → whole message
+    // rejected; the legacy snake_case spelling is an unknown field (ignored,
+    // message still parses with no session).
+    assert!(parse_message(r#"{"id":1,"method":"Test.run","sessionId":123}"#).is_none());
+    let msg = parse_message(r#"{"id":1,"method":"Test.run","session_id":123}"#)
+        .expect("unknown snake_case field is ignored");
+    assert!(msg.session_id.is_none());
 }
 
 #[test]
 fn parse_message_session_id_empty_string() {
-    let raw = r#"{"id":1,"method":"Test.run","session_id":""}"#;
+    let raw = r#"{"id":1,"method":"Test.run","sessionId":""}"#;
     let msg = parse_message(raw).unwrap();
     assert_eq!(msg.session_id.unwrap(), "");
 }
@@ -1268,7 +1274,7 @@ fn server_config_very_long_browser_name() {
 // 8. EventBroadcaster with no subscribers
 // ---------------------------------------------------------------------------
 
-fn empty_session_map() -> Arc<Mutex<HashMap<String, Arc<Mutex<cdp_server::CdpSession>>>>> {
+fn empty_session_map() -> Arc<Mutex<HashMap<String, Arc<cdp_server::SessionHandle>>>> {
     Arc::new(Mutex::new(HashMap::new()))
 }
 

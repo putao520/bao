@@ -17,8 +17,13 @@ mod page_pool;
 mod permission;
 mod runtime_bridge;
 mod screenshot;
+mod ws_registry;
 
 pub use config::{BaoConfig, BrowserConfig, PageConfig};
+// Bridge-command handler — the servo-side executor that drains
+// BridgeCommand during the event loop (run_with_bridge's per-command entry).
+// Public for e2e tests that drive the same loop shape as run_browser.
+pub use cdp_handler::handle_bridge_command;
 pub use delegate::{
     crash_safe_teardown_worker, is_javascript_mime_type, AutoCloseWorker, BaoServoDelegate,
     BaoWebViewDelegate, BaoWebViewState, DedicatedWorkerGlobalScopeState, ServiceWorkerFetchEvent,
@@ -43,6 +48,7 @@ pub use runtime_bridge::{
     BridgeResponse, EvaluateResult, RuntimeBridge, WorkerScopeInitFn,
 };
 pub use screenshot::{encode_image, ScreenshotFormat};
+pub use ws_registry::BaoWsRegistry;
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -53,9 +59,7 @@ use servo::{Opts, Servo, ServoBuilder};
 use bao_cdp::domains::ServoTargetProvider;
 use bao_cdp::servo_bridge::bridge_channel;
 use bao_cdp_client::bridge::{translate, ServoEvent};
-use cdp_server::{
-    CdpServer, DomainRegistry, EmptyHandler, EventBroadcaster, EventSender, ServerConfig,
-};
+use cdp_server::{CdpServer, EventBroadcaster, EventSender, ServerConfig};
 
 // BAO PATCH (BCE-20260627-009): Process-global servo opts initialization.
 // servo's `opts::initialize_options` uses an `OnceLock<Opts>` that panics on re-init,
@@ -441,7 +445,7 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         stealth_profile: None,
         ..Default::default()
     };
-    let _page = runtime.create_page(&page_config)?;
+    let page = runtime.create_page(&page_config)?;
     if let Some(ref page_url) = url {
         log::debug!("[bao] navigating to {}", page_url);
     }
@@ -464,15 +468,16 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         // shares the same SessionMap — events sent via this broadcaster reach all
         // connected WebSocket sessions.
         // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-        let registry = Arc::new(DomainRegistry::<EmptyHandler>::new());
+        //
+        // REQ-CDP WS command face: the registry is the real command dispatcher
+        // (BaoWsRegistry → bao_cdp::handle_command → servo bridge), not the
+        // EmptyHandler placeholder — WS sessions get real Page.navigate /
+        // Runtime.evaluate / Target.* round-trips (Playwright direct connect).
+        let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
         let config = ServerConfig::builder().host("127.0.0.1").port(port).build();
-        let target_id = format!(
-            "{:016x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64
-        );
+        // The default target is the initial page's real id (cdp_handler parses
+        // decimal page ids — a timestamp hex would never resolve to a page).
+        let target_id = page.id().to_string();
         let mut server = CdpServer::with_registry(config, registry);
         let provider = Arc::new(ServoTargetProvider::new(
             bridge_tx,

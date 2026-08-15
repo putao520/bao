@@ -66,7 +66,7 @@ fn test_cdp_message_null_id() {
 
 #[test]
 fn test_cdp_message_with_all_fields() {
-    let raw = r#"{"id":42,"method":"Runtime.evaluate","params":{"expr":"1"},"session_id":"s1"}"#;
+    let raw = r#"{"id":42,"method":"Runtime.evaluate","params":{"expr":"1"},"sessionId":"s1"}"#;
     let msg: CdpMessage = serde_json::from_str(raw).unwrap();
     assert_eq!(msg.id, Some(42));
     assert_eq!(msg.method, "Runtime.evaluate");

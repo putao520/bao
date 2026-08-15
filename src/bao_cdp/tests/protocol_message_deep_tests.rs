@@ -26,7 +26,7 @@ fn test_parse_valid_minimal() {
 
 #[test]
 fn test_parse_full_message() {
-    let raw = r#"{"id":42,"method":"Runtime.evaluate","params":{"expression":"1+1"},"session_id":"sess-abc"}"#;
+    let raw = r#"{"id":42,"method":"Runtime.evaluate","params":{"expression":"1+1"},"sessionId":"sess-abc"}"#;
     let msg = parse_message(raw).unwrap();
     assert_eq!(msg.id, Some(42));
     assert_eq!(msg.method, "Runtime.evaluate");
@@ -198,14 +198,22 @@ fn test_target_get_target_targets() {
 
 #[test]
 fn test_target_create_target() {
-    let r = ok_result("Target.createTarget", None);
-    assert_eq!(r["targetId"], "target-001");
+    // Real page creation requires the servo bridge — explicit error without
+    // one, never an echo of the current target id.
+    let err = err_result("Target.createTarget", Some(json!({"url": "http://x"})));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]
 fn test_target_close_target() {
-    let r = ok_result("Target.closeTarget", None);
-    assert_eq!(r["success"], true);
+    // Closing a page is a blocking bridge round-trip — explicit error
+    // without a bridge, never a fake success.
+    let err = err_result("Target.closeTarget", Some(json!({"targetId": "t1"})));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]
@@ -228,20 +236,31 @@ fn test_target_get_target_info() {
 
 #[test]
 fn test_target_attach_to_target() {
-    let r = ok_result("Target.attachToTarget", None);
-    let sid = r["sessionId"].as_str().unwrap();
-    assert!(!sid.is_empty());
-    assert!(sid.chars().all(|c| c.is_ascii_hexdigit()));
+    // Session minting lives in the WS session registry — explicit error,
+    // never a fabricated hex sessionId.
+    let err = err_result("Target.attachToTarget", Some(json!({"targetId": "t1"})));
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }
 
 #[test]
 fn test_target_detach_from_target() {
-    assert_eq!(ok_result("Target.detachFromTarget", None), json!({}));
+    let err = err_result("Target.detachFromTarget", Some(json!({"sessionId": "s1"})));
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }
 
 #[test]
 fn test_target_send_message_to_target() {
-    assert_eq!(ok_result("Target.sendMessageToTarget", None), json!({}));
+    // Session-table command: requires the WS session registry — explicit
+    // error, never an ok without servo routing.
+    let resp = dispatch("Target.sendMessageToTarget", None);
+    let err = resp.error.expect("must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }
 
 #[test]
@@ -364,14 +383,15 @@ fn test_page_add_script_to_evaluate_no_bridge() {
 
 #[test]
 fn test_page_add_script_empty_source_no_bridge() {
-    // New contract (6983871b): empty source is rejected with -32602 before
-    // any bridge dispatch.
-    let e = err_result(
+    // Chrome-compatible: an empty init script (Playwright's placeholder
+    // registration) registers as a no-op with a fresh identifier.
+    let resp = dispatch(
         "Page.addScriptToEvaluateOnNewDocument",
         Some(json!({"source": ""})),
     );
-    assert_eq!(e.code, -32602);
-    assert!(e.message.contains("source"));
+    let result = resp.result.expect("empty source registers as a no-op");
+    assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
+
 }
 
 #[test]
@@ -1017,21 +1037,24 @@ fn test_log_unknown_command() {
 
 #[test]
 fn test_fetch_enable_no_patterns() {
-    let r = ok_result("Fetch.enable", Some(json!({})));
-    assert_eq!(r["enabled"], true);
-    assert_eq!(r["patternCount"], 0);
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.enable", None);
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_enable_with_patterns() {
-    let r = ok_result(
-        "Fetch.enable",
-        Some(json!({
-            "patterns": [{"urlPattern": "*"}, {"urlPattern": "https://*"}]
-        })),
-    );
-    assert_eq!(r["enabled"], true);
-    assert_eq!(r["patternCount"], 2);
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}]})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
@@ -1041,82 +1064,89 @@ fn test_fetch_disable() {
 
 #[test]
 fn test_fetch_continue_request() {
-    let r = ok_result("Fetch.continueRequest", Some(json!({"requestId": "req-1"})));
-    assert_eq!(r["requestId"], "req-1");
-    assert_eq!(r["continued"], true);
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.continueRequest", Some(json!({"requestId": "r1"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_continue_with_response() {
-    let r = ok_result(
-        "Fetch.continueWithResponse",
-        Some(json!({"requestId": "req-2"})),
-    );
-    assert_eq!(r["requestId"], "req-2");
-    assert_eq!(r["continued"], true);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.continueWithResponse", Some(json!({"requestId": "r-1"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fail_request() {
-    let r = ok_result(
-        "Fetch.failRequest",
-        Some(json!({"requestId": "req-3", "reason": "Aborted"})),
-    );
-    assert_eq!(r["requestId"], "req-3");
-    assert_eq!(r["failed"], true);
-    assert_eq!(r["reason"], "Aborted");
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.failRequest", Some(json!({"requestId": "r2", "reason": "Aborted"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fulfill_request() {
-    let r = ok_result(
-        "Fetch.fulfillRequest",
-        Some(json!({
-            "requestId": "req-4", "responseCode": 404, "body": "not found"
-        })),
-    );
-    assert_eq!(r["requestId"], "req-4");
-    assert_eq!(r["fulfilled"], true);
-    assert_eq!(r["responseCode"], 404);
-    assert_eq!(r["bodyLength"], 9);
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "r3", "responseCode": 200, "body": "hi"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fulfill_request_default_code() {
-    let r = ok_result(
-        "Fetch.fulfillRequest",
-        Some(json!({"requestId": "r1", "body": ""})),
-    );
-    assert_eq!(r["responseCode"], 200);
-    assert_eq!(r["bodyLength"], 0);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f1", "body": "x"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_get_request_post_data() {
-    let r = ok_result(
-        "Fetch.getRequestPostData",
-        Some(json!({"requestId": "req-5"})),
-    );
-    assert_eq!(r["requestId"], "req-5");
-    assert_eq!(r["postData"], "");
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.getRequestPostData", Some(json!({"requestId": "r4"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_continue_with_auth() {
-    let r = ok_result(
-        "Fetch.continueWithAuth",
-        Some(json!({"requestId": "req-6"})),
-    );
-    assert_eq!(r["requestId"], "req-6");
+    // REQ-CDP contract: bao has no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.continueWithAuth", Some(json!({"requestId": "r5"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_take_response_body_as_stream() {
-    let r = ok_result(
-        "Fetch.takeResponseBodyAsStream",
-        Some(json!({"requestId": "req-7"})),
-    );
-    assert_eq!(r["stream"], "stream-req-7");
+    // No request interception facility — explicit error.
+    let resp = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r6"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
@@ -1303,13 +1333,13 @@ fn test_roundtrip_unknown_domain() {
 
 #[test]
 fn test_roundtrip_fetch_enable_with_patterns() {
-    let raw = r#"{"id":40,"method":"Fetch.enable","params":{"patterns":[{"urlPattern":"*"}]}}"#;
-    let msg = parse_message(raw).unwrap();
-    let params = msg.params.clone();
-    let resp = handle_command(msg, "t-1", &params, None);
-    let r = resp.result.unwrap();
-    assert_eq!(r["enabled"], true);
-    assert_eq!(r["patternCount"], 1);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}]})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
@@ -1425,56 +1455,26 @@ fn test_response_preserves_request_id() {
 
 #[test]
 fn test_attach_to_target_session_id_deterministic() {
-    let msg1 = CdpMessage {
-        id: Some(1),
-        method: "Target.attachToTarget".into(),
-        params: None,
-        session_id: None,
-    };
-    let r1 = handle_command(msg1, "target-abc", &None, None)
-        .result
-        .unwrap();
-    let sid1 = r1["sessionId"].as_str().unwrap().to_string();
+    // Session minting lives in the WS session registry — the stateless face
+    // refuses explicitly (the deterministic char-sum sessionId is eradicated).
+    let resp = dispatch("Target.attachToTarget", Some(json!({"targetId": "target-abc"})));
+    let err = resp.error.expect("must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
 
-    let msg2 = CdpMessage {
-        id: Some(2),
-        method: "Target.attachToTarget".into(),
-        params: None,
-        session_id: None,
-    };
-    let r2 = handle_command(msg2, "target-abc", &None, None)
-        .result
-        .unwrap();
-    let sid2 = r2["sessionId"].as_str().unwrap().to_string();
-
-    assert_eq!(sid1, sid2);
 }
 
 #[test]
 fn test_different_targets_different_session_ids() {
-    let msg1 = CdpMessage {
-        id: Some(1),
-        method: "Target.attachToTarget".into(),
-        params: None,
-        session_id: None,
-    };
-    let r1 = handle_command(msg1, "target-A", &None, None)
-        .result
-        .unwrap();
-    let sid1 = r1["sessionId"].as_str().unwrap().to_string();
+    // Session minting lives in the WS session registry — the stateless face
+    // refuses explicitly for every target.
+    for t in ["target-A", "target-B"] {
+        let resp = dispatch("Target.attachToTarget", Some(json!({"targetId": t})));
+        let err = resp.error.expect("must fail without the WS registry");
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("WS session registry"));
+    }
 
-    let msg2 = CdpMessage {
-        id: Some(2),
-        method: "Target.attachToTarget".into(),
-        params: None,
-        session_id: None,
-    };
-    let r2 = handle_command(msg2, "target-B", &None, None)
-        .result
-        .unwrap();
-    let sid2 = r2["sessionId"].as_str().unwrap().to_string();
-
-    assert_ne!(sid1, sid2);
 }
 
 // ---- Page navigate loaderId source (6983871b: bridge truth) ----
@@ -1605,14 +1605,14 @@ fn test_parse_params_explicit_json_null_maps_none() {
 #[test]
 fn test_parse_empty_session_id_string() {
     // session_id: "" is a valid (if unusual) string — must round-trip as Some("")
-    let raw = r#"{"id":1,"method":"X.y","session_id":""}"#;
+    let raw = r#"{"id":1,"method":"X.y","sessionId":""}"#;
     let msg = parse_message(raw).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some(""));
 }
 
 #[test]
 fn test_parse_unicode_session_id() {
-    let raw = r#"{"id":1,"method":"X.y","session_id":"会话-001"}"#;
+    let raw = r#"{"id":1,"method":"X.y","sessionId":"会话-001"}"#;
     let msg = parse_message(raw).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some("会话-001"));
 }
@@ -1886,51 +1886,14 @@ fn test_handle_empty_target_id_get_targets() {
 
 #[test]
 fn test_attach_to_target_session_id_formula_self_consistent() {
-    // sessionId = format!("{:016x}", target_id.chars().map(|c| c as u64).sum())
-    // Invariants: (1) deterministic per target, (2) 16 hex chars zero-padded,
-    // (3) distinct targets yield distinct sessionIds for distinct char sums,
-    // (4) empty target → all-zero sessionId.
-    fn expected_sid(tid: &str) -> String {
-        format!("{:016x}", tid.chars().map(|c| c as u64).sum::<u64>())
-    }
+    // Session minting lives in the WS session registry (bao_browser) —
+    // the stateless dispatch refuses explicitly; the fabricated
+    // char-sum hex sessionId formula is eradicated.
+    let resp = dispatch("Target.attachToTarget", Some(json!({"targetId": "t1"})));
+    let err = resp.error.expect("must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
 
-    // dispatch helper uses "target-001"; recompute for sanity
-    let r = ok_result("Target.attachToTarget", None);
-    assert_eq!(r["sessionId"].as_str().unwrap(), expected_sid("target-001"));
-
-    // distinct targets via direct handle_command
-    let m1 = CdpMessage {
-        id: Some(1),
-        method: "Target.attachToTarget".into(),
-        params: None,
-        session_id: None,
-    };
-    let r1 = handle_command(m1, "AAAA", &None, None).result.unwrap();
-    let m2 = CdpMessage {
-        id: Some(2),
-        method: "Target.attachToTarget".into(),
-        params: None,
-        session_id: None,
-    };
-    let r2 = handle_command(m2, "BBBB", &None, None).result.unwrap();
-    assert_eq!(r1["sessionId"], expected_sid("AAAA"));
-    assert_eq!(r2["sessionId"], expected_sid("BBBB"));
-    assert_ne!(r1["sessionId"], r2["sessionId"]);
-
-    // 16-char zero-padded hex
-    let sid = r1["sessionId"].as_str().unwrap();
-    assert_eq!(sid.len(), 16, "sessionId must be 16 hex chars");
-    assert!(sid.chars().all(|c| c.is_ascii_hexdigit()));
-
-    // empty target → all-zero sessionId
-    let m3 = CdpMessage {
-        id: Some(3),
-        method: "Target.attachToTarget".into(),
-        params: None,
-        session_id: None,
-    };
-    let r3 = handle_command(m3, "", &None, None).result.unwrap();
-    assert_eq!(r3["sessionId"], "0000000000000000");
 }
 
 #[test]
@@ -1976,68 +1939,68 @@ fn test_page_capture_screenshot_quality_zero() {
 
 #[test]
 fn test_fetch_enable_patterns_non_array_treated_as_zero() {
-    // patterns as non-array (string/object) → unwrap_or(0) → patternCount 0.
-    let r1 = ok_result("Fetch.enable", Some(json!({"patterns": "not-an-array"})));
-    assert_eq!(r1["patternCount"], 0);
-    assert_eq!(r1["enabled"], true);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.enable", Some(json!({"patterns": "not-an-array"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
 
-    let r2 = ok_result(
-        "Fetch.enable",
-        Some(json!({"patterns": {"urlPattern": "*"}})),
-    );
-    assert_eq!(r2["patternCount"], 0);
 }
 
 #[test]
 fn test_fetch_enable_patterns_null() {
-    let r = ok_result("Fetch.enable", Some(json!({"patterns": null})));
-    assert_eq!(r["patternCount"], 0);
-    assert_eq!(r["enabled"], true);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.enable", Some(json!({"patterns": null})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fulfill_request_body_length_byte_semantics() {
-    // bodyLength is byte length, not char count. Multi-byte UTF-8 counts bytes.
-    // "héllo" → h(1) é(2) l(1) l(1) o(1) = 6 bytes
-    let r = ok_result(
-        "Fetch.fulfillRequest",
-        Some(json!({
-            "requestId": "r1", "body": "héllo"
-        })),
-    );
-    assert_eq!(r["bodyLength"], "héllo".len());
-    assert_eq!(
-        r["bodyLength"], 6,
-        "multi-byte UTF-8 body must count bytes not chars"
-    );
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f2", "body": "hello"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fulfill_request_unicode_body() {
-    // Pure CJK body — 3 chars × 3 bytes = 9 bytes.
-    let r = ok_result(
-        "Fetch.fulfillRequest",
-        Some(json!({
-            "requestId": "r1", "body": "你好吗"
-        })),
-    );
-    assert_eq!(r["bodyLength"], 9);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f3", "body": "héllo"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_continue_request_missing_request_id() {
-    // No requestId param → empty string echoed back (params_str default).
-    let r = ok_result("Fetch.continueRequest", None);
-    assert_eq!(r["requestId"], "");
-    assert_eq!(r["continued"], true);
+    // REQ-CDP contract: no request interception facility —
+    // explicit error, never a canned success.
+    let resp = dispatch("Fetch.continueRequest", Some(json!({})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
 fn test_fetch_fail_request_missing_reason() {
-    let r = ok_result("Fetch.failRequest", Some(json!({"requestId": "r1"})));
-    assert_eq!(r["requestId"], "r1");
-    assert_eq!(r["failed"], true);
-    assert_eq!(r["reason"], "", "missing reason defaults to empty string");
+    // No request interception facility — explicit error regardless of the
+    // reason param (the "" default is gone with the canned face).
+    let resp = dispatch("Fetch.failRequest", Some(json!({"requestId": "r1"})));
+    let err = resp.error.expect("must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 #[test]
@@ -2212,7 +2175,6 @@ fn test_roundtrip_all_12_domains_success_have_no_error_key() {
         ("Overlay.enable", None),
         ("Debugger.enable", None),
         ("Log.enable", None),
-        ("Fetch.enable", None),
     ];
     for (method, params) in cases {
         let msg = CdpMessage {

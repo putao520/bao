@@ -3524,6 +3524,19 @@ impl BaoWebViewState {
         self.dedicated_worker_scopes.values().collect()
     }
 
+    /// Look up a DedicatedWorkerGlobalScope state by the Worker's script URL
+    /// (CDP worker targetId — the WorkerId is the script URL).
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:19]
+    pub fn dedicated_worker_scope_by_url(
+        &self,
+        url: &str,
+    ) -> Option<&DedicatedWorkerGlobalScopeState> {
+        self.dedicated_worker_scopes
+            .values()
+            .find(|scope| scope.worker_id.0 == url)
+    }
+
     // ─── Worker Script Loading State (REQ-BRW-004 / DF-WK-2) ───────────
 
     /// Register a script loading state for a Worker.
@@ -4105,6 +4118,19 @@ impl BaoWebViewState {
     /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope]
     pub fn shared_worker_scopes(&self) -> Vec<&SharedWorkerGlobalScopeState> {
         self.shared_worker_scopes.values().collect()
+    }
+
+    /// Look up a SharedWorkerGlobalScope state by the Worker's script URL
+    /// (CDP worker targetId — first match when several share a script URL).
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope] [criterion:19]
+    pub fn shared_worker_scope_by_script_url(
+        &self,
+        script_url: &str,
+    ) -> Option<&SharedWorkerGlobalScopeState> {
+        self.shared_worker_scopes
+            .values()
+            .find(|scope| scope.shared_worker_id.script_url == script_url)
     }
 
     /// Set the SharedWorker scope config from the first connecting page's StealthProfile.

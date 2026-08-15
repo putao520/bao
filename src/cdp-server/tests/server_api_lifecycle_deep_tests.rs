@@ -725,7 +725,7 @@ fn test_cdp_message_parse_minimal() {
 #[test]
 fn test_cdp_message_parse_full() {
     let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":42,"method":"Page.navigate","params":{"url":"http://x"},"session_id":"s1"}"#,
+        r#"{"id":42,"method":"Page.navigate","params":{"url":"http://x"},"sessionId":"s1"}"#,
     )
     .unwrap();
     assert_eq!(msg.id, Some(42));

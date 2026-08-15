@@ -580,7 +580,7 @@ fn test_cdp_message_params_null_vs_absent() {
 #[test]
 fn test_cdp_message_session_id_roundtrip() {
     // C5: JSON-RPC parsing must accept session_id (flat, non-array).
-    let raw = r#"{"id":7,"method":"Runtime.evaluate","session_id":"flat-session-1"}"#;
+    let raw = r#"{"id":7,"method":"Runtime.evaluate","sessionId":"flat-session-1"}"#;
     let msg: CdpMessage = serde_json::from_str(raw).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some("flat-session-1"));
 }
@@ -1416,7 +1416,7 @@ fn test_event_broadcaster_clone_shares_session_arc() {
     // internal map (HashMap<String, Arc<Mutex<CdpSession>>>).
     type SessionMap = Arc<
         std::sync::Mutex<
-            std::collections::HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>,
+            std::collections::HashMap<String, Arc<cdp_server::SessionHandle>>,
         >,
     >;
     // We cannot easily construct a CdpSession (needs a WebSocket), so verify

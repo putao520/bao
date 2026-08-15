@@ -127,8 +127,12 @@ fn test_internal_input_dispatch_mouse() {
 
 #[test]
 fn test_internal_fetch_enable() {
+    // Fetch.enable is an explicit error: no request interception facility
+    // (the servo embedder does not expose request pausing).
     let resp = dispatch("Fetch.enable", None);
-    assert!(resp.result.is_some());
+    let err = resp.error.expect("Fetch.enable must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
 }
 
 #[test]
@@ -732,36 +736,35 @@ fn test_method_with_many_dots_splits_at_first() {
 
 #[test]
 fn test_target_domain_create_target_returns_target_id() {
+    // createTarget requires the servo bridge (a real page must be created);
+    // without one it is an explicit error — never an echo of the current
+    // target id.
     let resp = dispatch("Target.createTarget", Some(json!({"url":"http://x"})));
-    let result = resp.result.expect("createTarget must succeed");
-    assert_eq!(
-        result["targetId"], TID,
-        "createTarget echoes routed target_id"
-    );
+    let err = resp.error.expect("createTarget must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 #[test]
 fn test_target_domain_attach_returns_session_id() {
+    // Session minting lives in the WS session registry (bao_browser), the
+    // only component with a sessionId→target table — the stateless dispatch
+    // must refuse with an explicit error, never fabricate a sessionId.
     let resp = dispatch("Target.attachToTarget", Some(json!({"targetId":"t1"})));
-    let result = resp.result.expect("attachToTarget must succeed");
-    let sid = result["sessionId"]
-        .as_str()
-        .expect("sessionId must be a string");
-    assert!(!sid.is_empty(), "sessionId must be non-empty hex");
-    // sessionId is hex-formatted; verify hex-only characters.
-    assert!(
-        sid.chars().all(|c| c.is_ascii_hexdigit()),
-        "sessionId not hex: {}",
-        sid
-    );
+    let err = resp.error.expect("attachToTarget must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
 }
 
 #[test]
 fn test_target_domain_close_target_succeeds_without_bridge() {
-    // No bridge → closeTarget still returns success (fire-and-forget is skipped).
+    // Closing a page requires the servo bridge — a blocking round-trip whose
+    // success means the page was really closed. No bridge → explicit error,
+    // never a fire-and-forget fake success.
     let resp = dispatch("Target.closeTarget", Some(json!({"targetId":"t1"})));
-    let result = resp.result.expect("closeTarget must succeed");
-    assert_eq!(result["success"], true);
+    let err = resp.error.expect("closeTarget must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 #[test]
@@ -955,35 +958,36 @@ fn test_debugger_domain_set_breakpoint_by_url_returns_id() {
 
 #[test]
 fn test_fetch_domain_enable_pattern_count_reflected() {
+    // Fetch.enable is an explicit error regardless of pattern count — no
+    // interception facility exists.
     let resp = dispatch(
         "Fetch.enable",
         Some(json!({"patterns":[{"urlPattern":"*"},{"requestStage":"Response"}]})),
     );
-    let result = resp.result.expect("Fetch.enable must succeed");
-    assert_eq!(result["enabled"], true);
-    assert_eq!(
-        result["patternCount"], 2,
-        "patternCount reflects params.patterns.len()"
-    );
+    let err = resp.error.expect("Fetch.enable must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
 }
 
 #[test]
 fn test_fetch_domain_fail_request_echoes_reason() {
+    // failRequest is an explicit error — an interception that can never be
+    // enabled can never be failed.
     let resp = dispatch(
         "Fetch.failRequest",
         Some(json!({"requestId":"r-1","reason":"Failed"})),
     );
-    let result = resp.result.unwrap();
-    assert_eq!(result["requestId"], "r-1");
-    assert_eq!(result["failed"], true);
-    assert_eq!(result["reason"], "Failed");
+    let err = resp.error.expect("Fetch.failRequest must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
 }
 
 #[test]
 fn test_fetch_domain_enable_no_patterns_zero_count() {
     let resp = dispatch("Fetch.enable", None);
-    let result = resp.result.unwrap();
-    assert_eq!(result["patternCount"], 0);
+    let err = resp.error.expect("Fetch.enable must fail explicitly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
 }
 
 // ---- BridgeCommand variant coverage: multi-target + Debugger (REQ-CDP-003) ----
@@ -1577,20 +1581,14 @@ fn test_input_insert_text_empty_no_bridge_ok() {
 
 #[test]
 fn test_page_add_script_empty_source_rejected_invalid_params() {
-    // New contract (6983871b): empty source is an explicit -32602
-    // invalid-params error — identifier generation lives behind the bridge
-    // (the old hardcoded {"identifier":"1"} stub is eradicated).
+    // Chrome-compatible: an empty init script (Playwright's placeholder
+    // registration) is a no-op success with a fresh identifier.
     let resp = dispatch(
         "Page.addScriptToEvaluateOnNewDocument",
-        Some(json!({"source":""})),
+        Some(json!({"source": ""})),
     );
-    let err = resp.error.expect("empty source must be rejected");
-    assert_eq!(err.code, -32602);
-    assert!(
-        err.message.contains("source"),
-        "error message must name the missing param, got: {}",
-        err.message
-    );
+    let result = resp.result.expect("empty source registers as a no-op");
+    assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
 }
 
 // ---- handle_command: CdpMessage.params field is ignored (params passed separately) ----
@@ -1600,28 +1598,26 @@ fn test_page_add_script_empty_source_rejected_invalid_params() {
 #[test]
 fn test_handle_command_uses_external_params_not_msg_params() {
     // Adversarial intent preserved from the pre-6983871b test: routing must
-    // read the `params` ARG, never CdpMessage.params. Page.navigate no longer
-    // succeeds without a bridge (its canned frameId:"0" is eradicated), so the
-    // observable carrier is Fetch.enable, whose patternCount is derived purely
-    // from the params arg — mismatched msg.params must not leak into it.
+    // read the `params` ARG, never CdpMessage.params. Fetch.enable no longer
+    // succeeds (no interception facility — explicit error), so the observable
+    // carrier is Page.setContent's html param: its validation reads the
+    // params ARG only — mismatched msg.params must not leak into it.
     let msg = CdpMessage {
         id: Some(1),
-        method: "Fetch.enable".into(),
-        // Deliberately put a DIFFERENT pattern count in msg.params — it must
-        // be IGNORED.
-        params: Some(json!({"patterns":[{"urlPattern":"*"}]})),
+        method: "Page.setContent".into(),
+        // Deliberately put a VALID html in msg.params — it must be IGNORED.
+        params: Some(json!({"html":"<h1>from-msg-params</h1>"})),
         session_id: None,
     };
-    // Pass the authoritative 2-pattern set via the `params` arg.
-    let params = json!({"patterns":[{"urlPattern":"*"},{"requestStage":"Response"}]});
+    // Pass empty html via the authoritative `params` arg → invalid-params
+    // error (proving the arg, not msg.params, was read).
+    let params = json!({"html":""});
     let resp = handle_command(msg, TID, &Some(params), None);
-    let result = resp
-        .result
-        .expect("dispatch must succeed using the params arg, not msg.params");
-    assert_eq!(
-        result["patternCount"], 2,
-        "patternCount must reflect the params ARG (2), not msg.params (1)"
-    );
+    let err = resp
+        .error
+        .expect("empty html via the params arg must be rejected");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("non-empty html"));
 }
 
 // ---- handle_command: session_id field is accepted (does not crash dispatch) ----

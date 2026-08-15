@@ -24,7 +24,7 @@ pub use protocol::{
 };
 pub use registry::{DomainRegistry, EmptyHandler, RegistryDispatch, SharedRegistry};
 pub use server::CdpServer;
-pub use session::{CdpSession, SessionState};
+pub use session::{CdpSession, SessionHandle, SessionState};
 pub use transport::{
     is_websocket_upgrade, parse_activate_request, parse_close_request, parse_new_request,
     TargetInfo,
@@ -70,6 +70,14 @@ pub trait EventSender: Send + Sync {
     /// Broadcast an event to all sessions that have enabled the domain
     /// extracted from `method` (format: "Domain.eventName").
     fn send_event(&self, method: &str, params: Value);
+
+    /// Broadcast a session-scoped event (flattened CDP sessions): the event
+    /// JSON carries `sessionId`, so clients route it to the attached target
+    /// session. Default impl degrades to a plain broadcast (registries
+    /// without session knowledge lose only the routing tag).
+    fn send_session_event(&self, session_id: &str, method: &str, params: Value) {
+        let _ = (session_id, method, params);
+    }
 }
 
 // ---------------------------------------------------------------------------

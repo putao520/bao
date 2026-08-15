@@ -44,6 +44,11 @@ pub struct PageInner {
     pub viewport: PhysicalSize<u32>,
     pub stealth_profile: Option<bao_stealth::StealthProfile>,
     pub permission: PermissionGuard,
+    /// Per-page servo UserContentManager — the real navigation-replay
+    /// facility for scripts injected via CDP
+    /// Page.addScriptToEvaluateOnNewDocument (servo replays user scripts on
+    /// every new document load of the owning WebView).
+    pub user_content_manager: Option<Rc<servo::UserContentManager>>,
     pub last_active_at: RefCell<Instant>,
     pub created_at: Instant,
     /// Node Realm global object pointer for privileged evaluate_js (REQ-SEC-002).
@@ -844,6 +849,13 @@ impl PageHandle {
         )
         .delegate(Rc::clone(&webview_delegate) as Rc<dyn servo::WebViewDelegate>);
 
+        // Wire a per-page UserContentManager so CDP
+        // Page.addScriptToEvaluateOnNewDocument can register scripts that
+        // servo replays on every future document load (navigation replay —
+        // the servo-native facility, not a bao-side re-injection loop).
+        let user_content_manager = Rc::new(servo::UserContentManager::new(&servo));
+        builder = builder.user_content_manager(Rc::clone(&user_content_manager));
+
         if let Some(ref url_str) = config.url {
             let url = url::Url::parse(url_str)
                 .map_err(|e| BrowserError::Init(format!("invalid URL: {e}")))?;
@@ -866,6 +878,7 @@ impl PageHandle {
                 Some(perm) => PermissionGuard::new(perm.clone()),
                 None => PermissionGuard::none(),
             },
+            user_content_manager: Some(user_content_manager),
             last_active_at: RefCell::new(Instant::now()),
             created_at: Instant::now(),
             node_realm_global: RefCell::new(std::ptr::null_mut()),
@@ -944,6 +957,24 @@ impl PageHandle {
     /// page-level JS cannot access Node APIs (REQ-SEC-002/003).
     pub fn evaluate_js_web(&self, script: &str) -> Result<String, BrowserError> {
         self.with_inner(|inner| inner.evaluate_js_web(script))
+    }
+
+    /// Register a script that servo replays on every future document load of
+    /// this page (CDP Page.addScriptToEvaluateOnNewDocument backing).
+    ///
+    /// Real navigation replay through servo's UserContentManager: the script
+    /// is added to the page's user-content set and executed by the script
+    /// thread when each new document is created. Takes effect from the next
+    /// navigation (servo applies user-content updates on reload/navigation).
+    pub fn add_script_to_evaluate_on_new_document(&self, source: &str) -> Result<(), BrowserError> {
+        self.with_inner(|inner| {
+            let ucm = inner
+                .user_content_manager
+                .clone()
+                .ok_or_else(|| BrowserError::Init("page has no UserContentManager".into()))?;
+            ucm.add_script(Rc::new(servo::UserScript::new(source.to_string(), None)));
+            Ok(())
+        })
     }
 
     pub fn take_screenshot(&self, format: ScreenshotFormat) -> Result<Vec<u8>, BrowserError> {

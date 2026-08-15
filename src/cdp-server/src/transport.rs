@@ -78,7 +78,7 @@ pub fn is_websocket_upgrade(request: &str) -> bool {
 pub fn respond_json(stream: &mut TcpStream, value: &Value) {
     let body = value.to_string();
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     );

@@ -47,7 +47,7 @@ fn test_parse_request_with_nested_params() {
 #[test]
 fn test_parse_request_with_session_id() {
     let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":5,"method":"Runtime.evaluate","params":{"expression":"1+1"},"session_id":"sess_abc123"}"#,
+        r#"{"id":5,"method":"Runtime.evaluate","params":{"expression":"1+1"},"sessionId":"sess_abc123"}"#,
     ).unwrap();
     assert_eq!(msg.session_id, Some("sess_abc123".into()));
 }
@@ -961,7 +961,7 @@ fn test_session_id_roundtrip_preserved_on_parse() {
     // REQ-CDS-004-C6: session_id is parsed and available for flat-session routing.
     // (Wire field name is "session_id" per CdpMessage struct definition.)
     let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":99,"method":"Runtime.evaluate","params":{"expression":"1"},"session_id":"flat-xyz"}"#,
+        r#"{"id":99,"method":"Runtime.evaluate","params":{"expression":"1"},"sessionId":"flat-xyz"}"#,
     )
     .unwrap();
     assert_eq!(msg.session_id.as_deref(), Some("flat-xyz"));
@@ -970,7 +970,7 @@ fn test_session_id_roundtrip_preserved_on_parse() {
 #[test]
 fn test_session_id_unicode_preserved() {
     let msg: CdpMessage =
-        serde_json::from_str(r#"{"id":1,"method":"X.y","session_id":"会话-🎉"}"#).unwrap();
+        serde_json::from_str(r#"{"id":1,"method":"X.y","sessionId":"会话-🎉"}"#).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some("会话-🎉"));
 }
 
@@ -985,7 +985,7 @@ fn test_session_id_null_is_none() {
 fn test_session_id_empty_string_is_some_empty() {
     // Boundary: empty session_id is still Some("") (distinct from absent/null).
     let msg: CdpMessage =
-        serde_json::from_str(r#"{"id":1,"method":"X.y","session_id":""}"#).unwrap();
+        serde_json::from_str(r#"{"id":1,"method":"X.y","sessionId":""}"#).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some(""));
 }
 

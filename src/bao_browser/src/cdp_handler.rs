@@ -356,33 +356,48 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         // @trace REQ-BRW-004 [entity:Worker] [entity:ServiceWorker]
         BridgeCommand::ListWorkerTargets { target_id } => {
             with_page(pool, &target_id, |page| {
+                // Real worker registry: the per-webview scope tables populated
+                // by Worker construction (DEC-WK-001 native path). Every entry
+                // is a live Dedicated/Shared Worker owned by this page — no
+                // synthetic worker-N ids.
                 let state = page.webview_state();
-                let count = state.borrow().active_worker_count();
-                // Worker targets are identified by their script URL
-                let workers: Vec<Value> = (0..count)
-                    .map(|i| {
-                        serde_json::json!({
-                            "targetId": format!("worker-{}", i),
-                            "type": "worker",
-                            "title": format!("Worker #{}", i),
-                        })
-                    })
+                let st = state.borrow();
+                let mut workers: Vec<Value> = st
+                    .dedicated_worker_scopes()
+                    .into_iter()
+                    .map(|scope| worker_target_json(&scope.worker_id.0, "worker"))
                     .collect();
-                Ok(serde_json::json!({ "targetInfos": workers }))
+                workers.extend(
+                    st.shared_worker_scopes()
+                        .into_iter()
+                        .map(|scope| worker_target_json(&scope.shared_worker_id.script_url, "shared_worker")),
+                );
+                Ok(serde_json::json!({ "workerTargets": workers }))
             })
         }
         BridgeCommand::GetWorkerTargetInfo {
             target_id,
             worker_id,
-        } => with_page(pool, &target_id, |_page| {
-            Ok(serde_json::json!({
-                "targetInfo": {
-                    "targetId": worker_id,
-                    "type": "worker",
-                    "title": format!("Worker: {}", worker_id),
-                    "url": worker_id,
-                }
-            }))
+        } => with_page(pool, &target_id, |page| {
+            // Real registry lookup: the worker id must identify a registered
+            // Dedicated/Shared Worker scope — unknown ids are an explicit
+            // error, never a fabricated TargetInfo.
+            let state = page.webview_state();
+            let st = state.borrow();
+            if let Some(scope) = st.dedicated_worker_scope_by_url(&worker_id) {
+                return Ok(serde_json::json!({
+                    "targetInfo": worker_target_json(&scope.worker_id.0, "worker")
+                }));
+            }
+            if let Some(scope) = st.shared_worker_scope_by_script_url(&worker_id) {
+                return Ok(serde_json::json!({
+                    "targetInfo": worker_target_json(
+                        &scope.shared_worker_id.script_url,
+                        "shared_worker"
+                    )
+                }));
+            }
+            Err(format!("unknown worker targetId: {worker_id}"))
         }),
         BridgeCommand::ListServiceWorkerRegistrations { target_id } => {
             with_page(pool, &target_id, |page| {
@@ -492,11 +507,35 @@ fn cmd_create_target(pool: &PagePool, url: &str) -> Result<Value, String> {
 }
 
 fn cmd_list_targets(pool: &PagePool) -> Result<Value, String> {
+    // Real enumeration: every tracked page with its live title/url. Shape is
+    // the array form ServoTargetProvider::list_targets parses ({id,title,url}
+    // entries) — the previous {"targetIds": [...]} object never matched the
+    // provider, silently forcing the single-target fallback path.
     let stats = pool.stats();
-    let target_ids: Vec<String> = (1..=stats.active + stats.idle)
-        .map(|i| i.to_string())
-        .collect();
-    Ok(serde_json::json!({ "targetIds": target_ids }))
+    let mut targets: Vec<Value> = Vec::new();
+    for id in 1..=(stats.active + stats.idle) {
+        if let Some(page) = pool.get_page(id) {
+            targets.push(serde_json::json!({
+                "id": id.to_string(),
+                "title": page.page_title().unwrap_or_default(),
+                "url": page.current_url().unwrap_or_else(|| "about:blank".into()),
+            }));
+        }
+    }
+    Ok(serde_json::json!(targets))
+}
+
+/// CDP TargetInfo JSON for a Worker sub-target. `target_id` is the Worker's
+/// script URL (the WorkerId) — the real registry key, not a synthetic index.
+/// @trace REQ-BRW-004 [entity:Worker] [entity:SharedWorker] [criterion:19]
+fn worker_target_json(target_id: &str, target_type: &str) -> Value {
+    serde_json::json!({
+        "targetId": target_id,
+        "type": target_type,
+        "title": target_id,
+        "url": target_id,
+        "attached": false,
+    })
 }
 
 fn to_browser_error(e: BrowserError) -> String {
@@ -527,7 +566,11 @@ fn cmd_evaluate(
     expression: &str,
     return_by_value: bool,
 ) -> Result<Value, String> {
-    let result = page.evaluate_js(expression).map_err(to_browser_error)?;
+    // Web-scope evaluation (REQ-SEC-002/003): CDP Runtime.evaluate is the
+    // page's DevTools console — it must run in the Page Realm WITHOUT Node
+    // API injection. (The privileged evaluate_js face is bao-internal only
+    // and additionally does not survive navigation.)
+    let result = page.evaluate_js_web(expression).map_err(to_browser_error)?;
     if return_by_value {
         let parsed: Result<Value, _> = serde_json::from_str(&result);
         let (value_type, value) = match parsed {
@@ -687,7 +730,16 @@ fn cmd_set_user_agent(page: &PageHandle, ua: &str) -> Result<Value, String> {
 }
 
 fn cmd_add_script(page: &PageHandle, source: &str) -> Result<Value, String> {
-    let _ = page.evaluate_js(source).map_err(to_browser_error)?;
+    // Real navigation replay: the script is registered on the page's servo
+    // UserContentManager and re-executed by the script thread on every future
+    // document load. Additionally applied to the current document so it is
+    // observable without a reload (a superset of Chrome's new-documents-only
+    // semantics — both executions are real).
+    page.add_script_to_evaluate_on_new_document(source)
+        .map_err(to_browser_error)?;
+    // Web-scope for the immediate application (REQ-SEC-002/003): the script
+    // is a page-level init script, not privileged bao code.
+    let _ = page.evaluate_js_web(source).map_err(to_browser_error)?;
     Ok(serde_json::json!({ "identifier": next_cdp_id("script") }))
 }
 
@@ -1332,7 +1384,7 @@ fn cmd_runtime_call_function_on(
             try {{
                 var obj = {obj_ref};
                 var args = {args_js};
-                var fn = eval({func_json});
+                var fn = Function('return (' + {func_json} + ')')();
                 if (typeof fn !== 'function') return JSON.stringify({{"result": {{ type: 'undefined' }}, "exceptionDetails": null}});
                 var callResult = fn.apply(obj, args);
                 if ({rbv}) {{
@@ -1366,7 +1418,11 @@ fn cmd_runtime_call_function_on(
         rbv = rbv,
     );
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
-    parse_js_result(&result)
+    // The wrapper always returns JSON.stringify({result/exceptionDetails}) —
+    // an unparseable output is a real failure, never a silent {}.
+    serde_json::from_str(&result).map_err(|e| {
+        format!("Runtime.callFunctionOn: page did not return the wrapper JSON: {e} (got: {result:.200})")
+    })
 }
 
 fn json_type(v: &Value) -> &'static str {

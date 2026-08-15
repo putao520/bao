@@ -1,19 +1,19 @@
-// @trace REQ-STL-001 [level:e2e] — U2 phase 1: same page, same TLS
-// fingerprint across both page-network stacks.
+// @trace REQ-STL-001 [level:e2e] — same page, same TLS fingerprint across
+// the page-network stacks (U2 terminal: the bun bridge is the only page
+// path).
 //
-// With `BAO_PAGE_NET_BUN` scoped to `img,css` (phase 1 pilot), a servo page
-// loads its stylesheet/image subresources through the bun bridge
-// (bun HTTPThread + BoringSSL stealth SSLConfig from the page profile),
-// while the same page's `window.fetch` rides the Node fetch stack (also
-// bun HTTPThread, same-profile SSLConfig via stealth_http). A raw TCP
-// capture server records each ClientHello before anything else happens on
-// the wire, then the test asserts:
+// A servo page loads its stylesheet/image/script/xhr subresources through
+// the bun bridge (bun HTTPThread + BoringSSL stealth SSLConfig from the
+// page profile), while the same page's `window.fetch` rides the Node fetch
+// stack (also bun HTTPThread, same-profile SSLConfig via stealth_http). A
+// raw TCP capture server records each ClientHello before anything else
+// happens on the wire, then the test asserts:
 //
-//   1. ALPN parity with hyper: the bridge captures advertise
-//      `h2,http/1.1` regardless of the Node-fetch h2 gate — the page
-//      egress migrated from hyper-h2 and must not downgrade to h1 (the
-//      `Flags::is_page_egress` bypass; the gate itself is the single
-//      source `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT`, default ON).
+//   1. ALPN parity: the bridge captures advertise `h2,http/1.1`
+//      regardless of the Node-fetch h2 gate — the page egress must not
+//      downgrade to h1 (the `Flags::is_page_egress` bypass; the gate
+//      itself is the single source
+//      `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT`, default ON).
 //   2. Same-page same-fingerprint: the canonicalized ClientHello bytes
 //      (client_random / session_id zeroed — per-connection randomness) are
 //      IDENTICAL for bridge-img, bridge-css and window.fetch. This covers
@@ -498,10 +498,6 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
     // init_test — same leg as servo-net's bun_bridge unit tests).
     bun_core::Output::init_test();
 
-    // Phase 1 pilot scope: img + css through the bridge, everything else
-    // (script / xhr / document) keeps servo's hyper path.
-    net::fetch::bun_bridge::set_page_net_bun_destinations("img,css");
-
     let img_capture = CaptureServer::spawn();
     let css_capture = CaptureServer::spawn();
     let fetch_capture = CaptureServer::spawn();
@@ -734,24 +730,24 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
         img_hello.ja3_string()
     );
 
-    // ── Pilot dispatch scope ──────────────────────────────────────────────
-    // img + css went through the bridge (counter), script + xhr did not —
-    // they reached the fixture via servo's hyper path instead.
+    // ── Dispatch scope ────────────────────────────────────────────────────
+    // Every subresource destination rides the bridge: img + css (the
+    // fingerprint-captured ones) plus script + xhr.
 
     let bridge_count = net::fetch::bun_bridge::page_net_bun_request_count();
     assert_eq!(
-        bridge_count, 2,
-        "bridge must have driven exactly img+css (got {bridge_count}; fixture paths: {:?})",
+        bridge_count, 4,
+        "bridge must have driven img+css+script+xhr (got {bridge_count}; fixture paths: {:?})",
         fixture.paths()
     );
     let paths = fixture.paths();
     assert!(
         paths.iter().any(|p| p.contains("script_probe")),
-        "script request missing from hyper fixture: {paths:?}"
+        "script request missing from fixture: {paths:?}"
     );
     assert!(
         paths.iter().any(|p| p.contains("xhr_probe")),
-        "xhr request missing from hyper fixture: {paths:?}"
+        "xhr request missing from fixture: {paths:?}"
     );
 
     // ── h2 SETTINGS payload parity (code-level cross-check) ───────────────

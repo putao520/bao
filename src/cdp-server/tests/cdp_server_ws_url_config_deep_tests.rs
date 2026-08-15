@@ -164,7 +164,7 @@ fn test_broadcaster_clone() {
 #[test]
 fn test_cdp_message_deserialize_all_fields() {
     let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":42,"method":"Page.navigate","params":{"url":"http://x"},"session_id":"s1"}"#,
+        r#"{"id":42,"method":"Page.navigate","params":{"url":"http://x"},"sessionId":"s1"}"#,
     )
     .unwrap();
     assert_eq!(msg.id, Some(42));

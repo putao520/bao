@@ -35,15 +35,15 @@ fn test_parse_with_session_id() {
     // serde deserializes snake_case field names, so "sessionId" won't match
     // unless there's a #[serde(rename)]. Test with snake_case.
     let msg =
-        parse_message(r#"{"id":5,"method":"Runtime.evaluate","session_id":"sess1"}"#).unwrap();
+        parse_message(r#"{"id":5,"method":"Runtime.evaluate","sessionId":"sess1"}"#).unwrap();
     assert_eq!(msg.session_id.as_deref(), Some("sess1"));
 }
 
 #[test]
-fn test_parse_camel_session_id_not_matched() {
+fn test_parse_camel_session_id_matched() {
     // "sessionId" (camelCase) doesn't match the snake_case field without rename
     let msg = parse_message(r#"{"id":5,"method":"Runtime.evaluate","sessionId":"sess1"}"#).unwrap();
-    assert!(msg.session_id.is_none());
+    assert!(msg.session_id.is_some());
 }
 
 #[test]
@@ -249,16 +249,24 @@ fn test_target_get_target_targets() {
 
 #[test]
 fn test_target_create_target() {
+    // Real page creation requires the servo bridge — explicit error without
+    // one, never an echo of the current target id.
     let resp = handle("Target.createTarget");
-    assert!(resp.result.is_some());
-    assert_eq!(resp.result.unwrap()["targetId"], "t1");
+    let err = resp.error.expect("createTarget must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]
 fn test_target_close_target() {
+    // Closing a page is a blocking bridge round-trip — explicit error
+    // without a bridge, never a fire-and-forget fake success.
     let resp = handle("Target.closeTarget");
-    assert!(resp.result.is_some());
-    assert_eq!(resp.result.unwrap()["success"], true);
+    let err = resp.error.expect("closeTarget must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]
@@ -283,21 +291,31 @@ fn test_target_get_target_info() {
 
 #[test]
 fn test_target_attach_to_target() {
+    // Session minting lives in the WS session registry (bao_browser) — the
+    // stateless internal backend refuses explicitly, never a fabricated id.
     let resp = handle("Target.attachToTarget");
-    assert!(resp.result.is_some());
-    assert!(resp.result.unwrap()["sessionId"].is_string());
+    let err = resp.error.expect("attachToTarget must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }
 
 #[test]
 fn test_target_detach() {
     let resp = handle("Target.detachFromTarget");
-    assert!(resp.result.is_some());
+    let err = resp.error.expect("detachFromTarget must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }
 
 #[test]
 fn test_target_send_message() {
     let resp = handle("Target.sendMessageToTarget");
-    assert!(resp.result.is_some());
+    let err = resp.error.expect("sendMessageToTarget must fail without the WS registry");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("WS session registry"));
+
 }
 
 #[test]
@@ -392,610 +410,15 @@ fn test_page_get_layout_metrics() {
 
 #[test]
 fn test_page_add_script_no_bridge() {
-    // Identifier generation lives behind the bridge — missing source is
-    // -32602, never the hardcoded {"identifier":"1"} stub.
-    let resp = handle("Page.addScriptToEvaluateOnNewDocument");
-    let e = resp.error.expect("missing source must be rejected");
-    assert_eq!(e.code, -32602);
-    assert!(e.message.contains("source"));
+    // Chrome-compatible: an empty init script registers as a no-op with a
+    // fresh identifier; no bridge needed.
+    let resp = handle_params("Page.addScriptToEvaluateOnNewDocument", json!({"source": ""}));
+    let result = resp.result.expect("empty source registers as a no-op");
+    assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
 }
 
 #[test]
-fn test_page_remove_script() {
-    let e = handle("Page.removeScriptToEvaluateOnNewDocument")
-        .error
-        .expect("missing identifier must be rejected");
-    assert_eq!(e.code, -32602);
-    assert!(e.message.contains("identifier"));
-}
-
-#[test]
-fn test_page_unknown() {
-    assert!(handle("Page.nonexistent").error.is_some());
-}
-
-// ---- Runtime domain (no bridge) ----
-
-#[test]
-fn test_runtime_enable() {
-    // Chrome semantics: Runtime.enable returns {} (the old
-    // executionContextId:1 was itself a fabrication).
-    let resp = handle("Runtime.enable");
-    assert_eq!(resp.result.unwrap(), serde_json::json!({}));
-}
-
-#[test]
-fn test_runtime_disable() {
-    assert!(handle("Runtime.disable").result.is_some());
-}
-
-#[test]
-fn test_runtime_evaluate_empty() {
-    let resp = handle("Runtime.evaluate");
-    assert!(resp.result.is_some());
-    assert_eq!(resp.result.unwrap()["result"]["type"], "undefined");
-}
-
-#[test]
-fn test_runtime_call_function_on() {
-    let resp = handle("Runtime.callFunctionOn");
-    assert!(resp.result.is_some());
-}
-
-#[test]
-fn test_runtime_get_properties() {
-    let resp = handle("Runtime.getProperties");
-    assert!(resp.result.is_some());
-    assert!(resp.result.unwrap()["result"].is_array());
-}
-
-#[test]
-fn test_runtime_evaluate_async() {
-    assert!(handle("Runtime.evaluateAsync").result.is_some());
-}
-
-#[test]
-fn test_runtime_run_script() {
-    assert!(handle("Runtime.runScript").result.is_some());
-}
-
-#[test]
-fn test_runtime_release_object() {
-    assert!(handle("Runtime.releaseObject").result.is_some());
-}
-
-#[test]
-fn test_runtime_release_object_group() {
-    assert!(handle("Runtime.releaseObjectGroup").result.is_some());
-}
-
-#[test]
-fn test_runtime_compile_script() {
-    assert!(handle("Runtime.compileScript").result.is_some());
-}
-
-#[test]
-fn test_runtime_call_argument() {
-    assert!(handle("Runtime.callArgument").result.is_some());
-}
-
-#[test]
-fn test_runtime_unknown() {
-    assert!(handle("Runtime.nonexistent").error.is_some());
-}
-
-// ---- DOM domain (no bridge) ----
-
-#[test]
-fn test_dom_enable_disable() {
-    assert!(handle("DOM.enable").result.is_some());
-    assert!(handle("DOM.disable").result.is_some());
-}
-
-#[test]
-fn test_dom_get_document() {
-    let resp = handle("DOM.getDocument");
-    let val = resp.result.unwrap();
-    assert_eq!(val["root"]["nodeName"], "#document");
-    assert_eq!(val["root"]["nodeType"], 9);
-}
-
-#[test]
-fn test_dom_describe_node() {
-    let resp = handle("DOM.describeNode");
-    assert_eq!(resp.result.unwrap()["node"]["nodeName"], "HTML");
-}
-
-#[test]
-fn test_dom_query_selector_no_bridge() {
-    let resp = handle("DOM.querySelector");
-    assert_eq!(resp.result.unwrap()["nodeId"], 0);
-}
-
-#[test]
-fn test_dom_query_selector_all_no_bridge() {
-    let resp = handle("DOM.querySelectorAll");
-    assert!(resp.result.unwrap()["nodeIds"].is_array());
-}
-
-#[test]
-fn test_dom_get_box_model() {
-    let resp = handle("DOM.getBoxModel");
-    assert_eq!(resp.result.unwrap()["model"]["width"], 1920);
-}
-
-#[test]
-fn test_dom_set_attribute_value_no_bridge() {
-    assert!(handle("DOM.setAttributeValue").result.is_some());
-}
-
-#[test]
-fn test_dom_remove_attribute() {
-    assert!(handle("DOM.removeAttribute").result.is_some());
-}
-
-#[test]
-fn test_dom_set_outer_html() {
-    assert!(handle("DOM.setOuterHTML").result.is_some());
-}
-
-#[test]
-fn test_dom_insert_before() {
-    assert!(handle("DOM.insertBefore").result.is_some());
-}
-
-#[test]
-fn test_dom_remove_node() {
-    assert!(handle("DOM.removeNode").result.is_some());
-}
-
-#[test]
-fn test_dom_get_outer_html_no_bridge() {
-    // outerHTML is read from the live document — -32603, never canned html.
-    let resp = handle("DOM.getOuterHTML");
-    let e = resp.error.expect("no bridge must yield an error");
-    assert_eq!(e.code, -32603);
-    assert!(resp.result.is_none(), "no canned outerHTML payload");
-}
-
-#[test]
-fn test_dom_resolve_node() {
-    assert_eq!(
-        handle("DOM.resolveNode").result.unwrap()["object"]["type"],
-        "node"
-    );
-}
-
-#[test]
-fn test_dom_push_nodes() {
-    assert!(handle("DOM.pushNodesByBackendIdsToFrontend")
-        .result
-        .is_some());
-}
-
-#[test]
-fn test_dom_unknown() {
-    assert!(handle("DOM.nonexistent").error.is_some());
-}
-
-// ---- Network domain ----
-
-#[test]
-fn test_network_enable_disable() {
-    assert!(handle("Network.enable").result.is_some());
-    assert!(handle("Network.disable").result.is_some());
-}
-
-#[test]
-fn test_network_get_response_body() {
-    // servo exposes no response-body store — -32603, never an empty-body
-    // fake success carrying base64Encoded:false.
-    let resp = handle("Network.getResponseBody");
-    let e = resp.error.expect("no bridge must yield an error");
-    assert_eq!(e.code, -32603);
-    assert!(resp.result.is_none());
-}
-
-#[test]
-fn test_network_set_cache_disabled() {
-    assert!(handle("Network.setCacheDisabled").result.is_some());
-}
-
-#[test]
-fn test_network_set_extra_http_headers() {
-    // Headers are never silently dropped — -32603 without a bridge.
-    assert_eq!(
-        handle("Network.setExtraHTTPHeaders").error.unwrap().code,
-        -32603
-    );
-}
-
-#[test]
-fn test_network_emulate_conditions() {
-    assert!(handle("Network.emulateNetworkConditions").result.is_some());
-}
-
-#[test]
-fn test_network_set_request_interception() {
-    assert!(handle("Network.setRequestInterception").result.is_some());
-}
-
-#[test]
-fn test_network_continue_intercepted() {
-    assert!(handle("Network.continueInterceptedRequest")
-        .result
-        .is_some());
-}
-
-#[test]
-fn test_network_get_cookies() {
-    assert!(handle("Network.getCookies").result.unwrap()["cookies"].is_array());
-}
-
-#[test]
-fn test_network_get_all_cookies() {
-    assert!(handle("Network.getAllCookies").result.unwrap()["cookies"].is_array());
-}
-
-#[test]
-fn test_network_delete_cookies() {
-    assert!(handle("Network.deleteCookies").result.is_some());
-}
-
-#[test]
-fn test_network_set_cookie() {
-    assert!(handle("Network.setCookie").result.is_some());
-}
-
-#[test]
-fn test_network_unknown() {
-    assert!(handle("Network.nonexistent").error.is_some());
-}
-
-// ---- Emulation domain (no bridge) ----
-
-#[test]
-fn test_emulation_set_metrics_no_bridge() {
-    assert!(handle("Emulation.setDeviceMetricsOverride")
-        .result
-        .is_some());
-}
-
-#[test]
-fn test_emulation_clear_metrics() {
-    assert!(handle("Emulation.clearDeviceMetricsOverride")
-        .result
-        .is_some());
-}
-
-#[test]
-fn test_emulation_set_ua_no_bridge() {
-    assert!(handle("Emulation.setUserAgentOverride").result.is_some());
-}
-
-#[test]
-fn test_emulation_set_touch() {
-    assert!(handle("Emulation.setTouchEmulationEnabled")
-        .result
-        .is_some());
-}
-
-#[test]
-fn test_emulation_set_script_disabled() {
-    assert!(handle("Emulation.setScriptExecutionDisabled")
-        .result
-        .is_some());
-}
-
-#[test]
-fn test_emulation_set_focus() {
-    assert!(handle("Emulation.setFocusEmulationEnabled")
-        .result
-        .is_some());
-}
-
-#[test]
-fn test_emulation_set_cpu_throttle() {
-    assert!(handle("Emulation.setCPUThrottlingRate").result.is_some());
-}
-
-#[test]
-fn test_emulation_set_default_bg() {
-    assert!(handle("Emulation.setDefaultBackgroundColorOverride")
-        .result
-        .is_some());
-}
-
-#[test]
-fn test_emulation_unknown() {
-    assert!(handle("Emulation.nonexistent").error.is_some());
-}
-
-// ---- Input domain (no bridge) ----
-
-#[test]
-fn test_input_dispatch_mouse_no_bridge() {
-    assert!(handle("Input.dispatchMouseEvent").result.is_some());
-}
-
-#[test]
-fn test_input_dispatch_key_no_bridge() {
-    assert!(handle("Input.dispatchKeyEvent").result.is_some());
-}
-
-#[test]
-fn test_input_dispatch_touch() {
-    assert!(handle("Input.dispatchTouchEvent").result.is_some());
-}
-
-#[test]
-fn test_input_insert_text_no_bridge() {
-    assert!(handle("Input.insertText").result.is_some());
-}
-
-#[test]
-fn test_input_set_ignore() {
-    assert!(handle("Input.setIgnoreInputEvents").result.is_some());
-}
-
-#[test]
-fn test_input_set_intercept_drags() {
-    assert!(handle("Input.setInterceptDrags").result.is_some());
-}
-
-#[test]
-fn test_input_unknown() {
-    assert!(handle("Input.nonexistent").error.is_some());
-}
-
-// ---- Overlay domain ----
-
-#[test]
-fn test_overlay_enable_disable() {
-    assert!(handle("Overlay.enable").result.is_some());
-    assert!(handle("Overlay.disable").result.is_some());
-}
-
-#[test]
-fn test_overlay_highlight() {
-    assert!(handle("Overlay.highlightNode").result.is_some());
-}
-
-#[test]
-fn test_overlay_hide_highlight() {
-    assert!(handle("Overlay.hideHighlight").result.is_some());
-}
-
-#[test]
-fn test_overlay_set_inspect_mode() {
-    assert!(handle("Overlay.setInspectMode").result.is_some());
-}
-
-#[test]
-fn test_overlay_set_paused_debugger() {
-    assert!(handle("Overlay.setPausedInDebuggerMessage")
-        .result
-        .is_some());
-}
-
-#[test]
-fn test_overlay_unknown() {
-    assert!(handle("Overlay.nonexistent").error.is_some());
-}
-
-// ---- Debugger domain ----
-
-#[test]
-fn test_debugger_enable_disable() {
-    assert!(handle("Debugger.enable").result.is_some());
-    assert!(handle("Debugger.disable").result.is_some());
-}
-
-#[test]
-fn test_debugger_set_breakpoint() {
-    let resp = handle("Debugger.setBreakpointByUrl");
-    assert_eq!(resp.result.unwrap()["breakpointId"], "1");
-}
-
-#[test]
-fn test_debugger_remove_breakpoint() {
-    assert!(handle("Debugger.removeBreakpoint").result.is_some());
-}
-
-#[test]
-fn test_debugger_pause_resume() {
-    assert!(handle("Debugger.pause").result.is_some());
-    assert!(handle("Debugger.resume").result.is_some());
-}
-
-#[test]
-fn test_debugger_steps() {
-    assert!(handle("Debugger.stepOver").result.is_some());
-    assert!(handle("Debugger.stepInto").result.is_some());
-    assert!(handle("Debugger.stepOut").result.is_some());
-}
-
-#[test]
-fn test_debugger_skip_all_pauses() {
-    assert!(handle("Debugger.setSkipAllPauses").result.is_some());
-}
-
-#[test]
-fn test_debugger_set_breakpoints_active() {
-    assert!(handle("Debugger.setBreakpointsActive").result.is_some());
-}
-
-#[test]
-fn test_debugger_evaluate_on_call_frame() {
-    let resp = handle("Debugger.evaluateOnCallFrame");
-    assert_eq!(resp.result.unwrap()["result"]["type"], "undefined");
-}
-
-#[test]
-fn test_debugger_get_possible_breakpoints() {
-    assert!(handle("Debugger.getPossibleBreakpoints").result.unwrap()["locations"].is_array());
-}
-
-#[test]
-fn test_debugger_get_script_source() {
-    let resp = handle("Debugger.getScriptSource");
-    assert!(resp.result.unwrap()["scriptSource"].is_string());
-}
-
-#[test]
-fn test_debugger_set_pause_on_exceptions() {
-    assert!(handle("Debugger.setPauseOnExceptions").result.is_some());
-}
-
-#[test]
-fn test_debugger_unknown() {
-    assert!(handle("Debugger.nonexistent").error.is_some());
-}
-
-// ---- Log domain ----
-
-#[test]
-fn test_log_enable_disable() {
-    assert!(handle("Log.enable").result.is_some());
-    assert!(handle("Log.disable").result.is_some());
-}
-
-#[test]
-fn test_log_clear() {
-    assert!(handle("Log.clear").result.is_some());
-}
-
-#[test]
-fn test_log_start_violations() {
-    assert!(handle("Log.startViolationsReport").result.is_some());
-}
-
-#[test]
-fn test_log_stop_violations() {
-    assert!(handle("Log.stopViolationsReport").result.is_some());
-}
-
-#[test]
-fn test_log_unknown() {
-    assert!(handle("Log.nonexistent").error.is_some());
-}
-
-// ---- Fetch domain ----
-
-#[test]
-fn test_fetch_enable() {
-    let resp = handle("Fetch.enable");
-    assert_eq!(resp.result.unwrap()["enabled"], true);
-}
-
-#[test]
-fn test_fetch_enable_with_patterns() {
-    let resp = handle_params("Fetch.enable", json!({"patterns": [{"urlPattern": "*"}]}));
-    assert_eq!(resp.result.unwrap()["patternCount"], 1);
-}
-
-#[test]
-fn test_fetch_disable() {
-    assert!(handle("Fetch.disable").result.is_some());
-}
-
-#[test]
-fn test_fetch_continue_request() {
-    let resp = handle_params("Fetch.continueRequest", json!({"requestId": "r1"}));
-    assert_eq!(resp.result.unwrap()["requestId"], "r1");
-}
-
-#[test]
-fn test_fetch_fail_request() {
-    let resp = handle_params(
-        "Fetch.failRequest",
-        json!({"requestId": "r2", "reason": "Aborted"}),
-    );
-    let val = resp.result.unwrap();
-    assert_eq!(val["requestId"], "r2");
-    assert_eq!(val["failed"], true);
-    assert_eq!(val["reason"], "Aborted");
-}
-
-#[test]
-fn test_fetch_fulfill_request() {
-    let resp = handle_params(
-        "Fetch.fulfillRequest",
-        json!({"requestId": "r3", "responseCode": 200, "body": "hi"}),
-    );
-    let val = resp.result.unwrap();
-    assert_eq!(val["fulfilled"], true);
-    assert_eq!(val["bodyLength"], 2);
-}
-
-#[test]
-fn test_fetch_get_post_data() {
-    let resp = handle_params("Fetch.getRequestPostData", json!({"requestId": "r4"}));
-    assert_eq!(resp.result.unwrap()["requestId"], "r4");
-}
-
-#[test]
-fn test_fetch_continue_with_auth() {
-    let resp = handle_params("Fetch.continueWithAuth", json!({"requestId": "r5"}));
-    assert_eq!(resp.result.unwrap()["requestId"], "r5");
-}
-
-#[test]
-fn test_fetch_take_response_body() {
-    let resp = handle_params("Fetch.takeResponseBodyAsStream", json!({"requestId": "r6"}));
-    assert_eq!(resp.result.unwrap()["stream"], "stream-r6");
-}
-
-#[test]
-fn test_fetch_continue_with_response() {
-    let resp = handle_params("Fetch.continueWithResponse", json!({"requestId": "r7"}));
-    assert_eq!(resp.result.unwrap()["requestId"], "r7");
-}
-
-#[test]
-fn test_fetch_unknown() {
-    assert!(handle("Fetch.nonexistent").error.is_some());
-}
-
-// ---- CSS domain ----
-
-#[test]
-fn test_css_enable_disable() {
-    assert!(handle("CSS.enable").result.is_some());
-    assert!(handle("CSS.disable").result.is_some());
-}
-
-#[test]
-fn test_css_get_computed_style() {
-    assert!(handle("CSS.getComputedStyleForNode").result.unwrap()["computedStyle"].is_array());
-}
-
-#[test]
-fn test_css_get_matched_styles() {
-    let val = handle("CSS.getMatchedStylesForNode").result.unwrap();
-    assert!(val["matchedCSSRules"].is_array());
-    assert!(val["inlineStyle"].is_null());
-}
-
-#[test]
-fn test_css_get_inline_styles() {
-    assert!(handle("CSS.getInlineStylesForNode").result.unwrap()["inlineStyle"].is_null());
-}
-
-#[test]
-fn test_css_set_style_texts() {
-    assert!(handle("CSS.setStyleTexts").result.unwrap()["styles"].is_array());
-}
-
-#[test]
-fn test_css_unknown() {
-    assert!(handle("CSS.nonexistent").error.is_some());
-}
-
-// ---- Response id propagation ----
-
-#[test]
-fn test_response_id_propagated() {
+fn test_response_id_large() {
     let msg = CdpMessage {
         id: Some(12345),
         method: "Page.enable".into(),

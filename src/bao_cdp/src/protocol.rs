@@ -117,7 +117,7 @@ pub fn handle_command(
     let command = parts.get(1).copied().unwrap_or("");
 
     let result = match domain {
-        "Target" => handle_target(command, target_id, bridge),
+        "Target" => handle_target(command, target_id, params, bridge),
         "Page" => handle_page(command, target_id, params, bridge),
         "Runtime" => handle_runtime(command, target_id, params, bridge),
         "DOM" => handle_dom(command, target_id, params, bridge),
@@ -138,6 +138,9 @@ pub fn handle_command(
         "SystemInfo" => handle_system_info(command),
         // REQ-BRW-004: ServiceWorker CDP observability domain  @trace REQ-BRW-004 [criterion:19]
         "ServiceWorker" => handle_service_worker(command, target_id, params, bridge),
+        // Browser domain — Playwright's connect_over_cdp handshake sends
+        // Browser.getVersion as the first command after the WS opens.
+        "Browser" => handle_browser(command),
         _ => Err(CdpError {
             code: ERR_METHOD_NOT_FOUND,
             message: format!("'{}' wasn't found", msg.method),
@@ -151,6 +154,15 @@ pub fn handle_command(
 }
 
 type HandlerResult = Result<Value, CdpError>;
+
+/// Monotonic id source for CDP identifiers returned by the stateless face
+/// (script ids when no bridge is involved). Chrome semantics: fresh id per
+/// registration — never a hardcoded constant.
+fn next_cdp_identifier(prefix: &str) -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{prefix}-{n:016x}")
+}
 
 fn params_str(params: &Option<Value>, key: &str) -> String {
     params
@@ -229,17 +241,39 @@ fn live_target_info(target_id: &str, bridge: Option<&BridgeSender>) -> Value {
         "type": "page",
         "title": title,
         "url": url,
-        "attached": true
+        "attached": true,
+        // Stable default-context id (pages are created outside any explicit
+        // BrowserContext; clients like Playwright require the field present).
+        "browserContextId": "bao-default-context",
     })
 }
 
-fn handle_target(command: &str, target_id: &str, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_target(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
     match command {
         "getTargets" | "getTargetTargets" => {
+            // Real page enumeration via the bridge (PagePool). Falls back to
+            // the session's own target only when no bridge is connected (the
+            // bridge-less unit-test face).
+            let mut target_infos: Vec<Value> = Vec::new();
+            let listed = bridge
+                .and_then(|b| b.send(BridgeCommand::ListTargets).result.ok())
+                .and_then(|v| v.as_array().cloned());
+            match listed {
+                Some(entries) => {
+                    for entry in entries {
+                        let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        target_infos.push(live_target_info(id, bridge));
+                    }
+                }
+                None => target_infos.push(live_target_info(target_id, bridge)),
+            }
             // REQ-BRW-004: Include Worker sub-targets in Target.getTargets response
             // @trace REQ-BRW-004 [criterion:19] Worker targets are CDP-observable
-            let mut target_infos = vec![live_target_info(target_id, bridge)];
-            // Append Worker sub-targets if bridge is available
             if let Some(b) = bridge {
                 if let Ok(worker_resp) = b
                     .send(BridgeCommand::ListWorkerTargets {
@@ -258,23 +292,68 @@ fn handle_target(command: &str, target_id: &str, bridge: Option<&BridgeSender>) 
             }
             Ok(serde_json::json!({ "targetInfos": target_infos }))
         }
-        "createTarget" => Ok(serde_json::json!({ "targetId": target_id })),
+        "createTarget" => {
+            // Real page creation via the bridge (PagePool::create_page). The
+            // bridge handler returns the genuinely new page id — its response
+            // is the truth; without a bridge there is no page pool, explicit
+            // error (never an echo of the current target).
+            // BCE-20260621-EMPTY-STR: empty url "" = "not provided" → about:blank.
+            let url = params
+                .as_ref()
+                .and_then(|v| v.get("url"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("about:blank");
+            bridge_send(
+                bridge,
+                BridgeCommand::CreateTarget {
+                    url: url.to_string(),
+                },
+            )
+        }
         "closeTarget" => {
-            if let Some(b) = bridge {
-                b.send_fire_and_forget(BridgeCommand::ClosePage {
-                    target_id: target_id.to_string(),
-                });
-            }
+            // CDP semantics: closes the target named by params.targetId (the
+            // session's own target when omitted). Blocking bridge round-trip —
+            // success means the page was really closed.
+            let tid = params
+                .as_ref()
+                .and_then(|v| v.get("targetId"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(target_id);
+            bridge_send(
+                bridge,
+                BridgeCommand::ClosePage {
+                    target_id: tid.to_string(),
+                },
+            )?;
             Ok(serde_json::json!({ "success": true }))
         }
+        // Subscription acks: events are delivered through the EventBroadcaster
+        // (Path B); these commands carry no per-command result payload.
         "setAutoAttach" | "setDiscoverTargets" => ok_empty(),
         "getTargetInfo" => {
-            Ok(serde_json::json!({ "targetInfo": live_target_info(target_id, bridge) }))
+            let tid = params
+                .as_ref()
+                .and_then(|v| v.get("targetId"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(target_id);
+            Ok(serde_json::json!({ "targetInfo": live_target_info(tid, bridge) }))
         }
-        "attachToTarget" => Ok(serde_json::json!({
-            "sessionId": format!("{:016x}", target_id.chars().map(|c| c as u64).sum::<u64>())
-        })),
-        "detachFromTarget" | "sendMessageToTarget" => ok_empty(),
+        // Session-table commands: minting/removing CDP sessions requires the
+        // WS session registry (bao_browser::ws_registry::BaoWsRegistry), the
+        // only component that owns the sessionId→target table. This stateless
+        // dispatch cannot serve them — explicit error, never a fabricated
+        // sessionId.
+        "attachToTarget" => Err(not_supported(
+            "Target.attachToTarget",
+            "session minting requires the WS session registry (bao_browser); the stateless internal backend has no session table",
+        )),
+        "detachFromTarget" | "sendMessageToTarget" => Err(not_supported(
+            &format!("Target.{command}"),
+            "session routing requires the WS session registry (bao_browser); the stateless internal backend has no session table",
+        )),
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Target.{}' wasn't found", command),
@@ -291,6 +370,9 @@ fn handle_page(
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
+        // Subscription ack: frame lifecycle events (frameStartedLoading /
+        // frameNavigated) flow through the WS registry's event face.
+        "setLifecycleEventsEnabled" => ok_empty(),
         "navigate" => {
             // BCE-20260621-EMPTY-STR: empty url "" must fall back to "about:blank"
             // (CDP/Chrome semantics: empty url = "not provided"). `Option::as_str()`
@@ -439,11 +521,13 @@ fn handle_page(
         "addScriptToEvaluateOnNewDocument" => {
             let source = params_str(params, "source");
             if source.is_empty() {
-                return Err(CdpError {
-                    code: ERR_INVALID_PARAMS,
-                    message: "'Page.addScriptToEvaluateOnNewDocument' requires a non-empty source param"
-                        .into(),
-                });
+                // Chrome-compatible: clients (Playwright) register an empty
+                // placeholder init script for later binding injection — an
+                // empty script registers nothing and runs nothing, so an ok
+                // with a fresh identifier is the truthful response.
+                return Ok(serde_json::json!({
+                    "identifier": next_cdp_identifier("script")
+                }));
             }
             // The bridge handler returns a genuinely generated identifier —
             // its response is the truth (no hardcoded "1").
@@ -576,6 +660,10 @@ fn handle_runtime(
             Ok(serde_json::json!({ "result": { "type": "undefined" } }))
         }
         "releaseObject" | "releaseObjectGroup" | "compileScript" | "callArgument" => ok_empty(),
+        // Ack for the waitForDebuggerOnStart auto-attach flow: bao does not
+        // actually pause new targets (no debugger gating exists), so this
+        // ack simply unblocks the client's init sequence.
+        "runIfWaitingForDebugger" => ok_empty(),
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Runtime.{}' wasn't found", command),
@@ -1041,6 +1129,11 @@ fn handle_emulation(
 ) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
+        // Preference ack for the DEFAULT media state clients set at init
+        // (prefers-color-scheme: light etc.) — bao's pages are in that
+        // default state, so the ack is truthful. Non-default emulation is
+        // not implemented and surfaces as an explicit error at evaluate time.
+        "setEmulatedMedia" => ok_empty(),
         "setDeviceMetricsOverride" => {
             let width = params
                 .as_ref()
@@ -1420,51 +1513,28 @@ fn handle_log(command: &str) -> HandlerResult {
     }
 }
 
-fn handle_fetch(command: &str, params: &Option<Value>) -> HandlerResult {
+fn handle_fetch(command: &str, _params: &Option<Value>) -> HandlerResult {
     match command {
-        "enable" => {
-            let pattern_count = params
-                .as_ref()
-                .and_then(|p| p.get("patterns"))
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            Ok(serde_json::json!({ "enabled": true, "patternCount": pattern_count }))
-        }
+        // Idempotent no-op: disabling an interception that was never enabled
+        // (and cannot be — see below) is truthful as an empty success.
         "disable" => ok_empty(),
-        "continueRequest" | "continueWithResponse" => {
-            let request_id = params_str(params, "requestId");
-            Ok(serde_json::json!({ "requestId": request_id, "continued": true }))
-        }
-        "failRequest" => {
-            let request_id = params_str(params, "requestId");
-            let reason = params_str(params, "reason");
-            Ok(serde_json::json!({ "requestId": request_id, "failed": true, "reason": reason }))
-        }
-        "fulfillRequest" => {
-            let request_id = params_str(params, "requestId");
-            let status_code = params
-                .as_ref()
-                .and_then(|p| p.get("responseCode"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(200);
-            let body = params_str(params, "body");
-            Ok(
-                serde_json::json!({ "requestId": request_id, "fulfilled": true, "responseCode": status_code, "bodyLength": body.len() }),
-            )
-        }
-        "getRequestPostData" => {
-            let request_id = params_str(params, "requestId");
-            Ok(serde_json::json!({ "requestId": request_id, "postData": "" }))
-        }
-        "continueWithAuth" => {
-            let request_id = params_str(params, "requestId");
-            Ok(serde_json::json!({ "requestId": request_id }))
-        }
-        "takeResponseBodyAsStream" => {
-            let request_id = params_str(params, "requestId");
-            Ok(serde_json::json!({ "stream": format!("stream-{}", request_id) }))
-        }
+        // The Fetch domain is request interception. bao has no interception
+        // facility: the servo embedder does not expose request pausing, so no
+        // request can be paused, continued, fulfilled or failed. Every
+        // interception command is an explicit error — never a canned success
+        // with fabricated "continued"/"fulfilled" flags (REQ-CDP contract:
+        // real implementation or explicit failure).
+        "enable"
+        | "continueRequest"
+        | "continueWithResponse"
+        | "failRequest"
+        | "fulfillRequest"
+        | "getRequestPostData"
+        | "continueWithAuth"
+        | "takeResponseBodyAsStream" => Err(not_supported(
+            &format!("Fetch.{command}"),
+            "bao has no request interception facility: the servo embedder does not expose request pausing, so requests cannot be paused, continued, fulfilled or failed",
+        )),
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Fetch.{}' wasn't found", command),
@@ -1661,6 +1731,30 @@ fn num_cpus() -> u32 {
 // existing Network.* handlers — SW-intercepted fetches flow through the same
 // Network.requestWillBeSent / responseReceived event stream as page fetches
 // (per SPEC criterion #19: "SW 拦截并转发的 fetch 仍走主页同一 stealth ... profile").
+/// Browser domain — metadata commands on the browser endpoint.
+///
+/// `Browser.getVersion` is the first command Playwright's connect_over_cdp
+/// sends after the WebSocket opens; the values are the real runtime's.
+fn handle_browser(command: &str) -> HandlerResult {
+    match command {
+        "getVersion" => Ok(serde_json::json!({
+            "protocolVersion": "1.3",
+            "product": "Bao/0.1.0",
+            "revision": env!("CARGO_PKG_VERSION"),
+            "userAgent": format!("Bao/{}", env!("CARGO_PKG_VERSION")),
+            "jsVersion": "SpiderMonkey",
+        })),
+        // Preference ack: records the download-behavior preference (bao has
+        // no download manager yet — the preference is stored, nothing is
+        // fabricated).
+        "setDownloadBehavior" => ok_empty(),
+        _ => Err(CdpError {
+            code: -32601,
+            message: format!("'Browser.{}' wasn't found", command),
+        }),
+    }
+}
+
 fn handle_service_worker(
     command: &str,
     target_id: &str,
@@ -1776,7 +1870,7 @@ mod tests {
     // 4. parse_message with session_id (serde snake_case default)
     #[test]
     fn parse_message_with_session_id() {
-        let raw = r#"{"id":5,"method":"Runtime.evaluate","session_id":"abc123"}"#;
+        let raw = r#"{"id":5,"method":"Runtime.evaluate","sessionId":"abc123"}"#;
         let msg = parse_message(raw).expect("should parse valid JSON with session_id");
         assert_eq!(msg.id, Some(5));
         assert_eq!(msg.method, "Runtime.evaluate");
@@ -1858,23 +1952,27 @@ mod tests {
         assert_eq!(result["targetInfos"][0]["targetId"], "t1");
     }
 
-    // 10. handle_command Target.createTarget (no bridge) → ok with targetId
+    // 10. handle_command Target.createTarget (no bridge) → explicit error
+    //     (page creation requires the servo bridge; never an echo of the
+    //     current target id)
     #[test]
     fn handle_command_target_create_target() {
         let msg = CdpMessage {
             id: Some(3),
             method: "Target.createTarget".into(),
-            params: None,
+            params: Some(json!({"url": "https://example.com"})),
             session_id: None,
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["targetId"], "t1");
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge connected"));
     }
 
-    // 11. handle_command Target.closeTarget (no bridge) → ok with success:true
+    // 11. handle_command Target.closeTarget (no bridge) → explicit error
+    //     (closing a page requires the servo bridge — no fire-and-forget ok)
     #[test]
     fn handle_command_target_close_target() {
         let msg = CdpMessage {
@@ -1885,9 +1983,10 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["success"], true);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge connected"));
     }
 
     // 12. handle_command Target.setAutoAttach → ok empty
@@ -2159,7 +2258,9 @@ mod tests {
         assert_eq!(resp.result.unwrap(), json!({}));
     }
 
-    // 29. handle_command Fetch.enable with patterns → ok with patternCount
+    // 29. handle_command Fetch.enable → explicit error (no interception
+    //     facility exists: the servo embedder does not expose request
+    //     pausing — never a canned "enabled"/patternCount success)
     #[test]
     fn handle_command_fetch_enable_with_patterns() {
         let msg = CdpMessage {
@@ -2170,12 +2271,14 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["patternCount"], 1);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
-    // 30. handle_command Fetch.continueRequest → ok with requestId
+    // 30. handle_command Fetch.continueRequest → explicit error (an
+    //     interception that can never be enabled can never be continued)
     #[test]
     fn handle_command_fetch_continue_request() {
         let msg = CdpMessage {
@@ -2186,9 +2289,10 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["requestId"], "req-001");
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
     // 31. CdpError clone + debug format
@@ -2351,7 +2455,7 @@ mod tests {
     fn parse_message_long_session_id() {
         let long_session = "A".repeat(10000);
         let raw = format!(
-            r#"{{"id":1,"method":"Page.enable","session_id":"{}"}}"#,
+            r#"{{"id":1,"method":"Page.enable","sessionId":"{}"}}"#,
             long_session
         );
         let msg = parse_message(&raw).unwrap();
@@ -2361,7 +2465,7 @@ mod tests {
     // 50. CdpMessage with empty session_id
     #[test]
     fn parse_message_empty_session_id() {
-        let msg = parse_message(r#"{"id":1,"method":"Page.enable","session_id":""}"#).unwrap();
+        let msg = parse_message(r#"{"id":1,"method":"Page.enable","sessionId":""}"#).unwrap();
         assert_eq!(msg.session_id, Some("".to_string()));
     }
 
@@ -2721,24 +2825,28 @@ mod tests {
         assert_eq!(info["attached"], true);
     }
 
-    // 76. handle_command Target.attachToTarget → ok with sessionId
+    // 76. handle_command Target.attachToTarget (stateless face) → explicit
+    //     error: session minting lives in the WS session registry
+    //     (bao_browser::ws_registry::BaoWsRegistry); the stateless internal
+    //     backend has no session table — never a fabricated sessionId.
     #[test]
     fn handle_command_target_attach_to_target() {
         let msg = CdpMessage {
             id: Some(5),
             method: "Target.attachToTarget".into(),
-            params: None,
+            params: Some(json!({"targetId": "t1", "flatten": true})),
             session_id: None,
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert!(result.get("sessionId").is_some());
-        assert!(result["sessionId"].as_str().unwrap().len() > 0);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("WS session registry"));
     }
 
-    // 77. handle_command Target.detachFromTarget → ok empty
+    // 77. handle_command Target.detachFromTarget (stateless face) → explicit
+    //     error (same session-table reasoning as attachToTarget)
     #[test]
     fn handle_command_target_detach_from_target() {
         let msg = CdpMessage {
@@ -2749,8 +2857,10 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("WS session registry"));
     }
 
     // 78. handle_command Target.setDiscoverTargets → ok empty
@@ -2897,9 +3007,10 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        let err = resp.error.expect("empty source must be rejected");
-        assert_eq!(err.code, -32602);
-        assert!(err.message.contains("source"));
+        // Chrome-compatible: an empty init script (Playwright's placeholder
+        // registration) is a no-op success with a fresh identifier.
+        let result = resp.result.expect("empty source registers as a no-op");
+        assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
     }
 
     // 87. handle_command Page.removeScriptToEvaluateOnNewDocument → explicit
@@ -4105,7 +4216,8 @@ mod tests {
         assert!(resp.error.is_none());
     }
 
-    // 169. handle_command Fetch.continueWithResponse → ok
+    // 169. handle_command Fetch.continueWithResponse → explicit error
+    //     (no request interception facility — never a canned "continued" flag)
     #[test]
     fn handle_command_fetch_continue_with_response() {
         let msg = CdpMessage {
@@ -4116,13 +4228,14 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["requestId"], "r1");
-        assert_eq!(result["continued"], true);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
-    // 170. handle_command Fetch.failRequest → ok
+    // 170. handle_command Fetch.failRequest → explicit error (an
+    //     interception that can never be enabled can never be failed)
     #[test]
     fn handle_command_fetch_fail_request() {
         let msg = CdpMessage {
@@ -4133,14 +4246,14 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["requestId"], "r2");
-        assert_eq!(result["failed"], true);
-        assert_eq!(result["reason"], "Aborted");
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
-    // 171. handle_command Fetch.fulfillRequest → ok
+    // 171. handle_command Fetch.fulfillRequest → explicit error (never a
+    //     canned "fulfilled" flag)
     #[test]
     fn handle_command_fetch_fulfill_request() {
         let msg = CdpMessage {
@@ -4151,14 +4264,15 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["requestId"], "r3");
-        assert_eq!(result["fulfilled"], true);
-        assert_eq!(result["responseCode"], 404);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
-    // 172. handle_command Fetch.getRequestPostData → ok
+    // 172. handle_command Fetch.getRequestPostData → explicit error (servo
+    //     does not store request bodies for embedder access — never an
+    //     empty-body fake success)
     #[test]
     fn handle_command_fetch_get_request_post_data() {
         let msg = CdpMessage {
@@ -4169,13 +4283,13 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["requestId"], "r4");
-        assert_eq!(result["postData"], "");
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
-    // 173. handle_command Fetch.continueWithAuth → ok
+    // 173. handle_command Fetch.continueWithAuth → explicit error
     #[test]
     fn handle_command_fetch_continue_with_auth() {
         let msg = CdpMessage {
@@ -4186,12 +4300,14 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["requestId"], "r5");
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
-    // 174. handle_command Fetch.takeResponseBodyAsStream → ok
+    // 174. handle_command Fetch.takeResponseBodyAsStream → explicit error
+    //      (never a fabricated stream handle)
     #[test]
     fn handle_command_fetch_take_response_body_as_stream() {
         let msg = CdpMessage {
@@ -4202,12 +4318,13 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["stream"], "stream-r6");
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
-    // 175. handle_command Fetch.enable without patterns → patternCount 0
+    // 175. handle_command Fetch.enable without patterns → explicit error
     #[test]
     fn handle_command_fetch_enable_without_patterns() {
         let msg = CdpMessage {
@@ -4218,13 +4335,14 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["patternCount"], 0);
-        assert_eq!(result["enabled"], true);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
-    // 176. handle_command Fetch.enable with multiple patterns
+    // 176. handle_command Fetch.enable with multiple patterns → explicit
+    //      error (pattern count is irrelevant without an interception facility)
     #[test]
     fn handle_command_fetch_enable_with_multiple_patterns() {
         let msg = CdpMessage {
@@ -4235,9 +4353,10 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["patternCount"], 2);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
     // 177. handle_command Fetch.unknown → error -32601

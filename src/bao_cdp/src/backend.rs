@@ -291,15 +291,17 @@ mod tests {
         assert_eq!(result, serde_json::json!({}));
     }
 
-    // 12. Fetch.enable returns ok with patternCount
+    // 12. Fetch.enable → explicit error (no request interception facility —
+    //     never a canned enabled/patternCount success)
     #[test]
     fn internal_backend_send_command_fetch_enable_returns_ok() {
         let backend = InternalBackend::new();
         let params = Some(serde_json::json!({"patterns": [{"urlPattern": "*"}]}));
-        let result = backend
+        let err = backend
             .send_command("Fetch.enable", &params, "test-target")
-            .unwrap();
-        assert_eq!(result["patternCount"], 1);
+            .unwrap_err();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("no request interception facility"));
     }
 
     // 13. ExternalBackend::new with invalid endpoint still constructs (connects lazily)

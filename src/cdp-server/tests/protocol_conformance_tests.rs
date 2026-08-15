@@ -46,7 +46,7 @@ fn test_cdp_message_deserialize_no_id() {
 #[test]
 fn test_cdp_message_deserialize_with_session_id() {
     let msg: CdpMessage = serde_json::from_str(
-        r#"{"id":3,"method":"Runtime.evaluate","params":{"expression":"1+1"},"session_id":"abc123"}"#
+        r#"{"id":3,"method":"Runtime.evaluate","params":{"expression":"1+1"},"sessionId":"abc123"}"#
     ).unwrap();
     assert_eq!(msg.session_id, Some("abc123".to_string()));
     assert_eq!(msg.method, "Runtime.evaluate");
@@ -148,7 +148,7 @@ fn test_cdp_message_round_trip_serialize_deserialize() {
     // CdpMessage is Deserialize-only (no Serialize derive) — reconstruct via
     // JSON to prove the wire format the server parses is identical to what a
     // real CDP client sends.
-    let wire = r#"{"id":7,"method":"Page.navigate","params":{"url":"https://x.com"},"session_id":"sess-1"}"#;
+    let wire = r#"{"id":7,"method":"Page.navigate","params":{"url":"https://x.com"},"sessionId":"sess-1"}"#;
     let parsed: CdpMessage = serde_json::from_str(wire).unwrap();
     assert_eq!(parsed.id, original.id);
     assert_eq!(parsed.method, original.method);
@@ -160,7 +160,7 @@ fn test_cdp_message_round_trip_serialize_deserialize() {
 fn test_cdp_message_session_id_alone_without_params() {
     // REQ-CDS-004-C6: sessionId must be accepted even when params is absent.
     let msg: CdpMessage =
-        serde_json::from_str(r#"{"id":1,"method":"Target.detachFromTarget","session_id":"s2"}"#)
+        serde_json::from_str(r#"{"id":1,"method":"Target.detachFromTarget","sessionId":"s2"}"#)
             .unwrap();
     assert_eq!(msg.session_id, Some("s2".into()));
     assert!(msg.params.is_none());

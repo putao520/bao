@@ -25,7 +25,7 @@ pub struct CdpServer {
     registry: SharedRegistry,
     target_provider: Option<Arc<dyn TargetProvider>>,
     broadcaster: Arc<EventBroadcaster>,
-    sessions: Arc<Mutex<HashMap<String, Arc<Mutex<CdpSession>>>>>,
+    sessions: Arc<Mutex<HashMap<String, Arc<crate::session::SessionHandle>>>>,
     /// Receiver for typed console messages forwarded from servo delegates.
     /// Each message is either a structured CDP event (ConsoleMessage::Event)
     /// or a plain log (ConsoleMessage::Log).
@@ -116,12 +116,24 @@ impl CdpServer {
                 Err(e) => log::warn!("CDP accept error: {}", e),
             }
 
-            // Process existing sessions.
+            // Process existing sessions. The session map lock is released
+            // BEFORE processing: command dispatch may synchronously emit
+            // events through the EventBroadcaster, which locks the same map
+            // (deadlock if held here). Events land in per-session outboxes
+            // and are drained into the socket here, under the session lock.
             let mut to_remove = Vec::new();
             {
-                let sessions = self.sessions.lock().map_err(|e| format!("lock: {}", e))?;
-                for (id, session) in sessions.iter() {
-                    let mut session = match session.lock() {
+                let session_list: Vec<_> = {
+                    match self.sessions.lock() {
+                        Ok(sessions) => sessions
+                            .iter()
+                            .map(|(id, h)| (id.clone(), Arc::clone(h)))
+                            .collect(),
+                        Err(_) => Vec::new(),
+                    }
+                };
+                for (id, handle) in session_list {
+                    let mut session = match handle.session.lock() {
                         Ok(s) => s,
                         Err(_) => continue,
                     };
@@ -130,20 +142,38 @@ impl CdpServer {
                         .process(&self.registry, event_sender.as_ref())
                         .is_err()
                     {
-                        to_remove.push(id.clone());
                         let domains = session.enabled_domains();
                         let sid = session.session_id().to_string();
                         session.begin_close();
                         drop(session);
+                        to_remove.push(id);
                         self.registry.notify_session_destroyed(&domains, &sid);
+                        continue;
+                    }
+                    // Drain queued events into the socket (gating applied
+                    // here, where the session state is readable).
+                    let drained: Vec<_> = match handle.outbox.lock() {
+                        Ok(mut outbox) => outbox.drain(..).collect(),
+                        Err(_) => Vec::new(),
+                    };
+                    for entry in drained {
+                        let deliver = if entry.browser_only {
+                            session.is_browser_session()
+                        } else {
+                            session.is_browser_session()
+                                || session.has_domain_enabled(&entry.domain)
+                        };
+                        if deliver {
+                            let _ = session.send_text(&entry.json);
+                        }
                     }
                 }
             }
 
             for id in to_remove {
                 if let Ok(mut sessions) = self.sessions.lock() {
-                    if let Some(session) = sessions.remove(&id) {
-                        if let Ok(mut s) = session.lock() {
+                    if let Some(handle) = sessions.remove(&id) {
+                        if let Ok(mut s) = handle.session.lock() {
                             s.finalize();
                         }
                     }
@@ -300,7 +330,7 @@ impl CdpServer {
                 return;
             }
             if let Ok(mut sessions) = self.sessions.lock() {
-                sessions.insert(session_id, Arc::new(Mutex::new(session)));
+                sessions.insert(session_id, crate::session::SessionHandle::new(session));
             }
         } else {
             transport::respond_raw(

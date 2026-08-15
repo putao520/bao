@@ -32,7 +32,7 @@ fn test_parse_message_with_params() {
 
 #[test]
 fn test_parse_message_with_session_id() {
-    let raw = r#"{"id":3,"method":"Runtime.evaluate","params":{"expression":"1+1"},"session_id":"sess-abc"}"#;
+    let raw = r#"{"id":3,"method":"Runtime.evaluate","params":{"expression":"1+1"},"sessionId":"sess-abc"}"#;
     let msg = parse_message(raw).unwrap();
     assert_eq!(msg.session_id.unwrap(), "sess-abc");
 }
@@ -110,7 +110,7 @@ fn test_parse_message_unicode_method() {
 #[test]
 fn test_parse_message_long_session_id() {
     let sid = "a".repeat(1000);
-    let raw = format!(r#"{{"id":10,"method":"Test.run","session_id":"{}"}}"#, sid);
+    let raw = format!(r#"{{"id":10,"method":"Test.run","sessionId":"{}"}}"#, sid);
     let msg = parse_message(&raw).unwrap();
     assert_eq!(msg.session_id.unwrap().len(), 1000);
 }

@@ -12,7 +12,8 @@ pub struct CdpMessage {
     pub method: String,
     #[serde(default)]
     pub params: Option<Value>,
-    #[serde(default)]
+    /// Flattened-session routing tag (CDP wire field is camelCase).
+    #[serde(default, rename = "sessionId")]
     pub session_id: Option<String>,
 }
 
@@ -133,12 +134,18 @@ mod tests {
         assert_eq!(msg.id, Some(0));
     }
 
-    // 5. parse_message with session_id
+    // 5. parse_message with sessionId (flattened-session routing tag — the
+    //    CDP wire field is camelCase; snake_case never parsed, silently
+    //    breaking all flat-session routing before the rename)
     #[test]
     fn parse_session_id() {
-        let msg = parse_message(r#"{"id":5,"method":"Runtime.evaluate","session_id":"sess-abc"}"#)
+        let msg = parse_message(r#"{"id":5,"method":"Runtime.evaluate","sessionId":"sess-abc"}"#)
             .unwrap();
         assert_eq!(msg.session_id, Some("sess-abc".into()));
+        // snake_case is NOT a CDP wire field — it must not parse.
+        let snake = parse_message(r#"{"id":5,"method":"Runtime.evaluate","session_id":"x"}"#)
+            .unwrap();
+        assert_eq!(snake.session_id, None);
     }
 
     // 6. parse_message with nested params object

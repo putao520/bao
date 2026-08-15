@@ -218,10 +218,16 @@ fn test_send_command_log_enable() {
 
 #[test]
 fn test_send_command_fetch_enable() {
+    // No request interception facility — explicit error through the internal
+    // backend, never a canned success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t-1");
-    let result = router.send_command(session.session_id(), "Fetch.enable", None);
-    assert!(result.is_ok());
+    let err = router
+        .send_command(session.session_id(), "Fetch.enable", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no request interception facility"));
+
 }
 
 // ---- Error paths ----
@@ -493,17 +499,27 @@ fn test_internal_dispatch_runtime_get_properties() {
 
 #[test]
 fn test_internal_dispatch_target_create_target() {
-    let result = internal_dispatch(
+    // Real page creation requires the servo bridge — explicit error through
+    // the internal backend, never a targetId echo.
+    let resp = internal_dispatch_raw(
         "Target.createTarget",
         Some(json!({"url": "https://example.com"})),
     );
-    assert!(result.get("targetId").is_some());
+    let err = resp.error.expect("createTarget must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]
 fn test_internal_dispatch_target_close_target() {
-    let result = internal_dispatch("Target.closeTarget", Some(json!({"targetId": "abc"})));
-    assert!(result.get("success").is_some());
+    // Closing a page is a blocking bridge round-trip — explicit error
+    // without a bridge, never a fake success.
+    let resp = internal_dispatch_raw("Target.closeTarget", Some(json!({"targetId": "abc"})));
+    let err = resp.error.expect("closeTarget must fail without a bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+
 }
 
 #[test]

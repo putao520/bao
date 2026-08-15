@@ -65,7 +65,7 @@ fn test_cdp_message_unicode_method() {
 #[test]
 fn test_cdp_message_session_id_variants() {
     for sid in ["s-1", ""] {
-        let raw = format!(r#"{{"id":1,"method":"Test.run","session_id":"{}"}}"#, sid);
+        let raw = format!(r#"{{"id":1,"method":"Test.run","sessionId":"{}"}}"#, sid);
         let msg = parse_message(&raw).unwrap();
         assert_eq!(msg.session_id.unwrap(), sid);
     }
@@ -74,7 +74,7 @@ fn test_cdp_message_session_id_variants() {
 #[test]
 fn test_cdp_message_session_id_long() {
     let sid = "a".repeat(500);
-    let raw = format!(r#"{{"id":1,"method":"Test.run","session_id":"{}"}}"#, sid);
+    let raw = format!(r#"{{"id":1,"method":"Test.run","sessionId":"{}"}}"#, sid);
     let msg = parse_message(&raw).unwrap();
     assert_eq!(msg.session_id.unwrap().len(), 500);
 }
