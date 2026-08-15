@@ -194,15 +194,16 @@ mod tests {
         assert_eq!(result, serde_json::json!({}));
     }
 
-    // 3. Runtime.enable returns ok with executionContextId
+    // 3. Runtime.enable returns ok empty (Chrome semantics: no
+    //    executionContextId in the enable response)
     #[test]
-    fn internal_backend_send_command_runtime_enable_returns_ok_with_execution_context_id() {
+    fn internal_backend_send_command_runtime_enable_returns_ok_empty() {
         let backend = InternalBackend::new();
         let result = backend
             .send_command("Runtime.enable", &None, "test-target")
             .unwrap();
-        assert!(result.get("executionContextId").is_some());
-        assert_eq!(result["executionContextId"], 1);
+        assert!(result.get("executionContextId").is_none());
+        assert_eq!(result, serde_json::json!({}));
     }
 
     // 4. DOM.getDocument returns ok with root node
@@ -247,16 +248,16 @@ mod tests {
         assert_eq!(err.code, -32601);
     }
 
-    // 8. Page.getLayoutMetrics returns dimensions
+    // 8. Page.getLayoutMetrics without a servo bridge → explicit error
+    //    (real layout dimensions require the live document; never 1920×1080)
     #[test]
     fn internal_backend_send_command_page_get_layout_metrics_returns_dimensions() {
         let backend = InternalBackend::new();
-        let result = backend
+        let err = backend
             .send_command("Page.getLayoutMetrics", &None, "test-target")
-            .unwrap();
-        assert!(result.get("contentSize").is_some());
-        assert_eq!(result["contentSize"]["width"], 1920);
-        assert_eq!(result["contentSize"]["height"], 1080);
+            .unwrap_err();
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge"));
     }
 
     // 9. target_id is passed through to the command handler

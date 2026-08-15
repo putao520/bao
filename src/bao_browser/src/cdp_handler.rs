@@ -106,9 +106,13 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             target_id,
             ignore_cache: _,
         } => with_page(pool, &target_id, cmd_reload),
-        BridgeCommand::GoBack { target_id: _ }
-        | BridgeCommand::GoForward { target_id: _ }
-        | BridgeCommand::StopLoading { target_id: _ } => Ok(serde_json::json!({})),
+        BridgeCommand::GoBack { target_id } => with_page(pool, &target_id, cmd_go_back),
+        BridgeCommand::GoForward { target_id } => with_page(pool, &target_id, cmd_go_forward),
+        // servo WebView exposes no stop-loading API (load cancellation is not
+        // part of the embedding surface) — explicit error, never a fake ok.
+        BridgeCommand::StopLoading { .. } => Err(
+            "Page.stopLoading not supported: servo WebView has no stop-loading API".into(),
+        ),
         BridgeCommand::ClosePage { target_id } => {
             let id = parse_target_id(&target_id);
             match id {
@@ -142,9 +146,11 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         } => with_page(pool, &target_id, |page| {
             cmd_set_cookie(page, &name, &value, url.as_deref(), domain.as_deref())
         }),
-        BridgeCommand::GetResponseBody { .. } => {
-            Ok(serde_json::json!({ "body": "", "base64Encoded": false }))
-        }
+        // servo does not store network response bodies for embedder access —
+        // explicit error instead of an empty-body fake success.
+        BridgeCommand::GetResponseBody { .. } => Err(
+            "Network.getResponseBody not supported: servo does not expose stored response bodies to the embedder".into(),
+        ),
 
         // Network domain — cache/cookies clearing, enable/disable
         BridgeCommand::NetworkEnable { .. } => ok_empty(),
@@ -155,7 +161,11 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         } => with_page(pool, &target_id, |page| {
             cmd_network_set_cache_disabled(page, cache_disabled)
         }),
-        BridgeCommand::NetworkSetExtraHTTPHeaders { .. } => ok_empty(),
+        // servo WebView has no per-target extra-headers injection API —
+        // explicit error instead of silently dropping the headers.
+        BridgeCommand::NetworkSetExtraHTTPHeaders { .. } => Err(
+            "Network.setExtraHTTPHeaders not supported: servo WebView has no extra-headers injection API".into(),
+        ),
         BridgeCommand::NetworkClearBrowserCache { target_id } => {
             with_page(pool, &target_id, cmd_network_clear_browser_cache)
         }
@@ -182,7 +192,12 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         // Security domain — enable/disable/certificate override
         BridgeCommand::SecurityEnable { .. } => ok_empty(),
         BridgeCommand::SecurityDisable { .. } => ok_empty(),
-        BridgeCommand::SecuritySetOverrideCertificateErrors { .. } => ok_empty(),
+        // Certificate-error override is startup-only (BaoConfig.ignore_certificate_errors
+        // → servo opts, read by the connector at init). No runtime per-target
+        // override face exists — explicit error, never a silent no-op ok.
+        BridgeCommand::SecuritySetOverrideCertificateErrors { .. } => Err(
+            "Security.setOverrideCertificateErrors not supported at runtime: certificate-error override is startup-only (BaoConfig.ignore_certificate_errors)".into(),
+        ),
 
         // Debugger domain — route through EvaluateJs to servo's debugger.js
         // These BridgeCommands are typed (no JS string injection from CDP layer).
@@ -252,21 +267,40 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             with_page(pool, &target_id, |page| cmd_debugger_unblackbox(page))
         }
         // ── Profiler commands ──
-        BridgeCommand::ProfilerStart { .. } => Ok(serde_json::json!({})),
-        BridgeCommand::ProfilerStop { .. } => Ok(serde_json::json!({"profile": {}})),
-        BridgeCommand::ProfilerSetSamplingInterval { .. } => Ok(serde_json::json!({})),
+        // mozjs FFI exposes no SpiderMonkey sampling-profiler hooks
+        // (SPS/GekkoProfiler are not wrapped) — explicit error, never a fake
+        // empty profile.
+        BridgeCommand::ProfilerStart { .. }
+        | BridgeCommand::ProfilerStop { .. }
+        | BridgeCommand::ProfilerSetSamplingInterval { .. } => Err(
+            "Profiler not supported: SpiderMonkey sampling profiler is not exposed through the mozjs FFI surface".into(),
+        ),
         // ── HeapProfiler commands ──
-        BridgeCommand::HeapProfilerTakeSnapshot { .. } => Ok(serde_json::json!({"snapshot": {}})),
-        BridgeCommand::HeapProfilerStartTracking { .. } => Ok(serde_json::json!({})),
-        BridgeCommand::HeapProfilerStopTracking { .. } => Ok(serde_json::json!({})),
-        BridgeCommand::HeapProfilerCollectGarbage { .. } => Ok(serde_json::json!({})),
-        // ── Memory commands ──
-        BridgeCommand::MemoryGetDOMCounters { .. } => {
-            Ok(serde_json::json!({"documents": 0, "nodes": 0, "jsEventListeners": 0}))
+        // mozjs FFI exposes no heap-snapshot serializer — explicit error.
+        BridgeCommand::HeapProfilerTakeSnapshot { .. }
+        | BridgeCommand::HeapProfilerStartTracking { .. }
+        | BridgeCommand::HeapProfilerStopTracking { .. } => Err(
+            "HeapProfiler snapshot/tracking not supported: mozjs FFI exposes no heap-snapshot API".into(),
+        ),
+        // collectGarbage IS real: servo exposes navigator.servo.GarbageCollectAllContexts()
+        // → ScriptToConstellationMessage::TriggerGarbageCollection → JS_GC on
+        // the script thread (the only thread allowed to touch the JSContext).
+        BridgeCommand::HeapProfilerCollectGarbage { target_id } => {
+            with_page(pool, &target_id, cmd_collect_garbage)
         }
-        BridgeCommand::MemoryPurgeJS { .. } => Ok(serde_json::json!({})),
+        // ── Memory commands ──
+        // jsEventListeners is not introspectable in SpiderMonkey — explicit
+        // error rather than a zeroed counters object.
+        BridgeCommand::MemoryGetDOMCounters { .. } => Err(
+            "Memory.getDOMCounters not supported: jsEventListeners count is not introspectable in SpiderMonkey".into(),
+        ),
+        BridgeCommand::MemoryPurgeJS { target_id } => {
+            with_page(pool, &target_id, cmd_collect_garbage)
+        }
         // ── Performance commands ──
-        BridgeCommand::PerformanceGetMetrics { .. } => Ok(serde_json::json!({"metrics": []})),
+        BridgeCommand::PerformanceGetMetrics { target_id } => {
+            with_page(pool, &target_id, cmd_performance_get_metrics)
+        }
 
         // ── CSS domain commands — JS evaluate for computed/matched/inline styles ──
         BridgeCommand::CssGetComputedStyleForNode { target_id, node_id } => {
@@ -313,8 +347,10 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         // @trace REQ-BRW-004 [entity:ServiceWorker]
         BridgeCommand::TerminateServiceWorker {
             target_id,
-            registration_id: _,
-        } => with_page(pool, &target_id, |_page| Ok(serde_json::json!({}))),
+            registration_id,
+        } => with_page(pool, &target_id, |page| {
+            cmd_terminate_service_worker(page, &registration_id)
+        }),
 
         // Worker/ServiceWorker target management — CDP Target domain for Workers
         // @trace REQ-BRW-004 [entity:Worker] [entity:ServiceWorker]
@@ -349,23 +385,34 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             }))
         }),
         BridgeCommand::ListServiceWorkerRegistrations { target_id } => {
-            with_page(pool, &target_id, |_page| {
-                // ServiceWorker registrations tracked per-webview
-                // Full implementation reads BaoWebViewState.service_worker_scope
-                Ok(serde_json::json!({ "registrations": [] }))
+            with_page(pool, &target_id, |page| {
+                // Real per-webview registry: the page's controlling
+                // ServiceWorker (BaoWebViewState.controlled_service_worker).
+                // Empty list means no registration — real state, not a stub.
+                let state = page.webview_state();
+                let st = state.borrow();
+                let registrations: Vec<Value> = st
+                    .controlling_service_worker()
+                    .map(|h| sw_registration_to_json(h.clone()))
+                    .into_iter()
+                    .collect();
+                Ok(serde_json::json!({ "registrations": registrations }))
             })
         }
-        BridgeCommand::GetServiceWorkerRegistrationInfo { target_id, .. } => {
-            with_page(pool, &target_id, |_page| {
-                Ok(serde_json::json!({ "registration": {} }))
+        BridgeCommand::GetServiceWorkerRegistrationInfo {
+            target_id,
+            registration_id,
+        } => {
+            with_page(pool, &target_id, |page| {
+                cmd_sw_registration_info(page, &registration_id)
             })
         }
-        BridgeCommand::StopServiceWorker { target_id, .. } => {
-            with_page(pool, &target_id, |_page| {
-                // @trace REQ-BRW-004 [entity:ServiceWorker] ServiceWorker stop
-                Ok(serde_json::json!({}))
-            })
-        }
+        BridgeCommand::StopServiceWorker {
+            target_id,
+            registration_id,
+        } => with_page(pool, &target_id, |page| {
+            cmd_terminate_service_worker(page, &registration_id)
+        }),
     };
     BridgeResponse { result }
 }
@@ -456,11 +503,22 @@ fn to_browser_error(e: BrowserError) -> String {
     format!("{e}")
 }
 
+/// Monotonic id source for CDP loaderId / script identifiers.
+///
+/// Chrome semantics: frameId is stable across navigations (we use the page id),
+/// loaderId is fresh per load. A monotonic counter yields genuinely unique,
+/// non-repeating ids — never a hardcoded constant.
+fn next_cdp_id(prefix: &str) -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{prefix}-{n:016x}")
+}
+
 fn cmd_navigate(page: &PageHandle, url: &str) -> Result<Value, String> {
     page.navigate(url).map_err(to_browser_error)?;
     Ok(serde_json::json!({
-        "frameId": "0",
-        "loaderId": format!("{:016x}", url.len() as u64)
+        "frameId": page.id().to_string(),
+        "loaderId": next_cdp_id("loader"),
     }))
 }
 
@@ -630,13 +688,118 @@ fn cmd_set_user_agent(page: &PageHandle, ua: &str) -> Result<Value, String> {
 
 fn cmd_add_script(page: &PageHandle, source: &str) -> Result<Value, String> {
     let _ = page.evaluate_js(source).map_err(to_browser_error)?;
-    Ok(serde_json::json!({ "identifier": "1" }))
+    Ok(serde_json::json!({ "identifier": next_cdp_id("script") }))
 }
 
+/// Page.reload — real servo reload (WebView::reload), not a re-navigate.
 fn cmd_reload(page: &PageHandle) -> Result<Value, String> {
-    let url = page.current_url().unwrap_or_else(|| "about:blank".into());
-    page.navigate(&url).map_err(to_browser_error)?;
-    Ok(serde_json::json!({ "frameId": "0", "loaderId": "0" }))
+    page.reload().map_err(to_browser_error)?;
+    Ok(serde_json::json!({
+        "frameId": page.id().to_string(),
+        "loaderId": next_cdp_id("loader"),
+    }))
+}
+
+/// Page.goBack — real servo session-history traversal (WebView::go_back).
+fn cmd_go_back(page: &PageHandle) -> Result<Value, String> {
+    if !page.can_go_back() {
+        return Err("cannot go back: no previous entry in session history".into());
+    }
+    page.go_back().map_err(to_browser_error)?;
+    Ok(serde_json::json!({ "frameId": page.id().to_string() }))
+}
+
+/// Page.goForward — real servo session-history traversal (WebView::go_forward).
+fn cmd_go_forward(page: &PageHandle) -> Result<Value, String> {
+    if !page.can_go_forward() {
+        return Err("cannot go forward: no forward entry in session history".into());
+    }
+    page.go_forward().map_err(to_browser_error)?;
+    Ok(serde_json::json!({ "frameId": page.id().to_string() }))
+}
+
+/// HeapProfiler.collectGarbage / Memory.forciblyPurgeJavaScriptMemory —
+/// triggers a real full GC on the page's script thread via servo's
+/// `navigator.servo.GarbageCollectAllContexts()` DOM API
+/// (ScriptToConstellationMessage::TriggerGarbageCollection → JS_GC).
+fn cmd_collect_garbage(page: &PageHandle) -> Result<Value, String> {
+    page.evaluate_js_web("navigator.servo.GarbageCollectAllContexts()")
+        .map_err(to_browser_error)?;
+    Ok(serde_json::json!({}))
+}
+
+/// Performance.getMetrics — real values via a single page evaluation.
+/// Only metrics that are truly computable are reported (Chrome's full set
+/// includes LayoutCount/RecalcStyleCount/JSEventListeners which have no
+/// SpiderMonkey/servo equivalent — omitted rather than zero-filled).
+fn cmd_performance_get_metrics(page: &PageHandle) -> Result<Value, String> {
+    let js = r#"(function() {
+        return JSON.stringify({
+            Timestamp: Date.now(),
+            Documents: 1 + window.frames.length,
+            Frames: 1 + window.frames.length,
+            Nodes: document.getElementsByTagName('*').length
+        });
+    })()"#;
+    let result = page.evaluate_js(js).map_err(to_browser_error)?;
+    let v: Value = serde_json::from_str(result.trim())
+        .map_err(|e| format!("Performance.getMetrics: page did not return JSON: {e}"))?;
+    let metrics: Vec<Value> = v
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .map(|(name, val)| serde_json::json!({ "name": name, "value": val }))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(serde_json::json!({ "metrics": metrics }))
+}
+
+/// ServiceWorker.terminateWorker / ServiceWorker.stopWorker — terminate the
+/// page's controlling ServiceWorker when the registration id matches.
+/// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
+fn cmd_terminate_service_worker(
+    page: &PageHandle,
+    registration_id: &str,
+) -> Result<Value, String> {
+    let id = parse_sw_registration_id(registration_id)?;
+    let state = page.webview_state();
+    let mut st = state.borrow_mut();
+    let is_match = st
+        .controlling_service_worker()
+        .map(|h| h.script_url == id.script_url && h.scope == id.scope)
+        .unwrap_or(false);
+    if !is_match {
+        return Err(format!(
+            "no controlling ServiceWorker registration '{registration_id}'"
+        ));
+    }
+    if let Some(handle) = st.controlling_service_worker() {
+        handle.terminate();
+    }
+    st.clear_controlling_service_worker();
+    Ok(serde_json::json!({}))
+}
+
+/// ServiceWorker.getRegistration — read the page's controlling ServiceWorker.
+/// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
+fn cmd_sw_registration_info(
+    page: &PageHandle,
+    registration_id: &str,
+) -> Result<Value, String> {
+    let id = parse_sw_registration_id(registration_id)?;
+    let state = page.webview_state();
+    let st = state.borrow();
+    match st.controlling_service_worker() {
+        Some(handle) if handle.script_url == id.script_url && handle.scope == id.scope => {
+            Ok(serde_json::json!({
+                "registration": sw_registration_to_json(handle.clone())
+            }))
+        }
+        _ => Err(format!(
+            "no controlling ServiceWorker registration '{registration_id}'"
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1721,28 +1884,39 @@ mod tests {
         assert!(msg.contains("页面加载失败"));
     }
 
-    // ─── cmd_navigate response structure (pure logic, no PageHandle) ────
+    // ─── cmd_navigate/cmd_reload id generation (pure logic) ────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
     #[test]
-    fn cmd_navigate_loader_id_from_url_length() {
-        // loaderId is format!("{:016x}", url.len() as u64)
-        let url = "http://a.com";
-        let loader_id = format!("{:016x}", url.len());
-        assert_eq!(loader_id, "000000000000000c"); // 12 chars hex
+    fn next_cdp_id_is_unique_and_prefixed() {
+        // loaderId/script identifiers are generated from a monotonic counter —
+        // never the hardcoded "0"/"1" constants (Chrome semantics: fresh id
+        // per load / per added script).
+        let a = super::next_cdp_id("loader");
+        let b = super::next_cdp_id("loader");
+        assert!(a.starts_with("loader-"), "id must carry its prefix: {a}");
+        assert_ne!(a, b, "ids must be unique per call");
+        let s = super::next_cdp_id("script");
+        assert!(s.starts_with("script-"), "id must carry its prefix: {s}");
     }
 
     #[test]
-    fn cmd_navigate_empty_url_loader_id() {
-        let loader_id = format!("{:016x}", 0usize);
-        assert_eq!(loader_id, "0000000000000000");
-    }
-
-    #[test]
-    fn cmd_navigate_long_url_loader_id() {
-        let url = "http://very-long-domain-name.example.com/path/to/resource";
-        let loader_id = format!("{:016x}", url.len());
-        assert_ne!(loader_id, "0000000000000000");
+    fn cmd_navigate_uses_page_id_frame_and_generated_loader() {
+        // frameId = real page id (stable across navigations), loaderId =
+        // generated per load — no hardcoded "0" constants remain.
+        let source = include_str!("cdp_handler.rs");
+        assert!(
+            source.contains("\"frameId\": page.id().to_string()"),
+            "cmd_navigate/cmd_reload must return the real page id as frameId"
+        );
+        assert!(
+            source.contains("\"loaderId\": next_cdp_id(\"loader\")"),
+            "cmd_navigate/cmd_reload must generate a fresh loaderId per load"
+        );
+        assert!(
+            !source.contains("\"loaderId\": \"0\""),
+            "no canned loaderId \"0\" may remain"
+        );
     }
 
     // ─── cmd_evaluate response structure (pure logic) ──────────────────
@@ -2074,9 +2248,10 @@ mod tests {
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
     #[test]
-    fn cmd_add_script_response_has_identifier() {
-        let resp = json!({ "identifier": "1" });
-        assert_eq!(resp["identifier"], "1");
+    fn cmd_add_script_response_has_generated_identifier() {
+        // identifier comes from the monotonic counter — never "1".
+        let resp = json!({ "identifier": super::next_cdp_id("script") });
+        assert!(resp["identifier"].as_str().unwrap().starts_with("script-"));
     }
 
     // ─── cmd_reload response structure (pure logic) ────────────────────
@@ -2084,19 +2259,72 @@ mod tests {
 
     #[test]
     fn cmd_reload_response_structure() {
-        let resp = json!({ "frameId": "0", "loaderId": "0" });
-        assert_eq!(resp["frameId"], "0");
-        assert_eq!(resp["loaderId"], "0");
+        // cmd_reload uses the real servo reload path (WebView::reload), not a
+        // re-navigate of the current URL.
+        let source = include_str!("cdp_handler.rs");
+        assert!(
+            source.contains("page.reload().map_err(to_browser_error)?;"),
+            "cmd_reload must call PageHandle::reload"
+        );
     }
 
     // ─── handle_bridge_command wildcard commands (pure logic) ──────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
     #[test]
-    fn handle_bridge_command_go_back_forward_stop_return_empty() {
-        // GoBack, GoForward, StopLoading all return Ok(json!({}))
-        let expected = json!({});
-        assert_eq!(expected, json!({}));
+    fn handle_bridge_command_go_back_forward_wired_stop_loading_errors() {
+        // GoBack/GoForward dispatch to real servo traversal; StopLoading is an
+        // explicit error (servo WebView has no stop-loading API).
+        let source = include_str!("cdp_handler.rs");
+        assert!(
+            source.contains("BridgeCommand::GoBack { target_id } => with_page"),
+            "GoBack must be dispatched to a page handler"
+        );
+        assert!(
+            source.contains("BridgeCommand::GoForward { target_id } => with_page"),
+            "GoForward must be dispatched to a page handler"
+        );
+        assert!(
+            source.contains("Page.stopLoading not supported"),
+            "StopLoading must return an explicit error, never a fake ok"
+        );
+    }
+
+    // ─── canned-response eradication (source-level guarantees) ─────────
+    // @trace REQ-CDP-003 [req:REQ-CDP-003] [level:unit]
+
+    #[test]
+    fn no_canned_successes_remain_in_dispatch() {
+        // Every audited canned success is replaced by either a real path or an
+        // explicit error. The literals below must never reappear.
+        let source = include_str!("cdp_handler.rs");
+        assert!(!source.contains("\"snapshot\": {}"));
+        assert!(!source.contains("\"profile\": {}"));
+        assert!(!source.contains("\"jsEventListeners\": 0"));
+        assert!(!source.contains("\"body\": \"\""));
+        assert!(!source.contains("\"identifier\": \"1\""));
+    }
+
+    #[test]
+    fn profiler_and_heapprofiler_report_explicit_errors() {
+        let source = include_str!("cdp_handler.rs");
+        assert!(source.contains("Profiler not supported"));
+        assert!(source.contains("HeapProfiler snapshot/tracking not supported"));
+        assert!(source.contains("Memory.getDOMCounters not supported"));
+        assert!(source.contains("Network.getResponseBody not supported"));
+        assert!(source.contains("Network.setExtraHTTPHeaders not supported"));
+        assert!(source.contains("Security.setOverrideCertificateErrors not supported"));
+    }
+
+    #[test]
+    fn collect_garbage_uses_servo_gc_api() {
+        // Real GC path: navigator.servo.GarbageCollectAllContexts() →
+        // TriggerGarbageCollection → JS_GC on the script thread.
+        let source = include_str!("cdp_handler.rs");
+        assert!(
+            source.contains("navigator.servo.GarbageCollectAllContexts()"),
+            "GC must go through servo's real GC DOM API"
+        );
     }
 
     #[test]

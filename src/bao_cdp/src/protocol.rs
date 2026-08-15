@@ -38,6 +38,19 @@ use crate::servo_bridge::{BridgeCommand, BridgeSender};
 const ERR_METHOD_NOT_FOUND: i64 = -32601;
 // JSON-RPC 2.0 error code: parse error (fallback on serialize failure).
 const ERR_PARSE_ERROR: i64 = -32700;
+// JSON-RPC 2.0 error code: invalid params.
+const ERR_INVALID_PARAMS: i64 = -32602;
+// Chrome DevTools "server error" code used for not-supported commands.
+const ERR_NOT_SUPPORTED: i64 = -32000;
+
+/// Build a not-supported error for a command whose backing facility does not
+/// exist (servo/SM face absent). Explicit failure — never a canned success.
+fn not_supported(method: &str, reason: &str) -> CdpError {
+    CdpError {
+        code: ERR_NOT_SUPPORTED,
+        message: format!("'{method}' not supported: {reason}"),
+    }
+}
 
 /// Parse a raw JSON-RPC 2.0 request string into a [`CdpMessage`].
 ///
@@ -168,6 +181,28 @@ fn ok_empty() -> HandlerResult {
     Ok(serde_json::json!({}))
 }
 
+/// Evaluate a JS expression on the target and extract the JSON document it
+/// returns. The expression must produce `JSON.stringify(...)` output; the
+/// EvaluateJs bridge path parses it into `result.value` (an object).
+fn eval_json(bridge: Option<&BridgeSender>, tid: &str, expression: &str) -> HandlerResult {
+    let resp = bridge_send(
+        bridge,
+        BridgeCommand::EvaluateJs {
+            target_id: tid.to_string(),
+            expression: expression.to_string(),
+            return_by_value: true,
+        },
+    )?;
+    resp.get("result")
+        .and_then(|r| r.get("value"))
+        .cloned()
+        .filter(|v| v.is_object())
+        .ok_or_else(|| CdpError {
+            code: ERR_NOT_SUPPORTED,
+            message: "page query failed: target did not return a JSON document".into(),
+        })
+}
+
 fn live_target_info(target_id: &str, bridge: Option<&BridgeSender>) -> Value {
     let title = bridge
         .and_then(|b| {
@@ -267,22 +302,15 @@ fn handle_page(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or("about:blank");
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::Navigate {
-                        target_id: tid.clone(),
-                        url: url.to_string(),
-                    },
-                )?;
-            }
-            let loader_id = format!("{:016x}", url.len() as u64);
-            let resp = cdp_protocol::page::NavigateReturnObjectBuilder::default()
-                .frame_id("0".into())
-                .loader_id(Some(loader_id))
-                .build()
-                .expect("NavigateReturnObject build: frame_id is always set");
-            Ok(serde_json::to_value(resp).unwrap_or_default())
+            // The bridge handler returns the real frameId (page id) and a
+            // freshly generated loaderId — its response is the truth.
+            bridge_send(
+                bridge,
+                BridgeCommand::Navigate {
+                    target_id: tid,
+                    url: url.to_string(),
+                },
+            )
         }
         "reload" => {
             let ignore_cache = params
@@ -290,50 +318,39 @@ fn handle_page(
                 .and_then(|p| p.get("ignoreCache"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::Reload {
-                        target_id: tid.clone(),
-                        ignore_cache,
-                    },
-                )?;
-            }
-            Ok(serde_json::json!({ "frameId": "0", "loaderId": "0" }))
+            // Real servo reload; response carries real frameId + fresh loaderId.
+            bridge_send(
+                bridge,
+                BridgeCommand::Reload {
+                    target_id: tid,
+                    ignore_cache,
+                },
+            )
         }
         "getFrameTree" => {
-            let url = bridge
-                .and_then(|b| {
-                    b.send(BridgeCommand::GetUrl {
-                        target_id: tid.clone(),
-                    })
-                    .result
-                    .ok()
-                })
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "about:blank".into());
-            Ok(serde_json::json!({
-                "frameTree": {
-                    "frame": { "id": "0", "url": url, "loaderId": "0", "mimeType": "text/html" }
-                }
-            }))
+            // Real main-frame data: url/mimeType/name/securityOrigin read from
+            // the live document via evaluate; frameId = the page's stable id
+            // (same identifier navigate/reload report). Child frames are not
+            // enumerable from the embedder — none are fabricated.
+            let mut frame = eval_json(
+                bridge,
+                &tid,
+                r#"(function(){ return JSON.stringify({
+                    url: location.href,
+                    mimeType: document.contentType,
+                    name: window.name,
+                    securityOrigin: location.origin
+                }); })()"#,
+            )?;
+            if let Some(obj) = frame.as_object_mut() {
+                obj.insert("id".into(), serde_json::json!(tid));
+            }
+            Ok(serde_json::json!({ "frameTree": { "frame": frame } }))
         }
-        "getNavigationHistory" => {
-            let url = bridge
-                .and_then(|b| {
-                    b.send(BridgeCommand::GetUrl {
-                        target_id: tid.clone(),
-                    })
-                    .result
-                    .ok()
-                })
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "about:blank".into());
-            Ok(serde_json::json!({
-                "currentIndex": 0,
-                "entries": [{ "id": 0, "url": url, "title": "" }]
-            }))
-        }
+        "getNavigationHistory" => Err(not_supported(
+            "Page.getNavigationHistory",
+            "servo WebView does not expose session-history entry enumeration (only can_go_back/go_forward traversal)",
+        )),
         "captureScreenshot" => {
             let format = params
                 .as_ref()
@@ -346,38 +363,112 @@ fn handle_page(
                 .and_then(|p| p.get("quality"))
                 .and_then(|v| v.as_u64())
                 .map(|q| q as u8);
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::TakeScreenshot {
-                        target_id: tid.clone(),
-                        format,
-                        quality,
-                    },
-                )
-            } else {
-                Ok(serde_json::json!({ "data": "" }))
-            }
+            // Real webrender screenshot via the bridge; without a bridge there
+            // is no renderer — explicit error, never empty image data.
+            bridge_send(
+                bridge,
+                BridgeCommand::TakeScreenshot {
+                    target_id: tid,
+                    format,
+                    quality,
+                },
+            )
         }
-        "setContent" | "close" | "bringToFront" => ok_empty(),
-        "getLayoutMetrics" => Ok(serde_json::json!({
-            "contentSize": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
-            "cssContentSize": { "x": 0, "y": 0, "width": 1920, "height": 1080 }
-        })),
+        "setContent" => {
+            // Real path — mirrors PageHandle::set_content (document.open/
+            // write/close through the page's script thread).
+            let html = params_str(params, "html");
+            if html.is_empty() {
+                return Err(CdpError {
+                    code: ERR_INVALID_PARAMS,
+                    message: "'Page.setContent' requires a non-empty html param".into(),
+                });
+            }
+            let js = format!(
+                r#"(function() {{ document.open(); document.write({}); document.close(); }})()"#,
+                serde_json::to_string(&html).unwrap_or_default(),
+            );
+            bridge_send(
+                bridge,
+                BridgeCommand::EvaluateJs {
+                    target_id: tid,
+                    expression: js,
+                    return_by_value: true,
+                },
+            )?;
+            ok_empty()
+        }
+        "close" => {
+            // Real close — same path as Target.closeTarget (PagePool::close_page).
+            bridge_send(bridge, BridgeCommand::ClosePage { target_id: tid })?;
+            ok_empty()
+        }
+        "bringToFront" => {
+            // Real focus through the page's window (headless servo has no
+            // window manager; window.focus() is the DOM activation path).
+            bridge_send(
+                bridge,
+                BridgeCommand::EvaluateJs {
+                    target_id: tid,
+                    expression: "window.focus()".into(),
+                    return_by_value: true,
+                },
+            )?;
+            ok_empty()
+        }
+        "getLayoutMetrics" => {
+            // Real layout data read from the live document: viewport size from
+            // window.innerWidth/innerHeight, content extent from
+            // documentElement scroll size. No hardcoded 1920×1080.
+            let m = eval_json(
+                bridge,
+                &tid,
+                r#"(function(){ var d = document.documentElement;
+                    return JSON.stringify({
+                        iw: window.innerWidth, ih: window.innerHeight,
+                        cw: d.scrollWidth, ch: d.scrollHeight
+                    }); })()"#,
+            )?;
+            Ok(serde_json::json!({
+                "layoutViewport": { "x": 0, "y": 0, "width": m["iw"], "height": m["ih"] },
+                "contentSize": { "x": 0, "y": 0, "width": m["cw"], "height": m["ch"] },
+                "cssLayoutViewport": { "x": 0, "y": 0, "width": m["iw"], "height": m["ih"] },
+                "cssContentSize": { "x": 0, "y": 0, "width": m["cw"], "height": m["ch"] }
+            }))
+        }
         "addScriptToEvaluateOnNewDocument" => {
             let source = params_str(params, "source");
-            if bridge.is_some() && !source.is_empty() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::AddScriptToEvaluateOnNewDocument {
-                        target_id: tid.clone(),
-                        source,
-                    },
-                )?;
+            if source.is_empty() {
+                return Err(CdpError {
+                    code: ERR_INVALID_PARAMS,
+                    message: "'Page.addScriptToEvaluateOnNewDocument' requires a non-empty source param"
+                        .into(),
+                });
             }
-            Ok(serde_json::json!({ "identifier": "1" }))
+            // The bridge handler returns a genuinely generated identifier —
+            // its response is the truth (no hardcoded "1").
+            bridge_send(
+                bridge,
+                BridgeCommand::AddScriptToEvaluateOnNewDocument {
+                    target_id: tid,
+                    source,
+                },
+            )
         }
-        "removeScriptToEvaluateOnNewDocument" => ok_empty(),
+        "removeScriptToEvaluateOnNewDocument" => {
+            let identifier = params_str(params, "identifier");
+            if identifier.is_empty() {
+                return Err(CdpError {
+                    code: ERR_INVALID_PARAMS,
+                    message: "'Page.removeScriptToEvaluateOnNewDocument' requires an identifier param"
+                        .into(),
+                });
+            }
+            Err(not_supported(
+                "Page.removeScriptToEvaluateOnNewDocument",
+                "added scripts are not kept in a removable registry",
+            ))
+        }
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Page.{}' wasn't found", command),
@@ -393,7 +484,10 @@ fn handle_runtime(
 ) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
-        "enable" => Ok(serde_json::json!({ "executionContextId": 1 })),
+        // Chrome semantics: Runtime.enable returns {} and fires
+        // executionContextCreated events — there is no executionContextId in
+        // the response (that was a fabricated context id).
+        "enable" => ok_empty(),
         "disable" => ok_empty(),
         "evaluate" => {
             let expression = params
@@ -583,17 +677,15 @@ fn handle_dom(
                 .as_ref()
                 .and_then(|p| p.get("nodeId"))
                 .and_then(|v| v.as_i64());
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::GetOuterHtml {
-                        target_id: tid.clone(),
-                        node_id,
-                    },
-                )
-            } else {
-                Ok(serde_json::json!({ "outerHTML": "<html><body></body></html>" }))
-            }
+            // Real outerHTML via the page's document; without a bridge there
+            // is no document — explicit error, never canned html.
+            bridge_send(
+                bridge,
+                BridgeCommand::GetOuterHtml {
+                    target_id: tid,
+                    node_id,
+                },
+            )
         }
         "resolveNode" => Ok(serde_json::json!({ "object": { "type": "node" } })),
         "pushNodesByBackendIdsToFrontend" => Ok(serde_json::json!({ "nodeIds": [] })),
@@ -704,17 +796,16 @@ fn handle_network(
         }
         "getResponseBody" => {
             let request_id = params_str(params, "requestId");
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::GetResponseBody {
-                        target_id: tid,
-                        request_id,
-                    },
-                )
-            } else {
-                Ok(serde_json::json!({ "body": "", "base64Encoded": false }))
-            }
+            // The bridge handler reports the real availability — servo does
+            // not expose stored response bodies, so this resolves to an
+            // explicit error rather than an empty-body fake success.
+            bridge_send(
+                bridge,
+                BridgeCommand::GetResponseBody {
+                    target_id: tid,
+                    request_id,
+                },
+            )
         }
         "setCacheDisabled" => {
             let cache_disabled = params
@@ -739,16 +830,16 @@ fn handle_network(
                 .and_then(|p| p.get("headers"))
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::NetworkSetExtraHTTPHeaders {
-                        target_id: tid,
-                        headers,
-                    },
-                )?;
-            }
-            ok_empty()
+            // The bridge handler reports the real support status — servo has
+            // no per-target extra-headers API, so this resolves to an explicit
+            // error rather than silently dropping the headers.
+            bridge_send(
+                bridge,
+                BridgeCommand::NetworkSetExtraHTTPHeaders {
+                    target_id: tid,
+                    headers,
+                },
+            )
         }
         "clearBrowserCache" => {
             if bridge.is_some() {
@@ -1390,38 +1481,24 @@ fn handle_profiler(
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
-        "start" => {
-            if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::ProfilerStart { target_id: tid })
-            } else {
-                ok_empty()
-            }
-        }
-        "stop" => {
-            if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::ProfilerStop { target_id: tid })
-            } else {
-                // Stub: return empty profile when no bridge
-                Ok(serde_json::json!({ "profile": {} }))
-            }
-        }
+        // The bridge handler reports the real support status — the mozjs FFI
+        // surface exposes no SpiderMonkey sampling profiler, so these resolve
+        // to explicit errors rather than an empty-profile fake success.
+        "start" => bridge_send(bridge, BridgeCommand::ProfilerStart { target_id: tid }),
+        "stop" => bridge_send(bridge, BridgeCommand::ProfilerStop { target_id: tid }),
         "setSamplingInterval" => {
             let interval = params
                 .as_ref()
                 .and_then(|p| p.get("interval"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(1000) as u32;
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::ProfilerSetSamplingInterval {
-                        target_id: tid,
-                        interval,
-                    },
-                )
-            } else {
-                ok_empty()
-            }
+            bridge_send(
+                bridge,
+                BridgeCommand::ProfilerSetSamplingInterval {
+                    target_id: tid,
+                    interval,
+                },
+            )
         }
         _ => Err(CdpError {
             code: -32601,
@@ -1438,46 +1515,32 @@ fn handle_heap_profiler(
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
+        // Snapshot/tracking resolve to explicit errors at the bridge handler
+        // (no heap-snapshot API in the mozjs FFI surface); collectGarbage is
+        // REAL — it drives servo's GarbageCollectAllContexts → JS_GC.
         "takeHeapSnapshot" => {
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::HeapProfilerTakeSnapshot { target_id: tid },
-                )
-            } else {
-                // Stub: return empty snapshot when no bridge
-                Ok(serde_json::json!({}))
-            }
+            bridge_send(
+                bridge,
+                BridgeCommand::HeapProfilerTakeSnapshot { target_id: tid },
+            )
         }
         "startTrackingHeapObjects" => {
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::HeapProfilerStartTracking { target_id: tid },
-                )
-            } else {
-                ok_empty()
-            }
+            bridge_send(
+                bridge,
+                BridgeCommand::HeapProfilerStartTracking { target_id: tid },
+            )
         }
         "stopTrackingHeapObjects" => {
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::HeapProfilerStopTracking { target_id: tid },
-                )
-            } else {
-                ok_empty()
-            }
+            bridge_send(
+                bridge,
+                BridgeCommand::HeapProfilerStopTracking { target_id: tid },
+            )
         }
         "collectGarbage" => {
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::HeapProfilerCollectGarbage { target_id: tid },
-                )
-            } else {
-                ok_empty()
-            }
+            bridge_send(
+                bridge,
+                BridgeCommand::HeapProfilerCollectGarbage { target_id: tid },
+            )
         }
         _ => Err(CdpError {
             code: -32601,
@@ -1489,28 +1552,19 @@ fn handle_heap_profiler(
 fn handle_memory(command: &str, target_id: &str, bridge: Option<&BridgeSender>) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
+        // getDOMCounters resolves to an explicit error at the bridge handler
+        // (jsEventListeners is not introspectable in SpiderMonkey) — never a
+        // zeroed counters object. forciblyPurgeJavaScriptMemory is REAL — it
+        // drives servo's GarbageCollectAllContexts → JS_GC.
         "getDOMCounters" => {
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::MemoryGetDOMCounters { target_id: tid },
-                )
-            } else {
-                // Default zero values when no bridge
-                Ok(serde_json::json!({
-                    "documents": 0,
-                    "nodes": 0,
-                    "jsEventListeners": 0
-                }))
-            }
+            bridge_send(
+                bridge,
+                BridgeCommand::MemoryGetDOMCounters { target_id: tid },
+            )
         }
         "prepareForLeakDetection" => ok_empty(),
         "forciblyPurgeJavaScriptMemory" => {
-            if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::MemoryPurgeJS { target_id: tid })
-            } else {
-                ok_empty()
-            }
+            bridge_send(bridge, BridgeCommand::MemoryPurgeJS { target_id: tid })
         }
         _ => Err(CdpError {
             code: -32601,
@@ -1527,16 +1581,13 @@ fn handle_performance(
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
+        // Real metrics (Timestamp/Documents/Frames/Nodes) computed from the
+        // live document at the bridge handler — never an empty canned list.
         "getMetrics" => {
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::PerformanceGetMetrics { target_id: tid },
-                )
-            } else {
-                // Return empty metrics list when no bridge
-                Ok(serde_json::json!({ "metrics": [] }))
-            }
+            bridge_send(
+                bridge,
+                BridgeCommand::PerformanceGetMetrics { target_id: tid },
+            )
         }
         _ => Err(CdpError {
             code: -32601,
@@ -1869,7 +1920,8 @@ mod tests {
         assert_eq!(resp.result.unwrap(), json!({}));
     }
 
-    // 14. handle_command Page.getLayoutMetrics → ok with contentSize
+    // 14. handle_command Page.getLayoutMetrics (no bridge) → explicit error
+    //     (real layout data requires the servo bridge; never canned 1920×1080)
     #[test]
     fn handle_command_page_get_layout_metrics() {
         let msg = CdpMessage {
@@ -1880,14 +1932,13 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert!(result.get("contentSize").is_some());
-        assert_eq!(result["contentSize"]["width"], 1920);
-        assert_eq!(result["contentSize"]["height"], 1080);
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge"));
     }
 
-    // 15. handle_command Runtime.enable → ok with executionContextId
+    // 15. handle_command Runtime.enable → ok empty (Chrome semantics: no
+    //     executionContextId in the response)
     #[test]
     fn handle_command_runtime_enable() {
         let msg = CdpMessage {
@@ -1899,8 +1950,7 @@ mod tests {
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["executionContextId"], 1);
+        assert_eq!(resp.result.unwrap(), json!({}));
     }
 
     // 16. handle_command Runtime.evaluate (no bridge, empty expr) → undefined result
@@ -2734,7 +2784,9 @@ mod tests {
         assert!(result.get("targetInfos").unwrap().as_array().unwrap().len() > 0);
     }
 
-    // 80. handle_command Page.navigate (no bridge) → ok with default url
+    // 80. handle_command Page.navigate (no bridge) → explicit error
+    //     (navigation requires the servo bridge; the bridge response carries
+    //     the real frameId/loaderId — never fabricated here)
     #[test]
     fn handle_command_page_navigate_no_bridge_default_url() {
         let msg = CdpMessage {
@@ -2745,12 +2797,12 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert!(result.get("frameId").is_some());
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge"));
     }
 
-    // 81. handle_command Page.navigate (no bridge) with url param
+    // 81. handle_command Page.navigate (no bridge) with url param → explicit error
     #[test]
     fn handle_command_page_navigate_with_url() {
         let msg = CdpMessage {
@@ -2761,12 +2813,12 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert!(result.get("frameId").is_some());
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge"));
     }
 
-    // 82. handle_command Page.reload (no bridge) → ok
+    // 82. handle_command Page.reload (no bridge) → explicit error
     #[test]
     fn handle_command_page_reload_no_bridge() {
         let msg = CdpMessage {
@@ -2777,13 +2829,13 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["frameId"], "0");
-        assert_eq!(result["loaderId"], "0");
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge"));
     }
 
-    // 83. handle_command Page.getFrameTree (no bridge) → ok
+    // 83. handle_command Page.getFrameTree (no bridge) → explicit error
+    //     (frame data is read from the live document via the bridge)
     #[test]
     fn handle_command_page_get_frame_tree() {
         let msg = CdpMessage {
@@ -2794,15 +2846,13 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        let frame = result["frameTree"]["frame"].as_object().unwrap();
-        assert!(frame.contains_key("id"));
-        assert!(frame.contains_key("url"));
-        assert!(frame.contains_key("mimeType"));
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge"));
     }
 
-    // 84. handle_command Page.getNavigationHistory (no bridge) → ok
+    // 84. handle_command Page.getNavigationHistory → explicit not-supported error
+    //     (servo WebView exposes no session-history enumeration)
     #[test]
     fn handle_command_page_get_navigation_history() {
         let msg = CdpMessage {
@@ -2813,13 +2863,13 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["currentIndex"], 0);
-        assert!(result["entries"].is_array());
+        let err = resp.error.expect("history enumeration must fail loudly");
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("not supported"));
     }
 
-    // 85. handle_command Page.captureScreenshot (no bridge) → ok with empty data
+    // 85. handle_command Page.captureScreenshot (no bridge) → explicit error
+    //     (no renderer without the bridge — never empty image data)
     #[test]
     fn handle_command_page_capture_screenshot_no_bridge() {
         let msg = CdpMessage {
@@ -2830,12 +2880,13 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["data"], "");
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge"));
     }
 
-    // 86. handle_command Page.addScriptToEvaluateOnNewDocument (no bridge, empty source)
+    // 86. handle_command Page.addScriptToEvaluateOnNewDocument (empty source)
+    //     → invalid-params error (identifier generation lives behind the bridge)
     #[test]
     fn handle_command_page_add_script_empty_source() {
         let msg = CdpMessage {
@@ -2846,27 +2897,29 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["identifier"], "1");
+        let err = resp.error.expect("empty source must be rejected");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("source"));
     }
 
-    // 87. handle_command Page.removeScriptToEvaluateOnNewDocument → ok empty
+    // 87. handle_command Page.removeScriptToEvaluateOnNewDocument → explicit
+    //     not-supported error (no removable script registry exists)
     #[test]
     fn handle_command_page_remove_script() {
         let msg = CdpMessage {
             id: Some(16),
             method: "Page.removeScriptToEvaluateOnNewDocument".into(),
-            params: None,
+            params: Some(json!({"identifier": "script-1"})),
             session_id: None,
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
+        let err = resp.error.expect("removal must fail loudly");
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("not supported"));
     }
 
-    // 88. handle_command Page.setContent → ok empty
+    // 88. handle_command Page.setContent (no html param) → invalid-params error
     #[test]
     fn handle_command_page_set_content() {
         let msg = CdpMessage {
@@ -2877,11 +2930,12 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
+        let err = resp.error.expect("missing html must be rejected");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("html"));
     }
 
-    // 89. handle_command Page.close → ok empty
+    // 89. handle_command Page.close (no bridge) → explicit error
     #[test]
     fn handle_command_page_close() {
         let msg = CdpMessage {
@@ -2892,11 +2946,11 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
     }
 
-    // 90. handle_command Page.bringToFront → ok empty
+    // 90. handle_command Page.bringToFront (no bridge) → explicit error
     #[test]
     fn handle_command_page_bring_to_front() {
         let msg = CdpMessage {
@@ -2907,7 +2961,8 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
     }
 
     // 91. handle_command Page.disable → ok empty
@@ -3189,7 +3244,8 @@ mod tests {
         assert!(resp.error.is_none());
     }
 
-    // 110. handle_command DOM.getOuterHTML (no bridge) → ok with default html
+    // 110. handle_command DOM.getOuterHTML (no bridge) → explicit error
+    //      (outerHTML is read from the live document — never canned html)
     #[test]
     fn handle_command_dom_get_outer_html_no_bridge() {
         let msg = CdpMessage {
@@ -3200,9 +3256,8 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert!(result.get("outerHTML").is_some());
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
     }
 
     // 111. handle_command DOM.resolveNode → ok
@@ -3266,7 +3321,9 @@ mod tests {
         assert!(resp.error.is_none());
     }
 
-    // 115. handle_command Network.getResponseBody → ok
+    // 115. handle_command Network.getResponseBody (no bridge) → explicit error
+    //      (servo does not expose stored response bodies — fail loudly, never
+    //      return an empty-body fake success)
     #[test]
     fn handle_command_network_get_response_body() {
         let msg = CdpMessage {
@@ -3277,10 +3334,8 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["body"], "");
-        assert_eq!(result["base64Encoded"], false);
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
     }
 
     // 116. handle_command Network.setCacheDisabled → ok empty
@@ -3297,7 +3352,9 @@ mod tests {
         assert!(resp.error.is_none());
     }
 
-    // 117. handle_command Network.setExtraHTTPHeaders → ok empty
+    // 117. handle_command Network.setExtraHTTPHeaders (no bridge) → explicit error
+    //      (servo has no extra-headers injection API — the headers are never
+    //      silently dropped)
     #[test]
     fn handle_command_network_set_extra_http_headers() {
         let msg = CdpMessage {
@@ -3308,7 +3365,8 @@ mod tests {
         };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
-        assert!(resp.error.is_none());
+        let err = resp.error.expect("no bridge must yield an error");
+        assert_eq!(err.code, -32603);
     }
 
     // 118. handle_command Network.emulateNetworkConditions → ok empty
