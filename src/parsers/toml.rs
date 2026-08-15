@@ -483,3 +483,59 @@ impl<'a> TOML<'a> {
 }
 
 // ported from: src/interchange/toml.zig
+
+#[cfg(test)]
+mod stack_check_tests {
+    //! BCE sweep #15: `parse_value`'s `StackCheck` guard must fire on
+    //! pathological inline-table nesting (as an error, not a segfault) and
+    //! stay quiet on deep-but-legal nesting. Pre 2e9b2009 the inverted
+    //! direction made every TOML parse fail `StackOverflow` at depth 0.
+    //! (The Zig-era hard depth cap is gone — the note at `parse_value` says
+    //! the calibration test was to be re-based on the guard; these are it.)
+    //!
+    //! HARNESS NOTE: `Source::init_path_string` borrows through a
+    //! lifetime-erased `Str` (see the OWNERSHIP note on `IntoStr`), so the
+    //! contents buffer must outlive the parse — generated inputs therefore
+    //! go through `init_path_string_owned`. Passing a temporary Vec's
+    //! `.as_slice()` dangles and the lexer reads freed memory (found the
+    //! hard way during this sweep: flaky "Unexpected " errors at offset 0).
+    use super::*;
+
+    fn deep_inline_tables(depth: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(depth * 4 + 3);
+        v.extend_from_slice(b"a=");
+        for _ in 0..depth {
+            v.push(b'{');
+            v.extend_from_slice(b"a=");
+        }
+        v.push(b'1');
+        v.resize(v.len() + depth, b'}');
+        v.push(b'\n');
+        v
+    }
+
+    fn parse_toml(contents: Vec<u8>) -> Result<(), bun_core::Error> {
+        js_ast::initialize_store();
+        let _store_scope = js_ast::StoreResetGuard::new();
+        let mut log = bun_ast::Log::init();
+        let source = bun_ast::Source::init_path_string_owned("deep.toml", contents);
+        let bump = Bump::new();
+        TOML::parse(&source, &mut log, &bump, false).map(|_| ())
+    }
+
+    #[test]
+    fn deep_inline_tables_parse_at_depth_1000() {
+        parse_toml(deep_inline_tables(1000)).expect("depth-1000 inline tables must parse");
+    }
+
+    #[test]
+    fn stack_guard_errors_instead_of_crashing() {
+        // A depth far past any real stack: the guard must fire as
+        // `Err("StackOverflow")` — never a segfault. A direction regression
+        // fails the pair either way (inverted → the depth-1000 test errors
+        // at depth 0; fail-open → SIGSEGV here).
+        let err = parse_toml(deep_inline_tables(1_000_000))
+            .expect_err("1M-deep inline tables must not parse");
+        assert_eq!(err.name(), "StackOverflow");
+    }
+}

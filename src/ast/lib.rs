@@ -3764,3 +3764,14 @@ mod line_column_tracker_tests {
         }
     }
 }
+
+// Link seam for `__bun_crash_handler_out_of_memory`: bun_alloc resolves it at
+// link time against bun_crash_handler (higher-tier than this crate's test
+// binary). OOM aborts the process either way — a faithful test stub (same
+// shape as the http test binaries' seam).
+#[cfg(test)]
+#[unsafe(no_mangle)]
+extern "Rust" fn __bun_crash_handler_out_of_memory() -> ! {
+    eprintln!("bun: out of memory");
+    std::process::abort()
+}

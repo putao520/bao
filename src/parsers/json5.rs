@@ -1120,3 +1120,55 @@ fn is_ident_continue_ascii(c: u8) -> bool {
 }
 
 // ported from: src/interchange/json5.zig
+
+#[cfg(test)]
+mod stack_check_tests {
+    //! BCE sweep #15: the JSON5 parser's recursion guard (`parse_value` →
+    //! `StackCheck`) must neither fire spuriously on deep-but-legal input
+    //! nor stay silent until a segfault on pathological input. Pre 2e9b2009
+    //! the guard's direction was inverted (constant-false) and every parse
+    //! failed `StackOverflow` at depth 0.
+    use super::*;
+    use bun_ast::StoreResetGuard;
+
+    fn deep_array(depth: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(depth * 2 + 1);
+        v.resize(depth, b'[');
+        v.push(b'1');
+        v.resize(depth * 2 + 1, b']');
+        v
+    }
+
+    fn parse_bytes(contents: &[u8]) -> Result<Expr, ExternalError> {
+        bun_ast::initialize_store();
+        let _store_scope = StoreResetGuard::new();
+        let mut log = Log::init();
+        let source = Source::init_path_string("deep.json5", contents);
+        let bump = Bump::new();
+        let result = JSON5Parser::parse(&source, &mut log, &bump);
+        assert!(
+            log.msgs.is_empty(),
+            "unexpected log: {:?}",
+            bstr::BStr::new(&log.msgs[0].data.text)
+        );
+        result
+    }
+
+    #[test]
+    fn deep_array_parses_at_depth_1000() {
+        // `Expr` has no `Debug`, so no `.unwrap()` — match by hand.
+        let _ = parse_bytes(&deep_array(1000)).map(|_| ());
+    }
+
+    #[test]
+    fn stack_guard_errors_instead_of_crashing() {
+        // The guard's failure surfaces as `ExternalError::StackOverflow`:
+        // `Error::StackOverflow` refuses to log (`add_to_log` maps it to
+        // `AddToLogError::StackOverflow`), which the entry point re-maps.
+        let err = match parse_bytes(&deep_array(1_000_000)) {
+            Ok(_) => panic!("1M-deep array must not parse"),
+            Err(e) => e,
+        };
+        assert_eq!(err, ExternalError::StackOverflow);
+    }
+}

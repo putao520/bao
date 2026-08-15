@@ -3682,3 +3682,53 @@ mod js_to_number_tests {
 }
 
 // ported from: src/js_parser/ast/Expr.zig
+
+#[cfg(test)]
+mod known_primitive_stack_check_tests {
+    //! BCE sweep #15: `known_primitive_with_check` returns `Unknown` when
+    //! `is_safe_to_recurse()` is false. Pre 2e9b2009 the guard's direction
+    //! was inverted (`getMaxStack` returned the stack origin), so the check
+    //! was constant-false and EVERY expression reported `Unknown` —
+    //! primitive-type inference was silently dead for its consumers
+    //! (`fold_string_addition`, `known_global`, template folding). Unlike
+    //! the loud depth-0 parser failures, this degraded quietly.
+    use super::*;
+
+    #[test]
+    fn literals_report_their_primitive() {
+        crate::initialize_store();
+        let _store_scope = crate::StoreResetGuard::new();
+
+        let number = Expr::init(E::Number { value: 1.0 }, Loc::EMPTY);
+        assert_eq!(number.data.known_primitive(), PrimitiveType::Number);
+
+        let boolean = Expr::init(E::Boolean { value: true }, Loc::EMPTY);
+        assert_eq!(boolean.data.known_primitive(), PrimitiveType::Boolean);
+
+        let null = Expr::init(E::Null {}, Loc::EMPTY);
+        assert_eq!(null.data.known_primitive(), PrimitiveType::Null);
+
+        let undefined = Expr::init(E::Undefined {}, Loc::EMPTY);
+        assert_eq!(undefined.data.known_primitive(), PrimitiveType::Undefined);
+    }
+
+    #[test]
+    fn logical_and_of_numbers_merges_to_number() {
+        // Exercises the guarded recursion: `EBinary(BinLogicalAnd)` goes
+        // through `merge_known_primitive_with_check` → child
+        // `known_primitive_with_check` calls, which pre-fix all bailed to
+        // `Unknown` before looking at the node.
+        crate::initialize_store();
+        let _store_scope = crate::StoreResetGuard::new();
+
+        let expr = Expr::init(
+            E::Binary {
+                op: crate::OpCode::BinLogicalAnd,
+                left: Expr::init(E::Number { value: 1.0 }, Loc::EMPTY),
+                right: Expr::init(E::Number { value: 2.0 }, Loc::EMPTY),
+            },
+            Loc::EMPTY,
+        );
+        assert_eq!(expr.data.known_primitive(), PrimitiveType::Number);
+    }
+}

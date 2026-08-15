@@ -1370,16 +1370,20 @@ mod tests {
     // appearing in the main dep graph.
     use bun_js_printer as js_printer;
 
-    #[allow(dead_code)]
     fn expect_printed_json(_contents: &[u8], expected: &[u8]) -> Result<(), bun_core::Error> {
         // Zig: Expr.Data.Store.create(); Stmt.Data.Store.create(); defer { ..reset() }.
         // RAII: `StoreResetGuard` resets both thread-local AST stores on every
         // exit path (including `?`).
+        js_ast::initialize_store();
         let _store_scope = js_ast::StoreResetGuard::new();
 
-        let mut contents = vec![0u8; _contents.len() + 1];
-        contents[.._contents.len()].copy_from_slice(_contents);
-        *contents.last_mut().unwrap() = b';';
+        // PORT FIX (found by the BCE #15 sweep — this helper was dead code
+        // with zero tests, so its bug was invisible): the Zig original
+        // appended a `;` SENTINEL beyond `contents.len` (slice-with-sentinel
+        // type); the port stuffed it INTO the contents, and array parsing
+        // rejects the trailing byte. Rust slices carry their length — no
+        // sentinel needed.
+        let contents = _contents.to_vec();
         let mut log = bun_ast::Log::init();
 
         let source = bun_ast::Source::init_path_string("source.json", &contents[..]);
@@ -1422,6 +1426,73 @@ mod tests {
         assert_eq!(expected, js);
         Ok(())
     }
-}
 
-// ported from: src/interchange/json.zig
+    // ── BCE sweep #15 (StackCheck direction) ─────────────────────────────
+    //
+    // Pre 2e9b2009 `Bun__StackCheck__getMaxStack` returned the stack ORIGIN
+    // (high bound), so `is_safe_to_recurse()` was constant-false and every
+    // guarded path misbehaved at depth 0:
+    //   - Pattern A (`!safe → Err StackOverflow`): every parse failed before
+    //     reading a single token — loud, found via this very parser.
+    //   - Pattern B (`safe → recurse, else silent fallback`): see the
+    //     `known_primitive` regression in `src/ast/expr.rs`.
+    // These tests pin both directions: deep input parses/prints fine (the
+    // guard must NOT fire spuriously) and truly deep input errors
+    // `StackOverflow` instead of segfaulting (the guard must fire).
+    //
+    // This module previously had zero `#[test]` functions — the depth-0
+    // breakage was invisible because nothing exercised `parse` at all.
+
+    fn deep_array(depth: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(depth * 2 + 1);
+        v.resize(depth, b'[');
+        v.push(b'1');
+        v.resize(depth * 2 + 1, b']');
+        v
+    }
+
+    #[test]
+    fn deep_array_round_trips() {
+        // Depth 250 also exercises the printer's own `stack_check` on the
+        // way out (parse AND print are both guarded recursion).
+        let input = deep_array(250);
+        expect_printed_json(&input, &input).unwrap();
+    }
+
+    #[test]
+    fn deep_object_parses_at_depth_1000() {
+        js_ast::initialize_store();
+        let _store_scope = js_ast::StoreResetGuard::new();
+        let mut contents = Vec::with_capacity(1000 * 7 + 1);
+        for _ in 0..1000 {
+            contents.extend_from_slice(b"{\"a\":");
+        }
+        contents.push(b'1');
+        contents.resize(contents.len() + 1000, b'}');
+        let mut log = bun_ast::Log::init();
+        let source = bun_ast::Source::init_path_string("deep.json", contents.as_slice());
+        let bump = Bump::new();
+        // `Expr` has no `Debug`, so no `.unwrap()` — match by hand.
+        let _ = parse::<false>(&source, &mut log, &bump).map(|_| ());
+        assert!(log.msgs.is_empty());
+    }
+
+    #[test]
+    fn stack_guard_errors_instead_of_crashing() {
+        // 1M nesting levels exhaust any thread stack long before the input
+        // ends; the guard must fire as `Err("StackOverflow")`. A direction
+        // regression fails this test either way: inverted → error at depth 0
+        // on the shallow tests above; fail-open → SIGSEGV here.
+        js_ast::initialize_store();
+        let _store_scope = js_ast::StoreResetGuard::new();
+        let contents = deep_array(1_000_000);
+        let mut log = bun_ast::Log::init();
+        let source = bun_ast::Source::init_path_string("overflow.json", contents.as_slice());
+        let bump = Bump::new();
+        let err = match parse::<false>(&source, &mut log, &bump) {
+            Ok(_) => panic!("1M-deep array must not parse"),
+            Err(e) => e,
+        };
+        assert_eq!(err.name(), "StackOverflow");
+    }
+}

@@ -6232,3 +6232,75 @@ fn eq_ascii<Enc: Encoding>(s: &[Enc::Unit], lit: &[u8]) -> bool {
 // ───────────────────────────────────────────────────────────────────────────
 
 // ported from: src/interchange/yaml.zig
+
+#[cfg(test)]
+mod stack_check_tests {
+    //! BCE sweep #15: `parse_node`'s `StackCheck` guard must not fire
+    //! spuriously on deep-but-legal nesting. Pre 2e9b2009 the inverted
+    //! direction made every YAML parse fail `StackOverflow` at depth 0.
+    //!
+    //! HARNESS NOTE: `Source::init_path_string` borrows through a
+    //! lifetime-erased `Str`; generated inputs go through
+    //! `init_path_string_owned` so the contents buffer outlives the parse
+    //! (a temporary Vec's `.as_slice()` dangles — lexer then reads freed
+    //! memory).
+    use super::*;
+    use bun_alloc::Arena;
+    use bun_ast::StoreResetGuard;
+
+    fn deep_flow_map(depth: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(depth * 4 + 1);
+        for _ in 0..depth {
+            v.extend_from_slice(b"{a: ");
+        }
+        v.push(b'1');
+        for _ in 0..depth {
+            v.push(b'}');
+        }
+        v
+    }
+
+    fn parse_yaml(contents: Vec<u8>) -> Result<(), YamlParseError> {
+        bun_ast::initialize_store();
+        let _store_scope = StoreResetGuard::new();
+        let mut log = bun_ast::Log::init();
+        let source = bun_ast::Source::init_path_string_owned("deep.yaml", contents);
+        let arena = Arena::new();
+        YAML::parse(&source, &mut log, &arena).map(|_| ())
+    }
+
+    fn parse_yaml_on_thread(stack: usize, contents: Vec<u8>) -> Result<(), YamlParseError> {
+        std::thread::Builder::new()
+            .stack_size(stack)
+            .spawn(move || parse_yaml(contents))
+            .expect("spawn")
+            .join()
+            .expect("join")
+    }
+
+    #[test]
+    fn deep_flow_map_parses_at_depth_1000() {
+        // `parse_node` frames are large (Zig shipped a stackFallback buffer
+        // per level), so the guard legitimately fires near ~200 levels on a
+        // default ~2 MiB thread — depth 1000 needs real headroom, given here
+        // as a 32 MiB stack. The parse must then succeed: the guard may not
+        // fire spuriously while stack remains.
+        parse_yaml_on_thread(32 * 1024 * 1024, deep_flow_map(1000))
+            .expect("depth-1000 flow map must parse on a 32 MiB stack");
+    }
+
+    #[test]
+    fn stack_guard_errors_instead_of_crashing() {
+        // On any stack this depth is far past the limit; the guard must
+        // fire as an orderly error — never a segfault. (The entry point
+        // funnels guard failures through `add_to_log`; the observable tag
+        // is whichever of syntax/overflow the log path leaves.)
+        let err = parse_yaml_on_thread(32 * 1024 * 1024, deep_flow_map(1_000_000))
+            .expect_err("1M-deep flow map must not parse");
+        assert!(matches!(
+            err,
+            YamlParseError::SyntaxError | YamlParseError::StackOverflow
+        ));
+    }
+}
+
