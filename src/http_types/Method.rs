@@ -43,6 +43,13 @@ pub enum Method {
     UNLINK = 33,
     UNLOCK = 34,
     UNSUBSCRIBE = 35,
+    /// Sentinel for extension methods (tokens outside the closed registry,
+    /// e.g. WebDAV-adjacent or private `FOO`-style verbs). Never appears on
+    /// the wire as the literal "EXTENSION": the request builder overrides the
+    /// wire form with the per-client interned token
+    /// (`HTTPClient::extension_method`). Hyper-parity for the servo bridge —
+    /// the closed registry alone would fail custom methods closed.
+    EXTENSION = 36,
 }
 
 // Zig: `pub const fromJS = Map.fromJS;` and `pub const toJS = @import("../http_jsc/method_jsc.zig").toJS;`
@@ -97,11 +104,17 @@ impl Method {
             Method::UNLINK => "UNLINK",
             Method::UNLOCK => "UNLOCK",
             Method::UNSUBSCRIBE => "UNSUBSCRIBE",
+            // Marker only — the wire form is the client's extension token
+            // (see the variant doc). A bare EXTENSION without a token is a
+            // programming error; the request builder debug_asserts this.
+            Method::EXTENSION => "EXTENSION",
         }
     }
 
     pub fn has_body(self) -> bool {
         !matches!(self, Method::HEAD | Method::TRACE)
+        // EXTENSION falls through as body-capable (conservative default for
+        // unknown verbs — mirrors how hyper treats non-registered methods).
     }
 
     pub fn has_request_body(self) -> bool {
@@ -114,6 +127,9 @@ impl Method {
     /// Per RFC 7231 §4.2.2, idempotent methods are safe to retry on
     /// keep-alive connection resets. POST and PATCH are NOT idempotent
     /// and must not be silently retried.
+    /// EXTENSION is deliberately absent from the allow-list: an unregistered
+    /// verb's retry semantics are unknowable, so never silently retry it on a
+    /// connection reset.
     pub fn is_idempotent(self) -> bool {
         matches!(
             self,

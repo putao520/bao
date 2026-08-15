@@ -187,6 +187,7 @@ fn make_client<'a>(
 ) -> HTTPClient<'a> {
     HTTPClient {
         method,
+        extension_method: None,
         header_entries,
         header_buf,
         url,
@@ -283,6 +284,15 @@ pub struct Options<'a> {
     /// ALPN offer is stealth-profile driven (hyper parity) instead of
     /// `EXPERIMENTAL_HTTP2_CLIENT` gated. See `Flags::is_page_egress`.
     pub is_page_egress: Option<bool>,
+    /// Omit the default `Connection: keep-alive` header (hyper wire parity
+    /// for the servo page-egress bridge; see `Flags::omit_connection_header`).
+    pub omit_connection_header: Option<bool>,
+    /// Wire form for a method outside the closed registry
+    /// (`Method::EXTENSION`): the interned token from
+    /// [`crate::intern_extension_method`]. Hyper-parity for the servo
+    /// bridge (custom verbs like `FOO` must reach the wire, not fail
+    /// closed).
+    pub extension_method: Option<&'static [u8]>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -552,6 +562,13 @@ impl<'a> AsyncHTTP<'a> {
         }
         if let Some(val) = options.is_page_egress {
             this.client.flags.is_page_egress = val;
+        }
+        if let Some(val) = options.omit_connection_header {
+            this.client.flags.omit_connection_header = val;
+        }
+        if let Some(val) = options.extension_method {
+            this.client.method = Method::EXTENSION;
+            this.client.extension_method = Some(val);
         }
         if let Some(val) = options.tls_props {
             this.client.tls_props = Some(val);

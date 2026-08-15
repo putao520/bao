@@ -21,10 +21,15 @@
 //!   9. devtools requestWillBeSent-equivalent field parity,
 //!   10. SSLConfig h2 fingerprint parity (SETTINGS payload + pseudo-header
 //!       order + preface PRIORITY frames + CA list in one config).
+//!   11. stage-3 SSLConfig interning: content-equal per-request configs
+//!       resolve to ONE registry pointer → keep-alive pool hit (one
+//!       connection for two requests; the same key shape the h2 session
+//!       matchers use, so this is the coalescing proof at pool level).
 //!
-//! The bridge flag itself is default-off; `http_loader.rs` dispatch and the
-//! servo-side behaviour are covered by the rest of this test suite running
-//! with the flag off (zero behaviour diff).
+//! The bridge flag is default-ON since stage 3 (unset → every destination
+//! rides the bridge; `BAO_PAGE_NET_BUN=off` is the hyper escape hatch).
+//! `http_loader.rs` dispatch and the servo-side behaviour are covered by the
+//! rest of this test suite.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -52,6 +57,25 @@ use net_traits::request::Destination;
 /// literal (the test server binds 0.0.0.0, not ::1).
 fn loopback_url(url: &servo_url::ServoUrl) -> String {
     url.as_str().replace("localhost", "127.0.0.1")
+}
+
+/// The connector's wire struct is the bridge's input type; build it from the
+/// same bao_stealth derivation the embedder (runtime_bridge) uses. Shared by
+/// the fingerprint-parity and intern-coalescing tests.
+fn servo_wire(profile: &bao_stealth::StealthProfile) -> net::connector::StealthTlsWireConfig {
+    let stc = bao_stealth::StealthTlsWireConfig::from_profile(profile);
+    net::connector::StealthTlsWireConfig {
+        tls12_cipher_suites: stc.tls12_cipher_suites,
+        tls13_cipher_suites: stc.tls13_cipher_suites,
+        signature_algorithms: stc.signature_algorithms,
+        supported_groups: stc.supported_groups,
+        alpn_protocols: stc.alpn_protocols,
+        h2_settings_payload: stc.h2_settings_payload,
+        h2_initial_stream_size: stc.h2_initial_stream_size,
+        h2_initial_connection_window_size: stc.h2_initial_connection_window_size,
+        h2_max_frame_size: stc.h2_max_frame_size,
+        h2_max_header_list_size: stc.h2_max_header_list_size,
+    }
 }
 
 /// Test-binary bootstrap for the bun HTTP seam — the same leg bun_http's own
@@ -91,6 +115,7 @@ fn bridge_get_roundtrip() {
     let outcome = spawn_blocking_task::<_, Result<Vec<u8>, BridgeError>>(async {
         let mut response = fetch_core(
             bun_http::Method::GET,
+            None,
             url,
             vec![(b"accept".to_vec(), b"*/*".to_vec())],
             None,
@@ -137,6 +162,7 @@ fn bridge_manual_redirect_returns_original_3xx() {
     let outcome = spawn_blocking_task::<_, Result<(u16, Vec<u8>), BridgeError>>(async {
         let mut response = fetch_core(
             bun_http::Method::GET,
+            None,
             url,
             Vec::new(),
             None,
@@ -185,6 +211,7 @@ fn bridge_abort_yields_load_cancelled() {
     spawn_task(async move {
         let outcome = fetch_core(
             bun_http::Method::GET,
+            None,
             url,
             Vec::new(),
             None,
@@ -282,8 +309,10 @@ fn bridge_error_mapping_table() {
 /// Exercises the pure parser — no process-global flag mutation.
 #[test]
 fn bridge_flag_spec_parsing() {
-    // Off family.
-    for value in ["", "0", "false", "FALSE", "  0  ", "bogus,,", ",,"] {
+    // Off family (stage 3: `off`/`hyper` are the explicit deprecated escape
+    // hatch; empty/garbage parses to off — the *unset* default is All, see
+    // parse_env_mode).
+    for value in ["", "0", "false", "FALSE", "  0  ", "off", "OFF", " Hyper ", "bogus,,", ",,"] {
         assert_eq!(
             parse_page_net_bun_spec(value),
             PageNetBunMode::Off,
@@ -426,6 +455,7 @@ fn bridge_streaming_delivery_incremental() {
     spawn_task(async move {
         let mut response = fetch_core(
             bun_http::Method::GET,
+            None,
             format!("http://127.0.0.1:{}/", port),
             Vec::new(),
             None,
@@ -491,6 +521,7 @@ fn bridge_reason_phrase_and_version() {
     let response = spawn_blocking_task::<_, Result<(), BridgeError>>(async {
         let response = fetch_core(
             bun_http::Method::GET,
+            None,
             format!("http://127.0.0.1:{}/", port),
             Vec::new(),
             None,
@@ -526,6 +557,7 @@ fn bridge_reason_phrase_and_version() {
     let response = spawn_blocking_task::<_, Result<(), BridgeError>>(async {
         let response = fetch_core(
             bun_http::Method::GET,
+            None,
             format!("http://127.0.0.1:{}/", port),
             Vec::new(),
             None,
@@ -638,6 +670,7 @@ fn bridge_ca_override_trust_store() {
         let tls_props = Some(bun_http::ssl_config::SharedPtr::new(ssl));
         let mut response = fetch_core(
             bun_http::Method::GET,
+            None,
             probe_url,
             Vec::new(),
             None,
@@ -677,6 +710,7 @@ fn bridge_ca_override_trust_store() {
         let tls_props = Some(bun_http::ssl_config::SharedPtr::new(ssl));
         fetch_core(
             bun_http::Method::GET,
+            None,
             probe_url,
             Vec::new(),
             None,
@@ -703,6 +737,7 @@ fn bridge_ca_override_trust_store() {
     let outcome = spawn_blocking_task::<_, Result<(), BridgeError>>(async {
         fetch_core(
             bun_http::Method::GET,
+            None,
             format!("https://localhost:{}/", port),
             Vec::new(),
             None,
@@ -820,21 +855,6 @@ fn bridge_devtools_msg_field_parity() {
 fn bridge_ssl_config_h2_fingerprint_and_ca() {
     // The connector's wire struct is the bridge's input type; build it from
     // the same bao_stealth derivation the embedder (runtime_bridge) uses.
-    fn servo_wire(profile: &bao_stealth::StealthProfile) -> net::connector::StealthTlsWireConfig {
-        let stc = bao_stealth::StealthTlsWireConfig::from_profile(profile);
-        net::connector::StealthTlsWireConfig {
-            tls12_cipher_suites: stc.tls12_cipher_suites,
-            tls13_cipher_suites: stc.tls13_cipher_suites,
-            signature_algorithms: stc.signature_algorithms,
-            supported_groups: stc.supported_groups,
-            alpn_protocols: stc.alpn_protocols,
-            h2_settings_payload: stc.h2_settings_payload,
-            h2_initial_stream_size: stc.h2_initial_stream_size,
-            h2_initial_connection_window_size: stc.h2_initial_connection_window_size,
-            h2_max_frame_size: stc.h2_max_frame_size,
-            h2_max_header_list_size: stc.h2_max_header_list_size,
-        }
-    }
     let profile = bao_stealth::StealthProfile::firefox_default();
     let wire = bao_stealth::StealthTlsWireConfig::from_profile(&profile);
     let ca: Vec<Vec<u8>> = vec![vec![0x30, 0x00]];
@@ -938,6 +958,7 @@ fn bridge_streaming_keepalive_content_length_and_reuse() {
         let url = format!("http://127.0.0.1:{}/", port_for_task);
         let mut response = match fetch_core(
             bun_http::Method::GET,
+            None,
             url,
             Vec::new(),
             None,
@@ -979,6 +1000,7 @@ fn bridge_streaming_keepalive_content_length_and_reuse() {
         let url = format!("http://127.0.0.1:{}/second", port_for_task2);
         let mut response = match fetch_core(
             bun_http::Method::GET,
+            None,
             url,
             Vec::new(),
             None,
@@ -1004,6 +1026,164 @@ fn bridge_streaming_keepalive_content_length_and_reuse() {
         Ok(Err(message)) => panic!("PROBE ERROR #2: {message}"),
         Err(_) => panic!("second request on the pooled keep-alive socket never completed"),
     }
+}
+
+/// Stage 3 (h2 coalescing enabler): the bridge's per-request SSLConfig must
+/// be interned through `GlobalRegistry` — every bun_http pool key (keep-alive
+/// pool AND the h2 session matchers) compares `*const SSLConfig`, so
+/// content-equal configs built independently per request must resolve to ONE
+/// pointer. Proves both halves:
+///   1. intern identity — two separately built content-equal configs upgrade
+///      to the same registry entry while alive;
+///   2. pool effect — two fetch_core requests that each build+intern their
+///      own config (mirroring `obtain_response_bun`) reuse ONE keep-alive
+///      connection (server-observed connection count == 1). Pre-intern this
+///      was one connection per request (distinct pool keys).
+#[test]
+fn bridge_ssl_config_intern_pool_coalescing() {
+    use std::io::{Read, Write};
+    link_native_seam();
+    // Initialize the async runtime (spawn_task silently drops tasks without
+    // it; the raw-TCP fixture below doesn't lazily init like make_server).
+    let (_runtime_server, _runtime_url) = make_server(|_request, _response| {});
+
+    let profile = bao_stealth::StealthProfile::firefox_default();
+    let wire = servo_wire(&profile);
+    let fingerprint = profile.http2.clone();
+
+    // 1. Intern identity: independently built content-equal configs → one
+    //    pointer (both strong refs held, so the registry weak-upgrades).
+    let interned_a = bun_http::ssl_config::GlobalRegistry::intern(build_ssl_config(
+        Some(&wire),
+        Some(&fingerprint),
+        None,
+    ));
+    let interned_b = bun_http::ssl_config::GlobalRegistry::intern(build_ssl_config(
+        Some(&wire),
+        Some(&fingerprint),
+        None,
+    ));
+    assert_eq!(
+        bun_http::ssl_config::SSLConfig::raw_ptr(Some(&interned_a)),
+        bun_http::ssl_config::SSLConfig::raw_ptr(Some(&interned_b)),
+        "content-equal configs must intern to one registry entry (pool-key shape)"
+    );
+    drop(interned_a);
+    drop(interned_b);
+
+    // 2. Pool effect: keep-alive h1 server that counts connections. Two
+    //    requests, each building+interning its own config exactly like
+    //    `obtain_response_bun` does → ONE connection total.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let connections_server = Arc::clone(&connections);
+    std::thread::spawn(move || {
+        // Serve until 2s of silence: per connection, answer every request
+        // head with a Content-Length body (keep-alive).
+        loop {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            connections_server.fetch_add(1, Ordering::SeqCst);
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(2000)));
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&buf[..idx]).to_string();
+                            let path = head.split(' ').nth(1).unwrap_or("/").to_string();
+                            buf.drain(..idx + 4);
+                            let body = format!("interned:{path}");
+                            let resp = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                                body.len(),
+                                body
+                            );
+                            if stream.write_all(resp.as_bytes()).is_err() {
+                                return;
+                            }
+                        }
+                    },
+                    Err(ref e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock ||
+                            e.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        break; // idle keep-alive connection — stop serving it
+                    },
+                    Err(_) => return,
+                }
+            }
+        }
+    });
+
+    for (label, path) in [("/first", 0usize), ("/second", 1)] {
+        let _ = label;
+        let (sender, receiver) = unbounded::<Result<Vec<u8>, String>>();
+        let cancel = Arc::new(BunCancelHandle::new());
+        let worker_cancel = Arc::clone(&cancel);
+        let wire_clone = wire.clone();
+        let fingerprint_clone = fingerprint.clone();
+        let port_for_task = port;
+        spawn_task(async move {
+            // Exactly obtain_response_bun's shape: build a FRESH config per
+            // request, intern it, hand the shared pointer to fetch_core.
+            let ssl_config = build_ssl_config(
+                Some(&wire_clone),
+                Some(&fingerprint_clone),
+                None,
+            );
+            let tls_props = Some(bun_http::ssl_config::GlobalRegistry::intern(ssl_config));
+            let url = format!("http://127.0.0.1:{}/first-or-second-{}", port_for_task, path);
+            match fetch_core(
+            bun_http::Method::GET,
+            None,
+                url,
+                Vec::new(),
+                None,
+                &worker_cancel,
+                None::<fn() -> bool>,
+                tls_props,
+                false,
+                true,
+            )
+            .await
+            {
+                Ok(mut response) => match response.collect_body().await {
+                    Ok(body) => {
+                        let _ = sender.send(Ok(body));
+                    },
+                    Err(error) => {
+                        let _ = sender.send(Err(format!("body failed: {error:?}")));
+                    },
+                },
+                Err(error) => {
+                    let _ = sender.send(Err(format!("head failed: {error:?}")));
+                },
+            }
+        });
+        match receiver.recv_timeout(Duration::from_secs(6)) {
+            Ok(Ok(body)) => assert!(
+                body.starts_with(b"interned:/first-or-second-"),
+                "request {path} body wrong: {body:?}"
+            ),
+            Ok(Err(message)) => panic!("PROBE ERROR interned #{path}: {message}"),
+            Err(_) => panic!("interned request #{path} never completed"),
+        }
+    }
+
+    // Give the server thread a moment to observe a (wrong) extra connection.
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        1,
+        "two requests with interned content-equal SSLConfigs must share ONE keep-alive connection (got {})",
+        connections.load(Ordering::SeqCst)
+    );
 }
 
 /// Full servo fetch pipeline with the bridge flag ON (stage 2 regression):

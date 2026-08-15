@@ -482,10 +482,15 @@ unsafe fn start_with_kind(
         _ => &[],
     };
 
-    // TLS fingerprint: StealthProfile → SSLConfig → SSLConfigSharedPtr.
+    // TLS fingerprint: StealthProfile → SSLConfig → interned SharedPtr.
+    // Interned (U2 stage 3): every bun_http pool key compares the
+    // `*const SSLConfig`, so content-equal per-fetch configs must resolve to
+    // ONE pointer for h2 session coalescing / keep-alive reuse — with h2
+    // offered by default, a fresh `SharedPtr::new` per fetch would negotiate
+    // h2 but open a connection per request.
     let tls_props = {
         let ssl_config = crate::stealth_http::stealth_profile_to_ssl_config(&profile);
-        Some(bun_http::ssl_config::SharedPtr::new(ssl_config))
+        Some(bun_http::ssl_config::GlobalRegistry::intern(ssl_config))
     };
 
     // AbortSignal wiring: flag → Signals.aborted backref. Wiring `aborted`

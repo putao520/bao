@@ -503,6 +503,11 @@ pub(crate) const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
 #[allow(clippy::too_many_arguments)]
 #[servo_tracing::instrument(skip_all, fields(url=url.as_str()))]
 /// This sets up the callback infrastructure to send body frames to `body_sender` and fires the client request.
+///
+/// DEPRECATED (U2 stage 3): the page network rides the bun bridge
+/// (`obtain_response_bun`) by default; this hyper path survives only as the
+/// `BAO_PAGE_NET_BUN=off` explicit escape hatch for one transition version
+/// and will be physically removed with the hyper/h2 client crates afterward.
 async fn obtain_response(
     client: &ServoClient,
     url: &ServoUrl,

@@ -797,6 +797,39 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
         "Firefox profile must send explicit PRIORITY frames (REQ-STL-002-C3)"
     );
 
+    // ── Phase C (U2 stage 3): EXPERIMENTAL_HTTP2_CLIENT default-ON smoke ──
+    // Reset the CLI atomic to false — no flag anywhere — and prove the env
+    // var's flipped default alone makes Node fetch offer h2: the ClientHello
+    // ALPN list must still be `h2,http/1.1`. (Pre-flip this posture offered
+    // http/1.1 only; the bridge bypass `is_page_egress` is NOT involved —
+    // this is the Node fetch stack's own gate.)
+    bun_http::EXPERIMENTAL_HTTP2_CLIENT_FROM_CLI.store(false, Ordering::Relaxed);
+    let default_capture = CaptureServer::spawn();
+    inject(
+        "fetch-default-h2",
+        &format!(
+            "(function(){{ fetch('https://127.0.0.1:{}/default_probe').catch(function(){{}}); }})()",
+            default_capture.port
+        ),
+    );
+    assert!(
+        wait_capturing(&default_capture, 1, Duration::from_secs(15)),
+        "no ClientHello captured for the default-flag fetch: errors={:?}",
+        default_capture.errors()
+    );
+    let default_hello = default_capture
+        .parsed()
+        .into_iter()
+        .next()
+        .expect("default-flag ClientHello parsed");
+    assert_eq!(
+        default_hello.alpn_protocols(),
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        "with no flag set anywhere, Node fetch must offer h2 by default (EXPERIMENTAL_HTTP2_CLIENT flip)"
+    );
+    default_capture.shutdown.store(true, Ordering::SeqCst);
+    eprintln!("[fp-e2e] default-flag fetch offers h2 (EXPERIMENTAL_HTTP2_CLIENT default ON)");
+
     img_capture.shutdown.store(true, Ordering::SeqCst);
     css_capture.shutdown.store(true, Ordering::SeqCst);
     fetch_capture.shutdown.store(true, Ordering::SeqCst);

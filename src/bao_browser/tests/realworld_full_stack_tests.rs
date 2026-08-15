@@ -115,7 +115,7 @@ struct FixtureServer {
 impl FixtureServer {
     fn spawn<F>(responder: F) -> Self
     where
-        F: Fn(&ReceivedRequest) -> (String, String, Vec<u8>) + Send + Sync + 'static,
+        F: Fn(&ReceivedRequest) -> (String, String, Vec<(&'static str, String)>, Vec<u8>) + Send + Sync + 'static,
     {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
         let port = listener.local_addr().unwrap().port();
@@ -180,7 +180,7 @@ fn run_server_loop<F>(
     request_count: Arc<AtomicUsize>,
     responder: Arc<F>,
 ) where
-    F: Fn(&ReceivedRequest) -> (String, String, Vec<u8>) + Send + Sync + 'static,
+    F: Fn(&ReceivedRequest) -> (String, String, Vec<(&'static str, String)>, Vec<u8>) + Send + Sync + 'static,
 {
     while !shutdown.load(Ordering::SeqCst) {
         match listener.accept() {
@@ -196,13 +196,17 @@ fn run_server_loop<F>(
                     requests.lock().unwrap().push(req.clone());
                     request_count.fetch_add(1, Ordering::SeqCst);
                 }
-                let (status, ct, body) = responder(&req);
-                let response = format!(
-                    "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                let (status, ct, extra_headers, body) = responder(&req);
+                let mut response = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n",
                     status,
                     ct,
                     body.len()
                 );
+                for (name, value) in &extra_headers {
+                    response.push_str(&format!("{}: {}\r\n", name, value));
+                }
+                response.push_str("Connection: close\r\n\r\n");
                 let _ = sock.write_all(response.as_bytes());
                 let _ = sock.write_all(&body);
                 let _ = sock.shutdown(std::net::Shutdown::Both);
@@ -389,6 +393,7 @@ fn scenario_1_rust_server_servo_client(pool: &PagePool, report: &mut Report) {
         (
             "200 OK".into(),
             "text/html; charset=utf-8".into(),
+            Vec::new(),
             html.as_bytes().to_vec(),
         )
     });
@@ -551,14 +556,20 @@ fn scenario_3_form_submission_e2e(pool: &PagePool, report: &mut Report) {
             (
                 "200 OK".into(),
                 "text/html".into(),
+                Vec::new(),
                 get_html.as_bytes().to_vec(),
             )
         } else if req.method == "POST" {
             post_log_clone.lock().unwrap().push(req.body.clone());
             let resp = b"<html><body><p id=\"r\">submitted</p></body></html>".to_vec();
-            ("200 OK".into(), "text/html".into(), resp)
+            ("200 OK".into(), "text/html".into(), Vec::new(), resp)
         } else {
-            ("405".into(), "text/plain".into(), b"bad method".to_vec())
+            (
+                "405".into(),
+                "text/plain".into(),
+                Vec::new(),
+                b"bad method".to_vec(),
+            )
         }
     });
 
@@ -672,9 +683,13 @@ fn scenario_4_browser_fetch_to_rust_server(pool: &PagePool, report: &mut Report)
     let json_body = br#"{"hello":"world","n":42}"#.to_vec();
     let json_clone = json_body.clone();
     let server = FixtureServer::spawn(move |_req| {
+        // A real cross-origin API sends ACAO — without it servo's CORS check
+        // (correctly) blocks the data:→http response read, which is a
+        // fixture limitation, not a library behavior.
         (
             "200 OK".into(),
             "application/json".into(),
+            vec![("Access-Control-Allow-Origin", "*".to_string())],
             json_clone.clone(),
         )
     });
@@ -736,9 +751,46 @@ fetch('http://127.0.0.1:{port}/')
         return;
     }
 
+    // The fetch promise resolves asynchronously AFTER the server saw the
+    // request — poll until JS has either the parsed JSON or the rejection,
+    // instead of reading `window.__json` the instant the hit was observed
+    // (which raced the promise and produced spurious empty-string skips).
+    let mut settled: Option<String> = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(s) = page.evaluate_js("(window.__json || window.__err) ? 'y' : 'n'") {
+            if s.trim() == "y" {
+                settled = page
+                    .evaluate_js("window.__json ? 'json:' + window.__json : 'err:' + window.__err")
+                    .ok();
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
     // If the server got hit, check that JS has the parsed JSON.
     // Note: CORS may block the JS response reading even though the server
     // received the request. This is servo's expected behavior for data: → http: cross-origin.
+    let json_state = settled.unwrap_or_default();
+    if !json_state.is_empty() {
+        if json_state.starts_with("json:") {
+            let s = json_state.trim_start_matches("json:");
+            if s.contains("hello") && s.contains("world") && s.contains("42") {
+                report.pass(&format!("{}::json_parsed", name));
+            } else {
+                report.fail(&format!("{}::json_parsed", name), &format!("got '{s}'"));
+            }
+        } else {
+            report.skip(
+                &format!("{}::json_parsed", name),
+                &format!("fetch rejected: {json_state}"),
+            );
+        }
+        let _ = page.close();
+        server.shutdown();
+        return;
+    }
     match page.evaluate_js("window.__json || ''") {
         Ok(s) if s.contains("hello") && s.contains("world") && s.contains("42") => {
             report.pass(&format!("{}::json_parsed", name))

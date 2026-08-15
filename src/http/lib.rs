@@ -216,6 +216,12 @@ pub struct Flags {
     /// once on a fresh connection but never loops.
     pub h3_retried: bool,
     pub is_node_http_client: bool,
+    /// Bao fusion (U2): omit the default `Connection: keep-alive` header on
+    /// the h1 wire. Bun's Node-side client sends it (upstream wire contract);
+    /// hyper — the client the servo bridge replaces — omits Connection on
+    /// HTTP/1.1 persistent connections (RFC 9112 §9.3 defaults). Page-egress
+    /// wire parity flips this on.
+    pub omit_connection_header: bool,
     /// Bao fusion (U2): page-egress request (servo's page-network bridge).
     /// Set from the stealth profile's ALPN list — the page egress migrated
     /// from hyper-h2 and must keep offering `h2,http/1.1`, so
@@ -248,6 +254,7 @@ impl Default for Flags {
             h3_retried: false,
             is_node_http_client: false,
             is_page_egress: false,
+            omit_connection_header: false,
         }
     }
 }
@@ -608,8 +615,30 @@ use core::ptr::NonNull;
 // and lifetime-erased at every call site; threading the lifetime removes that hazard.
 // Intrusive raw-pointer backrefs (socket ext, h2/h3 streams) store the
 // lifetime-erased `HTTPClient<'static>` form via [`HTTPClient::as_erased_ptr`].
+/// Intern an extension-method token (a verb outside the closed `Method`
+/// registry, e.g. `FOO`): returns the process-stable `&'static [u8]` wire
+/// form for `Options::extension_method` / `HTTPClient::extension_method`.
+/// The set of distinct verbs per process is tiny; a flat Vec under a mutex
+/// is the same shape as `ssl_config::GlobalRegistry`.
+pub fn intern_extension_method(name: &[u8]) -> &'static [u8] {
+    use std::sync::Mutex;
+    static EXTENSION_METHODS: Mutex<Vec<&'static [u8]>> = Mutex::new(Vec::new());
+    let mut table = EXTENSION_METHODS.lock().unwrap();
+    if let Some(found) = table.iter().find(|token| **token == name) {
+        return found;
+    }
+    let leaked: &'static [u8] = Box::leak(name.to_vec().into_boxed_slice());
+    table.push(leaked);
+    leaked
+}
+
 pub struct HTTPClient<'a> {
     pub method: Method,
+    /// Wire form for extension methods (`Method::EXTENSION`): the interned
+    /// token (`intern_extension_method`). `None` for registry methods — the
+    /// request builder then uses `method.as_str()`. See the EXTENSION variant
+    /// doc in `http_types::Method`.
+    pub extension_method: Option<&'static [u8]>,
     pub header_entries: headers::EntryList,
     pub header_buf: &'a [u8],
     pub url: URL<'a>,
@@ -1780,9 +1809,10 @@ impl<'a> HTTPClient<'a> {
 
     /// Whether to advertise "h2" in the TLS ALPN list. Restricted to request
     /// shapes the HTTP/2 path currently handles end-to-end (no proxy/Upgrade,
-    /// no sendfile). Enabled by `--experimental-http2-fetch`, the
-    /// `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT` env var, or
-    /// `protocol: "http2"` on the fetch options.
+    /// no sendfile). ON by default since U2 stage 3 (the h2 client soaked on
+    /// the page network); escape hatch:
+    /// `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT=0`, or forced per-request
+    /// with `protocol: "http1"`/`"http2"` on the fetch options.
     pub fn can_offer_h2(&self) -> bool {
         // The h2 session transmits from `attach()` without consulting the
         // `is_waiting_for_cert_check` park gate, so requests with a JS
@@ -2350,7 +2380,10 @@ impl<'a> HTTPClient<'a> {
             header_count += 1;
         }
 
-        if !override_connection_header && !self.flags.disable_keepalive {
+        if !override_connection_header &&
+            !self.flags.disable_keepalive &&
+            !self.flags.omit_connection_header
+        {
             request_headers_buf[header_count] = CONNECTION_HEADER;
             header_count += 1;
         }
@@ -2427,7 +2460,12 @@ impl<'a> HTTPClient<'a> {
         // the per-HTTP-thread `SHARED_REQUEST_HEADERS_BUF` static. Return as
         // `'static` so callers don't pin `&mut self` for the rest of their fn.
         picohttp::Request {
-            method: self.method.as_str().as_bytes(),
+            // Extension methods carry their interned token; registry methods
+            // render from the closed table. Both h1 (`write_request`) and h2
+            // (`:method` pseudo-header) consume this one construction site.
+            method: self
+                .extension_method
+                .unwrap_or(self.method.as_str().as_bytes()),
             // SAFETY: `url.pathname` borrows `self.url`, which outlives the returned `Request`.
             path: unsafe { bun_ptr::detach_lifetime(self.url.pathname) },
             minor_version: 1,

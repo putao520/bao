@@ -225,7 +225,10 @@ pub mod feature_flag {
     // Offer "h2" in the fetch() TLS ALPN list and speak HTTP/2 when the
     // server selects it. Off by default while the client implementation
     // matures. `--experimental-http2-fetch` is the CLI equivalent.
-    new_feature_flag!(pub BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT, "BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT", {});
+    // U2 stage 3: default ON — the h2 client has soaked on the page network
+    // (bridge e2e matrix + fingerprint parity). Escape hatch: set the env var
+    // to 0/false to fall back to HTTP/1.1-only fetch.
+    new_feature_flag!(pub BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT, "BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT", { default: true });
     // Honor `Alt-Svc: h3` from fetch() responses: subsequent requests to the
     // same origin go over QUIC/HTTP-3 instead of TCP. Off by default while
     // the client implementation matures. `--experimental-http3-fetch` is the

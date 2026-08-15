@@ -2,11 +2,12 @@
 // that runs servo's page network through bun's `HTTPThread` (single epoll
 // thread, usockets + boringssl stealth TLS) instead of hyper.
 //
-// Gate: `BAO_PAGE_NET_BUN` (default OFF — the hyper path in
-// `http_loader.rs:obtain_response` is untouched unless the flag is enabled).
-// `1`/`true` routes every request destination through the bridge (phase 2
-// posture); a comma list (`img,css`) routes only matching request
-// destinations (phase 1 pilot) — everything else keeps the hyper path.
+// Gate: `BAO_PAGE_NET_BUN` (default ON since U2 stage 3 — the page network
+// rides the bridge; the hyper path in `http_loader.rs:obtain_response` is
+// kept as the explicit escape hatch for one transition version).
+// Unset routes every request destination through the bridge; `0`/`false`/
+// `off`/`hyper` restores the hyper path for every destination; a comma list
+// (`img,css`) routes only matching request destinations (phase 1 pilot).
 //
 // Threading model (mirrors `fetch_async.rs` FetchTasklet, rehosted on tokio):
 //   - servo's fetch runs on a tokio net thread; this bridge schedules the
@@ -46,6 +47,12 @@
 // the page profile's `Http2Fingerprint` snapshot). Request bodies stay
 // buffered (servo's IPC body stream is drained before the request is
 // scheduled; `http_loader.rs` owns the streaming-request-body semantics).
+//
+// Stage 3 (h2 coalescing): the per-request SSLConfig is interned through
+// bun's `ssl_config::GlobalRegistry` — content-equal configs resolve to one
+// pointer, which is what every bun_http pool key compares, so same-origin
+// requests reuse one TLS/h2 connection (stream ids increment instead of a
+// new connection per request).
 
 use std::pin::pin;
 use std::str::FromStr;
@@ -89,12 +96,17 @@ use crate::http_loader::{FRAGMENT, BodyChunk, BodySink, obtain_response_setup_ro
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 // ──────────────────────────────────────────────────────────────────────────
-// Flag (default OFF)
+// Flag (default ON — U2 stage 3)
 //
 // `BAO_PAGE_NET_BUN`:
-//   - unset / `0` / `false`      → hyper path for every destination;
-//   - `1` / `true` / `all`       → every destination through the bridge
-//                                  (phase 2 posture);
+//   - unset                      → every destination through the bridge
+//                                  (stage 3 default; the page network is the
+//                                  bun stack);
+//   - `0` / `false` / `off` / `hyper`
+//                                → hyper path for every destination (explicit
+//                                  escape hatch, deprecated — one transition
+//                                  version, then the hyper path is removed);
+//   - `1` / `true` / `all`       → every destination through the bridge;
 //   - comma list, e.g. `img,css` → only matching request destinations
 //                                  through the bridge (phase 1 pilot).
 //
@@ -151,13 +163,18 @@ fn parse_destination_list(value: &str) -> Vec<Destination> {
 }
 
 /// Parse one `BAO_PAGE_NET_BUN` value (env string or runtime-override
-/// spec): `0`/`false` → off, `1`/`true`/`all` → every destination, anything
-/// else → a destination list. Pure — no global state, directly unit-testable.
+/// spec): `0`/`false`/`off`/`hyper` → off (the deprecated hyper escape
+/// hatch), `1`/`true`/`all` → every destination, anything else → a
+/// destination list. Pure — no global state, directly unit-testable.
+/// Note the *unset* default (bridge ON) lives in [`parse_env_mode`]; an
+/// explicitly empty value still parses to off.
 pub fn parse_page_net_bun_spec(value: &str) -> PageNetBunMode {
     let trimmed = value.trim();
     if trimmed.is_empty() ||
         trimmed.eq_ignore_ascii_case("0") ||
-        trimmed.eq_ignore_ascii_case("false")
+        trimmed.eq_ignore_ascii_case("false") ||
+        trimmed.eq_ignore_ascii_case("off") ||
+        trimmed.eq_ignore_ascii_case("hyper")
     {
         return PageNetBunMode::Off;
     }
@@ -176,13 +193,16 @@ pub fn parse_page_net_bun_spec(value: &str) -> PageNetBunMode {
 fn parse_env_mode() -> PageNetBunMode {
     match std::env::var("BAO_PAGE_NET_BUN") {
         Ok(value) => parse_page_net_bun_spec(&value),
-        Err(_) => PageNetBunMode::Off,
+        // U2 stage 3: unset → the page network rides the bridge (hyper is
+        // the explicit `off` escape hatch, deprecated).
+        Err(_) => PageNetBunMode::All,
     }
 }
 
 /// Resolve the effective mode: the runtime override wins; otherwise the env
-/// value is read exactly once (first call). Default: [`PageNetBunMode::Off`]
-/// (hyper path).
+/// value is read exactly once (first call). Default (unset):
+/// [`PageNetBunMode::All`] — the bridge; `BAO_PAGE_NET_BUN=off` restores
+/// the deprecated hyper path.
 fn effective_mode() -> PageNetBunMode {
     PAGE_NET_BUN_ENV_READ.call_once(|| {
         let mut guard = PAGE_NET_BUN_MODE.write();
@@ -654,6 +674,8 @@ pub fn build_ssl_config(
 /// This is the bridge's core, free of servo `FetchContext` concerns so it can
 /// be exercised directly by unit tests. `url` must already be
 /// fragment-percent-encoded (same `FRAGMENT` set the hyper path uses).
+/// `extension_method` carries the interned wire token when `method` is
+/// `Method::EXTENSION` (verbs outside bun's closed registry — hyper parity).
 ///
 /// The ownership protocol mirrors `fetch_async.rs` (BUG-ENG-369 /
 /// BCE-007-R5): URL / headers buffer / body are leaked to `&'static` because
@@ -672,6 +694,7 @@ pub fn build_ssl_config(
 #[allow(clippy::too_many_arguments)]
 pub async fn fetch_core(
     method: bun_http::Method,
+    extension_method: Option<&'static [u8]>,
     url: String,
     headers: Vec<(Vec<u8>, Vec<u8>)>,
     body: Option<Vec<u8>>,
@@ -767,6 +790,11 @@ pub async fn fetch_core(
         );
 
         let options = bun_http::async_http::Options {
+            extension_method,
+            // Hyper wire parity: no `Connection: keep-alive` on h1 (the
+            // replaced hyper client omitted it; connection persistence is
+            // the HTTP/1.1 default).
+            omit_connection_header: Some(true),
             tls_props,
             signals: Some(cancel.signals()),
             // Servo's Decoder owns decompression; Accept-Encoding passes
@@ -1327,11 +1355,37 @@ pub(crate) async fn obtain_response_bun(
     context: &FetchContext,
     fetch_terminated: UnboundedSender<bool>,
 ) -> Result<(HyperResponse<Decoder>, Option<ChromeToDevtoolsControlMsg>), NetworkError> {
-    PAGE_NET_BUN_REQUESTS.fetch_add(1, Ordering::Relaxed);
+        PAGE_NET_BUN_REQUESTS.fetch_add(1, Ordering::Relaxed);
 
     // https://url.spec.whatwg.org/#percent-encoded-bytes — same encode set as
     // the hyper path.
-    let encoded_url = utf8_percent_encode(url.as_str(), FRAGMENT).to_string();
+    let mut encoded_url = utf8_percent_encode(url.as_str(), FRAGMENT).to_string();
+
+    // Host-table parity (hyper connector behavior): `Connector::connect`
+    // resolves the CONNECT destination through `hosts::replace_host`
+    // (HOST_FILE / opts.host_file / the test-util mock table) while the Host
+    // header keeps the original name. The bridge rewrites the URL host the
+    // same way and pins the original authority as an explicit Host header —
+    // bun's builder then uses it verbatim (override_host_header) instead of
+    // deriving `Host` from the replaced URL.
+    let mut wire_headers = request_headers.clone();
+    let original_host = url.host_str().unwrap_or("").to_owned();
+    let replaced_host = crate::hosts::replace_host(&original_host).into_owned();
+    if replaced_host != original_host {
+        let port_suffix = match url.port() {
+            Some(port) => format!(":{port}"),
+            None => String::new(),
+        };
+        let authority = format!("{original_host}{port_suffix}");
+        encoded_url = encoded_url.replacen(
+            &format!("://{original_host}"),
+            &format!("://{replaced_host}"),
+            1,
+        );
+        if let Ok(value) = HeaderValue::from_str(&authority) {
+            wire_headers.insert(http::header::HOST, value);
+        }
+    }
 
     // Timing + devtools checkpoints at the same points as the hyper path
     // (obtain_response): connect_start before the request is assembled,
@@ -1349,16 +1403,30 @@ pub(crate) async fn obtain_response_bun(
         context.timing.set_attribute(ResourceAttribute::SecureConnectionStart);
     }
 
-    // Method: closed IANA registry enum is bun's wire contract (same policy
-    // as window.fetch in fetch_api.rs); unknown tokens fail closed.
+    // Method: bun's wire contract is a closed IANA registry enum (same
+    // policy as window.fetch in fetch_api.rs) — but hyper, the path being
+    // replaced, accepts ANY token verb. Stage 3 (hyper parity): unknown
+    // methods ride as `Method::EXTENSION` with the interned token
+    // (`intern_extension_method`), reaching the wire verbatim instead of
+    // failing closed (servo-net test_fetch_redirect_updates_method drives a
+    // literal `FOO` method through the pipeline).
     let method_upper = method.as_str().to_uppercase();
-    let bun_method = bun_http::Method::which(method_upper.as_bytes())
-        .ok_or(NetworkError::InvalidMethod)?;
+    let (bun_method, extension_method) = match bun_http::Method::which(method_upper.as_bytes())
+    {
+        Some(known) => (known, None),
+        None => (
+            bun_http::Method::EXTENSION,
+            Some(bun_http::intern_extension_method(method_upper.as_bytes())),
+        ),
+    };
 
     // Headers pass through verbatim (Accept-Encoding included — set by servo
     // at http_loader.rs set_default_accept_encoding; bun decompression is
     // disabled so the Content-Encoding bytes reach servo's Decoder intact).
-    let headers: Vec<(Vec<u8>, Vec<u8>)> = request_headers
+    // `wire_headers` is the local copy (possibly carrying the pinned Host
+    // header from the host-table rewrite above); the devtools message below
+    // keeps reporting the original servo-side header list.
+    let headers: Vec<(Vec<u8>, Vec<u8>)> = wire_headers
         .iter()
         .map(|(name, value)| {
             (
@@ -1457,7 +1525,18 @@ pub(crate) async fn obtain_response_bun(
         bao_stealth::global_http2_fingerprint().as_ref(),
         ca_override.as_deref(),
     );
-    let tls_props = Some(bun_http::ssl_config::SharedPtr::new(ssl_config));
+    // Stage 3 (h2 coalescing): intern the config through bun's global
+    // registry instead of a fresh `SharedPtr::new` per request. Every pool
+    // key in bun_http — the keep-alive pool (`PooledSocket.ssl_config`) and
+    // the h2 session/pending-connect matchers (`ClientSession::matches` /
+    // `PendingConnect::matches`) — compares `*const SSLConfig`, so
+    // content-equal configs must resolve to ONE pointer for a second request
+    // to land on the first's connection. The registry weak-upgrades while the
+    // originating session/pooled socket still holds a strong ref, so the
+    // interned pointer stays stable across sequential requests to the same
+    // origin; a profile/CA change produces different content → a distinct
+    // interned pointer → its own connection bucket (correct isolation).
+    let tls_props = Some(bun_http::ssl_config::GlobalRegistry::intern(ssl_config));
 
     let cancel = BunCancelHandle::new();
     let cancellation_listener = StdArc::clone(&context.cancellation_listener);
@@ -1465,8 +1544,9 @@ pub(crate) async fn obtain_response_bun(
 
     let host = url.host_str().unwrap_or("").to_owned();
 
-    let outcome = fetch_core(
+        let outcome = fetch_core(
         bun_method,
+        extension_method,
         encoded_url,
         headers,
         body,

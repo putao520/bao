@@ -95,8 +95,10 @@ pub fn stealth_http_request(
 /// Build an `SSLConfig` with TLS fingerprint fields populated from a `StealthProfile`.
 /// Returns a default `SSLConfig` (no fingerprint) when profile is `None`.
 ///
-/// The caller owns the returned `SSLConfig` and must ensure it is not interned
-/// (interning requires `SharedPtr::new(config)` via the global registry).
+/// The caller owns the returned `SSLConfig`. To get h2 connection coalescing
+/// / keep-alive pool reuse, wrap it with `ssl_config::GlobalRegistry::intern`
+/// (not `SharedPtr::new`) — bun_http pool keys compare the interned config
+/// pointer, so a fresh allocation per request defeats connection reuse.
 /// When the config is dropped, its C-string fields are freed via `deinit`.
 // @trace REQ-STL-001
 pub fn stealth_profile_to_ssl_config(profile: &Option<StealthProfile>) -> SSLConfig {

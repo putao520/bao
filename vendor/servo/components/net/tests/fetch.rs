@@ -1160,7 +1160,7 @@ fn test_fetch_redirect_updates_method_runner(
                 .unwrap_or(0);
 
             let mut test_pass = true;
-
+            
             if redirects == 0 {
                 *response.status_mut() = StatusCode::TEMPORARY_REDIRECT;
                 response

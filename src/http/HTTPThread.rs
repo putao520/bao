@@ -1348,7 +1348,19 @@ mod _event_loop_draft {
     }
 
     pub(super) fn on_start(opts: InitOpts, ready: Arc<(Mutex<bool>, Condvar)>) {
-        Output::Source::configure_named_thread(bun_core::zstr!("HTTP Client"));
+        // Late bring-up instead of `configure_named_thread`: an embedding that
+        // never initializes bun's Output subsystem (e.g. the servo-embedding
+        // `bao_browser::BaoRuntime`) used to die here on
+        // `configure_thread`'s `STDOUT_STREAM_SET` debug_assert — the HTTP
+        // thread panicked before signaling `ready`, so `init_once` blocked
+        // forever on the condvar and every scheduled fetch hung (the U2
+        // realworld scenario_1 "pipeline not ready" skip). The HTTP thread
+        // never executes JS, so the no-JS source (no StackCheck FFI — see
+        // `configure_thread_no_js`'s doc, which names the HTTP client thread
+        // as its intended user) is the correct shape, adopting the real stdio
+        // fds when no CLI-side init ran.
+        bun_core::Global::set_thread_name(bun_core::zstr!("HTTP Client"));
+        Output::Source::ensure_thread_source();
         // PERF(port): was MimallocArena bulk-free for bun.http.default_allocator.
 
         // uSockets' long-timeout counter is `% 240` minutes (see
