@@ -110,8 +110,6 @@ pub enum MigratePnpmLockfileError {
     RelativeLinkDependency,
     #[error("WorkspaceNameMissing")]
     WorkspaceNameMissing,
-    #[error("DependencyLoop")]
-    DependencyLoop,
     #[error("PnpmLockfileNotObject")]
     PnpmLockfileNotObject,
     #[error("PnpmLockfileMissingVersion")]
@@ -148,8 +146,6 @@ impl From<bun_core::Error> for MigratePnpmLockfileError {
         // collapse genuinely-unknown tags to InvalidPnpmLockfile.
         if e == bun_core::err!(OutOfMemory) {
             Self::OutOfMemory
-        } else if e == bun_core::err!(DependencyLoop) {
-            Self::DependencyLoop
         } else {
             Self::InvalidPnpmLockfile
         }
@@ -161,7 +157,6 @@ impl From<crate::lockfile_real::tree::SubtreeError> for MigratePnpmLockfileError
         use crate::lockfile_real::tree::SubtreeError as E;
         match e {
             E::OutOfMemory => Self::OutOfMemory,
-            E::DependencyLoop => Self::DependencyLoop,
         }
     }
 }

@@ -2,13 +2,11 @@ use crate::lockfile::package::PackageColumns as _;
 use bun_collections::HashMap;
 use bun_core::Output;
 
-use crate::Dependency;
 use crate::DependencyID;
 use crate::ManifestLoad;
 use crate::NetworkTask;
 use crate::PackageID;
 use crate::Resolution;
-use crate::dependency::Behavior;
 use crate::invalid_package_id;
 // `Task::Id` is a namespaced type in Zig (`PackageManagerTask.Id`); import the
 // *module* under the `Task` name so `Task::Id` resolves as a path (matches
@@ -44,21 +42,15 @@ impl From<StartManifestTaskError> for bun_core::Error {
     }
 }
 
+/// `is_required`: a failed fetch is logged as an error rather than a warning.
 fn start_manifest_task(
     manager: &mut PackageManager,
     pkg_name: &[u8],
-    dep: &Dependency,
+    is_required: bool,
     needs_extended_manifest: bool,
 ) -> Result<(), StartManifestTaskError> {
     let task_id = Task::Id::for_manifest(pkg_name);
-    // PORT NOTE: Zig passes the *raw packed-struct bit* `dep.behavior.optional`
-    // — not `Behavior.isOptional()` (which is `optional && !peer`). For
-    // optional-peer deps the raw bit is `true` but `is_optional()` is `false`,
-    // which would flip both the dedupe-map `is_required` bookkeeping and
-    // `for_manifest`'s error-suppression branch. Mirror runTasks.rs and read
-    // the raw flag.
-    let is_optional = dep.behavior.contains(Behavior::OPTIONAL);
-    if run_tasks::has_created_network_task(manager, task_id, is_optional) {
+    if run_tasks::has_created_network_task(manager, task_id, !is_required) {
         return Ok(());
     }
     manager.start_progress_bar_if_none();
@@ -93,7 +85,7 @@ fn start_manifest_task(
         pkg_name,
         scope.get(),
         None,
-        is_optional,
+        !is_required,
         needs_extended_manifest,
     )?;
 
@@ -158,7 +150,7 @@ pub fn populate_manifest_cache(
         Packages::All => {
             let mut seen_pkg_ids: HashMap<PackageID, ()> = HashMap::new();
 
-            for (_dep_id, dep) in dependencies.iter().enumerate() {
+            for _dep_id in 0..dependencies.len() {
                 let dep_id: DependencyID = DependencyID::try_from(_dep_id).expect("int cast");
 
                 let pkg_id = resolutions[dep_id as usize];
@@ -204,10 +196,10 @@ pub fn populate_manifest_cache(
                         // `start_manifest_task` only touches the network-task
                         // pool / progress bar / log, never `lockfile.buffers`
                         // or `lockfile.packages`, so the outstanding shared
-                        // slices (`pkg_name_slice`, `dep`) stay valid.
+                        // slice (`pkg_name_slice`) stays valid.
                         unsafe { &mut *manager_ptr },
                         pkg_name_slice,
-                        dep,
+                        false,
                         needs_extended_manifest,
                     )?;
                 }
@@ -259,10 +251,10 @@ pub fn populate_manifest_cache(
                             // root; `start_manifest_task` only touches the
                             // network-task pool / progress bar / log, never
                             // `lockfile.buffers` or `lockfile.packages`, so
-                            // `package_name` / `dep` stay valid.
+                            // `package_name` stays valid.
                             unsafe { &mut *manager_ptr },
                             package_name,
-                            dep,
+                            dep.behavior.is_required(),
                             needs_extended_manifest,
                         )?;
 

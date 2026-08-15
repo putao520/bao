@@ -132,8 +132,12 @@ impl CdpSession {
         Ok(())
     }
 
-    /// Route a CDP command: handle enable/disable internally, dispatch
-    /// everything else to DomainRegistry.
+    /// Route a CDP command to the registry. `Domain.enable`/`Domain.disable`
+    /// are dispatched like any other command — a domain the registry cannot
+    /// serve (unregistered, or an explicit not-supported like Fetch.enable
+    /// without an interception facility) must not fabricate an ok response.
+    /// Domain tracking and the first-enable notification happen only after a
+    /// successful enable dispatch.
     fn route_command(
         &mut self,
         msg: CdpMessage,
@@ -144,30 +148,30 @@ impl CdpSession {
         let domain = parts.first().copied().unwrap_or("");
         let command = parts.get(1).copied().unwrap_or("");
 
-        // Domain.enable / Domain.disable are handled internally.
-        match command {
-            "enable" => {
-                self.enabled_domains.insert(domain.to_string());
-                if self.state == SessionState::Created {
-                    self.state = SessionState::Active;
+        // Dispatch to DomainHandler with full routing context (message
+        // sessionId + the WS session's target id).
+        match registry.dispatch_message(&msg, &self.target_id, event_sender) {
+            Some(Ok(result)) => {
+                match command {
+                    "enable" => {
+                        self.enabled_domains.insert(domain.to_string());
+                        if self.state == SessionState::Created {
+                            self.state = SessionState::Active;
+                        }
+                        // Notify handler on first enable for this domain in
+                        // this session.
+                        if !self.first_domain_enabled.contains(domain) {
+                            self.first_domain_enabled.insert(domain.to_string());
+                            registry.notify_session_created(domain, &self.session_id);
+                        }
+                    }
+                    "disable" => {
+                        self.enabled_domains.remove(domain);
+                    }
+                    _ => {}
                 }
-                // Notify handler on first enable for this domain in this session.
-                if !self.first_domain_enabled.contains(domain) {
-                    self.first_domain_enabled.insert(domain.to_string());
-                    registry.notify_session_created(domain, &self.session_id);
-                }
-                return protocol::ok_empty(msg.id);
+                protocol::ok_response(msg.id, result)
             }
-            "disable" => {
-                self.enabled_domains.remove(domain);
-                return protocol::ok_empty(msg.id);
-            }
-            _ => {}
-        }
-
-        // Dispatch to DomainHandler.
-        match registry.dispatch_command(&msg.method, msg.params.unwrap_or_default(), event_sender) {
-            Some(Ok(result)) => protocol::ok_response(msg.id, result),
             Some(Err(err)) => CdpResponse {
                 id: msg.id,
                 result: None,

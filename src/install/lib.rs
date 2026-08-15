@@ -296,6 +296,32 @@ pub use bin::Bin;
 pub use lockfile_real::bun_lock as TextLockfile;
 pub use patch_install as patch;
 
+/// Test-only: parse a text `bun.lock` straight into a `Lockfile`.
+///
+/// `#[doc(hidden)]`: exists because `bun_install`'s own test binary cannot
+/// link — `bun_install_types` declares upward-resolved link-time symbols
+/// (`__bun_regex_*`) whose providers live in `bao_runtime` — so parser tests
+/// must run from a crate that links the full stack (see
+/// `bao_runtime/tests/lockfile_parse_tests.rs`).
+#[doc(hidden)]
+pub fn parse_text_lockfile_for_tests(
+    text: &'static str,
+) -> core::result::Result<lockfile_real::Lockfile, TextLockfile::ParseError> {
+    let source = bun_ast::Source::init_path_string("bun.lock", text);
+    initialize_store();
+    // The JSON parser's recursion guard compares against the thread-local
+    // stack limit; on a thread that never ran runtime startup (a test
+    // thread) the limit is unset and the first recursive check fails.
+    bun_core::StackCheck::configure_thread();
+    let bump = bun_alloc::Arena::new();
+    let mut log = bun_ast::Log::default();
+    let root = crate::bun_json::parse_package_json_utf8(&source, &mut log, &bump)
+        .expect("test support: fixture must be valid JSON");
+    let mut lockfile = lockfile_real::Lockfile::default();
+    TextLockfile::parse_into_binary_lockfile(&mut lockfile, root, &source, &mut log, None)?;
+    Ok(lockfile)
+}
+
 pub use dependency::Tag as DependencyVersionTag;
 pub use extract_tarball::ExtractTarball;
 pub use lockfile::{LoadResult, LoadStep, Lockfile, PatchedDep};

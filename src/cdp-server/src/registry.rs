@@ -52,6 +52,27 @@ pub trait RegistryDispatch: Send + Sync + 'static {
         event_sender: &dyn EventSender,
     ) -> Option<Result<Value, CdpError>>;
 
+    /// Dispatch with full routing context: the incoming message (including
+    /// its optional `sessionId` for flattened browser sessions) plus the WS
+    /// session's own target id (from the `/devtools/page/<id>` URL, or the
+    /// browser pseudo-target for `/devtools/browser` connections).
+    ///
+    /// Default impl discards the context and delegates to `dispatch_command`;
+    /// registries that need per-target / per-session routing override this.
+    fn dispatch_message(
+        &self,
+        msg: &crate::protocol::CdpMessage,
+        ws_target_id: &str,
+        event_sender: &dyn EventSender,
+    ) -> Option<Result<Value, CdpError>> {
+        let _ = ws_target_id;
+        self.dispatch_command(
+            &msg.method,
+            msg.params.clone().unwrap_or_default(),
+            event_sender,
+        )
+    }
+
     /// Notify the handler for `domain` that a session was created.
     fn notify_session_created(&self, domain: &str, session_id: &str);
 

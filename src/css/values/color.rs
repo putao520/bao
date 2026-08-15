@@ -1495,11 +1495,7 @@ pub fn parse_number_or_percentage(
     input: &mut css::Parser,
     parser: &ComponentParser,
 ) -> CssResult<f32> {
-    let result = parser.parse_number_or_percentage(input)?;
-    Ok(match result {
-        NumberOrPercentage::Number { value } => value,
-        NumberOrPercentage::Percentage { unit_value } => unit_value,
-    })
+    Ok(parser.parse_number_or_percentage(input)?.unit_value())
 }
 
 impl LABColor {

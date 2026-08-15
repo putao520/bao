@@ -141,12 +141,7 @@ pub fn do_patch_commit(
 
     let mut iterator = tree::Iterator::<{ tree::IteratorPathStyle::NodeModules }>::init(&lockfile);
     let mut resolution_buf = [0u8; 1024];
-    // PORT NOTE: reshaped for borrowck — `compute_cache_dir_and_subpath` borrows
-    // `manager` mutably while the package name/resolution borrow `lockfile`
-    // (which itself sometimes aliases `manager.lockfile`). Clone the slice/
-    // resolution out first, then compute, then assemble the result tuple.
-    let (cache_dir, cache_dir_subpath, changes_dir, pkg): (Fd, &ZStr, Vec<u8>, Package) =
-        match arg_kind {
+    let (changes_dir, pkg): (Vec<u8>, Package) = match arg_kind {
             PatchArgKind::Path => 'result: {
                 let package_json_path =
                     resolve_path::join_z::<platform::Auto>(&[argument, b"package.json"]);
@@ -242,21 +237,9 @@ pub fn do_patch_commit(
                     }
                 };
 
-                let name = lockfile.str(&package.name).to_vec();
-                let resolution_clone = actual_package.resolution;
-                let cache_result = compute_cache_dir_and_subpath(
-                    manager,
-                    &name,
-                    &resolution_clone,
-                    &mut folder_path_buf,
-                    None,
-                );
-                let cache_dir = cache_result.cache_dir;
-                let cache_dir_subpath = cache_result.cache_dir_subpath;
-
                 let changes_dir = argument.to_vec();
 
-                break 'result (cache_dir, cache_dir_subpath, changes_dir, actual_package);
+                break 'result (changes_dir, actual_package);
             }
             PatchArgKind::NameAndVersion => 'brk: {
                 let (name, version) = Dependency::split_name_and_maybe_version(argument);
@@ -274,33 +257,21 @@ pub fn do_patch_commit(
                 )
                 .as_bytes()
                 .to_vec();
-                let pkg = *lockfile.packages.get(pkg_id as usize);
-
-                let pkg_name_slice = pkg
-                    .name
-                    .slice(lockfile.buffers.string_bytes.as_slice())
-                    .to_vec();
-                let resolution_clone = pkg.resolution;
-                let cache_result = compute_cache_dir_and_subpath(
-                    manager,
-                    &pkg_name_slice,
-                    &resolution_clone,
-                    &mut folder_path_buf,
-                    None,
-                );
-                let cache_dir = cache_result.cache_dir;
-                let cache_dir_subpath = cache_result.cache_dir_subpath;
-                break 'brk (cache_dir, cache_dir_subpath, changes_dir, pkg);
+                break 'brk (changes_dir, *lockfile.packages.get(pkg_id as usize));
             }
         };
 
-    // zls
-    let cache_dir: Fd = cache_dir;
-    let cache_dir_subpath: &ZStr = cache_dir_subpath;
+    // `compute_cache_dir_and_subpath` resolves `pkg.resolution`'s strings against `manager.lockfile`.
+    manager.lockfile = lockfile;
+    let name = manager.lockfile.str(&pkg.name).to_vec();
+    let cache_result =
+        compute_cache_dir_and_subpath(manager, &name, &pkg.resolution, &mut folder_path_buf, None);
+    let cache_dir: Fd = cache_result.cache_dir;
+    let cache_dir_subpath: &ZStr = cache_result.cache_dir_subpath;
     let changes_dir: &[u8] = &changes_dir;
-    let pkg: Package = pkg;
+    let lockfile: &Lockfile = &manager.lockfile;
 
-    let name = pkg.name.slice(lockfile.buffers.string_bytes.as_slice());
+    let name = name.as_slice();
     let resolution_label_len = {
         let total = resolution_buf.len();
         let mut cursor: &mut [u8] = &mut resolution_buf[..];
@@ -670,6 +641,14 @@ fn escape_patch_filename(name: &[u8]) -> Option<Box<[u8]>> {
         Newline,
         CarriageReturn,
         Tab,
+        // NTFS-reserved; escaped on every OS so a committed patches/ dir checks out on Windows.
+        Colon,
+        Question,
+        Asterisk,
+        Quote,
+        LessThan,
+        GreaterThan,
+        Pipe,
         // Dot,
         Other,
     }
@@ -683,6 +662,13 @@ fn escape_patch_filename(name: &[u8]) -> Option<Box<[u8]>> {
                 EscapeVal::Newline => Some(b"%0A"),
                 EscapeVal::CarriageReturn => Some(b"%0D"),
                 EscapeVal::Tab => Some(b"%09"),
+                EscapeVal::Colon => Some(b"%3A"),
+                EscapeVal::Question => Some(b"%3F"),
+                EscapeVal::Asterisk => Some(b"%2A"),
+                EscapeVal::Quote => Some(b"%22"),
+                EscapeVal::LessThan => Some(b"%3C"),
+                EscapeVal::GreaterThan => Some(b"%3E"),
+                EscapeVal::Pipe => Some(b"%7C"),
                 // EscapeVal::Dot => Some(b"%2E"),
                 EscapeVal::Other => None,
             }
@@ -699,6 +685,13 @@ fn escape_patch_filename(name: &[u8]) -> Option<Box<[u8]>> {
         table[b'\n' as usize] = EscapeVal::Newline;
         table[b'\r' as usize] = EscapeVal::CarriageReturn;
         table[b'\t' as usize] = EscapeVal::Tab;
+        table[b':' as usize] = EscapeVal::Colon;
+        table[b'?' as usize] = EscapeVal::Question;
+        table[b'*' as usize] = EscapeVal::Asterisk;
+        table[b'"' as usize] = EscapeVal::Quote;
+        table[b'<' as usize] = EscapeVal::LessThan;
+        table[b'>' as usize] = EscapeVal::GreaterThan;
+        table[b'|' as usize] = EscapeVal::Pipe;
         table
     };
     let mut count: usize = 0;

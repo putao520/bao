@@ -1241,14 +1241,11 @@ impl<'a> PackageInstall<'a> {
             &[]
         };
 
-        state.walker = Some(
-            walker_skippable::walk(
-                state.cached_package_dir.fd(),
-                &[] as &[&OSPathSlice],
-                skip_dirs,
-            )
-            .expect("oom"), // bun.handleOom
-        );
+        state.walker = Some(bun_core::handle_oom(walker_skippable::walk(
+            state.cached_package_dir.fd(),
+            &[] as &[&OSPathSlice],
+            skip_dirs,
+        )));
         state.walker.as_mut().unwrap().resolve_unknown_entry_types = true;
 
         #[cfg(not(windows))]
@@ -2386,65 +2383,27 @@ impl<'a> PackageInstall<'a> {
         let state = manager.get_preinstall_state(package_id);
         match state {
             crate::PreinstallState::Done => false,
-            _ => 'brk: {
-                if self.patch.is_none() {
-                    let exists = match resolution_tag {
-                        resolution::Tag::Npm => 'package_json_exists: {
-                            // SAFETY: thread-local PathBuffer; this is the only borrower on
-                            // this thread for the duration of the block (Zig: `var buf = ...`).
-                            let buf: &mut [u8] = unsafe {
-                                (*crate::package_manager::cached_package_folder_name_buf())
-                                    .as_mut_slice()
-                            };
-
-                            if cfg!(debug_assertions) {
-                                debug_assert!(bun_core::is_slice_in_buffer(
-                                    self.cache_dir_subpath.as_bytes(),
-                                    buf
-                                ));
-                            }
-
-                            let subpath_len =
-                                strings::without_trailing_slash(self.cache_dir_subpath.as_bytes())
-                                    .len();
-                            buf[subpath_len] = SEP;
-                            // SAFETY: p points into the long-lived cached_package_folder_name_buf;
-                            // subpath_len is in bounds (was the prior NUL position).
-                            let _restore =
-                                scopeguard::guard(buf.as_mut_ptr(), move |p: *mut u8| unsafe {
-                                    *p.add(subpath_len) = 0;
-                                });
-                            buf[subpath_len + 1..subpath_len + 1 + b"package.json\0".len()]
-                                .copy_from_slice(b"package.json\0");
-                            // SAFETY: NUL written above.
-                            let subpath =
-                                ZStr::from_buf(&buf[..], subpath_len + 1 + b"package.json".len());
-                            break 'package_json_exists sys::exists_at(self.cache_dir, subpath);
-                        }
-                        _ => sys::directory_exists_at(self.cache_dir, self.cache_dir_subpath)
-                            .unwrap_or(false),
-                    };
-                    if exists {
-                        manager.set_preinstall_state(package_id, crate::PreinstallState::Done);
-                    }
-                    break 'brk !exists;
-                }
-                let idx = strings::last_index_of(self.cache_dir_subpath.as_bytes(), b"_patch_hash=")
-                    .unwrap_or_else(|| {
-                        panic!("Patched dependency cache dir subpath does not have the \"_patch_hash=HASH\" suffix. This is a bug, please file a GitHub issue.")
-                    });
-                let cache_dir_subpath_without_patch_hash =
-                    &self.cache_dir_subpath.as_bytes()[..idx];
-                // PORT NOTE: Zig wrote into the global `bun.path.join_buf` thread-local; use a
-                // stack PathBuffer here instead (same size, no shared state).
-                let mut join_buf = PathBuffer::uninit();
-                join_buf[..cache_dir_subpath_without_patch_hash.len()]
-                    .copy_from_slice(cache_dir_subpath_without_patch_hash);
-                join_buf[cache_dir_subpath_without_patch_hash.len()] = 0;
-                // SAFETY: NUL written above.
-                let subpath =
-                    ZStr::from_buf(&join_buf[..], cache_dir_subpath_without_patch_hash.len());
-                let exists = sys::directory_exists_at(self.cache_dir, subpath).unwrap_or(false);
+            _ => {
+                let exists = if self.patch.is_none() {
+                    crate::package_manager::directories::is_package_in_cache_at(
+                        self.cache_dir,
+                        self.cache_dir_subpath,
+                        resolution_tag,
+                    )
+                } else {
+                    let idx =
+                        strings::last_index_of(self.cache_dir_subpath.as_bytes(), b"_patch_hash=")
+                            .unwrap_or_else(|| {
+                                panic!("Patched dependency cache dir subpath does not have the \"_patch_hash=HASH\" suffix. This is a bug, please file a GitHub issue.")
+                            });
+                    let non_patched =
+                        bun_core::ZBox::from_bytes(&self.cache_dir_subpath.as_bytes()[..idx]);
+                    crate::package_manager::directories::is_package_in_cache_at(
+                        self.cache_dir,
+                        &non_patched,
+                        resolution_tag,
+                    )
+                };
                 if exists {
                     manager.set_preinstall_state(package_id, crate::PreinstallState::Done);
                 }

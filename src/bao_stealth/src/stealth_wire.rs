@@ -19,7 +19,8 @@
 /// Wire-level TLS/HTTP2 configuration for servo's network layer.
 ///
 /// Derived from [`StealthProfile`](crate::StealthProfile) and stored as a global
-/// that servo's connector reads during `create_tls_config()` and `create_http_client()`.
+/// that servo's connector reads during `create_tls_config()` (WS loader) and
+/// the page-network bun bridge shapes its per-request `SSLConfig` from.
 #[derive(Debug, Clone)]
 pub struct StealthTlsWireConfig {
     /// TLS 1.2 cipher suites as IANA u16 IDs (ordered as in profile).

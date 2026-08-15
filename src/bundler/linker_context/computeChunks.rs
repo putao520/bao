@@ -130,7 +130,7 @@ pub fn compute_chunks(
             let html_chunk_entry = html_chunks.get_or_put(js_chunk_key)?;
             if !html_chunk_entry.found_existing {
                 *html_chunk_entry.value_ptr = Chunk {
-                    entry_point: chunk::EntryPoint::new(source_index, entry_bit, true, false),
+                    entry_point: chunk::EntryPoint::entry_point(source_index, entry_bit),
                     entry_bits: entry_point_chunk_bits.clone()?,
                     content: chunk::Content::Html,
                     output_source_map: SourceMapPieces::init(),
@@ -171,7 +171,7 @@ pub fn compute_chunks(
                 // const css_chunk_entry = try js_chunks.getOrPut();
                 let order_len = order.len() as usize;
                 *css_chunk_entry.value_ptr = Chunk {
-                    entry_point: chunk::EntryPoint::new(source_index, entry_bit, true, false),
+                    entry_point: chunk::EntryPoint::entry_point(source_index, entry_bit),
                     entry_bits: entry_point_chunk_bits,
                     content: chunk::Content::Css(chunk::CssChunk {
                         imports_in_chunk_in_order: order,
@@ -199,7 +199,7 @@ pub fn compute_chunks(
         entry_point_to_js_chunk_idx[entry_id_] =
             u32::try_from(js_chunk_entry.index).expect("int cast");
         *js_chunk_entry.value_ptr = Chunk {
-            entry_point: chunk::EntryPoint::new(source_index, entry_bit, true, false),
+            entry_point: chunk::EntryPoint::entry_point(source_index, entry_bit),
             entry_bits: entry_point_chunk_bits,
             content: chunk::Content::Javascript(chunk::JavaScriptChunk::default()),
             output_source_map: SourceMapPieces::init(),
@@ -262,7 +262,7 @@ pub fn compute_chunks(
                         }
                     }
                     *css_chunk_entry.value_ptr = Chunk {
-                        entry_point: chunk::EntryPoint::new(source_index, entry_bit, true, false),
+                        entry_point: chunk::EntryPoint::entry_point(source_index, entry_bit),
                         entry_bits: entry_bits.clone()?,
                         content: chunk::Content::Css(chunk::CssChunk {
                             imports_in_chunk_in_order: order,
@@ -310,11 +310,9 @@ pub fn compute_chunks(
                                     && ast_targets[source_index.get() as usize] == Target::Browser;
                             *js_chunk_entry.value_ptr = Chunk {
                                 entry_bits: entry_bits.clone()?,
-                                entry_point: chunk::EntryPoint::new(
+                                entry_point: chunk::EntryPoint::non_entry_point(
                                     source_index.get(),
                                     0,
-                                    false,
-                                    false,
                                 ),
                                 content: chunk::Content::Javascript(
                                     chunk::JavaScriptChunk::default(),

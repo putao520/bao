@@ -8,7 +8,7 @@ use bun_core::{declare_scope, err, scoped_log};
 use bun_semver::String as SemverString;
 
 use crate::vlq::decode as decode_vlq;
-use crate::{LineColumnOffset, Ordinal, ParseResult, ParseResultFail, ParsedSourceMap};
+use crate::{LineColumnOffset, Ordinal, ParseFail, ParseResult, ParsedSourceMap};
 
 declare_scope!(SourceMap, visible);
 
@@ -502,11 +502,9 @@ pub fn parse(
 
     if let Some(count) = estimated_mapping_count {
         if mapping.ensure_total_capacity(count).is_err() {
-            return ParseResult::Fail(ParseResultFail {
-                msg: b"Out of memory",
+            return Err(ParseFail {
                 err: err!("OutOfMemory"),
                 loc: Loc::default(),
-                ..Default::default()
             });
         }
     }
@@ -547,10 +545,8 @@ pub fn parse(
         let generated_column_delta = decode_vlq(remain, 0);
 
         if generated_column_delta.start == 0 {
-            return ParseResult::Fail(ParseResultFail {
-                msg: b"Missing generated column value",
+            return Err(ParseFail {
                 err: err!("MissingGeneratedColumnValue"),
-                value: generated.columns.zero_based(),
                 loc: Loc {
                     start: i32::try_from(bytes.len() - remain.len()).unwrap_or(i32::MAX),
                 },
@@ -561,10 +557,8 @@ pub fn parse(
 
         generated.columns = generated.columns.add_scalar(generated_column_delta.value);
         if generated.columns.zero_based() < 0 {
-            return ParseResult::Fail(ParseResultFail {
-                msg: b"Invalid generated column value",
+            return Err(ParseFail {
                 err: err!("InvalidGeneratedColumnValue"),
-                value: generated.columns.zero_based(),
                 loc: Loc {
                     start: i32::try_from(bytes.len() - remain.len()).unwrap_or(i32::MAX),
                 },
@@ -595,22 +589,18 @@ pub fn parse(
         // Read the original source
         let source_index_delta = decode_vlq(remain, 0);
         if source_index_delta.start == 0 {
-            return ParseResult::Fail(ParseResultFail {
-                msg: b"Invalid source index delta",
+            return Err(ParseFail {
                 err: err!("InvalidSourceIndexDelta"),
                 loc: Loc {
                     start: i32::try_from(bytes.len() - remain.len()).unwrap_or(i32::MAX),
                 },
-                ..Default::default()
             });
         }
         source_index += source_index_delta.value;
 
         if source_index < 0 || source_index >= sources_count {
-            return ParseResult::Fail(ParseResultFail {
-                msg: b"Invalid source index value",
+            return Err(ParseFail {
                 err: err!("InvalidSourceIndexValue"),
-                value: source_index,
                 loc: Loc {
                     start: i32::try_from(bytes.len() - remain.len()).unwrap_or(i32::MAX),
                 },
@@ -621,22 +611,18 @@ pub fn parse(
         // Read the original line
         let original_line_delta = decode_vlq(remain, 0);
         if original_line_delta.start == 0 {
-            return ParseResult::Fail(ParseResultFail {
-                msg: b"Missing original line",
+            return Err(ParseFail {
                 err: err!("MissingOriginalLine"),
                 loc: Loc {
                     start: i32::try_from(bytes.len() - remain.len()).unwrap_or(i32::MAX),
                 },
-                ..Default::default()
             });
         }
 
         original.lines = original.lines.add_scalar(original_line_delta.value);
         if original.lines.zero_based() < 0 {
-            return ParseResult::Fail(ParseResultFail {
-                msg: b"Invalid original line value",
+            return Err(ParseFail {
                 err: err!("InvalidOriginalLineValue"),
-                value: original.lines.zero_based(),
                 loc: Loc {
                     start: i32::try_from(bytes.len() - remain.len()).unwrap_or(i32::MAX),
                 },
@@ -647,10 +633,8 @@ pub fn parse(
         // Read the original column
         let original_column_delta = decode_vlq(remain, 0);
         if original_column_delta.start == 0 {
-            return ParseResult::Fail(ParseResultFail {
-                msg: b"Missing original column value",
+            return Err(ParseFail {
                 err: err!("MissingOriginalColumnValue"),
-                value: original.columns.zero_based(),
                 loc: Loc {
                     start: i32::try_from(bytes.len() - remain.len()).unwrap_or(i32::MAX),
                 },
@@ -659,10 +643,8 @@ pub fn parse(
 
         original.columns = original.columns.add_scalar(original_column_delta.value);
         if original.columns.zero_based() < 0 {
-            return ParseResult::Fail(ParseResultFail {
-                msg: b"Invalid original column value",
+            return Err(ParseFail {
                 err: err!("InvalidOriginalColumnValue"),
-                value: original.columns.zero_based(),
                 loc: Loc {
                     start: i32::try_from(bytes.len() - remain.len()).unwrap_or(i32::MAX),
                 },
@@ -680,14 +662,12 @@ pub fn parse(
                 b';' => {}
 
                 // 5th column: the name
-                c => {
+                _ => {
                     // Read the name index
                     let name_index_delta = decode_vlq(remain, 0);
                     if name_index_delta.start == 0 {
-                        return ParseResult::Fail(ParseResultFail {
-                            msg: b"Invalid name index delta",
+                        return Err(ParseFail {
                             err: err!("InvalidNameIndexDelta"),
-                            value: i32::from(c),
                             loc: Loc {
                                 start: i32::try_from(bytes.len() - remain.len())
                                     .unwrap_or(i32::MAX),
@@ -700,14 +680,12 @@ pub fn parse(
                         name_index += name_index_delta.value;
                         if !has_names {
                             if mapping.ensure_with_names().is_err() {
-                                return ParseResult::Fail(ParseResultFail {
-                                    msg: b"Out of memory",
+                                return Err(ParseFail {
                                     err: err!("OutOfMemory"),
                                     loc: Loc {
                                         start: i32::try_from(bytes.len() - remain.len())
                                             .unwrap_or(i32::MAX),
                                     },
-                                    ..Default::default()
                                 });
                             }
                         }
@@ -746,7 +724,7 @@ pub fn parse(
     let mut psm = ParsedSourceMap::default();
     psm.mappings = mapping;
     psm.input_line_count = input_line_count;
-    ParseResult::Success(psm)
+    Ok(psm)
 }
 
 // ported from: src/sourcemap/Mapping.zig

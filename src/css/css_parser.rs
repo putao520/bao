@@ -4197,9 +4197,6 @@ impl<'a> Parser<'a> {
         let token: &Token = if using_cached_token {
             let cached_token = self.input.cached_token.as_ref().unwrap();
             self.input.tokenizer.reset(&cached_token.end_state);
-            if let Token::Function(f) = &cached_token.token {
-                self.input.tokenizer.see_function(f);
-            }
             &self.input.cached_token.as_ref().unwrap().token
         } else {
             let new_token = match self.input.tokenizer.next() {
@@ -4534,13 +4531,6 @@ pub struct CachedToken {
 
 // ───────────────────────────── Tokenizer ─────────────────────────────
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SeenStatus {
-    DontCare,
-    LookingForThem,
-    SeenAtLeastOne,
-}
-
 pub struct Tokenizer<'a> {
     pub src: &'a [u8],
     pub position: usize,
@@ -4550,7 +4540,6 @@ pub struct Tokenizer<'a> {
     // TODO(port): AST crate — keep arena. Zig threaded `Allocator`; in Rust
     // this is `&'a Bump`.
     pub arena: &'a Bump,
-    var_or_env_functions: SeenStatus,
     pub current: Token,
     pub previous: Token,
 }
@@ -4600,7 +4589,6 @@ impl<'a> Tokenizer<'a> {
             current_line_start_position: 0,
             current_line_number: 0,
             arena,
-            var_or_env_functions: SeenStatus::DontCare,
             current: Token::Whitespace(b""),
             previous: Token::Whitespace(b""),
         }
@@ -4659,17 +4647,6 @@ impl<'a> Tokenizer<'a> {
     #[inline]
     pub fn is_eof(&self) -> bool {
         self.position >= self.src.len()
-    }
-
-    pub fn see_function(&mut self, name: &[u8]) {
-        if self.var_or_env_functions == SeenStatus::LookingForThem {
-            // PORT NOTE: Zig had `and` here (always false); preserved.
-            if strings::eql_case_insensitive_ascii_check_length(name, b"var")
-                && strings::eql_case_insensitive_ascii_check_length(name, b"env")
-            {
-                self.var_or_env_functions = SeenStatus::SeenAtLeastOne;
-            }
-        }
     }
 
     /// Return error if it is eof.
@@ -5055,7 +5032,6 @@ impl<'a> Tokenizer<'a> {
                 }
                 return Token::Function(value);
             }
-            self.see_function(value);
             return Token::Function(value);
         }
         Token::Ident(value)
