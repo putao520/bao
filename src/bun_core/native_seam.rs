@@ -55,7 +55,14 @@ pub extern "C" fn on_before_reload_process_linux() {
 pub extern "C" fn Bun__StackCheck__initialize() {}
 
 /// Return the stack-end pointer for the current thread (pthread_attr path,
-/// 8 MiB-from-here fallback).
+/// 8 MiB-below-here fallback).
+///
+/// "End" is WTF `StackBounds::end()` — the LOW bound (the limit the stack
+/// grows down toward), NOT the high `origin()`. `StackCheck::
+/// is_safe_to_recurse()` measures `rsp - end`, so returning the high address
+/// inverts the check and makes every recursion probe fail at depth 0
+/// (surfaces as `error.StackOverflow` from the JSON parser before it reads
+/// a single token).
 #[unsafe(no_mangle)]
 pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
     unsafe {
@@ -65,12 +72,14 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
             let mut stack_size: usize = 0;
             if libc::pthread_attr_getstack(&attr, &mut stack_addr, &mut stack_size) == 0 {
                 libc::pthread_attr_destroy(&mut attr);
-                return (stack_addr as usize + stack_size) as *mut c_void;
+                // `stack_addr` is already the low bound on down-growing
+                // stacks — do NOT add `stack_size` (that is the origin).
+                return stack_addr;
             }
             libc::pthread_attr_destroy(&mut attr);
         }
         let marker: usize = 0;
-        (marker as *const usize as usize + 8 * 1024 * 1024) as *mut c_void
+        (marker as *const usize as usize - 8 * 1024 * 1024) as *mut c_void
     }
 }
 

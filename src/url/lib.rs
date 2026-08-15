@@ -721,6 +721,11 @@ impl<'a> URL<'a> {
                 offset += url.parse_password(&base[offset as usize..]).unwrap_or(0);
                 offset += url.parse_host(&base[offset as usize..]).unwrap_or(0);
             }
+            // Bare bracketed IPv6 host, e.g. the `[::1]:4873/` left of an .npmrc
+            // `//[::1]:4873/:_authToken` key once its `//` is stripped.
+            b'[' => {
+                offset += url.parse_host(base).unwrap_or(0);
+            }
             b'/' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b':' => {
                 let is_protocol_relative = base.len() > 1 && base[1] == b'/';
                 if is_protocol_relative {
@@ -1875,3 +1880,60 @@ impl<'a> Scanner<'a> {
 }
 
 // ported from: src/url/url.zig
+
+#[cfg(test)]
+mod bare_bracketed_ipv6_tests {
+    //! Upstream cfd3bea94: a bare bracketed IPv6 host (no scheme), e.g. the
+    //! `[::1]:4873/` left of an .npmrc `//[::1]:4873/:_authToken` key once
+    //! its `//` is stripped, must go through `parse_host` instead of falling
+    //! through the first-byte dispatch to an empty host.
+
+    use super::URL;
+
+    #[test]
+    fn host_with_port_and_trailing_slash() {
+        let url = URL::parse(b"[::1]:4873/");
+        assert_eq!(url.host, b"[::1]:4873");
+        assert_eq!(url.hostname, b"[::1]");
+        assert_eq!(url.port, b"4873");
+        assert_eq!(url.pathname, b"/");
+        assert_eq!(url.protocol, b"");
+    }
+
+    #[test]
+    fn host_without_port() {
+        let url = URL::parse(b"[::1]/");
+        assert_eq!(url.host, b"[::1]");
+        assert_eq!(url.hostname, b"[::1]");
+        assert_eq!(url.port, b"");
+        assert_eq!(url.pathname, b"/");
+    }
+
+    #[test]
+    fn host_with_path() {
+        let url = URL::parse(b"[2001:db8::1]:4873/a/b/");
+        assert_eq!(url.host, b"[2001:db8::1]:4873");
+        assert_eq!(url.hostname, b"[2001:db8::1]");
+        assert_eq!(url.port, b"4873");
+        assert_eq!(url.pathname, b"/a/b/");
+    }
+
+    #[test]
+    fn host_without_trailing_slash() {
+        let url = URL::parse(b"[::1]:4873");
+        assert_eq!(url.host, b"[::1]:4873");
+        assert_eq!(url.hostname, b"[::1]");
+        assert_eq!(url.port, b"4873");
+    }
+
+    #[test]
+    fn schemed_bracketed_host_unchanged() {
+        // `registry=` lines carry a scheme; they parsed correctly before and
+        // must keep the same components so nerf-dart key matching works.
+        let url = URL::parse(b"http://[::1]:4873/");
+        assert_eq!(url.host, b"[::1]:4873");
+        assert_eq!(url.hostname, b"[::1]");
+        assert_eq!(url.port, b"4873");
+        assert!(!url.protocol.is_empty());
+    }
+}

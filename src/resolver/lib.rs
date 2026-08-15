@@ -311,10 +311,14 @@ pub mod fs {
                 // (Zig had no lifetime; the singleton outlives every caller).
                 Some(d) => DirnameStore::instance().append_slice(d)?,
                 None => {
-                    // Spec fs.zig:161 — `bun.getcwdAlloc(allocator)`.
+                    // Spec fs.zig:161 — `bun.getcwdAlloc(allocator)`. Goes
+                    // through `bun_core::getcwd` so a deleted cwd surfaces as
+                    // `CurrentWorkingDirectoryUnlinked` instead of a bare
+                    // ENOENT (upstream a2496de44).
                     let mut buf = bun_paths::PathBuffer::default();
-                    let n = bun_sys::getcwd(&mut buf[..])?;
-                    DirnameStore::instance().append_slice(&buf[..n])?
+                    DirnameStore::instance().append_slice(
+                        bun_core::getcwd(&mut buf)?.as_bytes(),
+                    )?
                 }
             };
             // Seed the lower-tier `bun_paths::fs::FileSystem` singleton with the
@@ -2589,3 +2593,53 @@ pub mod options;
 pub mod resolver;
 pub mod result;
 pub mod standalone_module_graph;
+
+#[cfg(test)]
+mod getcwd_deleted_cwd_tests {
+    //! Upstream a2496de44: `getcwd(2)` failing with ENOENT (the cwd was
+    //! deleted) must surface as `error.CurrentWorkingDirectoryUnlinked` —
+    //! the name the root-error handler matches for its user-facing hint,
+    //! not the generic ENOENT fallback. `FileSystem::init`'s default-cwd
+    //! path routes through `bun_core::getcwd`, so the name is asserted on
+    //! that function directly.
+    //!
+    //! Lives in `bun_resolver` (not `bun_core`) because the error-intern
+    //! table's `ErrnoNames` hook is provided by `bun_errno`, which this
+    //! crate's test binary links transitively via `bun_sys`; `bun_core`'s
+    //! own test binary has no provider (see the note in
+    //! `bun_core::result` tests).
+    //!
+    //! The repro mutates process state (`chdir` + `rmdir`), so it re-execs
+    //! the test binary as a child instead of running in-process: cargo test
+    //! threads share one cwd, and deleting it would break every other test.
+    use bun_paths::PathBuffer;
+
+    #[test]
+    fn deleted_cwd_reports_current_working_directory_unlinked() {
+        const CHILD: &str = "BAO_TEST_GETCWD_DELETED_CWD_CHILD";
+        const TEST: &str =
+            "getcwd_deleted_cwd_tests::deleted_cwd_reports_current_working_directory_unlinked";
+        if std::env::var_os(CHILD).is_some() {
+            let mut dir = std::env::temp_dir();
+            dir.push(format!("bao-getcwd-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::env::set_current_dir(&dir).unwrap();
+            std::fs::remove_dir(&dir).unwrap();
+            let mut buf = PathBuffer::default();
+            // `ZStr` has no `Debug`, so no `unwrap_err()` — match by hand.
+            let err = match bun_core::getcwd(&mut buf) {
+                Ok(_) => panic!("getcwd must fail when the cwd was deleted"),
+                Err(e) => e,
+            };
+            assert_eq!(err.name(), "CurrentWorkingDirectoryUnlinked");
+            std::process::exit(0);
+        }
+        let exe = std::env::current_exe().unwrap();
+        let status = std::process::Command::new(exe)
+            .args(["--exact", TEST, "--test-threads=1"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "child run failed: {status:?}");
+    }
+}

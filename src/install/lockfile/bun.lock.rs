@@ -2140,19 +2140,37 @@ pub fn parse_into_binary_lockfile(
         }
     }
 
-    let Some(pkgs_expr) = root.get(b"packages") else {
-        // packages is empty, but there might be empty workspace packages
-        if workspace_pkgs_len == 0 {
-            lockfile.init_empty();
-        }
+    let pkgs_expr = root.get(b"packages");
+
+    // A missing "packages" object is parsed like an empty one. With no
+    // workspace packages there is nothing to resolve, otherwise the workspace
+    // packages appended above and the root's dependencies on them still need
+    // the resolution pass below (which also sizes `buffers.resolutions`).
+    if pkgs_expr.is_none() && workspace_pkgs_len == 0 {
+        lockfile.init_empty();
         return Ok(());
-    };
+    }
+
+    // Row list for "packages" — empty for a missing key, the same rows
+    // `"packages": {}` would yield (upstream 44acc3d61). The `e_object`
+    // unwrap is infallible once the `is_object` check below has run; the
+    // object itself lives in the parse arena. The `StoreRef` → `&Object`
+    // chain is pinned in named bindings first so the row slice's borrow
+    // outlives the statement that produced it.
+    let pkgs_obj = pkgs_expr.as_ref().and_then(|pkgs_expr| pkgs_expr.data.e_object());
+    let pkgs_obj = pkgs_obj.as_ref();
 
     {
-        if !pkgs_expr.is_object() {
-            log.add_error(Some(source), pkgs_expr.loc, b"Expected an object");
-            return Err(ParseError::InvalidPackagesObject);
+        if let Some(pkgs_expr) = &pkgs_expr {
+            if !pkgs_expr.is_object() {
+                log.add_error(Some(source), pkgs_expr.loc, b"Expected an object");
+                return Err(ParseError::InvalidPackagesObject);
+            }
         }
+        let pkg_rows: &[bun_ast::G::Property] = match pkgs_obj {
+            Some(obj) => obj.properties.slice(),
+            None => &[],
+        };
 
         // find the bundle roots.
         //
@@ -2166,13 +2184,7 @@ pub fn parse_into_binary_lockfile(
         // the bundled map, and mark the dependency bundled if it exists. This works
         // because package's direct bundled dependencies can only exist at the top
         // level of it's node_modules.
-        for prop in pkgs_expr
-            .data
-            .e_object()
-            .expect("infallible: variant checked")
-            .properties
-            .slice()
-        {
+        for prop in pkg_rows {
             let key = prop.key.expect("infallible: prop has key");
             let value = prop.value.expect("infallible: prop has value");
 
@@ -2207,13 +2219,7 @@ pub fn parse_into_binary_lockfile(
             bundled_pkgs.put(pkg_path, ());
         }
 
-        'next_pkg_key: for prop in pkgs_expr
-            .data
-            .e_object()
-            .expect("infallible: variant checked")
-            .properties
-            .slice()
-        {
+        'next_pkg_key: for prop in pkg_rows {
             let key = prop.key.expect("infallible: prop has key");
             let value = prop.value.expect("infallible: prop has value");
 
@@ -2788,13 +2794,7 @@ pub fn parse_into_binary_lockfile(
         }
 
         // then each package dependency
-        for prop in pkgs_expr
-            .data
-            .e_object()
-            .expect("infallible: variant checked")
-            .properties
-            .slice()
-        {
+        for prop in pkg_rows {
             let key = prop.key.expect("infallible: prop has key");
 
             let pkg_path = key
