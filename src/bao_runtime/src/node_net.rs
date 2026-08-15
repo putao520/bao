@@ -553,7 +553,16 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         &mut err,
     );
 
-    if listen_socket.is_null() || err != 0 {
+    // The return value is the authoritative success signal (NULL ⟺
+    // failure, the uWS contract). The C layer's *error is ALSO set on the
+    // success path (us_internal_bind_and_listen writes LIBUS_ERR after a
+    // successful listen() — a usockets divergence from upstream), so it
+    // must not be part of the success test: `err != 0` on a live listen
+    // socket used to drive this branch into destroying a group that still
+    // had the socket linked, tripping the head_listen_sockets assert in
+    // us_socket_group_deinit (SIGABRT on every net.Server.listen).
+    let _ = err;
+    if listen_socket.is_null() {
         // Listen failed — destroy the group.
         unsafe {
             SocketGroup::destroy(group_ptr);
@@ -1043,6 +1052,38 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             1,
             0,
         );
+
+        // The NET_JS IIFE resolves these host bridges as FREE variables —
+        // the `typeof __net_connect === "function"` probes inside the IIFE
+        // look at the GLOBAL, never at this module object. Defining them
+        // only on mod_obj left every probe false: Socket.connect /
+        // Server.listen / write / read / address all silently no-op'd.
+        // Mirror them onto the global (non-enumerable, configurable) so the
+        // IIFE sees them (same class as the http2 fix, commit 854677b0).
+        let global = CurrentGlobalOrNull(cx_raw);
+        if !global.is_null() {
+            rooted!(&in(cx) let global_root = global);
+            let bridges: &[(&str, JSNative, u32)] = &[
+                ("__net_listen", Some(net_listen), 2),
+                ("__net_connect", Some(net_connect), 2),
+                ("__net_write", Some(net_write), 2),
+                ("__net_close", Some(net_close), 1),
+                ("__net_address", Some(net_address), 1),
+                ("__net_read", Some(net_read), 1),
+                ("__net_isIPv6", Some(net_is_ipv6), 1),
+            ];
+            for &(name, native, nargs) in bridges {
+                let c_name = ZBox::from_bytes(name);
+                JS_DefineFunction(
+                    cx_raw,
+                    global_root.handle().into(),
+                    c_name.as_ptr(),
+                    native,
+                    nargs,
+                    0,
+                );
+            }
+        }
 
         // Store the JSContext for use in C callbacks.
         NET_CX.with(|c| c.set(Some(cx_raw)));

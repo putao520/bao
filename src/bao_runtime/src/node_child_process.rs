@@ -325,11 +325,15 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             1,
             0,
         );
-        // Internal: kill child process.
+        // Internal: kill child process. The JS shim probes this as
+        // `cp.__cp_kill_child` (ChildProcess.prototype.kill) — the previous
+        // name `__cp_kill` never matched that probe, so kill() silently
+        // no-op'd and only flipped the `killed` flag (BCE sweep #19, name-
+        // mismatch variant of the invisible-bridge class, cf. 854677b0).
         w2::JS_DefineFunction(
             cx,
             mod_obj.handle(),
-            c"__cp_kill".as_ptr(),
+            c"__cp_kill_child".as_ptr(),
             Some(cp_kill_child),
             2,
             0,
@@ -1212,12 +1216,15 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             // Mount `kill(signal)` directly on the native child object — the
             // polyfill's ChildProcess.prototype.kill exists but cp_spawn returns
             // a plain object without the prototype chain, so `child.kill` was
-            // undefined. Delegate to the existing __cp_kill_child native.
+            // undefined. child_kill reads the pid from `this.pid` and accepts
+            // the signal as a name string or number (the previous mount bound
+            // cp_kill_child directly, so `child.kill("SIGKILL")` parsed the
+            // string as the i32 pid and PANICKED, aborting the process).
             w2::JS_DefineFunction(
                 cx_ref,
                 child_obj.handle(),
                 c"kill".as_ptr(),
-                Some(cp_kill_child),
+                Some(child_kill),
                 1,
                 JSPROP_ENUMERATE as u32,
             );
@@ -1751,6 +1758,102 @@ unsafe extern "C" fn cp_stdin_close(_cx: *mut JSContext, argc: u32, vp: *mut JSV
 }
 
 // ─── Native: __cp_kill_child(pid, signal) ──────────────────────────────────
+
+/// Signal-name → libc signal number for `child.kill(sig)`. Node's canonical
+/// form is the NAME string ("SIGKILL"); a raw number is also accepted.
+fn signal_name_to_number(name: &str) -> ::std::option::Option<i32> {
+    match name {
+        "SIGHUP" => Some(libc::SIGHUP),
+        "SIGINT" => Some(libc::SIGINT),
+        "SIGQUIT" => Some(libc::SIGQUIT),
+        "SIGILL" => Some(libc::SIGILL),
+        "SIGTRAP" => Some(libc::SIGTRAP),
+        "SIGABRT" => Some(libc::SIGABRT),
+        "SIGBUS" => Some(libc::SIGBUS),
+        "SIGFPE" => Some(libc::SIGFPE),
+        "SIGKILL" => Some(libc::SIGKILL),
+        "SIGUSR1" => Some(libc::SIGUSR1),
+        "SIGSEGV" => Some(libc::SIGSEGV),
+        "SIGUSR2" => Some(libc::SIGUSR2),
+        "SIGPIPE" => Some(libc::SIGPIPE),
+        "SIGALRM" => Some(libc::SIGALRM),
+        "SIGTERM" => Some(libc::SIGTERM),
+        "SIGCHLD" => Some(libc::SIGCHLD),
+        "SIGCONT" => Some(libc::SIGCONT),
+        "SIGSTOP" => Some(libc::SIGSTOP),
+        "SIGTSTP" => Some(libc::SIGTSTP),
+        "SIGTTIN" => Some(libc::SIGTTIN),
+        "SIGTTOU" => Some(libc::SIGTTOU),
+        _ => ::std::option::Option::None,
+    }
+}
+
+/// `child.kill([signal])` — method ABI mounted on the spawn-returned object.
+/// Reads the pid from `this.pid` (NOT from args — the previous mount reused
+/// cp_kill_child directly, so `child.kill("SIGKILL")` parsed the STRING as
+/// the i32 pid and panicked on JSVal::to_int32's is_int32 assert, aborting
+/// the whole process). Accepts the signal as a name string or a number;
+/// defaults to SIGTERM per Node semantics.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn child_kill(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    // pid from this.pid
+    let mut pid: i32 = 0;
+    let this = args.thisv();
+    if this.is_object() {
+        let wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let this_obj = this.to_object());
+        let mut pid_val = UndefinedValue();
+        if JS_GetProperty(
+            cx,
+            this_obj.handle().into(),
+            c"pid".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut pid_val,
+            },
+        ) && pid_val.is_int32()
+        {
+            pid = pid_val.to_int32();
+        }
+    }
+    if pid == 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+
+    // signal: name string | number | default SIGTERM
+    let signal: i32 = if argc > 0 {
+        let sig_val = *args.get(0).ptr;
+        if sig_val.is_int32() {
+            sig_val.to_int32()
+        } else if sig_val.is_double() {
+            sig_val.to_double() as i32
+        } else if sig_val.is_string() {
+            let name = crate::js_to_rust_string(cx, sig_val);
+            match signal_name_to_number(&name) {
+                Some(n) => n,
+                None => {
+                    let msg = format!("kill: unknown signal name \"{}\"", name);
+                    if let Ok(c_msg) = ::std::ffi::CString::new(msg) {
+                        JS_ReportErrorUTF8(cx, c_msg.as_ptr());
+                    }
+                    return false;
+                }
+            }
+        } else {
+            libc::SIGTERM as i32
+        }
+    } else {
+        libc::SIGTERM as i32
+    };
+
+    let ret = unsafe { libc::kill(pid, signal) };
+    args.rval().set(BooleanValue(ret == 0));
+    true
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn cp_kill_child(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {

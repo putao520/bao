@@ -1247,6 +1247,49 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             0,
         );
 
+        // The ZLIB_JS IIFE calls these host bridges as FREE variables inside
+        // the transform classes' _process() methods (`return
+        // __zlib_deflateSync(all, {...})`) — free-variable lookup goes to the
+        // GLOBAL, never to this module object. Defining them only on mod_obj
+        // meant every _process() call threw ReferenceError (caught by the
+        // end()/flush() wrappers and re-emitted as 'error'), so the whole
+        // Gzip/Deflate/Brotli stream surface was broken. Mirror them onto
+        // the global (non-enumerable, configurable) so the IIFE sees them
+        // (same class as the http2 fix, commit 854677b0).
+        let global = CurrentGlobalOrNull(cx_raw);
+        if !global.is_null() {
+            rooted!(&in(cx) let global_root = global);
+            let bridges: &[(&str, JSNative, u32)] = &[
+                ("__zlib_deflateSync", Some(zlib_deflate_sync), 2),
+                ("__zlib_inflateSync", Some(zlib_inflate_sync), 1),
+                ("__zlib_gzipSync", Some(zlib_gzip_sync), 2),
+                ("__zlib_gunzipSync", Some(zlib_gunzip_sync), 1),
+                ("__zlib_deflateRawSync", Some(zlib_deflate_raw_sync), 2),
+                ("__zlib_inflateRawSync", Some(zlib_inflate_raw_sync), 1),
+                (
+                    "__zlib_brotliCompressSync",
+                    Some(zlib_brotli_compress_sync),
+                    2,
+                ),
+                (
+                    "__zlib_brotliDecompressSync",
+                    Some(zlib_brotli_decompress_sync),
+                    1,
+                ),
+            ];
+            for &(name, native, nargs) in bridges {
+                let c_name = ZBox::from_bytes(name);
+                w2::JS_DefineFunction(
+                    cx,
+                    global_root.handle(),
+                    c_name.as_ptr(),
+                    native,
+                    nargs,
+                    0,
+                );
+            }
+        }
+
         let c_filename = ZBox::from_bytes("node:zlib".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
         if opts.is_null() {

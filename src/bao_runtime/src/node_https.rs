@@ -369,6 +369,26 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             0,
         );
 
+        // The HTTPS_JS IIFE resolves this host bridge as a FREE variable —
+        // the `typeof __https_request === "function"` probe inside the IIFE
+        // looks at the GLOBAL, never at this module object. Defining it only
+        // on mod_obj left the probe false, so every https.request() came
+        // back with statusCode 0 and an empty body. Mirror it onto the
+        // global (non-enumerable, configurable) so the IIFE sees it (same
+        // class as the http2 fix, commit 854677b0).
+        let global = CurrentGlobalOrNull(cx_raw);
+        if !global.is_null() {
+            rooted!(&in(cx) let global_root = global);
+            JS_DefineFunction(
+                cx_raw,
+                global_root.handle().into(),
+                c"__https_request".as_ptr(),
+                Some(https_request),
+                4,
+                0,
+            );
+        }
+
         let c_filename = ZBox::from_bytes("node:https".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
         if opts.is_null() {

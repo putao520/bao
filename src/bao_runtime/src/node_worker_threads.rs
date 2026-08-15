@@ -1131,29 +1131,22 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
             libc::free(opts as *mut _);
             if ok && rval.is_object() {
-                let mc_ctor_fn = rval.to_object();
-                rooted!(&in(cx) let mc_root = mc_ctor_fn);
-                // Call the IIFE to get the actual constructor.
-                rooted!(&in(cx) let mc_fn_val = ObjectValue(mc_ctor_fn));
-                rooted!(&in(cx) let mut mc_result = UndefinedValue());
-                JS_CallFunctionValue(
+                // The source ends with `})()`, so Evaluate2's completion
+                // value IS the MessageChannel constructor already — do NOT
+                // call it again. The previous code re-invoked the constructor
+                // as a plain function (constructor has no `return` →
+                // undefined), so MessageChannel was never exported:
+                // require('worker_threads').MessageChannel === undefined
+                // (BCE sweep #19, same class as the http2 install() fix,
+                // commit 854677b0).
+                rooted!(&in(cx) let mc_val = ObjectValue(rval.to_object()));
+                JS_DefineProperty(
                     raw_cx,
-                    mc_root.handle().into(),
-                    mc_fn_val.handle().into(),
-                    &HandleValueArray::empty(),
-                    mc_result.handle_mut().into(),
+                    exports.handle().into(),
+                    c"MessageChannel".as_ptr(),
+                    mc_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
                 );
-                // mc_result is the MessageChannel constructor.
-                if mc_result.is_object() {
-                    rooted!(&in(cx) let mc_val = ObjectValue(mc_result.to_object()));
-                    JS_DefineProperty(
-                        raw_cx,
-                        exports.handle().into(),
-                        c"MessageChannel".as_ptr(),
-                        mc_val.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
             }
         }
 
