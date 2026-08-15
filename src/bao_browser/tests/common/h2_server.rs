@@ -1,17 +1,28 @@
-// H2 fixture: ALPN-h2 TLS server + minimal h2 framing (encode-only HPACK).
+// H2 fixture: ALPN-h2 TLS server + minimal h2 framing.
 //
 // Extracted from page_net_bun_full_matrix_e2e_tests (U2 stage 3) so both the
 // page-network matrix and the Node-fetch h2 coalescing smoke share ONE
-// fixture: BoringSSL TlsServer + hand-rolled h2 framing/HPACK-encode layer
-// (static-table :status plus literal headers, no huffman). Records every
-// request stream id and counts ALPN-h2 vs non-h2 connections.
+// fixture: BoringSSL TlsServer + hand-rolled h2 framing layer (response
+// HPACK encode: static-table :status plus literal headers, no huffman).
+// Records every request stream id and counts ALPN-h2 vs non-h2 connections.
+//
+// Decode side (h2 e2e evidence): request HEADERS/CONTINUATION blocks are
+// HPACK-decoded through lshpack (the same bun_http decoder the h2 client
+// uses for responses — one library, both directions), producing
+// [`H2RequestRecord`]s with method/path/authority/scheme + regular headers
+// + DATA bodies. The client's first non-ACK SETTINGS payload is recorded
+// raw per connection (`client_settings`) so tests can assert the stealth
+// profile's h2 SETTINGS bytes on the wire.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use bun_http::lshpack::HpackHandle;
 
 /// Length-prefixed ALPN wire entry for "h2".
 const ALPN_H2: &[u8] = b"\x02h2";
@@ -173,6 +184,7 @@ pub mod h2frame {
     pub const HEADERS: u8 = 0x1;
     pub const DATA: u8 = 0x0;
     pub const GOAWAY: u8 = 0x7;
+    pub const CONTINUATION: u8 = 0x9;
     pub const FLAG_ACK: u8 = 0x1;
     pub const FLAG_END_HEADERS: u8 = 0x4;
     pub const FLAG_END_STREAM: u8 = 0x1;
@@ -187,6 +199,26 @@ pub mod h2frame {
         head[5..9].copy_from_slice(&stream.to_be_bytes());
         head
     }
+}
+
+/// One HPACK-decoded request (headers complete at END_HEADERS; the DATA body
+/// is appended as END_STREAM frames arrive — poll for `body_done` on POST).
+#[derive(Debug, Clone)]
+pub struct H2RequestRecord {
+    pub stream_id: u32,
+    pub method: String,
+    pub path: String,
+    pub authority: String,
+    pub scheme: String,
+    /// Regular (non-pseudo) headers in wire order.
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    /// True once a DATA frame with END_STREAM completed the body (GET with
+    /// END_STREAM on HEADERS counts too — the block just carried no body).
+    pub body_done: bool,
+    /// Set when the HPACK block failed to decode (never silently fake-green:
+    /// tests assert exact method/path and will fail on the empty fields).
+    pub decode_error: bool,
 }
 
 /// HPACK block: `:status 200` (static-table index 8 → 0x88) plus
@@ -208,6 +240,12 @@ pub struct H2Server {
     shutdown: Arc<AtomicBool>,
     /// Every request stream, in arrival order: (stream id, label).
     pub streams: Arc<Mutex<Vec<(u32, String)>>>,
+    /// HPACK-decoded request records, in header-block-completion order.
+    pub requests: Arc<Mutex<Vec<H2RequestRecord>>>,
+    /// Per connection (arrival order): the client's FIRST non-ACK SETTINGS
+    /// frame payload, raw bytes — the stealth profile's h2 SETTINGS on the
+    /// wire (connection preface order: magic + SETTINGS).
+    pub client_settings: Arc<Mutex<Vec<Vec<u8>>>>,
     pub alpn_h2_count: Arc<AtomicUsize>,
     pub non_h2_count: Arc<AtomicUsize>,
 }
@@ -230,11 +268,15 @@ impl H2Server {
         let port = listener.local_addr().unwrap().port();
         let shutdown = Arc::new(AtomicBool::new(false));
         let streams: Arc<Mutex<Vec<(u32, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let requests: Arc<Mutex<Vec<H2RequestRecord>>> = Arc::new(Mutex::new(Vec::new()));
+        let client_settings: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
         let alpn_h2_count = Arc::new(AtomicUsize::new(0));
         let non_h2_count = Arc::new(AtomicUsize::new(0));
 
         let shutdown_c = Arc::clone(&shutdown);
         let streams_c = Arc::clone(&streams);
+        let requests_c = Arc::clone(&requests);
+        let settings_c = Arc::clone(&client_settings);
         let alpn_c = Arc::clone(&alpn_h2_count);
         let non_h2_c = Arc::clone(&non_h2_count);
         std::thread::Builder::new()
@@ -262,6 +304,8 @@ impl H2Server {
                             // keep accepting while a connection is served
                             // (the page multiplexes or opens new ones).
                             let streams = Arc::clone(&streams_c);
+                            let requests = Arc::clone(&requests_c);
+                            let settings = Arc::clone(&settings_c);
                             std::thread::spawn(move || {
                                 let mut io = ServerTlsIo {
                                     tcp,
@@ -269,7 +313,7 @@ impl H2Server {
                                     pending_plain: Vec::new(),
                                     pending_off: 0,
                                 };
-                                serve_h2_connection(&mut io, &streams);
+                                serve_h2_connection(&mut io, &streams, &requests, &settings);
                             });
                         },
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -284,6 +328,8 @@ impl H2Server {
             port,
             shutdown,
             streams,
+            requests,
+            client_settings,
             alpn_h2_count,
             non_h2_count,
         }
@@ -298,12 +344,18 @@ impl H2Server {
     }
 }
 
-/// Serve h2 requests on one connection: read the client preface, ACK the
-/// client SETTINGS, then answer every HEADERS frame with a minimal 200
-/// response (HTML for documents, JS for scripts — the page only needs the
-/// bytes to arrive). Request HEADERS payloads are NOT HPACK-decoded; the
-/// stream id is the record key.
-fn serve_h2_connection(io: &mut ServerTlsIo, streams: &Arc<Mutex<Vec<(u32, String)>>>) {
+/// Serve h2 requests on one connection: read the client preface, record the
+/// client's first SETTINGS payload, ACK it, then answer every completed
+/// header block (HEADERS + CONTINUATIONs through END_HEADERS) with a minimal
+/// 200 response (HTML — the page only needs the bytes to arrive). Request
+/// header blocks are HPACK-decoded via lshpack into `requests`; DATA frame
+/// payloads are appended to the stream's record body.
+fn serve_h2_connection(
+    io: &mut ServerTlsIo,
+    streams: &Arc<Mutex<Vec<(u32, String)>>>,
+    requests: &Arc<Mutex<Vec<H2RequestRecord>>>,
+    client_settings: &Arc<Mutex<Vec<Vec<u8>>>>,
+) {
     let deadline = Instant::now() + Duration::from_secs(30);
     // Client preface: 24-byte magic.
     let mut magic = [0u8; 24];
@@ -313,6 +365,14 @@ fn serve_h2_connection(io: &mut ServerTlsIo, streams: &Arc<Mutex<Vec<(u32, Strin
     if &magic != b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
         return;
     }
+    // One decoder per connection (HPACK dynamic table is connection-scoped).
+    // Capacity 65536 = the largest table the stealth profiles advertise, so
+    // any client dynamic-table size update stays decodable.
+    let mut hpack = HpackHandle::new(65536);
+    // Partial header block per stream: (fragment bytes, END_STREAM seen on
+    // any frame of the block). RFC 9113 §4.2: END_STREAM rides the HEADERS
+    // frame, END_HEADERS may arrive on a later CONTINUATION.
+    let mut header_fragments: HashMap<u32, (Vec<u8>, bool)> = HashMap::new();
     let mut buffer: Vec<u8> = Vec::new();
     let mut settings_seen = false;
     loop {
@@ -361,27 +421,47 @@ fn serve_h2_connection(io: &mut ServerTlsIo, streams: &Arc<Mutex<Vec<(u32, Strin
         match frame_type {
             h2frame::SETTINGS if flags & h2frame::FLAG_ACK == 0 && !settings_seen => {
                 settings_seen = true;
+                client_settings.lock().unwrap().push(payload);
                 // Server SETTINGS (empty) + ACK of the client's.
                 let _ = io.write_all(&h2frame::header(0, h2frame::SETTINGS, 0, 0));
                 let _ = io.write_all(&h2frame::header(0, h2frame::SETTINGS, h2frame::FLAG_ACK, 0));
                 let _ = io.flush();
             },
-            h2frame::HEADERS => {
-                streams.lock().unwrap().push((stream, format!("stream-{}", stream)));
-                let body = b"<html><head><title>h2</title></head><body><p id=\"t\">h2 doc</p></body></html>".to_vec();
-                let head_block = hpack_response_headers(&[
-                    ("content-type", "text/html; charset=utf-8"),
-                    ("content-length", &body.len().to_string()),
-                ]);
-                let mut out = h2frame::header(head_block.len(), h2frame::HEADERS, h2frame::FLAG_END_HEADERS, stream).to_vec();
-                out.extend_from_slice(&head_block);
-                let mut data = h2frame::header(body.len(), h2frame::DATA, h2frame::FLAG_END_STREAM, stream).to_vec();
-                data.extend_from_slice(&body);
-                if io.write_all(&out).is_err() || io.write_all(&data).is_err() {
-                    return;
+            h2frame::HEADERS | h2frame::CONTINUATION => {
+                let entry = header_fragments.entry(stream).or_default();
+                entry.0.extend_from_slice(&payload);
+                entry.1 |= flags & h2frame::FLAG_END_STREAM != 0;
+                if flags & h2frame::FLAG_END_HEADERS != 0 {
+                    let (block, end_stream_on_headers) =
+                        header_fragments.remove(&stream).unwrap_or_default();
+                    streams.lock().unwrap().push((stream, format!("stream-{}", stream)));
+                    let record = decode_request_block(&mut hpack, stream, &block);
+                    requests.lock().unwrap().push(H2RequestRecord {
+                        body_done: end_stream_on_headers,
+                        ..record
+                    });
+                    let body = b"<html><head><title>h2</title></head><body><p id=\"t\">h2 doc</p></body></html>".to_vec();
+                    let head_block = hpack_response_headers(&[
+                        ("content-type", "text/html; charset=utf-8"),
+                        ("content-length", &body.len().to_string()),
+                    ]);
+                    let mut out = h2frame::header(head_block.len(), h2frame::HEADERS, h2frame::FLAG_END_HEADERS, stream).to_vec();
+                    out.extend_from_slice(&head_block);
+                    let mut data = h2frame::header(body.len(), h2frame::DATA, h2frame::FLAG_END_STREAM, stream).to_vec();
+                    data.extend_from_slice(&body);
+                    if io.write_all(&out).is_err() || io.write_all(&data).is_err() {
+                        return;
+                    }
+                    let _ = io.flush();
                 }
-                let _ = io.flush();
-                let _ = payload;
+            },
+            h2frame::DATA => {
+                let end = flags & h2frame::FLAG_END_STREAM != 0;
+                let mut guard = requests.lock().unwrap();
+                if let Some(record) = guard.iter_mut().rev().find(|r| r.stream_id == stream) {
+                    record.body.extend_from_slice(&payload);
+                    record.body_done |= end;
+                }
             },
             h2frame::GOAWAY => return,
             _ => {},
@@ -390,6 +470,49 @@ fn serve_h2_connection(io: &mut ServerTlsIo, streams: &Arc<Mutex<Vec<(u32, Strin
             return;
         }
     }
+}
+
+/// HPACK-decode one complete header block (HEADERS + CONTINUATIONs) into the
+/// pseudo-header fields + regular header list. Decode errors are recorded on
+/// the record (`decode_error`) instead of silently fabricating fields.
+fn decode_request_block(hpack: &mut HpackHandle, stream_id: u32, block: &[u8]) -> H2RequestRecord {
+    let mut record = H2RequestRecord {
+        stream_id,
+        method: String::new(),
+        path: String::new(),
+        authority: String::new(),
+        scheme: String::new(),
+        headers: Vec::new(),
+        body: Vec::new(),
+        body_done: false,
+        decode_error: false,
+    };
+    let mut offset: usize = 0;
+    while offset < block.len() {
+        let result = match hpack.decode(&block[offset..]) {
+            Ok(r) => r,
+            Err(_) => {
+                record.decode_error = true;
+                return record;
+            },
+        };
+        // DecodeResult name/value borrow lshpack's thread-local scratch
+        // buffer — valid only until the next decode call, so copy now.
+        let name = result.name.to_vec();
+        let value = result.value.to_vec();
+        offset += result.next;
+        match name.as_slice() {
+            b":method" => record.method = String::from_utf8_lossy(&value).into_owned(),
+            b":path" => record.path = String::from_utf8_lossy(&value).into_owned(),
+            b":authority" => record.authority = String::from_utf8_lossy(&value).into_owned(),
+            b":scheme" => record.scheme = String::from_utf8_lossy(&value).into_owned(),
+            _ => record.headers.push((
+                String::from_utf8_lossy(&name).into_owned(),
+                String::from_utf8_lossy(&value).into_owned(),
+            )),
+        }
+    }
+    record
 }
 
 fn read_exact_deadline(io: &mut ServerTlsIo, buf: &mut [u8], deadline: Instant) -> std::io::Result<()> {
