@@ -16,12 +16,15 @@ use mozjs::jsval::{
     BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue,
     UndefinedValue,
 };
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
+use bun_uws_sys::app::App;
 use bun_uws_sys::socket_group::VTable;
 use bun_uws_sys::{CloseCode, ListenSocket, Loop, SocketGroup, SocketKind, us_socket_t};
 
+use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove, gc_store_unique_key};
 use crate::require::cache_builtin;
 
 // Direct FFI declaration for inet_ntop (not exported by libc crate on all platforms).
@@ -123,6 +126,22 @@ thread_local! {
     /// Used to return the correct port in Server.address() when getsockname fails.
     static NET_LISTEN_PORTS: RefCell<HashMap<usize, u16>> = RefCell::new(HashMap::new());
 
+    /// 'connection' dispatcher per listen socket: listen_ptr (as usize) →
+    /// GcStore key of the JS callback registered by `__net_on_connection`.
+    /// Consumed by `dispatch_accept` when the vtable on_open fires for an
+    /// accepted (is_client == 0) socket.
+    static NET_CONNECTION_CBS: RefCell<HashMap<usize, String>> = RefCell::new(HashMap::new());
+
+    /// Reverse index: accept-group ptr (as usize) → listen_ptr. Accepted
+    /// sockets reach the vtable with only their group pointer; this maps them
+    /// back to the owning Server (whose 'connection' dispatcher fires).
+    static NET_GROUP_LISTEN: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
+
+    /// Sockets that saw peer FIN (vtable on_end) but are not yet fully
+    /// closed. Distinguishes `__net_poll_state` 2 (half-open, 'end' fired)
+    /// from 1 (fully open).
+    static NET_EOF_SOCKETS: RefCell<HashMap<usize, bool>> = RefCell::new(HashMap::new());
+
     /// JSContext pointer stored for use in C callbacks.
     static NET_CX: Cell<Option<*mut JSContext>> = const { Cell::new(None) };
 }
@@ -131,33 +150,169 @@ pub struct NetCleanup;
 
 impl Drop for NetCleanup {
     fn drop(&mut self) {
+        // Drop liveness tokens FIRST so node_http::has_active_servers()
+        // reflects the cleared state (a stale token would keep drain_and_check
+        // ticking a loop whose groups are about to be freed). unregister is a
+        // retain-based no-op for pointers never registered.
+        NET_LISTEN_SOCKETS.with(|l| {
+            for key in l.borrow().iter() {
+                unsafe { crate::node_http::unregister_active_app(*key as *mut App<false>) };
+            }
+        });
         NET_SERVER_GROUPS.with(|g| g.borrow_mut().clear());
         NET_LISTEN_SOCKETS.with(|l| l.borrow_mut().clear());
         NET_SOCKETS.with(|s| s.borrow_mut().clear());
         NET_INCOMING_DATA.with(|d| d.borrow_mut().clear());
         NET_LISTEN_PORTS.with(|p| p.borrow_mut().clear());
+        NET_CONNECTION_CBS.with(|c| c.borrow_mut().clear());
+        NET_GROUP_LISTEN.with(|m| m.borrow_mut().clear());
+        NET_EOF_SOCKETS.with(|e| e.borrow_mut().clear());
         NET_CX.with(|c| c.set(None));
     }
 }
 
 // ──────────────────── VTable callbacks ────────────────────
 
-/// Socket opened (accept or connect completion).
+/// Socket opened (accept or connect completion). `is_client` distinguishes the
+/// two (loop.c dispatches `us_dispatch_open(s, 0, ...)` for accepts).
 unsafe extern "C" fn net_on_open(
     s: *mut us_socket_t,
-    _is_client: ::std::ffi::c_int,
+    is_client: ::std::ffi::c_int,
     _ip: *mut u8,
     _ip_length: ::std::ffi::c_int,
 ) -> *mut us_socket_t {
     let key = s as usize;
     NET_SOCKETS.with(|m| m.borrow_mut().insert(key, true));
-    // If this is a connect completion, store the result.
-    CONNECT_RESULT.with(|r| {
-        if r.get().is_none() {
-            r.set(Some(key));
-        }
-    });
+    if is_client != 0 {
+        // Connect completion — feed net_connect's spin loop. Accepts MUST NOT
+        // write CONNECT_RESULT: they fire on the same thread loop *during*
+        // another socket's connect spin (the echo shape: the server's SYN-ACK
+        // accept and the client's connect completion land in the same
+        // epoll batch), and the unguarded write made net_connect return the
+        // server-side accepted socket as the client socket.
+        CONNECT_RESULT.with(|r| {
+            if r.get().is_none() {
+                r.set(Some(key));
+            }
+        });
+    } else {
+        // Server-side accept — bridge into JS ('connection' at accept time).
+        unsafe { dispatch_accept(s) };
+    }
     s
+}
+
+/// Bridge a usockets accept (vtable on_open, is_client == 0) into JS: build a
+/// net.Socket via the NET_JS IIFE's global factory (`__net_make_socket`, so
+/// the prototype chain and the __net_read poll machinery stay owned by the
+/// IIFE) and dispatch the owning Server's 'connection' handler with it.
+///
+/// Runs on the JS thread inside a loop tick — possibly re-entrantly while a
+/// `__net_connect` spin is on the native stack (same-thread re-entrancy is
+/// the same shape bun_listen's vtable callbacks already use). The handler is
+/// resolved from GcStore inside the context's persistent realm, mirroring
+/// `invoke_js_callback` in bun_listen.rs.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn dispatch_accept(s: *mut us_socket_t) {
+    let Some(cx) = NET_CX.with(|c| c.get()) else { return };
+    if cx.is_null() {
+        return;
+    }
+
+    // Which Server owns this accept? Accepted sockets carry only their group.
+    let group_ptr = (*s).group() as *mut SocketGroup as usize;
+    let listen_key = NET_GROUP_LISTEN.with(|m| m.borrow().get(&group_ptr).copied());
+    let Some(listen_key) = listen_key else { return };
+    let cb_key = NET_CONNECTION_CBS.with(|m| m.borrow().get(&listen_key).cloned());
+    let Some(cb_key) = cb_key else { return };
+
+    // Enter the context's persistent realm — GcStore resolves the callback as
+    // a property on this realm's global.
+    let Some(global) = bao_engine::context::thread_realm_global() else { return };
+    if global.is_null() {
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+    let Some(handler) = gc_store_get(cx, &cb_key) else { return };
+    if handler.is_null() {
+        return;
+    }
+
+    // Build the JS socket: __net_make_socket(ptr) → new Socket with _ptr set.
+    rooted!(&in(realm_cx) let ptr_arg = DoubleValue(s as usize as f64));
+    let factory_args = HandleValueArray {
+        length_: 1,
+        elements_: &*ptr_arg.handle(),
+    };
+    let mut sock_val = UndefinedValue();
+    let sock_ok = JS_CallFunctionName(
+        realm_cx.raw_cx(),
+        global_root.handle().into(),
+        c"__net_make_socket".as_ptr(),
+        &factory_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut sock_val,
+        },
+    );
+    if !sock_ok || !sock_val.is_object() {
+        JS_ClearPendingException(realm_cx.raw_cx());
+        return;
+    }
+    rooted!(&in(realm_cx) let sock_obj = sock_val.to_object());
+    let sock_h = sock_obj.handle().into();
+
+    // Remote address/port — the accepted socket knows its peer.
+    let mut ip_buf = [0u8; 64];
+    if let Ok(ip) = (*s).remote_address(&mut ip_buf) {
+        let c_ip = ZBox::from_bytes(ip);
+        let ip_js = JS_NewStringCopyZ(realm_cx.raw_cx(), c_ip.as_ptr());
+        if !ip_js.is_null() {
+            rooted!(&in(realm_cx) let ip_v = StringValue(&*ip_js));
+            JS_DefineProperty(
+                realm_cx.raw_cx(),
+                sock_h,
+                c"remoteAddress".as_ptr(),
+                ip_v.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+    rooted!(&in(realm_cx) let rp_v = Int32Value((*s).remote_port()));
+    JS_DefineProperty(
+        realm_cx.raw_cx(),
+        sock_h,
+        c"remotePort".as_ptr(),
+        rp_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    // connection handler(socket)
+    rooted!(&in(realm_cx) let handler_val = ObjectValue(handler));
+    rooted!(&in(realm_cx) let sock_elem = ObjectValue(sock_obj.get()));
+    let call_args = HandleValueArray {
+        length_: 1,
+        elements_: &*sock_elem.handle(),
+    };
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionValue(
+        realm_cx.raw_cx(),
+        global_root.handle().into(),
+        handler_val.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        JS_ClearPendingException(realm_cx.raw_cx());
+    }
 }
 
 /// Socket received data — store in per-socket buffer for JS to read via __net_read.
@@ -193,6 +348,7 @@ unsafe extern "C" fn net_on_close(
     let key = s as usize;
     NET_SOCKETS.with(|m| m.borrow_mut().remove(&key));
     NET_INCOMING_DATA.with(|d| d.borrow_mut().remove(&key));
+    NET_EOF_SOCKETS.with(|e| e.borrow_mut().remove(&key));
     s
 }
 
@@ -206,8 +362,11 @@ unsafe extern "C" fn net_on_long_timeout(s: *mut us_socket_t) -> *mut us_socket_
     s
 }
 
-/// Socket received FIN/EOF.
+/// Socket received FIN/EOF — mark half-closed so `__net_poll_state` reports 2
+/// (the JS poll chain delivers 'end' once, Node semantics).
 unsafe extern "C" fn net_on_end(s: *mut us_socket_t) -> *mut us_socket_t {
+    let key = s as usize;
+    NET_EOF_SOCKETS.with(|e| e.borrow_mut().insert(key, true));
     s
 }
 
@@ -274,6 +433,7 @@ const NET_JS: &str = r#"
     this.connecting = false;
     this._ptr = 0;
     this._polling = false;
+    this._sawEnd = false;
   }
   Socket.prototype = Object.create(EE.prototype);
   Socket.prototype.constructor = Socket;
@@ -336,16 +496,47 @@ const NET_JS: &str = r#"
   Socket.prototype._startPoll = function() {
     if (this._polling || this._ptr === 0) return;
     this._polling = true;
-    this._pollTick();
+    // DEFERRED first tick — same class as the CP shim fix: a synchronous
+    // first tick drained buffered data before listeners registered later in
+    // the same block (on('connect') cb writing, then on('data')) could see it.
+    setTimeout(this._pollTick.bind(this), 0);
   };
   Socket.prototype._stopPoll = function() {
     this._polling = false;
   };
   Socket.prototype._pollTick = function() {
     if (!this._polling || this.destroyed || this._ptr === 0) return;
+    // Socket lifecycle from the native side: 1 open, 2 peer-FIN seen,
+    // 3 fully closed. Without this the poll chain spun forever after the
+    // peer (or the server's close_all) closed the socket, holding the event
+    // loop open and never delivering 'end'/'close'. usockets commonly closes
+    // the socket right after dispatching on_end (no half-open window), so the
+    // poll may first observe state 3 — deliver 'end' before 'close' there
+    // too (Node ordering: end precedes close).
+    if (typeof __net_poll_state === "function") {
+      var st = __net_poll_state(this._ptr);
+      if (st === 3) {
+        this._stopPoll();
+        this._ptr = 0;
+        this.destroyed = true;
+        if (!this._sawEnd) {
+          this._sawEnd = true;
+          this.emit("end");
+        }
+        this.emit("close");
+        return;
+      }
+      if (st === 2 && !this._sawEnd) {
+        this._sawEnd = true;
+        this.emit("end");
+      }
+    }
     if (typeof __net_read === "function") {
       var buf = __net_read(this._ptr);
-      if (buf && buf.length > 0) {
+      // __net_read returns an ArrayBuffer (transfer-owned) — length lives on
+      // .byteLength; the old `.length` check was always undefined and 'data'
+      // never fired.
+      if (buf && buf.byteLength > 0) {
         this.emit("data", buf);
       }
     }
@@ -381,6 +572,15 @@ const NET_JS: &str = r#"
         this.listening = true;
         this.emit("listening");
         if (cb) cb();
+        // Register the accept dispatcher: the native side (dispatch_accept,
+        // vtable on_open with is_client == 0) calls it with a Socket built by
+        // __net_make_socket each time the loop accepts an inbound connection.
+        if (typeof __net_on_connection === "function") {
+          var self = this;
+          __net_on_connection(ptr, function(sock) {
+            self.emit("connection", sock);
+          });
+        }
       } else {
         this.emit("error", new Error("listen EADDRINUSE"));
       }
@@ -459,6 +659,20 @@ const NET_JS: &str = r#"
     }
     return true;
   }
+
+  // Accept-bridge factory: the native side (dispatch_accept) calls this to
+  // build the JS net.Socket for a usockets-accepted socket — the prototype
+  // chain and the __net_read poll machinery stay owned by this IIFE. Written
+  // TO the global (not probed FROM it), so the free-variable probe class
+  // fixed in bbe20a81 does not apply.
+  try {
+    globalThis.__net_make_socket = function(ptr) {
+      var s = new Socket();
+      s._ptr = ptr;
+      s.connecting = false;
+      return s;
+    };
+  } catch (e) { /* globalThis unavailable — accept bridge disabled */ }
 
   return {
     Socket: Socket,
@@ -579,6 +793,21 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     });
     NET_LISTEN_SOCKETS.with(|l| l.borrow_mut().push(listen_key));
 
+    // Reverse index for the accept bridge: an accepted socket reaches the
+    // vtable with only its group pointer — map it back to this listen socket
+    // (whose 'connection' dispatcher fires).
+    NET_GROUP_LISTEN.with(|m| m.borrow_mut().insert(group_ptr as usize, listen_key));
+
+    // JS-idle tick surface (BCE-007 registration gap, node:net variant):
+    // drain_and_check only drives the uWS loop while
+    // node_http::has_active_servers() is true — that branch is the only thing
+    // that ever `accept()`s on this listen socket. Register it in the unified
+    // liveness registry so an idle script (no pending timers, no poll chains)
+    // still accepts inbound connections. Liveness token only: the registry
+    // does ptr-eq bookkeeping and never dereferences (same representation-
+    // preserving alias node_http2 uses for its `App<true>` tokens).
+    unsafe { crate::node_http::register_active_app(listen_socket as *mut App<false>) };
+
     // Store the requested port so address() can return it if getsockname fails.
     // If port 0 was requested, the OS assigned a port — getsockname in net_address
     // will retrieve the actual port, but we store the requested port as fallback.
@@ -693,10 +922,21 @@ unsafe extern "C" fn net_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     }
 
     let ptr_val = jsval_to_ptr(&(*args.get(0).ptr));
-    let data = if (*args.get(1).ptr).is_string() {
+    // Node accepts string | Buffer | Uint8Array | ArrayBuffer. The previous
+    // string-only branch silently wrote an EMPTY payload for every non-string
+    // argument (the silent no-op class) — echo servers writing the received
+    // ArrayBuffer back transmitted nothing.
+    let data: Vec<u8> = if (*args.get(1).ptr).is_string() {
         unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
+            .into_bytes()
     } else {
-        String::new()
+        match crate::node_buffer::collect_byte_view(cx, *args.get(1).ptr) {
+            Some(b) => b,
+            None => {
+                args.rval().set(Int32Value(-1));
+                return true;
+            }
+        }
     };
 
     let socket_ptr = ptr_val as *mut us_socket_t;
@@ -707,13 +947,13 @@ unsafe extern "C" fn net_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     }
 
     // us_socket_t::write returns the number of bytes written (or 0 on backpressure).
-    let written = unsafe { (*socket_ptr).write(data.as_bytes()) };
+    let written = unsafe { (*socket_ptr).write(&data) };
     args.rval().set(Int32Value(written));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn net_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn net_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let ptr_val = if argc > 0 {
         jsval_to_ptr(&(*args.get(0).ptr))
@@ -736,19 +976,54 @@ unsafe extern "C" fn net_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     }
 
     // Try to close as a listen socket.
-    NET_LISTEN_SOCKETS.with(|l| {
+    let is_listen = NET_LISTEN_SOCKETS.with(|l| {
         let mut list = l.borrow_mut();
-        if let Some(pos) = list.iter().position(|&k| k == ptr_val) {
-            list.swap_remove(pos);
+        match list.iter().position(|&k| k == ptr_val) {
+            Some(pos) => {
+                list.swap_remove(pos);
+                true
+            }
+            None => false,
+        }
+    });
+
+    if is_listen {
+        // Server teardown. close_all first (listeners, then accepted sockets —
+        // their net_on_close fires synchronously and cleans NET_SOCKETS /
+        // NET_EOF_SOCKETS), then explicit destroy. Dropping the group Box
+        // alone leaves a linked group in the loop's list whenever accepted
+        // sockets existed (use-after-free on the next tick), and destroy
+        // asserts the empty-lists contract (the same head_listen_sockets
+        // assert that SIGABRT'd net_listen before the bbe20a81 root-cause).
+        if let Some(group_box) = NET_SERVER_GROUPS.with(|g| g.borrow_mut().remove(&ptr_val)) {
+            let raw = Box::into_raw(group_box);
+            let group_addr = raw as usize;
+            unsafe {
+                (*raw).close_all();
+                SocketGroup::destroy(raw);
+                drop(Box::from_raw(raw));
+            }
+            NET_GROUP_LISTEN.with(|m| m.borrow_mut().remove(&group_addr));
+        } else {
+            // No group tracked (defensive) — at least close the listener fd.
             let listen_ptr = ptr_val as *mut ListenSocket;
             unsafe {
                 (*listen_ptr).close();
             }
         }
-    });
-
-    // Remove associated socket group.
-    NET_SERVER_GROUPS.with(|g| g.borrow_mut().remove(&ptr_val));
+        NET_LISTEN_PORTS.with(|p| p.borrow_mut().remove(&ptr_val));
+        // Drop the connection dispatcher (GcStore entry + map slot) and the
+        // JS-idle liveness token registered at listen time.
+        NET_CONNECTION_CBS.with(|c| {
+            if let Some(key) = c.borrow_mut().remove(&ptr_val) {
+                gc_store_remove(cx, &key);
+            }
+        });
+        unsafe { crate::node_http::unregister_active_app(ptr_val as *mut App<false>) };
+    } else {
+        // Not a listen socket — a per-connect group may still be tracked.
+        NET_SERVER_GROUPS.with(|g| g.borrow_mut().remove(&ptr_val));
+    }
 
     args.rval().set(UndefinedValue());
     true
@@ -986,6 +1261,65 @@ unsafe extern "C" fn net_is_ipv6(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     true
 }
 
+/// __net_on_connection(listen_ptr, callback) — Server.listen registers its
+/// 'connection' dispatcher here. dispatch_accept (vtable accept path) resolves
+/// the callback from GcStore and calls it with the accepted JS Socket.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn net_on_connection(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    let listen_ptr = jsval_to_ptr(&(*args.get(0).ptr));
+    let cb_val = *args.get(1).ptr;
+    if listen_ptr == 0 || !cb_val.is_object() {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let cb_obj = cb_val.to_object());
+    if !unsafe { JS_ObjectIsFunction(cb_obj.get()) } {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+
+    let key = gc_store_unique_key(&format!("net_connection_{}", listen_ptr));
+    gc_store_insert(cx, &key, cb_obj.get());
+    NET_CONNECTION_CBS.with(|c| c.borrow_mut().insert(listen_ptr, key));
+
+    args.rval().set(BooleanValue(true));
+    true
+}
+
+/// __net_poll_state(socket_ptr) → 1 open | 2 peer-FIN seen ('end' pending) |
+/// 3 fully closed. The JS Socket poll chain consumes this to deliver
+/// 'end'/'close' and stop scheduling when the native socket is gone.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn net_poll_state(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let ptr_val = if argc > 0 {
+        jsval_to_ptr(&(*args.get(0).ptr))
+    } else {
+        0
+    };
+    if ptr_val == 0 {
+        args.rval().set(Int32Value(3));
+        return true;
+    }
+
+    let open = NET_SOCKETS.with(|m| m.borrow().contains_key(&ptr_val));
+    if !open {
+        args.rval().set(Int32Value(3));
+        return true;
+    }
+    let eof = NET_EOF_SOCKETS.with(|e| e.borrow().contains_key(&ptr_val));
+    args.rval().set(Int32Value(if eof { 2 } else { 1 }));
+    true
+}
+
 pub fn install(cx: &mut mozjs::context::JSContext) {
     rooted!(&in(cx) let mod_obj = unsafe { w2::JS_NewPlainObject(cx) });
     if mod_obj.get().is_null() {
@@ -1052,6 +1386,22 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             1,
             0,
         );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_on_connection".as_ptr(),
+            Some(net_on_connection),
+            2,
+            0,
+        );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_poll_state".as_ptr(),
+            Some(net_poll_state),
+            1,
+            0,
+        );
 
         // The NET_JS IIFE resolves these host bridges as FREE variables —
         // the `typeof __net_connect === "function"` probes inside the IIFE
@@ -1071,6 +1421,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ("__net_address", Some(net_address), 1),
                 ("__net_read", Some(net_read), 1),
                 ("__net_isIPv6", Some(net_is_ipv6), 1),
+                ("__net_on_connection", Some(net_on_connection), 2),
+                ("__net_poll_state", Some(net_poll_state), 1),
             ];
             for &(name, native, nargs) in bridges {
                 let c_name = ZBox::from_bytes(name);

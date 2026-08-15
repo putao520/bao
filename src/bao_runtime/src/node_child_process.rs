@@ -55,7 +55,13 @@ struct AsyncChildState {
     stdout_data: Vec<u8>,
     /// Buffered stderr data accumulated by the polling thread.
     stderr_data: Vec<u8>,
-    /// Exit info (exit_code, signal) set when the child exits.
+    /// Reaped status (exit_code, signal) — stashed by waitpid the moment the
+    /// child is reaped, PUBLISHED into `exit_info` only once both pipes are
+    /// drained. Publishing early let JS observe 'exit' before the final
+    /// buffered bytes reached the drain (stderr data intermittently lost).
+    reaped: Option<(i32, i32)>,
+    /// Exit info (exit_code, signal) set when the child exits AND its pipes
+    /// are fully drained — the JS poll chain consumes this once.
     exit_info: Option<(i32, i32)>,
 }
 
@@ -68,6 +74,22 @@ impl Drop for CpCleanup {
             states.clear();
         }
         CP_STDIN_FDS.with(|m| m.borrow_mut().clear());
+    }
+}
+
+/// Pipes are drained when every piped end hit EOF; unpiped slots (fd < 0)
+/// count as drained immediately.
+fn cp_pipes_drained(s: &AsyncChildState) -> bool {
+    (s.stdout_eof || s.stdout_fd < 0) && (s.stderr_eof || s.stderr_fd < 0)
+}
+
+/// Publish the reaped status into `exit_info` — only once the pipes are
+/// drained. Publishing at reap time let the JS poll chain observe 'exit'
+/// (and stop) before the final buffered bytes were readable, intermittently
+/// losing stderr/stdout tails (task #21: drain-before-publish invariant).
+fn cp_try_publish(s: &mut AsyncChildState) {
+    if s.exit_info.is_none() && s.reaped.is_some() && cp_pipes_drained(s) {
+        s.exit_info = s.reaped;
     }
 }
 
@@ -87,9 +109,44 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
                 s.stderr_eof,
             )
         };
+        let pipes_drained =
+            (stdout_eof || stdout_fd < 0) && (stderr_eof || stderr_fd < 0);
 
-        // If child has exited and both pipes are EOF, we're done.
-        if child_exited && stdout_eof && stderr_eof {
+        // Exit detection runs EVERY iteration, decoupled from pipe EOF. This
+        // block used to sit at the loop bottom (after fd processing), so the
+        // empty-pollfds branch's `continue` skipped it entirely: once both
+        // pipes EOF'd before the child was observed exiting (any fast child),
+        // the thread spun in the 10ms sleep branch forever, the child
+        // zombified, and exit/data events never reached JS (task #21 root
+        // cause; strace "passed" only because syscall overhead let waitpid
+        // win the race in the last fd-processing iteration).
+        {
+            let mut s = state.lock().unwrap();
+            if !s.child_exited {
+                let mut wstatus: c_int = 0;
+                let ret = unsafe { libc::waitpid(s.pid, &mut wstatus, libc::WNOHANG) };
+                if ret == s.pid {
+                    // Child has exited — stash the status; cp_try_publish
+                    // lifts it into exit_info once the pipes are drained.
+                    let exit_code = if libc::WIFEXITED(wstatus) {
+                        libc::WEXITSTATUS(wstatus)
+                    } else {
+                        -1
+                    };
+                    let signal = if libc::WIFSIGNALED(wstatus) {
+                        libc::WTERMSIG(wstatus)
+                    } else {
+                        0
+                    };
+                    s.child_exited = true;
+                    s.reaped = Some((exit_code, signal));
+                }
+            }
+            cp_try_publish(&mut s);
+        }
+
+        // If child has exited and the pipes are drained, we're done.
+        if child_exited && pipes_drained {
             break;
         }
 
@@ -167,6 +224,7 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
                     } else {
                         s.stderr_eof = true;
                     }
+                    cp_try_publish(&mut s);
                 }
                 _ => {
                     // EAGAIN or error.
@@ -179,31 +237,8 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
                         } else {
                             s.stderr_eof = true;
                         }
+                        cp_try_publish(&mut s);
                     }
-                }
-            }
-        }
-
-        // Check if child has exited (non-blocking waitpid).
-        {
-            let mut s = state.lock().unwrap();
-            if !s.child_exited {
-                let mut wstatus: c_int = 0;
-                let ret = unsafe { libc::waitpid(s.pid, &mut wstatus, libc::WNOHANG) };
-                if ret == s.pid {
-                    // Child has exited.
-                    let exit_code = if libc::WIFEXITED(wstatus) {
-                        libc::WEXITSTATUS(wstatus)
-                    } else {
-                        -1
-                    };
-                    let signal = if libc::WIFSIGNALED(wstatus) {
-                        libc::WTERMSIG(wstatus)
-                    } else {
-                        0
-                    };
-                    s.child_exited = true;
-                    s.exit_info = Some((exit_code, signal));
                 }
             }
         }
@@ -1073,6 +1108,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                 child_exited: false,
                 stdout_data: Vec::new(),
                 stderr_data: Vec::new(),
+                reaped: None,
                 exit_info: None,
             }));
 
@@ -3453,6 +3489,7 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                 child_exited: false,
                 stdout_data: Vec::new(),
                 stderr_data: Vec::new(),
+                reaped: None,
                 exit_info: None,
             }));
 
@@ -3675,7 +3712,13 @@ const CP_JS: &str = r#"
   ChildProcess.prototype._startPoll = function() {
     if (this._polling) return;
     this._polling = true;
-    this._pollTick();
+    // DEFERRED first tick: running it synchronously here drained pipe data
+    // and emitted it BEFORE listeners registered later in the same
+    // synchronous block (e.g. child.once('exit', ...) then
+    // child.stderr.on('data', ...)) — the payload reached zero listeners and
+    // was lost forever. Deferring one macrotask lets the whole registration
+    // sequence complete first.
+    setTimeout(this._pollTick.bind(this), 0);
   };
 
   ChildProcess.prototype._pollTick = function() {
@@ -3684,18 +3727,14 @@ const CP_JS: &str = r#"
     var self = this;
     var pid = this.pid;
 
-    // Drain stdout data.
+    // Drain stdout data. emit() dispatches to both child.on('stdout_data')
+    // listeners and stdout.on('data') registrations (they share the same
+    // 'stdout_data' list) — the previous manual second loop here dispatched
+    // every payload TWICE.
     if (typeof cp.__cp_drain === 'function' && !this.stdout._ended) {
       var stdoutBuf = cp.__cp_drain(pid, 0);
       if (stdoutBuf && stdoutBuf.byteLength > 0) {
         this.emit('stdout_data', stdoutBuf);
-        // Also emit on stdout stream listeners.
-        var stdoutCbs = this._events['stdout_data'];
-        if (stdoutCbs) {
-          for (var i = 0; i < stdoutCbs.length; i++) {
-            try { stdoutCbs[i](stdoutBuf); } catch(e) {}
-          }
-        }
       }
     }
 
@@ -3704,12 +3743,6 @@ const CP_JS: &str = r#"
       var stderrBuf = cp.__cp_drain(pid, 1);
       if (stderrBuf && stderrBuf.byteLength > 0) {
         this.emit('stderr_data', stderrBuf);
-        var stderrCbs = this._events['stderr_data'];
-        if (stderrCbs) {
-          for (var i = 0; i < stderrCbs.length; i++) {
-            try { stderrCbs[i](stderrBuf); } catch(e) {}
-          }
-        }
       }
     }
 
@@ -3747,6 +3780,37 @@ const CP_JS: &str = r#"
 
   // Store the constructor for reuse.
   cp._ChildProcess = ChildProcess;
+
+  // Wrap the native spawn: cp_spawn returns a plain data object (pid /
+  // exitCode / killed / _stdinFd / kill), so `child.on` was undefined and the
+  // ChildProcess wrapper above was stored but never used (filed from the
+  // bbe20a81 sweep). Wrapping here gives every spawn() the full EventEmitter
+  // surface: on/once/emit ('exit'/'close'/'error'/'stdout_data'/
+  // 'stderr_data'), stdin/stdout/stderr stream objects, kill(signal). The
+  // native side is untouched (bbe20a81-finalized FFI) — the wrapper proxies
+  // it via the __cp_* poll bridges.
+  //
+  // Argument normalization: the native parses the second parameter as an
+  // OPTIONS object ({args: [...], cwd, stdio...}). The Node call shape
+  // spawn(cmd, argsArray[, opts]) passed the ARRAY straight through — the
+  // native read no `args` property and forked the command with NO arguments
+  // (an interactive /bin/sh inheriting the parent's stdin then hung
+  // forever, no exit, no data). Normalize here before the native call.
+  var __cp_native_spawn = cp.spawn;
+  cp.spawn = function(cmd, a, b) {
+    var opts = null;
+    if (Array.isArray(a)) {
+      opts = (b && typeof b === 'object') ? b : {};
+      opts = Object.assign({}, opts, { args: a });
+    } else if (a && typeof a === 'object') {
+      opts = a; // already the options-object shape
+    }
+    var native = opts === null
+      ? __cp_native_spawn.call(cp, cmd)
+      : __cp_native_spawn.call(cp, cmd, opts);
+    if (!native) return native;
+    return new ChildProcess(native);
+  };
 })();
 "#;
 

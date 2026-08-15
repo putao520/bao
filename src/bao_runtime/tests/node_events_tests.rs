@@ -166,3 +166,106 @@ fn test_node_events_all() {
     );
     bun_runtime::shutdown_thread_sm();
 }
+
+// @trace TEST-ENG-007-EV [req:REQ-ENG-007] [level:integration]
+// Same-object NESTED emits — the EmitterState single-owner invariant
+// regression. get_state used to consume the prop-owned Box
+// (`*Box::from_raw`) while the hidden prop kept pointing at the freed
+// memory; ANY listener that re-emitted on the same object ran from_raw on
+// the dangling pointer a second time → 112B double free + SIGSEGV
+// (mimalloc abort; bt lands in ee_emit's listeners.get). These are the
+// canonical Node shapes: sock.on('data', () => sock.end()),
+// sock.on('end', () => sock.end()) — end() re-emits 'end'/'close'.
+#[test]
+fn test_node_events_nested_same_object_emits() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    let results = eval_string(
+        &mut ctx,
+        r#"
+        var events = require('events');
+        var results = [];
+        function check(label, fn) {
+            try { var ok = fn(); results.push(label + ":" + (ok ? "PASS" : "FAIL")); }
+            catch(e) { results.push(label + ":ERROR:" + (e.message || e)); }
+        }
+
+        // 3-level same-object nesting: emitting 'a' emits 'b' emits 'c'.
+        // Before the ownership fix this double-freed and crashed the process.
+        check("nested_3_levels", function() {
+            var ee = new events.EventEmitter();
+            var order = [];
+            ee.on("a", function() { order.push("a"); ee.emit("b"); });
+            ee.on("b", function() { order.push("b"); ee.emit("c"); });
+            ee.on("c", function() { order.push("c"); });
+            ee.emit("a");
+            return order.join(",") === "a,b,c";
+        });
+
+        // Canonical socket shape: 'data' listener calls end(), which
+        // re-emits 'end' then 'close' on the SAME object synchronously.
+        check("data_end_close_shape", function() {
+            var sock = new events.EventEmitter();
+            sock.end = function() { this.emit("end"); this.emit("close"); };
+            var seen = [];
+            sock.on("data", function() { sock.end(); });
+            sock.on("end", function() { seen.push("end"); });
+            sock.on("close", function() { seen.push("close"); });
+            sock.emit("data");
+            return seen.join(",") === "end,close";
+        });
+
+        // Nested once-removal: the inner once listener fires exactly once
+        // even when reached through a nested emit.
+        check("nested_once", function() {
+            var ee = new events.EventEmitter();
+            var fires = 0;
+            ee.once("tick", function() { fires++; });
+            ee.on("go", function() { ee.emit("tick"); });
+            ee.emit("go");
+            ee.emit("go");
+            return fires === 1;
+        });
+
+        // Nested on(): registering a listener from inside a listener of the
+        // same emitter must survive the outer emit's state write-back.
+        check("nested_on_registration", function() {
+            var ee = new events.EventEmitter();
+            var hits = 0;
+            ee.on("first", function() { ee.on("second", function() { hits++; }); });
+            ee.emit("first");
+            ee.emit("second");
+            return hits === 1;
+        });
+
+        // Deep recursion through the same event (bounded) — stress the
+        // snapshot write-back ordering.
+        check("self_recursive_bounded", function() {
+            var ee = new events.EventEmitter();
+            var n = 0;
+            ee.on("step", function() { n++; if (n < 10) ee.emit("step"); });
+            ee.emit("step");
+            return n === 10;
+        });
+
+        results.join("|")
+    "#,
+    );
+
+    let mut all_passed = true;
+    for item in results.split('|') {
+        if !item.contains(":PASS") {
+            eprintln!("  FAIL: {}", item);
+            all_passed = false;
+        }
+    }
+    assert!(
+        all_passed,
+        "Nested same-object emit tests must pass (single-owner invariant). Results: {}",
+        results
+    );
+    bun_runtime::shutdown_thread_sm();
+}

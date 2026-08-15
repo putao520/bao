@@ -1707,6 +1707,16 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                 0,
                 JSPROP_ENUMERATE as u32,
             );
+            // Non-blocking exit probe for the event-surface watcher in the
+            // dispose wrapper below: null while running, exit code once done.
+            JS_DefineFunction(
+                cx_ref,
+                subproc_obj.handle(),
+                c"_pollExited".as_ptr(),
+                ::std::option::Option::Some(subproc_poll_exited),
+                0,
+                0,
+            );
 
             let killed_val = BooleanValue(false);
             rooted!(&in(cx_ref) let kv = killed_val);
@@ -1758,13 +1768,88 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     },
   });
 
-  // stdout / stderr stream-like wrappers with text().
-  function makeStream(readAllFn) {
+  // ── EventEmitter surface (child_process.spawn parity) ──────────────────
+  // on/once/off/emit plus 'exit'/'close' dispatch and stdout/stderr
+  // 'data'/'end'. The stdio model here is capture-at-exit (the native
+  // readers are read_to_end), so stream 'data' delivers the full captured
+  // output once, then 'end'; 'exit'/'close' carry (exitCode) — polled via
+  // the non-blocking _pollExited native so the loop never stalls.
+  var _events = {};
+  function _arr(ev) { return _events[ev] || (_events[ev] = []); }
+  proc.on = function(ev, cb) {
+    if (typeof cb !== 'function') return proc;
+    _arr(ev).push(cb);
+    if (ev === 'exit' || ev === 'close') _startExitWatch();
+    return proc;
+  };
+  proc.once = function(ev, cb) {
+    var g = function() { proc.off(ev, g); cb.apply(null, arguments); };
+    g.listener = cb;
+    return proc.on(ev, g);
+  };
+  proc.off = function(ev, cb) {
+    var a = _events[ev];
+    if (a) {
+      var i = a.indexOf(cb);
+      if (i >= 0) a.splice(i, 1);
+    }
+    return proc;
+  };
+  proc.emit = function(ev) {
+    var a = _events[ev];
+    if (!a || a.length === 0) return false;
+    a = a.slice();
+    var args = Array.prototype.slice.call(arguments, 1);
+    for (var i = 0; i < a.length; i++) {
+      try { a[i].apply(null, args); } catch (e) {}
+    }
+    return true;
+  };
+
+  var _watching = false;
+  var _finished = false;
+  function _startExitWatch() {
+    if (_watching || _finished) return;
+    _watching = true;
+    (function tick() {
+      if (_finished) return;
+      var code = (typeof proc._pollExited === 'function') ? proc._pollExited() : null;
+      if (code !== null && code !== undefined) {
+        _finished = true;
+        _watching = false;
+        _finish(code);
+        return;
+      }
+      setTimeout(tick, 0);
+    })();
+  }
+  function _finish(code) {
+    var out = (typeof proc._readStdout === 'function') ? proc._readStdout() : null;
+    var err = (typeof proc._readStderr === 'function') ? proc._readStderr() : null;
+    if (out !== null && out !== undefined) proc.emit('stdout_data', out);
+    proc.emit('stdout_end');
+    if (err !== null && err !== undefined) proc.emit('stderr_data', err);
+    proc.emit('stderr_end');
+    proc.emit('exit', code);
+    proc.emit('close', code);
+  }
+
+  // stdout / stderr stream-like wrappers with text() and data/end events.
+  function makeStream(readAllFn, dataEv, endEv) {
     return {
       text: function() {
         var s = (typeof readAllFn === 'function') ? (readAllFn.call(proc) || '') : '';
         if (s && typeof s.then === 'function') return s;
         return Promise.resolve(String(s));
+      },
+      on: function(ev, cb) {
+        if (ev === 'data') {
+          // Register, then ensure the exit watcher runs (data is delivered
+          // from the captured full output at exit — see the note above).
+          return proc.on(dataEv, cb);
+        }
+        if (ev === 'end') return proc.on(endEv, cb);
+        return proc.on(ev, cb);
       },
       // `read` / `pipe`-style accessors are not exercised by upstream
       // buffer detach tests; provide stubs that surface they're unimplemented
@@ -1772,14 +1857,26 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
       read: function() { return Promise.resolve(null); },
     };
   }
+  var _stdoutStream = makeStream(proc._readStdout, 'stdout_data', 'stdout_end');
+  var _stderrStream = makeStream(proc._readStderr, 'stderr_data', 'stderr_end');
   Object.defineProperty(proc, 'stdout', {
     configurable: true, enumerable: true,
-    get: function() { return makeStream(proc._readStdout); },
+    get: function() { return _stdoutStream; },
   });
   Object.defineProperty(proc, 'stderr', {
     configurable: true, enumerable: true,
-    get: function() { return makeStream(proc._readStderr); },
+    get: function() { return _stderrStream; },
   });
+  // Stream 'data'/'end' interest also drives the exit watcher (the payload
+  // is delivered at exit in this capture-at-exit stdio model).
+  var _innerOn = proc.on;
+  proc.on = function(e, cb) {
+    var r = _innerOn(e, cb);
+    if (e === 'stdout_data' || e === 'stdout_end' || e === 'stderr_data' || e === 'stderr_end') {
+      _startExitWatch();
+    }
+    return r;
+  };
 
   // Symbol.asyncDispose — invoked at end of `await using proc { ... }`.
   // Contract (TC39 Explicit Resource Management): the value of
@@ -1943,6 +2040,59 @@ unsafe extern "C" fn subproc_wait(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
             let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
+        }
+    }
+    true
+}
+
+/// Non-blocking exit probe for the Bun.spawn event surface: `null` while the
+/// child runs, the exit code (number) once it has terminated. Does NOT block
+/// (unlike `wait`) so the wrapper's setTimeout watcher can poll without
+/// stalling the JS thread. Mirrors subproc_wait's exitCode convention
+/// (signal deaths → -1; std::process doesn't expose the full status shape).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subproc_poll_exited(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let child_ptr = match get_child_ptr_from_this(cx, &args) {
+        Some(p) => p,
+        None => {
+            args.rval().set(NullValue());
+            return true;
+        }
+    };
+
+    let child = &mut *child_ptr;
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            let exit_code = status.code().unwrap_or(-1);
+            let this = args.thisv();
+            if this.is_object() {
+                let mut wrapped_cx_p =
+                    mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                let cx_ref_p = &mut wrapped_cx_p;
+                rooted!(&in(cx_ref_p) let obj = this.to_object());
+                rooted!(&in(cx_ref_p) let exited_root = BooleanValue(true));
+                JS_SetProperty(
+                    cx,
+                    obj.handle().into(),
+                    c"exited".as_ptr(),
+                    exited_root.handle().into(),
+                );
+                rooted!(&in(cx_ref_p) let ec_root = Int32Value(exit_code));
+                JS_SetProperty(
+                    cx,
+                    obj.handle().into(),
+                    c"exitCode".as_ptr(),
+                    ec_root.handle().into(),
+                );
+            }
+            args.rval().set(Int32Value(exit_code));
+        }
+        Ok(None) => {
+            args.rval().set(NullValue());
+        }
+        Err(_) => {
+            args.rval().set(Int32Value(-1));
         }
     }
     true

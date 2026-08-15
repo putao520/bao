@@ -820,13 +820,31 @@ fn build_tcp_server(
         )
     };
 
-    if listen_socket.is_null() || err != 0 {
+    // The return value is the authoritative success signal (NULL ⟺ failure,
+    // the uWS contract) — same usockets divergence root-caused in node_net
+    // (bbe20a81): us_internal_bind_and_listen writes *error = LIBUS_ERR after
+    // a SUCCESSFUL listen() (bsd.c:921), so `err != 0` here misjudged every
+    // live listen socket as failed and destroyed its still-linked group —
+    // SIGABRT in us_socket_group_deinit's head_listen_sockets assert on every
+    // Bun.listen TCP path.
+    let _ = err;
+    if listen_socket.is_null() {
         unsafe {
             SocketGroup::destroy(group_ptr);
         }
         args.rval().set(UndefinedValue());
         return true;
     }
+
+    // JS-idle tick surface (BCE-007 registration gap, Bun.listen TCP variant):
+    // drain_and_check only drives the uWS loop while
+    // node_http::has_active_servers() is true — without this registration an
+    // idle script never accepts inbound connections on this group. Liveness
+    // token only: the registry does ptr-eq bookkeeping and never dereferences
+    // (the same representation-preserving alias node_http2 uses for App<true>).
+    unsafe {
+        crate::node_http::register_active_app(group_ptr as *mut bun_uws_sys::app::App<false>)
+    };
 
     // Read actual bound port
     let ls_ref = bun_opaque::opaque_deref_mut(listen_socket);
@@ -918,6 +936,13 @@ fn build_tcp_server(
             if !group_ptr.is_null() {
                 (*group_ptr).close_all();
                 SocketGroup::destroy(group_ptr);
+                // Drop the JS-idle liveness token registered in
+                // build_tcp_server (see the BCE-007 note there).
+                unsafe {
+                    crate::node_http::unregister_active_app(
+                        group_ptr as *mut bun_uws_sys::app::App<false>,
+                    )
+                };
             }
             let undef = UndefinedValue();
             let undef_h = Handle::<Value> {
@@ -1281,6 +1306,15 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         unsafe {
             (*(ud_ptr as *mut ConnectUserData)).group_ptr = ptr::null_mut();
         }
+    } else {
+        // JS-idle tick surface (BCE-007 class): connect-side data/close events
+        // fire from vtable callbacks, which only run while the loop is ticked
+        // (node_http::has_active_servers). Register the client socket as a
+        // liveness token; connect_on_close drops it. Token only — the registry
+        // never dereferences.
+        unsafe {
+            crate::node_http::register_active_app(socket_key as *mut bun_uws_sys::app::App<false>)
+        };
     }
 
     // Build JS Socket object
@@ -1426,6 +1460,35 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     if socket_key == 0 {
         unsafe {
             reject_connect_promise(cx, promise, "Bun.connect: connection failed");
+        }
+    } else {
+        // Synchronous (loopback) connect: connect_on_open never fires for an
+        // already-open socket, so resolve HERE with the full socket object —
+        // the promise used to stay pending forever on this path.
+        unsafe {
+            if let Some(global) = bao_engine::context::thread_realm_global() {
+                if !global.is_null() {
+                    let sock_obj = build_tcp_socket_obj(
+                        cx,
+                        socket_key as *mut us_socket_t,
+                        None,
+                        None,
+                    );
+                    if !sock_obj.is_null() {
+                        let mut wrapped_cx_r =
+                            mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                        let cx_ref_r = &mut wrapped_cx_r;
+                        rooted!(&in(cx_ref_r) let p = promise);
+                        rooted!(&in(cx_ref_r) let val = ObjectValue(sock_obj));
+                        mozjs_sys::jsapi::JS::ResolvePromise(
+                            cx,
+                            p.handle().into(),
+                            val.handle().into(),
+                        );
+                        mozjs_sys::jsapi::js::RunJobs(cx);
+                    }
+                }
+            }
         }
     }
 
@@ -2084,13 +2147,229 @@ static CONNECT_VTABLE: VTable = VTable {
     on_handshake: Some(tcp_on_handshake),
 };
 
+/// ──────────────────── shared TCP socket JS object builder ────────────────────
+/// Builds the JS socket object for a connected usockets TCP socket. Shared by
+/// the Bun.listen accept bridge (tcp_on_open) and the Bun.connect promise
+/// resolution (connect_on_open) — previously the accept callbacks carried NO
+/// socket identity and the promise resolved with a bare {_socketPtr} that had
+/// no write/end methods (both filed from the #21 sweep follow-up).
+
+/// socket.write(data) — string or Buffer/Uint8Array/ArrayBuffer payload.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn tcp_sock_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+    let this_h = this_obj.handle().into();
+
+    let mut ptr_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        this_h,
+        c"_socketPtr".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ptr_val,
+        },
+    );
+    let socket_key = if ptr_val.is_double() {
+        ptr_val.to_double() as usize
+    } else {
+        0
+    };
+    if socket_key == 0 || argc == 0 {
+        args.rval().set(Int32Value(-1));
+        return true;
+    }
+
+    // Node/Bun accept string | bytes — same collect_byte_view contract as
+    // node_net's __net_write (non-string input must not silently write empty).
+    let data: Vec<u8> = if (*args.get(0).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(0).ptr).into_bytes()
+    } else {
+        match crate::node_buffer::collect_byte_view(cx, *args.get(0).ptr) {
+            Some(b) => b,
+            None => {
+                args.rval().set(Int32Value(-1));
+                return true;
+            }
+        }
+    };
+
+    let socket_ptr = socket_key as *mut us_socket_t;
+    let written = (*socket_ptr).write(&data);
+    args.rval().set(Int32Value(written));
+    true
+}
+
+/// socket.end() — graceful close (FIN).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn tcp_sock_end(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+    let this_h = this_obj.handle().into();
+
+    let mut ptr_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        this_h,
+        c"_socketPtr".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ptr_val,
+        },
+    );
+    if ptr_val.is_double() {
+        let socket_ptr = ptr_val.to_double() as usize as *mut us_socket_t;
+        (*socket_ptr).close(CloseCode::normal);
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// socket.destroy() — abortive close.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn tcp_sock_destroy(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+    let this_h = this_obj.handle().into();
+
+    let mut ptr_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        this_h,
+        c"_socketPtr".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ptr_val,
+        },
+    );
+    if ptr_val.is_double() {
+        let socket_ptr = ptr_val.to_double() as usize as *mut us_socket_t;
+        (*socket_ptr).close(CloseCode::failure);
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// Build a JS socket object (write/end/destroy + remote/local address info)
+/// for a connected `us_socket_t`. Caller must be in the target realm.
+///
+/// `sock_store_key` — when Some, the object is ALSO stored in GcStore under
+/// this key so the vtable callbacks (data/end/close) can resolve the SAME
+/// object and pass it to the JS handlers as the socket identity.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn build_tcp_socket_obj(
+    cx: *mut JSContext,
+    s: *mut us_socket_t,
+    remote_ip: Option<&[u8]>,
+    sock_store_key: Option<&str>,
+) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let sock_obj = w2::JS_NewPlainObject(cx_ref));
+    if sock_obj.get().is_null() {
+        return ptr::null_mut();
+    }
+    let sock_h = sock_obj.handle().into();
+
+    rooted!(&in(cx_ref) let ptr_val = DoubleValue(s as usize as f64));
+    JS_DefineProperty(
+        cx,
+        sock_h,
+        c"_socketPtr".as_ptr(),
+        ptr_val.handle().into(),
+        0,
+    );
+
+    // Remote address: prefer the dispatch-provided ip, fall back to the
+    // socket's own remote_address.
+    let mut ip_buf = [0u8; 64];
+    let remote: Option<Vec<u8>> = match remote_ip {
+        Some(ip) => Some(ip.to_vec()),
+        None => (*s).remote_address(&mut ip_buf).ok().map(|s| s.to_vec()),
+    };
+    if let Some(ip) = remote {
+        let c_ip = ZBox::from_bytes(&ip);
+        let ip_js = JS_NewStringCopyZ(cx, c_ip.as_ptr());
+        if !ip_js.is_null() {
+            rooted!(&in(cx_ref) let ip_v = StringValue(&*ip_js));
+            JS_DefineProperty(
+                cx,
+                sock_h,
+                c"remoteAddress".as_ptr(),
+                ip_v.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+    rooted!(&in(cx_ref) let rp_v = Int32Value((*s).remote_port()));
+    JS_DefineProperty(
+        cx,
+        sock_h,
+        c"remotePort".as_ptr(),
+        rp_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    rooted!(&in(cx_ref) let lp_v = Int32Value((*s).local_port()));
+    JS_DefineProperty(
+        cx,
+        sock_h,
+        c"localPort".as_ptr(),
+        lp_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    JS_DefineFunction(
+        cx,
+        sock_h,
+        c"write".as_ptr(),
+        Some(tcp_sock_write),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    JS_DefineFunction(
+        cx,
+        sock_h,
+        c"end".as_ptr(),
+        Some(tcp_sock_end),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    JS_DefineFunction(
+        cx,
+        sock_h,
+        c"destroy".as_ptr(),
+        Some(tcp_sock_destroy),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+
+    if let Some(key) = sock_store_key {
+        gc_store_insert(cx, key, sock_obj.get());
+    }
+
+    sock_obj.get()
+}
+
+/// GcStore key under which the accepted socket's JS object is registered for
+/// the vtable callbacks (tcp_on_data / tcp_on_close / tcp_on_end).
+fn listen_sock_store_key(s: *mut us_socket_t) -> String {
+    format!("listen_tcp_sock_{}", s as usize)
+}
+
 /// @trace REQ-BAO-API-017 [api:Bun.listen] TCP on_open callback — fires socket.open JS callback
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn tcp_on_open(
     s: *mut us_socket_t,
     _is_client: ::std::ffi::c_int,
-    _ip: *mut u8,
-    _ip_length: ::std::ffi::c_int,
+    ip: *mut u8,
+    ip_length: ::std::ffi::c_int,
 ) -> *mut us_socket_t {
     let key = s as usize;
     LISTEN_TCP_SOCKETS.with(|m| m.borrow_mut().insert(key, true));
@@ -2098,7 +2377,36 @@ unsafe extern "C" fn tcp_on_open(
     // Retrieve user data from the socket's group owner
     let ud = &*((*s).group().owner::<ListenTcpUserData>() as *const ListenTcpUserData);
 
-    // Call JS `open` callback (renamed from `connect` in socket options)
+    // Accept bridge: build the JS socket identity and pass it to the open
+    // handler (Bun API: open(socket)) — previously fired with NO arguments,
+    // so JS could never address the accepted connection.
+    if !ud.cx.is_null() {
+        if let Some(global) = bao_engine::context::thread_realm_global() {
+            if !global.is_null() {
+                let mut wrapped_cx =
+                    mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(ud.cx));
+                let cx_ref = &mut wrapped_cx;
+                rooted!(&in(cx_ref) let global_root = global);
+                let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+                let remote_ip = if !ip.is_null() && ip_length > 0 {
+                    Some(::std::slice::from_raw_parts(ip, ip_length as usize))
+                } else {
+                    None
+                };
+                let store_key = listen_sock_store_key(s);
+                let sock_obj = build_tcp_socket_obj(realm_cx.raw_cx(), s, remote_ip, Some(&store_key));
+                if !sock_obj.is_null() {
+                    rooted!(&in(realm_cx) let sock_val = ObjectValue(sock_obj));
+                    let _ = invoke_js_callback(ud.cx, &ud.connect_cb_key, &[*sock_val.handle()]);
+                    return s;
+                }
+            }
+        }
+    }
+
+    // Fallback: no realm / object build failed — fire without identity.
     let _ = invoke_js_callback(ud.cx, &ud.connect_cb_key, &[]);
 
     s
@@ -2121,15 +2429,44 @@ unsafe extern "C" fn tcp_on_data(
         return s;
     }
 
-    // Build a JS string from the received data
+    // Enter the persistent realm BEFORE allocating: JS_NewStringCopyN is a GC
+    // allocation and SM resolves the AllocSite from the context's current
+    // realm — with no realm entered (async dispatch has none) the allocator
+    // crashed (SIGSEGV in AllocNurseryOrTenuredCell, site=0x0). Latent until
+    // the BCE-007 liveness registration actually started delivering accepts
+    // during JS-idle. Same class as connect_on_data / udp_on_data below.
+    let Some(global) = bao_engine::context::thread_realm_global() else {
+        return s;
+    };
+    if global.is_null() {
+        return s;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
     let slice = ::std::slice::from_raw_parts(data, length as usize);
-    let js_str = JS_NewStringCopyN(cx, slice.as_ptr() as *const _, length as usize);
+    let js_str = JS_NewStringCopyN(
+        realm_cx.raw_cx(),
+        slice.as_ptr() as *const _,
+        length as usize,
+    );
     if js_str.is_null() {
         return s;
     }
-
-    let data_val = StringValue(&*js_str);
-    let _ = invoke_js_callback(cx, &ud.data_cb_key, &[data_val]);
+    rooted!(&in(realm_cx) let data_root = StringValue(&*js_str));
+    let data_val = *data_root.handle();
+    // Bun API: data(socket, data) — resolve the accepted socket's JS object
+    // from the accept registry and pass it as the first argument.
+    let sock_key = listen_sock_store_key(s);
+    if let Some(sock_obj) = gc_store_get(cx, &sock_key) {
+        rooted!(&in(realm_cx) let sock_val = ObjectValue(sock_obj));
+        let _ = invoke_js_callback(cx, &ud.data_cb_key, &[*sock_val.handle(), data_val]);
+    } else {
+        let _ = invoke_js_callback(cx, &ud.data_cb_key, &[data_val]);
+    }
 
     s
 }
@@ -2150,8 +2487,44 @@ unsafe extern "C" fn tcp_on_close(
 
     let ud = &*((*s).group().owner::<ListenTcpUserData>() as *const ListenTcpUserData);
 
+    // Resolve the accepted socket's JS object, drop it from the accept
+    // registry, and deliver close(socket, code).
+    let sock_key = listen_sock_store_key(s);
+    let sock_obj = if ud.cx.is_null() {
+        None
+    } else {
+        gc_store_get(ud.cx, &sock_key)
+    };
+    if !ud.cx.is_null() {
+        gc_store_remove(ud.cx, &sock_key);
+    }
+
     let code_val = Int32Value(code);
-    let _ = invoke_js_callback(ud.cx, &ud.close_cb_key, &[code_val]);
+    match sock_obj {
+        Some(obj) if !obj.is_null() => {
+            if let Some(global) = bao_engine::context::thread_realm_global() {
+                if !global.is_null() {
+                    let mut wrapped_cx =
+                        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(ud.cx));
+                    let cx_ref = &mut wrapped_cx;
+                    rooted!(&in(cx_ref) let global_root = global);
+                    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+                    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+                    rooted!(&in(realm_cx) let sock_val = ObjectValue(obj));
+                    let _ = invoke_js_callback(
+                        ud.cx,
+                        &ud.close_cb_key,
+                        &[*sock_val.handle(), code_val],
+                    );
+                    return s;
+                }
+            }
+            let _ = invoke_js_callback(ud.cx, &ud.close_cb_key, &[code_val]);
+        }
+        _ => {
+            let _ = invoke_js_callback(ud.cx, &ud.close_cb_key, &[code_val]);
+        }
+    }
 
     s
 }
@@ -2168,6 +2541,29 @@ unsafe extern "C" fn tcp_on_long_timeout(s: *mut us_socket_t) -> *mut us_socket_
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn tcp_on_end(s: *mut us_socket_t) -> *mut us_socket_t {
     let ud = &*((*s).group().owner::<ListenTcpUserData>() as *const ListenTcpUserData);
+
+    // Deliver end(socket) when the accepted identity is registered.
+    let sock_key = listen_sock_store_key(s);
+    if !ud.cx.is_null() {
+        if let Some(sock_obj) = gc_store_get(ud.cx, &sock_key) {
+            if !sock_obj.is_null() {
+                if let Some(global) = bao_engine::context::thread_realm_global() {
+                    if !global.is_null() {
+                        let mut wrapped_cx =
+                            mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(ud.cx));
+                        let cx_ref = &mut wrapped_cx;
+                        rooted!(&in(cx_ref) let global_root = global);
+                        let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+                        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+                        rooted!(&in(realm_cx) let sock_val = ObjectValue(sock_obj));
+                        let _ =
+                            invoke_js_callback(ud.cx, &ud.end_cb_key, &[*sock_val.handle()]);
+                        return s;
+                    }
+                }
+            }
+        }
+    }
 
     let _ = invoke_js_callback(ud.cx, &ud.end_cb_key, &[]);
     s
@@ -2241,7 +2637,10 @@ unsafe extern "C" fn connect_on_open(
     // Resolve the pending Promise with the socket pointer
     // The socket JS object is built lazily — we resolve with the socket key
     // so the caller can construct the Socket object from the resolved value.
-    // For Bun API compatibility, we resolve with the us_socket_t pointer as a number.
+    // For Bun API compatibility, we resolve with a full Socket object
+    // (write/end/destroy + remote/local address info) — the previous bare
+    // {_socketPtr} had no methods, so the resolved socket could neither
+    // write nor close (filed from the #21 sweep follow-up).
     if !ud.promise_settled.get() && !ud.promise.is_null() {
         ud.promise_settled.set(true);
         let cx = ud.cx;
@@ -2249,13 +2648,9 @@ unsafe extern "C" fn connect_on_open(
             let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             let cx_ref = &mut wrapped_cx;
             rooted!(&in(cx_ref) let p = ud.promise);
-            // Build a Socket-like object to resolve with
-            rooted!(&in(cx_ref) let sock_obj = w2::JS_NewPlainObject(cx_ref));
-            if !sock_obj.get().is_null() {
-                let sock_h = sock_obj.handle().into();
-                rooted!(&in(cx_ref) let ptr_v = DoubleValue(key as f64));
-                JS_DefineProperty(cx, sock_h, c"_socketPtr".as_ptr(), ptr_v.handle().into(), 0);
-                rooted!(&in(cx_ref) let val = ObjectValue(sock_obj.get()));
+            let sock_obj = build_tcp_socket_obj(cx, s, None, None);
+            if !sock_obj.is_null() {
+                rooted!(&in(cx_ref) let val = ObjectValue(sock_obj));
                 mozjs_sys::jsapi::JS::ResolvePromise(cx, p.handle().into(), val.handle().into());
             }
             mozjs_sys::jsapi::js::RunJobs(cx);
@@ -2282,13 +2677,30 @@ unsafe extern "C" fn connect_on_data(
         return s;
     }
 
+    // Enter the persistent realm before the GC allocation — see tcp_on_data.
+    let Some(global) = bao_engine::context::thread_realm_global() else {
+        return s;
+    };
+    if global.is_null() {
+        return s;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
     let slice = ::std::slice::from_raw_parts(data, length as usize);
-    let js_str = JS_NewStringCopyN(cx, slice.as_ptr() as *const _, length as usize);
+    let js_str = JS_NewStringCopyN(
+        realm_cx.raw_cx(),
+        slice.as_ptr() as *const _,
+        length as usize,
+    );
     if js_str.is_null() {
         return s;
     }
-
-    let data_val = StringValue(&*js_str);
+    rooted!(&in(realm_cx) let data_root = StringValue(&*js_str));
+    let data_val = *data_root.handle();
     let _ = invoke_js_callback(cx, &ud.data_cb_key, &[data_val]);
 
     s
@@ -2304,13 +2716,22 @@ unsafe extern "C" fn connect_on_close(
 ) -> *mut us_socket_t {
     let key = s as usize;
     LISTEN_TCP_SOCKETS.with(|m| m.borrow_mut().remove(&key));
-    CONNECT_GROUPS.with(|g| g.borrow_mut().remove(&key));
+    // Resolve owner BEFORE dropping the group Box: the sync-connect path
+    // stores the Box under the socket ptr, and dropping it HERE (as this
+    // callback used to do) freed the group while usockets was still
+    // dispatching on it — the subsequent (*s).group() read freed memory
+    // (0xdfdfdfdfdfdfdfdf misaligned-deref abort). Dispatch first, free after.
+    let ud_ptr = (*s).group().owner::<ConnectUserData>() as *const ConnectUserData;
+    let ud = &*ud_ptr;
 
-    let ud = &*((*s).group().owner::<ConnectUserData>() as *const ConnectUserData);
     let code_val = Int32Value(code);
     let _ = invoke_js_callback(ud.cx, &ud.close_cb_key, &[code_val]);
     // Also fire end callback on close (Bun API: close implies end)
     let _ = invoke_js_callback(ud.cx, &ud.end_cb_key, &[]);
+
+    CONNECT_GROUPS.with(|g| g.borrow_mut().remove(&key));
+    // Drop the JS-idle liveness token registered in bun_connect.
+    unsafe { crate::node_http::unregister_active_app(s as *mut bun_uws_sys::app::App<false>) };
 
     s
 }
@@ -2362,6 +2783,19 @@ extern "C" fn udp_on_data(
         return;
     }
 
+    // Enter the persistent realm before the GC allocations — see tcp_on_data.
+    let Some(global) = bao_engine::context::thread_realm_global() else {
+        return;
+    };
+    if global.is_null() {
+        return;
+    }
+    let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
     // Iterate packets and invoke JS callback for each
     let pkt_buf = unsafe { &mut *packets };
     for i in 0..count {
@@ -2369,12 +2803,19 @@ extern "C" fn udp_on_data(
         if payload.is_empty() {
             continue;
         }
-        let js_str = unsafe { JS_NewStringCopyN(cx, payload.as_ptr() as *const _, payload.len()) };
+        let js_str = unsafe {
+            JS_NewStringCopyN(
+                realm_cx.raw_cx(),
+                payload.as_ptr() as *const _,
+                payload.len(),
+            )
+        };
         if js_str.is_null() {
             continue;
         }
 
-        let data_val = unsafe { StringValue(&*js_str) };
+        rooted!(&in(realm_cx) let data_root = StringValue(unsafe { &*js_str }));
+        let data_val = *data_root.handle();
         let _ = unsafe { invoke_js_callback(cx, &ud.data_cb_key, &[data_val]) };
     }
 }

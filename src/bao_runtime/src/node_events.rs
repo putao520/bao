@@ -18,6 +18,10 @@ use crate::require::cache_builtin;
 /// Global counter for generating unique GcStore keys for event listeners.
 static EE_LISTENER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Clone is load-bearing: get_state returns snapshots so nested ee_* calls on
+/// the same object never alias the prop-owned Box (single-owner invariant,
+/// see get_state/set_state).
+#[derive(Clone)]
 struct EmitterState {
     /// GcStore keys for listener functions (GC-managed via global object properties).
     listeners: HashMap<String, Vec<String>>,
@@ -443,7 +447,19 @@ fn get_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<EmitterState> {
             }
             let ptr = hidden.to_private() as *mut EmitterState;
             if !ptr.is_null() {
-                return Some(*Box::from_raw(ptr));
+                // SINGLE-OWNER INVARIANT: the hidden prop OWNS the Box at
+                // rest; readers only take a CLONE. The previous
+                // `*Box::from_raw(ptr)` took ownership out while the prop
+                // kept pointing at it — any listener that re-entered an ee_*
+                // op on the SAME object (the canonical Node shapes:
+                // sock.on('data', () => sock.end()), child.on('exit', ...)
+                // re-emitting) ran `Box::from_raw` on the already-freed
+                // pointer a second time → double free + SIGSEGV
+                // (EmitterState ≈ 112B, matches the mimalloc report).
+                // Nested ops now each hold an independent snapshot; the last
+                // set_state wins (same-event nested once-removal may drift —
+                // Node snapshots listeners per emit too).
+                return Some((&*ptr).clone());
             }
         }
     }
@@ -453,6 +469,31 @@ fn get_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<EmitterState> {
 fn set_state(cx: *mut JSContext, obj: *mut JSObject, state: EmitterState) {
     unsafe {
         // Hidden property only — see get_state for why reserved slots are unsafe.
+        //
+        // SINGLE-OWNER INVARIANT (see get_state): free the Box being replaced.
+        // Without this, every set_state leaked the previous state — benign
+        // while get_state still consumed the Box, a growing leak now that
+        // readers only clone.
+        {
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let obj_root = obj);
+            let mut old = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                obj_root.handle().into(),
+                STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut old,
+                },
+            );
+            if old.is_double() && (old.asBits_ & 0xFFFF000000000000) == 0 {
+                let old_ptr = old.to_private() as *mut EmitterState;
+                if !old_ptr.is_null() {
+                    drop(Box::from_raw(old_ptr));
+                }
+            }
+        }
         let boxed = Box::new(state);
         let val = PrivateValue(Box::into_raw(boxed) as *const ::std::os::raw::c_void);
         let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -780,11 +821,11 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
     };
 
-    let mut state = ensure_state(cx, this_obj_root.get());
+    let state = ensure_state(cx, this_obj_root.get());
     let listener_keys = match state.listeners.get(&event_name) {
         Some(l) => l.clone(),
         None => {
-            set_state(cx, this_obj_root.get(), state);
+            // No mutation — nothing to write back (get_state only cloned).
             args.rval().set(BooleanValue(false));
             return true;
         }
@@ -851,9 +892,17 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         // If gc_store_get returns None, the object was GC'd — skip it (don't keep stale key)
     }
 
-    state.listeners.insert(event_name.clone(), remaining_keys);
-    state.once_flags.insert(event_name, remaining_once);
-    set_state(cx, this_obj_root.get(), state);
+    // KEYED MERGE write-back: listeners registered or removed by NESTED ee_*
+    // calls (same object) during the loop above live in the prop's CURRENT
+    // state — writing back our pre-loop snapshot would erase them
+    // (nested_on_registration regression). Re-read and apply only THIS emit's
+    // mutation: replace the fired event's listener list. Same-event nested
+    // off-during-emit can still resurrect a removed listener until the next
+    // emit (Node snapshots its firing list too); cross-event nesting is exact.
+    let mut current = ensure_state(cx, this_obj_root.get());
+    current.listeners.insert(event_name.clone(), remaining_keys);
+    current.once_flags.insert(event_name, remaining_once);
+    set_state(cx, this_obj_root.get(), current);
 
     args.rval().set(BooleanValue(had_listeners));
     true
