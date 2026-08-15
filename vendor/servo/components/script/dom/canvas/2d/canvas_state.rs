@@ -2559,7 +2559,7 @@ impl UnshapedTextRun<'_> {
         }
 
         match (&self.font, other_font) {
-            (Some(font_a), Some(font_b)) => font_a.identifier() == font_b.identifier(),
+            (Some(font_a), Some(font_b)) => *font_a.identifier() == *font_b.identifier(),
             (None, None) => true,
             _ => false,
         }
@@ -2608,7 +2608,7 @@ impl UnshapedTextRun<'_> {
             .collect();
 
         let identifier = font.identifier();
-        let font_data = match &identifier {
+        let font_data = match &*identifier {
             FontIdentifier::Local(_) => None,
             FontIdentifier::Web(_) | FontIdentifier::ArrayBuffer(_) => {
                 Some(font.font_data_and_index().ok()?)
@@ -2616,7 +2616,7 @@ impl UnshapedTextRun<'_> {
         }
         .cloned();
         let canvas_font = CanvasFont {
-            identifier,
+            identifier: identifier.to_owned(),
             data: font_data,
         };
 
