@@ -4,14 +4,33 @@
 //!
 //! Exposes the Node.js `node:test` API surface (test(), describe(), it(),
 //! before/after hooks, mock, assert) by delegating to the bun:test
-//! infrastructure already present on `globalThis.__bun_test_module`.
+//! infrastructure on `globalThis.__bun_test_module`.
+//!
+//! ## Silent-fake eradication (group D)
+//!
+//! Two bugs are closed here:
+//!
+//! 1. **Install-order freeze**: the previous source resolved
+//!    `__bun_test_module` once at module-eval time. `node_test::install`
+//!    runs BEFORE `bun_test::install_bun_test` in `globals.rs`, so the
+//!    resolution always saw `undefined` and froze an inert
+//!    `test: function(){}` stub into the builtin cache — even under
+//!    `bao test`, node:test files registered nothing and reported 0/0.
+//!    All bridging is now resolved lazily at call time.
+//! 2. **Plain-run fake pass**: only `bao test` (cli.rs → run_test_file →
+//!    run_bun_tests_report) drives registered tests. In any other mode
+//!    (`bao run`, `-e`, library embedding) registration would silently
+//!    no-op and the user would believe tests passed. test()/describe()/it()
+//!    and the hooks now refuse with an explicit throw unless
+//!    `process.argv[1] === 'test'` (the `bao test` subcommand).
 //!
 //! ## Architecture
 //!
 //! Follows the same JS IIFE pattern as node_stream.rs / node_vm.rs:
 //! - `TEST_SOURCE` const holds the JS source
 //! - `install()` evaluates the IIFE, extracts the returned object, and
-//!   registers it via `cache_builtin(cx, "node:test", ...)`
+//!   registers it via `cache_builtin(cx, "test", ...)` (require() strips
+//!   the `node:` prefix, so the bare key serves both specifiers)
 //!
 //! ## References
 //!
@@ -31,98 +50,113 @@ use crate::require::cache_builtin;
 const TEST_SOURCE: &str = r#"
 (function() {
   var _g = globalThis;
-  var _btm = _g.__bun_test_module;
-  if (!_btm) {
-    // bun:test shim not installed yet — return an empty module stub so
-    // require("node:test") doesn't throw.
-    return {
-      test: function() {},
-      describe: function() {},
-      it: function() {},
-      before: function() {},
-      after: function() {},
-      beforeEach: function() {},
-      afterEach: function() {},
-      mock: {},
-      assert: {},
-      run: function() {}
-    };
+
+  // ── lazy infrastructure resolution ──
+  // Resolved at CALL time, never at module-eval time: node_test::install runs
+  // before bun_test::install_bun_test, so an install-time check would freeze
+  // a dead stub into the builtin cache (see module docs).
+  function _btm() {
+    var btm = _g.__bun_test_module;
+    if (!btm) {
+      throw new Error("node:test: bun:test runner infrastructure (globalThis.__bun_test_module) is not installed in this context — refusing to fake test registration.");
+    }
+    return btm;
+  }
+  function _fn(host, path, name) {
+    var f = host && host[name];
+    if (typeof f !== 'function') {
+      throw new Error("node:test: bun:test does not implement " + path + "." + name + " — refusing to fake it.");
+    }
+    return f;
+  }
+
+  // ── runner gate ──
+  // `bao test` is the only mode that executes registered suites
+  // (runtime.rs run_test_file → run_bun_tests_report). Everywhere else,
+  // registration would silently no-op and fake a pass. Fail closed.
+  function _runnerGate() {
+    var argv = (_g.process && _g.process.argv) || [];
+    if (argv[1] !== 'test') {
+      throw new Error("node:test requires `bao test <file>`: this process is not the bao test runner (process.argv[1] !== 'test'), so registered tests would never execute and would silently fake a pass. Re-run with: bao test <file>");
+    }
   }
 
   // ── test function ──
   // Node.js node:test uses test() as the primary entry; Bun's bun:test uses
-  // test() too. Bridge directly.
-  var testFn = _btm.test || function() {};
-
-  // Attach sub-methods from bun:test
-  testFn.skip = _btm.test && _btm.test.skip ? _btm.test.skip : function() {};
-  testFn.todo = _btm.test && _btm.test.todo ? _btm.test.todo : function() {};
-  testFn.only = _btm.test && _btm.test.only ? _btm.test.only : function() {};
-  testFn.failing = _btm.test && _btm.test.failing ? _btm.test.failing : function() {};
-  testFn.if = _btm.test && _btm.test.if ? _btm.test.if : function(cond) { return cond ? testFn : { skip: function(){} }; };
-  testFn.skipIf = _btm.test && _btm.test.skipIf ? _btm.test.skipIf : function(cond) { return cond ? { skip: function(){}, only: function(){} } : testFn; };
-  testFn.onlyIf = _btm.test && _btm.test.onlyIf ? _btm.test.onlyIf : function(cond) { return cond ? testFn : { skip: function(){}, only: function(){} }; };
-  testFn.each = _btm.test && _btm.test.each ? _btm.test.each : function() { return function(name, fn) { testFn(name, fn); }; };
+  // test() too. Bridge directly, arguments pass through unchanged.
+  function withGate(host, path, name) {
+    var f = function() {
+      _runnerGate();
+      return _fn(host(), path, name).apply(host(), arguments);
+    };
+    f._target = name;
+    return f;
+  }
+  var testFn = withGate(_btm, 'bun:test', 'test');
+  // Sub-methods delegate to the bun:test variants of the same name.
+  ['skip', 'todo', 'only', 'failing', 'if', 'skipIf', 'onlyIf', 'each'].forEach(function(variant) {
+    testFn[variant] = withGate(function() { return _fn(_btm(), 'bun:test', 'test'); },
+                               'bun:test.test', variant);
+  });
 
   // ── describe ──
-  var describeFn = _btm.describe || function() {};
-  describeFn.skip = _btm.describe && _btm.describe.skip ? _btm.describe.skip : function() {};
-  describeFn.todo = _btm.describe && _btm.describe.todo ? _btm.describe.todo : function() {};
-  describeFn.only = _btm.describe && _btm.describe.only ? _btm.describe.only : function(name, fn) { describeFn(name, fn); };
-  describeFn.each = _btm.describe && _btm.describe.each ? _btm.describe.each : function() { return function(name, fn) { describeFn(name, fn); }; };
-  describeFn.if = _btm.describe && _btm.describe.if ? _btm.describe.if : function(cond) { return cond ? describeFn : { skip: function(){} }; };
-  describeFn.skipIf = _btm.describe && _btm.describe.skipIf ? _btm.describe.skipIf : function(cond) { return cond ? { skip: function(){}, only: function(){}, if: function(){ return { skip: function(){} }; } } : describeFn; };
+  var describeFn = withGate(_btm, 'bun:test', 'describe');
+  ['skip', 'todo', 'only', 'each', 'if', 'skipIf'].forEach(function(variant) {
+    describeFn[variant] = withGate(function() { return _fn(_btm(), 'bun:test', 'describe'); },
+                                   'bun:test.describe', variant);
+  });
 
   // ── it ──
-  var itFn = _btm.it || function() {};
-  itFn.skip = _btm.it && _btm.it.skip ? _btm.it.skip : function() {};
-  itFn.todo = _btm.it && _btm.it.todo ? _btm.it.todo : function() {};
-  itFn.only = _btm.it && _btm.it.only ? _btm.it.only : function(name, fn) { itFn(name, fn); };
-  itFn.each = _btm.it && _btm.it.each ? _btm.it.each : function() { return function(name, fn) { itFn(name, fn); }; };
-  itFn.failing = _btm.it && _btm.it.failing ? _btm.it.failing : function() {};
-  itFn.if = _btm.it && _btm.it.if ? _btm.it.if : function(cond) { return cond ? itFn : { skip: function(){} }; };
-  itFn.skipIf = _btm.it && _btm.it.skipIf ? _btm.it.skipIf : function(cond) { return cond ? { skip: function(){}, only: function(){} } : itFn; };
-  itFn.onlyIf = _btm.it && _btm.it.onlyIf ? _btm.it.onlyIf : function(cond) { return cond ? itFn : { skip: function(){}, only: function(){} }; };
+  var itFn = withGate(_btm, 'bun:test', 'it');
+  ['skip', 'todo', 'only', 'each', 'failing', 'if', 'skipIf', 'onlyIf'].forEach(function(variant) {
+    itFn[variant] = withGate(function() { return _fn(_btm(), 'bun:test', 'it'); },
+                             'bun:test.it', variant);
+  });
 
   // ── hooks ──
-  // Node.js node:test uses before/after (aliases for beforeAll/afterAll)
-  var beforeFn = _btm.beforeAll || _btm.before || function() {};
-  var afterFn = _btm.afterAll || _btm.after || function() {};
-  var beforeEachFn = _btm.beforeEach || function() {};
-  var afterEachFn = _btm.afterEach || function() {};
+  // Node.js node:test uses before/after (aliases for beforeAll/afterAll).
+  var beforeFn = withGate(_btm, 'bun:test', 'beforeAll');
+  var afterFn = withGate(_btm, 'bun:test', 'afterAll');
+  var beforeEachFn = withGate(_btm, 'bun:test', 'beforeEach');
+  var afterEachFn = withGate(_btm, 'bun:test', 'afterEach');
 
   // ── mock ──
-  // Node.js node:test exposes test.mock with fn/spyOn/restore/clear/reset
-  var jestObj = _btm.jest || {};
+  // Node.js node:test exposes test.mock with fn/spyOn/restore/clear/reset.
+  // fn/spyOn delegate to bun:test jest (real call-tracking mocks); restore
+  // actually restores every spy created through this module.
+  var _spies = [];
   var mockObj = {
-    fn: jestObj.fn || function(impl) {
-      var calls = [];
-      var fn = impl ? impl : function() {};
-      var wrapper = function() {
-        calls.push(Array.prototype.slice.call(arguments));
-        return fn.apply(this, arguments);
-      };
-      wrapper.mock = { calls: calls };
-      wrapper.mockImplementation = function(newImpl) { fn = newImpl; return wrapper; };
-      wrapper.mockReturnValue = function(val) { fn = function() { return val; }; return wrapper; };
-      wrapper.mockRestore = function() {};
-      wrapper.mockClear = function() { calls.length = 0; return wrapper; };
-      wrapper.mockReset = function() { calls.length = 0; fn = function() {}; return wrapper; };
-      return wrapper;
+    fn: function(impl) {
+      var jest = _fn(_btm(), 'bun:test', 'jest');
+      return _fn(jest, 'bun:test.jest', 'fn')(impl);
     },
-    spyOn: jestObj.spyOn || function(obj, method) {
+    spyOn: function(obj, method) {
       if (!obj || typeof obj[method] !== 'function') {
         throw new Error('mock.spyOn requires an object with a function property');
       }
-      var original = obj[method];
-      var mock = mockObj.fn(original);
-      obj[method] = mock;
-      mock.mockRestore = function() { obj[method] = original; };
+      var jest = _fn(_btm(), 'bun:test', 'jest');
+      var mock = _fn(jest, 'bun:test.jest', 'spyOn')(obj, method);
+      _spies.push({ mock: mock, obj: obj, method: method });
       return mock;
     },
-    restore: function() {},
-    clear: function() {},
-    reset: function() {},
+    restore: function() {
+      for (var i = 0; i < _spies.length; i++) {
+        var s = _spies[i];
+        if (typeof s.mock.mockRestore === 'function') s.mock.mockRestore();
+        else s.obj[s.method] = s.mock._original;
+      }
+      _spies.length = 0;
+    },
+    clear: function() {
+      for (var i = 0; i < _spies.length; i++) {
+        if (typeof _spies[i].mock.mockClear === 'function') _spies[i].mock.mockClear();
+      }
+    },
+    reset: function() {
+      for (var i = 0; i < _spies.length; i++) {
+        if (typeof _spies[i].mock.mockReset === 'function') _spies[i].mock.mockReset();
+      }
+    },
     getter: function(obj, prop, impl) {
       var orig = Object.getOwnPropertyDescriptor(obj, prop);
       Object.defineProperty(obj, prop, { get: impl, configurable: true });
@@ -136,86 +170,66 @@ const TEST_SOURCE: &str = r#"
   };
 
   // ── assert ──
-  // Node.js node:test assert subset. Delegate to the Node.js assert module
-  // if available, otherwise provide a minimal implementation.
-  var assertObj;
-  var nodeAssert = (typeof _g.require === 'function') ? (function() { try { return _g.require('assert'); } catch(e) { return null; } })() : null;
-  if (nodeAssert) {
-    assertObj = {
-      ok: nodeAssert.ok || function(val, msg) { if (!val) throw new Error(msg || 'assertion failed'); },
-      equal: nodeAssert.equal || function(a, b, msg) { if (a != b) throw new Error(msg || 'expected ' + a + ' to equal ' + b); },
-      notEqual: nodeAssert.notEqual || function(a, b, msg) { if (a == b) throw new Error(msg || 'expected values not to be equal'); },
-      deepEqual: nodeAssert.deepEqual || function(a, b, msg) { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(msg || 'deep equal failed'); },
-      notDeepEqual: nodeAssert.notDeepEqual || function(a, b, msg) { if (JSON.stringify(a) === JSON.stringify(b)) throw new Error(msg || 'expected values not to deep equal'); },
-      strictEqual: nodeAssert.strictEqual || function(a, b, msg) { if (a !== b) throw new Error(msg || 'strict equal failed'); },
-      notStrictEqual: nodeAssert.notStrictEqual || function(a, b, msg) { if (a === b) throw new Error(msg || 'expected values not to be strictly equal'); },
-      throws: nodeAssert.throws || function(fn, expected, msg) {
-        var threw = false;
-        try { fn(); } catch(e) { threw = true; if (expected && typeof expected === 'function' && !(e instanceof expected)) throw new Error(msg || 'wrong error type'); }
-        if (!threw) throw new Error(msg || 'expected function to throw');
-      },
-      doesNotThrow: nodeAssert.doesNotThrow || function(fn, expected, msg) {
-        try { fn(); } catch(e) { throw new Error(msg || 'expected function not to throw'); }
-      },
-      rejects: nodeAssert.rejects || function(asyncFn, expected, msg) {
-        return Promise.resolve().then(function() {
-          var p = typeof asyncFn === 'function' ? asyncFn() : asyncFn;
-          return p.then(function() { throw new Error(msg || 'expected promise to reject'); }, function(e) {
-            if (expected && typeof expected === 'function' && !(e instanceof expected)) throw new Error(msg || 'wrong rejection type');
-          });
-        });
-      },
-      ifError: nodeAssert.ifError || function(err) { if (err) throw err; },
-      match: function(actual, regex, msg) {
-        if (!regex.test(actual)) throw new Error(msg || 'expected ' + actual + ' to match ' + regex);
-      },
-      doesNotMatch: function(actual, regex, msg) {
-        if (regex.test(actual)) throw new Error(msg || 'expected ' + actual + ' not to match ' + regex);
-      }
-    };
-  } else {
-    // Minimal assert without node:assert
-    assertObj = {
-      ok: function(val, msg) { if (!val) throw new Error(msg || 'assertion failed'); },
-      equal: function(a, b, msg) { if (a != b) throw new Error(msg || 'expected ' + a + ' to equal ' + b); },
-      notEqual: function(a, b, msg) { if (a == b) throw new Error(msg || 'expected values not to be equal'); },
-      deepEqual: function(a, b, msg) { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(msg || 'deep equal failed'); },
-      notDeepEqual: function(a, b, msg) { if (JSON.stringify(a) === JSON.stringify(b)) throw new Error(msg || 'expected values not to deep equal'); },
-      strictEqual: function(a, b, msg) { if (a !== b) throw new Error(msg || 'strict equal failed'); },
-      notStrictEqual: function(a, b, msg) { if (a === b) throw new Error(msg || 'expected values not to be strictly equal'); },
-      throws: function(fn, expected, msg) {
-        var threw = false;
-        try { fn(); } catch(e) { threw = true; if (expected && typeof expected === 'function' && !(e instanceof expected)) throw new Error(msg || 'wrong error type'); }
-        if (!threw) throw new Error(msg || 'expected function to throw');
-      },
-      doesNotThrow: function(fn, expected, msg) {
-        try { fn(); } catch(e) { throw new Error(msg || 'expected function not to throw'); }
-      },
-      rejects: function(asyncFn, expected, msg) {
-        return Promise.resolve().then(function() {
-          var p = typeof asyncFn === 'function' ? asyncFn() : asyncFn;
-          return p.then(function() { throw new Error(msg || 'expected promise to reject'); }, function(e) {
-            if (expected && typeof expected === 'function' && !(e instanceof expected)) throw new Error(msg || 'wrong rejection type');
-          });
-        });
-      },
-      ifError: function(err) { if (err) throw err; },
-      match: function(actual, regex, msg) {
-        if (!regex.test(actual)) throw new Error(msg || 'expected ' + actual + ' to match ' + regex);
-      },
-      doesNotMatch: function(actual, regex, msg) {
-        if (regex.test(actual)) throw new Error(msg || 'expected ' + actual + ' not to match ' + regex);
-      }
+  // Node.js node:test assert subset. Delegates to the Node.js assert module
+  // (real implementation); the local fallback is itself a real asserting
+  // implementation, not a pass-through stub.
+  var _nodeAssert = null;
+  function _assert() {
+    if (_nodeAssert === null) {
+      _nodeAssert = (typeof _g.require === 'function')
+        ? (function() { try { return _g.require('assert'); } catch (e) { return undefined; } })()
+        : undefined;
+    }
+    return _nodeAssert;
+  }
+  function _delegateAssert(name, fallback) {
+    return function() {
+      var na = _assert();
+      if (na && typeof na[name] === 'function') return na[name].apply(na, arguments);
+      return fallback.apply(null, arguments);
     };
   }
+  var assertObj = {
+    ok: _delegateAssert('ok', function(val, msg) { if (!val) throw new Error(msg || 'assertion failed'); }),
+    equal: _delegateAssert('equal', function(a, b, msg) { if (a != b) throw new Error(msg || 'expected ' + a + ' to equal ' + b); }),
+    notEqual: _delegateAssert('notEqual', function(a, b, msg) { if (a == b) throw new Error(msg || 'expected values not to be equal'); }),
+    deepEqual: _delegateAssert('deepEqual', function(a, b, msg) { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(msg || 'deep equal failed'); }),
+    notDeepEqual: _delegateAssert('notDeepEqual', function(a, b, msg) { if (JSON.stringify(a) === JSON.stringify(b)) throw new Error(msg || 'expected values not to deep equal'); }),
+    strictEqual: _delegateAssert('strictEqual', function(a, b, msg) { if (a !== b) throw new Error(msg || 'strict equal failed'); }),
+    notStrictEqual: _delegateAssert('notStrictEqual', function(a, b, msg) { if (a === b) throw new Error(msg || 'expected values not to be strictly equal'); }),
+    throws: _delegateAssert('throws', function(fn, expected, msg) {
+      var threw = false;
+      try { fn(); } catch(e) { threw = true; if (expected && typeof expected === 'function' && !(e instanceof expected)) throw new Error(msg || 'wrong error type'); }
+      if (!threw) throw new Error(msg || 'expected function to throw');
+    }),
+    doesNotThrow: _delegateAssert('doesNotThrow', function(fn, expected, msg) {
+      try { fn(); } catch(e) { throw new Error(msg || 'expected function not to throw'); }
+    }),
+    rejects: _delegateAssert('rejects', function(asyncFn, expected, msg) {
+      return Promise.resolve().then(function() {
+        var p = typeof asyncFn === 'function' ? asyncFn() : asyncFn;
+        return p.then(function() { throw new Error(msg || 'expected promise to reject'); }, function(e) {
+          if (expected && typeof expected === 'function' && !(e instanceof expected)) throw new Error(msg || 'wrong rejection type');
+        });
+      });
+    }),
+    ifError: _delegateAssert('ifError', function(err) { if (err) throw err; }),
+    match: function(actual, regex, msg) {
+      if (!regex.test(actual)) throw new Error(msg || 'expected ' + actual + ' to match ' + regex);
+    },
+    doesNotMatch: function(actual, regex, msg) {
+      if (regex.test(actual)) throw new Error(msg || 'expected ' + actual + ' not to match ' + regex);
+    }
+  };
 
   // ── run() ──
-  // Node.js node:test run() delegates to __run_bun_tests()
+  // Delegates to the real bun:test runner. Explicit API — not gated, the
+  // caller asked for execution, and a missing runner fails explicitly.
   function runFn() {
-    if (typeof _g.__run_bun_tests === 'function') {
-      return _g.__run_bun_tests();
+    if (typeof _g.__run_bun_tests !== 'function') {
+      throw new Error("node:test run(): bun:test runner (globalThis.__run_bun_tests) is not installed — refusing to return a fake empty report.");
     }
-    return { passed: 0, failed: 0, errors: [] };
+    return _g.__run_bun_tests();
   }
 
   return {
@@ -303,6 +317,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        cache_builtin(cx, "node:test", mod_obj.get());
+        // Cache under the bare name "test": require() strips the "node:"
+        // prefix (require.rs require_fn), so both require("test") and
+        // require("node:test") resolve to "builtin:test". The previous
+        // "node:test" key matched neither and require("node:test") threw
+        // "Cannot find module".
+        cache_builtin(cx, "test", mod_obj.get());
     }
 }

@@ -1157,10 +1157,16 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        // MessagePort — delegate to globalThis.MessagePort or stub.
+        // MessagePort — delegate to globalThis.MessagePort or refuse.
+        // A bare `new MessagePort()` has no entangled peer, so an empty
+        // constructor would hand back an inert object whose postMessage
+        // silently dropped every message (silent-fake eradication group D).
+        // Real ports come from MessageChannel (port1/port2) or Worker.
         let mp_source = r#"(typeof globalThis.MessagePort === 'function'
   ? globalThis.MessagePort
-  : function MessagePort() {})"#;
+  : function MessagePort() {
+      throw new TypeError("worker_threads.MessagePort must be obtained from MessageChannel (port1/port2) or Worker — bare construction is not supported and would return an inert fake port.");
+    })"#;
         let mut mp_text = mozjs::rust::transform_str_to_source_text(mp_source);
         let mut mp_val = UndefinedValue();
         let mp_opts =
@@ -1188,10 +1194,73 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        // BroadcastChannel — delegate to globalThis or stub.
+        // BroadcastChannel — delegate to globalThis, else real in-process
+        // broadcast: a registry keyed by channel name fans every postMessage
+        // out to the OTHER open instances of the same channel (per WHATWG
+        // semantics the sender does not receive its own message). The
+        // previous fallback's postMessage was a no-op that silently dropped
+        // every message (silent-fake eradication group D).
         let bc_source = r#"(typeof globalThis.BroadcastChannel === 'function'
   ? globalThis.BroadcastChannel
-  : function BroadcastChannel(name) { this.name = name; this.postMessage = function() {}; this.close = function() {}; })"#;
+  : (function() {
+      var registry = globalThis.__baoBroadcastRegistry || (globalThis.__baoBroadcastRegistry = {});
+      function BroadcastChannel(name) {
+        if (!(this instanceof BroadcastChannel)) return new BroadcastChannel(name);
+        if (typeof name !== 'string' || name === '') throw new TypeError('BroadcastChannel: name must be a non-empty string');
+        this.name = name;
+        this.onmessage = null;
+        this.onmessageerror = null;
+        this._closed = false;
+        this._listeners = [];
+        (registry[name] || (registry[name] = [])).push(this);
+      }
+      function _deliver(port, ev) {
+        var firstErr = null;
+        if (typeof port.onmessage === 'function') {
+          try { port.onmessage(ev); } catch (e) { if (!firstErr) firstErr = e; }
+        }
+        for (var i = 0; i < port._listeners.length; i++) {
+          try { port._listeners[i](ev); } catch (e) { if (!firstErr) firstErr = e; }
+        }
+        return firstErr;
+      }
+      BroadcastChannel.prototype.postMessage = function(message) {
+        if (this._closed) throw new Error('BroadcastChannel "' + this.name + '" is closed');
+        var peers = registry[this.name] || [];
+        var firstErr = null;
+        for (var i = 0; i < peers.length; i++) {
+          var peer = peers[i];
+          if (peer === this || peer._closed) continue;
+          var err = _deliver(peer, { data: message });
+          if (err && !firstErr) firstErr = err;
+        }
+        // Delivery completes for every peer before a throwing handler's
+        // error surfaces — no peer is starved, no error is swallowed.
+        if (firstErr) throw firstErr;
+      };
+      BroadcastChannel.prototype.close = function() {
+        if (this._closed) return;
+        this._closed = true;
+        var peers = registry[this.name] || [];
+        var idx = peers.indexOf(this);
+        if (idx >= 0) peers.splice(idx, 1);
+        if (peers.length === 0) delete registry[this.name];
+      };
+      BroadcastChannel.prototype.addEventListener = function(type, fn) {
+        if (typeof fn !== 'function') throw new TypeError('BroadcastChannel.addEventListener: listener must be a function');
+        // 'messageerror' can never fire in-process (no structured-clone
+        // failures without serialization); anything else is refused.
+        if (type !== 'message' && type !== 'messageerror') throw new TypeError('BroadcastChannel.addEventListener: unsupported event type "' + type + '"');
+        this._listeners.push(fn);
+      };
+      BroadcastChannel.prototype.removeEventListener = function(type, fn) {
+        if (type !== 'message' && type !== 'messageerror') return;
+        var idx = this._listeners.indexOf(fn);
+        if (idx >= 0) this._listeners.splice(idx, 1);
+      };
+      Object.defineProperty(BroadcastChannel.prototype, 'closed', { get: function() { return this._closed; }, configurable: true });
+      return BroadcastChannel;
+    })())"#;
         let mut bc_text = mozjs::rust::transform_str_to_source_text(bc_source);
         let mut bc_val = UndefinedValue();
         let bc_opts = mozjs::glue::NewCompileOptions(

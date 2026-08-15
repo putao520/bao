@@ -6179,110 +6179,16 @@ if (typeof _g.DOMException === 'undefined') {
   _g.DOMException = DOMException;
 }
 
-// DOMParser — lightweight HTML parser for CLI mode.
+// DOMParser — browser-only API.
 // Browser mode: servo provides window.DOMParser natively (no override needed).
-// CLI mode: parses HTML via native __dom_parse(html, mimeType) if available,
-// otherwise falls back to a minimal document object with querySelector etc.
+// CLI mode: no HTML parser exists in this context. The previous fallback
+// returned a regex pseudo-DOM whose querySelector always answered null and
+// whose body/head were string-scraped fragments — every query result was a
+// silent lie. Refuse explicitly instead (silent-fake eradication group D).
 if (typeof _g.DOMParser === 'undefined') {
   function DOMParser() {}
   DOMParser.prototype.parseFromString = function(html, mimeType) {
-    mimeType = mimeType || 'text/html';
-    // Try native Rust binding (html5ever-based) if available.
-    if (typeof __dom_parse === 'function') {
-      var result = __dom_parse(html, mimeType);
-      if (result != null) return result;
-    }
-    // Fallback: return a minimal document object.
-    // Supports text/html and application/xhtml+xml.
-    if (mimeType === 'text/xml' || mimeType === 'application/xml') {
-      // XML parsing not supported in fallback — return empty document.
-      return {
-        nodeType: 9,
-        documentElement: null,
-        body: { innerHTML: '', children: [], childNodes: [] },
-        head: { children: [], childNodes: [] },
-        querySelector: function() { return null; },
-        querySelectorAll: function() { return []; },
-        getElementsByTagName: function() { return []; },
-        getElementById: function() { return null; },
-        getElementsByClassName: function() { return []; },
-        childNodes: [],
-        createElement: function(tag) {
-          return {
-            nodeType: 1, tagName: tag.toUpperCase(), children: [], childNodes: [],
-            attributes: {}, innerHTML: '', textContent: '',
-            appendChild: function(c) { this.children.push(c); this.childNodes.push(c); return c; },
-            setAttribute: function(n, v) { this.attributes[n] = v; },
-            getAttribute: function(n) { return this.attributes.hasOwnProperty(n) ? this.attributes[n] : null; },
-            querySelector: function() { return null; },
-            querySelectorAll: function() { return []; }
-          };
-        },
-        createTextNode: function(t) { return { nodeType: 3, textContent: t }; }
-      };
-    }
-    // HTML fallback: parse basic structure with regex-based extraction.
-    var titleMatch = (typeof html === 'string') ? html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) : null;
-    var title = titleMatch ? titleMatch[1] : '';
-    var bodyMatch = (typeof html === 'string') ? html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) : null;
-    var bodyHTML = bodyMatch ? bodyMatch[1] : (typeof html === 'string' ? html : '');
-    var headMatch = (typeof html === 'string') ? html.match(/<head[^>]*>([\s\S]*?)<\/head>/i) : null;
-    var headHTML = headMatch ? headMatch[1] : '';
-    function _makeElement(tag, inner) {
-      return {
-        nodeType: 1, tagName: tag.toUpperCase(), children: [], childNodes: [],
-        attributes: {}, innerHTML: inner || '', textContent: (inner || '').replace(/<[^>]*>/g, ''),
-        appendChild: function(c) { this.children.push(c); this.childNodes.push(c); return c; },
-        setAttribute: function(n, v) { this.attributes[n] = v; },
-        getAttribute: function(n) { return this.attributes.hasOwnProperty(n) ? this.attributes[n] : null; },
-        querySelector: function() { return null; },
-        querySelectorAll: function() { return []; }
-      };
-    }
-    var bodyEl = _makeElement('body', bodyHTML);
-    var headEl = _makeElement('head', headHTML);
-    if (title) {
-      var titleEl = _makeElement('title', title);
-      titleEl.textContent = title;
-      headEl.children.push(titleEl);
-      headEl.childNodes.push(titleEl);
-    }
-    var htmlEl = _makeElement('html', '');
-    htmlEl.children = [headEl, bodyEl];
-    htmlEl.childNodes = [headEl, bodyEl];
-    return {
-      nodeType: 9,
-      documentElement: htmlEl,
-      body: bodyEl,
-      head: headEl,
-      title: title,
-      querySelector: function(sel) {
-        // Minimal: support 'body', 'head', 'title', 'html' tag selectors.
-        var s = (sel || '').toLowerCase();
-        if (s === 'html') return htmlEl;
-        if (s === 'head') return headEl;
-        if (s === 'body') return bodyEl;
-        if (s === 'title') { return title ? headEl.querySelector('title') || null : null; }
-        return null;
-      },
-      querySelectorAll: function(sel) {
-        var r = this.querySelector(sel);
-        return r ? [r] : [];
-      },
-      getElementsByTagName: function(tag) {
-        var t = (tag || '').toUpperCase();
-        if (t === 'HTML') return [htmlEl];
-        if (t === 'HEAD') return [headEl];
-        if (t === 'BODY') return [bodyEl];
-        if (t === 'TITLE' && title) return headEl.children.filter(function(c) { return c.tagName === 'TITLE'; });
-        return [];
-      },
-      getElementById: function() { return null; },
-      getElementsByClassName: function() { return []; },
-      childNodes: [htmlEl],
-      createElement: function(tag) { return _makeElement(tag, ''); },
-      createTextNode: function(t) { return { nodeType: 3, textContent: t }; }
-    };
+    throw new Error("DOMParser is only available in a browser context: CLI mode has no servo DOM to parse into, and returning a fake document would silently misreport every query result. Run the code inside `bao browser` / a page context.");
   };
   _g.DOMParser = DOMParser;
 }

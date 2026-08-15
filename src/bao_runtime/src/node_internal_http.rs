@@ -82,35 +82,20 @@ const HTTP_AGENT_JS: &str = r#"
 
 const HTTP_CLIENT_JS: &str = r#"
 (function() {
-  // ClientRequest — minimal stub extending OutgoingMessage shape.
-  // The real implementation lives in node_http; this internal module
-  // just needs to expose the class for require('_http_client').
+  // ClientRequest — explicit failure (silent-fake eradication group D).
+  //
+  // Bao has no real ClientRequest socket class: node_http's `http.request()`
+  // goes through the fetch_async network path (returning a Promise), and the
+  // ClientRequest name exposed on the http module is only an inert surface
+  // for typeof checks. The previous phantom here accepted write()/end()
+  // callbacks and reported success while silently dropping the entire
+  // request body. Fail closed until a real streaming implementation lands;
+  // callers should use require('http').request().
   function ClientRequest(opts, cb) {
-    if (!(this instanceof ClientRequest)) return new ClientRequest(opts, cb);
-    this.method = (opts && opts.method) || 'GET';
-    this.path = (opts && opts.path) || '/';
-    this.host = (opts && opts.hostname) || (opts && opts.host) || 'localhost';
-    this.port = (opts && opts.port) || 80;
-    this.protocol = (opts && opts.protocol) || 'http:';
-    this._headers = {};
-    this._headerNames = {};
-    this.finished = false;
-    this._aborted = false;
+    throw new Error("require('_http_client').ClientRequest is not implemented in bao: constructing it would silently drop the request body (write()/end() have no transport). Use require('http').request() — the real network path — instead.");
   }
   var kBodyChunks = Symbol('kBodyChunks');
   var abortedSymbol = Symbol('aborted');
-  ClientRequest.prototype.setTimeout = function(msecs, callback) { if (callback) this.on('timeout', callback); return this; };
-  ClientRequest.prototype.clearTimeout = function(cb) { return this; };
-  ClientRequest.prototype.write = function(chunk, encoding, cb) { if (typeof encoding === 'function') { cb = encoding; } if (cb) cb(); return true; };
-  ClientRequest.prototype.end = function(chunk, encoding, cb) { if (typeof chunk === 'function') { cb = chunk; } else if (typeof encoding === 'function') { cb = encoding; } this.finished = true; if (cb) cb(); return this; };
-  ClientRequest.prototype.flushHeaders = function() {};
-  ClientRequest.prototype.destroy = function(err) { this._aborted = true; };
-  ClientRequest.prototype.abort = function() { this.destroy(); };
-  ClientRequest.prototype.setSocketKeepAlive = function(enable, initialDelay) {};
-  ClientRequest.prototype.setNoDelay = function(noDelay) {};
-  Object.defineProperty(ClientRequest.prototype, 'aborted', { get: function() { return this._aborted; }, set: function(v) { this._aborted = v; }, configurable: true });
-  Object.defineProperty(ClientRequest.prototype, 'writable', { get: function() { return !this.finished; }, configurable: true });
-
   return { ClientRequest: ClientRequest, kBodyChunks: kBodyChunks, abortedSymbol: abortedSymbol };
 })()
 "#;

@@ -565,7 +565,11 @@ const WASI_SOURCE: &str = r#"
       if (!fdesc) return EBADF;
       if (whence === 0) fdesc.offset = offset;
       else if (whence === 1) fdesc.offset += offset;
-      else if (whence === 2) fdesc.offset = 0; // SEEK_END not supported
+      // SEEK_END requires the real file size, which this JS WASI shim does
+      // not track — faking offset=0+ESUCCESS lied about seeking (silent-fake
+      // eradication group D). Fail closed with ENOSYS; same for unknown
+      // whence values.
+      else return ENOSYS;
       writeU64(mem, newoffset, 0, fdesc.offset);
       return ESUCCESS;
     },
