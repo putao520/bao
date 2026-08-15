@@ -1275,19 +1275,113 @@ use core::cell::Cell;
 
 mod _event_loop_draft {
     use super::*;
-    use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::{Arc, Condvar, Mutex, Once, OnceLock, PoisonError};
 
     static INIT_ONCE: Once = Once::new();
 
+    /// Result of the one-shot `init_once` run. `call_once` blocks late
+    /// callers until the first finishes, so every `init()` caller can read
+    /// the same outcome here.
+    static INIT_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
+
+    /// Startup-handshake state shared between `init_once()` (caller thread)
+    /// and `on_start()` (HTTP thread). One-way `Pending → Ready | Failed`;
+    /// the first terminal write wins (a panic *after* `on_start` signaled
+    /// ready — inside `process_events` — must not downgrade `Ready`).
+    enum ThreadReady {
+        Pending,
+        Ready,
+        /// The HTTP thread panicked before signaling readiness; carries the
+        /// panic message so `init_once` can fail fast instead of parking on
+        /// the condvar forever.
+        Failed(String),
+    }
+
+    type ReadyPair = (Mutex<ThreadReady>, Condvar);
+
     /// Condvar pair shared between `init_once()` (caller thread) and
     /// `on_start()` (HTTP thread). The caller blocks until the HTTP thread
-    /// signals readiness — this eliminates the has_awoken race entirely.
-    static THREAD_READY: OnceLock<Arc<(Mutex<bool>, Condvar)>> = OnceLock::new();
+    /// publishes a terminal state — this eliminates the has_awoken race
+    /// entirely, and the `Failed` arm turns a startup panic into a fast
+    /// `Err` instead of a permanent block.
+    static THREAD_READY: OnceLock<Arc<ReadyPair>> = OnceLock::new();
 
-    fn thread_ready_pair() -> Arc<(Mutex<bool>, Condvar)> {
+    fn thread_ready_pair() -> Arc<ReadyPair> {
         THREAD_READY
-            .get_or_init(|| Arc::new((Mutex::new(false), Condvar::new())))
+            .get_or_init(|| Arc::new((Mutex::new(ThreadReady::Pending), Condvar::new())))
             .clone()
+    }
+
+    #[cfg(test)]
+    fn fresh_ready_pair() -> Arc<ReadyPair> {
+        Arc::new((Mutex::new(ThreadReady::Pending), Condvar::new()))
+    }
+
+    /// Poison-tolerant lock: this module exists to survive the HTTP thread
+    /// panicking, so a poisoned mutex must not turn the handshake itself
+    /// into a second panic.
+    fn lock_ready(pair: &ReadyPair) -> std::sync::MutexGuard<'_, ThreadReady> {
+        pair.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `on_start`'s success path: publish `Ready` and wake `init_once`.
+    fn signal_ready(ready: &ReadyPair) {
+        let mut guard = lock_ready(ready);
+        *guard = ThreadReady::Ready;
+        ready.1.notify_all();
+    }
+
+    /// `init_once`'s side of the handshake: park until the HTTP thread
+    /// publishes a terminal state. `Ok(())` on `Ready`; `Err(panic message)`
+    /// if the thread died before signaling — the caller must fail loudly
+    /// instead of letting every subsequent fetch hang on a dead thread.
+    fn wait_for_ready(ready: &ReadyPair) -> Result<(), String> {
+        let mut guard = lock_ready(ready);
+        loop {
+            match &*guard {
+                ThreadReady::Ready => return Ok(()),
+                ThreadReady::Failed(msg) => return Err(msg.clone()),
+                ThreadReady::Pending => {
+                    guard = ready.1.wait(guard).unwrap_or_else(PoisonError::into_inner)
+                }
+            }
+        }
+    }
+
+    fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+        if let Some(msg) = payload.downcast_ref::<&str>() {
+            (*msg).to_string()
+        } else if let Some(msg) = payload.downcast_ref::<String>() {
+            msg.clone()
+        } else {
+            "non-string panic payload".to_string()
+        }
+    }
+
+    /// Panic guard for the HTTP-thread startup body. `on_start` signals
+    /// `Ready` itself on success; if it panics first (Output bring-up, loop
+    /// init, CA load — or any unknown future path), publish `Failed` with
+    /// the panic message so `init_once` returns `Err` instead of blocking on
+    /// the condvar forever (historically: an embedding that never
+    /// initialized bun's Output subsystem panicked before the signal and
+    /// every scheduled fetch hung — the U2 scenario_1 "pipeline not ready"
+    /// skip). The default panic hook still prints the panic + location to
+    /// stderr; this guard only adds the failure channel to the handshake.
+    fn run_startup_guarded(ready: Arc<ReadyPair>, body: impl FnOnce()) {
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(body)) {
+            let msg = panic_payload_message(payload);
+            let mut guard = lock_ready(&ready);
+            // First terminal state wins: `on_start` signals ready *before*
+            // entering `process_events`, so a `Pending` state here means the
+            // panic struck during startup — the case `init_once` is parked
+            // on. A `Ready` state means the loop body died later; leave it
+            // (shutdown goes through `has_awoken`, not this pair).
+            if matches!(*guard, ThreadReady::Pending) {
+                *guard = ThreadReady::Failed(msg);
+                ready.1.notify_all();
+            }
+        }
     }
 
     // PORT NOTE: Zig `std.Thread.spawn` + `.detach()` allocates nothing on the
@@ -1304,10 +1398,15 @@ mod _event_loop_draft {
         std::sync::OnceLock::new();
 
     pub(super) fn init(opts: &InitOpts) {
-        INIT_ONCE.call_once(|| init_once(opts));
+        INIT_ONCE.call_once(|| {
+            let _ = INIT_RESULT.set(init_once(opts));
+        });
+        if let Some(Err(msg)) = INIT_RESULT.get() {
+            Output::panic(format_args!("HTTP client thread failed to start: {}", msg));
+        }
     }
 
-    fn init_once(opts: &InitOpts) {
+    fn init_once(opts: &InitOpts) -> Result<(), String> {
         // Spec HTTPThread.zig:195-206 — initialize the global (with timer
         // started on the calling thread) BEFORE spawning, so `on_start`'s
         // `crate::http_thread_mut()` finds `Some(..)` and can fill in
@@ -1321,41 +1420,44 @@ mod _event_loop_draft {
         // libdeflate::load() no longer needed — pure Rust flate2 + miniz_oxide backend.
         let ready = thread_ready_pair();
         let opts_copy = opts.clone();
-        let ready_clone = ready.clone();
+        let ready_guard = ready.clone();
+        let ready_body = ready.clone();
         let thread = std::thread::Builder::new()
             .stack_size(bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize)
-            .spawn(move || on_start(opts_copy, ready_clone));
+            .spawn(move || {
+                run_startup_guarded(ready_guard, move || on_start(opts_copy, ready_body))
+            });
         match thread {
             // detach — see HTTP_THREAD_HANDLE note above re: LSAN reachability
             Ok(t) => {
                 let _ = HTTP_THREAD_HANDLE.set(t);
             }
-            Err(err) => Output::panic(format_args!("Failed to start HTTP Client thread: {}", err)),
+            Err(err) => return Err(format!("Failed to start HTTP Client thread: {}", err)),
         }
         // Block until the HTTP thread has finished on_start() and is ready to
         // accept tasks. This guarantees that every subsequent `schedule()` call
         // observes `has_awoken == true`, eliminating the wakeup race entirely.
         // The Condvar wait is the architecturally correct synchronization
         // primitive for this thread-startup handshake (replaces the former
-        // yield-and-skip hack which relied on probabilistic timing).
-        {
-            let (lock, cvar) = &*ready;
-            let mut guard = lock.lock().unwrap();
-            while !*guard {
-                guard = cvar.wait(guard).unwrap();
-            }
-        }
+        // yield-and-skip hack which relied on probabilistic timing); the
+        // `Failed` arm (a startup panic on the HTTP thread, caught by
+        // `run_startup_guarded`) turns what used to be a permanent block into
+        // a fast `Err` for `init` to report.
+        wait_for_ready(&ready)
     }
 
-    pub(super) fn on_start(opts: InitOpts, ready: Arc<(Mutex<bool>, Condvar)>) {
+    fn on_start(opts: InitOpts, ready: Arc<ReadyPair>) {
         // Late bring-up instead of `configure_named_thread`: an embedding that
         // never initializes bun's Output subsystem (e.g. the servo-embedding
         // `bao_browser::BaoRuntime`) used to die here on
         // `configure_thread`'s `STDOUT_STREAM_SET` debug_assert — the HTTP
         // thread panicked before signaling `ready`, so `init_once` blocked
         // forever on the condvar and every scheduled fetch hung (the U2
-        // realworld scenario_1 "pipeline not ready" skip). The HTTP thread
-        // never executes JS, so the no-JS source (no StackCheck FFI — see
+        // realworld scenario_1 "pipeline not ready" skip). That symptom class
+        // is closed by `run_startup_guarded` (any pre-signal panic now
+        // surfaces as a fast `Err` from `init`); the late bring-up below
+        // removes this particular panic's cause. The HTTP thread never
+        // executes JS, so the no-JS source (no StackCheck FFI — see
         // `configure_thread_no_js`'s doc, which names the HTTP client thread
         // as its intended user) is the correct shape, adopting the real stdio
         // fds when no CLI-side init ran.
@@ -1449,14 +1551,10 @@ mod _event_loop_draft {
         // readers (which Acquire-load `has_awoken`).
         thread.has_awoken.store(true, Ordering::Release);
         // Signal the caller thread that we are ready. The Condvar notify
-        // unblocks `init_once()` which is waiting in `cvar.wait()`, guaranteeing
-        // that every subsequent `schedule()` call observes `has_awoken == true`.
-        {
-            let (lock, cvar) = &*ready;
-            let mut guard = lock.lock().unwrap();
-            *guard = true;
-            cvar.notify_all();
-        }
+        // unblocks `init_once()` which is waiting in `wait_for_ready()`,
+        // guaranteeing that every subsequent `schedule()` call observes
+        // `has_awoken == true`.
+        signal_ready(&ready);
         thread.process_events();
     }
 
@@ -1506,6 +1604,75 @@ mod _event_loop_draft {
                     Output::flush();
                 }
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod startup_guard_tests {
+        use super::*;
+
+        /// The exact wrapper the real spawn in `init_once` puts around
+        /// `on_start`, driven with an injected panicking body: the handshake
+        /// must surface `Err` with the panic message quickly instead of
+        /// parking `init_once` on the condvar forever.
+        #[test]
+        fn startup_panic_before_ready_surfaces_err_not_hang() {
+            let ready = fresh_ready_pair();
+            let guard_ready = ready.clone();
+            let spawned = std::thread::spawn(move || {
+                run_startup_guarded(guard_ready, || panic!("injected startup failure"))
+            });
+            // Watchdog: run the wait side on its own thread and fail on
+            // timeout — a regression to the condvar hang shows up as a test
+            // failure, not a dead test binary.
+            let waiter_ready = ready.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(wait_for_ready(&waiter_ready));
+            });
+            let result = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("wait_for_ready did not return — handshake hung");
+            spawned.join().unwrap();
+            let Err(msg) = result else {
+                panic!("startup panic must surface as Err, got Ok");
+            };
+            assert!(
+                msg.contains("injected startup failure"),
+                "panic message not propagated: {msg}"
+            );
+        }
+
+        /// Success path: the body signals ready (as `on_start` does) and the
+        /// handshake returns `Ok`.
+        #[test]
+        fn startup_ready_signal_returns_ok() {
+            let ready = fresh_ready_pair();
+            let guard_ready = ready.clone();
+            let body_ready = ready.clone();
+            std::thread::spawn(move || {
+                run_startup_guarded(guard_ready, move || signal_ready(&body_ready))
+            });
+            wait_for_ready(&ready).expect("ready signal must return Ok");
+        }
+
+        /// `on_start` signals ready *before* entering `process_events`; a
+        /// panic after the signal (in the loop body) must not downgrade
+        /// `Ready` to `Failed`.
+        #[test]
+        fn panic_after_ready_keeps_ready() {
+            let ready = fresh_ready_pair();
+            let guard_ready = ready.clone();
+            let body_ready = ready.clone();
+            let spawned = std::thread::spawn(move || {
+                run_startup_guarded(guard_ready, move || {
+                    signal_ready(&body_ready);
+                    panic!("post-ready crash (process_events analog)");
+                })
+            });
+            wait_for_ready(&ready).expect("ready already signaled");
+            spawned.join().unwrap();
+            assert!(matches!(&*lock_ready(&ready), ThreadReady::Ready));
         }
     }
 }
