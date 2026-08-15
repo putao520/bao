@@ -571,7 +571,7 @@ impl Lockfile {
         };
 
         if lockfile_format == LockfileFormat::Text {
-            let source = bun_ast::Source::init_path_string(b"bun.lock", buf.as_slice());
+            let source = bun_ast::Source::init_path_string_owned(b"bun.lock", buf);
             initialize_store();
             let bump = bun_alloc::Arena::new();
             let json = match JSON::parse_package_json_utf8(&source, log, &bump) {

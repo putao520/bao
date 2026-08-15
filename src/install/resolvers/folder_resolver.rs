@@ -334,7 +334,7 @@ fn read_package_json_from_disk<R: FolderResolverImpl>(
             let _ = file.close();
             read_result?;
 
-            bun_ast::Source::init_path_string(abs.as_bytes(), body.list.as_slice())
+            bun_ast::Source::init_path_string_interned_owned(abs.as_bytes(), body.list.to_vec())
         };
 
         // SAFETY: see PORT NOTE above on borrow splitting.

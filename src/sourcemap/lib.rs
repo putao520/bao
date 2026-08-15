@@ -1074,7 +1074,7 @@ pub fn parse_json(
     use std::sync::Arc;
 
     // TODO(port): narrow error set
-    let json_src = bun_ast::Source::init_path_string("sourcemap.json", source);
+    let json_src = bun_ast::Source::init_path_string_owned("sourcemap.json", source.to_vec());
     let mut log = bun_ast::Log::init();
     // `defer log.deinit()` → Drop
 

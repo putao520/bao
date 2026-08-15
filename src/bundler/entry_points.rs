@@ -70,12 +70,12 @@ impl FallbackEntryPoint {
             .client_css_in_js
             != ClientCssInJs::AutoOnImportCss;
 
-        // PORT NOTE: self-referential — when the rendered code fits in
-        // `entry.code_buffer` the Source borrows it (disjoint-field write to
-        // `entry.source` while `entry.code_buffer` is shared-borrowed). On
-        // overflow the Source owns the bytes via `Cow::Owned` (Zig allocated
-        // from `transpiler.arena`; here the Source owns it directly so Drop
-        // frees it).
+        // PORT NOTE: the Source always OWNS its bytes (interned path label +
+        // `Cow::Owned` contents) — the old shape re-borrowed the scratch
+        // `entry.code_buffer` / caller's `input_path` through the
+        // lifetime-erased `IntoStr` shim, a self-referential dangling hazard
+        // (BCE: `Source::init_path_string` class). One copy of a tiny
+        // generated wrapper beats a dangling borrow.
         // PORT NOTE: assemble bytes directly (not `write!`+`BStr`) so a
         // non-UTF-8 byte in `input_path` is emitted verbatim like Zig `{s}`,
         // not lossily replaced with U+FFFD by `BStr as Display`.
@@ -91,14 +91,17 @@ impl FallbackEntryPoint {
                     buf[prefix.len()..prefix.len() + input_path.len()]
                         .copy_from_slice(input_path);
                     buf[prefix.len() + input_path.len()..count].copy_from_slice(suffix);
-                    entry.source =
-                        bun_ast::Source::init_path_string(input_path, &entry.code_buffer[..count]);
+                    entry.source = bun_ast::Source::init_path_string_interned_owned(
+                        input_path,
+                        entry.code_buffer[..count].to_vec(),
+                    );
                 } else {
                     let mut v: Vec<u8> = Vec::with_capacity(count);
                     v.extend_from_slice(prefix);
                     v.extend_from_slice(input_path);
                     v.extend_from_slice(suffix);
-                    entry.source = bun_ast::Source::init_path_string_owned(input_path, v);
+                    entry.source =
+                        bun_ast::Source::init_path_string_interned_owned(input_path, v);
                 }
             }};
         }
@@ -252,9 +255,13 @@ impl ClientEntryPoint {
             ext: original_path.ext,
             filename: original_path.filename,
         };
-        entry.source = bun_ast::Source::init_path_string(
+        // The generated label is written into the REUSED `entry.path_buffer`
+        // scratch (overwritten by the next entry) and `code` re-borrows
+        // `entry.code_buffer` — the Source owns copies of both (interned
+        // path + `Cow::Owned` contents) so it never dangles.
+        entry.source = bun_ast::Source::init_path_string_interned_owned(
             Self::generate_entry_point_path(&mut entry.path_buffer.0, &original_path_borrowed),
-            code,
+            code.to_vec(),
         );
         entry.source.path.namespace = b"client-entry";
         Ok(())
@@ -521,12 +528,12 @@ impl MacroEntryPoint {
             cursor.position() as usize
         };
 
-        // TODO(port): self-referential — `macro_label`/`code` borrow `entry.code_buffer`
-        // and are stored into `entry.source` (lifetime erased via `IntoStr`); restructure
-        // so Source owns its bytes (or use a raw-ptr slice).
+        // `macro_label`/`code` re-borrow the reused `entry.code_buffer` scratch —
+        // the Source owns copies of both (interned path + `Cow::Owned` contents)
+        // so it never dangles (resolves the old self-referential TODO).
         let macro_label: &[u8] = &entry.code_buffer[..label_len];
         let code: &[u8] = &entry.code_buffer[label_len..label_len + code_len];
-        entry.source = bun_ast::Source::init_path_string(macro_label, code);
+        entry.source = bun_ast::Source::init_path_string_interned_owned(macro_label, code.to_vec());
         // `Path::init` already set `text = macro_label`; only override namespace.
         entry.source.path.namespace = js_ast::Macro::NAMESPACE;
         Ok(())

@@ -963,9 +963,9 @@ impl<'a> PackageInstall<'a> {
             return None;
         }
 
-        Some(bun_ast::Source::init_path_string(
+        Some(bun_ast::Source::init_path_string_interned_owned(
             package_json_path.as_bytes(),
-            &mutable.list[0..total],
+            mutable.list[0..total].to_vec(),
         ))
     }
 

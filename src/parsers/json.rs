@@ -1386,7 +1386,7 @@ mod tests {
         let contents = _contents.to_vec();
         let mut log = bun_ast::Log::init();
 
-        let source = bun_ast::Source::init_path_string("source.json", &contents[..]);
+        let source = bun_ast::Source::init_path_string_owned("source.json", contents);
         let bump = Bump::new();
         let expr = parse::<false>(&source, &mut log, &bump)?;
 
@@ -1470,7 +1470,7 @@ mod tests {
         contents.push(b'1');
         contents.resize(contents.len() + 1000, b'}');
         let mut log = bun_ast::Log::init();
-        let source = bun_ast::Source::init_path_string("deep.json", contents.as_slice());
+        let source = bun_ast::Source::init_path_string_owned("deep.json", contents);
         let bump = Bump::new();
         // `Expr` has no `Debug`, so no `.unwrap()` — match by hand.
         let _ = parse::<false>(&source, &mut log, &bump).map(|_| ());
@@ -1487,7 +1487,7 @@ mod tests {
         let _store_scope = js_ast::StoreResetGuard::new();
         let contents = deep_array(1_000_000);
         let mut log = bun_ast::Log::init();
-        let source = bun_ast::Source::init_path_string("overflow.json", contents.as_slice());
+        let source = bun_ast::Source::init_path_string_owned("overflow.json", contents);
         let bump = Bump::new();
         let err = match parse::<false>(&source, &mut log, &bump) {
             Ok(_) => panic!("1M-deep array must not parse"),

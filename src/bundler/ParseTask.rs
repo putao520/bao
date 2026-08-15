@@ -1501,7 +1501,7 @@ pub mod parse_worker {
                         })
                     }
                     Err(e) => {
-                        let source = Source::init_empty_file(
+                        let source = Source::init_empty_file_interned(
                             // TODO(port): zig duped via log.msgs.arena
                             file_path.text,
                         );

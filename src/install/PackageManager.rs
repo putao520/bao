@@ -1698,7 +1698,10 @@ pub fn init(
                         )?
                     };
                     let json_source =
-                        bun_ast::Source::init_path_string(&*json_path, &json_buf[..json_len]);
+                        bun_ast::Source::init_path_string_interned_owned(
+                            &*json_path,
+                            json_buf[..json_len].to_vec(),
+                        );
                     initialize_store();
                     // Zig threads `ctx.allocator`; the Rust JSON parser takes a bump arena.
                     let json_arena = bun_alloc::Arena::new();

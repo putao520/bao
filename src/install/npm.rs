@@ -189,7 +189,7 @@ pub fn whoami(manager: &mut PackageManager) -> Result<Vec<u8>, WhoamiError> {
     }
 
     let mut log = bun_ast::Log::init();
-    let source = bun_ast::Source::init_path_string("???", response_buf.list.as_slice());
+    let source = bun_ast::Source::init_path_string_owned("???", response_buf.list.as_slice().to_vec());
     let bump = bun_alloc::Arena::new();
     let json = match JSON::parse_utf8(&source, &mut log, &bump) {
         Ok(j) => j,
@@ -222,7 +222,7 @@ pub fn response_error<const OTP_RESPONSE: bool>(
 ) -> Result<core::convert::Infallible, AllocError> {
     let message: Option<Vec<u8>> = 'message: {
         let mut log = bun_ast::Log::init();
-        let source = bun_ast::Source::init_path_string("???", response_body.list.as_slice());
+        let source = bun_ast::Source::init_path_string_owned("???", response_body.list.as_slice().to_vec());
         let bump = bun_alloc::Arena::new();
         let json = match JSON::parse_utf8(&source, &mut log, &bump) {
             Ok(j) => j,
@@ -1970,11 +1970,12 @@ impl PackageManifest {
         is_extended_manifest: bool,
     ) -> Result<Option<PackageManifest>, Error> {
         // TODO(port): narrow error set
-        // `bun_ast::Source::init_path_string` accepts borrowed `&[u8]` via
-        // `IntoStr`; the Source only lives for the duration of this function,
-        // so pass the caller's buffers through directly without manufacturing
-        // `'static` references here (PORTING.md §Forbidden lifetime extension).
-        let source = bun_ast::Source::init_path_string(expected_name, json_buffer);
+        // The Source only lives for the duration of this function, but the
+        // lifetime-erased borrow shim is gone (BCE: dangling-`Source` class):
+        // intern the manifest label and copy the buffer once — both are
+        // one-shot per registry request, dominated by network I/O.
+        let source =
+            bun_ast::Source::init_path_string_interned_owned(expected_name, json_buffer.to_vec());
         initialize_store();
         // TODO(port): bun.ast.Stmt.Data.Store.memory_allocator.?.pop() — Zig
         // pushed/popped the AST arena around the parse so the JSON AST is

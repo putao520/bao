@@ -1591,7 +1591,7 @@ impl<'a> SecurityScanSubprocess<'a> {
         }
 
         let json_source =
-            bun_ast::Source::init_path_string("ipc-message.json", self.ipc_data.as_slice());
+            bun_ast::Source::init_path_string_owned("ipc-message.json", self.ipc_data.to_vec());
 
         let mut temp_log = bun_ast::Log::init();
         let bump = bun_alloc::Arena::new();

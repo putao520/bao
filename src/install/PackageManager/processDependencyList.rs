@@ -148,7 +148,7 @@ impl PackageManager {
                     let mut pkg = Package::default();
                     if let Some(json) = &data.json {
                         let package_json_source =
-                            &bun_ast::Source::init_path_string(&json.path[..], &json.buf[..]);
+                            &bun_ast::Source::init_path_string_interned_owned(&json.path, json.buf.clone());
 
                         // SAFETY: `self` is a live `&mut PackageManager`; the callee
                         // split-borrows `self.lockfile` / `self.log` (separate
@@ -240,7 +240,7 @@ impl PackageManager {
             ResolutionTag::LocalTarball | ResolutionTag::RemoteTarball => {
                 let json = data.json.as_ref().unwrap();
                 let package_json_source =
-                    &bun_ast::Source::init_path_string(&json.path[..], &json.buf[..]);
+                    &bun_ast::Source::init_path_string_interned_owned(&json.path, json.buf.clone());
                 let mut package = Package::default();
 
                 let mut resolver = TarballResolver {
@@ -300,7 +300,7 @@ impl PackageManager {
                 if !data.json.as_ref().unwrap().buf.is_empty() {
                     let json = data.json.as_ref().unwrap();
                     let package_json_source =
-                        &bun_ast::Source::init_path_string(&json.path[..], &json.buf[..]);
+                        &bun_ast::Source::init_path_string_interned_owned(&json.path, json.buf.clone());
                     initialize_store();
                     // SAFETY: `self.log` is set once by `PackageManager::init()` and
                     // never null while tasks run (mirrors Zig's non-optional `*logger.Log`).

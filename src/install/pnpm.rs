@@ -243,7 +243,7 @@ pub(crate) fn migrate_pnpm_lockfile<'a>(
     // YAML tree. Mirror Zig's `deepClone(allocator)`: clone the tree out of
     // the Store into `yaml_arena` (which lives for the whole function) so
     // `root` survives those resets.
-    let yaml_source = bun_ast::Source::init_path_string(b"pnpm-lock.yaml", data);
+    let yaml_source = bun_ast::Source::init_path_string_owned(b"pnpm-lock.yaml", data.to_vec());
     let yaml_arena = bun_alloc::Arena::new();
     let _root: Expr = match bun_parsers::yaml::YAML::parse(&yaml_source, log, &yaml_arena) {
         Ok(r) => r,

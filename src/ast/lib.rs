@@ -493,30 +493,40 @@ pub mod api {
     }
 }
 
-/// `[]const u8` parameter shim — accepts `&str` / `&[u8]` (any lifetime)
-/// and erases to the crate-wide `Str` (`&'static [u8]`) lie so callers in either
-/// string flavour compile against the same Zig-shaped signatures.
+/// `[]const u8` parameter shim for **statically-backed** string data —
+/// `&'static str` / `&'static [u8]` / `&'static [u8; N]` literals and consts.
+///
+/// BCE root cure (dangling-`Source` class): this trait previously accepted
+/// `&[u8]` of *any* lifetime and erased it to `Str` (`&'static [u8]`) via
+/// `detach_lifetime`, so `Source::init_path_string(path, temp_vec.as_slice())`
+/// compiled and then read freed memory (symptom: from the second parse on,
+/// offset-0 "Unexpected " errors). The impls are now `'static`-only and the
+/// trait is fully safe — a runtime buffer passed where `impl IntoStr` is
+/// expected is a **compile error**, not latent UB.
+///
+/// Runtime-built data must use the owning/interning constructors:
+/// contents → `Source::init_path_string_owned` (`Cow::Owned`), paths → the
+/// `*_interned` constructor family (`data_store_dupe_str`, arena ownership).
 /// TODO(port): lifetime — remove with `Str` once `'source` is threaded through.
 pub trait IntoStr {
     fn into_str(self) -> Str;
 }
-impl IntoStr for &[u8] {
+impl IntoStr for &'static [u8] {
     #[inline]
     fn into_str(self) -> Str {
-        // SAFETY: lifetime erasure; see module-level OWNERSHIP note.
-        unsafe { bun_collections::detach_lifetime(self) }
+        self
     }
 }
-impl IntoStr for &str {
+impl IntoStr for &'static str {
     #[inline]
     fn into_str(self) -> Str {
-        self.as_bytes().into_str()
+        self.as_bytes()
     }
 }
-impl<const N: usize> IntoStr for &[u8; N] {
+impl<const N: usize> IntoStr for &'static [u8; N] {
     #[inline]
     fn into_str(self) -> Str {
-        self[..].into_str()
+        &self[..]
     }
 }
 
@@ -786,10 +796,10 @@ impl Location {
     }
 
     pub fn count(&self, builder: &mut StringBuilder) {
-        builder.count(self.file.as_ref().into_str());
+        builder.count(self.file.as_ref());
         builder.count(self.namespace);
         if let Some(text) = &self.line_text {
-            builder.count(text.as_ref().into_str());
+            builder.count(text.as_ref());
         }
     }
 
@@ -2954,6 +2964,18 @@ impl Source {
         }
     }
 
+    /// [`Source::init_empty_file`] for a runtime-built path — the label bytes
+    /// are interned ([`data_store_dupe_str`], arena ownership) so no
+    /// `'static` borrow is manufactured from a scratch buffer.
+    pub fn init_empty_file_interned(filepath: &[u8]) -> Source {
+        let path = bun_paths::fs::Path::init(data_store_dupe_str(filepath));
+        Source {
+            path,
+            contents: Cow::Borrowed(b""),
+            ..Default::default()
+        }
+    }
+
     pub fn init_file(file: &PathContentsPair) -> Result<Source, bun_core::Error> {
         let mut source = Source {
             path: file.path,
@@ -2975,6 +2997,11 @@ impl Source {
         Ok(source)
     }
 
+    /// Borrowed-arm constructor — **`'static` data only** (literals, consts,
+    /// interned slices). `IntoStr` is `'static`-only, so passing a runtime
+    /// buffer (`Vec::as_slice`, `&buf[..]`) is a compile error; use
+    /// [`Source::init_path_string_owned`] (contents) and the `*_interned`
+    /// family (path) for runtime-built inputs.
     pub fn init_path_string(path_string: impl IntoStr, contents: impl IntoStr) -> Source {
         let path = bun_paths::fs::Path::init(path_string.into_str());
         Source {
@@ -2986,8 +3013,36 @@ impl Source {
 
     /// `init_path_string` with heap-owned contents — used by `source_from_file`
     /// so the read buffer is dropped with the `Source` instead of leaked.
+    /// This is the correct variant whenever `contents` is a runtime buffer
+    /// (`Vec<u8>` moves in directly; `&[u8]` callers pass `.to_vec()` — one
+    /// copy beats a dangling borrow).
     pub fn init_path_string_owned(path_string: impl IntoStr, contents: Vec<u8>) -> Source {
         let path = bun_paths::fs::Path::init(path_string.into_str());
+        Source {
+            path,
+            contents: Cow::Owned(contents),
+            ..Default::default()
+        }
+    }
+
+    /// `init_path_string` for a runtime-built **path** with `'static`
+    /// contents. The path bytes are interned via [`data_store_dupe_str`]
+    /// (thread-local AST arena ownership, bulk-freed on store reset) so
+    /// `Path<'static>` is sound without caller-side lifetime erasure.
+    pub fn init_path_string_interned(path_string: &[u8], contents: impl IntoStr) -> Source {
+        let path = bun_paths::fs::Path::init(data_store_dupe_str(path_string));
+        Source {
+            path,
+            contents: Cow::Borrowed(contents.into_str()),
+            ..Default::default()
+        }
+    }
+
+    /// Fully-runtime variant: interned path + owned contents. The one-call
+    /// shape for parse-and-drop call sites that build both inputs at runtime
+    /// (reads off disk/network buffers, generated entry-point labels).
+    pub fn init_path_string_interned_owned(path_string: &[u8], contents: Vec<u8>) -> Source {
+        let path = bun_paths::fs::Path::init(data_store_dupe_str(path_string));
         Source {
             path,
             contents: Cow::Owned(contents),
@@ -3179,10 +3234,10 @@ pub(crate) fn source_from_file_at(
             bytes = bom.remove_and_convert_to_utf8_and_free(bytes);
         }
     }
-    // `path` is caller-owned; goes through the `IntoStr` borrow shim
-    // (same as every other `Source` constructor). `bytes` is owned by the
-    // returned `Source` via `Cow::Owned` — no leaking.
-    Ok(Source::init_path_string_owned(path.as_bytes(), bytes))
+    // `path` is caller-owned runtime data — interned so `Path<'static>` is
+    // sound. `bytes` is owned by the returned `Source` via `Cow::Owned` —
+    // no leaking, no borrow of the caller's buffer.
+    Ok(Source::init_path_string_interned_owned(path.as_bytes(), bytes))
 }
 
 /// `source_from_file_at` rooted at the process CWD.
@@ -3608,7 +3663,7 @@ mod line_column_tracker_tests {
     use super::*;
 
     fn check_corpus_entry(contents: &[u8]) {
-        let source = Source::init_path_string(b"tracker-test.js" as &[u8], contents);
+        let source = Source::init_path_string_owned(b"tracker-test.js" as &[u8], contents.to_vec());
         let len = contents.len();
 
         // Non-decreasing offsets (the parser/lexer pattern): every result must
@@ -3689,7 +3744,7 @@ mod line_column_tracker_tests {
         for _ in 0..12 {
             contents.extend_from_slice(statement);
         }
-        let source = Source::init_path_string(b"tracker-test.js" as &[u8], contents.as_slice());
+        let source = Source::init_path_string_owned(b"tracker-test.js" as &[u8], contents);
 
         let mut offsets = Vec::new();
         for statement_index in 0..12usize {

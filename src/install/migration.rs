@@ -242,7 +242,7 @@ pub(crate) fn migrate_npm_lockfile<'a>(
     Install::initialize_store();
 
     let arena = bun_alloc::Arena::new();
-    let json_src = bun_ast::Source::init_path_string(abs_path, data);
+    let json_src = bun_ast::Source::init_path_string_interned_owned(abs_path, data.to_vec());
     let json = bun_parsers::json::parse_utf8(&json_src, log, &arena)
         .map_err(|_| err!("InvalidNPMLockfile"))?;
 

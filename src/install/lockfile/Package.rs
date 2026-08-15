@@ -2862,7 +2862,7 @@ impl Package<u64> {
                                         Default::default(),
                                     ) {
                                         Ok(s) => s,
-                                        Err(_) => bun_ast::Source::init_empty_file(
+                                        Err(_) => bun_ast::Source::init_empty_file_interned(
                                             note_abs_path.as_bytes(),
                                         ),
                                     };
@@ -2900,7 +2900,7 @@ impl Package<u64> {
 
                         let src = match bun_ast::to_source(&abs_path, Default::default()) {
                             Ok(s) => s,
-                            Err(_) => bun_ast::Source::init_empty_file(abs_path.as_bytes()),
+                            Err(_) => bun_ast::Source::init_empty_file_interned(abs_path.as_bytes()),
                         };
 
                         let _ = log.add_range_error_fmt_with_notes(

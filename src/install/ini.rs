@@ -241,7 +241,7 @@ mod draft {
     use bun_api::{self, BunInstall, NpmRegistry, npm_registry};
     use bun_ast::E::Rope;
     use bun_ast::{E, Expr, ExprData};
-    use bun_ast::{IntoStr, Loc, Log, Source};
+    use bun_ast::{Loc, Log, Source};
     use bun_collections::{ArrayHashMap, VecExt};
     use bun_core::ZStr;
     use bun_core::{Global, Output};
@@ -306,19 +306,16 @@ mod draft {
 
     impl<'a> Parser<'a> {
         pub fn init(path: &[u8], src: &'a [u8], env: &'a mut DotEnvLoader<'a>) -> Parser<'a> {
-            // TODO(port): bun_ast::Source<'bump> — `Source::init_path_string`
-            // currently takes `Str = &'static [u8]`; once the lower tier threads a
-            // lifetime through `Source`, pass `path`/`src` directly. They outlive
-            // the `Parser` and its `Source`/`Expr` tree (arena-freed in lockstep),
-            // so no wrong value is produced today.
-            let path_s: &'static [u8] = path.into_str();
-            let src_s: &'static [u8] = src.into_str();
+            // TODO(port): bun_ast::Source<'bump> — once the lower tier threads
+            // a lifetime through `Source`, pass `path`/`src` directly instead of
+            // interning/copying. `src` is also kept as the real `&'a [u8]` borrow
+            // on the `Parser`, so the copy only feeds the `Source` view.
             Parser {
                 opts: Options::default(),
                 logger: Log::init(),
                 src,
                 out: Expr::init(E::Object::default(), Loc::EMPTY),
-                source: Source::init_path_string(path_s, src_s),
+                source: Source::init_path_string_interned_owned(path, src.to_vec()),
                 arena: Arena::new(),
                 env,
             }
@@ -592,11 +589,9 @@ mod draft {
                     // `bun_ast::Expr` (via the `From` impl in
                     // `bun_ast::expr`) so the rest of this body works
                     // against a single `ExprData`.
-                    // `Str = &'static [u8]` lifetime erasure (see PORTING.md
-                    // §Allocators / `Parser::init` above). `val` is a sub-slice
-                    // of `self.src` and outlives the temporary `Source`.
-                    let val_s: &'static [u8] = val.into_str();
-                    let src = Source::init_path_string(self.source.path.text, val_s);
+                    // `val` is a sub-slice of `self.src`; the temporary
+                    // `Source` owns a copy (path text is already `'static`).
+                    let src = Source::init_path_string_owned(self.source.path.text, val.to_vec());
                     let mut log = Log::init();
                     // Try to parse it and if it fails will just treat it as a string
                     let json_val: Expr =
@@ -1350,7 +1345,12 @@ mod draft {
         // local `parser` is dropped before this fn returns, so erase both to a fresh
         // `'p` (matches `Parser::init`'s own erasures for `path`/`src`).
         // SAFETY: `parser` does not outlive `env`/`source.contents`.
-        let contents: &'static [u8] = source.contents.as_ref().into_str();
+        // The `env` cast below pins `Parser::init`'s `'a` to `'static`, so
+        // `src` must be `'static` too: intern the npmrc bytes
+        // (`data_store_dupe_str`, arena ownership) instead of the old trait
+        // shim's raw lifetime erasure. The parser (and its `Source`'s own
+        // copy) is dropped before this fn returns.
+        let contents: &'static [u8] = bun_ast::data_store_dupe_str(source.contents());
         // SAFETY: `parser` is dropped before this function returns and so does not
         // outlive `env` or its borrowed data; this cast only erases lifetimes.
         let env = unsafe {

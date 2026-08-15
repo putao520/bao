@@ -6304,3 +6304,138 @@ mod stack_check_tests {
     }
 }
 
+
+#[cfg(test)]
+mod source_ownership_and_flow_fidelity_tests {
+    //! Two pinned behaviors:
+    //!
+    //! 1. BCE regression (dangling-`Source` class): `Source::init_path_string`
+    //!    used to accept any-lifetime `&[u8]` through the `IntoStr` erasure
+    //!    shim, so building a `Source` from a temporary Vec's `.as_slice()`
+    //!    left it reading freed memory — parses after the first saw garbage at
+    //!    offset 0 ("Unexpected "). The shim is now `'static`-only (that call
+    //!    shape no longer compiles); the behavioral half is pinned here: a
+    //!    `Source` built across a dropped temporary parses byte-identically on
+    //!    every parse, even with heap churn between rounds.
+    //! 2. Nested flow fidelity: `[[1]]`-style flow sequences must surface as
+    //!    an array root whose items are arrays — re-verified on clean (owned)
+    //!    probes after the dangling class was eradicated.
+    use super::*;
+    use bun_alloc::Arena;
+    use bun_ast::StoreResetGuard;
+
+    /// Parse and run `f` against the root while the AST store scope and
+    /// arena are still alive — `Expr` nodes are `StoreRef`-backed (thread-local
+    /// store), so walking the tree after the scope drops is use-after-reset
+    /// (see the `deepClone` note in `install/pnpm.rs`).
+    fn with_parsed<T>(source: &bun_ast::Source, f: impl FnOnce(&Expr) -> T) -> T {
+        bun_ast::initialize_store();
+        let _store_scope = StoreResetGuard::new();
+        let mut log = bun_ast::Log::init();
+        let arena = Arena::new();
+        let root = YAML::parse(source, &mut log, &arena).expect("parse must succeed");
+        assert!(
+            log.msgs.is_empty(),
+            "log must stay clean, got {} message(s)",
+            log.msgs.len()
+        );
+        f(&root)
+    }
+
+    fn source_owned(contents: &[u8]) -> bun_ast::Source {
+        bun_ast::Source::init_path_string_owned("probe.yaml", contents.to_vec())
+    }
+
+    // ── 1. dangling-Source regression ─────────────────────────────────────
+
+    #[test]
+    fn source_from_dropped_temporary_parses_identically_twice() {
+        // The buffer is a true temporary: dead before the caller ever parses.
+        let source = {
+            let temp: Vec<u8> = b"root:\n  - 1\n  - [2, 3]\n".to_vec();
+            bun_ast::Source::init_path_string_owned("temp.yaml", temp)
+        };
+        // Heap-recycling provocateur: were anything still pointing into the
+        // dropped temporary, this allocation would reuse that memory and the
+        // next parse would read 0xAB garbage.
+        let churn: Vec<u8> = vec![0xAB; 1 << 20];
+        assert!(churn.iter().all(|&b| b == 0xAB) && churn.len() == 1 << 20);
+        drop(churn);
+
+        for round in 0..2 {
+            with_parsed(&source, |root| {
+                let list = root
+                    .get(b"root")
+                    .unwrap_or_else(|| panic!("round {round}: `root` key missing"));
+                let mut items = list.as_array().expect("`root` must parse as a sequence");
+                let first = items.next().expect("item 0");
+                assert_eq!(first.as_number(), Some(1.0), "round {round}: item 0");
+                let second = items.next().expect("item 1");
+                let mut inner = second.as_array().expect("item 1 must be a flow sequence");
+                assert_eq!(inner.next().and_then(|e| e.as_number()), Some(2.0));
+                assert_eq!(inner.next().and_then(|e| e.as_number()), Some(3.0));
+                assert!(inner.next().is_none(), "flow sequence must end at 2 items");
+                assert!(items.next().is_none(), "sequence must end at 2 items");
+            });
+        }
+    }
+
+    // ── 2. nested flow fidelity ───────────────────────────────────────────
+
+    #[test]
+    fn flow_sequence_root_is_an_array_of_arrays() {
+        // `[[1]]`: the document root is a flow sequence whose single item is
+        // itself a flow sequence containing 1.
+        with_parsed(&source_owned(b"[[1]]"), |root| {
+            let mut items = root.as_array().expect("[[1]] root must be an array");
+            let inner = items.next().expect("[[1]] must have one item");
+            let mut inner_items = inner.as_array().expect("inner must be an array");
+            assert_eq!(inner_items.next().and_then(|e| e.as_number()), Some(1.0));
+            assert!(inner_items.next().is_none());
+            assert!(items.next().is_none());
+        });
+    }
+
+    #[test]
+    fn deeply_nested_flow_sequences_keep_array_shape() {
+        with_parsed(&source_owned(b"[[[1, 2], 3], [4]]"), |root| {
+            let mut outer = root.as_array().expect("root must be an array");
+            let first = outer.next().expect("item 0");
+            let mut first_items = first.as_array().expect("item 0 must be an array");
+            let nested = first_items.next().expect("item 0/0");
+            let mut nested_items = nested.as_array().expect("item 0/0 must be an array");
+            assert_eq!(nested_items.next().and_then(|e| e.as_number()), Some(1.0));
+            assert_eq!(nested_items.next().and_then(|e| e.as_number()), Some(2.0));
+            assert!(nested_items.next().is_none());
+            assert_eq!(
+                first_items.next().and_then(|e| e.as_number()),
+                Some(3.0),
+                "item 0/1 must be scalar 3"
+            );
+            assert!(first_items.next().is_none());
+            let second = outer.next().expect("item 1");
+            let mut second_items = second.as_array().expect("item 1 must be an array");
+            assert_eq!(second_items.next().and_then(|e| e.as_number()), Some(4.0));
+            assert!(second_items.next().is_none());
+            assert!(outer.next().is_none());
+        });
+    }
+
+    #[test]
+    fn flow_maps_nested_in_flow_sequences_keep_shapes() {
+        with_parsed(&source_owned(b"[{a: 1, b: [2, {c: 3}]}]"), |root| {
+            let mut outer = root.as_array().expect("root must be an array");
+            let map = outer.next().expect("item 0");
+            assert!(map.is_object(), "item 0 must be a flow map");
+            assert_eq!(map.get(b"a").and_then(|e| e.as_number()), Some(1.0));
+            let b = map.get(b"b").expect("`b` key");
+            let mut b_items = b.as_array().expect("`b` must be an array");
+            assert_eq!(b_items.next().and_then(|e| e.as_number()), Some(2.0));
+            let c = b_items.next().expect("`b[1]`");
+            assert!(c.is_object(), "`b[1]` must be a flow map");
+            assert_eq!(c.get(b"c").and_then(|e| e.as_number()), Some(3.0));
+            assert!(b_items.next().is_none());
+            assert!(outer.next().is_none());
+        });
+    }
+}

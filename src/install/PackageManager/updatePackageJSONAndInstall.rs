@@ -552,7 +552,7 @@ fn update_package_json_and_install_with_manager_with_updates(
         }
 
         let source =
-            bun_ast::Source::init_path_string(&b"package.json"[..], &new_package_json_source[..]);
+            bun_ast::Source::init_path_string_owned(&b"package.json"[..], new_package_json_source.to_vec());
 
         // Now, we _re_ parse our in-memory edited package.json
         // so we can commit the version we changed from the lockfile

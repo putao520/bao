@@ -365,7 +365,8 @@ impl Scripts {
             let _ = save.append(b"package.json"); // OOM/capacity: Zig aborts; port keeps fire-and-forget
 
             json_buf = bun_sys::File::read_from(Fd::cwd(), save.slice_z())?;
-            let json_src = bun_ast::Source::init_path_string(save.slice(), json_buf.as_slice());
+            let json_src =
+                bun_ast::Source::init_path_string_interned_owned(save.slice(), json_buf);
 
             initialize_store();
             bun_json::parse_package_json_utf8(&json_src, log, &bump)?

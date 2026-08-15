@@ -2271,7 +2271,7 @@ pub(crate) fn serialize_json_source_map_for_standalone(
     // bump arena and drop it on return (matches `defer arena.free`).
     let arena = bun_alloc::Arena::new();
 
-    let json_src = bun_ast::Source::init_path_string("sourcemap.json", json_source);
+    let json_src = bun_ast::Source::init_path_string_owned("sourcemap.json", json_source.to_vec());
     let mut log = bun_ast::Log::init();
 
     // the allocator given to the JS parser is not respected for all parts

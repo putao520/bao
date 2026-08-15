@@ -720,9 +720,8 @@ pub(crate) fn migrate_yarn_lockfile<'a>(
             return Err(bun_core::err!("InvalidPackageJSON"));
         };
 
-        // The path buffer must outlive `package_json_source`: `Source.path.text`
-        // borrows into it (lifetime-erased) and is read when `parse_append`
-        // emits a warning (`Location::clone` deep-copies the file path).
+        // `Source` owns its bytes (interned fd path + `Cow::Owned` contents)
+        // so the path/contents buffers no longer need to outlive it.
         let mut package_json_path_buf = PathBuffer::uninit();
         let package_json_source = {
             let Ok(package_json_path) =
@@ -730,7 +729,10 @@ pub(crate) fn migrate_yarn_lockfile<'a>(
             else {
                 return Err(bun_core::err!("InvalidPackageJSON"));
             };
-            bun_ast::Source::init_path_string(&*package_json_path, package_json_contents.as_slice())
+            bun_ast::Source::init_path_string_interned_owned(
+                &*package_json_path,
+                package_json_contents,
+            )
         };
         drop(package_json_fd); // close now; fd no longer needed past path resolution
 

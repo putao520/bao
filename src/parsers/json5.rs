@@ -1143,7 +1143,7 @@ mod stack_check_tests {
         bun_ast::initialize_store();
         let _store_scope = StoreResetGuard::new();
         let mut log = Log::init();
-        let source = Source::init_path_string("deep.json5", contents);
+        let source = Source::init_path_string_owned("deep.json5", contents.to_vec());
         let bump = Bump::new();
         let result = JSON5Parser::parse(&source, &mut log, &bump);
         assert!(

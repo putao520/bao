@@ -644,7 +644,7 @@ impl<'a> RouteLoader<'a> {
         if route.param_count == 0 {
             // PORT NOTE: Zig getOrPut → std Entry API (StringHashMap = std HashMap).
             if let Some(existing) = self.static_list.get(route.match_name.slice()) {
-                let source = bun_ast::Source::init_empty_file(route.abs_path.slice());
+                let source = bun_ast::Source::init_empty_file_interned(route.abs_path.slice());
                 self.log.add_error_fmt(
                     Some(&source),
                     bun_ast::Loc::EMPTY,
@@ -670,7 +670,7 @@ impl<'a> RouteLoader<'a> {
             // It will cause unexpected behavior.
             if new_route.has_uppercase {
                 if let Some(existing) = self.static_list.get(&new_route.name[1..]) {
-                    let source = bun_ast::Source::init_empty_file(new_route.abs_path.slice());
+                    let source = bun_ast::Source::init_empty_file_interned(new_route.abs_path.slice());
                     self.log.add_error_fmt(
                         Some(&source),
                         bun_ast::Loc::EMPTY,
@@ -699,7 +699,7 @@ impl<'a> RouteLoader<'a> {
         {
             match self.dedupe_dynamic.entry(route.full_hash) {
                 Entry::Occupied(e) => {
-                    let source = bun_ast::Source::init_empty_file(route.abs_path.slice());
+                    let source = bun_ast::Source::init_empty_file_interned(route.abs_path.slice());
                     self.log.add_error_fmt(
                         Some(&source),
                         bun_ast::Loc::EMPTY,
@@ -1687,7 +1687,7 @@ pub mod pattern {
         /// That way, we can provide a list of all invalid routes rather than failing the first time.
         pub fn validate(input: &[u8], log: &mut bun_ast::Log) -> Option<ValidationResult> {
             if strings::CodepointIterator::needs_utf8_decoding(input) {
-                let source = bun_ast::Source::init_empty_file(input);
+                let source = bun_ast::Source::init_empty_file_interned(input);
                 log.add_error_fmt(
                     Some(&source),
                     bun_ast::Loc::EMPTY,
@@ -1705,7 +1705,7 @@ pub mod pattern {
                 let pattern: Pattern = match Pattern::init_unhashed(input, offset) {
                     Ok(p) => p,
                     Err(err) => {
-                        let source = bun_ast::Source::init_empty_file(input);
+                        let source = bun_ast::Source::init_empty_file_interned(input);
                         match err {
                             PatternParseError::CatchAllMustBeAtTheEnd => {
                                 log.add_error_fmt(
