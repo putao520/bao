@@ -405,6 +405,19 @@ fn read_request_head(stream: &mut impl Read) {
 
 const CHUNKS: [&str; 3] = ["alpha-", "beta-", "gamma"];
 const FULL_BODY: &str = "alpha-beta-gamma";
+const CHUNK_DELAY: Duration = Duration::from_millis(100);
+
+/// Wall-clock floor for the streaming-delivery timing proof: the strict
+/// semantic threshold is `2 × CHUNK_DELAY`, but a zero-tolerance comparison
+/// flakes under multi-process test load (scheduler shaves a few ms off each
+/// server sleep; bun_bridge's copy of this test measured 287-299ms spans
+/// against a 300ms line at 12-way concurrency). The 0.75× floor keeps the
+/// proof meaningful — a buffered one-shot delivery collapses to ~0ms — while
+/// load jitter alone can no longer pierce it. Same tolerance principle as
+/// bun_bridge's `timing_floor`.
+fn timing_floor(strict: Duration) -> Duration {
+    strict * 3 / 4
+}
 
 /// Streaming mode: the result callback must arrive per chunk (incremental,
 /// spread over the server's delays), not as one buffered final delivery.
@@ -413,7 +426,7 @@ const FULL_BODY: &str = "alpha-beta-gamma";
 /// `schedule_response_body_drain` round-trip per chunk.
 #[test]
 fn streaming_mode_delivers_chunks_incrementally() {
-    let port = spawn_slow_chunked_server(&CHUNKS, Duration::from_millis(100));
+    let port = spawn_slow_chunked_server(&CHUNKS, CHUNK_DELAY);
     let deliveries = run_request(format!("http://127.0.0.1:{}/", port), false, true);
 
     let terminal = deliveries
@@ -447,12 +460,16 @@ fn streaming_mode_delivers_chunks_incrementally() {
     );
 
     // Incremental proof #1 (time): first chunk delivery to last chunk
-    // delivery must span at least two server inter-chunk delays (100ms
-    // each); a buffered one-shot delivery would collapse to ~0.
+    // delivery must span at least two server inter-chunk delays; a buffered
+    // one-shot delivery would collapse to ~0. `timing_floor` applies the
+    // load tolerance (0.75× of the strict 2×CHUNK_DELAY = 150ms floor).
     let span = body_chunks[body_chunks.len() - 1].at - body_chunks[0].at;
     assert!(
-        span >= Duration::from_millis(150),
-        "chunk deliveries must be spread over the server's delays, got {:?}",
+        span >= timing_floor(CHUNK_DELAY * 2),
+        "chunk deliveries must be spread over the server's delays (floor \
+         {:?}, 0.75× of strict {:?}), got {:?}",
+        timing_floor(CHUNK_DELAY * 2),
+        CHUNK_DELAY * 2,
         span
     );
 
@@ -472,7 +489,7 @@ fn streaming_mode_delivers_chunks_incrementally() {
 /// incidental TCP fragmentation.
 #[test]
 fn buffered_mode_contrast_delivers_body_once() {
-    let port = spawn_slow_chunked_server(&CHUNKS, Duration::from_millis(100));
+    let port = spawn_slow_chunked_server(&CHUNKS, CHUNK_DELAY);
     let deliveries = run_request(format!("http://127.0.0.1:{}/", port), false, false);
 
     let terminal = deliveries.last().expect("delivery arrived");

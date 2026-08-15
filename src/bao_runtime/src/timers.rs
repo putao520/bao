@@ -159,6 +159,13 @@ where
                 ::std::boxed::Box::new(bun_event_loop::MiniEventLoop::MiniEventLoop::init());
             ptr = bun_core::heap::into_raw(boxed);
             cell.set(ptr);
+            // BCE-20260814-TLS-DRIVER-UAF: publish this loop as a live
+            // cross-thread wakeup target. Registration happens after
+            // `MiniEventLoop::init` materialized bao_uloop's BAO_LOOP, so
+            // the registry's thread-exit guard deregisters (LIFO) before
+            // BAO_LOOP's Drop frees the uws loop — the ordering the
+            // ConcurrentWakeup lock handshake depends on.
+            bun_event_loop::ConcurrentWakeup::register_thread_loop(ptr);
         }
         // SAFETY: `ptr` is either the previously-stored non-null pointer
         // (valid for the thread's lifetime per the BAO_RUNTIME_LOOP

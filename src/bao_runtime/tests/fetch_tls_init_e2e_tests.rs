@@ -190,6 +190,50 @@ fn record_for(records: &Records, path: &str) -> Option<ConnRecord> {
         .cloned()
 }
 
+/// Bounded wait for a server-side record mentioning `path`. The client-side
+/// phase settles the instant the fetch promise does, but the record is
+/// pushed by the capture server's `serve_one` thread — under CPU
+/// oversubscription (e.g. the whole test fleet pinned to one core) that
+/// thread lags by an unbounded scheduling delay, so reading `records`
+/// immediately after `__alldone` assumed zero observer lag and flaked with
+/// `got None`. Poll until the wire evidence actually lands.
+fn wait_record_for(records: &Records, path: &str) -> Option<ConnRecord> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(rec) = record_for(records, path) {
+            return Some(rec);
+        }
+        if Instant::now() > deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Bounded wait for the first empty-request (handshake-aborted) connection
+/// record — same starved-observer rationale as [`wait_record_for`]. The
+/// record is only pushed when the aborted connection's `serve_one` loop
+/// exits (client close observed), which under load happens after the
+/// client-side promise already settled.
+fn wait_aborted_record(records: &Records) -> Option<ConnRecord> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(rec) = records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.request.is_empty())
+            .cloned()
+        {
+            return Some(rec);
+        }
+        if Instant::now() > deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 #[test]
 fn test_fetch_init_tls_e2e() {
     bun_core::output::init_test();
@@ -407,7 +451,7 @@ fn test_fetch_init_tls_e2e() {
     // SNI for server A phases = URL host (localhost), i.e. the override is
     // off unless requested.
     for path in ["/p2-ca-pem", "/p3-insecure", "/p3b-secure-plus-ca"] {
-        let rec = record_for(&records_a, path)
+        let rec = wait_record_for(&records_a, path)
             .unwrap_or_else(|| panic!("no server-A record for {}", path));
         assert_eq!(
             rec.sni.as_deref(),
@@ -418,7 +462,7 @@ fn test_fetch_init_tls_e2e() {
     }
     // SNI for the servername override = the override name, NOT the URL host
     // (localhost) — the ClientHello carried the user's servername.
-    let rec_b = record_for(&records_b, "/p4-sni-override")
+    let rec_b = wait_record_for(&records_b, "/p4-sni-override")
         .expect("no server-B record for /p4-sni-override");
     assert_eq!(
         rec_b.sni.as_deref(),
@@ -429,18 +473,17 @@ fn test_fetch_init_tls_e2e() {
     // application (closed before send), and — being override-less — it must
     // have carried the URL host as SNI (the override is strictly opt-in per
     // fetch; p5 proves it does NOT stick to the next connection).
+    // wait_aborted_record first: the p5 record is pushed only when the
+    // connection's serve_one loop sees the client close, which under CPU
+    // oversubscription lags the client-side settlement; the negative check
+    // below is stable only after that observer loop finished.
+    let aborted_b = wait_aborted_record(&records_b);
     let rec_b5 = record_for(&records_b, "/p5-wrong-ca");
     assert!(
         rec_b5.is_none(),
         "p5 wrong-ca request must not reach the server, got {:?}",
         rec_b5
     );
-    let aborted_b = records_b
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|r| r.request.is_empty())
-        .cloned();
     assert_eq!(
         aborted_b.as_ref().and_then(|r| r.sni.as_deref()),
         Some("localhost"),

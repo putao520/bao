@@ -4,6 +4,7 @@ pub mod AnyTask;
 pub mod AnyTaskWithExtraContext;
 pub mod AutoFlusher;
 pub mod ConcurrentTask;
+pub mod ConcurrentWakeup;
 pub mod DeferredTaskQueue;
 pub mod EventLoopTimer;
 pub mod ManagedTask;

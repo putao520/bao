@@ -613,15 +613,33 @@ fn tls_schedule_tasklet(shared: &Arc<ServerShared>) {
         shared.task_scheduled.store(false, Ordering::Release);
         return;
     }
-    // SAFETY: mini_loop_ptr was captured on the JS thread and is valid for
-    // the thread's lifetime; shared is kept alive by the JS registry Arc
-    // until the ServerClosed tasklet removes it.
+    // BCE-20260814-TLS-DRIVER-UAF: enqueue through the process-global
+    // liveness registry instead of a raw `&mut *loop_ptr` +
+    // `enqueue_task_concurrent`. The MiniEventLoop box is leaked, but its
+    // uws loop is freed when the owning JS thread exits (bao_uloop's
+    // thread-local BaoLoopState::drop) — this driver thread is a
+    // process-lifetime singleton, so an event landing after that exit woke
+    // freed loop memory (SIGSEGV in us_poll_fd, ~50% of
+    // tls_sni_server_tests runs under load). The registry handshake makes
+    // enqueue+wakeup mutually exclusive with the loop free.
+    //
+    // SAFETY: loop_ptr was captured on the JS thread via with_event_loop
+    // (leaked allocation, stable memory); shared is kept alive by the JS
+    // registry Arc until the ServerClosed tasklet removes it.
     unsafe {
-        let loop_ref = &mut *(loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>);
         let shared_ptr = Arc::as_ptr(shared) as *mut ServerShared;
         let task_ptr = core::ptr::addr_of_mut!((*shared_ptr).concurrent_task);
         (*task_ptr).from(shared_ptr, tls_event_tasklet_shim);
-        loop_ref.enqueue_task_concurrent(NonNull::new_unchecked(task_ptr));
+        let mini = loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>;
+        if !bun_event_loop::ConcurrentWakeup::enqueue_task_concurrent_cross_thread(
+            mini,
+            NonNull::new_unchecked(task_ptr),
+        ) {
+            // Owning JS thread exited: identical handling to the uncaptured
+            // case — reset so a later attempt can retry; events remain
+            // queued (nothing drains them, same as before the fix).
+            shared.task_scheduled.store(false, Ordering::Release);
+        }
     }
 }
 

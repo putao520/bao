@@ -58,6 +58,21 @@ fn loopback_url(url: &servo_url::ServoUrl) -> String {
     url.as_str().replace("localhost", "127.0.0.1")
 }
 
+/// Wall-clock floor for the streaming-delivery timing proofs. The strict
+/// semantic threshold is `2 × inter-chunk delay` (two server delays between
+/// first and last delivery), but a zero-tolerance comparison flakes under
+/// multi-process test load: at 12-way concurrency the scheduler routinely
+/// shaves a few ms off each ~150ms server sleep, and measured spans of
+/// 287-299ms against the 300ms line failed ~31-89% of runs (load-dependent).
+/// The 0.75× floor keeps the proof meaningful — a buffered one-shot delivery
+/// collapses to ~0ms, hundreds of ms below the floor — while load jitter
+/// alone can no longer pierce it. Same tolerance principle as
+/// tls_info_and_streaming_tests' streaming_mode_delivers_chunks_incrementally
+/// (150ms floor for a 200ms strict threshold).
+fn timing_floor(strict: Duration) -> Duration {
+    strict * 3 / 4
+}
+
 /// The connector's wire struct is the bridge's input type; build it from the
 /// same bao_stealth derivation the embedder (runtime_bridge) uses. Shared by
 /// the fingerprint-parity and intern-coalescing tests.
@@ -435,19 +450,26 @@ fn bridge_streaming_delivery_incremental() {
     );
     // Incremental proof #1 (time): first chunk delivery to last chunk
     // delivery must span at least two server inter-chunk delays — a buffered
-    // one-shot delivery would collapse to ~0.
+    // one-shot delivery would collapse to ~0. `timing_floor` applies the
+    // load tolerance (0.75×) so scheduler jitter can't pierce the line.
     let span = chunks[chunks.len() - 1].0 - chunks[0].0;
     assert!(
-        span >= DELAY * 2,
-        "chunk deliveries must be spread over the server's delays, got {span:?}"
+        span >= timing_floor(DELAY * 2),
+        "chunk deliveries must be spread over the server's delays (floor \
+         {:?}, 0.75× of strict {:?}), got {span:?}",
+        timing_floor(DELAY * 2),
+        DELAY * 2
     );
     // Incremental proof #2 (head-first): the head was published before the
     // last chunk arrived — the server still owed ≥ 2 delays of body when
-    // the future resolved.
+    // the future resolved. Same `timing_floor` tolerance as proof #1.
     let head_lead = chunks[chunks.len() - 1].0 - head_at;
     assert!(
-        head_lead >= DELAY * 2,
-        "head must resolve well before the terminal chunk, lead was {head_lead:?}"
+        head_lead >= timing_floor(DELAY * 2),
+        "head must resolve well before the terminal chunk (floor {:?}, 0.75× \
+         of strict {:?}), lead was {head_lead:?}",
+        timing_floor(DELAY * 2),
+        DELAY * 2
     );
 }
 

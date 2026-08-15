@@ -887,22 +887,29 @@ fn on_http_done(
         .is_ok()
     {
         // 4. Enqueue resolve_tasklet on the JS thread's MiniEventLoop.
-        // SAFETY: mini_loop_ptr was set by start_with_kind on the JS thread;
-        // it remains valid for the thread's lifetime.
+        // SAFETY: mini_loop_ptr was set by start_with_kind on the JS thread
+        // (leaked allocation, stable memory).
         let loop_ptr = unsafe { &*this }.mini_loop_ptr;
         if !loop_ptr.is_null() {
-            // SAFETY: the MiniEventLoop is alive for the thread's lifetime.
-            let loop_ref = unsafe {
-                &mut *(loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>)
-            };
+            // BCE-20260814-TLS-DRIVER-UAF (same class as the tls driver
+            // fix): this runs on the HTTP thread while the MiniEventLoop's
+            // uws loop is freed at JS-thread exit. Route through the
+            // process-global liveness registry so enqueue+wakeup cannot
+            // race the free.
             let concurrent_task_ptr = unsafe { core::ptr::addr_of_mut!((*this).concurrent_task) };
             // SAFETY: concurrent_task_ptr is a valid pointer to the
-            // AnyTaskWithExtraContext embedded in PendingFetch.
-            loop_ref.enqueue_task_concurrent(unsafe {
-                core::ptr::NonNull::new_unchecked(concurrent_task_ptr)
-            });
-            // enqueue_task_concurrent internally calls wakeup(), so the
-            // JS thread will be woken from any blocking epoll_wait.
+            // AnyTaskWithExtraContext embedded in PendingFetch; loop_ptr
+            // was captured via with_event_loop on the JS thread.
+            //
+            // Success pushes the task and wakes the JS thread out of any
+            // blocking epoll_wait. `false` means the owning thread exited:
+            // skip, mirroring the uncaptured case above.
+            let _ = unsafe {
+                bun_event_loop::ConcurrentWakeup::enqueue_task_concurrent_cross_thread(
+                    loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>,
+                    core::ptr::NonNull::new_unchecked(concurrent_task_ptr),
+                )
+            };
         }
     }
 

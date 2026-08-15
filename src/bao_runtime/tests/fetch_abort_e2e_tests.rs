@@ -195,19 +195,36 @@ fn test_fetch_abort_signal_three_states() {
                       }});
 
             // 2. Mid-flight abort via init.signal (server delays 800ms).
+            //    Deterministic ordering: the abort fires only after the Rust
+            //    driver observed the request on the wire (it sets
+            //    globalThis.__midSeen once the capture server recorded
+            //    "/a-mid"). A blind setTimeout(40) assumed 40ms always covers
+            //    connect+send+accept+record; under CPU oversubscription that
+            //    is false and the abort raced ahead of the send. The re-arm
+            //    poll keeps the abort strictly inside the server's 800ms
+            //    response-delay window, which is the actual mid-flight
+            //    property under test.
             var c2 = new AbortController();
             fetch(base + "/a-mid", {{ signal: c2.signal }})
                 .then(function() {{ out.mid = "resolved"; }},
                       function(e) {{ out.mid = "rejected:" + e.name + ":" + e.message; }});
-            setTimeout(function() {{ c2.abort(); }}, 40);
+            function armAbortWhenSeen(ctrl, flag) {{
+                function tryAbort() {{
+                    if (globalThis[flag]) {{ ctrl.abort(); }}
+                    else {{ setTimeout(tryAbort, 5); }}
+                }}
+                setTimeout(tryAbort, 40);
+            }}
+            armAbortWhenSeen(c2, "__midSeen");
 
-            // 3. Mid-flight abort via Request.signal (Request base path).
+            // 3. Mid-flight abort via Request.signal (Request base path) —
+            //    same observed-then-abort gating as phase 2.
             var c3 = new AbortController();
             var req = new Request(base + "/a-req", {{ signal: c3.signal }});
             fetch(req)
                 .then(function() {{ out.reqsig = "resolved"; }},
                       function(e) {{ out.reqsig = "rejected:" + e.name + ":" + e.message; }});
-            setTimeout(function() {{ c3.abort(); }}, 40);
+            armAbortWhenSeen(c3, "__reqSeen");
 
             // 4. No signal: plain fetch regression guard.
             fetch(base + "/a-plain")
@@ -247,6 +264,7 @@ fn test_fetch_abort_signal_three_states() {
     let cx_raw = ctx.raw_cx();
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut final_poll = String::new();
+    let (mut mid_seen, mut req_seen) = (false, false);
     while Instant::now() < deadline {
         {
             let mut cxm = ctx.cx();
@@ -268,6 +286,19 @@ fn test_fetch_abort_signal_three_states() {
         }
         std::thread::sleep(Duration::from_millis(2));
         final_poll = eval_string(&mut ctx, r#"globalThis.__poll()"#);
+        // Publish the wire-observation flags the gated aborts poll for. The
+        // capture server records "/a-mid"/"/a-req" the moment its connection
+        // thread reads the full request — before its 800ms response delay —
+        // so flipping the flag here keeps each abort strictly inside the
+        // mid-flight window instead of racing the send under load.
+        if !mid_seen && count_for(&captured, "/a-mid http") >= 1 {
+            mid_seen = true;
+            eval_string(&mut ctx, "globalThis.__midSeen = true");
+        }
+        if !req_seen && count_for(&captured, "/a-req http") >= 1 {
+            req_seen = true;
+            eval_string(&mut ctx, "globalThis.__reqSeen = true");
+        }
         if !final_poll.contains("PENDING") {
             break;
         }

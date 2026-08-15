@@ -45,6 +45,28 @@ fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
     }
 }
 
+/// Deadline-based pump: keep driving the JS thread's MiniEventLoop until
+/// `cond` (checked once per round) holds, or `timeout` wall-clock elapses.
+/// Early-exits the moment the condition is met; returns false only at the
+/// deadline (bounded wait, never infinite). Replaces fixed iteration-count
+/// budgets at every site that gates an assertion on async completion — a
+/// fixed N×1ms budget starves under CPU oversubscription (the RemoveServer
+/// close callback never got CPU within 10×1ms under 1-core/40-process load).
+fn drive_event_loop_until(
+    ctx: &mut JsContext,
+    timeout: Duration,
+    cond: impl Fn(&mut JsContext) -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while !cond(ctx) {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        drive_event_loop(ctx, 5);
+    }
+    true
+}
+
 /// Escape a PEM string for embedding in a JS double-quoted string literal.
 fn js_str(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\"")
@@ -147,13 +169,17 @@ fn tls_client_session(
 }
 
 /// Run a client session on a worker thread while the test (JS) thread pumps
-/// the event loop. Returns the session result.
+/// the event loop. Once the client session finishes, keeps pumping until
+/// `settled` holds (JS-side emissions — secureConnection / tlsClientError —
+/// may still be in flight when the client thread is done) or a 2s deadline.
+/// Returns the session result.
 fn run_client_with_pump(
     ctx: &mut JsContext,
     port: u16,
     servername: &str,
     want_bytes: Option<&[u8]>,
     trusted_ders: &[Vec<u8>],
+    settled: impl Fn(&mut JsContext) -> bool,
 ) -> Result<ClientOutcome, String> {
     let done = Arc::new(AtomicBool::new(false));
     let result: Arc<Mutex<Option<Result<ClientOutcome, String>>>> = Arc::new(Mutex::new(None));
@@ -177,8 +203,10 @@ fn run_client_with_pump(
     while !done.load(Ordering::Acquire) {
         drive_event_loop(ctx, 5);
     }
-    // Extra pump so the JS side settles (secureConnection listeners etc).
-    drive_event_loop(ctx, 5);
+    // Settle pump: deadline-based (a fixed count starves under CPU
+    // oversubscription — the client thread finishing does not imply the
+    // driver already dispatched the JS-side emission tasks).
+    drive_event_loop_until(ctx, Duration::from_secs(2), settled);
     result.lock().unwrap().take().expect("client result")
 }
 
@@ -241,7 +269,12 @@ fn sni_two_domains_select_cert_per_name() {
     );
     let r = eval_string(&mut ctx, &setup);
     assert_eq!(r, "ok", "server setup eval failed: {}", r);
-    drive_event_loop(&mut ctx, 3);
+    assert!(
+        drive_event_loop_until(&mut ctx, Duration::from_secs(2), |ctx| {
+            eval_string(ctx, "String(globalThis.port > 0)") == "true"
+        }),
+        "listen callback must fire: port not captured"
+    );
     let port = match ctx.eval("globalThis.port;", "<p>") {
         Ok(JsValue::Number(n)) => n as u16,
         _ => panic!("port not captured after listen"),
@@ -250,16 +283,22 @@ fn sni_two_domains_select_cert_per_name() {
 
     // foo.com → foo cert.
     let trusted = vec![foo_der.clone(), bar_der.clone()];
-    let out = run_client_with_pump(&mut ctx, port, "foo.com", None, &trusted)
-        .expect("foo.com handshake must succeed");
+    let out = run_client_with_pump(&mut ctx, port, "foo.com", None, &trusted, |ctx| {
+        eval_string(ctx, "globalThis.sniSeen.join(',')") == "foo.com"
+            && eval_string(ctx, "String(globalThis.secureCount)") == "1"
+    })
+    .expect("foo.com handshake must succeed");
     assert_eq!(
         out.peer_cert_der, foo_der,
         "SNI foo.com must serve the foo.com certificate"
     );
 
     // bar.com → bar cert (same listener, one IP, two certificates).
-    let out = run_client_with_pump(&mut ctx, port, "bar.com", None, &trusted)
-        .expect("bar.com handshake must succeed");
+    let out = run_client_with_pump(&mut ctx, port, "bar.com", None, &trusted, |ctx| {
+        eval_string(ctx, "globalThis.sniSeen.join(',')") == "foo.com,bar.com"
+            && eval_string(ctx, "String(globalThis.secureCount)") == "2"
+    })
+    .expect("bar.com handshake must succeed");
     assert_eq!(
         out.peer_cert_der, bar_der,
         "SNI bar.com must serve the bar.com certificate"
@@ -273,9 +312,12 @@ fn sni_two_domains_select_cert_per_name() {
 
     let close = eval_string(&mut ctx, "server.close(function(){ globalThis.closed = true; }); 'closing'");
     assert_eq!(close, "closing");
-    drive_event_loop(&mut ctx, 10);
-    let closed = eval_string(&mut ctx, "String(globalThis.closed === true)");
-    assert_eq!(closed, "true", "close() callback must run after teardown");
+    assert!(
+        drive_event_loop_until(&mut ctx, Duration::from_secs(2), |ctx| {
+            eval_string(ctx, "String(globalThis.closed === true)") == "true"
+        }),
+        "close() callback must run after teardown"
+    );
 }
 
 // ─── 2. No SNICallback → static certificate (default contract branch) ──
@@ -308,7 +350,12 @@ fn static_cert_regression_without_sni_callback() {
     );
     let r = eval_string(&mut ctx, &setup);
     assert_eq!(r, "ok", "static server setup failed: {}", r);
-    drive_event_loop(&mut ctx, 3);
+    assert!(
+        drive_event_loop_until(&mut ctx, Duration::from_secs(2), |ctx| {
+            eval_string(ctx, "String(globalThis.port > 0)") == "true"
+        }),
+        "listen callback must fire: port not captured"
+    );
     let port = match ctx.eval("globalThis.port;", "<p>") {
         Ok(JsValue::Number(n)) => n as u16,
         _ => panic!("port not captured after listen"),
@@ -316,8 +363,15 @@ fn static_cert_regression_without_sni_callback() {
     assert!(port > 0);
 
     // Even WITH an SNI extension in the ClientHello, the static cert serves.
-    let out = run_client_with_pump(&mut ctx, port, "anything.example", None, &[static_der.clone()])
-        .expect("static-cert handshake must succeed");
+    let out = run_client_with_pump(
+        &mut ctx,
+        port,
+        "anything.example",
+        None,
+        &[static_der.clone()],
+        |ctx| eval_string(ctx, "String(globalThis.secureCount)") == "1",
+    )
+    .expect("static-cert handshake must succeed");
     assert_eq!(
         out.peer_cert_der, static_der,
         "no SNICallback → static certificate for every connection"
@@ -368,7 +422,12 @@ fn write_from_sni_callback_delivered_before_secure_connection_writes() {
     );
     let r = eval_string(&mut ctx, &setup);
     assert_eq!(r, "ok", "setup failed: {}", r);
-    drive_event_loop(&mut ctx, 3);
+    assert!(
+        drive_event_loop_until(&mut ctx, Duration::from_secs(2), |ctx| {
+            eval_string(ctx, "String(globalThis.port > 0)") == "true"
+        }),
+        "listen callback must fire: port not captured"
+    );
     let port = match ctx.eval("globalThis.port;", "<p>") {
         Ok(JsValue::Number(n)) => n as u16,
         _ => panic!("port not captured after listen"),
@@ -376,8 +435,18 @@ fn write_from_sni_callback_delivered_before_secure_connection_writes() {
     assert!(port > 0);
 
     let foo_der = pem_parse_certs(&foo_cert).into_iter().next().expect("foo DER");
-    let out = run_client_with_pump(&mut ctx, port, "foo.com", Some(b"from-secure;"), &[foo_der])
-        .expect("handshake with in-callback write must succeed");
+    let out = run_client_with_pump(
+        &mut ctx,
+        port,
+        "foo.com",
+        Some(b"from-secure;"),
+        &[foo_der],
+        // The 'connection' socket is captured before the handshake (the
+        // SNICallback write proves it); nothing else JS-side gates the
+        // plaintext assertions below (client-side truth).
+        |ctx| eval_string(ctx, "String(globalThis.connSock !== null)") == "true",
+    )
+    .expect("handshake with in-callback write must succeed");
     assert!(
         out.plaintext.starts_with(b"from-callback;"),
         "parked callback write must be delivered right after the handshake, got: {:?}",
@@ -441,14 +510,21 @@ fn sni_callback_error_fails_handshake_with_tls_client_error() {
     );
     let r = eval_string(&mut ctx, &setup);
     assert_eq!(r, "ok", "setup failed: {}", r);
-    drive_event_loop(&mut ctx, 3);
+    assert!(
+        drive_event_loop_until(&mut ctx, Duration::from_secs(2), |ctx| {
+            eval_string(ctx, "String(globalThis.port > 0)") == "true"
+        }),
+        "listen callback must fire: port not captured"
+    );
     let port = match ctx.eval("globalThis.port;", "<p>") {
         Ok(JsValue::Number(n)) => n as u16,
         _ => panic!("port not captured after listen"),
     };
     assert!(port > 0);
 
-    let result = run_client_with_pump(&mut ctx, port, "foo.com", None, &[]);
+    let result = run_client_with_pump(&mut ctx, port, "foo.com", None, &[], |ctx| {
+        eval_string(ctx, "String(globalThis.clientErrors.length > 0)") == "true"
+    });
     assert!(
         result.is_err(),
         "client handshake must fail when SNICallback errors (got {:?})",
@@ -521,7 +597,12 @@ fn client_connect_real_session_info_and_io() {
     );
     let r = eval_string(&mut ctx, &setup);
     assert_eq!(r, "ok", "server setup failed: {}", r);
-    drive_event_loop(&mut ctx, 3);
+    assert!(
+        drive_event_loop_until(&mut ctx, Duration::from_secs(2), |ctx| {
+            eval_string(ctx, "String(globalThis.port > 0)") == "true"
+        }),
+        "listen callback must fire: port not captured"
+    );
     let port = match ctx.eval("globalThis.port;", "<p>") {
         Ok(JsValue::Number(n)) => n as u16,
         _ => panic!("port not captured after listen"),
@@ -667,7 +748,12 @@ fn client_connect_rejects_untrusted_server_by_default() {
     );
     let r = eval_string(&mut ctx, &setup);
     assert_eq!(r, "ok", "server setup failed: {}", r);
-    drive_event_loop(&mut ctx, 3);
+    assert!(
+        drive_event_loop_until(&mut ctx, Duration::from_secs(2), |ctx| {
+            eval_string(ctx, "String(globalThis.port > 0)") == "true"
+        }),
+        "listen callback must fire: port not captured"
+    );
     let port = match ctx.eval("globalThis.port;", "<p>") {
         Ok(JsValue::Number(n)) => n as u16,
         _ => panic!("port not captured after listen"),

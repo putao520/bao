@@ -3240,13 +3240,49 @@ pub fn capture_stack_trace(begin: usize, addrs: &mut [usize]) -> usize {
 /// and `[fp + PC_OFFSET]` is the caller's saved return address. Used as the
 /// `first_address` trim point for `capture_current` (which falls back to the
 /// full trace if it doesn't match).
+///
+/// The `[fp + PC_OFFSET]` load is guarded. Nothing in this workspace
+/// force-enables frame pointers for every caller, so inlining into a frame
+/// that repurposed rbp/x29 reads a garbage "fp" — the unguarded load then
+/// aborted ~17% of processes under 12-way test load (measured: unnamed servo
+/// worker threads hitting the RefPtr debug paths with rbp holding scratch
+/// values like `0xc`, tripping the alignment UB check / SIGSEGV on
+/// `[scratch + 8]`). A real fp is provably:
+///
+/// 1. non-zero and 16-byte aligned (SysV x86-64 `push rbp` and AArch64
+///    `stp x29, x30` prologues both land the fp on a 16-byte boundary), and
+/// 2. inside the caller's own frame: above any of its locals and within one
+///    frame span of them (fp points at the top of the frame that materializes
+///    `probe`), on whichever stack that frame lives on — regular or alt.
+///
+/// Garbage that survives both checks points into the live stack neighborhood
+/// (mapped by construction), so the load cannot fault; garbage that fails
+/// either check yields 0 — the established "no trim" sentinel, same as the
+/// non-fp arches — and `capture_current` degrades to the full untrimmed
+/// trace: a noisier trace beats an aborted process.
 #[inline(always)]
 pub fn return_address() -> usize {
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     {
+        /// Upper bound on a single frame's local-to-fp span. Real Rust
+        /// frames are far smaller; the bound only needs to stay tight enough
+        /// that garbage passing the window points at mapped stack, not off
+        /// the end of the mapping. Larger frames that overshoot it are
+        /// rejected → 0 → untrimmed trace (degraded, never a crash).
+        const MAX_FRAME_SPAN: usize = 128 * 1024;
         let fp = debug::frame_address();
-        // SAFETY: `fp` is this function's own valid frame pointer; the
-        // return-address slot at `[fp + PC_OFFSET]` is always mapped.
+        // A local of the (inlined) caller's own frame; the real fp sits at
+        // the top of that same frame.
+        let probe = 0u8;
+        let probe_addr = core::ptr::from_ref(&probe) as usize;
+        let fp_is_plausible =
+            fp != 0 && fp % 16 == 0 && fp > probe_addr && fp - probe_addr <= MAX_FRAME_SPAN;
+        if !fp_is_plausible {
+            return 0;
+        }
+        // SAFETY: fp passed the frame-plausibility checks — `[fp +
+        // PC_OFFSET]` is the saved return-address slot of a live frame on
+        // the current stack, which is mapped while that frame exists.
         unsafe { *((fp + debug::PC_OFFSET) as *const usize) }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -3254,6 +3290,53 @@ pub fn return_address() -> usize {
         // No frame-pointer asm! mapping for this arch; capture_current treats 0
         // as "no trim".
         0
+    }
+}
+
+#[cfg(test)]
+mod return_address_tests {
+    use super::{capture_stack_trace, return_address};
+
+    /// Non-inlined frame so the caller↔fp relationship under test is stable
+    /// regardless of surrounding inlining.
+    #[inline(never)]
+    fn trimmed_depth() -> (usize, usize) {
+        let begin = return_address();
+        let mut addrs = [0usize; 64];
+        let n = capture_stack_trace(begin, &mut addrs);
+        (begin, n)
+    }
+
+    /// Normal path: the guarded read must still yield the caller's real
+    /// return address (a healthy frame passes the plausibility checks), and
+    /// `capture_stack_trace` must still produce a backtrace trimmed to it.
+    #[test]
+    fn normal_path_still_yields_trim_point_and_trace() {
+        let (begin, n) = trimmed_depth();
+        assert_ne!(
+            begin, 0,
+            "healthy frame: the guard must pass the real fp through"
+        );
+        assert!(n >= 1, "capture must produce frames, got {n}");
+    }
+
+    /// The 12-way crash class: the RefPtr debug paths call `return_address`
+    /// from unnamed pool threads. Those calls must stay non-fatal AND still
+    /// yield a usable trim point on healthy frames (degradation to 0 is only
+    /// for garbage fps, not a blanket fallback).
+    #[test]
+    fn unnamed_threads_yield_trim_point_without_aborting() {
+        let handles: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(trimmed_depth))
+            .collect();
+        for (i, h) in handles.into_iter().enumerate() {
+            let (begin, n) = h.join().unwrap_or_else(|_| panic!("unnamed thread {i} aborted"));
+            assert_ne!(
+                begin, 0,
+                "unnamed thread {i}: healthy frame must still yield a trim point"
+            );
+            assert!(n >= 1, "unnamed thread {i}: capture must produce frames");
+        }
     }
 }
 
