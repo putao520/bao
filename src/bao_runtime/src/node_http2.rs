@@ -233,6 +233,13 @@ const HTTP2_JS: &str = r#"
     this._ended = true;
     this.readable = false;
     this.writable = false;
+    // Upstream f7ad274e3 parity: release the stream from the session's
+    // registry as soon as it is fully closed. Node drops a stream when both
+    // halves close; without this eviction one Http2Stream per request stays
+    // rooted on the session for its whole lifetime (WeakRef never clears).
+    if (this._session && this._session._streams) {
+      delete this._session._streams[this._id];
+    }
     this.emit('close');
     if (cb) cb();
     return this;
@@ -267,6 +274,10 @@ const HTTP2_JS: &str = r#"
     this._ended = true;
     this.readable = false;
     this.writable = false;
+    // Same release-on-close invariant as close() (f7ad274e3 parity).
+    if (this._session && this._session._streams) {
+      delete this._session._streams[this._id];
+    }
     if (error) this.emit('error', error);
     this.emit('close');
   };
@@ -447,6 +458,13 @@ const HTTP2_JS: &str = r#"
     }
 
     this._streams[streamId] = stream;
+    // Upstream f7ad274e3 parity (its flush_queue release point): when the
+    // outbound request already completed synchronously — END_STREAM sent by
+    // the fetch bridge above — the finished stream must not sit in the
+    // session registry until session teardown.
+    if (stream._ended) {
+      delete this._streams[streamId];
+    }
     this.emit('stream', stream, headers);
     return stream;
   };
@@ -485,12 +503,14 @@ const HTTP2_JS: &str = r#"
       return;
     }
     this._closed = true;
-    // Close all open streams
+    // Close all open streams. `_streams` is Object.create(null) — it has no
+    // hasOwnProperty (calling it threw TypeError the first time this code
+    // was ever reached); for-in over a null-proto object only ever yields
+    // own enumerable keys, so the guard was redundant anyway. Each
+    // stream.close() evicts itself from the registry (f7ad274e3 parity).
     for (var id in this._streams) {
-      if (this._streams.hasOwnProperty(id)) {
-        var stream = this._streams[id];
-        if (!stream._closed) stream.close();
-      }
+      var stream = this._streams[id];
+      if (stream && !stream._closed) stream.close();
     }
     this.emit('close');
     if (callback) callback();
@@ -503,11 +523,10 @@ const HTTP2_JS: &str = r#"
     }
     this._destroyed = true;
     this._closed = true;
-    // Destroy all streams
+    // Destroy all streams (evicts each from the registry — see close()).
     for (var id in this._streams) {
-      if (this._streams.hasOwnProperty(id)) {
-        this._streams[id].destroy(error);
-      }
+      var stream = this._streams[id];
+      if (stream) stream.destroy(error);
     }
     if (error) this.emit('error', error);
     this.emit('close');
@@ -982,6 +1001,43 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             0 as u32,
         );
 
+        // The JS IIFE resolves these host bridges as FREE variables — the
+        // `typeof __http2_server_listen === 'function'` probes inside the
+        // IIFE look at the GLOBAL, never at this module object. Defining
+        // them only on http2_obj left every probe false: JS-side servers
+        // fell back to a no-op listen and the client fetch bridge never
+        // ran. Mirror them onto the global (non-enumerable, configurable)
+        // so the IIFE sees them.
+        rooted!(&in(cx) let global = CurrentGlobalOrNull(cx.raw_cx()));
+        if !global.get().is_null() {
+            let bridges: &[(&str, JSNative, u32)] = &[
+                ("__http2_fetch", Some(http2_fetch), 4),
+                ("__http2_server_listen", Some(http2_server_listen), 3),
+                ("__http2_server_close", Some(http2_server_close), 2),
+                (
+                    "__http2_secure_server_listen",
+                    Some(http2_secure_server_listen),
+                    3,
+                ),
+                (
+                    "__http2_secure_server_close",
+                    Some(http2_secure_server_close),
+                    2,
+                ),
+            ];
+            for &(name, native, nargs) in bridges {
+                let c_name = ZBox::from_bytes(name);
+                w2::JS_DefineFunction(
+                    cx,
+                    global.handle(),
+                    c_name.as_ptr(),
+                    native,
+                    nargs,
+                    0 as u32,
+                );
+            }
+        }
+
         // ── Evaluate JS IIFE ───────────────────────────────────────────
         let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"node:http2".as_ptr(), 1);
         if !opts.is_null() {
@@ -997,62 +1053,48 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 },
             ) && rval.is_object()
             {
-                rooted!(&in(cx) let iife_obj = rval.to_object());
-                rooted!(&in(cx) let global = CurrentGlobalOrNull(cx.raw_cx()));
-                if !global.get().is_null() {
-                    // Call the IIFE to get the exports object
-                    let mut call_rval = UndefinedValue();
-                    let call_rval_h = MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut call_rval,
-                    };
-                    rooted!(&in(cx) let iife_val = ObjectValue(iife_obj.get()));
-                    JS_CallFunctionValue(
+                // HTTP2_JS ends with `})();`, so Evaluate2's completion value
+                // IS the exports object already — do NOT call it again. The
+                // previous code re-invoked the exports object as a function
+                // (TypeError, silently swallowed), which dropped the entire
+                // JS API surface (connect / Http2Session / Http2Stream /
+                // getDefaultSettings / ...) from the module:
+                // require('http2').connect was undefined.
+                rooted!(&in(cx) let exports = rval.to_object());
+                // Copy JS-defined properties onto http2_obj
+                let js_props = [
+                    "connect",
+                    "Http2Session",
+                    "Http2Stream",
+                    "Http2Server",
+                    "Http2SecureServer",
+                    "getDefaultSettings",
+                    "getPackedSettings",
+                    "getUnpackedSettings",
+                    "sensitiveHeaders",
+                    "performance",
+                ];
+                for &prop in &js_props {
+                    let c_prop = ZBox::from_bytes(prop.as_bytes());
+                    let mut prop_val = UndefinedValue();
+                    JS_GetProperty(
                         cx.raw_cx(),
-                        global.handle().into(),
-                        iife_val.handle().into(),
-                        &HandleValueArray::empty(),
-                        call_rval_h,
+                        exports.handle().into(),
+                        c_prop.as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut prop_val,
+                        },
                     );
-
-                    if call_rval.is_object() {
-                        rooted!(&in(cx) let exports = call_rval.to_object());
-                        // Copy JS-defined properties onto http2_obj
-                        let js_props = [
-                            "connect",
-                            "Http2Session",
-                            "Http2Stream",
-                            "Http2Server",
-                            "Http2SecureServer",
-                            "getDefaultSettings",
-                            "getPackedSettings",
-                            "getUnpackedSettings",
-                            "sensitiveHeaders",
-                            "performance",
-                        ];
-                        for &prop in &js_props {
-                            let c_prop = ZBox::from_bytes(prop.as_bytes());
-                            let mut prop_val = UndefinedValue();
-                            JS_GetProperty(
-                                cx.raw_cx(),
-                                exports.handle().into(),
-                                c_prop.as_ptr(),
-                                MutableHandle::<Value> {
-                                    _phantom_0: ::std::marker::PhantomData,
-                                    ptr: &mut prop_val,
-                                },
-                            );
-                            if !prop_val.is_undefined() {
-                                rooted!(&in(cx) let pv = prop_val);
-                                JS_DefineProperty(
-                                    cx.raw_cx(),
-                                    http2_obj.handle().into(),
-                                    c_prop.as_ptr(),
-                                    pv.handle().into(),
-                                    (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
-                                );
-                            }
-                        }
+                    if !prop_val.is_undefined() {
+                        rooted!(&in(cx) let pv = prop_val);
+                        JS_DefineProperty(
+                            cx.raw_cx(),
+                            http2_obj.handle().into(),
+                            c_prop.as_ptr(),
+                            pv.handle().into(),
+                            (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+                        );
                     }
                 }
             }
@@ -1620,15 +1662,37 @@ unsafe extern "C" fn http2_create_server(cx: *mut JSContext, argc: u32, vp: *mut
         return true;
     }
 
-    // Call new Http2Server(options, handler)
+    // new Http2Server(options, handler): build the instance off the ctor's
+    // prototype and run the ctor body with the instance as `this`. A bare
+    // JS_CallFunctionValue against the global runs the sloppy-mode ctor on
+    // the global and returns undefined (the ctor has no return statement),
+    // which made createServer() yield undefined.
     rooted!(&in(cx_ref) let ctor = ctor_val.to_object());
-    rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
 
-    let mut new_rval = UndefinedValue();
-    let new_rval_h = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut new_rval,
-    };
+    let mut proto_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        ctor.handle().into(),
+        c"prototype".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut proto_val,
+        },
+    );
+    rooted!(&in(cx_ref) let proto_obj = if proto_val.is_object() {
+        proto_val.to_object()
+    } else {
+        ::std::ptr::null_mut::<JSObject>()
+    });
+    rooted!(&in(cx_ref) let server_obj = w2::JS_NewObjectWithGivenProto(
+        cx_ref,
+        ::std::ptr::null(),
+        proto_obj.handle()
+    ));
+    if server_obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
 
     // Prepare args: (options, handler)
     let opts_arg = if argc > 0 && (*args.get(0).ptr).is_object() {
@@ -1638,9 +1702,6 @@ unsafe extern "C" fn http2_create_server(cx: *mut JSContext, argc: u32, vp: *mut
     };
     let handler_arg = if argc > 1 && (*args.get(1).ptr).is_object() {
         *args.get(1).ptr
-    } else if argc > 0 && (*args.get(0).ptr).is_object() {
-        // Single function arg: createServer(handler)
-        UndefinedValue()
     } else {
         UndefinedValue()
     };
@@ -1657,23 +1718,22 @@ unsafe extern "C" fn http2_create_server(cx: *mut JSContext, argc: u32, vp: *mut
         elements_: call_args_vals.as_ptr(),
     };
 
-    rooted!(&in(cx_ref) let ctor_val = ObjectValue(ctor.get()));
+    rooted!(&in(cx_ref) let ctor_fn = ObjectValue(ctor.get()));
+    let mut ctor_rval = UndefinedValue();
     JS_CallFunctionValue(
         cx,
-        global.handle().into(),
-        ctor_val.handle().into(),
+        server_obj.handle().into(),
+        ctor_fn.handle().into(),
         &call_args,
-        new_rval_h,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ctor_rval,
+        },
     );
 
-    if new_rval.is_object() {
-        rooted!(&in(cx_ref) let server_obj = new_rval.to_object());
-        // Store handler on the server object for native listen
-        store_handler(cx, cx_ref, server_obj.get(), argc, &args);
-        args.rval().set(ObjectValue(server_obj.get()));
-    } else {
-        args.rval().set(UndefinedValue());
-    }
+    // Store handler on the server object for native listen
+    store_handler(cx, cx_ref, server_obj.get(), argc, &args);
+    args.rval().set(ObjectValue(server_obj.get()));
 
     true
 }
@@ -1750,15 +1810,35 @@ unsafe extern "C" fn http2_create_secure_server(
         return true;
     }
 
-    // Call new Http2SecureServer(options, handler)
+    // new Http2SecureServer(options, handler): construct via the ctor's
+    // prototype with the instance as `this` (see http2_create_server — a
+    // bare call against the global returns undefined).
     rooted!(&in(cx_ref) let ctor = ctor_val.to_object());
-    rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
 
-    let mut new_rval = UndefinedValue();
-    let new_rval_h = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut new_rval,
-    };
+    let mut proto_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        ctor.handle().into(),
+        c"prototype".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut proto_val,
+        },
+    );
+    rooted!(&in(cx_ref) let proto_obj = if proto_val.is_object() {
+        proto_val.to_object()
+    } else {
+        ::std::ptr::null_mut::<JSObject>()
+    });
+    rooted!(&in(cx_ref) let server_obj = w2::JS_NewObjectWithGivenProto(
+        cx_ref,
+        ::std::ptr::null(),
+        proto_obj.handle()
+    ));
+    if server_obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
 
     let opts_arg = if argc > 0 && (*args.get(0).ptr).is_object() {
         *args.get(0).ptr
@@ -1783,31 +1863,30 @@ unsafe extern "C" fn http2_create_secure_server(
         elements_: call_args_vals.as_ptr(),
     };
 
-    rooted!(&in(cx_ref) let ctor_val = ObjectValue(ctor.get()));
+    rooted!(&in(cx_ref) let ctor_fn = ObjectValue(ctor.get()));
+    let mut ctor_rval = UndefinedValue();
     JS_CallFunctionValue(
         cx,
-        global.handle().into(),
-        ctor_val.handle().into(),
+        server_obj.handle().into(),
+        ctor_fn.handle().into(),
         &call_args,
-        new_rval_h,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ctor_rval,
+        },
     );
 
-    if new_rval.is_object() {
-        rooted!(&in(cx_ref) let server_obj = new_rval.to_object());
-        store_handler(cx, cx_ref, server_obj.get(), argc, &args);
-        // Mark as secure
-        rooted!(&in(cx_ref) let secure_val = BooleanValue(true));
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_secure".as_ptr(),
-            secure_val.handle().into(),
-            0,
-        );
-        args.rval().set(ObjectValue(server_obj.get()));
-    } else {
-        args.rval().set(UndefinedValue());
-    }
+    store_handler(cx, cx_ref, server_obj.get(), argc, &args);
+    // Mark as secure
+    rooted!(&in(cx_ref) let secure_val = BooleanValue(true));
+    JS_DefineProperty(
+        cx,
+        server_obj.handle().into(),
+        c"_secure".as_ptr(),
+        secure_val.handle().into(),
+        0,
+    );
+    args.rval().set(ObjectValue(server_obj.get()));
 
     true
 }
