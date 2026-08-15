@@ -115,6 +115,38 @@ struct AbortEntry {
     async_http_id: u32,
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// init.tls (undici dispatcher tls subset)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Per-fetch TLS options parsed from WHATWG-fetch `init.tls` (the Node
+/// undici `dispatcher` tls option subset): custom trust anchors, explicit
+/// verification opt-out, SNI override. `None` end-to-end = the previous
+/// behaviour byte-for-byte (stealth profile only, system roots, verify on).
+///
+/// Injection mapping (all fields land on the interned `SSLConfig`, so they
+/// participate in `content_hash`/`is_same` — distinct trust stores / SNI
+/// overrides never alias in the connection pool or TLS session cache):
+/// - `ca_certs_der`  → `SSLConfig.ca_certs_der` (servo `CACertificates::
+///   Override` semantics: replaces the system roots for this connection's
+///   peer verification only, via `SSL_set0_verify_cert_store` in
+///   `configure_http_client_with_alpn`)
+/// - `servername`    → `SSLConfig.server_name` (SNI override;
+///   `get_tls_hostname` prefers it)
+/// - `reject_unauthorized` → `AsyncHTTP::Options.reject_unauthorized` →
+///   `client.flags.reject_unauthorized` (Node `rejectUnauthorized:false`
+///   explicit opt-out — verification still runs by default)
+#[derive(Default)]
+pub struct FetchTlsInit {
+    /// DER-encoded CA certificates from `init.tls.ca` (PEM strings parsed
+    /// via BoringSSL; DER byte views taken verbatim). Empty = system roots.
+    pub ca_certs_der: Box<[Box<[u8]>]>,
+    /// `init.tls.rejectUnauthorized`. `None` = default (verify).
+    pub reject_unauthorized: Option<bool>,
+    /// `init.tls.servername` SNI override (non-empty host string).
+    pub servername: Option<String>,
+}
+
 thread_local! {
     static ABORT_REGISTRY: RefCell<HashMap<u32, AbortEntry>> = RefCell::new(HashMap::new());
 }
@@ -247,6 +279,7 @@ pub unsafe fn start(
             body,
             ResolveKind::Response,
             None,
+            None,
         )
     }
 }
@@ -282,6 +315,44 @@ pub unsafe fn start_with_signal(
             body,
             ResolveKind::Response,
             Some(abort),
+            None,
+        )
+    }
+}
+
+/// fetch()-native entry: WHATWG `fetch(input, init)` with both optional
+/// channels — `init.signal` (abort) and `init.tls` (undici dispatcher tls
+/// subset, see [`FetchTlsInit`]). `start`/`start_with_signal` are the
+/// Node-API entries (http/https/http2) and carry no per-fetch tls options.
+///
+/// # Safety
+///
+/// - `cx` must be a live `JSContext*` on the current thread.
+/// - `promise_val` must be an Object JSVal holding a *pending* Promise.
+pub unsafe fn start_fetch(
+    cx: *mut JSContext,
+    promise_val: JSVal,
+    profile: Option<crate::stealth_http::StealthProfile>,
+    method: bun_http::Method,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+    abort: Option<AbortRequest>,
+    tls: Option<FetchTlsInit>,
+) {
+    // SAFETY: delegate with the default Response form; abort/tls pass through.
+    unsafe {
+        start_with_kind(
+            cx,
+            promise_val,
+            profile,
+            method,
+            url,
+            headers,
+            body,
+            ResolveKind::Response,
+            abort,
+            tls,
         )
     }
 }
@@ -317,6 +388,7 @@ pub unsafe fn start_tls_probe(cx: *mut JSContext, promise_val: JSVal, host: Stri
             None,
             ResolveKind::TlsSocket { host_idx },
             None,
+            None,
         )
     }
 }
@@ -338,6 +410,7 @@ unsafe fn start_with_kind(
     body: Option<Vec<u8>>,
     kind: ResolveKind,
     abort: Option<AbortRequest>,
+    tls: Option<FetchTlsInit>,
 ) {
     // GUARD-A (GC root): heap-root the pending Promise value across the async
     // window. The async window spans ticks AND frames (root lives from here
@@ -488,8 +561,27 @@ unsafe fn start_with_kind(
     // ONE pointer for h2 session coalescing / keep-alive reuse — with h2
     // offered by default, a fresh `SharedPtr::new` per fetch would negotiate
     // h2 but open a connection per request.
+    //
+    // init.tls (undici subset): trust-store/SNI overrides are folded into
+    // the SAME config before interning — they are part of the content hash,
+    // so a fetch with a custom CA intentionally never shares a pooled
+    // connection with a default-roots fetch to the same origin.
     let tls_props = {
-        let ssl_config = crate::stealth_http::stealth_profile_to_ssl_config(&profile);
+        let mut ssl_config = crate::stealth_http::stealth_profile_to_ssl_config(&profile);
+        if let Some(tls) = &tls {
+            if !tls.ca_certs_der.is_empty() {
+                ssl_config.ca_certs_der = Some(tls.ca_certs_der.clone());
+            }
+            if let Some(sn) = &tls.servername {
+                if !ssl_config.server_name.is_null() {
+                    // SAFETY: dupe_z-allocated C string solely owned by this
+                    // config (stealth_profile_to_ssl_config leaves it null;
+                    // defensive free keeps the overwrite leak-free anyway).
+                    unsafe { bun_core::free_sensitive(ssl_config.server_name) };
+                }
+                ssl_config.server_name = bun_core::dupe_z(sn.as_bytes());
+            }
+        }
         Some(bun_http::ssl_config::GlobalRegistry::intern(ssl_config))
     };
 
@@ -506,9 +598,14 @@ unsafe fn start_with_kind(
     });
 
     // Build AsyncHTTP::Options with TLS props (+ abort signals when wired).
+    // init.tls.rejectUnauthorized rides the explicit Options channel (Node
+    // semantics: verification still runs by default; only an explicit
+    // `false` opts out — check_server_identity/on_handshake consult the
+    // client flag).
     let options = bun_http::async_http::Options {
         tls_props,
         signals,
+        reject_unauthorized: tls.as_ref().and_then(|t| t.reject_unauthorized),
         ..Default::default()
     };
 

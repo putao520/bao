@@ -237,6 +237,9 @@ fn hpack_response_headers(extra: &[(&str, &str)]) -> Vec<u8> {
 
 pub struct H2Server {
     pub port: u16,
+    /// The fixture's certificate PEM (the same material `TlsServer` serves)
+    /// — tests that verify-on (fetch `init.tls.ca`) feed this to the client.
+    pub cert_pem: String,
     shutdown: Arc<AtomicBool>,
     /// Every request stream, in arrival order: (stream id, label).
     pub streams: Arc<Mutex<Vec<(u32, String)>>>,
@@ -254,7 +257,16 @@ impl H2Server {
     pub fn spawn() -> Self {
         let (cert, key) =
             bao_boringssl_bridge::generate_self_signed_pem("127.0.0.1", 365).expect("self-signed cert");
-        let server = Arc::new(bao_boringssl_bridge::TlsServer::new(&cert, &key).expect("TlsServer"));
+        Self::spawn_with_cert(&cert, &key)
+    }
+
+    /// Cert-providing variant: the caller picks the certificate material
+    /// (e.g. CN=localhost so a verifying client's hostname check can pass —
+    /// the default 127.0.0.1-CN cert can never satisfy an IP-host identity
+    /// check, RFC 2818 §3.1) and holds the PEM to feed `init.tls.ca`.
+    pub fn spawn_with_cert(cert: &str, key: &str) -> Self {
+        let cert_pem = cert.to_string();
+        let server = Arc::new(bao_boringssl_bridge::TlsServer::new(cert, key).expect("TlsServer"));
         // SAFETY: TlsServer::ctx returns its live SSL_CTX; installing the
         // ALPN select callback before any accept is thread-free.
         unsafe {
@@ -326,6 +338,7 @@ impl H2Server {
             .expect("spawn h2 fixture");
         H2Server {
             port,
+            cert_pem,
             shutdown,
             streams,
             requests,

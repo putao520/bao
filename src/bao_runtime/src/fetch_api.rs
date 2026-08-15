@@ -97,6 +97,10 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     // of the raw JSVal here (the object stays reachable through args —
     // init/Request object on the argv stack); rooted where consumed below.
     let mut signal_val: Option<JSVal> = None;
+    // init.tls (undici dispatcher tls subset — Node-stack fetch parity for
+    // self-signed/private-PKI servers): parsed only from the init object;
+    // `None` = zero behavioural change (system roots, verify on, URL SNI).
+    let mut tls_init: Option<crate::fetch_async::FetchTlsInit> = None;
 
     if input_val.is_string() {
         url = crate::js_to_rust_string(cx, input_val);
@@ -275,6 +279,22 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                     signal_val = Some(sv);
                 }
             }
+            // init.tls (fetch-specific, undici dispatcher tls subset): parse
+            // AFTER the WHATWG fields so a malformed tls object fails closed
+            // before any request is scheduled. Absent/null = no change.
+            {
+                let tv = get_val_prop(cx, opts_obj.handle(), "tls");
+                if !tv.is_undefined() && !tv.is_null() {
+                    match parse_tls_init(cx, tv) {
+                        Ok(t) => tls_init = Some(t),
+                        Err(msg) => {
+                            let c_msg = ZBox::from_bytes(msg.as_bytes());
+                            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                            return false;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -375,7 +395,7 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         let flag = Arc::new(AtomicBool::new(false));
         // SAFETY: cx is live on this thread; promise_val is the pending Promise.
         unsafe {
-            crate::fetch_async::start_with_signal(
+            crate::fetch_async::start_fetch(
                 cx,
                 promise_val,
                 profile,
@@ -383,10 +403,11 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                 url,
                 headers,
                 body,
-                crate::fetch_async::AbortRequest {
+                ::std::option::Option::Some(crate::fetch_async::AbortRequest {
                     id: abort_id,
                     flag: ::std::sync::Arc::clone(&flag),
-                },
+                }),
+                tls_init,
             );
             register_abort_listener(cx, sv, abort_id);
         }
@@ -396,7 +417,17 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 
     // SAFETY: cx is live on this thread; promise_val is the pending Promise.
     unsafe {
-        crate::fetch_async::start(cx, promise_val, profile, bun_method, url, headers, body);
+        crate::fetch_async::start_fetch(
+            cx,
+            promise_val,
+            profile,
+            bun_method,
+            url,
+            headers,
+            body,
+            None,
+            tls_init,
+        );
     }
 
     args.rval().set(promise_val);
@@ -1427,6 +1458,209 @@ unsafe fn parse_header_entry(cx: *mut JSContext, pair_val: JSVal) -> Option<(Str
     }
 }
 
+// ── init.tls parsing (undici dispatcher tls subset) ────────────────────────
+
+/// Safety valve: a hostile `ca` array must not grow the parsed trust store
+/// unboundedly (each entry becomes a handshake-time X509_STORE member).
+/// 256 entries is far beyond any legitimate CA bundle (a full system root
+/// store is ~150; undici dispatchers carry a handful).
+const MAX_CA_ENTRIES: usize = 256;
+
+/// Parse WHATWG-fetch `init.tls` — the Node undici `dispatcher` tls option
+/// subset: `{ ca?: string|string[]|BufferSource|BufferSource[],
+/// rejectUnauthorized?: boolean, servername?: string }`.
+///
+/// - `ca`: PEM strings are decoded to DER by BoringSSL (`pem_parse_certs`);
+///   byte views are taken as raw DER (or PEM bytes, sniffed by the BEGIN
+///   marker). A provided `ca` that yields zero certs fails closed — a typo
+///   must not silently degrade to system roots.
+/// - `rejectUnauthorized`: explicit verification opt-out (Node semantics;
+///   verification still runs by default — this is a user instruction, never
+///   a silent fallback).
+/// - `servername`: non-empty SNI override (empty string is ambiguous between
+///   "no override" and Node's SNI-suppression `''` — rejected loudly rather
+///   than silently picking one).
+///
+/// Unknown keys are ignored (undici ignores unknown dispatcher tls options).
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*` on the current thread; `tls_val` must be
+/// protected from GC by the caller's stack frame.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn parse_tls_init(
+    cx: *mut JSContext,
+    tls_val: JSVal,
+) -> ::std::result::Result<crate::fetch_async::FetchTlsInit, String> {
+    unsafe {
+        if !tls_val.is_object() {
+            return Err(
+                "fetch: init.tls must be an object ({ ca, rejectUnauthorized, servername })"
+                    .to_string(),
+            );
+        }
+        let wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        // BCE-012: root to_object() result — the JS reads below can trigger GC
+        rooted!(&in(wrapped_cx) let obj = tls_val.to_object());
+
+        let mut out = crate::fetch_async::FetchTlsInit::default();
+
+        // ca → DER trust list (Override semantics; absent = system roots).
+        let ca_val = get_val_prop(cx, obj.handle(), "ca");
+        if !ca_val.is_undefined() && !ca_val.is_null() {
+            let mut ders: Vec<Box<[u8]>> = Vec::new();
+            collect_ca_ders(cx, ca_val, &mut ders)?;
+            if ders.is_empty() {
+                return Err("fetch: init.tls.ca contained no parseable certificate".to_string());
+            }
+            out.ca_certs_der = ders.into_boxed_slice();
+        }
+
+        // rejectUnauthorized → explicit verify opt-out.
+        let ra_val = get_val_prop(cx, obj.handle(), "rejectUnauthorized");
+        if !ra_val.is_undefined() && !ra_val.is_null() {
+            if !ra_val.is_boolean() {
+                return Err("fetch: init.tls.rejectUnauthorized must be a boolean".to_string());
+            }
+            out.reject_unauthorized = ::std::option::Option::Some(ra_val.to_boolean());
+        }
+
+        // servername → SNI override.
+        let sn_val = get_val_prop(cx, obj.handle(), "servername");
+        if !sn_val.is_undefined() && !sn_val.is_null() {
+            if !sn_val.is_string() {
+                return Err("fetch: init.tls.servername must be a string".to_string());
+            }
+            let sn = crate::js_to_rust_string(cx, sn_val);
+            if sn.is_empty() {
+                return Err(
+                    "fetch: init.tls.servername must be a non-empty host string".to_string(),
+                );
+            }
+            if sn.as_bytes().contains(&0) {
+                return Err("fetch: init.tls.servername must not contain NUL".to_string());
+            }
+            out.servername = ::std::option::Option::Some(sn);
+        }
+
+        Ok(out)
+    }
+}
+
+/// Append the DER certs carried by one `init.tls.ca` value — a PEM string, a
+/// byte view (raw DER, or PEM bytes sniffed by the BEGIN marker), or an
+/// array mixing both. Recursion depth is bounded by construction: arrays
+/// iterate elements, and only the string/byte-view leaf forms parse.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*`; `val` must be protected from GC by the
+/// caller's stack frame.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn collect_ca_ders(
+    cx: *mut JSContext,
+    val: JSVal,
+    out: &mut Vec<Box<[u8]>>,
+) -> ::std::result::Result<(), String> {
+    unsafe {
+        if out.len() >= MAX_CA_ENTRIES {
+            return Err(format!("fetch: init.tls.ca exceeds {} entries", MAX_CA_ENTRIES));
+        }
+        // PEM string → DER (BoringSSL validates the block structure; a PEM
+        // that yields zero certs is an error, not a silent no-op).
+        if val.is_string() {
+            let pem = crate::js_to_rust_string(cx, val);
+            let ders = bao_boringssl_bridge::pem_parse_certs(&pem);
+            if ders.is_empty() {
+                return Err(
+                    "fetch: init.tls.ca PEM string contained no parseable certificate".to_string(),
+                );
+            }
+            for der in ders {
+                if out.len() >= MAX_CA_ENTRIES {
+                    break;
+                }
+                out.push(der.into_boxed_slice());
+            }
+            return Ok(());
+        }
+        if val.is_object() {
+            let wrapped_cx =
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            // BCE-012: root to_object() result — the JS reads below can trigger GC
+            rooted!(&in(wrapped_cx) let obj = val.to_object());
+
+            // Array form: each element is a PEM string / DER byte view.
+            let mut is_array = false;
+            rooted!(&in(wrapped_cx) let probe = val);
+            IsArrayObject(cx, probe.handle().into(), &mut is_array);
+            if is_array {
+                let mut len_val = UndefinedValue();
+                JS_GetProperty(
+                    cx,
+                    obj.handle().into(),
+                    c"length".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut len_val,
+                    },
+                );
+                let len = if len_val.is_int32() && len_val.to_int32() > 0 {
+                    (len_val.to_int32() as usize).min(MAX_CA_ENTRIES)
+                } else {
+                    0
+                };
+                for i in 0..len as u32 {
+                    let mut el = UndefinedValue();
+                    JS_GetElement(
+                        cx,
+                        obj.handle().into(),
+                        i,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut el,
+                        },
+                    );
+                    collect_ca_ders(cx, el, out)?;
+                }
+                return Ok(());
+            }
+
+            // Byte view: PEM bytes (sniffed) or one raw DER certificate.
+            // Unparseable DER is skipped fail-closed downstream by
+            // apply_ca_certs_der (the store stays without it — verification
+            // fails against the override, never silently passes).
+            if let ::std::option::Option::Some(bytes) = crate::node_buffer::collect_byte_view(cx, val)
+            {
+                let looks_pem = bytes
+                    .windows(b"-----BEGIN".len())
+                    .any(|w| w == &b"-----BEGIN"[..]);
+                if looks_pem {
+                    let pem = String::from_utf8_lossy(&bytes).into_owned();
+                    let ders = bao_boringssl_bridge::pem_parse_certs(&pem);
+                    if ders.is_empty() {
+                        return Err(
+                            "fetch: init.tls.ca PEM bytes contained no parseable certificate"
+                                .to_string(),
+                        );
+                    }
+                    for der in ders {
+                        if out.len() >= MAX_CA_ENTRIES {
+                            break;
+                        }
+                        out.push(der.into_boxed_slice());
+                    }
+                    return Ok(());
+                }
+                out.push(bytes.into_boxed_slice());
+                return Ok(());
+            }
+        }
+        Err("fetch: init.tls.ca entries must be PEM strings or DER byte views (Buffer/Uint8Array)".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MultipartValue, encode_multipart, generate_multipart_boundary};
@@ -1509,6 +1743,37 @@ mod tests {
         assert!(
             source.contains(&seq_form),
             "BCE-20260814-FETCH-H: sequence pair form must be documented/parseable"
+        );
+    }
+
+    /// init.tls (undici dispatcher tls subset) must be parsed and plumbed to
+    /// the SSLConfig injection — the gap this feature closed was "self-signed
+    /// server ⇒ only fail-closed, no configuration surface". Split string
+    /// literals to avoid self-match in include_str source.
+    #[test]
+    fn init_tls_parsed_and_injected() {
+        let source = include_str!("fetch_api.rs");
+        let parse_call = ["parse_", "tls_init"].join("");
+        assert!(
+            source.contains(&parse_call),
+            "TEST-ENG-FETCH-TLS REGRESSION: fetch_fn must parse init.tls"
+        );
+        // Fail-closed parsing: a provided ca that parses to zero certs must
+        // be an error, never a silent fallback to system roots.
+        let fail_closed = ["no parseable ", "certificate"].join("");
+        assert!(
+            source.contains(&fail_closed),
+            "TEST-ENG-FETCH-TLS REGRESSION: unparseable init.tls.ca must fail closed"
+        );
+        // rejectUnauthorized is Node-semantics explicit opt-out (boolean only).
+        assert!(
+            source.contains("rejectUnauthorized"),
+            "TEST-ENG-FETCH-TLS REGRESSION: rejectUnauthorized option missing"
+        );
+        // servername SNI override must flow through.
+        assert!(
+            source.contains("servername"),
+            "TEST-ENG-FETCH-TLS REGRESSION: servername option missing"
         );
     }
 
