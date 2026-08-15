@@ -50,9 +50,7 @@ use servo_url::{ImmutableOrigin, ServoUrl};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::async_runtime::{init_async_runtime, spawn_task};
-use crate::connector::{
-    CACertificates, CertificateErrorOverrideManager, create_http_client, create_tls_config,
-};
+use crate::connector::{CACertificates, CertificateErrorOverrideManager};
 use crate::cookie::ServoCookie;
 use crate::cookie_storage::CookieStorage;
 use crate::embedder::NetToEmbedderMsg;
@@ -203,8 +201,6 @@ struct ResourceChannelManager {
 /// This returns a tuple HttpState and a private HttpState.
 fn create_http_states(
     config_dir: Option<&Path>,
-    ca_certificates: CACertificates,
-    ignore_certificate_errors: bool,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 ) -> (Arc<HttpState>, Arc<HttpState>) {
     let mut hsts_list = HstsList::default();
@@ -223,11 +219,6 @@ fn create_http_states(
         auth_cache: RwLock::new(auth_cache),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: HttpCache::new(HttpCacheAssignment::Public),
-        client: create_http_client(create_tls_config(
-            ca_certificates.clone(),
-            ignore_certificate_errors,
-            override_manager.clone(),
-        )),
         override_manager,
         embedder_proxy: embedder_proxy.clone(),
     };
@@ -239,11 +230,6 @@ fn create_http_states(
         auth_cache: RwLock::new(AuthCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: HttpCache::new(HttpCacheAssignment::Private),
-        client: create_http_client(create_tls_config(
-            ca_certificates,
-            ignore_certificate_errors,
-            override_manager.clone(),
-        )),
         override_manager,
         embedder_proxy,
     };
@@ -263,12 +249,8 @@ impl ResourceChannelManager {
         protocols: Arc<ProtocolRegistry>,
         embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
     ) {
-        let (public_http_state, private_http_state) = create_http_states(
-            self.config_dir.as_deref(),
-            self.ca_certificates.clone(),
-            self.ignore_certificate_errors,
-            embedder_proxy,
-        );
+        let (public_http_state, private_http_state) =
+            create_http_states(self.config_dir.as_deref(), embedder_proxy);
 
         let mut rx_set = GenericReceiverSet::new();
         let private_id = rx_set.add(private_receiver);
@@ -853,7 +835,6 @@ impl CoreResourceManager {
                 websocket_chan: None,
                 ca_certificates,
                 ignore_certificate_errors,
-                force_bun_bridge: false,
                 preloaded_resources: preloaded_resources.clone(),
                 in_flight_keep_alive_records,
             };
@@ -953,7 +934,6 @@ impl CoreResourceManager {
                         )))),
                         ca_certificates,
                         ignore_certificate_errors,
-                        force_bun_bridge: false,
                         preloaded_resources,
                         in_flight_keep_alive_records,
                     };

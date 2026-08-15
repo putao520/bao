@@ -109,11 +109,6 @@ pub struct FetchContext {
     pub websocket_chan: Option<Arc<Mutex<WebSocketChannel>>>,
     pub ca_certificates: CACertificates,
     pub ignore_certificate_errors: bool,
-    /// U2 bridge: force this context's requests through the bun bridge
-    /// regardless of the `BAO_PAGE_NET_BUN` flag (test/embedder seam — it
-    /// overrides even the `off` escape hatch; see `http_network_fetch`'s
-    /// dispatch).
-    pub force_bun_bridge: bool,
     pub preloaded_resources: SharedPreloadedResources,
     pub in_flight_keep_alive_records: SharedInflightKeepAliveRecords,
 }

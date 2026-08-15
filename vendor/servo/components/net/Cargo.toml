@@ -26,15 +26,13 @@ tracing = ["dep:tracing"]
 # source of truth — local mapping copies in connector.rs are forbidden).
 bao_boringssl_bridge = { path = "../../../../src/bao_boringssl_bridge" }
 bao_stealth = { path = "../../../../src/bao_stealth" }
-# Shared per-host DNS cache (Bao fusion: servo/hyper + usockets + node:dns
+# Shared per-host DNS cache (Bao fusion: usockets + node:dns + the WS loader
 # resolve through one cache). Low-tier, std-only surface.
 bun_dns = { path = "../../../../src/dns" }
-bun_boringssl = { path = "../../../../src/boringssl" }
 bun_boringssl_sys = { path = "../../../../src/boringssl_sys" }
-# Bao fusion (U2 page-network unification): fetch driver on bun's
-# HTTPThread (single epoll thread + stealth TLS), flag-gated behind
-# BAO_PAGE_NET_BUN (default off — hyper path untouched; `1` = all
-# destinations, `img,css` = phase 1 destination pilot).
+# Bao fusion (U2 page-network unification): the page-network fetch driver on
+# bun's HTTPThread (single epoll thread + stealth TLS) — the only path (the
+# hyper escape hatch was removed with BAO_PAGE_NET_BUN).
 bun_core = { path = "../../../../src/bun_core" }
 bun_http = { path = "../../../../src/http" }
 bun_threading = { path = "../../../../src/threading" }
@@ -59,7 +57,7 @@ futures-util = { workspace = true }
 headers = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-hyper = { workspace = true, features = ["client", "http1", "http2"] }
+hyper = { workspace = true, features = ["http1", "http2"] }
 hyper-util = { workspace = true, features = ["http1"] }
 hyper_serde = { workspace = true }
 imsz = { workspace = true }
@@ -101,7 +99,6 @@ tempfile = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
 tokio-rustls = { workspace = true }
-tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["codec", "io"] }
 tower = { workspace = true }
 tracing = { workspace = true, optional = true }

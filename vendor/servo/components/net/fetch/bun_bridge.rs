@@ -2,12 +2,9 @@
 // that runs servo's page network through bun's `HTTPThread` (single epoll
 // thread, usockets + boringssl stealth TLS) instead of hyper.
 //
-// Gate: `BAO_PAGE_NET_BUN` (default ON since U2 stage 3 — the page network
-// rides the bridge; the hyper path in `http_loader.rs:obtain_response` is
-// kept as the explicit escape hatch for one transition version).
-// Unset routes every request destination through the bridge; `0`/`false`/
-// `off`/`hyper` restores the hyper path for every destination; a comma list
-// (`img,css`) routes only matching request destinations (phase 1 pilot).
+// U2 terminal: this bridge IS the page network — every request destination
+// rides it (the former `BAO_PAGE_NET_BUN` flag and the hyper escape hatch
+// in `http_loader.rs:obtain_response` have been removed).
 //
 // Threading model (mirrors `fetch_async.rs` FetchTasklet, rehosted on tokio):
 //   - servo's fetch runs on a tokio net thread; this bridge schedules the
@@ -46,7 +43,7 @@
 // (SETTINGS payload + pseudo-header wire order + preface PRIORITY frames from
 // the page profile's `Http2Fingerprint` snapshot). Request bodies stay
 // buffered (servo's IPC body stream is drained before the request is
-// scheduled; `http_loader.rs` owns the streaming-request-body semantics).
+// scheduled; bun frames the buffered body with Content-Length).
 //
 // Stage 3 (h2 coalescing): the per-request SSLConfig is interned through
 // bun's `ssl_config::GlobalRegistry` — content-equal configs resolve to one
@@ -55,11 +52,9 @@
 // new connection per request).
 
 use std::pin::pin;
-use std::str::FromStr;
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Once;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -71,11 +66,10 @@ use hyper::Response as HyperResponse;
 use hyper::body::Frame;
 use hyper::ext::ReasonPhrase;
 use ipc_channel::ipc::IpcSender;
-use log::warn;
 use net_traits::NetworkError;
 use net_traits::ResourceAttribute;
 use net_traits::request::{BodyChunkRequest, Destination};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::id::{BrowsingContextId, PipelineId};
 use servo_url::ServoUrl;
@@ -87,7 +81,7 @@ use crate::connector::TlsHandshakeInfo;
 use crate::decoder::Decoder;
 use crate::devtools::prepare_devtools_request;
 use crate::fetch::methods::FetchContext;
-use crate::http_loader::{FRAGMENT, BodyChunk, BodySink, obtain_response_setup_router_callback};
+use crate::http_loader::{FRAGMENT, BodyChunk, obtain_response_setup_router_callback};
 
 /// How often the awaiting future re-checks servo's cancellation listener while
 /// waiting for the HTTPThread callback. The Notify wakes us the moment the
@@ -96,157 +90,13 @@ use crate::http_loader::{FRAGMENT, BodyChunk, BodySink, obtain_response_setup_ro
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 // ──────────────────────────────────────────────────────────────────────────
-// Flag (default ON — U2 stage 3)
-//
-// `BAO_PAGE_NET_BUN`:
-//   - unset                      → every destination through the bridge
-//                                  (stage 3 default; the page network is the
-//                                  bun stack);
-//   - `0` / `false` / `off` / `hyper`
-//                                → hyper path for every destination (explicit
-//                                  escape hatch, deprecated — one transition
-//                                  version, then the hyper path is removed);
-//   - `1` / `true` / `all`       → every destination through the bridge;
-//   - comma list, e.g. `img,css` → only matching request destinations
-//                                  through the bridge (phase 1 pilot).
-//
-// List tokens are fetch-spec destination names (`image`, `style`,
-// `document`, …) plus the pilot aliases `img`, `css`, `js` and `xhr` (XHR
-// requests carry `Destination::None`). Unknown tokens warn and are ignored;
-// a list that parses to the empty set leaves the bridge off.
+// Request counter
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Effective bridge scope. `Destinations` is the phase 1 pilot shape
-/// (`img,css`); `All` is the phase 2 end state.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PageNetBunMode {
-    Off,
-    All,
-    Destinations(Vec<Destination>),
-}
-
-static PAGE_NET_BUN_MODE: RwLock<Option<PageNetBunMode>> = RwLock::new(None);
-static PAGE_NET_BUN_ENV_READ: Once = Once::new();
-
 /// Number of requests dispatched through the bridge (incremented at
-/// `obtain_response_bun` entry, before any I/O). Diagnostics / e2e pilot
-/// assertions: proves which requests actually took the bun path.
+/// `obtain_response_bun` entry, before any I/O). Diagnostics / e2e
+/// assertions: proves which requests actually went through the bridge.
 static PAGE_NET_BUN_REQUESTS: AtomicU64 = AtomicU64::new(0);
-
-/// Parse a comma-separated destination list. Aliases map to fetch-spec
-/// names first, then `Destination::from_str` (the csp crate's closed table)
-/// decides validity — no bespoke name matching to drift out of sync.
-fn parse_destination_list(value: &str) -> Vec<Destination> {
-    let mut destinations = Vec::new();
-    for raw in value.split(',') {
-        let token = raw.trim().to_ascii_lowercase();
-        if token.is_empty() {
-            continue;
-        }
-        let canonical = match token.as_str() {
-            "img" => "image",
-            "css" => "style",
-            "js" => "script",
-            "xhr" => "",
-            other => other,
-        };
-        match Destination::from_str(canonical) {
-            Ok(destination) => {
-                if !destinations.contains(&destination) {
-                    destinations.push(destination);
-                }
-            },
-            Err(_) => warn!("BAO_PAGE_NET_BUN: unknown destination token '{raw}' (ignored)"),
-        }
-    }
-    destinations
-}
-
-/// Parse one `BAO_PAGE_NET_BUN` value (env string or runtime-override
-/// spec): `0`/`false`/`off`/`hyper` → off (the deprecated hyper escape
-/// hatch), `1`/`true`/`all` → every destination, anything else → a
-/// destination list. Pure — no global state, directly unit-testable.
-/// Note the *unset* default (bridge ON) lives in [`parse_env_mode`]; an
-/// explicitly empty value still parses to off.
-pub fn parse_page_net_bun_spec(value: &str) -> PageNetBunMode {
-    let trimmed = value.trim();
-    if trimmed.is_empty() ||
-        trimmed.eq_ignore_ascii_case("0") ||
-        trimmed.eq_ignore_ascii_case("false") ||
-        trimmed.eq_ignore_ascii_case("off") ||
-        trimmed.eq_ignore_ascii_case("hyper")
-    {
-        return PageNetBunMode::Off;
-    }
-    if trimmed == "1" || trimmed.eq_ignore_ascii_case("true") || trimmed.eq_ignore_ascii_case("all")
-    {
-        return PageNetBunMode::All;
-    }
-    let destinations = parse_destination_list(value);
-    if destinations.is_empty() {
-        warn!("BAO_PAGE_NET_BUN='{value}' parsed to an empty destination set — bridge stays off");
-        return PageNetBunMode::Off;
-    }
-    PageNetBunMode::Destinations(destinations)
-}
-
-fn parse_env_mode() -> PageNetBunMode {
-    match std::env::var("BAO_PAGE_NET_BUN") {
-        Ok(value) => parse_page_net_bun_spec(&value),
-        // U2 stage 3: unset → the page network rides the bridge (hyper is
-        // the explicit `off` escape hatch, deprecated).
-        Err(_) => PageNetBunMode::All,
-    }
-}
-
-/// Resolve the effective mode: the runtime override wins; otherwise the env
-/// value is read exactly once (first call). Default (unset):
-/// [`PageNetBunMode::All`] — the bridge; `BAO_PAGE_NET_BUN=off` restores
-/// the deprecated hyper path.
-fn effective_mode() -> PageNetBunMode {
-    PAGE_NET_BUN_ENV_READ.call_once(|| {
-        let mut guard = PAGE_NET_BUN_MODE.write();
-        if guard.is_none() {
-            *guard = Some(parse_env_mode());
-        }
-    });
-    PAGE_NET_BUN_MODE
-        .read()
-        .clone()
-        .unwrap_or(PageNetBunMode::Off)
-}
-
-/// Dispatch predicate for the `http_network_fetch` cut point: does this
-/// request destination go through the bun bridge?
-pub fn page_net_bun_enabled_for(destination: Destination) -> bool {
-    match effective_mode() {
-        PageNetBunMode::Off => false,
-        PageNetBunMode::All => true,
-        PageNetBunMode::Destinations(destinations) => destinations.contains(&destination),
-    }
-}
-
-/// The current mode (diagnostics).
-pub fn page_net_bun_mode() -> PageNetBunMode {
-    effective_mode()
-}
-
-/// Override the bridge flag at runtime (embedder / tests): `true` = every
-/// destination, `false` = off. Does not affect already-in-flight requests.
-pub fn set_page_net_bun_enabled(enabled: bool) {
-    *PAGE_NET_BUN_MODE.write() = Some(if enabled {
-        PageNetBunMode::All
-    } else {
-        PageNetBunMode::Off
-    });
-}
-
-/// Override the bridge flag with a destination list at runtime (embedder /
-/// tests) — same token syntax as the env value (e.g. `"img,css"`; `1`/`true`
-/// also accepted). An empty/invalid parse leaves the bridge off.
-pub fn set_page_net_bun_destinations(spec: &str) {
-    *PAGE_NET_BUN_MODE.write() = Some(parse_page_net_bun_spec(spec));
-}
 
 /// How many requests have been dispatched through the bridge (see
 /// [`PAGE_NET_BUN_REQUESTS`]).
@@ -1331,16 +1181,16 @@ pub fn build_devtools_request_msg(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Servo-side entry point (called from http_loader.rs behind the flag)
+// Servo-side entry point (called from http_loader.rs)
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Flag-gated replacement for `obtain_response` (hyper). Same contract:
-/// returns headers-wrapped response + devtools message (stage 2: built, not
-/// `None`) or a `NetworkError`. The redirect loop, CORS, cache, HSTS and
+/// The page-network fetch exchange (the only path — the hyper-era
+/// `obtain_response` escape hatch was removed with `BAO_PAGE_NET_BUN`).
+/// Same contract: returns headers-wrapped response + devtools message or a
+/// `NetworkError`. The redirect loop, CORS, cache, HSTS and
 /// cookies all remain servo-side — this function only performs the single
 /// HTTP exchange. The downstream `responseReceived`-equivalent devtools
-/// messages are emitted by `http_fetch`'s shared body-consumption loop,
-/// exactly as for the hyper path.
+/// messages are emitted by `http_fetch`'s shared body-consumption loop.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn obtain_response_bun(
     url: &ServoUrl,
@@ -1449,7 +1299,7 @@ pub(crate) async fn obtain_response_bun(
         obtain_response_setup_router_callback(
             StdArc::clone(&devtools_bytes),
             chunk_requester,
-            BodySink::Buffered(sender),
+            sender,
             fetch_terminated,
         )?;
         let mut buffered = vec![];

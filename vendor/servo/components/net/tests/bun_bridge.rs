@@ -26,8 +26,8 @@
 //!       connection for two requests; the same key shape the h2 session
 //!       matchers use, so this is the coalescing proof at pool level).
 //!
-//! The bridge flag is default-ON since stage 3 (unset → every destination
-//! rides the bridge; `BAO_PAGE_NET_BUN=off` is the hyper escape hatch).
+//! The bridge is the only page-network path (the `BAO_PAGE_NET_BUN` flag and
+//! the hyper escape hatch were removed).
 //! `http_loader.rs` dispatch and the servo-side behaviour are covered by the
 //! rest of this test suite.
 
@@ -46,9 +46,8 @@ use net_traits::NetworkError;
 
 use net::async_runtime::{spawn_blocking_task, spawn_task};
 use net::fetch::bun_bridge::{
-    BunCancelHandle, BridgeError, PageNetBunMode, build_devtools_request_msg, build_ssl_config,
-    bun_tls_info_to_handshake, fetch_core, map_bun_error, parse_page_net_bun_spec,
-    to_servo_response,
+    BunCancelHandle, BridgeError, build_devtools_request_msg, build_ssl_config,
+    bun_tls_info_to_handshake, fetch_core, map_bun_error, to_servo_response,
 };
 use net::test_util::{make_body, make_server, make_ssl_server};
 use net_traits::request::Destination;
@@ -303,63 +302,6 @@ fn bridge_error_mapping_table() {
     }
 }
 
-/// `BAO_PAGE_NET_BUN` value semantics (U2 phase 1): off / all / destination
-/// list, aliases (`img`→image, `css`→style, `js`→script, `xhr`→None),
-/// canonical fetch-spec names, unknown tokens ignored, empty parse → off.
-/// Exercises the pure parser — no process-global flag mutation.
-#[test]
-fn bridge_flag_spec_parsing() {
-    // Off family (stage 3: `off`/`hyper` are the explicit deprecated escape
-    // hatch; empty/garbage parses to off — the *unset* default is All, see
-    // parse_env_mode).
-    for value in ["", "0", "false", "FALSE", "  0  ", "off", "OFF", " Hyper ", "bogus,,", ",,"] {
-        assert_eq!(
-            parse_page_net_bun_spec(value),
-            PageNetBunMode::Off,
-            "value '{value}' must parse to Off"
-        );
-    }
-
-    // All family (phase 2 posture).
-    for value in ["1", "true", "TRUE", "all", " 1 "] {
-        assert_eq!(
-            parse_page_net_bun_spec(value),
-            PageNetBunMode::All,
-            "value '{value}' must parse to All"
-        );
-    }
-
-    // Pilot list: aliases.
-    assert_eq!(
-        parse_page_net_bun_spec("img,css"),
-        PageNetBunMode::Destinations(vec![Destination::Image, Destination::Style])
-    );
-    // Canonical fetch-spec names, whitespace + duplicate tolerant.
-    assert_eq!(
-        parse_page_net_bun_spec(" style , image ,style"),
-        PageNetBunMode::Destinations(vec![Destination::Style, Destination::Image])
-    );
-    // Unknown tokens are ignored, valid ones survive.
-    assert_eq!(
-        parse_page_net_bun_spec("img, nonsense ,css"),
-        PageNetBunMode::Destinations(vec![Destination::Image, Destination::Style])
-    );
-    // `xhr` alias → Destination::None (XHR requests carry the None dest).
-    assert_eq!(
-        parse_page_net_bun_spec("xhr"),
-        PageNetBunMode::Destinations(vec![Destination::None])
-    );
-    // `js` alias → script.
-    assert_eq!(
-        parse_page_net_bun_spec("js"),
-        PageNetBunMode::Destinations(vec![Destination::Script])
-    );
-    // Full canonical coverage: every FromStr-valid name round-trips.
-    assert_eq!(
-        parse_page_net_bun_spec("document"),
-        PageNetBunMode::Destinations(vec![Destination::Document])
-    );
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Stage 2: true streaming, ReasonPhrase/version, TLS info, CA override,
@@ -1212,9 +1154,6 @@ fn bridge_servo_pipeline_document_fetch() {
         *response.body_mut() = make_body(b"pipeline hello".to_vec());
     });
     let mut context = crate::new_fetch_context(None, None);
-    // Per-context routing override — NOT the process-global flag (which
-    // would race the suite's concurrent fetch tests).
-    context.force_bun_bridge = true;
     let request = RequestBuilder::new(
         Some(TEST_WEBVIEW_ID),
         url.clone(),
@@ -1262,7 +1201,6 @@ fn bridge_servo_pipeline_cors_opaque_origin() {
         *response.body_mut() = make_body(b"cors-data".to_vec());
     });
     let mut context = crate::new_fetch_context(None, None);
-    context.force_bun_bridge = true;
     let request = RequestBuilder::new(
         Some(TEST_WEBVIEW_ID),
         url.clone(),

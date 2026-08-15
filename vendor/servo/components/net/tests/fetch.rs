@@ -790,7 +790,6 @@ fn test_fetch_with_hsts() {
         websocket_chan: None,
         ca_certificates: CACertificates::Default,
         ignore_certificate_errors: false,
-        force_bun_bridge: false,
         preloaded_resources: Default::default(),
         in_flight_keep_alive_records: Default::default(),
     };
@@ -855,7 +854,6 @@ fn test_load_adds_host_to_hsts_list_when_url_is_https() {
         websocket_chan: None,
         ca_certificates: CACertificates::Default,
         ignore_certificate_errors: false,
-        force_bun_bridge: false,
         preloaded_resources: Default::default(),
         in_flight_keep_alive_records: Default::default(),
     };
@@ -925,7 +923,6 @@ fn test_fetch_self_signed() {
         websocket_chan: None,
         ca_certificates: CACertificates::Default,
         ignore_certificate_errors: false,
-        force_bun_bridge: false,
         preloaded_resources: Default::default(),
         in_flight_keep_alive_records: Default::default(),
     };
@@ -1573,7 +1570,6 @@ fn test_fetch_request_intercepted() {
         websocket_chan: None,
         ca_certificates: CACertificates::Default,
         ignore_certificate_errors: false,
-        force_bun_bridge: false,
         preloaded_resources: Default::default(),
         in_flight_keep_alive_records: Default::default(),
     };

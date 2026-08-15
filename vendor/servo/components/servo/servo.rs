@@ -991,8 +991,6 @@ impl Servo {
             private_storage_threads.clone(),
         );
 
-        net::connector::prewarm_tls();
-
         if opts::get().multiprocess {
             prefs::add_observer(Box::new(constellation_proxy.clone()));
         }
