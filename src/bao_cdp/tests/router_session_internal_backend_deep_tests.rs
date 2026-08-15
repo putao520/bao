@@ -148,8 +148,9 @@ fn test_session_send_runtime_enable() {
     let session = router.create_internal_session("t1");
     let result = session.send(&router, "Runtime.enable", None);
     assert!(result.is_ok());
-    let val = result.unwrap();
-    assert_eq!(val["executionContextId"], 1);
+    // New contract (6983871b): Chrome semantics — Runtime.enable returns {}
+    // (executionContextId:1 was a fabrication).
+    assert_eq!(result.unwrap(), serde_json::json!({}));
 }
 
 #[test]
@@ -263,8 +264,15 @@ fn test_session_send_tracks_enabled_domains() {
     session.send(&router, "Page.enable", None).ok();
     session.send(&router, "Runtime.enable", None).ok();
     session.send(&router, "DOM.enable", None).ok();
-    // Sending additional commands should still work
-    assert!(session.send(&router, "Page.getLayoutMetrics", None).is_ok());
+    // Sending additional commands should still route: getLayoutMetrics
+    // surfaces its explicit -32603 (no bridge) while evaluate succeeds.
+    assert_eq!(
+        session
+            .send(&router, "Page.getLayoutMetrics", None)
+            .unwrap_err()
+            .code,
+        -32603
+    );
     assert!(session
         .send(
             &router,

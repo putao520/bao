@@ -315,83 +315,98 @@ fn test_page_enable_disable() {
     assert!(handle("Page.disable").result.is_some());
 }
 
+// New contract (6983871b): every servo-state-dependent Page command is an
+// explicit error without a bridge — real data or explicit failure, never a
+// canned success. -32603 = no servo bridge; -32000 = facility absent;
+// -32602 = required param missing.
+
 #[test]
 fn test_page_navigate_default_url() {
     let resp = handle("Page.navigate");
-    assert!(resp.result.is_some());
-    let val = resp.result.unwrap();
-    assert_eq!(val["frameId"], "0");
-    assert!(val["loaderId"].is_string());
+    let e = resp.error.expect("no bridge must yield an error");
+    assert_eq!(e.code, -32603);
+    assert!(e.message.contains("no servo bridge"));
 }
 
 #[test]
 fn test_page_navigate_with_url() {
     let resp = handle_params("Page.navigate", json!({"url": "https://example.com"}));
-    assert!(resp.result.is_some());
+    assert_eq!(resp.error.unwrap().code, -32603);
 }
 
 #[test]
 fn test_page_reload() {
-    let resp = handle("Page.reload");
-    assert!(resp.result.is_some());
+    assert_eq!(handle("Page.reload").error.unwrap().code, -32603);
 }
 
 #[test]
 fn test_page_get_frame_tree() {
-    let resp = handle("Page.getFrameTree");
-    assert!(resp.result.is_some());
+    assert_eq!(handle("Page.getFrameTree").error.unwrap().code, -32603);
 }
 
 #[test]
 fn test_page_get_navigation_history() {
+    // servo exposes no session-history enumeration — -32000, never a
+    // fabricated currentIndex/entries payload.
     let resp = handle("Page.getNavigationHistory");
-    assert!(resp.result.is_some());
-    let val = resp.result.unwrap();
-    assert_eq!(val["currentIndex"], 0);
+    let e = resp.error.expect("history enumeration must fail loudly");
+    assert_eq!(e.code, -32000);
+    assert!(e.message.contains("not supported"));
 }
 
 #[test]
 fn test_page_capture_screenshot_no_bridge() {
+    // No renderer without the bridge — -32603, never {"data":""}.
     let resp = handle("Page.captureScreenshot");
-    assert!(resp.result.is_some());
-    assert_eq!(resp.result.unwrap()["data"], "");
+    let e = resp.error.expect("no bridge must yield an error");
+    assert_eq!(e.code, -32603);
+    assert!(resp.result.is_none(), "no fabricated image data");
 }
 
 #[test]
 fn test_page_set_content() {
-    assert!(handle("Page.setContent").result.is_some());
+    let e = handle("Page.setContent").error.expect("missing html must be rejected");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("html"));
 }
 
 #[test]
 fn test_page_close() {
-    assert!(handle("Page.close").result.is_some());
+    assert_eq!(handle("Page.close").error.unwrap().code, -32603);
 }
 
 #[test]
 fn test_page_bring_to_front() {
-    assert!(handle("Page.bringToFront").result.is_some());
+    assert_eq!(handle("Page.bringToFront").error.unwrap().code, -32603);
 }
 
 #[test]
 fn test_page_get_layout_metrics() {
+    // Metrics are computed live from the document — -32603 without a bridge,
+    // the hardcoded 1920x1080 is eradicated.
     let resp = handle("Page.getLayoutMetrics");
-    assert!(resp.result.is_some());
-    let val = resp.result.unwrap();
-    assert_eq!(val["contentSize"]["width"], 1920);
+    let e = resp.error.expect("no bridge must yield an error");
+    assert_eq!(e.code, -32603);
+    assert!(resp.result.is_none(), "no fabricated dimensions");
 }
 
 #[test]
 fn test_page_add_script_no_bridge() {
+    // Identifier generation lives behind the bridge — missing source is
+    // -32602, never the hardcoded {"identifier":"1"} stub.
     let resp = handle("Page.addScriptToEvaluateOnNewDocument");
-    assert!(resp.result.is_some());
-    assert_eq!(resp.result.unwrap()["identifier"], "1");
+    let e = resp.error.expect("missing source must be rejected");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("source"));
 }
 
 #[test]
 fn test_page_remove_script() {
-    assert!(handle("Page.removeScriptToEvaluateOnNewDocument")
-        .result
-        .is_some());
+    let e = handle("Page.removeScriptToEvaluateOnNewDocument")
+        .error
+        .expect("missing identifier must be rejected");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("identifier"));
 }
 
 #[test]
@@ -403,8 +418,10 @@ fn test_page_unknown() {
 
 #[test]
 fn test_runtime_enable() {
+    // Chrome semantics: Runtime.enable returns {} (the old
+    // executionContextId:1 was itself a fabrication).
     let resp = handle("Runtime.enable");
-    assert_eq!(resp.result.unwrap()["executionContextId"], 1);
+    assert_eq!(resp.result.unwrap(), serde_json::json!({}));
 }
 
 #[test]
@@ -534,11 +551,11 @@ fn test_dom_remove_node() {
 
 #[test]
 fn test_dom_get_outer_html_no_bridge() {
+    // outerHTML is read from the live document — -32603, never canned html.
     let resp = handle("DOM.getOuterHTML");
-    assert_eq!(
-        resp.result.unwrap()["outerHTML"],
-        "<html><body></body></html>"
-    );
+    let e = resp.error.expect("no bridge must yield an error");
+    assert_eq!(e.code, -32603);
+    assert!(resp.result.is_none(), "no canned outerHTML payload");
 }
 
 #[test]
@@ -571,8 +588,12 @@ fn test_network_enable_disable() {
 
 #[test]
 fn test_network_get_response_body() {
+    // servo exposes no response-body store — -32603, never an empty-body
+    // fake success carrying base64Encoded:false.
     let resp = handle("Network.getResponseBody");
-    assert_eq!(resp.result.unwrap()["base64Encoded"], false);
+    let e = resp.error.expect("no bridge must yield an error");
+    assert_eq!(e.code, -32603);
+    assert!(resp.result.is_none());
 }
 
 #[test]
@@ -582,7 +603,11 @@ fn test_network_set_cache_disabled() {
 
 #[test]
 fn test_network_set_extra_http_headers() {
-    assert!(handle("Network.setExtraHTTPHeaders").result.is_some());
+    // Headers are never silently dropped — -32603 without a bridge.
+    assert_eq!(
+        handle("Network.setExtraHTTPHeaders").error.unwrap().code,
+        -32603
+    );
 }
 
 #[test]

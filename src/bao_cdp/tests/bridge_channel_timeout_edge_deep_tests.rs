@@ -372,6 +372,9 @@ fn test_target_close_target_fire_and_forget() {
 
 #[test]
 fn test_page_navigate_with_bridge() {
+    // New contract (6983871b): the bridge response is the truth — the real
+    // frameId (page id) and fresh loaderId come from the bridge handler and
+    // must pass through verbatim, never fabricated by the protocol layer.
     let (tx, rx) = bridge_channel(Duration::from_millis(200));
     let navigated = Arc::new(AtomicUsize::new(0));
     let navigated2 = navigated.clone();
@@ -384,7 +387,7 @@ fn test_page_navigate_with_bridge() {
                     navigated2.fetch_add(1, Ordering::SeqCst);
                 }
                 BridgeResponse {
-                    result: Ok(json!({})),
+                    result: Ok(json!({"frameId": "t1", "loaderId": "load-7f3a"})),
                 }
             });
             if got {
@@ -402,16 +405,19 @@ fn test_page_navigate_with_bridge() {
     done.store(1, Ordering::Relaxed);
     assert!(resp.result.is_some());
     let result = resp.result.unwrap();
-    assert_eq!(result["frameId"], "0");
+    assert_eq!(result["frameId"], "t1");
     assert!(result["loaderId"].is_string());
     assert_eq!(navigated.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn test_page_navigate_no_bridge_default_url() {
+fn test_page_navigate_no_bridge_explicit_error() {
+    // New contract (6983871b): navigation requires the servo bridge —
+    // explicit -32603, never a fabricated frameId:"0" success.
     let resp = dispatch("Page.navigate", Some(json!({})));
-    assert!(resp.result.is_some());
-    assert_eq!(resp.result.unwrap()["frameId"], "0");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 // ============================================================================
@@ -635,11 +641,13 @@ fn test_network_get_all_cookies() {
 }
 
 #[test]
-fn test_network_get_response_body() {
+fn test_network_get_response_body_no_bridge_explicit_error() {
+    // New contract (6983871b): servo exposes no response-body store —
+    // explicit -32603 without a bridge, never an empty-body fake success.
     let resp = dispatch("Network.getResponseBody", None);
-    let result = resp.result.unwrap();
-    assert_eq!(result["body"], "");
-    assert_eq!(result["base64Encoded"], false);
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(resp.result.is_none(), "error response must not carry a body");
 }
 
 #[test]
@@ -652,12 +660,17 @@ fn test_network_set_cache_disabled() {
 }
 
 #[test]
-fn test_network_set_extra_http_headers() {
+fn test_network_set_extra_http_headers_no_bridge_explicit_error() {
+    // New contract (6983871b): servo has no per-target extra-headers API —
+    // the bridge reports real support; without one it is an explicit -32603,
+    // never a silent header drop masquerading as success.
     let resp = dispatch(
         "Network.setExtraHTTPHeaders",
         Some(json!({"headers": {"X-Custom": "value"}})),
     );
-    assert!(resp.result.is_some());
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(resp.result.is_none());
 }
 
 #[test]
@@ -1246,36 +1259,110 @@ fn test_page_enable_disable_empty_result() {
 }
 
 #[test]
-fn test_page_navigate_loader_id_encodes_url_length() {
-    // loaderId = format!("{:016x}", url.len()) — adversarial: verify the encoding rule.
-    let resp = dispatch("Page.navigate", Some(json!({"url": "https://example.com"})));
-    let r = resp.result.unwrap();
-    let url_len = "https://example.com".len() as u64;
-    assert_eq!(r["loaderId"], format!("{:016x}", url_len));
-    assert_eq!(r["frameId"], "0");
+fn test_page_navigate_loader_id_from_bridge_response() {
+    // New contract (6983871b): the old fabricated rule
+    // `loaderId = format!("{:016x}", url.len())` is eradicated — loaderIds
+    // are per-load values from the bridge handler. Adversarial: a distinctive
+    // loaderId that CANNOT be derived from the url length must pass through
+    // verbatim ("https://example.com".len()=19 → the old canned rule would
+    // produce 0000000000000013, not this value).
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|_| BridgeResponse {
+                result: Ok(json!({"frameId": "t1", "loaderId": "load-not-url-len"})),
+            });
+            if got {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge(
+        "Page.navigate",
+        Some(json!({"url": "https://example.com"})),
+        "t1",
+        &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    let r = resp.result.expect("bridge response must pass through");
+    assert_eq!(r["loaderId"], "load-not-url-len");
+    assert_eq!(r["frameId"], "t1");
 }
 
 #[test]
 fn test_page_navigate_empty_url_defaults_to_about_blank() {
-    // No url key → defaults to "about:blank" (len 10 → loaderId = 000000000000000a).
-    let resp = dispatch("Page.navigate", Some(json!({})));
-    let r = resp.result.unwrap();
-    assert_eq!(
-        r["loaderId"],
-        format!("{:016x}", "about:blank".len() as u64)
-    );
+    // BCE-20260621-EMPTY-STR guard: empty/missing url must fall back to
+    // "about:blank" in the Navigate command the bridge receives (verified by
+    // capturing the actual bridge command, not a canned response).
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<String>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::Navigate { url, .. } = cmd {
+                    *captured2.lock().unwrap() = Some(url);
+                }
+                BridgeResponse {
+                    result: Ok(json!({"frameId": "t1", "loaderId": "load-1"})),
+                }
+            });
+            if got {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("Page.navigate", Some(json!({})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert!(resp.result.is_some());
+    let url = captured
+        .lock()
+        .unwrap()
+        .take()
+        .expect("Navigate bridge command must fire");
+    assert_eq!(url, "about:blank", "empty url must default to about:blank");
 }
 
 #[test]
 fn test_page_navigate_non_string_url_falls_back_to_default() {
-    // Boundary: url present but not a string → falls through to default.
-    let resp = dispatch("Page.navigate", Some(json!({"url": 42})));
-    let r = resp.result.unwrap();
-    // Falls back to "about:blank" because as_str() on a number is None.
-    assert_eq!(
-        r["loaderId"],
-        format!("{:016x}", "about:blank".len() as u64)
-    );
+    // Boundary: url present but not a string → as_str() is None → the bridge
+    // must still receive the "about:blank" default.
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<String>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::Navigate { url, .. } = cmd {
+                    *captured2.lock().unwrap() = Some(url);
+                }
+                BridgeResponse {
+                    result: Ok(json!({"frameId": "t1", "loaderId": "load-1"})),
+                }
+            });
+            if got {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("Page.navigate", Some(json!({"url": 42})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert!(resp.result.is_some());
+    let url = captured
+        .lock()
+        .unwrap()
+        .take()
+        .expect("Navigate bridge command must fire");
+    assert_eq!(url, "about:blank", "non-string url must fall back to about:blank");
 }
 
 #[test]
@@ -1306,18 +1393,24 @@ fn test_page_navigate_with_bridge_timeout_surfaces_32603_error() {
 }
 
 #[test]
-fn test_page_navigate_missing_url_no_bridge_default_path() {
+fn test_page_navigate_missing_url_no_bridge_explicit_error() {
+    // New contract (6983871b): navigate without a bridge is an explicit
+    // -32603 regardless of the url defaulting logic.
     let resp = dispatch("Page.navigate", None);
-    assert!(resp.result.is_some());
-    assert_eq!(resp.result.unwrap()["frameId"], "0");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
-fn test_page_reload_no_bridge_uses_default_frame_ids() {
+fn test_page_reload_no_bridge_explicit_error() {
+    // New contract (6983871b): reload goes through the real WebView::reload
+    // path via the bridge — without one it is an explicit -32603, never the
+    // canned frameId/loaderId "0" success.
     let resp = dispatch("Page.reload", Some(json!({"ignoreCache": true})));
-    let r = resp.result.unwrap();
-    assert_eq!(r["frameId"], "0");
-    assert_eq!(r["loaderId"], "0");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(resp.result.is_none());
 }
 
 #[test]
@@ -1359,29 +1452,35 @@ fn test_page_reload_with_bridge_routes_reload_command() {
 }
 
 #[test]
-fn test_page_get_frame_tree_no_bridge_default_url() {
+fn test_page_get_frame_tree_no_bridge_explicit_error() {
+    // New contract (6983871b): frame url/mimeType/name/origin are read from
+    // the live document via the bridge; without one it is an explicit -32603,
+    // never a fabricated about:blank frame tree.
     let resp = dispatch("Page.getFrameTree", None);
-    let frame = &resp.result.unwrap()["frameTree"]["frame"];
-    assert_eq!(frame["id"], "0");
-    assert_eq!(frame["url"], "about:blank");
-    assert_eq!(frame["mimeType"], "text/html");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
-fn test_page_get_navigation_history_default_url() {
+fn test_page_get_navigation_history_not_supported() {
+    // New contract (6983871b): servo WebView exposes no session-history
+    // enumeration — explicit -32000, never a fabricated single-entry history.
     let resp = dispatch("Page.getNavigationHistory", None);
-    let r = resp.result.unwrap();
-    assert_eq!(r["currentIndex"], 0);
-    let entries = r["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["url"], "about:blank");
+    let err = resp.error.expect("history enumeration must fail loudly");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("not supported"));
+    assert!(resp.result.is_none());
 }
 
 #[test]
-fn test_page_capture_screenshot_no_bridge_empty_data() {
+fn test_page_capture_screenshot_no_bridge_explicit_error() {
+    // New contract (6983871b): no renderer without the bridge — explicit
+    // -32603, never the canned {"data":""} success.
     let resp = dispatch("Page.captureScreenshot", None);
-    let r = resp.result.unwrap();
-    assert_eq!(r["data"], "");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(resp.result.is_none(), "no fabricated image data");
 }
 
 #[test]
@@ -1490,7 +1589,12 @@ fn test_page_add_script_empty_source_skips_bridge() {
         &tx,
     );
     done.store(1, Ordering::Relaxed);
-    assert_eq!(resp.result.unwrap()["identifier"], "1");
+    // New contract (6983871b): empty source is rejected with -32602 invalid
+    // params BEFORE any bridge dispatch (the old {"identifier":"1"} stub is
+    // eradicated — identifier generation lives behind the bridge).
+    let err = resp.error.expect("empty source must be rejected");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("source"));
     std::thread::sleep(Duration::from_millis(30));
     assert_eq!(
         dispatched.load(Ordering::SeqCst),
@@ -1513,7 +1617,7 @@ fn test_page_add_script_nonempty_source_dispatches_bridge() {
                     *captured2.lock().unwrap() = Some(source);
                 }
                 BridgeResponse {
-                    result: Ok(json!({})),
+                    result: Ok(json!({"identifier": "41"})),
                 }
             });
             if got {
@@ -1529,7 +1633,9 @@ fn test_page_add_script_nonempty_source_dispatches_bridge() {
         &tx,
     );
     done.store(1, Ordering::Relaxed);
-    assert_eq!(resp.result.unwrap()["identifier"], "1");
+    // New contract (6983871b): the identifier is genuinely generated behind
+    // the bridge — its response is the truth (no hardcoded "1").
+    assert_eq!(resp.result.unwrap()["identifier"], "41");
     let src = captured
         .lock()
         .unwrap()
@@ -1540,27 +1646,41 @@ fn test_page_add_script_nonempty_source_dispatches_bridge() {
 
 #[test]
 fn test_page_remove_script_to_evaluate_on_new_document_empty() {
+    // New contract (6983871b): a missing identifier param is -32602 invalid
+    // params — the old silent ok is eradicated.
     let resp = dispatch("Page.removeScriptToEvaluateOnNewDocument", None);
-    assert!(resp.result.is_some());
-    assert!(resp.error.is_none());
+    let err = resp.error.expect("missing identifier must be rejected");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("identifier"));
 }
 
 #[test]
-fn test_page_misc_commands_empty_results() {
-    for cmd in ["setContent", "close", "bringToFront"] {
+fn test_page_misc_commands_no_bridge_explicit_errors() {
+    // New contract (6983871b): all three are real paths now —
+    // setContent validates its html param (-32602), close and bringToFront
+    // require the bridge (-32603). No silent empty successes remain.
+    let resp = dispatch("Page.setContent", None);
+    let err = resp.error.expect("setContent without html must be rejected");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("html"));
+
+    for cmd in ["close", "bringToFront"] {
         let resp = dispatch(&format!("Page.{cmd}"), None);
-        assert!(resp.result.is_some(), "{cmd} must return a result");
-        assert!(resp.error.is_none(), "{cmd} must not error");
+        let err = resp.error.expect("{cmd} requires the bridge");
+        assert_eq!(err.code, -32603, "{cmd} must surface -32603 without a bridge");
+        assert!(resp.result.is_none(), "{cmd} must not fake success");
     }
 }
 
 #[test]
-fn test_page_get_layout_metrics_constant_dimensions() {
+fn test_page_get_layout_metrics_no_bridge_explicit_error() {
+    // New contract (6983871b): layout metrics are computed live from the
+    // document via the bridge; without one it is an explicit -32603 — the
+    // hardcoded 1920x1080 constant is eradicated.
     let resp = dispatch("Page.getLayoutMetrics", None);
-    let r = resp.result.unwrap();
-    assert_eq!(r["contentSize"]["width"], 1920);
-    assert_eq!(r["contentSize"]["height"], 1080);
-    assert_eq!(r["cssContentSize"]["width"], 1920);
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(resp.result.is_none(), "no fabricated dimensions");
 }
 
 #[test]
@@ -1576,9 +1696,12 @@ fn test_page_unknown_subcommand_method_not_found() {
 // ============================================================================
 
 #[test]
-fn test_runtime_enable_returns_execution_context_id() {
+fn test_runtime_enable_returns_chrome_empty_object() {
+    // New contract (6983871b): Chrome semantics — Runtime.enable returns {}
+    // and fires executionContextCreated events; no fabricated
+    // executionContextId in the response.
     let resp = dispatch("Runtime.enable", None);
-    assert_eq!(resp.result.unwrap()["executionContextId"], 1);
+    assert_eq!(resp.result.unwrap(), json!({}));
 }
 
 #[test]
@@ -2002,12 +2125,13 @@ fn test_dom_set_attribute_value_default_node_id_zero() {
 }
 
 #[test]
-fn test_dom_get_outer_html_no_bridge_default() {
+fn test_dom_get_outer_html_no_bridge_explicit_error() {
+    // New contract (6983871b): outerHTML is read from the live document via
+    // the bridge; without one it is an explicit -32603, never canned html.
     let resp = dispatch("DOM.getOuterHTML", None);
-    assert_eq!(
-        resp.result.unwrap()["outerHTML"],
-        "<html><body></body></html>"
-    );
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(resp.result.is_none(), "no canned outerHTML payload");
 }
 
 #[test]
@@ -2501,20 +2625,29 @@ fn test_network_enable_disable_empty_result() {
 }
 
 #[test]
-fn test_network_get_response_body_constant_shape() {
+fn test_network_get_response_body_with_request_id_no_bridge_explicit_error() {
+    // New contract (6983871b): the old "constant shape"
+    // ({"body":"", "base64Encoded":false}) was a canned success —
+    // servo exposes no response-body store, so this is an explicit -32603.
     let resp = dispatch("Network.getResponseBody", Some(json!({"requestId": "r1"})));
-    let r = resp.result.unwrap();
-    assert_eq!(r["body"], "");
-    assert_eq!(r["base64Encoded"], false);
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(resp.result.is_none(), "no fake empty body");
 }
 
 #[test]
-fn test_network_cache_and_headers_noop() {
-    for cmd in ["setCacheDisabled", "setExtraHTTPHeaders"] {
-        let resp = dispatch(&format!("Network.{cmd}"), None);
-        assert!(resp.result.is_some());
-        assert!(resp.error.is_none());
-    }
+fn test_network_cache_disabled_ok_headers_require_bridge() {
+    // New contract (6983871b): setCacheDisabled without a bridge is a genuine
+    // no-op ok (nothing to disable); setExtraHTTPHeaders is NOT — headers are
+    // never silently dropped, it surfaces -32603 without a bridge.
+    let resp = dispatch("Network.setCacheDisabled", None);
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+
+    let resp = dispatch("Network.setExtraHTTPHeaders", None);
+    let err = resp.error.expect("headers must not be silently dropped");
+    assert_eq!(err.code, -32603);
+    assert!(resp.result.is_none());
 }
 
 #[test]
@@ -2846,19 +2979,19 @@ fn test_serialize_response_round_trip_idempotent() {
 
 #[test]
 fn test_bridge_dependent_command_no_bridge_yields_32603() {
-    // Adversarial: commands that REQUIRE a bridge (Page.navigate with non-empty
-    // url, Runtime.evaluate with non-empty expression, DOM.getDocument, etc.)
-    // must surface -32603 "no servo bridge connected" when bridge=None.
-    // But note: several handlers guard `bridge.is_some()` and fall back to a
-    // default — those do NOT hit bridge_send. The pure-bridge-required path is
-    // only exercised when the handler unconditionally calls bridge_send.
-    // We document this by confirming the fallback path returns a result, NOT 32603.
+    // New contract (6983871b): Page.navigate is genuinely bridge-dependent —
+    // the frameId/loaderId come from the bridge response, so without a bridge
+    // it must surface -32603 "no servo bridge connected". The old no-bridge
+    // fallback success (fabricated frameId "0") is eradicated.
     let resp = dispatch("Page.navigate", Some(json!({"url": "https://example.com"})));
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
     assert!(
-        resp.result.is_some(),
-        "no-bridge fallback must succeed (handler guards bridge.is_some())"
+        err.message.contains("no servo bridge"),
+        "error must name the missing bridge, got: {}",
+        err.message
     );
-    assert!(resp.error.is_none());
+    assert!(resp.result.is_none());
 }
 
 #[test]

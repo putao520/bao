@@ -88,7 +88,12 @@ fn assert_jsonrpc_invariant(resp: &CdpResponse, ctx: &str) {
 
 #[test]
 fn test_invariant_all_ok_responses() {
-    // Every known ok command must carry result AND NOT error.
+    // Every bridge-independent ok command must carry result AND NOT error.
+    // New contract (6983871b): bridge-dependent commands (navigate/reload/
+    // screenshot/frame-tree/layout/close/...) and param-validated commands
+    // (setContent/addScript/removeScript) were removed from this ok-list —
+    // they now surface explicit errors without a bridge, which
+    // test_invariant_bridge_dependent_errors below pins down.
     for method in [
         "Target.getTargets",
         "Target.getTargetTargets",
@@ -102,17 +107,6 @@ fn test_invariant_all_ok_responses() {
         "Target.sendMessageToTarget",
         "Page.enable",
         "Page.disable",
-        "Page.navigate",
-        "Page.reload",
-        "Page.getFrameTree",
-        "Page.getNavigationHistory",
-        "Page.captureScreenshot",
-        "Page.setContent",
-        "Page.close",
-        "Page.bringToFront",
-        "Page.getLayoutMetrics",
-        "Page.addScriptToEvaluateOnNewDocument",
-        "Page.removeScriptToEvaluateOnNewDocument",
         "Runtime.enable",
         "Runtime.disable",
         "Runtime.evaluate",
@@ -134,14 +128,11 @@ fn test_invariant_all_ok_responses() {
         "DOM.setOuterHTML",
         "DOM.insertBefore",
         "DOM.removeNode",
-        "DOM.getOuterHTML",
         "DOM.resolveNode",
         "DOM.pushNodesByBackendIdsToFrontend",
         "Network.enable",
         "Network.disable",
-        "Network.getResponseBody",
         "Network.setCacheDisabled",
-        "Network.setExtraHTTPHeaders",
         "Network.emulateNetworkConditions",
         "Network.setRequestInterception",
         "Network.continueInterceptedRequest",
@@ -213,6 +204,47 @@ fn test_invariant_all_ok_responses() {
             "[{}] expected success but got error: {:?}",
             method,
             r.error
+        );
+    }
+}
+
+#[test]
+fn test_invariant_bridge_dependent_errors() {
+    // New contract (6983871b) mirror of the ok-sweep: every command that
+    // needs a servo bridge or a required param must surface an explicit
+    // error (never a canned success) when dispatched without a bridge.
+    // -32603: no servo bridge; -32000: facility does not exist;
+    // -32602: required param missing/empty.
+    const NO_BRIDGE: i64 = -32603;
+    const NOT_SUPPORTED: i64 = -32000;
+    const INVALID_PARAMS: i64 = -32602;
+    for (method, code) in [
+        ("Page.navigate", NO_BRIDGE),
+        ("Page.reload", NO_BRIDGE),
+        ("Page.getFrameTree", NO_BRIDGE),
+        ("Page.getNavigationHistory", NOT_SUPPORTED),
+        ("Page.captureScreenshot", NO_BRIDGE),
+        ("Page.setContent", INVALID_PARAMS),
+        ("Page.close", NO_BRIDGE),
+        ("Page.bringToFront", NO_BRIDGE),
+        ("Page.getLayoutMetrics", NO_BRIDGE),
+        ("Page.addScriptToEvaluateOnNewDocument", INVALID_PARAMS),
+        ("Page.removeScriptToEvaluateOnNewDocument", INVALID_PARAMS),
+        ("DOM.getOuterHTML", NO_BRIDGE),
+        ("Network.getResponseBody", NO_BRIDGE),
+        ("Network.setExtraHTTPHeaders", NO_BRIDGE),
+    ] {
+        let r = dispatch(method, None);
+        assert_jsonrpc_invariant(&r, method);
+        let e = r.error.unwrap_or_else(|| panic!("[{method}] expected error"));
+        assert_eq!(
+            e.code, code,
+            "[{method}] expected {code} but got {}: {}",
+            e.code, e.message
+        );
+        assert!(
+            r.result.is_none(),
+            "[{method}] canned success is eradicated — error responses carry no result"
         );
     }
 }
@@ -653,243 +685,231 @@ fn test_page_disable() {
 
 #[test]
 fn test_page_navigate_default_url() {
+    // New contract (6983871b): the bridge response carries the real
+    // frameId/loaderId — without a bridge navigate is an explicit -32603.
     let r = dispatch("Page.navigate", Some(json!({})));
     assert_jsonrpc_invariant(&r, "Page.navigate");
-    let result = r.result.unwrap();
-    assert_eq!(result["frameId"], "0");
-    // NavigateReturnObject also carries loaderId (REQ-CDP-004-C1).
-    assert!(
-        result.get("loaderId").is_some(),
-        "Page.navigate must return loaderId"
-    );
-    let loader_id = result["loaderId"]
-        .as_str()
-        .expect("loaderId must be string");
-    assert!(!loader_id.is_empty(), "loaderId must be non-empty");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
+    assert!(e.message.contains("no servo bridge"));
 }
 
 #[test]
 fn test_page_navigate_no_params() {
-    // Adversarial: navigate with no params at all → default url about:blank → len 11.
+    // Adversarial: navigate with no params at all → default url about:blank
+    // path still requires the bridge → explicit -32603.
     let r = dispatch("Page.navigate", None);
-    let result = r.result.unwrap();
-    assert_eq!(result["frameId"], "0");
-    // loaderId = format!("{:016x}", url.len()) where url="about:blank" (11 chars).
-    assert_eq!(result["loaderId"], "000000000000000b");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_navigate_with_url() {
     let r = dispatch("Page.navigate", Some(json!({"url":"https://example.com"})));
-    let result = r.result.unwrap();
-    assert_eq!(result["frameId"], "0");
-    assert!(result.get("loaderId").is_some());
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
+    assert!(r.result.is_none(), "no fabricated frameId/loaderId");
 }
 
 #[test]
 fn test_page_navigate_loader_id_depends_on_url_length() {
-    // Adversarial: loaderId is hex of url.len() — different url lengths → different loaderId.
-    let short = dispatch("Page.navigate", Some(json!({"url":"ab"})))
-        .result
-        .unwrap()["loaderId"]
-        .clone();
-    let long = dispatch("Page.navigate", Some(json!({"url":"abcdefghij"})))
-        .result
-        .unwrap()["loaderId"]
-        .clone();
-    assert_ne!(short, long, "loaderId must vary with url length");
-    assert_eq!(short, "0000000000000002");
-    assert_eq!(long, "000000000000000a");
+    // New contract (6983871b): the url-length-derived loaderId rule is
+    // eradicated — loaderIds are per-load bridge values. Both navigations
+    // surface the same explicit -32603 and never a derived loaderId.
+    for url in ["ab", "abcdefghij"] {
+        let r = dispatch("Page.navigate", Some(json!({"url":url})));
+        let e = r.error.unwrap();
+        assert_eq!(e.code, -32603, "url={url}");
+        assert!(r.result.is_none(), "no url-length-derived loaderId for url={url}");
+    }
 }
 
 #[test]
 fn test_page_navigate_empty_url_uses_default() {
-    // Adversarial: url="" (empty string) is falsy → defaults to about:blank.
+    // Adversarial: url="" (empty string) is falsy → defaults to about:blank
+    // for the bridge command; without a bridge it is still an explicit -32603.
     let r = dispatch("Page.navigate", Some(json!({"url":""})));
-    let result = r.result.unwrap();
-    // about:blank is 11 chars → loaderId = 0x0b = "000000000000000b".
-    assert_eq!(result["loaderId"], "000000000000000b");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_navigate_url_wrong_type() {
-    // Adversarial: url as number (not string) → as_str() returns None → defaults to about:blank.
+    // Adversarial: url as number (not string) → as_str() returns None →
+    // default url path → explicit -32603.
     let r = dispatch("Page.navigate", Some(json!({"url":12345})));
-    let result = r.result.unwrap();
-    assert_eq!(result["frameId"], "0");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_reload_default() {
     let r = dispatch("Page.reload", None);
     assert_jsonrpc_invariant(&r, "Page.reload");
-    let result = r.result.unwrap();
-    assert_eq!(result["frameId"], "0");
-    assert_eq!(result["loaderId"], "0");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_reload_ignore_cache_present() {
     let r = dispatch("Page.reload", Some(json!({"ignoreCache":true})));
     assert_jsonrpc_invariant(&r, "Page.reload");
-    assert!(r.result.is_some());
-    let result = r.result.unwrap();
-    // reload always returns frameId="0", loaderId="0" regardless of ignoreCache.
-    assert_eq!(result["frameId"], "0");
-    assert_eq!(result["loaderId"], "0");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_reload_ignore_cache_false() {
-    // Adversarial: ignoreCache=false explicitly → still ok.
+    // Adversarial: ignoreCache=false explicitly → still bridge-required.
     let r = dispatch("Page.reload", Some(json!({"ignoreCache":false})));
-    assert!(r.result.is_some());
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_get_frame_tree() {
+    // New contract (6983871b): frame url/mime/name/origin are read from the
+    // live document via the bridge — explicit -32603 without one.
     let r = dispatch("Page.getFrameTree", None);
     assert_jsonrpc_invariant(&r, "Page.getFrameTree");
-    let frame = r.result.unwrap()["frameTree"]["frame"].clone();
-    assert_eq!(frame["id"], "0");
-    // Full frame schema (REQ-CDP-004-C5):
-    assert!(frame["url"].is_string(), "frame.url must be string");
-    assert!(
-        frame["loaderId"].is_string(),
-        "frame.loaderId must be string"
-    );
-    assert_eq!(frame["mimeType"], "text/html");
-    let keys: std::collections::BTreeSet<String> =
-        frame.as_object().unwrap().keys().cloned().collect();
-    for required in ["id", "url", "loaderId", "mimeType"] {
-        assert!(keys.contains(required), "frame must contain {}", required);
-    }
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_get_frame_tree_default_url() {
-    // Adversarial: no bridge → frame.url defaults to about:blank.
-    let frame = dispatch("Page.getFrameTree", None).result.unwrap()["frameTree"]["frame"].clone();
-    assert_eq!(frame["url"], "about:blank");
+    // Adversarial: no bridge → no fabricated about:blank frame url.
+    let r = dispatch("Page.getFrameTree", None);
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
+    assert!(e.message.contains("no servo bridge"));
 }
 
 #[test]
 fn test_page_get_navigation_history() {
+    // New contract (6983871b): servo exposes no session-history enumeration
+    // — explicit -32000, never a fabricated 1-entry history.
     let r = dispatch("Page.getNavigationHistory", None);
     assert_jsonrpc_invariant(&r, "Page.getNavigationHistory");
-    let result = r.result.unwrap();
-    assert_eq!(result["currentIndex"], 0);
-    assert!(result["entries"].is_array());
-    let entries = result["entries"].as_array().unwrap();
-    assert_eq!(
-        entries.len(),
-        1,
-        "default navigation history has exactly 1 entry"
-    );
-    let entry = &entries[0];
-    assert_eq!(entry["id"], 0);
-    assert!(entry["url"].is_string());
-    assert_eq!(entry["title"], "");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32000);
+    assert!(e.message.contains("not supported"));
 }
 
 #[test]
 fn test_page_capture_screenshot_default() {
     let r = dispatch("Page.captureScreenshot", None);
     assert_jsonrpc_invariant(&r, "Page.captureScreenshot");
-    // No bridge → data is empty string (not absent).
-    let result = r.result.unwrap();
-    assert!(result["data"].is_string(), "data must be string");
-    assert_eq!(
-        result["data"], "",
-        "no-bridge screenshot data must be empty string"
-    );
+    // New contract (6983871b): no renderer without the bridge — explicit
+    // -32603, never empty-string data masquerading as a screenshot.
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
+    assert!(r.result.is_none(), "no fabricated data field");
 }
 
 #[test]
 fn test_page_capture_screenshot_jpeg() {
     let r = dispatch("Page.captureScreenshot", Some(json!({"format":"jpeg"})));
     assert_jsonrpc_invariant(&r, "Page.captureScreenshot");
-    assert!(r.result.is_some());
-    // No bridge: format/quality params are accepted but data is still empty.
-    assert_eq!(r.result.unwrap()["data"], "");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_capture_screenshot_with_quality() {
-    // Adversarial: quality param alone (no format) — must not panic.
+    // Adversarial: quality param alone (no format) — must not panic; params
+    // are parsed then the bridge requirement surfaces.
     let r = dispatch("Page.captureScreenshot", Some(json!({"quality":80})));
-    assert!(r.result.is_some());
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_capture_screenshot_webp_format() {
-    // Adversarial: webp format — accepted, no panic.
+    // Adversarial: webp format — accepted, no panic, then -32603.
     let r = dispatch("Page.captureScreenshot", Some(json!({"format":"webp"})));
-    assert!(r.result.is_some());
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_set_content() {
+    // New contract (6983871b): setContent validates its html param —
+    // missing html is -32602, never a silent ok.
     let r = dispatch("Page.setContent", None);
     assert_jsonrpc_invariant(&r, "Page.setContent");
-    assert_eq!(r.result.unwrap(), json!({}));
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("html"));
 }
 
 #[test]
 fn test_page_close() {
-    assert!(ok_resp("Page.close", None));
+    // New contract (6983871b): real close via PagePool — requires bridge.
+    let r = dispatch("Page.close", None);
+    assert_jsonrpc_invariant(&r, "Page.close");
+    assert_eq!(r.error.unwrap().code, -32603);
 }
 
 #[test]
 fn test_page_bring_to_front() {
-    assert!(ok_resp("Page.bringToFront", None));
+    // New contract (6983871b): real focus path — requires bridge.
+    let r = dispatch("Page.bringToFront", None);
+    assert_jsonrpc_invariant(&r, "Page.bringToFront");
+    assert_eq!(r.error.unwrap().code, -32603);
 }
 
 #[test]
 fn test_page_get_layout_metrics() {
+    // New contract (6983871b): metrics are computed live from the document —
+    // explicit -32603, the hardcoded 1920x1080 is eradicated.
     let r = dispatch("Page.getLayoutMetrics", None);
     assert_jsonrpc_invariant(&r, "Page.getLayoutMetrics");
-    let result = r.result.unwrap();
-    assert!(result["contentSize"]["width"].is_number());
-    // Full layout metrics schema:
-    assert_eq!(result["contentSize"]["width"], 1920);
-    assert_eq!(result["contentSize"]["height"], 1080);
-    assert_eq!(result["contentSize"]["x"], 0);
-    assert_eq!(result["contentSize"]["y"], 0);
-    assert_eq!(result["cssContentSize"]["width"], 1920);
-    assert_eq!(result["cssContentSize"]["height"], 1080);
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
+    assert!(r.result.is_none(), "no fabricated dimensions");
 }
 
 #[test]
 fn test_page_add_script() {
+    // New contract (6983871b): identifier generation lives behind the
+    // bridge — no bridge is an explicit -32603, no hardcoded "1".
     let r = dispatch(
         "Page.addScriptToEvaluateOnNewDocument",
         Some(json!({"source":"console.log(1)"})),
     );
     assert_jsonrpc_invariant(&r, "Page.addScriptToEvaluateOnNewDocument");
-    assert_eq!(r.result.unwrap()["identifier"], "1");
+    assert_eq!(r.error.unwrap().code, -32603);
 }
 
 #[test]
 fn test_page_add_script_empty_source() {
-    // Adversarial: empty source — still returns identifier "1".
+    // Adversarial: empty source — rejected with -32602 before dispatch.
     let r = dispatch(
         "Page.addScriptToEvaluateOnNewDocument",
         Some(json!({"source":""})),
     );
-    assert_eq!(r.result.unwrap()["identifier"], "1");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("source"));
 }
 
 #[test]
 fn test_page_add_script_no_source_key() {
-    // Adversarial: missing source key — still returns identifier "1".
+    // Adversarial: missing source key — same -32602 invalid params.
     let r = dispatch("Page.addScriptToEvaluateOnNewDocument", None);
-    assert_eq!(r.result.unwrap()["identifier"], "1");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32602);
 }
 
 #[test]
 fn test_page_remove_script() {
-    assert!(ok_resp("Page.removeScriptToEvaluateOnNewDocument", None));
+    // New contract (6983871b): a missing identifier param is -32602.
+    let r = dispatch("Page.removeScriptToEvaluateOnNewDocument", None);
+    assert_jsonrpc_invariant(&r, "Page.removeScriptToEvaluateOnNewDocument");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("identifier"));
 }
 
 #[test]
@@ -907,14 +927,11 @@ fn test_page_unknown() {
 
 #[test]
 fn test_runtime_enable() {
+    // New contract (6983871b): Chrome semantics — Runtime.enable returns {}
+    // and fires executionContextCreated events (no fabricated context id).
     let r = dispatch("Runtime.enable", None);
     assert_jsonrpc_invariant(&r, "Runtime.enable");
-    let result = r.result.unwrap();
-    assert!(result["executionContextId"].is_number());
-    assert_eq!(
-        result["executionContextId"], 1,
-        "default execution context id is 1"
-    );
+    assert_eq!(r.result.unwrap(), json!({}));
 }
 
 #[test]
@@ -1164,12 +1181,13 @@ fn test_dom_remove_node() {
 
 #[test]
 fn test_dom_get_outer_html_default() {
+    // New contract (6983871b): outerHTML is read from the live document —
+    // explicit -32603, never canned default HTML.
     let r = dispatch("DOM.getOuterHTML", None);
     assert_jsonrpc_invariant(&r, "DOM.getOuterHTML");
-    let result = r.result.unwrap();
-    assert!(result["outerHTML"].is_string());
-    // No-bridge default HTML.
-    assert_eq!(result["outerHTML"], "<html><body></body></html>");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
+    assert!(r.result.is_none(), "no canned outerHTML");
 }
 
 #[test]
@@ -1211,13 +1229,13 @@ fn test_network_disable() {
 
 #[test]
 fn test_network_get_response_body() {
+    // New contract (6983871b): servo exposes no response-body store —
+    // explicit -32603, never an empty-body fake success.
     let r = dispatch("Network.getResponseBody", None);
     assert_jsonrpc_invariant(&r, "Network.getResponseBody");
-    let result = r.result.unwrap();
-    assert_eq!(result["base64Encoded"], false);
-    // Full schema (REQ-CDP-006-C5):
-    assert_eq!(result["body"], "", "default body is empty string");
-    assert_eq!(result["base64Encoded"], false);
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
+    assert!(r.result.is_none(), "no fake body schema");
 }
 
 #[test]
@@ -1227,7 +1245,12 @@ fn test_network_set_cache_disabled() {
 
 #[test]
 fn test_network_set_extra_http_headers() {
-    assert!(ok_resp("Network.setExtraHTTPHeaders", None));
+    // New contract (6983871b): headers are never silently dropped —
+    // explicit -32603 without a bridge.
+    let r = dispatch("Network.setExtraHTTPHeaders", None);
+    assert_jsonrpc_invariant(&r, "Network.setExtraHTTPHeaders");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
@@ -2112,17 +2135,21 @@ fn test_min_id_preserved() {
 
 #[test]
 fn test_params_as_array_accepted() {
-    // Adversarial: params as array (unusual but valid JSON) — handlers use .get() which
-    // returns None on non-objects, so defaults kick in. Must not panic.
+    // Adversarial: params as array (unusual but valid JSON) — handlers use
+    // .get() which returns None on non-objects, so the default-url path runs
+    // without a panic; the bridge requirement then surfaces as -32603.
     let r = dispatch("Page.navigate", Some(json!([{"url":"http://x"}])));
-    assert!(r.result.is_some(), "array params must not crash navigate");
+    let e = r.error.expect("array params must not crash navigate");
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_params_as_string_accepted() {
-    // Adversarial: params as string — must not panic.
+    // Adversarial: params as string — must not panic; same default-url path
+    // → explicit -32603.
     let r = dispatch("Page.navigate", Some(json!("just a string")));
-    assert!(r.result.is_some());
+    let e = r.error.expect("string params must not crash navigate");
+    assert_eq!(e.code, -32603);
 }
 
 #[test]

@@ -79,8 +79,11 @@ fn test_session_send_page_navigate() {
         "Page.navigate",
         Some(serde_json::json!({"url":"http://test"})),
     );
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap()["frameId"], "0");
+    // New contract (6983871b): frameId/loaderId come from the bridge —
+    // without one navigate is an explicit -32603, never frameId "0".
+    let err = result.expect_err("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
@@ -225,14 +228,19 @@ fn test_send_tracks_domain() {
     // Send tracks the domain from method string
     let _ = session.send(&router, "Page.enable", None);
     let _ = session.send(&router, "Runtime.enable", None);
-    // These should succeed because they're internal dispatches
-    assert!(session
-        .send(
-            &router,
-            "Page.navigate",
-            Some(serde_json::json!({"url":"http://test"}))
-        )
-        .is_ok());
+    // Internal dispatch still routes — navigate surfaces its explicit
+    // -32603 (no bridge) rather than a routing failure.
+    assert_eq!(
+        session
+            .send(
+                &router,
+                "Page.navigate",
+                Some(serde_json::json!({"url":"http://test"}))
+            )
+            .unwrap_err()
+            .code,
+        -32603
+    );
 }
 
 // ---- Multiple sessions concurrent ----
@@ -345,5 +353,6 @@ fn test_router_send_command_with_params() {
         "Page.navigate",
         Some(serde_json::json!({"url":"http://a.com"})),
     );
-    assert!(result.is_ok());
+    // Routing works; navigate surfaces its explicit -32603 (no bridge).
+    assert_eq!(result.unwrap_err().code, -32603);
 }

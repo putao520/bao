@@ -32,90 +32,88 @@ fn test_page_disable_response_structure() {
     );
 }
 
+// New contract (6983871b): real data via the bridge or explicit error.
+// These router-level boundary tests now pin the explicit error shapes:
+// -32603 = no servo bridge; -32602 = required param missing.
+
 #[test]
-fn test_page_close_response_empty() {
+fn test_page_close_response_error_without_bridge() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session.send(&router, "Page.close", None).unwrap(),
-        json!({})
-    );
+    let err = session.send(&router, "Page.close", None).unwrap_err();
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
-fn test_page_bring_to_front_response_empty() {
+fn test_page_bring_to_front_response_error_without_bridge() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session.send(&router, "Page.bringToFront", None).unwrap(),
-        json!({})
-    );
+    let err = session.send(&router, "Page.bringToFront", None).unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
-fn test_page_set_content_response_empty() {
+fn test_page_set_content_missing_html_rejected() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session.send(&router, "Page.setContent", None).unwrap(),
-        json!({})
-    );
+    let err = session.send(&router, "Page.setContent", None).unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("html"));
 }
 
 #[test]
-fn test_page_get_layout_metrics_fields() {
+fn test_page_get_layout_metrics_error_without_bridge() {
+    // Metrics are computed live from the document — explicit -32603, the
+    // hardcoded 1920x1080 field shape is eradicated.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(&router, "Page.getLayoutMetrics", None)
-        .unwrap();
-    assert!(result.get("contentSize").is_some(), "missing contentSize");
-    assert!(result["contentSize"]["width"].is_number());
-    assert!(result["contentSize"]["height"].is_number());
-    assert!(
-        result.get("cssContentSize").is_some(),
-        "missing cssContentSize"
-    );
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
-fn test_page_add_script_response_has_identifier() {
+fn test_page_add_script_requires_bridge_for_identifier() {
+    // Identifier generation lives behind the bridge — no bridge is an
+    // explicit -32603, never a fabricated identifier field.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(
             &router,
             "Page.addScriptToEvaluateOnNewDocument",
             Some(json!({"source": "console.log(1)"})),
         )
-        .unwrap();
-    assert!(result.get("identifier").is_some(), "missing identifier");
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
 fn test_page_add_script_empty_source() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(
             &router,
             "Page.addScriptToEvaluateOnNewDocument",
             Some(json!({"source": ""})),
         )
-        .unwrap();
-    assert!(result.get("identifier").is_some());
+        .unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("source"));
 }
 
 #[test]
-fn test_page_remove_script_response_empty() {
+fn test_page_remove_script_missing_identifier_rejected() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session
-            .send(&router, "Page.removeScriptToEvaluateOnNewDocument", None)
-            .unwrap(),
-        json!({})
-    );
+    let err = session
+        .send(&router, "Page.removeScriptToEvaluateOnNewDocument", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("identifier"));
 }
 
 #[test]
@@ -130,43 +128,48 @@ fn test_page_unknown_command_error_code() {
 }
 
 #[test]
-fn test_page_navigate_has_frame_and_loader_id() {
+fn test_page_navigate_error_without_bridge() {
+    // frameId/loaderId come from the bridge response — without a bridge
+    // navigate is an explicit -32603 and no id fields are fabricated.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(
             &router,
             "Page.navigate",
             Some(json!({"url": "http://example.com"})),
         )
-        .unwrap();
-    assert!(result.get("frameId").is_some(), "missing frameId");
-    assert!(result.get("loaderId").is_some(), "missing loaderId");
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
-fn test_page_navigate_empty_url_defaults() {
+fn test_page_navigate_empty_url_error_without_bridge() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert!(session
+    let err = session
         .send(&router, "Page.navigate", Some(json!({})))
-        .is_ok());
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
 fn test_page_reload_no_params() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert!(session.send(&router, "Page.reload", None).is_ok());
+    let err = session.send(&router, "Page.reload", None).unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
 fn test_page_reload_with_ignore_cache() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert!(session
+    let err = session
         .send(&router, "Page.reload", Some(json!({"ignoreCache": true})))
-        .is_ok());
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 // ============================================================================
@@ -174,11 +177,13 @@ fn test_page_reload_with_ignore_cache() {
 // ============================================================================
 
 #[test]
-fn test_runtime_enable_returns_execution_context() {
+fn test_runtime_enable_returns_chrome_empty_object() {
+    // New contract (6983871b): Chrome semantics — Runtime.enable returns {}
+    // (executionContextId:1 was itself a fabrication).
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let result = session.send(&router, "Runtime.enable", None).unwrap();
-    assert_eq!(result["executionContextId"], 1);
+    assert_eq!(result, json!({}));
 }
 
 #[test]
@@ -433,16 +438,15 @@ fn test_network_enable_disable_response_empty() {
 }
 
 #[test]
-fn test_network_get_response_body_fields() {
+fn test_network_get_response_body_error_without_bridge() {
+    // New contract (6983871b): servo exposes no response-body store —
+    // explicit -32603, never the {"body":"", "base64Encoded":false} shape.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(&router, "Network.getResponseBody", None)
-        .unwrap();
-    assert!(result.get("body").is_some());
-    assert!(result.get("base64Encoded").is_some());
-    assert_eq!(result["body"], "");
-    assert_eq!(result["base64Encoded"], false);
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
@@ -498,15 +502,15 @@ fn test_network_set_cache_disabled_response_empty() {
 }
 
 #[test]
-fn test_network_set_extra_http_headers_response_empty() {
+fn test_network_set_extra_http_headers_error_without_bridge() {
+    // New contract (6983871b): headers are never silently dropped —
+    // explicit -32603 without a bridge.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session
-            .send(&router, "Network.setExtraHTTPHeaders", None)
-            .unwrap(),
-        json!({})
-    );
+    let err = session
+        .send(&router, "Network.setExtraHTTPHeaders", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]

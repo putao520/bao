@@ -229,7 +229,8 @@ fn test_router_send_command_with_params() {
         "Page.navigate",
         Some(serde_json::json!({"url": "https://example.com"})),
     );
-    assert!(result.is_ok());
+    // Routing works; navigate surfaces its explicit -32603 (no bridge).
+    assert_eq!(result.unwrap_err().code, -32603);
 }
 
 #[test]

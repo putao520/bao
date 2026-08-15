@@ -121,13 +121,14 @@ fn test_router_session_send_registers_domain() {
     // session.send auto-registers domain via enabled_domains insert
     let _ = session.send(&router, "Page.enable", None);
     let _ = session.send(&router, "Runtime.enable", None);
-    // Sending again should still work (domain already registered)
+    // Sending again should still route (domain already registered) —
+    // navigate surfaces its explicit -32603 (no bridge).
     let result = session.send(
         &router,
         "Page.navigate",
         Some(json!({"url": "https://example.com"})),
     );
-    assert!(result.is_ok());
+    assert_eq!(result.unwrap_err().code, -32603);
 }
 
 // ---- BackendKind ----

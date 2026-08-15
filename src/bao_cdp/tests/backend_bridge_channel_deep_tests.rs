@@ -23,10 +23,15 @@ fn dispatch(method: &str, params: Option<serde_json::Value>) -> CdpResponse {
 }
 
 #[test]
-fn test_internal_page_navigate() {
+fn test_internal_page_navigate_no_bridge_explicit_error() {
+    // New contract (6983871b): the bridge response carries the real
+    // frameId/loaderId — without a bridge navigate is an explicit -32603,
+    // never a fabricated frameId:"0" success.
     let resp = dispatch("Page.navigate", Some(json!({"url":"http://test"})));
-    assert!(resp.result.is_some());
-    assert_eq!(resp.result.unwrap()["frameId"], "0");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
+    assert!(resp.result.is_none(), "error response must not carry result");
 }
 
 #[test]
@@ -784,44 +789,56 @@ fn test_target_domain_unknown_subcommand_error() {
 }
 
 #[test]
-fn test_page_domain_navigate_returns_frame_id_zero() {
+fn test_page_domain_navigate_no_bridge_explicit_error() {
+    // New contract (6983871b): real frameId/loaderId come from the bridge
+    // response; without a bridge navigate is an explicit -32603, never a
+    // fabricated frameId:"0" success.
     let resp = dispatch("Page.navigate", Some(json!({"url":"http://test"})));
-    let result = resp.result.expect("Page.navigate must succeed");
-    assert_eq!(result["frameId"], "0", "stub frameId is fixed '0'");
-    let loader = result["loaderId"].as_str().expect("loaderId present");
-    assert!(!loader.is_empty());
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
+    assert!(resp.result.is_none(), "error response must not carry result");
 }
 
 #[test]
-fn test_page_domain_navigate_missing_url_defaults_to_blank() {
-    // No url param → defaults to "about:blank"; no bridge → still succeeds.
+fn test_page_domain_navigate_missing_url_no_bridge_explicit_error() {
+    // No url param → the handler defaults the url to "about:blank" and still
+    // needs the bridge; without one it is an explicit -32603 (the default-url
+    // fallback itself is covered by the lib test for the bridge path).
     let resp = dispatch("Page.navigate", Some(json!({})));
-    assert!(
-        resp.result.is_some(),
-        "navigate without url must not fail (no bridge)"
-    );
+    let err = resp
+        .error
+        .expect("navigate without url and without bridge must fail loudly");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
-fn test_page_domain_capture_screenshot_without_bridge_returns_empty_data() {
+fn test_page_domain_capture_screenshot_no_bridge_explicit_error() {
+    // New contract (6983871b): no renderer without the bridge — explicit
+    // -32603, never the canned {"data":""} success.
     let resp = dispatch(
         "Page.captureScreenshot",
         Some(json!({"format":"jpeg","quality":50})),
     );
-    let result = resp
-        .result
-        .expect("captureScreenshot without bridge returns stub");
-    // No bridge → returns {"data":""}
-    assert_eq!(result["data"], "");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
+    assert!(
+        resp.result.is_none(),
+        "error response must not carry fabricated image data"
+    );
 }
 
 #[test]
-fn test_page_domain_get_frame_tree_structure() {
+fn test_page_domain_get_frame_tree_no_bridge_explicit_error() {
+    // New contract (6983871b): frame url/mimeType/name/origin are read from
+    // the live document via the bridge; without one it is an explicit -32603,
+    // never a fabricated frame tree.
     let resp = dispatch("Page.getFrameTree", None);
-    let result = resp.result.expect("getFrameTree must succeed");
-    let frame = &result["frameTree"]["frame"];
-    assert_eq!(frame["id"], "0");
-    assert_eq!(frame["mimeType"], "text/html");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
@@ -831,10 +848,17 @@ fn test_page_domain_unknown_subcommand_error() {
 }
 
 #[test]
-fn test_runtime_domain_enable_returns_execution_context() {
+fn test_runtime_domain_enable_returns_chrome_empty_object() {
+    // New contract (6983871b): Chrome semantics — Runtime.enable returns {}
+    // and fires executionContextCreated events; the response carries no
+    // executionContextId (that was a fabricated context id).
     let resp = dispatch("Runtime.enable", None);
     let result = resp.result.expect("Runtime.enable must succeed");
-    assert_eq!(result["executionContextId"], 1);
+    assert_eq!(result, json!({}), "Runtime.enable result must be exactly {{}}");
+    assert!(
+        result.get("executionContextId").is_none(),
+        "no fabricated executionContextId in the response"
+    );
 }
 
 #[test]
@@ -879,11 +903,14 @@ fn test_dom_domain_unknown_subcommand_error() {
 }
 
 #[test]
-fn test_network_domain_get_response_body_returns_body() {
-    let resp = dispatch("Network.getResponseBody", None);
-    let result = resp.result.expect("getResponseBody must succeed");
-    assert_eq!(result["body"], "");
-    assert_eq!(result["base64Encoded"], false);
+fn test_network_domain_get_response_body_no_bridge_explicit_error() {
+    // New contract (6983871b): servo exposes no response-body store — the
+    // bridge handler reports the real availability; without a bridge this is
+    // an explicit -32603, never an empty-body fake success.
+    let resp = dispatch("Network.getResponseBody", Some(json!({"requestId":"r-1"})));
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(resp.result.is_none(), "error response must not carry a body");
 }
 
 #[test]
@@ -1549,14 +1576,21 @@ fn test_input_insert_text_empty_no_bridge_ok() {
 }
 
 #[test]
-fn test_page_add_script_empty_source_no_bridge_ok() {
-    // Empty source → bridge_send skipped (source.is_empty()), returns {"identifier":"1"}.
+fn test_page_add_script_empty_source_rejected_invalid_params() {
+    // New contract (6983871b): empty source is an explicit -32602
+    // invalid-params error — identifier generation lives behind the bridge
+    // (the old hardcoded {"identifier":"1"} stub is eradicated).
     let resp = dispatch(
         "Page.addScriptToEvaluateOnNewDocument",
         Some(json!({"source":""})),
     );
-    let result = resp.result.expect("empty source returns identifier stub");
-    assert_eq!(result["identifier"], "1");
+    let err = resp.error.expect("empty source must be rejected");
+    assert_eq!(err.code, -32602);
+    assert!(
+        err.message.contains("source"),
+        "error message must name the missing param, got: {}",
+        err.message
+    );
 }
 
 // ---- handle_command: CdpMessage.params field is ignored (params passed separately) ----
@@ -1565,24 +1599,29 @@ fn test_page_add_script_empty_source_no_bridge_ok() {
 
 #[test]
 fn test_handle_command_uses_external_params_not_msg_params() {
+    // Adversarial intent preserved from the pre-6983871b test: routing must
+    // read the `params` ARG, never CdpMessage.params. Page.navigate no longer
+    // succeeds without a bridge (its canned frameId:"0" is eradicated), so the
+    // observable carrier is Fetch.enable, whose patternCount is derived purely
+    // from the params arg — mismatched msg.params must not leak into it.
     let msg = CdpMessage {
         id: Some(1),
-        method: "Page.navigate".into(),
-        // Deliberately put a DIFFERENT url in msg.params — it must be IGNORED.
-        params: Some(json!({"url":"http://from-msg-params"})),
+        method: "Fetch.enable".into(),
+        // Deliberately put a DIFFERENT pattern count in msg.params — it must
+        // be IGNORED.
+        params: Some(json!({"patterns":[{"urlPattern":"*"}]})),
         session_id: None,
     };
-    // Pass the authoritative url via the `params` arg.
-    let params = json!({"url":"http://from-arg"});
+    // Pass the authoritative 2-pattern set via the `params` arg.
+    let params = json!({"patterns":[{"urlPattern":"*"},{"requestStage":"Response"}]});
     let resp = handle_command(msg, TID, &Some(params), None);
-    // No bridge → navigate returns frameId="0" regardless, but must NOT error.
-    // The key assertion: it returns Ok (routing used `params` arg path), proving
-    // msg.params being wrong/junk does not corrupt dispatch.
-    assert!(
-        resp.result.is_some(),
-        "dispatch must succeed using the params arg, not msg.params"
+    let result = resp
+        .result
+        .expect("dispatch must succeed using the params arg, not msg.params");
+    assert_eq!(
+        result["patternCount"], 2,
+        "patternCount must reflect the params ARG (2), not msg.params (1)"
     );
-    assert_eq!(resp.result.unwrap()["frameId"], "0");
 }
 
 // ---- handle_command: session_id field is accepted (does not crash dispatch) ----

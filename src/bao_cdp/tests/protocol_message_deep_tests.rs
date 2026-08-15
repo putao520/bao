@@ -264,104 +264,122 @@ fn test_page_disable() {
 
 #[test]
 fn test_page_navigate_no_bridge() {
-    let r = ok_result("Page.navigate", Some(json!({"url": "https://example.com"})));
-    assert_eq!(r["frameId"], "0");
-    assert!(r["loaderId"].is_string());
+    // New contract (6983871b): the bridge response carries the real
+    // frameId/loaderId — without a bridge navigate is an explicit -32603.
+    let e = err_result("Page.navigate", Some(json!({"url": "https://example.com"})));
+    assert_eq!(e.code, -32603);
+    assert!(e.message.contains("no servo bridge"));
 }
 
 #[test]
 fn test_page_navigate_default_url() {
-    let r = ok_result("Page.navigate", Some(json!({})));
-    assert_eq!(r["frameId"], "0");
+    let e = err_result("Page.navigate", Some(json!({})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_reload_no_bridge() {
-    let r = ok_result("Page.reload", Some(json!({"ignoreCache": true})));
-    assert_eq!(r["frameId"], "0");
-    assert_eq!(r["loaderId"], "0");
+    // New contract (6983871b): reload goes through WebView::reload via the
+    // bridge — explicit -32603, never fabricated frameId/loaderId "0".
+    let e = err_result("Page.reload", Some(json!({"ignoreCache": true})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_get_frame_tree_no_bridge() {
-    let r = ok_result("Page.getFrameTree", None);
-    let frame = r["frameTree"]["frame"].as_object().unwrap();
-    assert_eq!(frame["id"], "0");
-    assert_eq!(frame["url"], "about:blank");
-    assert_eq!(frame["mimeType"], "text/html");
+    // New contract (6983871b): frame data is read from the live document via
+    // the bridge — explicit -32603, never a fabricated about:blank tree.
+    let e = err_result("Page.getFrameTree", None);
+    assert_eq!(e.code, -32603);
+    assert!(e.message.contains("no servo bridge"));
 }
 
 #[test]
 fn test_page_get_navigation_history_no_bridge() {
-    let r = ok_result("Page.getNavigationHistory", None);
-    assert_eq!(r["currentIndex"], 0);
-    let entries = r["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["url"], "about:blank");
+    // New contract (6983871b): servo exposes no session-history enumeration —
+    // explicit -32000, never a fabricated single-entry history.
+    let e = err_result("Page.getNavigationHistory", None);
+    assert_eq!(e.code, -32000);
+    assert!(e.message.contains("not supported"));
 }
 
 #[test]
 fn test_page_capture_screenshot_no_bridge() {
-    let r = ok_result("Page.captureScreenshot", Some(json!({"format": "png"})));
-    assert_eq!(r["data"], "");
+    // New contract (6983871b): no renderer without the bridge — explicit
+    // -32603, never the canned {"data":""} success.
+    let e = err_result("Page.captureScreenshot", Some(json!({"format": "png"})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_capture_screenshot_jpeg_no_bridge() {
-    let r = ok_result(
+    let e = err_result(
         "Page.captureScreenshot",
         Some(json!({"format": "jpeg", "quality": 80})),
     );
-    assert_eq!(r["data"], "");
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_set_content() {
-    assert_eq!(ok_result("Page.setContent", None), json!({}));
+    // New contract (6983871b): setContent validates its html param —
+    // missing html is -32602, never a silent ok.
+    let e = err_result("Page.setContent", None);
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("html"));
 }
 
 #[test]
 fn test_page_close() {
-    assert_eq!(ok_result("Page.close", None), json!({}));
+    // New contract (6983871b): real close via PagePool — requires the bridge.
+    let e = err_result("Page.close", None);
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_bring_to_front() {
-    assert_eq!(ok_result("Page.bringToFront", None), json!({}));
+    // New contract (6983871b): real focus path — requires the bridge.
+    let e = err_result("Page.bringToFront", None);
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_get_layout_metrics() {
-    let r = ok_result("Page.getLayoutMetrics", None);
-    assert_eq!(r["contentSize"]["width"], 1920);
-    assert_eq!(r["contentSize"]["height"], 1080);
-    assert_eq!(r["cssContentSize"]["width"], 1920);
+    // New contract (6983871b): metrics are computed live from the document —
+    // explicit -32603, the hardcoded 1920x1080 is eradicated.
+    let e = err_result("Page.getLayoutMetrics", None);
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_add_script_to_evaluate_no_bridge() {
-    let r = ok_result(
+    // New contract (6983871b): identifier generation lives behind the
+    // bridge — no bridge is an explicit -32603, no hardcoded "1".
+    let e = err_result(
         "Page.addScriptToEvaluateOnNewDocument",
         Some(json!({"source": "console.log(1)"})),
     );
-    assert_eq!(r["identifier"], "1");
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_add_script_empty_source_no_bridge() {
-    let r = ok_result(
+    // New contract (6983871b): empty source is rejected with -32602 before
+    // any bridge dispatch.
+    let e = err_result(
         "Page.addScriptToEvaluateOnNewDocument",
         Some(json!({"source": ""})),
     );
-    assert_eq!(r["identifier"], "1");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("source"));
 }
 
 #[test]
 fn test_page_remove_script() {
-    assert_eq!(
-        ok_result("Page.removeScriptToEvaluateOnNewDocument", None),
-        json!({})
-    );
+    // New contract (6983871b): a missing identifier param is -32602.
+    let e = err_result("Page.removeScriptToEvaluateOnNewDocument", None);
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("identifier"));
 }
 
 #[test]
@@ -373,8 +391,9 @@ fn test_page_unknown_command() {
 
 #[test]
 fn test_runtime_enable() {
-    let r = ok_result("Runtime.enable", None);
-    assert_eq!(r["executionContextId"], 1);
+    // New contract (6983871b): Chrome semantics — Runtime.enable returns {}
+    // (no fabricated executionContextId).
+    assert_eq!(ok_result("Runtime.enable", None), json!({}));
 }
 
 #[test]
@@ -535,8 +554,10 @@ fn test_dom_remove_node() {
 
 #[test]
 fn test_dom_get_outer_html_no_bridge() {
-    let r = ok_result("DOM.getOuterHTML", Some(json!({"nodeId": 1})));
-    assert_eq!(r["outerHTML"], "<html><body></body></html>");
+    // New contract (6983871b): outerHTML is read from the live document —
+    // explicit -32603, never canned html.
+    let e = err_result("DOM.getOuterHTML", Some(json!({"nodeId": 1})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
@@ -570,9 +591,10 @@ fn test_network_disable() {
 
 #[test]
 fn test_network_get_response_body() {
-    let r = ok_result("Network.getResponseBody", None);
-    assert_eq!(r["body"], "");
-    assert_eq!(r["base64Encoded"], false);
+    // New contract (6983871b): servo exposes no response-body store —
+    // explicit -32603, never an empty-body fake success.
+    let e = err_result("Network.getResponseBody", None);
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
@@ -582,7 +604,10 @@ fn test_network_set_cache_disabled() {
 
 #[test]
 fn test_network_set_extra_http_headers() {
-    assert_eq!(ok_result("Network.setExtraHTTPHeaders", None), json!({}));
+    // New contract (6983871b): headers are never silently dropped —
+    // explicit -32603 without a bridge.
+    let e = err_result("Network.setExtraHTTPHeaders", None);
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
@@ -1452,10 +1477,14 @@ fn test_different_targets_different_session_ids() {
     assert_ne!(sid1, sid2);
 }
 
-// ---- Page navigate loader_id from url length ----
+// ---- Page navigate loaderId source (6983871b: bridge truth) ----
 
 #[test]
 fn test_navigate_loader_id_from_url_length() {
+    // New contract (6983871b): the fabricated rule
+    // `loaderId = format!("{:016x}", url.len())` is eradicated — loaderIds
+    // are per-load values from the bridge. Without a bridge, navigate is an
+    // explicit -32603 and no loaderId is ever derived from the url.
     let url = "https://example.com/page";
     let msg = CdpMessage {
         id: Some(1),
@@ -1463,11 +1492,10 @@ fn test_navigate_loader_id_from_url_length() {
         params: Some(json!({"url": url})),
         session_id: None,
     };
-    let r = handle_command(msg, "t-1", &Some(json!({"url": url})), None)
-        .result
-        .unwrap();
-    let loader_id = r["loaderId"].as_str().unwrap();
-    assert_eq!(loader_id, format!("{:016x}", url.len() as u64));
+    let resp = handle_command(msg, "t-1", &Some(json!({"url": url})), None);
+    let e = resp.error.expect("no bridge must yield an error");
+    assert_eq!(e.code, -32603);
+    assert!(resp.result.is_none(), "no url-length-derived loaderId");
 }
 
 // ---- All 12 domain error paths ----
@@ -1907,52 +1935,43 @@ fn test_attach_to_target_session_id_formula_self_consistent() {
 
 #[test]
 fn test_page_navigate_empty_url_defaults_to_about_blank() {
-    // BCE-20260621-EMPTY-STR: empty url "" must fall back to "about:blank"
-    // (CDP/Chrome semantics). loaderId is url.len()-derived → "about:blank".len() = 11 = 0x0b.
-    let r = ok_result("Page.navigate", Some(json!({"url": ""})));
-    assert_eq!(r["frameId"], "0");
-    assert_eq!(
-        r["loaderId"],
-        format!("{:016x}", "about:blank".len() as u64)
-    );
+    // BCE-20260621-EMPTY-STR: empty url "" falls back to "about:blank" for the
+    // bridge command; without a bridge the url defaulting still resolves to
+    // the same explicit -32603 as any other navigate (no canned success).
+    let e = err_result("Page.navigate", Some(json!({"url": ""})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_navigate_missing_params_field() {
-    // No params at all → default url "about:blank".
-    let r = ok_result("Page.navigate", None);
-    assert_eq!(r["frameId"], "0");
-    assert_eq!(
-        r["loaderId"],
-        format!("{:016x}", "about:blank".len() as u64)
-    );
+    // No params at all → default url "about:blank" path → explicit -32603.
+    let e = err_result("Page.navigate", None);
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_navigate_url_non_string_ignored() {
-    // url given as number (invalid type) → unwrap_or("about:blank")
-    let r = ok_result("Page.navigate", Some(json!({"url": 123})));
-    assert_eq!(r["frameId"], "0");
-    assert_eq!(
-        r["loaderId"],
-        format!("{:016x}", "about:blank".len() as u64)
-    );
+    // url given as number (invalid type) → as_str() is None → default url
+    // path → explicit -32603.
+    let e = err_result("Page.navigate", Some(json!({"url": 123})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_capture_screenshot_default_format_png() {
-    // No format param → defaults to "png" (no bridge → empty data, no error).
-    let r = ok_result("Page.captureScreenshot", None);
-    assert_eq!(r["data"], "");
+    // No format param → format defaults to "png", but a renderer is still
+    // required — explicit -32603, never empty data.
+    let e = err_result("Page.captureScreenshot", None);
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_capture_screenshot_quality_zero() {
-    let r = ok_result(
+    let e = err_result(
         "Page.captureScreenshot",
         Some(json!({"format": "jpeg", "quality": 0})),
     );
-    assert_eq!(r["data"], "");
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
@@ -2071,9 +2090,10 @@ fn test_dom_set_attribute_value_missing_name_value() {
 
 #[test]
 fn test_dom_get_outer_html_missing_node_id() {
-    // No nodeId → node_id None → no bridge returns default HTML.
-    let r = ok_result("DOM.getOuterHTML", None);
-    assert_eq!(r["outerHTML"], "<html><body></body></html>");
+    // No nodeId → node_id None → still requires the live document via the
+    // bridge — explicit -32603, never canned html.
+    let e = err_result("DOM.getOuterHTML", None);
+    assert_eq!(e.code, -32603);
 }
 
 #[test]

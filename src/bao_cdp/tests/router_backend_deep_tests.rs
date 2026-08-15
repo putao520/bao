@@ -295,6 +295,9 @@ fn test_send_command_after_detach_fails() {
 
 #[test]
 fn test_session_send_page_navigate() {
+    // New contract (6983871b): frameId/loaderId come from the bridge
+    // response — without a bridge navigate is an explicit -32603 and no id
+    // fields are fabricated.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t-1");
     let result = session.send(
@@ -302,10 +305,9 @@ fn test_session_send_page_navigate() {
         "Page.navigate",
         Some(json!({"url": "https://example.com"})),
     );
-    assert!(result.is_ok());
-    let val = result.unwrap();
-    assert!(val.get("frameId").is_some());
-    assert!(val.get("loaderId").is_some());
+    let err = result.expect_err("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
@@ -314,13 +316,14 @@ fn test_session_send_enables_domain_tracking() {
     let session = router.create_internal_session("t-1");
     session.send(&router, "Page.enable", None).unwrap();
     // Session tracks enabled domains internally
-    // Verify by sending another command in same domain
+    // Verify by sending another command in same domain: it still routes
+    // (explicit -32603, not a routing/serialization failure).
     let result = session.send(
         &router,
         "Page.navigate",
         Some(json!({"url": "about:blank"})),
     );
-    assert!(result.is_ok());
+    assert_eq!(result.unwrap_err().code, -32603);
 }
 
 #[test]
@@ -454,16 +457,32 @@ fn internal_dispatch(method: &str, params: Option<serde_json::Value>) -> serde_j
     resp.result.unwrap_or_else(|| json!({}))
 }
 
+/// Raw CdpResponse for asserting explicit-error contracts (6983871b).
+fn internal_dispatch_raw(method: &str, params: Option<serde_json::Value>) -> bao_cdp::CdpResponse {
+    let params_ref = params.clone();
+    let msg = CdpMessage {
+        id: Some(1),
+        method: method.to_string(),
+        params,
+        session_id: None,
+    };
+    handle_command(msg, "test-target", &params_ref, None)
+}
+
 #[test]
 fn test_internal_dispatch_page_get_frame_tree() {
-    let result = internal_dispatch("Page.getFrameTree", None);
-    assert!(result.get("frameTree").is_some());
+    // New contract (6983871b): frame data is read from the live document —
+    // explicit -32603, never a fabricated frameTree.
+    let resp = internal_dispatch_raw("Page.getFrameTree", None);
+    assert_eq!(resp.error.unwrap().code, -32603);
 }
 
 #[test]
 fn test_internal_dispatch_page_get_layout_metrics() {
-    let result = internal_dispatch("Page.getLayoutMetrics", None);
-    assert!(result.get("contentSize").is_some());
+    // New contract (6983871b): metrics are computed live — explicit -32603,
+    // the fabricated contentSize is eradicated.
+    let resp = internal_dispatch_raw("Page.getLayoutMetrics", None);
+    assert_eq!(resp.error.unwrap().code, -32603);
 }
 
 #[test]
@@ -495,8 +514,10 @@ fn test_internal_dispatch_dom_describe_node() {
 
 #[test]
 fn test_internal_dispatch_network_get_response_body() {
-    let result = internal_dispatch("Network.getResponseBody", Some(json!({"requestId": "r-1"})));
-    assert!(result.get("body").is_some());
+    // New contract (6983871b): servo exposes no response-body store —
+    // explicit -32603, never a canned body.
+    let resp = internal_dispatch_raw("Network.getResponseBody", Some(json!({"requestId": "r-1"})));
+    assert_eq!(resp.error.unwrap().code, -32603);
 }
 
 #[test]

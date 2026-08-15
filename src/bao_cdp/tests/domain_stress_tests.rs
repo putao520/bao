@@ -50,20 +50,32 @@ fn test_rapid_dom_enable_disable_cycle() {
 fn test_mixed_domain_commands_interleaved() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("mixed");
-    let commands = vec![
-        ("Page.enable", None),
-        ("Runtime.enable", None),
-        ("DOM.enable", None),
-        ("Page.navigate", Some(json!({"url": "https://example.com"}))),
-        ("Runtime.evaluate", Some(json!({"expression": "1+1"}))),
-        ("DOM.getDocument", None),
-        ("Page.disable", None),
-        ("Runtime.disable", None),
-        ("DOM.disable", None),
+    // New contract (6983871b): navigate needs a bridge (-32603) while the
+    // others succeed — the stress intent (interleaved routing stays healthy)
+    // is preserved by expecting each command's contract-conformant outcome.
+    let commands: Vec<(&str, Option<serde_json::Value>, bool)> = vec![
+        ("Page.enable", None, true),
+        ("Runtime.enable", None, true),
+        ("DOM.enable", None, true),
+        ("Page.navigate", Some(json!({"url": "https://example.com"})), false),
+        ("Runtime.evaluate", Some(json!({"expression": "1+1"})), true),
+        ("DOM.getDocument", None, true),
+        ("Page.disable", None, true),
+        ("Runtime.disable", None, true),
+        ("DOM.disable", None, true),
     ];
-    for (cmd, params) in &commands {
+    for (cmd, params, expect_ok) in &commands {
         let result = session.send(&router, cmd, params.clone());
-        assert!(result.is_ok(), "Command '{}' failed: {:?}", cmd, result);
+        if *expect_ok {
+            assert!(result.is_ok(), "Command '{}' failed: {:?}", cmd, result);
+        } else {
+            assert_eq!(
+                result.unwrap_err().code,
+                -32603,
+                "Command '{}' must surface explicit -32603 without a bridge",
+                cmd
+            );
+        }
     }
 }
 
@@ -79,12 +91,14 @@ fn test_multiple_sessions_same_commands() {
         session.send(&router, "DOM.enable", None).unwrap();
     }
     for session in &sessions {
+        // New contract (6983871b): navigate without a bridge surfaces an
+        // explicit -32603 per session (routing isolation preserved).
         let result = session.send(
             &router,
             "Page.navigate",
             Some(json!({"url": "https://test.com"})),
         );
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap_err().code, -32603);
     }
 }
 
@@ -99,13 +113,14 @@ fn test_unknown_commands_do_not_corrupt_state() {
     for i in 0..20 {
         let _ = session.send(&router, &format!("FakeDomain.command{}", i), None);
     }
-    // Known commands should still work
+    // Known commands should still route — navigate surfaces its explicit
+    // -32603 (contract-conformant), proving state was not corrupted.
     let result = session.send(
         &router,
         "Page.navigate",
         Some(json!({"url": "https://ok.com"})),
     );
-    assert!(result.is_ok());
+    assert_eq!(result.unwrap_err().code, -32603);
 }
 
 #[test]
@@ -139,7 +154,8 @@ fn test_session_isolation_under_load() {
             "Runtime.evaluate",
             Some(json!({"expression": format!("{}", i)})),
         );
-        assert!(r1.is_ok(), "s1 iteration {} failed", i);
+        // navigate: explicit -32603 (no bridge); evaluate: no-bridge stub Ok.
+        assert_eq!(r1.unwrap_err().code, -32603, "s1 iteration {} failed", i);
         assert!(r2.is_ok(), "s2 iteration {} failed", i);
     }
     // Detach s1
@@ -179,7 +195,9 @@ fn test_navigate_with_empty_url() {
     let session = router.create_internal_session("empty-url");
     session.send(&router, "Page.enable", None).unwrap();
     let result = session.send(&router, "Page.navigate", Some(json!({"url": ""})));
-    assert!(result.is_ok());
+    // Empty url falls back to about:blank for the bridge command; without a
+    // bridge the explicit -32603 still surfaces (no canned success).
+    assert_eq!(result.unwrap_err().code, -32603);
 }
 
 #[test]
@@ -189,7 +207,8 @@ fn test_navigate_with_very_long_url() {
     session.send(&router, "Page.enable", None).unwrap();
     let long_url = format!("https://example.com/{}", "a".repeat(10000));
     let result = session.send(&router, "Page.navigate", Some(json!({"url": long_url})));
-    assert!(result.is_ok());
+    // No panic on the 10k-char url; explicit -32603 per the new contract.
+    assert_eq!(result.unwrap_err().code, -32603);
 }
 
 #[test]
@@ -202,7 +221,8 @@ fn test_navigate_with_unicode_url() {
         "Page.navigate",
         Some(json!({"url": "https://example.com/日本語/パス?値=🎉"})),
     );
-    assert!(result.is_ok());
+    // No panic on unicode; explicit -32603 per the new contract.
+    assert_eq!(result.unwrap_err().code, -32603);
 }
 
 #[test]
@@ -288,9 +308,10 @@ fn test_network_get_response_body() {
         "Network.getResponseBody",
         Some(json!({"requestId": "1234"})),
     );
-    assert!(result.is_ok());
-    let val = result.unwrap();
-    assert!(val["body"].is_string());
+    // New contract (6983871b): no response-body store — explicit -32603,
+    // never a canned body string.
+    let err = result.expect_err("no bridge must yield an error");
+    assert_eq!(err.code, -32603);
 }
 
 // ---- Debugger domain boundary ----
@@ -412,12 +433,18 @@ fn test_full_session_lifecycle_stress() {
     }
     // Execute commands on all
     for (i, s) in alive.iter().enumerate() {
-        s.send(
-            &router,
-            "Page.navigate",
-            Some(json!({"url": format!("https://page{}.com", i)})),
-        )
-        .unwrap();
+        // navigate surfaces its explicit -32603; evaluate succeeds — both
+        // prove routing stays healthy across all sessions.
+        assert_eq!(
+            s.send(
+                &router,
+                "Page.navigate",
+                Some(json!({"url": format!("https://page{}.com", i)})),
+            )
+            .unwrap_err()
+            .code,
+            -32603
+        );
         s.send(
             &router,
             "Runtime.evaluate",
@@ -453,7 +480,9 @@ fn test_router_send_command_to_valid_session() {
         "Page.navigate",
         Some(json!({"url": "https://direct.com"})),
     );
-    assert!(result.is_ok());
+    // Routing to a valid session works — navigate itself surfaces its
+    // explicit -32603 (no bridge), not a routing failure.
+    assert_eq!(result.unwrap_err().code, -32603);
 }
 
 #[test]

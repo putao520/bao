@@ -16,6 +16,12 @@ const TID: &str = "test-target";
 const ERR_METHOD_NOT_FOUND: i64 = -32601;
 // Error code returned for the no-bridge fallback path (internal error per bao_cdp).
 const ERR_NO_BRIDGE: i64 = -32603;
+// JSON-RPC 2.0 invalid-params error code (6983871b: required param missing).
+const ERR_INVALID_PARAMS: i64 = -32602;
+// Chrome "server error" code for not-supported commands (6983871b).
+const ERR_NOT_SUPPORTED: i64 = -32000;
+// Alias matching protocol.rs naming for the no-bridge internal error.
+const ERR_INTERNAL_ERROR: i64 = ERR_NO_BRIDGE;
 
 // Helper: parse + handle without bridge
 fn dispatch(raw: &str) -> CdpResponse {
@@ -188,125 +194,120 @@ fn test_page_disable() {
     assert_eq!(result.as_object().unwrap().len(), 0);
 }
 
+// New contract (6983871b): real data via the bridge or explicit error —
+// every canned NavigateReturnObject/frameTree/screenshot/layout stub below
+// is eradicated. -32603 = no servo bridge; -32000 = facility absent;
+// -32602 = required param missing.
+
 #[test]
 fn test_page_navigate_default_url() {
-    // No bridge ⇒ NavigateReturnObject built with default "about:blank".
+    // No bridge ⇒ explicit -32603 (the bridge response is the truth for
+    // frameId/loaderId; nothing is derived from the default url).
     let resp = dispatch(r#"{"id":12,"method":"Page.navigate"}"#);
-    let result = resp.result.unwrap();
-    // frame_id is hardcoded "0" (NavigateReturnObjectBuilder).
-    assert_eq!(result["frameId"], "0");
-    // loader_id = format!("{:016x}", url.len()) — for "about:blank" len = 11.
-    assert_eq!(result["loaderId"], format!("{:016x}", "about:blank".len()));
-    assert_eq!(result["loaderId"].as_str().unwrap().len(), 16);
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(err.message.contains("no servo bridge"));
+    assert!(resp.result.is_none());
 }
 
 #[test]
 fn test_page_navigate_with_url() {
     let resp = dispatch_with_params("Page.navigate", json!({"url": "https://example.com"}));
-    let result = resp.result.unwrap();
-    assert_eq!(result["frameId"], "0");
-    // loader_id derived from url.len() — deterministic per url length.
-    assert_eq!(
-        result["loaderId"],
-        format!("{:016x}", "https://example.com".len())
-    );
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(resp.result.is_none(), "no url-length-derived loaderId");
 }
 
 #[test]
 fn test_page_get_frame_tree() {
     let resp = dispatch(r#"{"id":13,"method":"Page.getFrameTree"}"#);
-    let result = resp.result.unwrap();
-    let frame = &result["frameTree"]["frame"];
-    // Without bridge url defaults to "about:blank"; frame fields all asserted.
-    assert_eq!(frame["id"], "0");
-    assert_eq!(frame["url"], "about:blank");
-    assert_eq!(frame["loaderId"], "0");
-    assert_eq!(frame["mimeType"], "text/html");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(resp.result.is_none(), "no fabricated frame tree");
 }
 
 #[test]
 fn test_page_get_navigation_history() {
+    // servo exposes no session-history enumeration — explicit -32000.
     let resp = dispatch(r#"{"id":14,"method":"Page.getNavigationHistory"}"#);
-    let result = resp.result.unwrap();
-    assert_eq!(result["currentIndex"], 0);
-    // entries array must be non-empty (one entry with id 0).
-    let entries = result["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["id"], 0);
-    assert_eq!(entries[0]["url"], "about:blank");
+    let err = resp.error.expect("history enumeration must fail loudly");
+    assert_eq!(err.code, ERR_NOT_SUPPORTED);
+    assert!(err.message.contains("not supported"));
 }
 
 #[test]
 fn test_page_capture_screenshot_default() {
-    // No bridge ⇒ returns { "data": "" } (empty placeholder).
+    // No bridge ⇒ no renderer — explicit -32603, never {"data": ""}.
     let resp = dispatch(r#"{"id":15,"method":"Page.captureScreenshot"}"#);
-    let result = resp.result.unwrap();
-    assert_eq!(result["data"], "");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(resp.result.is_none(), "no empty-data placeholder");
 }
 
 #[test]
 fn test_page_get_layout_metrics() {
+    // Metrics are computed live from the document — explicit -32603, the
+    // hardcoded 1920×1080 constants are eradicated.
     let resp = dispatch(r#"{"id":16,"method":"Page.getLayoutMetrics"}"#);
-    let result = resp.result.unwrap();
-    // contentSize constants: 1920×1080 (hardcoded viewport defaults).
-    assert_eq!(result["contentSize"]["width"], 1920);
-    assert_eq!(result["contentSize"]["height"], 1080);
-    assert_eq!(result["contentSize"]["x"], 0);
-    assert_eq!(result["contentSize"]["y"], 0);
-    // cssContentSize mirrors contentSize exactly.
-    assert_eq!(result["cssContentSize"], result["contentSize"]);
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(resp.result.is_none(), "no fabricated dimensions");
 }
 
 #[test]
 fn test_page_add_script() {
-    // Empty source ⇒ identifier is always "1" (deterministic stub).
+    // Empty source ⇒ -32602 invalid params (identifier generation lives
+    // behind the bridge; the deterministic "1" stub is eradicated).
     let resp = dispatch_with_params(
         "Page.addScriptToEvaluateOnNewDocument",
         json!({"source": ""}),
     );
-    let result = resp.result.unwrap();
-    assert_eq!(result["identifier"], "1");
+    let err = resp.error.expect("empty source must be rejected");
+    assert_eq!(err.code, ERR_INVALID_PARAMS);
+    assert!(err.message.contains("source"));
 }
 
 #[test]
 fn test_page_remove_script() {
-    // removeScriptToEvaluateOnNewDocument ⇒ ok_empty.
+    // With an identifier the facility itself is absent — explicit -32000
+    // (no removable script registry exists).
     let resp = dispatch_with_params(
         "Page.removeScriptToEvaluateOnNewDocument",
         json!({"identifier": "1"}),
     );
-    let result = resp.result.unwrap();
-    assert!(result.is_object());
+    let err = resp.error.expect("removeScript must fail loudly");
+    assert_eq!(err.code, ERR_NOT_SUPPORTED);
+    assert!(err.message.contains("not supported"));
 }
 
 #[test]
 fn test_page_set_content() {
     let resp = dispatch(r#"{"id":17,"method":"Page.setContent"}"#);
-    let result = resp.result.unwrap();
-    assert!(result.is_object());
+    let err = resp.error.expect("missing html must be rejected");
+    assert_eq!(err.code, ERR_INVALID_PARAMS);
+    assert!(err.message.contains("html"));
 }
 
 #[test]
 fn test_page_close() {
     let resp = dispatch(r#"{"id":18,"method":"Page.close"}"#);
-    let result = resp.result.unwrap();
-    assert!(result.is_object());
+    assert_eq!(resp.error.unwrap().code, ERR_INTERNAL_ERROR);
 }
 
 #[test]
 fn test_page_bring_to_front() {
     let resp = dispatch(r#"{"id":19,"method":"Page.bringToFront"}"#);
-    let result = resp.result.unwrap();
-    assert!(result.is_object());
+    assert_eq!(resp.error.unwrap().code, ERR_INTERNAL_ERROR);
 }
 
 #[test]
 fn test_page_reload_no_bridge() {
-    // reload ⇒ { frameId: "0", loaderId: "0" } (distinct from navigate's len-derived loaderId).
+    // reload goes through WebView::reload via the bridge — explicit -32603,
+    // never the fabricated frameId/loaderId "0" pair.
     let resp = dispatch_with_params("Page.reload", json!({"ignoreCache": true}));
-    let result = resp.result.unwrap();
-    assert_eq!(result["frameId"], "0");
-    assert_eq!(result["loaderId"], "0");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(resp.result.is_none());
 }
 
 #[test]
@@ -323,8 +324,9 @@ fn test_page_unknown() {
 fn test_runtime_enable() {
     let resp = dispatch(r#"{"id":30,"method":"Runtime.enable"}"#);
     let result = resp.result.unwrap();
-    // executionContextId is hardcoded 1 (deterministic stub).
-    assert_eq!(result["executionContextId"], 1);
+    // Chrome semantics: {} — the old executionContextId:1 was a fabrication
+    // (contexts arrive via executionContextCreated events).
+    assert_eq!(result, json!({}));
 }
 
 #[test]
@@ -495,10 +497,12 @@ fn test_dom_set_attribute_value_no_bridge() {
 
 #[test]
 fn test_dom_get_outer_html_no_bridge() {
+    // outerHTML is read from the live document — explicit -32603, never the
+    // canned "<html><body></body></html>" stub.
     let resp = dispatch(r#"{"id":44,"method":"DOM.getOuterHTML"}"#);
-    let result = resp.result.unwrap();
-    // Exact stub HTML (not just "is_string").
-    assert_eq!(result["outerHTML"], "<html><body></body></html>");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(resp.result.is_none(), "no canned outerHTML payload");
 }
 
 #[test]
@@ -559,11 +563,12 @@ fn test_network_disable() {
 
 #[test]
 fn test_network_get_response_body() {
+    // servo exposes no response-body store — explicit -32603, never the
+    // {"body":"", "base64Encoded":false} fake success.
     let resp = dispatch(r#"{"id":52,"method":"Network.getResponseBody"}"#);
-    let result = resp.result.unwrap();
-    assert_eq!(result["base64Encoded"], false);
-    // body defaults to "" (empty string), not absent.
-    assert_eq!(result["body"], "");
+    let err = resp.error.expect("no bridge must yield an error");
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(resp.result.is_none(), "no fake body schema");
 }
 
 #[test]
@@ -592,18 +597,23 @@ fn test_network_set_cache_disabled() {
 #[test]
 fn test_network_misc_ok_empty() {
     // emulateNetworkConditions, setRequestInterception, continueInterceptedRequest,
-    // deleteCookies, setCookie, setExtraHTTPHeaders ⇒ ok_empty.
+    // deleteCookies, setCookie ⇒ ok_empty (genuinely bridge-independent).
+    // setExtraHTTPHeaders moved out: servo has no per-target extra-headers
+    // API and headers are never silently dropped — explicit -32603.
     for m in &[
         "emulateNetworkConditions",
         "setRequestInterception",
         "continueInterceptedRequest",
         "deleteCookies",
         "setCookie",
-        "setExtraHTTPHeaders",
     ] {
         let resp = dispatch(&format!(r#"{{"id":1,"method":"Network.{}"}}"#, m));
         assert!(resp.result.unwrap().is_object(), "Network.{} ok_empty", m);
     }
+    let resp = dispatch(r#"{"id":1,"method":"Network.setExtraHTTPHeaders"}"#);
+    let err = resp.error.expect("headers must not be silently dropped");
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(resp.result.is_none());
 }
 
 #[test]
