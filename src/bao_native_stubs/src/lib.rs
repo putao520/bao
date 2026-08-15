@@ -1,97 +1,73 @@
 // @trace REQ-ENG-001
-//! Rust implementations and C library link bridges for symbols originally provided
-//! by Zig-compiled C/Zig code in upstream Bun.
+//! C library link bridge for symbols originally provided by Zig-compiled
+//! C/Zig code in upstream Bun. This crate NO LONGER defines any `#[no_mangle]`
+//! C-seam symbol itself (STUB-INVENTORY dual-def iron rule) — it is purely a
+//! **test-linking anchor**: `force_link()` drags in the C archives and the
+//! crates that own the seam symbols.
 //!
-//! ## Compiled C libraries (real implementations, no stubs)
-//! - mimalloc → libmimalloc.a (bun_mimalloc_sys)
-//! - highway SIMD → libhighway.a + libhighway_strings.a (bun_highway)
-//! - zstd → zstd-pure-rs (pure Rust, no C library)
-//! - brotli → pure Rust (bun_brotli via rust-brotli crate, no C library)
+//! ## Symbol ownership (one `#[no_mangle]` definition per symbol, everywhere)
+//! - `bun_core::native_seam` / `bun_core::util::spawn_ffi` — stdio / StackCheck /
+//!   crash dump / cpu features / executable probe / ares_inet_pton /
+//!   BunString__fromBytes / WTFStringImpl destroy / posix_spawn_bun /
+//!   reload-process sync
+//! - `bao_uloop` — TLS C→Rust hooks (Bun__Node__UseSystemCA,
+//!   BUN__warn__extra_ca_load_failed, bun_ssl_ctx_cache_on_free) +
+//!   Bun__addrinfo_* DNS seam + loop dispatch symbols
+//! - `bun_runtime::product_native_symbols` — URL__* / WTF__parse* / __bun_regex_*
+//!   / signal-forwarding quartet (Bun__{register,unregister,sendPending}Signals*
+//!   + Bun__currentSyncPID) / linux_trace
+//! - `bao_boringssl_bridge` — UpgradedDuplex__* (12 fns)
+//! - `bun_uws_sys::c_hooks` — Bun__JSC_onBeforeWait / Bun__panic / sys_epoll_pwait2
+//! - `bun_crash_handler` — __bun_crash_handler_out_of_memory
+//! - `bun_alloc` — WTF__releaseFastMallocFreeMemoryForThisThread
+//! - `bun_core::util` — WTF__numberOfProcessorCores
+//! - compiled C libraries: mimalloc (bun_mimalloc_sys), highway (bun_highway),
+//!   zstd (pure Rust via bun_zstd), brotli (pure Rust), lsquic/lshpack
+//!   (bun_lsquic_sys), BoringSSL (bun_boringssl_sys), uSockets (bun_uws_sys)
 //!
-//! ## Functional Rust implementations (not stubs)
-//! - ares_inet_pton: real IPv4/IPv6 parsing
-//! - bun_cpu_features: real CPU feature detection
-//! - is_executable_file: real stat + permission check
-//! - BunString__fromBytes / Bun__WTFStringImpl__destroy: real alloc/dealloc
-//! - WTF__base64URLEncode: moved to bun_base64 (simdutf pure Rust)
-//! - posix_spawn_bun: real process spawning via posix_spawnp
-//! - Signal forwarding: real signal registration + delivery
-//! - WTF__DumpStackTrace: real backtrace output
-//!
-//! ## Remaining no-op stubs (require architecture work)
-//! - WTF__releaseFastMallocFreeMemoryForThisThread → real owner: bun_alloc
-//!
-//! ## Moved to product RealImpl (do NOT reintroduce — dual-def)
-//! - Bun__linux_trace_* → `bun_runtime::linux_trace`
-//!
-//! Linker GC prevention: a ctor in .init_array auto-calls force_link() at load time,
-//! so integration tests don't need explicit force_link() calls.
+//! Linker GC prevention: a ctor in .init_array auto-calls force_link() at load
+//! time, so integration tests don't need explicit force_link() calls.
 
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use core::ffi::{c_char, c_int, c_short, c_void};
-
 mod c_lib_stubs;
 
-/// Get the C `environ` pointer portably.
-unsafe fn extern_environ() -> *mut *mut c_char {
-    unsafe extern "C" {
-        static environ: *mut *mut c_char;
-    }
-    unsafe { environ }
-}
-
-/// Force the linker to include all native stub symbols.
+/// Force the linker to include the C libraries and seam-symbol owners.
 /// Call this from test code: `bao_native_stubs::force_link();`
 ///
 /// Note: Only call this after the process is fully initialized (e.g., at the
-/// start of a test function, not in a global ctor). Some stubs call libc
-/// functions that require full process initialization.
+/// start of a test function, not in a global ctor). Some chained code calls
+/// libc functions that require full process initialization.
 #[inline(never)]
 pub fn force_link() {
-    // Wave 74-LOOP-A: pull in bao_uloop's `#[unsafe(no_mangle)] extern "C"` loop
-    // symbols (uws_get_loop / us_wakeup_loop / us_loop_run_bun_tick / ...).
-    // Without this, the linker strips them and any code path that touches
-    // `bun_event_loop::MiniEventLoop` fails to link.
+    // bao_uloop's `#[unsafe(no_mangle)] extern "C"` loop symbols
+    // (uws_get_loop / us_wakeup_loop / us_loop_run_bun_tick / ...), DNS seam
+    // and TLS C→Rust hooks. Without this, the linker strips them and any code
+    // path that touches `bun_event_loop::MiniEventLoop` fails to link.
     bao_uloop::force_link();
 
-    // Wave 75: pull in compiled mimalloc C library (libmimalloc.a).
+    // Compiled mimalloc C library (libmimalloc.a).
     bun_mimalloc_sys::force_link();
 
-    // Wave 75b: pull in compiled highway SIMD library (libhighway.a + libhighway_strings.a).
+    // Compiled highway SIMD library (libhighway.a + libhighway_strings.a).
     bun_highway::force_link();
 
-    // Wave 75c: zstd — now pure Rust (zstd-pure-rs), no C library to link.
+    // zstd — now pure Rust (zstd-pure-rs), no C library to link.
     bun_zstd::force_link();
 
-    let _ = Bun__currentSyncPID.load(std::sync::atomic::Ordering::Relaxed);
+    // bun_core / bao_uloop / bun_runtime seam symbols — owned there; do NOT
+    // define or re-anchor them here (STUB-INVENTORY dual-def iron rule).
+    // Former def sites removed: bun_restore_stdio, ares_inet_pton,
+    // Bun__StackCheck__{initialize,getMaxStack}, WTF__DumpStackTrace,
+    // on_before_reload_process_linux, posix_spawn_bun, bun_cpu_features,
+    // is_executable_file, BunString__fromBytes, Bun__WTFStringImpl__destroy,
+    // Bun__currentSyncPID, Bun__{register,unregister,sendPending}Signals*,
+    // Bun__Node__UseSystemCA, BUN__warn__extra_ca_load_failed,
+    // bun_ssl_ctx_cache_on_free — now single-defined in
+    // bun_core::native_seam / bun_core::util::spawn_ffi / bao_uloop /
+    // bun_runtime::product_native_symbols.
 
-    let _ = bun_cpu_features();
-    let _ = is_executable_file(core::ptr::null());
-
-    let _ = BunString__fromBytes(core::ptr::null(), 0);
-    Bun__WTFStringImpl__destroy(core::ptr::null());
-
-    // URL__* / WTF__parse* / __bun_regex_* — real owners in
-    // bun_runtime::product_native_symbols + bun_url pure path / bun_core.
-    // Do NOT reintroduce noops (STUB-INVENTORY dual-def iron rule).
-
-    // bun_core references
-    bun_restore_stdio();
-    let _ = ares_inet_pton(0, core::ptr::null(), core::ptr::null_mut());
-
-    // bun_core::StackCheck / bun_crash_handler / bun_spawn
-    // ABI aligned with product_native_symbols (product owner); stubs = dev/test only.
-    Bun__StackCheck__initialize();
-    WTF__DumpStackTrace(core::ptr::null(), 0);
-    Bun__registerSignalsForForwarding();
-    Bun__sendPendingSignalIfNecessary();
-    Bun__unregisterSignalsForForwarding();
-
-    // Bun__linux_trace_* — real owner: bun_runtime::linux_trace
-    // Do NOT reintroduce noops (STUB-INVENTORY dual-def iron rule).
-    let _ = Bun__StackCheck__getMaxStack();
     // Force-link all c_lib_stubs symbols
     c_lib_stubs::force_c_lib_stubs();
 }
@@ -105,498 +81,6 @@ pub fn force_link() {
 pub unsafe extern "C" fn __force_link_entry() {
     force_link();
 }
-
-// ──────────────────────────────────────────────────────────────
-// mimalloc: now provided by compiled C library (bun_mimalloc_sys).
-// All mi_* symbols resolved by libmimalloc.a at link time.
-// ──────────────────────────────────────────────────────────────
-
-// ──────────────────────────────────────────────────────────────
-// UpgradedDuplex — real implementations in src/bao_boringssl_bridge/src/socket.rs
-// ──────────────────────────────────────────────────────────────
-// All 12 UpgradedDuplex__* functions (ssl_error, is_established, is_closed,
-// is_shutdown, ssl, set_timeout, flush, encode_and_write, raw_write, shutdown,
-// shutdown_read, close) are provided by bao_boringssl_bridge with #[unsafe(no_mangle)].
-// The linker picks those versions instead of these stubs.
-
-// ──────────────────────────────────────────────────────────────
-// URL__* — real owner: bun_runtime::product_native_symbols + bun_url::whatwg
-// pure path. Do NOT reintroduce dead/identity noops (STUB-INVENTORY).
-// ──────────────────────────────────────────────────────────────
-
-/// ABI-compatible mirror of `bun_core::String` (24 bytes, 8-aligned).
-/// Kept for remaining stub symbols that cannot depend on bun_core.
-#[repr(C, align(8))]
-#[derive(Clone, Copy)]
-pub struct BunStringValue {
-    tag: u64,
-    _impl: [u64; 2],
-}
-
-// ──────────────────────────────────────────────────────────────
-// bun_restore_stdio — referenced by bun_core::output::stdio
-// ──────────────────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn bun_restore_stdio() {
-    // Flush stdout/stderr before any fd restoration
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().flush();
-}
-
-// ──────────────────────────────────────────────────────────────
-// ares_inet_pton — referenced by bun_core::string (IP address check)
-// ──────────────────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn ares_inet_pton(af: c_int, src: *const c_char, dst: *mut c_void) -> c_int {
-    if src.is_null() || dst.is_null() {
-        return 0;
-    }
-    unsafe {
-        let cstr = core::ffi::CStr::from_ptr(src);
-        let s = match cstr.to_str() {
-            Ok(s) => s,
-            Err(_) => return 0,
-        };
-        match af {
-            2 /* AF_INET */ => {
-                match s.parse::<std::net::Ipv4Addr>() {
-                    Ok(addr) => {
-                        let octets = addr.octets();
-                        core::ptr::copy_nonoverlapping(octets.as_ptr(), dst as *mut u8, 4);
-                        1
-                    }
-                    Err(_) => 0,
-                }
-            }
-            10 /* AF_INET6 */ => {
-                match s.parse::<std::net::Ipv6Addr>() {
-                    Ok(addr) => {
-                        let octets = addr.octets();
-                        core::ptr::copy_nonoverlapping(octets.as_ptr(), dst as *mut u8, 16);
-                        1
-                    }
-                    Err(_) => 0,
-                }
-            }
-            _ => 0,
-        }
-    }
-}
-
-// ──────────────────────────────────────────────────────────────
-// Symbols still referenced by upstream Bun crates
-// ──────────────────────────────────────────────────────────────
-
-// ── Crash / stack / signals — ABI must match product_native_symbols ─────
-// Product owner = `bun_runtime::product_native_symbols`. This crate is
-// **dev/test force_link only**; do not expand product surface here.
-
-/// ABI: `(ptr, count)` — same as product / `bun_crash_handler`.
-#[unsafe(no_mangle)]
-pub extern "C" fn WTF__DumpStackTrace(ptr: *const usize, count: usize) {
-    if !ptr.is_null() && count > 0 {
-        // SAFETY: caller provides `count` valid instruction addresses.
-        let frames = unsafe { core::slice::from_raw_parts(ptr, count) };
-        for (i, addr) in frames.iter().enumerate() {
-            eprintln!("  #{i:2} {addr:#x}");
-        }
-    } else {
-        let bt = std::backtrace::Backtrace::force_capture();
-        eprintln!("{bt}");
-    }
-}
-
-// ──────────────────────────────────────────────────────────────
-// WTF__parseES5Date / parseDouble / dtoa — real owner: bun_core pure +
-// bun_runtime::product_native_symbols no_mangle. Do NOT reintroduce NaN/0
-// noops (STUB-INVENTORY).
-//
-// __bun_regex_* — real owner: bun_runtime::product_native_symbols (regex crate).
-// Do NOT reintroduce always-fail noops (STUB-INVENTORY).
-// ──────────────────────────────────────────────────────────────
-
-/// ABI: void — same as product / `bun_core::util::StackCheck`.
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__StackCheck__initialize() {
-    // Bounds resolved lazily via getMaxStack (product RealImpl).
-}
-
-// bun_spawn::process signal forwarding — ABI: zero-arg (spawn_sys SSOT).
-// RealImpl mirrors product_native_symbols (PENDING + Bun__currentSyncPID).
-use std::sync::atomic::{AtomicI32, Ordering};
-
-static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
-
-#[cfg(unix)]
-extern "C" fn bun_forward_signal_handler(sig: c_int) {
-    let pid = Bun__currentSyncPID.load(Ordering::Relaxed);
-    if pid != 0 && pid != -1 {
-        unsafe {
-            libc::kill(pid as libc::pid_t, sig);
-        }
-    } else {
-        PENDING_SIGNAL.store(sig, Ordering::SeqCst);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__registerSignalsForForwarding() {
-    #[cfg(unix)]
-    {
-        PENDING_SIGNAL.store(0, Ordering::SeqCst);
-        unsafe {
-            let mut sa: libc::sigaction = core::mem::zeroed();
-            sa.sa_sigaction = bun_forward_signal_handler as *const () as usize;
-            libc::sigemptyset(&mut sa.sa_mask);
-            sa.sa_flags = libc::SA_RESTART;
-            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
-                libc::sigaction(sig, &sa, core::ptr::null_mut());
-            }
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__unregisterSignalsForForwarding() {
-    #[cfg(unix)]
-    {
-        unsafe {
-            let mut sa: libc::sigaction = core::mem::zeroed();
-            sa.sa_sigaction = libc::SIG_DFL;
-            libc::sigemptyset(&mut sa.sa_mask);
-            sa.sa_flags = 0;
-            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
-                libc::sigaction(sig, &sa, core::ptr::null_mut());
-            }
-        }
-        PENDING_SIGNAL.store(0, Ordering::SeqCst);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__sendPendingSignalIfNecessary() {
-    let sig = PENDING_SIGNAL.swap(0, Ordering::SeqCst);
-    if sig == 0 {
-        return;
-    }
-    let pid = Bun__currentSyncPID.load(Ordering::Relaxed);
-    if pid != 0 && pid != -1 {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(pid as libc::pid_t, sig);
-        }
-    }
-}
-
-// SSL_set_ciphersuites — real implementation in src/bao_boringssl_bridge/src/socket.rs
-// bun_core::util::reload_process references this
-#[unsafe(no_mangle)]
-pub extern "C" fn on_before_reload_process_linux() {
-    // Sync filesystem buffers before exec() — matches Bun's behavior
-    unsafe {
-        libc::sync();
-    }
-}
-
-// bun_io::FilePoll::on_update — provided by bao_runtime::dispatch
-// (extern "Rust" linkage, not extern "C"). No stub needed here.
-
-// ──────────────────────────────────────────────────────────────
-// Symbols referenced by bun_resolver/bun_perf/bun_ast dependency chain
-// ──────────────────────────────────────────────────────────────
-// Bun__linux_trace_* — real owner: bun_runtime::linux_trace (not here)
-// __bun_resolver_init_package_manager — provided above (no-op stub)
-// Bun__StackCheck__getMaxStack — provided above
-
-// ──────────────────────────────────────────────────────────────
-// bun_spawn / bun_core stubs
-// ──────────────────────────────────────────────────────────────
-
-/// BunSpawnRequest mirrors `bun_core::spawn_ffi::BunSpawnRequest`.
-/// We duplicate it here to avoid importing bun_core (which would create
-/// a circular dependency for the native stubs crate).
-#[repr(C)]
-struct BunSpawnRequest {
-    chdir_buf: *const c_char,
-    detached: bool,
-    new_process_group: bool,
-    actions: SpawnActionsList,
-    pty_slave_fd: c_int,
-    linux_pdeathsig: c_int,
-}
-
-#[repr(C)]
-struct SpawnActionsList {
-    ptr: *const SpawnAction,
-    len: usize,
-}
-
-#[repr(C)]
-struct SpawnAction {
-    kind: u8, // 0=None, 1=Close, 2=Dup2, 3=Open — matches bun_core::spawn_ffi::FileActionType (repr(u8))
-    _pad: [u8; 7], // padding to align path to 8 bytes
-    path: *const c_char,
-    fds: [c_int; 2],
-    flags: c_int,
-    mode: c_int,
-}
-
-const ACTION_CLOSE: u8 = 1;
-const ACTION_DUP2: u8 = 2;
-const ACTION_OPEN: u8 = 3;
-
-/// Rust implementation of `posix_spawn_bun`.
-///
-/// The upstream C++ version (`bun-spawn.cpp`) uses vfork() + custom child setup.
-/// Bao's version converts `BunSpawnRequest` actions to standard
-/// `posix_spawn_file_actions_t` and calls `posix_spawnp`, avoiding
-/// the glibc 2.39 clone3+CLONE_INTO_CGROUP EBADF bug on cgroup v2 systems.
-#[unsafe(no_mangle)]
-pub extern "C" fn posix_spawn_bun(
-    pid: *mut c_int,
-    path: *const c_char,
-    request: *const c_void,
-    argv: *const *mut c_char,
-    envp: *const *mut c_char,
-) -> c_int {
-    unsafe {
-        let req = &*(request as *const BunSpawnRequest);
-
-        // Build posix_spawn file actions from BunSpawnRequest
-        let mut fa: libc::posix_spawn_file_actions_t = core::mem::zeroed();
-        let rc = libc::posix_spawn_file_actions_init(&mut fa);
-        if rc != 0 {
-            return rc;
-        }
-
-        // Apply chdir if specified
-        if !req.chdir_buf.is_null() {
-            libc::posix_spawn_file_actions_addchdir_np(&mut fa, req.chdir_buf);
-        }
-
-        // Convert custom actions to posix_spawn actions
-        for i in 0..req.actions.len {
-            let action = &*req.actions.ptr.add(i);
-            match action.kind {
-                ACTION_CLOSE => {
-                    libc::posix_spawn_file_actions_addclose(&mut fa, action.fds[0]);
-                }
-                ACTION_DUP2 => {
-                    if action.fds[0] == action.fds[1] {
-                        // dup2(old, old) is a no-op, but clear CLOEXEC.
-                        // posix_spawn doesn't have a "clear CLOEXEC" action,
-                        // so we do dup2 to a temp fd, then dup2 back.
-                        // Simpler: just addinherit on platforms that support it.
-                        // For now, dup2 to self is handled by posix_spawn.
-                    }
-                    libc::posix_spawn_file_actions_adddup2(&mut fa, action.fds[0], action.fds[1]);
-                }
-                ACTION_OPEN => {
-                    libc::posix_spawn_file_actions_addopen(
-                        &mut fa,
-                        action.fds[0],
-                        action.path,
-                        action.flags,
-                        action.mode as libc::mode_t,
-                    );
-                }
-                _ => {}
-            }
-        }
-
-        // Build spawn attributes
-        let mut attr: libc::posix_spawnattr_t = core::mem::zeroed();
-        let rc = libc::posix_spawnattr_init(&mut attr);
-        if rc != 0 {
-            libc::posix_spawn_file_actions_destroy(&mut fa);
-            return rc;
-        }
-
-        let mut flags: c_short =
-            (libc::POSIX_SPAWN_SETSIGDEF | libc::POSIX_SPAWN_SETSIGMASK) as c_short;
-        if req.new_process_group {
-            flags |= 0x80; // POSIX_SPAWN_SETSID on Linux
-        }
-
-        // Reset all signals to default in child
-        let mut sigdefault: libc::sigset_t = core::mem::zeroed();
-        libc::sigemptyset(&mut sigdefault);
-        libc::posix_spawnattr_setsigdefault(&mut attr, &sigdefault);
-
-        // Unblock all signals in child
-        let mut sigmask: libc::sigset_t = core::mem::zeroed();
-        libc::sigfillset(&mut sigmask);
-        libc::posix_spawnattr_setsigmask(&mut attr, &sigmask);
-
-        libc::posix_spawnattr_setflags(&mut attr, flags);
-
-        // Use the provided envp, or environ if null
-        let env = if envp.is_null() {
-            extern_environ()
-        } else {
-            envp as *mut *mut c_char
-        };
-
-        let rc = libc::posix_spawnp(pid, path, &fa, &attr, argv as *mut *mut c_char, env);
-
-        libc::posix_spawnattr_destroy(&mut attr);
-        libc::posix_spawn_file_actions_destroy(&mut fa);
-        rc
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn bun_cpu_features() -> u64 {
-    let mut flags: u64 = 0;
-    flags |= 1 << 1; // SSE2 (guaranteed on x86_64)
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") {
-            flags |= 1 << 5;
-        }
-        if is_x86_feature_detected!("sse4.2") {
-            flags |= 1 << 3;
-        }
-    }
-    flags
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn is_executable_file(path: *const c_char) -> bool {
-    if path.is_null() {
-        return false;
-    }
-    unsafe {
-        let mut st: libc::stat = core::mem::zeroed();
-        if libc::stat(path, &mut st) != 0 {
-            return false;
-        }
-        (st.st_mode & libc::S_IXUSR) != 0
-    }
-}
-
-// ──────────────────────────────────────────────────────────────
-// Additional stubs — only those with real functionality remain
-// ──────────────────────────────────────────────────────────────
-
-/// BunString__fromBytes: create a Bun string from raw bytes
-/// Original: Zig-compiled C function in bun_core/string.
-/// Bao: allocate and copy bytes into a Rust String, returned as a pointer.
-/// Note: This is a simplified stub — the real implementation handles Latin1 vs UTF-16.
-#[unsafe(no_mangle)]
-pub extern "C" fn BunString__fromBytes(bytes: *const u8, len: usize) -> *mut c_void {
-    if bytes.is_null() || len == 0 {
-        return core::ptr::null_mut();
-    }
-    unsafe {
-        let slice = core::slice::from_raw_parts(bytes, len);
-        let s = ::std::string::String::from_utf8_lossy(slice).into_owned();
-        Box::into_raw(Box::new(s)) as *mut c_void
-    }
-}
-
-/// Bun__WTFStringImpl__destroy: destroy a WTFStringImpl
-/// Original: Zig-compiled C function that decrements refcount and frees.
-/// Bao: free the allocated String.
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__WTFStringImpl__destroy(this: *const c_void) {
-    if this.is_null() {
-        return;
-    }
-    unsafe {
-        let _ = Box::from_raw(this as *mut ::std::string::String);
-    }
-}
-
-// ──────────────────────────────────────────────────────────────
-// Signal forwarding — provided by bao_bin/process management
-// ──────────────────────────────────────────────────────────────
-
-/// Bun__currentSyncPID: tracks the current synchronous child process PID.
-/// Original: Zig-compiled C++ AtomicI64 global variable accessed via .store()/.load().
-/// Bao: provides an AtomicI64 static that bun_spawn_sys::ffi expects.
-#[cfg(target_os = "linux")]
-#[unsafe(no_mangle)]
-pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 =
-    std::sync::atomic::AtomicI64::new(-1);
-
-#[cfg(not(target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 =
-    std::sync::atomic::AtomicI64::new(-1);
-
-// ──────────────────────────────────────────────────────────────
-// WTF base64 — now replaced by simdutf pure Rust implementation
-// in bun_base64::encode_url_safe(). No stub needed.
-// ──────────────────────────────────────────────────────────────
-
-// ──────────────────────────────────────────────────────────────
-// Brotli decoder — now provided by compiled C library (bun_brotli_sys build.rs).
-// All BrotliDecoder* symbols resolved by libbrotli.a at link time.
-// ──────────────────────────────────────────────────────────────
-
-// ──────────────────────────────────────────────────────────────
-// libdeflate — replaced by pure Rust (flate2 + miniz_oxide via bun_zlib).
-// No C compilation needed; bun_libdeflate_sys crate removed.
-// ──────────────────────────────────────────────────────────────
-
-// ──────────────────────────────────────────────────────────────
-// ZSTD — now pure Rust (zstd-pure-rs via bun_zstd crate).
-// No C library compilation needed.
-// ──────────────────────────────────────────────────────────────
-
-// ──────────────────────────────────────────────────────────────
-// Misc stubs
-// ──────────────────────────────────────────────────────────────
-// `__bun_crash_handler_out_of_memory` — real export in `bun_crash_handler`
-// (returns `!`). Do NOT stub here: full product path always co-links
-// bun_crash_handler (via bun_install / bao_engine / js_parser). Dual-def
-// breaks consumer lib-test link (gsc-frog-tools).
-
-// ──────────────────────────────────────────────────────────────
-// Bun__linux_trace_* — REAL owner: bun_runtime::linux_trace
-// Do NOT reintroduce no-op stubs here (dual-def with product path).
-// ──────────────────────────────────────────────────────────────
-
-// ──────────────────────────────────────────────────────────────
-// bun_core::StackCheck — returns stack end pointer
-// ──────────────────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
-    unsafe {
-        let mut attr: libc::pthread_attr_t = core::mem::zeroed();
-        if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) == 0 {
-            let mut stack_addr: *mut c_void = core::ptr::null_mut();
-            let mut stack_size: usize = 0;
-            if libc::pthread_attr_getstack(&attr, &mut stack_addr, &mut stack_size) == 0 {
-                libc::pthread_attr_destroy(&mut attr);
-                return (stack_addr as usize + stack_size) as *mut c_void;
-            }
-            libc::pthread_attr_destroy(&mut attr);
-        }
-        // Fallback: 8MB from current stack frame
-        let marker: usize = 0;
-        (marker as *const usize as usize + 8 * 1024 * 1024) as *mut c_void
-    }
-}
-
-// __bun_resolver_init_package_manager — provided by bun_install (#[unsafe(no_mangle)])
-// bao_runtime depends on bun_install, the linker resolves the symbol from there.
-// All highway_* symbols resolved by libhighway.a + libhighway_strings.a at link time.
-// ──────────────────────────────────────────────────────────────
-
-// ──────────────────────────────────────────────────────────────
-// FilePoll dispatch — provided by bao_uloop/bun_io integration
-// ──────────────────────────────────────────────────────────────
-
-// BoringSSL SSL_* stubs — all removed, now provided by compiled
-// libboringssl.a (bun_boringssl_sys build.rs). Includes:
-//   SSL_set_cipher_list, SSL_set_ciphersuites, SSL_set1_curves_list,
-//   SSL_set1_sigalgs_list, and all other SSL_*/BIO_*/ERR_* symbols.
 
 // ──────────────────────────────────────────────────────────────
 // §0  Closed-set dispatch no-op stubs via bun_dispatch::link_noop_*
@@ -616,26 +100,3 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
 
 // BufferedReaderParentLink: no link_noop — product_buffered_reader owns the set.
 // ProcessExit: no link_noop — product_process_exit owns the set.
-
-// ──────────────────────────────────────────────────────────────
-// §3  Miscellaneous extern "C" stubs
-// ──────────────────────────────────────────────────────────────
-
-// `__bun_dns_prefetch` — real owner: `bun_runtime::dispatch` (async resolve warm).
-// `__bun_get_vm_ctx` — real owner: `bun_runtime::dispatch` (Mini/Js EventLoopCtx).
-// Do NOT reintroduce Mini+null / empty noops (STUB-INVENTORY.md). Dual-def
-// with bun_runtime breaks product + gsc-frog-tools lib-test link.
-
-// `sys_preadv2` / `sys_pwritev2` — real owner: `bun_sys` (libc wrappers).
-// Do NOT reintroduce -1 stubs (STUB-INVENTORY.md).
-
-// `WTF__numberOfProcessorCores` — real owner: `bun_core::util` (sysconf).
-// Do NOT reintroduce hard-coded `1` stub (STUB-INVENTORY.md).
-
-// `URL__*` / `WTF__parseES5Date` / `WTF__parseDouble` / `WTF__dtoa` /
-// `__bun_regex_compile|matches|drop` — real owners in bun_url / bun_core /
-// bun_runtime::product_native_symbols. Do NOT reintroduce noops.
-//
-// `WTF__releaseFastMallocFreeMemoryForThisThread` — real owner: `bun_alloc`
-// (`mi_collect(false)` via bun_mimalloc_sys). Do NOT reintroduce empty noop
-// (dual-def with bun_alloc breaks product + test link).

@@ -890,6 +890,60 @@ pub use addrinfo::Bun__addrinfo_set;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Bun__internal_ensureDateHeaderTimerIsEnabled(_loop: *mut c_void) {}
 
+// ──────────────── TLS C→Rust hooks (root_certs.cpp / openssl.c) ──────────
+// Callbacks libusockets_tls.a calls back into once its C socket symbols are
+// referenced. bao_uloop is chained into every link scope that pulls those
+// archives (via bao_native_stubs or bun_runtime), so the single `#[no_mangle]`
+// definitions live here (STUB-INVENTORY dual-def iron rule; former def sites
+// bao_native_stubs/c_lib_stubs.rs and bun_runtime::product_native_symbols are
+// deleted — do NOT reintroduce them).
+
+/// Whether to load system CA certificates for TLS verification. Set by
+/// `--use-system-ca` / `NODE_USE_SYSTEM_CA=1` upstream; default: load.
+#[unsafe(no_mangle)]
+pub static mut Bun__Node__UseSystemCA: bool = true;
+
+/// Warning callback: `root_certs.cpp` calls this when a certificate file in
+/// the system CA directory cannot be parsed (the certs are skipped).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn BUN__warn__extra_ca_load_failed(
+    filename: *const c_char,
+    error_msg: *const c_char,
+) {
+    let filename_str = if filename.is_null() {
+        "(unknown)".to_string()
+    } else {
+        // SAFETY: caller contract (root_certs.cpp) provides NUL-terminated C strings.
+        unsafe { std::ffi::CStr::from_ptr(filename) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    let error_str = if error_msg.is_null() {
+        "(unknown)".to_string()
+    } else {
+        // SAFETY: see above.
+        unsafe { std::ffi::CStr::from_ptr(error_msg) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    eprintln!("warn: ignoring extra certs from {filename_str}, load failed: {error_str}");
+}
+
+/// BoringSSL CRYPTO_EX_free callback (openssl.c `us_ctx_cache_ex_idx`).
+/// Tombstones the SSLContextCache entry when the last SSL_CTX ref drops;
+/// safe no-op while no SSL_CTX cache is wired (every handshake gets a fresh
+/// SSL_CTX). Same shape the former stub/product defs had.
+#[unsafe(no_mangle)]
+pub extern "C" fn bun_ssl_ctx_cache_on_free(
+    _parent: *mut c_void,
+    _ptr: *mut c_void,
+    _ad: *mut c_void,
+    _index: c_int,
+    _argl: i64,
+    _argp: *mut c_void,
+) {
+}
+
 /// Force the linker to keep bao_uloop's `#[no_mangle] extern "C"` symbols.
 /// BUG-353 fix: loop symbols (us_create_loop, uws_get_loop, etc.) are now
 /// extern "C" imports from libusockets.a/libuwsockets.a — no need to force-link
@@ -1003,28 +1057,12 @@ mod hangup_tests {
         on_handshake: None,
     };
 
-    // root_certs.cpp (chained into the link once the C socket symbols are
-    // referenced) calls back into these two Bun-side symbols. bao_native_stubs
-    // provides them in production, but as a dev-dependency it depends on
-    // bao_uloop itself and dual-defines the whole crate in the test binary —
-    // so define the two callbacks locally instead.
-    #[unsafe(no_mangle)]
-    extern "C" fn BUN__warn__extra_ca_load_failed(_filename: *const c_char, _error: *const c_char) {
-    }
-    #[unsafe(no_mangle)]
-    static Bun__Node__UseSystemCA: bool = false;
-    /// BoringSSL CRYPTO_EX_free callback (openssl.c us_ctx_cache_ex_idx).
-    /// Same no-op shape as bao_native_stubs: safe while no SSL_CTX cache is wired.
-    #[unsafe(no_mangle)]
-    extern "C" fn bun_ssl_ctx_cache_on_free(
-        _parent: *mut c_void,
-        _ptr: *mut c_void,
-        _ad: *mut c_void,
-        _index: c_int,
-        _argl: i64,
-        _argp: *mut c_void,
-    ) {
-    }
+    // root_certs.cpp / openssl.c C→Rust hooks (BUN__warn__extra_ca_load_failed,
+    // Bun__Node__UseSystemCA, bun_ssl_ctx_cache_on_free) are now defined at lib
+    // level in this crate (see the "TLS C→Rust hooks" section) — the former
+    // test-local copies were a workaround for the dev-dep cycle and would
+    // dual-define the lib symbols now that ownership lives here.
+
     /// FilePoll tagged-pointer dispatch (epoll_kqueue.c). The real one lives
     /// in bun_io; this test registers no FilePolls, so it is never called —
     /// the symbol only needs to exist for the link.

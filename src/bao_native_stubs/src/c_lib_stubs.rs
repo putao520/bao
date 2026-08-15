@@ -16,8 +16,6 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use core::ffi::{c_char, c_int, c_void};
-
 // ──────────────────────────────────────────────────────────────
 // lshpack — HPACK header compression for HTTP/2
 // Provided by compiled C library: bun_lsquic_sys (vendor/lshpack, merged)
@@ -26,21 +24,6 @@ use core::ffi::{c_char, c_int, c_void};
 // ──────────────────────────────────────────────────────────────
 // SSL — provided by libusockets.a + libusockets_tls.a when compiled with TLS
 // ──────────────────────────────────────────────────────────────
-
-/// BoringSSL CRYPTO_EX_free callback. Tombstones the SSLContextCache entry
-/// when the last SSL_CTX ref drops. The real implementation in Bun's
-/// SSLContextCache clears `entry.ctx = null`; this no-op is safe when the
-/// cache is not yet wired — every TLS handshake creates a fresh SSL_CTX.
-#[unsafe(no_mangle)]
-pub extern "C" fn bun_ssl_ctx_cache_on_free(
-    _parent: *mut c_void,
-    _ptr: *mut c_void,
-    _ad: *mut c_void,
-    _index: c_int,
-    _argl: i64,
-    _argp: *mut c_void,
-) {
-}
 
 // us_get_default_ca_store / us_get_shared_default_ca_store — provided by
 // compiled C++ code (root_certs.cpp in libusockets_tls.a).
@@ -57,58 +40,11 @@ pub extern "C" fn bun_ssl_ctx_cache_on_free(
 // ──────────────────────────────────────────────────────────────
 
 // ──────────────────────────────────────────────────────────────
-// BoringSSL extensions (not in system OpenSSL)
+// C-library → Rust hooks (all owned elsewhere; do NOT define here)
 // ──────────────────────────────────────────────────────────────
 //
-// These stubs ARE used — `bun_boringssl_sys` declares them via
-// `extern "C"` blocks, and `bun_http::configure_http_client_with_alpn`
-// calls them through `bun_boringssl::c::*`. Keeping them until
-// the Phase-level rustls migration replaces the whole TLS stack.
-
-// ──────────────────────────────────────────────────────────────
-// TLS C→Rust callbacks (root_certs.cpp)
-// ──────────────────────────────────────────────────────────────
-
-/// Global flag: whether to load system CA certificates.
-/// In Bun, this is set by `--use-system-ca` CLI flag or `NODE_USE_SYSTEM_CA=1`.
-/// Default `true` — always load system CAs for TLS verification.
-#[unsafe(no_mangle)]
-pub static mut Bun__Node__UseSystemCA: bool = true;
-
-/// Warning callback when loading extra CA files fails.
-/// Called by `root_certs.cpp` when a certificate file in the system CA
-/// directory cannot be parsed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn BUN__warn__extra_ca_load_failed(
-    filename: *const c_char,
-    error_msg: *const c_char,
-) {
-    let filename_str = if filename.is_null() {
-        "(unknown)".to_string()
-    } else {
-        unsafe { std::ffi::CStr::from_ptr(filename) }
-            .to_string_lossy()
-            .into_owned()
-    };
-    let error_str = if error_msg.is_null() {
-        "(unknown)".to_string()
-    } else {
-        unsafe { std::ffi::CStr::from_ptr(error_msg) }
-            .to_string_lossy()
-            .into_owned()
-    };
-    eprintln!(
-        "warn: ignoring extra certs from {}, load failed: {}",
-        filename_str, error_str
-    );
-}
-
-// ──────────────────────────────────────────────────────────────
-// C-library → Rust hooks (non-duplicate subset)
-// ──────────────────────────────────────────────────────────────
-//
-// The following hooks live in co-located / owning crates and must NOT be
-// duplicated here (dual-def breaks product lib-test link):
+// Dual-def iron rule (STUB-INVENTORY): every hook below has exactly one
+// `#[no_mangle]` definition in its owning crate:
 //
 //   - Bun__JSC_onBeforeWait       — bun_uws_sys/src/c_hooks.rs
 //   - Bun__panic                  — bun_uws_sys/src/c_hooks.rs
@@ -117,10 +53,13 @@ pub unsafe extern "C" fn BUN__warn__extra_ca_load_failed(
 //   - Bun__isEpollPwait2SupportedOnLinuxKernel — bun_analytics (kernel version check)
 //   - __bun_crash_handler_out_of_memory — bun_crash_handler
 //
-// Remaining hooks that are specific to bao_native_stubs' link scope:
+// TLS C→Rust hooks (root_certs.cpp / openssl.c us_ctx_cache_ex_idx) moved to
+// their named owner `bao_uloop` (chained into every link scope that pulls the
+// uSockets TLS archives). Do NOT reintroduce copies here — dual-def with
+// bao_uloop / bun_runtime::product_native_symbols breaks consumer links:
 //   - Bun__Node__UseSystemCA      — system CA flag (root_certs.cpp)
 //   - BUN__warn__extra_ca_load_failed — warning callback (root_certs.cpp)
-//   - bun_ssl_ctx_cache_on_free   — BoringSSL EX_free callback
+//   - bun_ssl_ctx_cache_on_free   — BoringSSL EX_free callback (openssl.c)
 
 // ──────────────────────────────────────────────────────────────
 // BoringSSL extensions — now provided by compiled C++ library (bun_boringssl_sys)

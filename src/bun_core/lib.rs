@@ -16,6 +16,9 @@
 pub mod Global;
 pub mod atomic_cell;
 pub mod hint;
+/// C-seam `#[no_mangle]` RealImpl symbols owned by this crate (the lowest
+/// crate on the dep graph that touches them). See `native_seam.rs` header.
+pub mod native_seam;
 pub mod result;
 pub mod thread_id;
 pub mod tty;
@@ -2159,16 +2162,9 @@ pub(crate) mod strings_impl {
     // Do NOT call the system `inet_pton` here: on Windows that resolves into
     // ws2_32.dll and fails with WSANOTINITIALISED whenever it runs before
     // `WSAStartup()`, which URL/host parsing can. c-ares' impl is pure C, no
-    // preconditions. bun_core sits below bun_cares_sys in the dep graph, so we
-    // re-declare the extern locally (zero new deps; `libc` is already here).
+    // preconditions. RealImpl lives in `crate::native_seam` (named owner).
     // ──────────────────────────────────────────────────────────────────────
-    unsafe extern "C" {
-        pub fn ares_inet_pton(
-            af: core::ffi::c_int,
-            src: *const core::ffi::c_char,
-            dst: *mut core::ffi::c_void,
-        ) -> core::ffi::c_int;
-    }
+    use crate::native_seam::ares_inet_pton;
     // dep-graph: bun_core < bun_sys, so cannot import the canonical
     // `bun_sys::posix::AF`. Keep a thin libc/ws2def passthrough instead. The
     // previous hand-rolled cfg ladder hardcoded `10` for the BSD fallback,
@@ -2189,8 +2185,8 @@ pub(crate) mod strings_impl {
         }
         buf[..input.len()].copy_from_slice(input);
         let mut dst = [0u8; 28];
-        // SAFETY: buf is NUL-terminated; dst ≥ sizeof(in6_addr).
-        unsafe { ares_inet_pton(AF_INET6, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0 }
+        // buf is NUL-terminated (zeroed then copied); dst ≥ sizeof(in6_addr).
+        ares_inet_pton(AF_INET6, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0
     }
 
     pub fn starts_with_uuid(s: &[u8]) -> bool {
@@ -3261,11 +3257,213 @@ pub fn return_address() -> usize {
     }
 }
 
+// NOTE: no `test_link` force-link mod that pulls `bao_native_stubs` /
+// `bao_uloop` / `bun_sys`: any dev-dep cycling back to the bun_core rlib
+// dual-defines this crate's own `#[no_mangle]` symbols (`Bun__atexit`,
+// `Bun__onExit`, …) in the `--lib` test binary, and cargo silently drops
+// direct `bun_*` dev-deps from the lib-test link line. The C-seam symbols
+// bun_core declares are self-provided in `native_seam` / `util::spawn_ffi`;
+// the link-interface `Sys` arms below are provided test-compilation-only.
+
+/// Real libc-backed `OutputSink[Sys]` arm for the `--lib` test binary.
+///
+/// `--lib` tests are an incomplete link scope: upper tiers (`bun_sys`) install
+/// the `Sys` arm in real binaries, but cargo drops dev-deps that cycle back to
+/// bun_core from the lib-test link line. This arm exists only under
+/// `#[cfg(test)]` (never co-linked with `bun_sys`'s impl — no dual-def) and
+/// performs REAL syscalls: unbuffered writes straight to the fd (the buffered
+/// adapter in `bun_sys` is a coalescing optimization, not a semantic contract).
 #[cfg(test)]
-mod test_link {
-    #[test]
-    fn _force_link_deps() {
-        bao_native_stubs::force_link();
-        bun_sys::force_link();
+mod test_output_sink {
+    use crate::output::{self, QuietWriter, QuietWriterAdapter};
+    use crate::util::Fd;
+    use crate::{Error, Winsize};
+
+    /// Stash the raw fd in `QuietWriter`'s opaque slot 0 (same ABI as
+    /// `bun_sys`'s qw_set_fd/qw_fd).
+    #[inline]
+    fn qw_set_fd(qw: &mut QuietWriter, fd: Fd) {
+        // SAFETY: `QuietWriter` is `#[repr(C)] { _opaque: [*mut (); 4] }`;
+        // writing the first word through a live `&mut` is in-bounds + aligned.
+        unsafe {
+            *core::ptr::from_mut(qw).cast::<*mut ()>() = fd.native() as usize as *mut ();
+        }
+    }
+    #[inline]
+    fn qw_fd(qw: &QuietWriter) -> Fd {
+        // SAFETY: see qw_set_fd — reading the first word of a live reference.
+        let raw = unsafe { *core::ptr::from_ref(qw).cast::<*mut ()>() };
+        Fd::from_native(raw as usize as _)
+    }
+
+    /// Best-effort write-all loop ("quiet": errors swallowed → `false`).
+    fn fd_write_all_quiet(fd: Fd, mut bytes: &[u8]) -> bool {
+        while !bytes.is_empty() {
+            // SAFETY: `bytes` describes a valid slice for the duration of the call.
+            let rc = unsafe {
+                libc::write(fd.native(), bytes.as_ptr().cast(), bytes.len())
+            };
+            if rc <= 0 {
+                return false;
+            }
+            bytes = &bytes[rc as usize..];
+        }
+        true
+    }
+
+    #[cfg(unix)]
+    fn fd_is_terminal(fd: Fd) -> bool {
+        // SAFETY: plain int fd (bad fd → ENOTTY/EBADF, never UB).
+        let tty = unsafe { libc::isatty(fd.native()) };
+        tty == 1
+    }
+    #[cfg(not(unix))]
+    fn fd_is_terminal(_fd: Fd) -> bool {
+        false
+    }
+
+    #[cfg(unix)]
+    fn fd_tty_winsize(fd: Fd) -> Option<Winsize> {
+        // SAFETY: POD, zero-valid — libc::winsize is all-integer; ioctl writes it.
+        let mut ws: libc::winsize = unsafe { core::mem::zeroed() };
+        // SAFETY: plain int fd (bad fd → ENOTTY/EBADF, never UB).
+        let rc = unsafe { libc::ioctl(fd.native(), libc::TIOCGWINSZ, &raw mut ws) };
+        if rc == 0 {
+            Some(Winsize {
+                row: ws.ws_row,
+                col: ws.ws_col,
+                xpixel: ws.ws_xpixel,
+                ypixel: ws.ws_ypixel,
+            })
+        } else {
+            None
+        }
+    }
+    #[cfg(not(unix))]
+    fn fd_tty_winsize(_fd: Fd) -> Option<Winsize> {
+        None
+    }
+
+    /// Concrete repr behind the opaque `QuietWriterAdapter` (`[u8; 64]`).
+    /// First field MUST be `io::Writer` (head-cast contract, see output.rs).
+    #[repr(C)]
+    struct TestQuietWriterAdapter {
+        writer: crate::io::Writer,
+        fd: Fd,
+    }
+
+    unsafe fn adapter_write_all(
+        w: *mut crate::io::Writer,
+        bytes: &[u8],
+    ) -> Result<(), Error> {
+        // SAFETY: `w` points at the first field of a TestQuietWriterAdapter.
+        let this = unsafe { &mut *w.cast::<TestQuietWriterAdapter>() };
+        let _ = fd_write_all_quiet(this.fd, bytes);
+        Ok(())
+    }
+    unsafe fn adapter_flush(w: *mut crate::io::Writer) -> Result<(), Error> {
+        // SAFETY: see adapter_write_all. Unbuffered adapter — nothing to drain.
+        let _ = unsafe { &mut *w.cast::<TestQuietWriterAdapter>() };
+        Ok(())
+    }
+
+    /// Real recursive `mkdirat` relative to `cwd` (EEXIST-tolerant).
+    fn mkdir_recursive_at(cwd: Fd, dir: &[u8]) -> Result<(), Error> {
+        if dir.is_empty() {
+            return Ok(());
+        }
+        let mut prefix: Vec<u8> = Vec::new();
+        for comp in dir.split(|&b| b == b'/') {
+            if comp.is_empty() {
+                continue;
+            }
+            // Extend the prefix by one component and mkdirat it.
+            if !prefix.is_empty() {
+                prefix.push(b'/');
+            }
+            prefix.extend_from_slice(comp);
+            let z = crate::ZBox::from_vec_with_nul(prefix.clone());
+            // SAFETY: `z` is a NUL-terminated path owned for the call.
+            let rc = unsafe {
+                libc::mkdirat(cwd.native(), z.as_ptr().cast(), 0o755)
+            };
+            if rc != 0 {
+                let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                if errno != libc::EEXIST {
+                    return Err(Error::from_errno(errno));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    link_impl_OutputSink! {
+        Sys for () => |_this| {
+            stderr() => output::File(Fd::stderr()),
+            make_path(cwd, dir) => mkdir_recursive_at(cwd, dir),
+            create_file(cwd, path) => {
+                let z = crate::ZBox::from_vec_with_nul(path.to_vec());
+                // SAFETY: `z` is NUL-terminated; O_CREAT needs a mode argument.
+                let rc = unsafe {
+                    libc::openat(
+                        cwd.native(),
+                        z.as_ptr().cast(),
+                        libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+                        0o664,
+                    )
+                };
+                if rc < 0 {
+                    Err(Error::from_errno(
+                        std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                    ))
+                } else {
+                    Ok(Fd::from_native(rc))
+                }
+            },
+            quiet_writer_from_fd(fd) => {
+                let mut out = QuietWriter::ZEROED;
+                qw_set_fd(&mut out, fd);
+                out
+            },
+            quiet_writer_adapt(qw, _buf, _len) => {
+                let fd = qw_fd(&qw);
+                let concrete = TestQuietWriterAdapter {
+                    writer: crate::io::Writer {
+                        write_all: adapter_write_all,
+                        flush: adapter_flush,
+                    },
+                    fd,
+                };
+                // SAFETY: TestQuietWriterAdapter fits the opaque [u8; 64]
+                // (repr(C): fn-ptr pair + i32 ≤ 64 bytes, align ≤ 8).
+                let mut adapted = QuietWriterAdapter::uninit();
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        core::ptr::from_ref(&concrete).cast::<u8>(),
+                        core::ptr::from_mut(&mut adapted).cast::<u8>(),
+                        core::mem::size_of::<TestQuietWriterAdapter>(),
+                    );
+                }
+                adapted
+            },
+            quiet_writer_flush(_qw) => {},
+            quiet_writer_write_all(qw, bytes) => fd_write_all_quiet(qw_fd(qw), bytes),
+            quiet_writer_fd(qw) => qw_fd(qw),
+            tty_winsize(fd) => fd_tty_winsize(fd),
+            is_terminal(fd) => fd_is_terminal(fd),
+            read(fd, buf) => {
+                // SAFETY: `buf` describes a valid writable slice.
+                let rc = unsafe {
+                    libc::read(fd.native(), buf.as_mut_ptr().cast(), buf.len())
+                };
+                if rc < 0 {
+                    Err(Error::from_errno(
+                        std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                    ))
+                } else {
+                    Ok(rc as usize)
+                }
+            },
+        }
     }
 }

@@ -715,6 +715,10 @@ pub mod windows_stdio {
 pub mod stdio {
     use super::*;
 
+    // `bun_initialize_process` / `bun_restore_stdio` RealImpl lives in
+    // `crate::native_seam` (named owner; one-shot stdio fixup + TTY restore).
+    use crate::native_seam::{bun_initialize_process, bun_restore_stdio};
+
     // TODO(port): move to bun_core_sys
     unsafe extern "C" {
         // Written once by C at process startup before threads; Rust only reads.
@@ -724,11 +728,6 @@ pub mod stdio {
         // 2024 `unsafe extern`) discharges the link-time existence proof here so
         // readers need no `unsafe` (cell-get reduction).
         pub(crate) safe static bun_is_stdio_null: [AtomicI32; 3];
-        /// No preconditions; one-shot stdio fixup at process startup.
-        pub(crate) safe fn bun_initialize_process();
-        /// No preconditions; restores TTY state on the standard streams.
-        #[allow(dead_code)]
-        pub(crate) safe fn bun_restore_stdio();
     }
 
     /// Read `bun_is_stdio_null[idx]`. Written once by C

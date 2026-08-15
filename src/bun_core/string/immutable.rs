@@ -2382,14 +2382,9 @@ pub const UNICODE_REPLACEMENT_STR: [u8; 3] = [0xEF, 0xBF, 0xBD];
 // Spec (immutable.zig:1990, 2003) calls `bun.c_ares.ares_inet_pton`, the vendored
 // c-ares implementation. Do NOT call the system `inet_pton` here: on Windows that
 // resolves into ws2_32.dll and fails with WSANOTINITIALISED whenever it runs before
-// `WSAStartup()`, which URL/host parsing can. c-ares' impl is pure C, no preconditions.
-unsafe extern "C" {
-    pub fn ares_inet_pton(
-        af: c_int,
-        src: *const core::ffi::c_char,
-        dst: *mut core::ffi::c_void,
-    ) -> c_int;
-}
+// `WSAStartup()`, which URL/host parsing can. c-ares' impl is pure C, no
+// preconditions. RealImpl lives in `crate::native_seam` (named owner).
+pub use crate::native_seam::ares_inet_pton;
 // dep-graph: bun_string < bun_sys, so cannot import the canonical
 // `bun_sys::posix::AF`. Keep a thin libc/ws2def passthrough instead. The
 // previous hand-rolled cfg ladder hardcoded `10` for the BSD fallback, which
@@ -2407,11 +2402,9 @@ pub fn is_ip_address(input: &[u8]) -> bool {
     }
     buf[..input.len()].copy_from_slice(input);
     let mut dst = [0u8; 28];
-    // SAFETY: buf is NUL-terminated; dst ≥ sizeof(in6_addr).
-    unsafe {
-        ares_inet_pton(AF_INET, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0
-            || ares_inet_pton(AF_INET6, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0
-    }
+    // buf is NUL-terminated (zeroed then copied); dst ≥ sizeof(in6_addr).
+    ares_inet_pton(AF_INET, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0
+        || ares_inet_pton(AF_INET6, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0
 }
 
 pub fn is_ipv6_address(input: &[u8]) -> bool {
@@ -2421,8 +2414,8 @@ pub fn is_ipv6_address(input: &[u8]) -> bool {
     }
     buf[..input.len()].copy_from_slice(input);
     let mut dst = [0u8; 28];
-    // SAFETY: buf is NUL-terminated; dst ≥ sizeof(in6_addr).
-    unsafe { ares_inet_pton(AF_INET6, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0 }
+    // buf is NUL-terminated (zeroed then copied); dst ≥ sizeof(in6_addr).
+    ares_inet_pton(AF_INET6, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0
 }
 
 pub fn left_has_any_in_right(to_check: &[&[u8]], against: &[&[u8]]) -> bool {

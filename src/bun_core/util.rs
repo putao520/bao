@@ -2314,15 +2314,13 @@ fn thread_id() -> u64 {
 
 // ─── StackCheck (from bun.zig) ───────────────────────────────────────────
 // Thin FFI wrapper; configure_thread() is all output.rs needs.
+// `Bun__StackCheck__*` RealImpl lives in `crate::native_seam` (named owner).
+use crate::native_seam::{Bun__StackCheck__getMaxStack, Bun__StackCheck__initialize};
 #[derive(Clone, Copy)]
 pub struct StackCheck {
     cached_stack_end: usize,
 }
 unsafe extern "C" {
-    /// No preconditions; initializes thread-local stack bookkeeping.
-    safe fn Bun__StackCheck__initialize();
-    /// No preconditions; returns the cached stack-bound pointer for this thread.
-    safe fn Bun__StackCheck__getMaxStack() -> *mut core::ffi::c_void;
     /// `&mut libc::timespec` is ABI-identical to libc's `struct timespec *`
     /// (thin non-null pointer to a `#[repr(C)]` struct); the type encodes the
     /// only pointer-validity precondition, so `safe fn` discharges the
@@ -4712,10 +4710,7 @@ pub fn reload_process(clear_terminal: bool, may_return: bool) {
     unsafe {
         #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
         {
-            unsafe extern "C" {
-                safe fn on_before_reload_process_linux();
-            }
-            on_before_reload_process_linux();
+            crate::native_seam::on_before_reload_process_linux();
         }
 
         // We clone argv so that the memory address isn't the same as the libc one
@@ -4881,15 +4876,113 @@ pub mod spawn_ffi {
         }
     }
 
+    /// Bun's `posix_spawn_bun` (upstream `bun-spawn.cpp` used vfork() + custom
+    /// child setup). RealImpl lives here — next to its request structs — as the
+    /// single `#[no_mangle]` definition for every link scope (former def sites
+    /// `bao_native_stubs` / `bun_runtime::product_native_symbols` are deleted;
+    /// STUB-INVENTORY dual-def iron rule). This crate converts the request's
+    /// actions to standard `posix_spawn_file_actions_t` and calls
+    /// `posix_spawnp`, avoiding the glibc 2.39 clone3+CLONE_INTO_CGROUP EBADF
+    /// bug on cgroup v2 systems. Return ABI is `isize` (this decl is the SSOT
+    /// `bun_spawn_sys` re-exports).
     #[cfg(unix)]
-    unsafe extern "C" {
-        pub fn posix_spawn_bun(
-            pid: *mut c_int,
-            path: *const c_char,
-            request: *const BunSpawnRequest,
-            argv: *const *const c_char,
-            envp: *const *const c_char,
-        ) -> isize;
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn posix_spawn_bun(
+        pid: *mut c_int,
+        path: *const c_char,
+        request: *const BunSpawnRequest,
+        argv: *const *const c_char,
+        envp: *const *const c_char,
+    ) -> isize {
+        use super::c_environ;
+        // SAFETY: caller (bun_core::util / bun_spawn_sys) passes a valid
+        // `BunSpawnRequest` per the bun_spawn_request_t ABI.
+        let req = unsafe { &*request };
+
+        // SAFETY: libc posix_spawn plumbing owns `fa`; destroyed before return.
+        unsafe {
+            let mut fa: libc::posix_spawn_file_actions_t = core::mem::zeroed();
+            let rc = libc::posix_spawn_file_actions_init(&mut fa);
+            if rc != 0 {
+                return rc as isize;
+            }
+
+            if !req.chdir_buf.is_null() {
+                libc::posix_spawn_file_actions_addchdir_np(&mut fa, req.chdir_buf);
+            }
+
+            for i in 0..req.actions.len {
+                // SAFETY: `actions.ptr[..len]` is a valid action array per ABI.
+                let action = &*req.actions.ptr.add(i);
+                match action.kind {
+                    FileActionType::Close => {
+                        libc::posix_spawn_file_actions_addclose(&mut fa, action.fds[0]);
+                    }
+                    FileActionType::Dup2 => {
+                        libc::posix_spawn_file_actions_adddup2(
+                            &mut fa,
+                            action.fds[0],
+                            action.fds[1],
+                        );
+                    }
+                    FileActionType::Open => {
+                        libc::posix_spawn_file_actions_addopen(
+                            &mut fa,
+                            action.fds[0],
+                            action.path,
+                            action.flags,
+                            action.mode as libc::mode_t,
+                        );
+                    }
+                    FileActionType::None => {}
+                }
+            }
+
+            let mut attr: libc::posix_spawnattr_t = core::mem::zeroed();
+            let rc = libc::posix_spawnattr_init(&mut attr);
+            if rc != 0 {
+                libc::posix_spawn_file_actions_destroy(&mut fa);
+                return rc as isize;
+            }
+
+            let mut flags: core::ffi::c_short =
+                (libc::POSIX_SPAWN_SETSIGDEF | libc::POSIX_SPAWN_SETSIGMASK) as core::ffi::c_short;
+            if req.new_process_group {
+                flags |= 0x80; // POSIX_SPAWN_SETSID on Linux
+            }
+
+            // Reset all signals to default in child.
+            let mut sigdefault: libc::sigset_t = core::mem::zeroed();
+            libc::sigemptyset(&mut sigdefault);
+            libc::posix_spawnattr_setsigdefault(&mut attr, &sigdefault);
+
+            // Unblock all signals in child.
+            let mut sigmask: libc::sigset_t = core::mem::zeroed();
+            libc::sigfillset(&mut sigmask);
+            libc::posix_spawnattr_setsigmask(&mut attr, &sigmask);
+
+            libc::posix_spawnattr_setflags(&mut attr, flags);
+
+            // Use the provided envp, or environ if null.
+            let env = if envp.is_null() {
+                c_environ() as *mut *const c_char
+            } else {
+                envp
+            };
+
+            let rc = libc::posix_spawnp(
+                pid,
+                path,
+                &fa,
+                &attr,
+                argv as *mut *mut c_char,
+                env as *mut *mut c_char,
+            );
+
+            libc::posix_spawnattr_destroy(&mut attr);
+            libc::posix_spawn_file_actions_destroy(&mut fa);
+            rc as isize
+        }
     }
 }
 

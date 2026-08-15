@@ -71,8 +71,9 @@ pub struct String(pub bun_alloc::String);
 crate::assert_ffi_layout!(String, 24, 8);
 // FFI surface from `src/jsc/bindings/BunString.cpp`. All return a fresh
 // WTF-backed `String` with refcount = 1; caller must `deref()` (or transfer).
+// `BunString__fromBytes` RealImpl lives in `crate::native_seam` (named owner).
+use crate::native_seam::BunString__fromBytes;
 unsafe extern "C" {
-    fn BunString__fromBytes(bytes: *const u8, len: usize) -> String;
     fn BunString__fromLatin1(bytes: *const u8, len: usize) -> String;
     fn BunString__fromUTF16(bytes: *const u16, len: usize) -> String;
     fn BunString__fromUTF16ToLatin1(bytes: *const u16, len: usize) -> String;
@@ -225,8 +226,7 @@ impl String {
             return Self::EMPTY;
         }
         // BunString__fromBytes auto-detects all-ASCII → Latin1, else UTF-8.
-        // SAFETY: s.as_ptr()/len describe a valid byte slice.
-        unsafe { BunString__fromBytes(s.as_ptr(), s.len()) }
+        BunString__fromBytes(s.as_ptr(), s.len())
     }
     pub fn clone_latin1(s: &[u8]) -> Self {
         if s.is_empty() {

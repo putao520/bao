@@ -32,7 +32,10 @@ thiserror.workspace = true
 [target.'cfg(windows)'.dependencies]
 bun_windows_sys = { workspace = true, target = "windows" }
 
-[dev-dependencies]
-bao_native_stubs.workspace = true
-bao_uloop.workspace = true
-bun_sys.workspace = true
+# NOTE: no dev-dependencies. Any dev-dep cycling back to the bun_core rlib
+# either gets silently dropped from the `--lib` test link line by cargo
+# (direct `bun_*` deps) or dual-defines this crate's own `#[no_mangle]` symbols
+# (`Bun__atexit`, `Bun__onExit`, ...) in the test binary (`bao_native_stubs` /
+# `bao_uloop`). The C-seam symbols are self-provided in `native_seam` /
+# `util::spawn_ffi`; the `OutputSink[Sys]` link arm is provided
+# test-compilation-only in lib.rs (`test_output_sink`).
