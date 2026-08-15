@@ -2164,3 +2164,313 @@ fn test_stale_while_revalidate_serves_cached_and_revalidates_in_background() {
 
     let _ = server.close();
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Streaming request bodies (bun bridge: IPC chunks → wire incrementally)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// What the raw-TCP upload server observed for one request.
+struct UploadObservation {
+    /// Request head (request line + headers) as received on the wire.
+    head: String,
+    /// Instant the FIRST request-body byte arrived after the head — the
+    /// streaming proof: it must precede the producer finishing all chunks.
+    first_body_byte: Option<Instant>,
+    /// Raw body wire bytes (chunked framing included when chunked).
+    raw_body: Vec<u8>,
+}
+
+/// Decode a `{hex}\r\n data \r\n`-framed chunked body (terminal `0\r\n\r\n`).
+fn decode_chunked_body(raw: &[u8]) -> Vec<u8> {
+    let mut decoded = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        let line_end = raw[pos..]
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .expect("chunk size line")
+            + pos;
+        let size_text = std::str::from_utf8(&raw[pos..line_end]).expect("hex size");
+        let size = usize::from_str_radix(size_text, 16).expect("valid hex");
+        pos = line_end + 2;
+        if size == 0 {
+            assert_eq!(&raw[pos..], b"\r\n", "terminal chunk is 0\\r\\n\\r\\n");
+            return decoded;
+        }
+        decoded.extend_from_slice(&raw[pos..pos + size]);
+        pos += size;
+        assert_eq!(&raw[pos..pos + 2], b"\r\n", "chunk data CRLF");
+        pos += 2;
+    }
+}
+
+/// Spawn a raw-TCP server that reads exactly one request (head + body) and
+/// reports the observation. `body_done` decides when the body is complete:
+/// `Some(n)` = raw body of exactly `n` bytes (Content-Length framing);
+/// `None` = chunked framing, done at the terminal `0\r\n\r\n` chunk.
+fn spawn_upload_server(body_done: Option<usize>) -> (String, Receiver<UploadObservation>) {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (sender, receiver) = unbounded();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut seen = Vec::new();
+        let mut chunk = [0u8; 16 * 1024];
+        let head_end = loop {
+            let n = stream.read(&mut chunk).expect("read request head");
+            seen.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&seen[..head_end]).into_owned();
+        let mut raw_body = seen[head_end..].to_vec();
+        let mut first_body_byte = (!raw_body.is_empty()).then(Instant::now);
+        loop {
+            let chunked_done = body_done.is_none()
+                && raw_body.ends_with(b"0\r\n\r\n");
+            let raw_done = body_done.is_some_and(|total| raw_body.len() >= total);
+            if chunked_done || raw_done {
+                break;
+            }
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if raw_body.is_empty() {
+                        first_body_byte = Some(Instant::now());
+                    }
+                    raw_body.extend_from_slice(&chunk[..n]);
+                },
+                Err(ref error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock ||
+                        error.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    continue;
+                },
+                Err(_) => break,
+            }
+        }
+        // The error-path test aborts mid-upload: a dead peer makes the
+        // response write fail — expected, not a panic.
+        let _ = stream.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        );
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        let _ = sender.send(UploadObservation {
+            head,
+            first_body_byte,
+            raw_body,
+        });
+    });
+    (format!("http://127.0.0.1:{port}/upload"), receiver)
+}
+
+/// Fake script-side body producer speaking the pull contract: `Connect`
+/// yields the first chunk; every subsequent `Chunk` request yields the next
+/// chunk (after `delay`) or `Done` (recording when all chunks were produced),
+/// or `Error` after `fail_after` chunks. `total_bytes` decides the
+/// Content-Length vs chunked wire framing exactly like the DOM side.
+#[allow(clippy::too_many_arguments)]
+fn create_pull_streaming_body(
+    chunk: servo_base::generic_channel::GenericSharedMemory,
+    chunk_count: usize,
+    delay: Duration,
+    total_bytes: Option<usize>,
+    fail_after: Option<usize>,
+    finished: Arc<parking_lot::Mutex<Option<Instant>>>,
+) -> net_traits::request::RequestBody {
+    use net_traits::request::{BodyChunkRequest, BodyChunkResponse, BodySource};
+    use servo_base::generic_channel::GenericSharedMemory;
+
+    struct ProducerState {
+        response: Option<ipc_channel::ipc::IpcSender<BodyChunkResponse>>,
+        produced: usize,
+    }
+    let state = Arc::new(parking_lot::Mutex::new(ProducerState {
+        response: None,
+        produced: 0,
+    }));
+
+    let (chunk_request_sender, chunk_request_receiver) = ipc_channel::ipc::channel().unwrap();
+    ipc_channel::router::ROUTER.add_typed_route(
+        chunk_request_receiver,
+        Box::new(move |message| {
+            let request = message.unwrap();
+            let state = Arc::clone(&state);
+            let chunk: GenericSharedMemory = chunk.clone();
+            let finished = Arc::clone(&finished);
+            // Each message is served on its own thread so the ROUTER thread
+            // never blocks on `delay` (pulls are sequential — one in flight —
+            // so the producer threads never race).
+            std::thread::spawn(move || {
+                let mut state = state.lock();
+                if let BodyChunkRequest::Connect(sender) = &request {
+                    state.response = Some(sender.clone());
+                }
+                let response = state.response.clone();
+                let Some(response) = response else {
+                    return;
+                };
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+                if fail_after == Some(state.produced) {
+                    let _ = response.send(BodyChunkResponse::Error);
+                    return;
+                }
+                if state.produced < chunk_count {
+                    state.produced += 1;
+                    let _ = response.send(BodyChunkResponse::Chunk(chunk.clone()));
+                } else {
+                    *finished.lock() = Some(Instant::now());
+                    let _ = response.send(BodyChunkResponse::Done);
+                }
+            });
+        }),
+    );
+
+    net_traits::request::RequestBody::new(chunk_request_sender, BodySource::Object, total_bytes)
+}
+
+fn upload_request(url: &str, body: net_traits::request::RequestBody) -> Request {
+    RequestBuilder::new(
+        None,
+        UrlWithBlobClaim::from_url_without_having_claimed_blob(ServoUrl::parse(url).unwrap()),
+        Referrer::NoReferrer,
+    )
+        .body(Some(body))
+        .method(Method::POST)
+        .destination(Destination::None)
+        .origin(mock_origin())
+        .pipeline_id(Some(TEST_PIPELINE_ID))
+        .policy_container(Default::default())
+        .build()
+}
+
+/// Unknown-length body → `Transfer-Encoding: chunked` on the wire, and the
+/// FIRST body byte reaches the server while the producer is still producing
+/// later chunks (the buffered-era bridge could not put a byte on the wire
+/// before the whole body was resident). Total decoded bytes must match.
+#[test]
+fn test_request_body_streams_incrementally_chunked() {
+    use servo_base::generic_channel::GenericSharedMemory;
+
+    let chunk_size = 32 * 1024;
+    let chunk_count = 8usize;
+    let delay = Duration::from_millis(50);
+    let payload_byte_count = chunk_size * chunk_count;
+
+    let (url, receiver) = spawn_upload_server(None);
+    let finished: Arc<parking_lot::Mutex<Option<Instant>>> = Arc::new(parking_lot::Mutex::new(None));
+    let body = create_pull_streaming_body(
+        GenericSharedMemory::from_byte(b'a', chunk_size),
+        chunk_count,
+        delay,
+        None,
+        None,
+        Arc::clone(&finished),
+    );
+
+    let response = fetch(upload_request(&url, body), None);
+
+    let observation = receiver.recv().expect("server observed the upload");
+    assert!(
+        !response.is_network_error(),
+        "streaming upload must succeed: {:?}",
+        response.get_network_error()
+    );
+    assert!(observation.head.to_lowercase().contains("transfer-encoding: chunked"));
+    assert!(!observation.head.to_lowercase().contains("content-length:"));
+
+    // Streaming proof: the first wire byte arrived before the producer
+    // finished producing (with margin for scheduling noise). A body-buffering
+    // implementation sends its first byte only AFTER Done, i.e. after
+    // `finished`.
+    let first_body_byte = observation
+        .first_body_byte
+        .expect("server must receive body bytes");
+    let finished_at = finished.lock().expect("producer must finish");
+    assert!(
+        first_body_byte + Duration::from_millis(150) < finished_at,
+        "first wire byte ({first_body_byte:?}) must precede production end ({finished_at:?}) — the body was buffered"
+    );
+
+    let decoded = decode_chunked_body(&observation.raw_body);
+    assert_eq!(decoded.len(), payload_byte_count);
+    assert!(decoded.iter().all(|byte| *byte == b'a'));
+}
+
+/// Known-length body → Content-Length honored, raw bytes on the wire (no
+/// chunked framing), still incremental.
+#[test]
+fn test_request_body_streams_incrementally_content_length() {
+    use servo_base::generic_channel::GenericSharedMemory;
+
+    let chunk_size = 16 * 1024;
+    let chunk_count = 6usize;
+    let delay = Duration::from_millis(50);
+    let total = chunk_size * chunk_count;
+
+    let (url, receiver) = spawn_upload_server(Some(total));
+    let finished: Arc<parking_lot::Mutex<Option<Instant>>> = Arc::new(parking_lot::Mutex::new(None));
+    let body = create_pull_streaming_body(
+        GenericSharedMemory::from_byte(b'b', chunk_size),
+        chunk_count,
+        delay,
+        Some(total),
+        None,
+        Arc::clone(&finished),
+    );
+
+    let response = fetch(upload_request(&url, body), None);
+
+    let observation = receiver.recv().expect("server observed the upload");
+    assert!(
+        !response.is_network_error(),
+        "streaming upload must succeed: {:?}",
+        response.get_network_error()
+    );
+    let head_lower = observation.head.to_lowercase();
+    assert!(head_lower.contains(&format!("content-length: {total}")));
+    assert!(!head_lower.contains("transfer-encoding"));
+
+    let first_body_byte = observation
+        .first_body_byte
+        .expect("server must receive body bytes");
+    let finished_at = finished.lock().expect("producer must finish");
+    assert!(
+        first_body_byte + Duration::from_millis(150) < finished_at,
+        "first wire byte ({first_body_byte:?}) must precede production end ({finished_at:?}) — the body was buffered"
+    );
+
+    assert_eq!(observation.raw_body.len(), total);
+    assert!(observation.raw_body.iter().all(|byte| *byte == b'b'));
+}
+
+/// A body stream error mid-upload fails the fetch (network error) instead of
+/// silently sending a truncated body.
+#[test]
+fn test_request_body_stream_error_fails_fetch() {
+    use servo_base::generic_channel::GenericSharedMemory;
+
+    let (url, _receiver) = spawn_upload_server(None);
+    let finished: Arc<parking_lot::Mutex<Option<Instant>>> = Arc::new(parking_lot::Mutex::new(None));
+    let body = create_pull_streaming_body(
+        GenericSharedMemory::from_byte(b'c', 8 * 1024),
+        8,
+        Duration::from_millis(20),
+        None,
+        Some(2), // error after two chunks
+        Arc::clone(&finished),
+    );
+
+    let response = fetch(upload_request(&url, body), None);
+    assert!(
+        response.is_network_error(),
+        "a request-body stream error must fail the fetch"
+    );
+}

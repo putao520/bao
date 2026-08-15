@@ -41,9 +41,18 @@
 // per-SSL via `SSLConfig::ca_certs_der`); non-canonical ReasonPhrase surfaced
 // through an owned-bytes `hyper::ext::ReasonPhrase`; h2 fingerprint parity
 // (SETTINGS payload + pseudo-header wire order + preface PRIORITY frames from
-// the page profile's `Http2Fingerprint` snapshot). Request bodies stay
-// buffered (servo's IPC body stream is drained before the request is
-// scheduled; bun frames the buffered body with Content-Length).
+// the page profile's `Http2Fingerprint` snapshot).
+//
+// Streaming request bodies (restored hyper-era semantics, the symmetric
+// counterpart of `enable_response_body_streaming`): servo's IPC body chunks
+// feed a `bun_http` `ThreadSafeStreamBuffer` owned by the request
+// (`HTTPRequestBody::Stream`), which the HTTPThread drains to the socket as
+// the peer accepts bytes. Wire framing mirrors the hyper client: no
+// Content-Length → `Transfer-Encoding: chunked` on h1 (the feeder writes the
+// `{hex}\r\n … \r\n` framing + terminal chunk), Content-Length → raw bytes
+// with the header honored, h2 → raw DATA frames (framing is native). A 16 KiB
+// high-water mark + one IPC chunk in flight bound the buffered upload
+// memory — an XHR/fetch uploading a large body never holds it whole.
 //
 // Stage 3 (h2 coalescing): the per-request SSLConfig is interned through
 // bun's `ssl_config::GlobalRegistry` — content-equal configs resolve to one
@@ -51,10 +60,12 @@
 // requests reuse one TLS/h2 connection (stream ids increment instead of a
 // new connection per request).
 
+use std::io::Write as IoWrite;
 use std::pin::pin;
+use std::ptr::NonNull;
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -269,6 +280,115 @@ impl Drop for StreamAbortGuard {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Streaming request body (servo IPC chunks → ThreadSafeStreamBuffer → wire)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// High-water mark for the streaming request-body buffer (upstream
+/// `FetchTasklet.writeRequestData` uses the JS sink's 16384 default). The
+/// feeder stops pulling IPC chunks while this much data is buffered, and
+/// resumes on the buffer-drain callback — the upload's resident memory stays
+/// bounded by this + one in-flight chunk, independent of body length.
+const REQUEST_BODY_HIGH_WATER_MARK: usize = 16 * 1024;
+
+/// Signals for the streaming request body, shared between the HTTPThread
+/// result callback and the producer-side feeder.
+pub struct StreamSignals {
+    /// `Some(is_http2)` once the HTTPThread delivered `can_stream` (request
+    /// head on the wire — h1: socket writable; h2: HEADERS flushed). The
+    /// feeder holds chunks until then because the ALPN outcome decides the
+    /// chunked-vs-raw framing (`HTTPClientResult::is_http2`).
+    start: StdMutex<Option<bool>>,
+    /// Set on the terminal delivery: the exchange is over (success or
+    /// failure) — the feeder stops producing further writes.
+    terminal: AtomicBool,
+    /// Wakes the feeder after `start` / `terminal` transitions (permit-based,
+    /// so a signal that fires before the feeder awaits still wakes it).
+    notify: Notify,
+}
+
+impl StreamSignals {
+    fn new() -> Self {
+        StreamSignals {
+            start: StdMutex::new(None),
+            terminal: AtomicBool::new(false),
+            notify: Notify::new(),
+        }
+    }
+}
+
+/// The request's `ThreadSafeStreamBuffer` (heap allocation, intrusive
+/// refcount, internal mutex — thread-safe by construction; producer-side
+/// access goes through its lock).
+// SAFETY: the buffer synchronizes internally (`locked_*` helpers take its
+// mutex); the raw pointer is only dereferenced through those helpers.
+#[derive(Clone, Copy)]
+struct StreamBufferPtr(NonNull<bun_http::ThreadSafeStreamBuffer>);
+unsafe impl Send for StreamBufferPtr {}
+unsafe impl Sync for StreamBufferPtr {}
+
+/// Handle to a streaming request body: what `fetch_core` installs into the
+/// `AsyncHTTP` (`HTTPRequestBody::Stream` + the
+/// `is_streaming_request_body` flag) and the feeder drives. Cheaply clonable
+/// — one clone crosses into `fetch_core`, the feeder keeps the original.
+#[derive(Clone)]
+pub struct StreamBodyHandle {
+    buffer: StreamBufferPtr,
+    /// Woken by the buffer's drain callback (HTTPThread → tokio) when the
+    /// HTTPThread drained the buffer: resume pulling IPC chunks.
+    drain_notify: StdArc<Notify>,
+    /// Start/terminal signals (also stored in `BridgeState` for the result
+    /// callback to publish into).
+    signals: StdArc<StreamSignals>,
+}
+
+impl StreamBodyHandle {
+    /// Create the shared buffer (intrusive refcount 2: producer + HTTPThread)
+    /// and the signal set.
+    pub fn new() -> Self {
+        // SAFETY-free construction: `ThreadSafeStreamBuffer::new` heap-allocates
+        // and returns a live pointer with its 2 initial refs.
+        let buffer =
+            StreamBufferPtr(NonNull::new(bun_http::ThreadSafeStreamBuffer::new(
+                bun_http::ThreadSafeStreamBuffer::default(),
+            ))
+            .expect("ThreadSafeStreamBuffer::new allocates"));
+        StreamBodyHandle {
+            buffer,
+            drain_notify: StdArc::new(Notify::new()),
+            signals: StdArc::new(StreamSignals::new()),
+        }
+    }
+}
+
+impl Default for StreamBodyHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Drain callback wired into the `ThreadSafeStreamBuffer` (runs on the
+/// HTTPThread, under the buffer lock): wake the producer side.
+fn bridge_request_stream_drained(this: *mut Notify) {
+    // SAFETY: the context is the `Arc<Notify>` raw ref stashed by
+    // `fetch_core`'s stream install; it stays alive until the feeder's
+    // cleanup clears this callback first (under the same buffer lock), so
+    // the callback cannot outlive the allocation.
+    unsafe { (&*this).notify_one() };
+}
+
+/// The request body a bridge exchange carries.
+pub enum BridgeRequestBody {
+    /// No body.
+    Empty,
+    /// Fully-buffered body, known at schedule time (leaked to `&'static`;
+    /// framed with Content-Length by bun's request builder).
+    Buffered(Vec<u8>),
+    /// Incrementally-supplied body over a `ThreadSafeStreamBuffer` (see the
+    /// module header for the wire-framing rules).
+    Stream(StreamBodyHandle),
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Bridge state (shared between the tokio future and the HTTPThread callback)
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -303,6 +423,10 @@ struct BridgeState {
     body_owned: Option<*mut [u8]>,
     /// Backing `Box<[u8]>` for the leaked `&'static` headers buffer.
     headers_owned: Option<*mut [u8]>,
+    /// Streaming request-body signals (present iff the exchange rides a
+    /// `Stream` body): the callback publishes `can_stream` / terminal
+    /// transitions, the feeder consumes them.
+    stream_signals: Option<StdArc<StreamSignals>>,
 }
 
 // SAFETY: `head` (std Mutex), `body_tx` (tokio), `notify` (tokio) and
@@ -528,11 +652,19 @@ pub fn build_ssl_config(
 /// `Method::EXTENSION` (verbs outside bun's closed registry — hyper parity).
 ///
 /// The ownership protocol mirrors `fetch_async.rs` (BUG-ENG-369 /
-/// BCE-007-R5): URL / headers buffer / body are leaked to `&'static` because
-/// the heap-allocated `AsyncHTTP` outlives this frame; the backing boxes are
-/// reclaimed by the terminal `on_http_done`. The `AsyncHTTP` itself is
-/// heap-allocated via `bun_core::heap::into_raw` and reclaimed through the
-/// `real` backref (see the audit comment in `on_http_done`).
+/// BCE-007-R5): URL / headers buffer / a `Buffered` body are leaked to
+/// `&'static` because the heap-allocated `AsyncHTTP` outlives this frame; the
+/// backing boxes are reclaimed by the terminal `on_http_done`. The `AsyncHTTP`
+/// itself is heap-allocated via `bun_core::heap::into_raw` and reclaimed
+/// through the `real` backref (see the audit comment in `on_http_done`).
+///
+/// Request-body streaming: a [`BridgeRequestBody::Stream`] installs bun's
+/// `HTTPRequestBody::Stream` + the `is_streaming_request_body` flag (the
+/// symmetric counterpart of the response-side arming below) and wires the
+/// buffer-drain callback; the CALLER drives the supply side (see
+/// `RequestBodyFeeder` in the servo wrapper). The buffer's producer ref is
+/// the caller's to release — the callback-side ref is released by bun_http
+/// (`write_to_stream` / h2 `drain_send_body` / `InternalState::reset`).
 ///
 /// Response streaming: the `ResponseBodyStreaming` signal is armed before
 /// scheduling, so the callback fires per `on_data` — every non-terminal
@@ -547,7 +679,7 @@ pub async fn fetch_core(
     extension_method: Option<&'static [u8]>,
     url: String,
     headers: Vec<(Vec<u8>, Vec<u8>)>,
-    body: Option<Vec<u8>>,
+    body: BridgeRequestBody,
     cancel: &BunCancelHandle,
     should_cancel: Option<impl Fn() -> bool>,
     tls_props: Option<bun_http::ssl_config::SharedPtr>,
@@ -597,16 +729,23 @@ pub async fn fetch_core(
         };
         let entry_list = hb.entries;
 
-        // Request body: leak to 'static (empty body shares the static empty
-        // slice). Buffered — see the module header (stage 2 keeps servo-side
-        // request-body semantics; no Transfer-Encoding header is set here,
-        // bun frames the buffered body with Content-Length).
-        let (body_slice, body_owned): (&'static [u8], Option<*mut [u8]>) = match body {
-            Some(b) if !b.is_empty() => {
+        // Request body: `Buffered` leaks to 'static (empty body shares the
+        // static empty slice; bun frames it with Content-Length). `Stream`
+        // carries no slice here — the AsyncHTTP's request body is swapped to
+        // the shared buffer after init (below), and the caller-side feeder
+        // supplies the bytes incrementally.
+        let (body_slice, body_owned, stream_install): (
+            &'static [u8],
+            Option<*mut [u8]>,
+            Option<StreamBodyHandle>,
+        ) = match body {
+            BridgeRequestBody::Buffered(b) if !b.is_empty() => {
                 let leaked: &'static [u8] = Box::leak(b.into_boxed_slice());
-                (leaked, Some(leaked as *const [u8] as *mut [u8]))
+                (leaked, Some(leaked as *const [u8] as *mut [u8]), None)
             },
-            _ => (&[], None),
+            BridgeRequestBody::Buffered(_) => (&[], None, None),
+            BridgeRequestBody::Empty => (&[], None, None),
+            BridgeRequestBody::Stream(handle) => (&[], None, Some(handle)),
         };
 
         // Response buffer owned by the AsyncHTTP (raw *mut; freed by the
@@ -626,6 +765,9 @@ pub async fn fetch_core(
             } else {
                 None
             },
+            stream_signals: stream_install
+                .as_ref()
+                .map(|handle| StdArc::clone(&handle.signals)),
         });
         // The state's `signal_box` keeps the atomics the AsyncHTTP signals
         // point into alive for as long as either the future or the callback
@@ -678,6 +820,30 @@ pub async fn fetch_core(
         // True streaming (stage 2): per-on_data delivery instead of a single
         // buffered terminal body — the same signal the JS fetch path arms.
         async_http_boxed.enable_response_body_streaming();
+        if let Some(handle) = stream_install {
+            // Streaming request body (the request-side symmetric): swap the
+            // body to the shared buffer and arm the flag BEFORE scheduling —
+            // exactly the upstream `FetchTasklet` post-init assignments. The
+            // bitwise clone in `start_queued_task` carries the Stream arm
+            // into the HTTPThread (trivially copyable by design), and
+            // `on_start` moves it into the client's InternalState.
+            async_http_boxed.request_body =
+                bun_http::HTTPRequestBody::Stream(bun_http::http_request_body::Stream {
+                    buffer: Some(handle.buffer.0),
+                    ended: false,
+                });
+            async_http_boxed.client.flags.is_streaming_request_body = true;
+            // Drain wakeup (HTTPThread → producer): hold one Arc ref raw for
+            // the callback context; the feeder's cleanup (clear under the
+            // buffer lock, then `Arc::from_raw`) releases it.
+            let notify_ptr =
+                StdArc::into_raw(StdArc::clone(&handle.drain_notify)) as *mut Notify;
+            // SAFETY: `handle.buffer` is the live producer-ref allocation
+            // from `StreamBodyHandle::new`; pre-schedule (main-thread) wiring
+            // per `set_drain_callback`'s contract.
+            bun_http::ThreadSafeStreamBuffer::from_attached(handle.buffer.0)
+                .set_drain_callback(bridge_request_stream_drained, notify_ptr);
+        }
         let async_http_box: *mut bun_http::AsyncHTTP<'static> =
             bun_core::heap::into_raw(async_http_boxed);
 
@@ -781,6 +947,23 @@ fn on_http_done(
     // until the terminal delivery consumes it; intermediate deliveries hold
     // only this shared borrow.
     let state: &BridgeState = unsafe { &*this };
+
+    // Streaming request body: publish the request-side transitions.
+    // - `can_stream` (one-shot, first delivery carrying it): the request head
+    //   is on the wire; `is_http2` is final, which decides the feeder's
+    //   chunked-vs-raw framing.
+    // - terminal: the exchange is over — a still-uploading feeder stops.
+    // Both wake the feeder (permit-based Notify: safe before it awaits).
+    if let Some(signals) = &state.stream_signals {
+        if result.can_stream && signals.start.lock().unwrap().is_none() {
+            *signals.start.lock().unwrap() = Some(result.is_http2);
+            signals.notify.notify_one();
+        }
+        if result_is_terminal {
+            signals.terminal.store(true, Ordering::Release);
+            signals.notify.notify_one();
+        }
+    }
 
     if let Some(fail) = result.fail {
         let error = map_bun_error(fail);
@@ -1181,6 +1364,271 @@ pub fn build_devtools_request_msg(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Streaming request body producer (servo IPC → ThreadSafeStreamBuffer)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Producer side of a streaming request body: pulls servo's IPC body chunks
+/// (pull-driven router — one chunk in flight) and writes them into the
+/// request's `ThreadSafeStreamBuffer` (chunked-framed on h1 when the outgoing
+/// headers carry no Content-Length; raw otherwise), waking the HTTPThread per
+/// chunk. `finish` releases the producer-side resources exactly once; it runs
+/// on every path (clean end, body-stream failure, exchange failure — the
+/// `drive` future may be dropped at any await point, `obtain_response_bun`
+/// drops the feeder on early return).
+struct RequestBodyFeeder {
+    /// The streaming-body handle (producer ref + signals). `None` after
+    /// [`RequestBodyFeeder::finish`].
+    handle: Option<StreamBodyHandle>,
+    /// Chunks forwarded by the router (see
+    /// `obtain_response_setup_router_callback`).
+    receiver: UnboundedReceiver<BodyChunk>,
+    /// Pull channel to the script-side body stream (requests the next chunk
+    /// once the network accepted the previous one).
+    chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
+    /// The request's id (shared with `BunCancelHandle`) for the write/abort
+    /// schedules.
+    async_http_id: StdArc<AtomicU32>,
+    /// Termination signal mirrored on feeder-local failures (the router sends
+    /// it on its own Done/Error paths).
+    fetch_terminated: UnboundedSender<bool>,
+    /// Whether the outgoing headers carry Content-Length (raw bytes; the
+    /// total is the DOM-computed length). Without it the h1 wire rides
+    /// `Transfer-Encoding: chunked` (bun's request builder adds the header
+    /// for a streaming body) and the feeder writes the framing.
+    content_length_known: bool,
+}
+
+impl RequestBodyFeeder {
+    /// Wire the router (chunk forwarding + `fetch_terminated` plumbing) and
+    /// build the feeder + the handle for `fetch_core`.
+    fn setup(
+        devtools_bytes: StdArc<Mutex<Vec<u8>>>,
+        chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
+        fetch_terminated: UnboundedSender<bool>,
+        async_http_id: StdArc<AtomicU32>,
+        content_length_known: bool,
+    ) -> Result<(RequestBodyFeeder, StreamBodyHandle), NetworkError> {
+        let handle = StreamBodyHandle::new();
+        let (sink, receiver) = unbounded_channel();
+        // The router owns a clone of the termination sender (fires on the
+        // DOM-side Done/Error); the feeder mirrors it on its own failure
+        // paths.
+        obtain_response_setup_router_callback(
+            devtools_bytes,
+            StdArc::clone(&chunk_requester),
+            sink,
+            fetch_terminated.clone(),
+        )?;
+        Ok((
+            RequestBodyFeeder {
+                handle: Some(handle.clone()),
+                receiver,
+                chunk_requester,
+                async_http_id,
+                fetch_terminated,
+                content_length_known,
+            },
+            handle,
+        ))
+    }
+
+    fn id(&self) -> u32 {
+        self.async_http_id.load(Ordering::Acquire)
+    }
+
+    /// The live handle (until `finish`).
+    fn handle(&self) -> &StreamBodyHandle {
+        self.handle.as_ref().expect("feeder handle until finish")
+    }
+
+    /// Append one body chunk into the shared buffer with the negotiated
+    /// framing; returns the buffered size after the write.
+    fn write_chunk(&mut self, bytes: &[u8], chunked: bool) -> usize {
+        // SAFETY: live producer-ref allocation; the locked helpers take the
+        // buffer's mutex.
+        let buffer = unsafe { &mut *self.handle().buffer.0.as_ptr() };
+        if chunked {
+            // `{hex}\r\n` + data + `\r\n` — upstream writeRequestData's framing.
+            let mut framed = Vec::with_capacity(18 + bytes.len() + 2);
+            let _ = write!(framed, "{:x}\r\n", bytes.len());
+            framed.extend_from_slice(bytes);
+            framed.extend_from_slice(b"\r\n");
+            buffer.locked_write(&framed)
+        } else {
+            buffer.locked_write(bytes)
+        }
+    }
+
+    /// Write the chunked terminal (`0\r\n\r\n`) — only for chunked framing.
+    fn write_terminal_chunk(&mut self, chunked: bool) {
+        if chunked {
+            // SAFETY: live producer-ref allocation; locked helper.
+            unsafe { &mut *self.handle().buffer.0.as_ptr() }
+                .locked_write(bun_http::END_OF_CHUNKED_HTTP1_1_ENCODING_BODY);
+        }
+    }
+
+    /// Request the next IPC chunk (fetch spec transmit-body step 5.1.2.3,
+    /// performed by the network consumer). `false` = the body stream closed
+    /// abnormally.
+    fn request_next_chunk(&mut self) -> bool {
+        let mut requester = self.chunk_requester.lock();
+        match requester.as_mut() {
+            Some(sender) => sender.send(BodyChunkRequest::Chunk).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Fail the body stream: mirror the router's termination semantics and
+    /// abort the in-flight exchange.
+    fn fail_stream(&mut self, action: &str) -> NetworkError {
+        log::warn!("Failed to read all chunks from request body while trying to {action}.");
+        let _ = self.fetch_terminated.send(true);
+        let id = self.id();
+        if id != 0 {
+            bun_http::HTTPThread::schedule_shutdown_from_any_thread(id);
+        }
+        NetworkError::ConnectionFailure
+    }
+
+    /// Producer-side cleanup: stop the drain callback (under the buffer lock,
+    /// racing no `report_drain`), release the callback context's `Arc` ref,
+    /// and release the producer ref on the buffer. Exactly once.
+    fn finish(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        // SAFETY: live producer-ref allocation created in
+        // `StreamBodyHandle::new` (the producer's ref of the initial 2).
+        bun_http::ThreadSafeStreamBuffer::from_attached(handle.buffer.0)
+            .clear_drain_callback_locked();
+        // Release the raw Arc ref the drain-callback context held
+        // (`Arc::into_raw` in `fetch_core`'s stream install; the callback was
+        // just cleared under the buffer lock, so nothing derefs it anymore).
+        // SAFETY: pointer came from `Arc::into_raw` on this exact allocation.
+        drop(unsafe { StdArc::from_raw(StdArc::as_ptr(&handle.drain_notify)) });
+        // Producer ref release (the HTTPThread's own ref is released by
+        // bun_http: write_to_stream / h2 drain_send_body / InternalState::reset).
+        bun_http::ThreadSafeStreamBuffer::deref(handle.buffer.0);
+    }
+
+    /// Drive the supply side to completion. Resolves `Ok` once the body
+    /// stream ended cleanly (End scheduled — the HTTPThread flushes the tail)
+    /// or the exchange went terminal first; `Err` when the body stream failed
+    /// (the exchange was aborted — the caller surfaces the failure).
+    async fn drive(&mut self) -> Result<(), NetworkError> {
+        // Clone the signal Arcs out of the handle so no `&self` borrow lives
+        // across the select (whose arms take `&mut self`).
+        let (signals, drain_notify) = {
+            let handle = self.handle();
+            (StdArc::clone(&handle.signals), StdArc::clone(&handle.drain_notify))
+        };
+        let mut started: Option<bool> = None; // Some(is_http2)
+        let mut chunked = false;
+        let mut paused = false;
+        let outcome = loop {
+            // The exchange is over (success tail or failure): no further
+            // writes can matter — the HTTPThread no longer drains this body.
+            if signals.terminal.load(Ordering::Acquire) {
+                break Ok(());
+            }
+            let mut notified = pin!(signals.notify.notified());
+            let mut drained = pin!(drain_notify.notified());
+            tokio::select! {
+                chunk = self.receiver.recv(),
+                    if started.is_some() && !paused =>
+                {
+                    match chunk {
+                        Some(BodyChunk::Chunk(bytes)) => {
+                            let size = self.write_chunk(&bytes, chunked);
+                            bun_http::HTTPThread::schedule_request_write_from_any_thread(
+                                self.id(),
+                                bun_http::http_thread::WriteMessageType::Data,
+                            );
+                            if size >= REQUEST_BODY_HIGH_WATER_MARK {
+                                // Backpressure: hold off pulling until the
+                                // HTTPThread drained the buffer.
+                                paused = true;
+                            } else if !self.request_next_chunk() {
+                                break Err(self.fail_stream("requesting the next chunk"));
+                            }
+                        },
+                        Some(BodyChunk::Done) => {
+                            self.write_terminal_chunk(chunked);
+                            bun_http::HTTPThread::schedule_request_write_from_any_thread(
+                                self.id(),
+                                bun_http::http_thread::WriteMessageType::End,
+                            );
+                            break Ok(());
+                        },
+                        Some(BodyChunk::Error) | None => {
+                            // Body stream errored / the router route vanished:
+                            // abort rather than send a truncated body.
+                            break Err(self.fail_stream("streaming the request body"));
+                        },
+                    }
+                },
+                _ = drained.as_mut(), if paused => {
+                    // Buffer drained below the mark: resume pulling.
+                    paused = false;
+                    if started.is_some() && !self.request_next_chunk() {
+                        break Err(self.fail_stream("requesting the next chunk after a drain"));
+                    }
+                },
+                _ = notified.as_mut() => {
+                    if started.is_none() {
+                        let signalled = *signals.start.lock().unwrap();
+                        if let Some(is_http2) = signalled {
+                            started = Some(is_http2);
+                            // h1 without a known length rides chunked
+                            // framing; Content-Length or h2 → raw bytes.
+                            chunked = !is_http2 && !self.content_length_known;
+                        }
+                    }
+                    // terminal is re-checked at the loop top.
+                },
+                _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => {
+                    // Safety tick: re-derive state from the shared signals /
+                    // buffer instead of relying solely on Notify permits —
+                    // covers a missed start or drain wakeup.
+                    if started.is_none() {
+                        let signalled = *signals.start.lock().unwrap();
+                        if let Some(is_http2) = signalled {
+                            started = Some(is_http2);
+                            chunked = !is_http2 && !self.content_length_known;
+                        }
+                    }
+                    if paused && started.is_some() {
+                        // SAFETY: live producer-ref allocation; locked helper.
+                        let size =
+                            unsafe { &mut *self.handle().buffer.0.as_ptr() }.locked_size();
+                        if size < REQUEST_BODY_HIGH_WATER_MARK {
+                            paused = false;
+                            if !self.request_next_chunk() {
+                                break Err(self.fail_stream(
+                                    "requesting the next chunk while resuming",
+                                ));
+                            }
+                        }
+                    }
+                },
+            }
+        };
+        self.finish();
+        outcome
+    }
+}
+
+impl Drop for RequestBodyFeeder {
+    fn drop(&mut self) {
+        // Drive-to-completion already finished (handle taken → no-op). This
+        // arm covers every other path: exchange error while still uploading,
+        // servo cancellation, the future dropped at any await point.
+        self.finish();
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Servo-side entry point (called from http_loader.rs)
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -1286,36 +1734,31 @@ pub(crate) async fn obtain_response_bun(
         })
         .collect();
 
-    // Request body: drain the IPC body stream into a buffer. The router
-    // callback is the hyper path's own plumbing — it forwards
-    // `fetch_terminated(false/true)` on body Done/Error exactly as before,
-    // and accumulates the published bytes for the devtools message.
-    // (Request bodies stay buffered — servo's
-    // streaming-request-body semantics belong to http_loader's hyper path;
-    // bun frames the buffered body with Content-Length.)
+    // Request body: STREAMING supply (restored hyper-era semantics — bytes
+    // reach the wire as they arrive; no full-body residency). The router
+    // forwards the IPC chunks (and keeps the hyper path's
+    // `fetch_terminated(false/true)` plumbing on body Done/Error); the feeder
+    // writes them into the request's `ThreadSafeStreamBuffer`, which the
+    // HTTPThread drains to the socket incrementally. Backpressure: the feeder
+    // pulls one IPC chunk at a time and pauses at the 16 KiB high-water mark
+    // until the buffer drains. The devtools message accumulates the published
+    // bytes (built after the upload completes — full-body field parity with
+    // the buffered era).
+    let cancel = BunCancelHandle::new();
     let devtools_bytes = StdArc::new(Mutex::new(vec![]));
-    let body: Option<Vec<u8>> = if let Some(chunk_requester) = body_sender {
-        let (sender, mut receiver) = unbounded_channel();
-        obtain_response_setup_router_callback(
-            StdArc::clone(&devtools_bytes),
-            chunk_requester,
-            sender,
-            fetch_terminated,
-        )?;
-        let mut buffered = vec![];
-        loop {
-            match receiver.recv().await {
-                Some(BodyChunk::Chunk(bytes)) => buffered.extend_from_slice(&bytes),
-                Some(BodyChunk::Done) => break,
-                None => {
-                    log::warn!("Failed to read all chunks from request body.");
-                    break;
-                },
-            }
-        }
-        Some(buffered)
-    } else {
-        None
+    let content_length_known = request_headers.contains_key(http::header::CONTENT_LENGTH);
+    let (body, feeder) = match body_sender {
+        Some(chunk_requester) => {
+            let (feeder, handle) = RequestBodyFeeder::setup(
+                StdArc::clone(&devtools_bytes),
+                chunk_requester,
+                fetch_terminated,
+                StdArc::clone(&cancel.async_http_id),
+                content_length_known,
+            )?;
+            (BridgeRequestBody::Stream(handle), Some(feeder))
+        },
+        None => (BridgeRequestBody::Empty, None),
     };
 
     let connect_end = CrossProcessInstant::now();
@@ -1388,13 +1831,12 @@ pub(crate) async fn obtain_response_bun(
     // interned pointer → its own connection bucket (correct isolation).
     let tls_props = Some(bun_http::ssl_config::GlobalRegistry::intern(ssl_config));
 
-    let cancel = BunCancelHandle::new();
     let cancellation_listener = StdArc::clone(&context.cancellation_listener);
     let should_cancel = move || cancellation_listener.cancelled();
 
     let host = url.host_str().unwrap_or("").to_owned();
 
-        let outcome = fetch_core(
+    let fetch_future = fetch_core(
         bun_method,
         extension_method,
         encoded_url,
@@ -1405,8 +1847,51 @@ pub(crate) async fn obtain_response_bun(
         tls_props,
         profile_offers_h2,
         !context.ignore_certificate_errors,
-    )
-    .await;
+    );
+    tokio::pin!(fetch_future);
+
+    // Drive the exchange and the request-body upload concurrently. Whichever
+    // finishes first, the other continues: the upload must complete even
+    // after the head arrives (servers read the body before responding), and
+    // the exchange must settle even if the feeder ends first. A body-stream
+    // failure fails the whole fetch — the same ConnectionFailure contract
+    // the buffered era's fetch_terminated(true) path enforced.
+    let outcome = match feeder {
+        Some(mut feeder) => {
+            let drive = feeder.drive();
+            tokio::pin!(drive);
+            let mut feeder_running = true;
+            let outcome = tokio::select! {
+                outcome = &mut fetch_future => outcome,
+                fed = &mut drive => {
+                    feeder_running = false;
+                    // The feeder ended (clean end-of-body, or it aborted the
+                    // exchange on a body-stream error — the shutdown settles
+                    // the exchange either way); await its head/error.
+                    let outcome = fetch_future.await;
+                    if fed.is_err() && outcome.is_ok() {
+                        Err(BridgeError::Network(NetworkError::ConnectionFailure))
+                    } else {
+                        outcome
+                    }
+                },
+            };
+            match outcome {
+                Ok(response) => {
+                    // Upload tail: the head may arrive before the last chunks
+                    // (bounded by the exchange's terminal signal or the body
+                    // stream's Done/Error).
+                    if feeder_running && drive.await.is_err() {
+                        Err(BridgeError::Network(NetworkError::ConnectionFailure))
+                    } else {
+                        Ok(response)
+                    }
+                },
+                Err(error) => Err(error),
+            }
+        },
+        None => fetch_future.await,
+    };
 
     let response = match outcome {
         Ok(response) => response,

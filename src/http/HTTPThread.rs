@@ -1214,6 +1214,72 @@ impl HttpThread {
         // valid after on_start() (guaranteed by the has_awoken check above).
         unsafe { (&*this).wakeup() };
     }
+
+    /// Cross-thread request-body write entry: announce that the producer of a
+    /// streaming request body wrote bytes into the request's
+    /// `ThreadSafeStreamBuffer` (`Data`), or finished it (`End`). Port of Zig
+    /// `HTTPThread.scheduleRequestWrite` called from a non-HTTP thread
+    /// (FetchTasklet.writeRequestData / writeEndRequest); the HTTP-thread tick
+    /// (`drain_queued_writes`) looks the id up in the abort tracker, marks the
+    /// stream `ended` for `End`, and flushes the buffered bytes to the socket
+    /// (h1) or the h2 session (`ClientSession::stream_body_by_http_id`).
+    ///
+    /// Safe to call from any thread, mirroring
+    /// [`Self::schedule_shutdown_from_any_thread`]: the push is guarded by
+    /// `queued_writes_lock` (shared with `drain_queued_writes` on the HTTP
+    /// thread) and `wakeup()` is atomics + raw FFI. A write for an id with no
+    /// registered socket (request not yet connected, or already terminal) is
+    /// dropped by the tick — the bytes stay in the buffer until the socket
+    /// exists, or are simply never sent for a finished request.
+    pub fn schedule_request_write_from_any_thread(async_http_id: u32, kind: WriteMessageType) {
+        if async_http_id == 0 {
+            return;
+        }
+        // Release guard + assertion: same pairing with `init_once` as
+        // `schedule()` above.
+        assert!(
+            crate::HTTP_THREAD_INIT.load(Ordering::Acquire),
+            "HTTPThread::schedule_request_write_from_any_thread() called before HTTPThread::init()"
+        );
+        // SAFETY: `HTTP_THREAD_INIT == true` ⇒ `HTTP_THREAD` is fully
+        // written. Raw field access (not `ParentRef`): `queued_writes` is a
+        // plain `Vec` needing `&mut` for `push`, but every read/write — here
+        // and in `drain_queued_writes` — happens under `queued_writes_lock`,
+        // so the lock serializes all access and no aliasing is observable.
+        let this: *mut Self = unsafe {
+            (*crate::HTTP_THREAD.get_unchecked()).as_mut_ptr()
+        };
+        unsafe {
+            let writes = ::std::ptr::addr_of_mut!((*this).queued_writes);
+            let lock = ::std::ptr::addr_of!((*this).queued_writes_lock);
+            {
+                let _guard = (*lock).lock_guard();
+                (*writes).push(WriteMessage {
+                    async_http_id,
+                    kind,
+                });
+            }
+        }
+        // Same has_awoken handshake as `schedule()`.
+        // SAFETY: `this` points at the initialized HttpThread; both fields
+        // below are designed for cross-thread shared access.
+        let has_awoken = unsafe { &*::std::ptr::addr_of!((*this).has_awoken) };
+        if !has_awoken.load(Ordering::Acquire) {
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(100);
+            while !has_awoken.load(Ordering::Acquire) {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "HTTPThread::schedule_request_write_from_any_thread() timed out waiting for HTTPThread::init()"
+                    );
+                }
+                ::std::hint::spin_loop();
+            }
+        }
+        // SAFETY: wakeup only touches atomics + the uws loop pointer, both
+        // valid after on_start() (guaranteed by the has_awoken check above).
+        unsafe { (&*this).wakeup() };
+    }
 }
 
 /// Evict the least-recently-used SSL context cache entry.

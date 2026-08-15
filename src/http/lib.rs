@@ -261,7 +261,13 @@ impl Default for Flags {
 
 // ───────────────────────────── globals ─────────────────────────────
 
-pub static ASYNC_HTTP_ID_MONOTONIC: AtomicU32 = AtomicU32::new(0);
+/// First assigned id is 1: `fetch_add` returns the PREVIOUS value, so a 0
+/// start hands the first-ever signalled request id 0 — the "no id" sentinel
+/// every cross-thread schedule guards on
+/// (`schedule_request_write_from_any_thread`, the abort/shutdown schedules).
+/// A first request with id 0 could never be written to mid-upload nor
+/// aborted from another thread.
+pub static ASYNC_HTTP_ID_MONOTONIC: AtomicU32 = AtomicU32::new(1);
 
 /// Set once at startup (before the HTTP thread spawns) and then only read on
 /// that thread. The h2 counterpart was removed when
@@ -850,6 +856,13 @@ const HOST_HEADER_NAME: &[u8] = b"Host";
 const CONTENT_LENGTH_HEADER_NAME: &[u8] = b"Content-Length";
 const CHUNKED_ENCODED_HEADER: picohttp::Header =
     picohttp::Header::new(b"Transfer-Encoding", b"chunked");
+
+/// Terminal chunk of a chunked-encoded HTTP/1.1 body (Zig
+/// `http.end_of_chunked_http1_1_encoding_response_body`). Written by the
+/// producer side of a streaming request body when it reaches end-of-body and
+/// the exchange rides chunked framing (no Content-Length, not h2 — see
+/// `FetchTasklet.writeEndRequest` upstream / the servo bun bridge feeder).
+pub const END_OF_CHUNKED_HTTP1_1_ENCODING_BODY: &[u8] = b"0\r\n\r\n";
 const CONNECTION_HEADER: picohttp::Header = picohttp::Header::new(b"Connection", b"keep-alive");
 const ACCEPT_HEADER: picohttp::Header = picohttp::Header::new(b"Accept", b"*/*");
 

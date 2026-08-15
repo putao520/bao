@@ -57,15 +57,17 @@ impl ThreadSafeStreamBuffer {
 
     /// Upgrade an attached intrusive-ref handle to `&mut Self`.
     ///
-    /// INVARIANT: while `p` is held, the HTTP side owns one intrusive ref on
-    /// the buffer (taken at attach, released in `Stream::detach`); the buffer
-    /// is a separate heap allocation that outlives the returned borrow and is
-    /// disjoint from any `&mut HTTPClient`/`&mut Stream`. HTTP-thread-only at
-    /// every caller, so the `&mut` is the sole live borrow on this side of the
-    /// internal lock. Centralises the SAFETY argument shared by
+    /// INVARIANT: while `p` is held, the caller owns one intrusive ref on the
+    /// buffer (the producer's from `new`, or the HTTP side's taken at attach
+    /// and released in `Stream::detach`); the buffer is a separate heap
+    /// allocation that outlives the returned borrow and is disjoint from any
+    /// `&mut HTTPClient`/`&mut Stream`. Every producer-side access goes
+    /// through the internal lock (`locked_*` helpers), so cross-thread use
+    /// (the servo bun bridge feeder) is as safe as the HTTP-thread use.
+    /// Centralises the SAFETY argument shared by
     /// `http_request_body::Stream::buffer_mut` and `HTTPClient::write_to_stream`.
     #[inline]
-    pub(crate) fn from_attached<'a>(mut p: core::ptr::NonNull<Self>) -> &'a mut Self {
+    pub fn from_attached<'a>(mut p: core::ptr::NonNull<Self>) -> &'a mut Self {
         // SAFETY: see INVARIANT above.
         unsafe { p.as_mut() }
     }
@@ -110,6 +112,38 @@ impl ThreadSafeStreamBuffer {
 
     pub fn clear_drain_callback(&mut self) {
         self.callback = None;
+    }
+
+    /// Producer-side append under the buffer lock; returns the buffered size
+    /// after the write (the producer's high-water-mark check). Zig shape:
+    /// `const buf = sb.acquire(); defer sb.release(); buf.write(data);`.
+    /// OOM/capacity is fire-and-forget (Zig aborts; the port keeps the
+    /// `write_to_stream_using_buffer` convention).
+    pub fn locked_write(&mut self, bytes: &[u8]) -> usize {
+        let buffer = self.acquire();
+        let _ = buffer.write(bytes);
+        let size = buffer.size();
+        self.release();
+        size
+    }
+
+    /// Buffered size under the lock (producer resume check).
+    pub fn locked_size(&mut self) -> usize {
+        let buffer = self.acquire();
+        let size = buffer.size();
+        self.release();
+        size
+    }
+
+    /// `clear_drain_callback` under the buffer lock. `report_drain` reads
+    /// `callback` only between `acquire()`/`release()` (HTTP thread), so
+    /// clearing under the same lock is race-free — a bare
+    /// `clear_drain_callback()` from the producer thread could tear against
+    /// an in-flight `report_drain`.
+    pub fn clear_drain_callback_locked(&mut self) {
+        self.acquire();
+        self.callback = None;
+        self.release();
     }
 
     /// This is exclusively called from the http thread.

@@ -411,12 +411,19 @@ pub(crate) enum BodyChunk {
     Chunk(GenericSharedMemory),
     /// Body is done.
     Done,
+    /// The body stream errored (fetch spec step 5: terminate the fetch) —
+    /// the driver aborts the in-flight exchange instead of sending a
+    /// truncated body.
+    Error,
 }
 
-/// The sink side of the request body: chunks arriving over IPC are
-/// forwarded through this sender to the fetch driver, which buffers them
-/// before the request is scheduled (request bodies stay buffered — no
-/// streaming-request-body over the network).
+/// The sink side of the request body: chunks arriving over IPC are forwarded
+/// through this sender to the fetch driver, which writes them incrementally
+/// into the request's streaming-body buffer (the bun bridge's
+/// `ThreadSafeStreamBuffer`) — the wire sees bytes as they arrive, never a
+/// fully-buffered body. This is the pull-driven consumer side: the driver
+/// requests the next IPC chunk only after the previous one was accepted by
+/// the network (backpressure — at most one chunk in flight).
 pub(crate) type BodySink = UnboundedSender<BodyChunk>;
 
 fn request_body_stream_closed_error(action: &str) -> NetworkError {
@@ -443,6 +450,14 @@ fn log_fetch_terminated_send_failure(terminated_with_error: bool, context: &str)
 pub(crate) const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
 
 /// Setup the callback mechanism to forward chunks from the request received to the `chunk_requester`.
+///
+/// Streaming contract (https://fetch.spec.whatwg.org/#concept-request-transmit-body,
+/// steps 3–5): this route connects to the script-side body stream, requests
+/// the FIRST chunk (steps 3–4), and forwards every delivered chunk to `sink`
+/// (step 5.1.2.2). Requesting the NEXT chunk (step 5.1.2.3) is the consumer's
+/// job: the fetch driver pulls through its clone of `chunk_requester` once
+/// the network accepted the previous chunk, so at most one IPC chunk is in
+/// flight and the wire — not an intermediary buffer — applies backpressure.
 pub(crate) fn obtain_response_setup_router_callback(
     devtools_bytes: StdArc<Mutex<Vec<u8>>>,
     chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
@@ -514,7 +529,7 @@ pub(crate) fn obtain_response_setup_router_callback(
                         );
                     }
                     if let Some(sink) = sink.take() {
-                        let _ = sink.send(BodyChunk::Done);
+                        let _ = sink.send(BodyChunk::Error);
                     }
 
                     return;
@@ -523,45 +538,15 @@ pub(crate) fn obtain_response_setup_router_callback(
 
             devtools_bytes.lock().extend_from_slice(&bytes);
 
-            // Step 5.1.2.2, transmit chunk over the network,
-            // currently implemented by sending the bytes to the fetch worker.
+            // Step 5.1.2.2, transmit chunk over the network: hand the bytes
+            // to the fetch worker. Step 5.1.2.3 (request the next chunk) is
+            // performed by the consumer once this chunk was accepted — see
+            // the streaming contract in the doc comment above.
             {
                 let Some(sink) = sink.as_ref() else {
                     return;
                 };
                 let _ = sink.send(BodyChunk::Chunk(bytes));
-            }
-
-            // Step 5.1.2.3
-            // Request the next chunk.
-            let mut chunk_requester = chunk_requester.lock();
-            if let Some(chunk_requester) = chunk_requester.as_mut() {
-                if let Err(error) = chunk_requester.send(BodyChunkRequest::Chunk) {
-                    log_request_body_stream_closed(
-                        "request the next request body chunk",
-                        Some(&error),
-                    );
-                    if fetch_terminated.send(true).is_err() {
-                        log_fetch_terminated_send_failure(
-                            true,
-                            "handling failure to request the next request body chunk",
-                        );
-                    }
-                    if let Some(sink) = sink.take() {
-                        let _ = sink.send(BodyChunk::Done);
-                    }
-                }
-            } else {
-                log_request_body_stream_closed("request the next request body chunk", None);
-                if fetch_terminated.send(true).is_err() {
-                    log_fetch_terminated_send_failure(
-                        true,
-                        "handling a closed request body stream while requesting the next chunk",
-                    );
-                }
-                if let Some(sink) = sink.take() {
-                    let _ = sink.send(BodyChunk::Done);
-                }
             }
         }),
     );

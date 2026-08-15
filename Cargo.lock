@@ -497,6 +497,8 @@ dependencies = [
  "bun_http",
  "bun_runtime",
  "bun_sys",
+ "bun_threading",
+ "bun_url",
  "bun_uws",
  "cdp-server",
  "cookie 0.18.1",

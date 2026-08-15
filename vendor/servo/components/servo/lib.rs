@@ -137,7 +137,8 @@ pub fn register_worker_scope_callback(
 /// Set anti-fingerprinting TLS/HTTP2 configuration for servo's network layer
 /// (Bao vendor patch, REQ-STL-001: browser-level JA3/JA4 anti-fingerprinting).
 ///
-/// When set, servo's HTTP client (boringssl-backed connector) uses these
+/// When set, servo's TLS consumers (the page-network bun bridge and the
+/// boringssl-backed WebSocket loader) use these
 /// values for TLS cipher suite/curves/signature algorithm reordering and ALPN
 /// negotiation, plus HTTP/2 connection parameters (SETTINGS frame, window
 /// sizes). boringssl supports full JA3/JA4 fingerprint configuration.
