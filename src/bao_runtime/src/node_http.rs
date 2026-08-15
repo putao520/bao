@@ -399,36 +399,28 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
 
         // http.ClientRequest / IncomingMessage / OutgoingMessage — Node.js
-        // surfaces these as named classes. http_request already returns a
-        // ClientRequest-shaped object; we expose a stub class for each so
-        // `typeof require('http').ClientRequest === 'function'` works.
-        // (See ~/code/rust/bun/src/js/node/_http_client.ts and
-        //  _http_incoming.ts / _http_outgoing.ts for the full Bun impls.)
+        // surfaces these as named classes, and conformance checks key on
+        // `typeof require('http').ClientRequest === 'function'`. Bao has no
+        // real streaming implementation of these classes: http.request()
+        // drives the real fetch_async network path. The previous phantom
+        // objects accepted write()/end()/on() and reported success while
+        // silently dropping everything. Fail closed on construction (same
+        // disposition as _http_client's ClientRequest, silent-fake
+        // eradication group D); the function objects themselves keep the
+        // typeof surface intact. (See ~/code/rust/bun/src/js/node/
+        // _http_client.ts / _http_incoming.ts / _http_outgoing.ts for the
+        // full Bun impls a future port would bring.)
         {
             let classes_src = r#"(function(h){
-  function ClientRequest(opts, cb) { this._opts = opts || {}; if (cb) this.once('response', cb); }
-  ClientRequest.prototype.on = function(e, fn) { if (!this._events) this._events = {}; (this._events[e] || (this._events[e] = [])).push(fn); return this; };
-  ClientRequest.prototype.once = ClientRequest.prototype.on;
-  ClientRequest.prototype.end = function(cb) { if (cb) cb(); return this; };
-  ClientRequest.prototype.write = function() { return true; };
-  ClientRequest.prototype.setHeader = function() { return this; };
-  ClientRequest.prototype.getHeader = function() { return undefined; };
-  ClientRequest.prototype.abort = function() {};
-  ClientRequest.prototype.setTimeout = function() { return this; };
-
-  function IncomingMessage(socket) { this.socket = socket; this.headers = {}; this.method = null; this.httpVersion = '1.1'; this.statusCode = 200; }
-  IncomingMessage.prototype.on = ClientRequest.prototype.on;
-  IncomingMessage.prototype.once = ClientRequest.prototype.on;
-
-  function OutgoingMessage() { this.headers = {}; this._headers = []; }
-  OutgoingMessage.prototype.on = ClientRequest.prototype.on;
-  OutgoingMessage.prototype.once = ClientRequest.prototype.on;
-  OutgoingMessage.prototype.setHeader = function(name, value) { this.headers[name] = value; };
-  OutgoingMessage.prototype.getHeader = function(name) { return this.headers[name]; };
-  OutgoingMessage.prototype.removeHeader = function(name) { delete this.headers[name]; };
-  OutgoingMessage.prototype.write = function() { return true; };
-  OutgoingMessage.prototype.end = function(cb) { if (cb) cb(); return this; };
-
+  function ClientRequest(opts, cb) {
+    throw new Error("require('http').ClientRequest is not implemented in bao: constructing it would silently drop the request (write()/end()/on() have no transport). Use require('http').request() — the real network path — instead.");
+  }
+  function IncomingMessage(socket) {
+    throw new Error("require('http').IncomingMessage is not implemented in bao: it has no real socket/stream to read from. Response data arrives through require('http').request() — the real network path.");
+  }
+  function OutgoingMessage() {
+    throw new Error("require('http').OutgoingMessage is not implemented in bao: it has no transport, so write()/end()/setHeader() would silently drop the message. Use require('http').request() — the real network path — instead.");
+  }
   h.ClientRequest = ClientRequest;
   h.IncomingMessage = IncomingMessage;
   h.OutgoingMessage = OutgoingMessage;

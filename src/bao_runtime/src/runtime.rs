@@ -4,6 +4,7 @@ use bao_engine::context::{JsContext, SmRuntimeGuard};
 use bao_engine::error::JsError;
 use bao_engine::module_loader::ModuleLoader;
 use bao_engine::value::JsValue;
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 
 use crate::globals;
@@ -207,11 +208,37 @@ impl BaoRuntime {
                 |realm_cx| unsafe { crate::bun_test::run_bun_tests_report(realm_cx.raw_cx()) },
             )
         } else {
-            // Non-module file: run as a plain script in the persistent realm.
-            // A plain script (no import/export) cannot register bun:test
-            // suites via the module loader, so the report is empty.
+            // Non-module (CJS/plain-script) file: run as a script in the
+            // persistent realm, then drive the registered suites exactly like
+            // the module branch above — require('node:test') in a CJS file
+            // registers into the same bun:test collector, and registered but
+            // never-executed suites are the silent fake pass this runner
+            // exists to prevent.
             self.eval(&source, path)?;
-            ::std::result::Result::Ok(crate::bun_test::TestReport::default())
+            ::std::result::Result::Ok(self.run_registered_tests())
         }
+    }
+
+    /// Drive the bun:test suites registered in this context's persistent
+    /// realm and return the report. `bao test` calls this after evaluating
+    /// each test file — module files via `eval_module_in_realm_then`'s
+    /// callback (which runs inside `AutoRealm`), plain-script files and
+    /// `bao test -e` evals directly here — so every entry path executes what
+    /// it registered instead of reporting a vacuous 0/0.
+    //
+    // @trace REQ-ENG-006 [entity:BaoRuntime] — bao test runner execution
+    pub fn run_registered_tests(&mut self) -> crate::bun_test::TestReport {
+        let global_ptr = match self.ensure_realm() {
+            Ok(g) => g,
+            Err(_) => return crate::bun_test::TestReport::default(),
+        };
+        let mut cx = self.ctx.cx();
+        rooted!(&in(cx) let global = global_ptr);
+        // Enter the persistent realm: the runner's shims evaluate against the
+        // current realm's global (same contract as the module branch's
+        // after_eval callback).
+        let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+        unsafe { crate::bun_test::run_bun_tests_report(realm_cx.raw_cx()) }
     }
 }

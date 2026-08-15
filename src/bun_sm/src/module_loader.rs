@@ -884,24 +884,13 @@ unsafe extern "C" fn host_resolve_imported_module(
     // Synthetic ESM modules with explicit named exports for known builtins
     let synthetic_esm = match stripped {
         // @trace REQ-ENG-005 [module:node:test] — node:test runner shim.
-        // Forwards describe/test/it/before*/after* hooks to the bun:test
-        // collector so a file can use `import { describe, test } from "node:test"`
-        // and still be picked up by `bao test`. Node's surface is broader
-        // (run(), test.run(), MockTracker) but the upstream tests in this repo
-        // only use describe/test/it + before/after hooks.
-        "test" => Some(
-            r#"var _m = require("bun:test");
-export var describe = _m.describe;
-export var test = _m.test;
-export var it = _m.it;
-export var before = _m.beforeAll;
-export var after = _m.afterAll;
-export var beforeEach = _m.beforeEach;
-export var afterEach = _m.afterEach;
-export var mock = _m.jest;
-export default _m;
-"#,
-        ),
+        // Delegates to the CJS `node:test` builtin (bao_runtime::node_test),
+        // the single gated source of truth: outside `bao test`
+        // (process.argv[1] !== 'test') test/describe/it and the hooks throw
+        // a pointer to `bao test <file>` instead of silently registering
+        // suites that would never execute; under `bao test` the same calls
+        // bridge to the real bun:test registration/execution.
+        "test" => Some(NODE_TEST_ESM_BRIDGE),
         "bun:test" => Some(
             r#"var _m = require("bun:test");
 export var describe = _m.describe;
@@ -1610,6 +1599,33 @@ fn builtin_named_exports(name: &str) -> &'static [&'static str] {
 /// for each named export (so SM's linker can resolve them statically) plus a
 /// `default` export pointing at the full builtin module object. Unknown names
 /// fall back to `default`-only (still `import X from "<builtin>"`-able).
+/// ESM bridge source for `node:test` — shared by the static-import resolve
+/// hook (`host_resolve_imported_module`) and dynamic `import("node:test")`
+/// (`dynamic_import_builtin`) so both expose the identical surface.
+///
+/// Forwards every named export to the CJS `node:test` builtin installed by
+/// `bao_runtime::node_test` — the gated single source of truth. The previous
+/// version bound directly to `require("bun:test")`, which registers suites
+/// with no runner gate: under `bao run` a file doing
+/// `import { test } from "node:test"` silently registered nothing and faked
+/// a pass. Routing through the CJS module keeps the ESM and CJS contracts
+/// identical (throw outside `bao test`, real registration inside it).
+const NODE_TEST_ESM_BRIDGE: &str = r#"var _m = require("node:test");
+export var test = _m.test;
+export var describe = _m.describe;
+export var it = _m.it;
+export var before = _m.before;
+export var after = _m.after;
+export var beforeAll = _m.beforeAll;
+export var afterAll = _m.afterAll;
+export var beforeEach = _m.beforeEach;
+export var afterEach = _m.afterEach;
+export var mock = _m.mock;
+export var assert = _m.assert;
+export var run = _m.run;
+export default _m;
+"#;
+
 fn builtin_esm_source(name: &str) -> &'static str {
     // Static module source is required because SM's ESM linker reads exports
     // at compile time. We render this once per builtin and leak it so the
@@ -2479,6 +2495,11 @@ unsafe fn dynamic_import_builtin(
         // hand-written sources in the resolve hook; everything else uses
         // `builtin_esm_source` (which always emits `export default _m`).
         let esm_src: ::std::borrow::Cow<'static, str> = match stripped {
+            // node:test — same gated CJS bridge as the static-import path
+            // (see NODE_TEST_ESM_BRIDGE). The previous generic fallback only
+            // exposed `default`, so `const { test } = await import("node:test")`
+            // linked to a missing export.
+            "test" => ::std::borrow::Cow::Borrowed(NODE_TEST_ESM_BRIDGE),
             "bun:test" => ::std::borrow::Cow::Borrowed(
                 r#"var _m = require("bun:test");
 export var describe = _m.describe;

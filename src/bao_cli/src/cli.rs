@@ -343,7 +343,14 @@ fn run_test(eval: Option<&str>, files: &[String]) -> ::std::result::Result<(), i
         match rt.eval(code, "<test-eval>") {
             Ok(_) => {
                 flush_js_output();
-                Ok(())
+                // `bao test -e` IS the test runner (argv[1] === 'test', the
+                // node:test gate passes): drive the registered suites instead
+                // of exiting right after registration — same execution path
+                // as `bao test <file>`.
+                let report = rt.run_registered_tests();
+                flush_js_output();
+                render_report(&report);
+                if report.failed > 0 { Err(1) } else { Ok(()) }
             }
             Err(e) => {
                 flush_js_output();

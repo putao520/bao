@@ -9,17 +9,25 @@
 // Covered surfaces:
 //   1. node:test        — refuses fake registration outside `bao test`;
 //                         really registers + runs under the test runner
+//                         (CJS require + ESM import share the gated bridge)
+//   1b. bao test runner — plain-script (CJS) files and `-e` evals drive the
+//                         registered suites, not a vacuous 0/0 report
 //   2. readline         — question() (sync + promises) reads a real line
 //                         from stdin; EOF fails explicitly
 //   3. _http_client     — ClientRequest construction throws instead of
-//                         accepting a body it would silently drop
+//                         accepting a body it would silently drop; the
+//                         http module's named typeof-surface classes
+//                         (ClientRequest/IncomingMessage/OutgoingMessage)
+//                         refuse construction the same way
 //   4. worker_threads   — BroadcastChannel does real registry fan-out;
 //                         bare MessagePort construction refuses
 //   5. wasi             — fd_seek SEEK_END returns ENOSYS, not fake success
 //   6. DOMParser        — CLI mode throws instead of returning a pseudo-DOM
 
-use bao_engine::context::JsContext;
+use bao_engine::context::{JsContext, thread_realm_global};
+use bao_engine::module_loader::ModuleLoader;
 use bao_engine::value::JsValue;
+use mozjs::rooted;
 use std::sync::Mutex;
 
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
@@ -153,6 +161,151 @@ fn node_test_missing_infrastructure_refuses() {
 })()"#,
     );
     assert_eq!(out, "REFUSED");
+}
+
+// ESM import path — the synthetic `node:test` ESM module must go through the
+// same gated CJS bridge as require('node:test'): outside `bao test` the
+// test()/describe() calls fail the module evaluation with the bao-test hint
+// (a silent no-op registration would fake a pass under `bao run`).
+
+#[test]
+fn node_test_esm_import_refuses_fake_registration_outside_runner() {
+    let mut ctx = make_ctx();
+    ctx.eval("void 0;", "<realm-init>").expect("realm init");
+    let global_ptr = thread_realm_global().expect("realm global");
+    let mut cx = ctx.cx();
+    rooted!(&in(cx) let global = global_ptr);
+
+    let result = ModuleLoader::eval_module_in_realm(
+        &mut cx,
+        "import { test } from 'node:test';\ntest('esm-plain-run', function() {});",
+        "<esm-plain-run>.mjs",
+        None,
+        global.handle(),
+    );
+    let err = result.expect_err(
+        "ESM node:test registration outside the runner must fail the module evaluation",
+    );
+    assert!(
+        err.message.contains("bao test"),
+        "error must point at `bao test`, got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn node_test_esm_import_under_runner_registers_and_executes() {
+    let mut ctx = make_ctx();
+    // Simulate `bao test`: the runner gate keys on the CLI subcommand.
+    ctx.eval("process.argv[1] = 'test'; void 0;", "<runner-sim>")
+        .expect("runner sim");
+    let global_ptr = thread_realm_global().expect("realm global");
+    let mut cx = ctx.cx();
+    rooted!(&in(cx) let global = global_ptr);
+
+    ModuleLoader::eval_module_in_realm(
+        &mut cx,
+        "import { test, describe, it } from 'node:test';\n\
+         test('esm-passes', function() { globalThis.__esmExec = (globalThis.__esmExec || 0) + 1; });\n\
+         describe('suite', function() { it('inner', function() { globalThis.__esmExec = (globalThis.__esmExec || 0) + 1; }); });",
+        "<esm-runner>.mjs",
+        None,
+        global.handle(),
+    )
+    .expect("ESM import under the runner must register for real");
+
+    // Drive the real bun:test runner over the ESM-registered suites.
+    let out = eval_string(
+        &mut ctx,
+        r#"(function() {
+  var p = require('node:test').run();
+  if (!p || typeof p.then !== 'function') return 'NOT_PROMISE';
+  p.then(function(r) { globalThis.__rep = r; },
+         function(e) { globalThis.__rep = { error: String(e) }; });
+  return 'STARTED';
+})()"#,
+    );
+    assert_eq!(out, "STARTED");
+
+    let out = eval_string(
+        &mut ctx,
+        r#"(function() {
+  var r = globalThis.__rep;
+  if (!r) return 'NO_REPORT';
+  return JSON.stringify({ passed: r.passed, failed: r.failed, exec: globalThis.__esmExec });
+})()"#,
+    );
+    // Both registered bodies actually EXECUTED (exec proves real execution
+    // through the ESM bridge, not fake registration).
+    assert_eq!(out, r#"{"passed":2,"failed":0,"exec":2}"#);
+}
+
+// bao test runner driving — plain-script (CJS) files and `-e` evals must
+// execute the suites they registered, not return a vacuous 0/0 report.
+
+#[test]
+fn run_test_file_cjs_drives_registered_suites() {
+    let path = std::env::temp_dir().join(format!(
+        "bao-nodetest-gate-{}-{}.cjs",
+        std::process::id(),
+        line!()
+    ));
+    std::fs::write(
+        &path,
+        r#"
+process.argv[1] = 'test';
+var nt = require('node:test');
+nt.test('cjs-passes', function() { globalThis.__cjsExec = (globalThis.__cjsExec || 0) + 1; });
+nt.test('cjs-fails', function() { throw new Error('boom-cjs'); });
+"#,
+    )
+    .expect("write temp CJS test file");
+
+    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let report = rt
+        .run_test_file(path.to_str().unwrap())
+        .expect("run_test_file must succeed");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(report.passed, 1, "CJS-registered passing suite must run");
+    assert_eq!(report.failed, 1, "CJS-registered failing suite must run");
+    let r = rt
+        .eval("String(globalThis.__cjsExec)", "<verify>")
+        .expect("verify eval");
+    assert_eq!(
+        r.as_string(),
+        Some("1"),
+        "the passing CJS test body must have actually executed"
+    );
+}
+
+#[test]
+fn runner_eval_then_run_registered_tests_executes() {
+    // Same primitives as `bao test -e` (cli.rs): eval the code, then drive
+    // the registered suites via BaoRuntime::run_registered_tests.
+    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    rt.eval(
+        r#"
+process.argv[1] = 'test';
+var nt = require('node:test');
+nt.test('eval-passes', function() { globalThis.__evalExec = (globalThis.__evalExec || 0) + 1; });
+nt.test('eval-fails', function() { throw new Error('boom-eval'); });
+"#,
+        "<test-eval>",
+    )
+    .expect("eval must succeed");
+
+    let report = rt.run_registered_tests();
+    assert_eq!(report.passed, 1, "-e-registered passing suite must run");
+    assert_eq!(report.failed, 1, "-e-registered failing suite must run");
+    let r = rt
+        .eval("String(globalThis.__evalExec)", "<verify>")
+        .expect("verify eval");
+    assert_eq!(
+        r.as_string(),
+        Some("1"),
+        "the passing -e test body must have actually executed"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -325,6 +478,35 @@ fn internal_http_client_request_refuses_instead_of_dropping_body() {
     assert_eq!(
         out, "THREW:true",
         "ClientRequest must throw explicitly (and keep symbol exports)"
+    );
+}
+
+// http module's named typeof-surface classes — same disposition as
+// _http_client: constructing them would hand the caller an object whose
+// write()/end()/on() silently drop everything, so construction refuses;
+// `typeof` stays 'function' for conformance checks.
+
+#[test]
+fn http_named_classes_refuse_construction_with_function_typeof() {
+    let mut ctx = make_ctx();
+    let out = eval_string(
+        &mut ctx,
+        r#"(function() {
+  var h = require('http');
+  var typeofOk = typeof h.ClientRequest === 'function'
+    && typeof h.IncomingMessage === 'function'
+    && typeof h.OutgoingMessage === 'function';
+  var results = [];
+  ['ClientRequest', 'IncomingMessage', 'OutgoingMessage'].forEach(function(name) {
+    try { new h[name]({ host: 'example.com' }); results.push(name + ':NO_THROW'); }
+    catch (e) { results.push(/require\('http'\)\.request/.test(e.message) ? name + ':THREW' : name + ':WRONG:' + e.message.substring(0, 40)); }
+  });
+  return (typeofOk ? 'FN:' : 'NOT_FN:') + results.join(',');
+})()"#,
+    );
+    assert_eq!(
+        out, "FN:ClientRequest:THREW,IncomingMessage:THREW,OutgoingMessage:THREW",
+        "all three named classes: typeof stays function, construction throws an http.request hint"
     );
 }
 
