@@ -1651,7 +1651,7 @@ pub struct GenerateChunkCtx<'a> {
     pub c: bun_ptr::ParentRef<LinkerContext<'a>>,
     /// Backref to the full `chunks: &mut [Chunk]` slice owned by
     /// `generate_chunks_in_parallel`. The slice outlives every
-    /// `GenerateChunkCtx` (joined via `wait_for_all`), so [`bun_ptr::BackRef`]'s
+    /// `GenerateChunkCtx` (joined via the batch's `group.wait()`), so [`bun_ptr::BackRef`]'s
     /// owner-outlives-holder invariant holds and per-task reads go through
     /// safe `Deref`. Tasks that need write provenance (HTML loader) recover
     /// the raw `*mut [Chunk]` via [`bun_ptr::BackRef::as_ptr`].
@@ -1700,7 +1700,7 @@ impl<'a> GenerateChunkCtx<'a> {
 
 pub struct PendingPartRange<'a> {
     pub part_range: PartRange,
-    pub task: ThreadPoolLib::Task,
+    pub task: ThreadPoolLib::CountedTask,
     pub ctx: &'a GenerateChunkCtx<'a>,
     pub i: u32,
 }

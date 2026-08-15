@@ -27,7 +27,7 @@ use crate::chunk::{Content, CssImportOrderKind};
 // tasks may hold pointers to the same `LinkerContext` concurrently without
 // materializing aliased Rust references.
 pub struct PrepareCssAstTask {
-    pub task: ThreadPoolLib::Task,
+    pub task: ThreadPoolLib::CountedTask,
     pub chunk: *mut Chunk,
     pub linker: *mut LinkerContext<'static>,
 }
