@@ -146,6 +146,7 @@ fn new_fetch_context(
         websocket_chan: None,
         ca_certificates: CACertificates::Default,
         ignore_certificate_errors: false,
+        force_bun_bridge: false,
         preloaded_resources: Default::default(),
         in_flight_keep_alive_records: Default::default(),
     }

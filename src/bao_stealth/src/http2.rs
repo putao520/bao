@@ -164,6 +164,35 @@ impl Default for Http2Fingerprint {
     }
 }
 
+// ── Process-global HTTP/2 fingerprint snapshot ──────────────────────────
+//
+// U2 page-network unification: the servo-net bun bridge runs on the net
+// thread, where the ScriptThread-scoped `engine_props` profile lookups
+// (thread-local fallback / per-Realm map) are unreachable. The h2 SETTINGS
+// payload reaches it through servo's `StealthTlsWireConfig` global, but the
+// pseudo-header wire order and the connection-preface PRIORITY frames live
+// only on the full `Http2Fingerprint` — so the embedder snapshots the active
+// page profile's h2 fingerprint here, right next to
+// `servo::set_stealth_tls_config`, and the bridge reads it when shaping its
+// `SSLConfig`. Same lifecycle as the wire-config global: set on profile
+// activation, cleared when the profile is deactivated.  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+
+static GLOBAL_HTTP2_FINGERPRINT: std::sync::RwLock<Option<Http2Fingerprint>> =
+    std::sync::RwLock::new(None);
+
+/// Snapshot the active page profile's HTTP/2 fingerprint for cross-thread
+/// consumers (see module notes). `None` deactivates.
+pub fn set_global_http2_fingerprint(fingerprint: Option<&Http2Fingerprint>) {
+    let mut guard = GLOBAL_HTTP2_FINGERPRINT.write().unwrap();
+    *guard = fingerprint.cloned();
+}
+
+/// The active page profile's HTTP/2 fingerprint (clone), or `None` when no
+/// profile is active.
+pub fn global_http2_fingerprint() -> Option<Http2Fingerprint> {
+    GLOBAL_HTTP2_FINGERPRINT.read().unwrap().clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

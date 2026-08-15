@@ -32,6 +32,10 @@ bao_engine = { path = "../bao_engine" }
 # page_wss_bao_tls_e2e_tests: local TLS WS fixture (BoringSSL server +
 # bun_uws RFC 6455 codec) driving the page wss path end-to-end.
 bao_boringssl_bridge.workspace = true
+# page_net_bun_full_matrix_e2e_tests: SSL_CTX_set_alpn_select_cb +
+# SSL_TLSEXT_ERR_* for the h2 fixture's ALPN negotiation (same sys leg the
+# bridge itself uses).
+bun_boringssl_sys.workspace = true
 bun_uws.workspace = true
 # page_net_bun_fingerprint_e2e_tests: drives servo-net's bun_bridge flag /
 # request counter from the e2e harness (same path dep servo uses — unified).

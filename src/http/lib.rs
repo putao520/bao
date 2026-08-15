@@ -993,7 +993,68 @@ pub fn configure_http_client_with_alpn(
             if !props.tls_sigalgs_list.is_null() {
                 let _ = boringssl::c::SSL_set1_sigalgs_list(ssl, props.tls_sigalgs_list);
             }
+            // Trust-store override (servo CACertificates::Override): replace
+            // this connection's verify store with the DER trust list before
+            // the handshake runs. The shared usockets ctx (its verify mode
+            // and default roots) is untouched — every other connection keeps
+            // default-roots semantics.
+            if let Some(ders) = &props.ca_certs_der {
+                apply_ca_certs_der(ssl, ders);
+            }
         }
+    }
+}
+
+/// Build an `X509_STORE` from a DER trust list and install it as the
+/// connection's verify store (`SSL_set0_verify_cert_store`), replacing the
+/// default system roots for this connection only. Unparseable DER entries
+/// are skipped (fail-closed: an entry that cannot be a CA simply is not
+/// trusted); if no entry parses the store stays empty and verification fails
+/// closed against it, mirroring `SSL_CTX_set_default_verify_paths` failure
+/// semantics in servo's connector (`create_tls_config`).
+unsafe fn apply_ca_certs_der(ssl: &mut boringssl::c::SSL, ders: &[Box<[u8]>]) {
+    // Not in the bindgen surface (see bao_boringssl_bridge client.rs, which
+    // declares X509_STORE_add_cert the same way) — both symbols are exported
+    // by the linked BoringSSL.
+    unsafe extern "C" {
+        fn X509_STORE_new() -> *mut boringssl::c::X509_STORE;
+        fn X509_STORE_free(store: *mut boringssl::c::X509_STORE);
+        fn X509_STORE_add_cert(
+            store: *mut boringssl::c::X509_STORE,
+            x509: *mut boringssl::c::X509,
+        ) -> core::ffi::c_int;
+    }
+    // SAFETY: X509_STORE_new returns a fresh owned store (null only on OOM).
+    let store = unsafe { X509_STORE_new() };
+    if store.is_null() {
+        return;
+    }
+    for der in ders {
+        let mut p = der.as_ptr();
+        // SAFETY: d2i_X509 reads the DER slice; the returned X509 is solely
+        // owned here and freed after the store up-refs it.
+        let x509 = unsafe {
+            boringssl::c::d2i_X509(core::ptr::null_mut(), &mut p, der.len() as core::ffi::c_long)
+        };
+        if x509.is_null() {
+            continue;
+        }
+        // SAFETY: store was just created and is live; x509 is a live parsed
+        // certificate (X509_STORE_add_cert up-refs internally).
+        let ok = unsafe { X509_STORE_add_cert(store, x509) };
+        // SAFETY: our reference from d2i_X509; the store holds its own.
+        unsafe { boringssl::c::X509_free(x509) };
+        if ok != 1 {
+            // SAFETY: still solely ours — set0 is only attempted after the
+            // loop, so nothing else can hold a reference yet.
+            unsafe { X509_STORE_free(store) };
+            return;
+        }
+    }
+    // SAFETY: on success ownership of the store transfers to the SSL; on
+    // failure it does not, so free it ourselves.
+    if unsafe { boringssl::c::SSL_set0_verify_cert_store(ssl, store) } != 1 {
+        unsafe { X509_STORE_free(store) };
     }
 }
 

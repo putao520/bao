@@ -13,6 +13,13 @@ pub struct BaoConfig {
     pub default_viewport_width: u32,
     pub default_viewport_height: u32,
     pub stealth_profile: Option<StealthProfile>,
+    /// Servo `opts::ignore_certificate_errors` (WPT posture): skip peer
+    /// certificate verification failures for page/network fetches. Production
+    /// keeps `false` (fail closed); tests driving local self-signed TLS
+    /// fixtures (e.g. the U2 h2 e2e matrix) enable it. Process-global
+    /// (first `BaoRuntime::new` wins — same first-writer-wins semantics as
+    /// every other servo opt).
+    pub ignore_certificate_errors: bool,
 }
 
 impl Default for BaoConfig {
@@ -24,6 +31,7 @@ impl Default for BaoConfig {
             default_viewport_width: 1920,
             default_viewport_height: 1080,
             stealth_profile: None,
+            ignore_certificate_errors: false,
         }
     }
 }
@@ -90,6 +98,9 @@ impl From<BrowserConfig> for BaoConfig {
             default_viewport_width: bc.viewport_width,
             default_viewport_height: bc.viewport_height,
             stealth_profile: bc.stealth_profile,
+            // BrowserConfig has no certificate-relaxation surface —
+            // production conversion stays fail-closed.
+            ignore_certificate_errors: false,
         }
     }
 }

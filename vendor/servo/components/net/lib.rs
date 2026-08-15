@@ -41,7 +41,7 @@ pub mod fetch {
 
 /// A module for re-exports of items used in unit tests.
 pub mod test {
-    pub use crate::decoder::{BodyStreamError, DECODER_BUFFER_SIZE, map_decode_error};
+    pub use crate::decoder::{BodyStreamError, DECODER_BUFFER_SIZE, Decoder, map_decode_error};
     pub use crate::hosts::parse_hostsfile;
     pub use crate::http_loader::HttpState;
 }

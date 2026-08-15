@@ -2201,14 +2201,23 @@ async fn http_network_fetch(
             // fetch driver (bun HTTPThread + stealth TLS). `BAO_PAGE_NET_BUN`
             // is either all-destinations (`1`/`true`) or a destination list
             // (`img,css`); unmatched destinations keep the hyper path below,
-            // byte-for-byte the original behaviour.
+            // byte-for-byte the original behaviour. Stage 2: the bridge takes
+            // the same devtools identification inputs as `obtain_response`
+            // (request/pipeline/browsing-context ids, destination, is_xhr) so
+            // its requestWillBeSent-equivalent message is field-identical.
             let response_future =
-                if crate::fetch::bun_bridge::page_net_bun_enabled_for(request.destination) {
+                if context.force_bun_bridge ||
+                    crate::fetch::bun_bridge::page_net_bun_enabled_for(request.destination) {
                     crate::fetch::bun_bridge::obtain_response_bun(
                         &url,
                         &request.method,
                         &mut request.headers,
                         body,
+                        &request.pipeline_id,
+                        Some(&request_id),
+                        request.destination,
+                        is_xhr,
+                        browsing_context_id,
                         context,
                         fetch_terminated_sender,
                     )

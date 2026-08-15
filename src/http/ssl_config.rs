@@ -68,6 +68,16 @@ pub struct SSLConfig {
     /// preface (Firefox reserves its dependency-tree streams 3/5/7/11; Chrome
     /// v106+ sends none). Empty/None = no PRIORITY frames.
     pub h2_priority_frames: Option<Box<[H2PriorityFrame]>>,
+    /// Trust-store override: DER-encoded CA certificates that REPLACE the
+    /// default system roots for this connection's peer verification (servo
+    /// `CACertificates::Override` semantics — its connector builds the same
+    /// trust list on its SSL_CTX in `create_tls_config`). Applied per-SSL in
+    /// `configure_http_client_with_alpn` via `SSL_set0_verify_cert_store`, so
+    /// the shared usockets context (and every other connection) is untouched.
+    /// `None` = default roots. Plain owned data — participates in
+    /// `content_hash`/`equals` so distinct trust stores never alias in the
+    /// intern registry or the TLS session cache salt.
+    pub ca_certs_der: Option<Box<[Box<[u8]>]>>,
     /// Memoized `content_hash()`. Interior-mutable because it's lazily filled
     /// through `Arc<SSLConfig>` (shared ref) by the intern registry's hash
     /// context. Zig used a plain `u64` mutated via `*SSLConfig` (Zig pointers
@@ -157,6 +167,7 @@ impl SSLConfig {
         h2_initial_window_size: 0,
         h2_pseudo_header_order: None,
         h2_priority_frames: None,
+        ca_certs_der: None,
         cached_hash: AtomicU64::new(0),
     };
 
@@ -369,6 +380,15 @@ impl SSLConfig {
             (None, None) => {}
             _ => return false,
         }
+        match (&self.ca_certs_der, &other.ca_certs_der) {
+            (Some(a), Some(b)) => {
+                if a.len() != b.len() || a.iter().zip(b.iter()).any(|(x, y)| x != y) {
+                    return false;
+                }
+            }
+            (None, None) => {}
+            _ => return false,
+        }
         true
     }
 
@@ -439,6 +459,12 @@ impl SSLConfig {
                 hasher.update(&f.stream_id.to_ne_bytes());
                 hasher.update(&f.stream_dependency.to_ne_bytes());
                 hasher.update(&[u8::from(f.exclusive), f.weight]);
+            }
+        }
+        if let Some(ref ders) = self.ca_certs_der {
+            for der in ders.iter() {
+                hasher.update(&der);
+                hasher.update(&[0]);
             }
         }
         let hash = hasher.final_();
@@ -542,6 +568,7 @@ impl Clone for SSLConfig {
             h2_initial_window_size: self.h2_initial_window_size,
             h2_pseudo_header_order: self.h2_pseudo_header_order.clone(),
             h2_priority_frames: self.h2_priority_frames.clone(),
+            ca_certs_der: self.ca_certs_der.clone(),
             cached_hash: AtomicU64::new(0),
         }
     }

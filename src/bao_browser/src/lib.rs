@@ -90,6 +90,19 @@ impl BaoRuntime {
         // Force-init servo's process-global OnceLock<Opts> BEFORE any servo code
         // calls get() (which would lazily lock in Default). This wins the race
         // against servo's get_or_init(Default::default).
+        //
+        // Config-derived opts go in FIRST (initialize_options is
+        // first-writer-wins): the static LazyLock below only exists to win the
+        // same race for code paths that never construct a BaoRuntime, so once
+        // this call runs it is a no-op. `ignore_certificate_errors` is the one
+        // field tests set non-default (WPT posture against local self-signed
+        // TLS fixtures, e.g. the U2 h2 e2e matrix).
+        servo::opts::initialize_options(Opts {
+            force_isolate_event_loops: true,
+            disable_script_debugger: true,
+            ignore_certificate_errors: config.ignore_certificate_errors,
+            ..Opts::default()
+        });
         std::sync::LazyLock::force(&BAO_SERVO_OPTS_INIT);
 
         // BUG-ENG-366: `force_isolate_event_loops` only governs servo's event-loop
@@ -124,6 +137,7 @@ impl BaoRuntime {
         //       opts when we know a prior instance already configured servo.
         let desired_opts = Opts {
             force_isolate_event_loops: true,
+            ignore_certificate_errors: config.ignore_certificate_errors,
             // BAO PATCH (BCE-20260621-002): Skip servo's
             // `JS::Debugger::addDebuggee` path entirely. Bao embeds
             // servo but uses `bao_cdp` (its own CDP) and never connects

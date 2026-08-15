@@ -4,34 +4,48 @@
 
 //! U2 page-network bridge (bun HTTPThread fetch driver) unit tests.
 //!
-//! These exercise `fetch_core` directly (no `FetchContext` needed) against a
-//! local hyper h1 server:
-//!   1. plain GET round trip,
+//! These exercise `fetch_core` directly (no `FetchContext` needed) against
+//! local servers:
+//!   1. plain GET round trip (buffered-consumer view of the streamed body),
 //!   2. `FetchRedirect::Manual` returns the original 3xx (not followed),
 //!   3. abort via the Signals `aborted` atomic + HTTPThread shutdown →
 //!      `NetworkError::LoadCancelled`,
-//!   4. the full bun error → NetworkError mapping table.
+//!   4. the full bun error → NetworkError mapping table,
+//!   and the stage-2 semantics:
+//!   5. true streaming delivery (head first, body chunks incremental — raw
+//!      slow-chunked server, the 52634b89 pattern at bridge level),
+//!   6. ReasonPhrase / response Version surfacing (`to_servo_response`),
+//!   7. `BunTlsInfo` → `TlsHandshakeInfo` mapping (TlsSecurityInfo wiring),
+//!   8. per-request CA override (right CA verifies, wrong/absent CA fails
+//!      closed — servo `CACertificates::Override` semantics),
+//!   9. devtools requestWillBeSent-equivalent field parity,
+//!   10. SSLConfig h2 fingerprint parity (SETTINGS payload + pseudo-header
+//!       order + preface PRIORITY frames + CA list in one config).
 //!
 //! The bridge flag itself is default-off; `http_loader.rs` dispatch and the
 //! servo-side behaviour are covered by the rest of this test suite running
 //! with the flag off (zero behaviour diff).
 
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::unbounded;
 use http::StatusCode;
 use http::HeaderValue;
+use hyper::ext::ReasonPhrase;
 use net_traits::NetworkError;
 
 use net::async_runtime::{spawn_blocking_task, spawn_task};
 use net::fetch::bun_bridge::{
-    BunCancelHandle, BridgeError, BunHttpResponse, PageNetBunMode, fetch_core, map_bun_error,
-    parse_page_net_bun_spec,
+    BunCancelHandle, BridgeError, PageNetBunMode, build_devtools_request_msg, build_ssl_config,
+    bun_tls_info_to_handshake, fetch_core, map_bun_error, parse_page_net_bun_spec,
+    to_servo_response,
 };
-use net::test_util::{make_body, make_server};
+use net::test_util::{make_body, make_server, make_ssl_server};
 use net_traits::request::Destination;
 
 /// bun's HTTP client resolves through its own resolver; pin the loopback
@@ -74,8 +88,8 @@ fn bridge_get_roundtrip() {
 
     let url = loopback_url(&url);
     let cancel = BunCancelHandle::new();
-    let outcome = spawn_blocking_task::<_, Result<BunHttpResponse, BridgeError>>(async {
-        fetch_core(
+    let outcome = spawn_blocking_task::<_, Result<Vec<u8>, BridgeError>>(async {
+        let mut response = fetch_core(
             bun_http::Method::GET,
             url,
             vec![(b"accept".to_vec(), b"*/*".to_vec())],
@@ -87,17 +101,18 @@ fn bridge_get_roundtrip() {
             true,
         )
         .await
+        .expect("GET through the bun bridge must succeed");
+        assert_eq!(response.status_code, 200);
+        let header = response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(b"x-bao-bridge"))
+            .expect("custom response header must pass through");
+        assert_eq!(header.1, b"yes");
+        response.collect_body().await
     });
 
-    let response = outcome.expect("GET through the bun bridge must succeed");
-    assert_eq!(response.status_code, 200);
-    assert_eq!(response.body, b"hello from bun bridge");
-    let header = response
-        .headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(b"x-bao-bridge"))
-        .expect("custom response header must pass through");
-    assert_eq!(header.1, b"yes");
+    assert_eq!(outcome.expect("streamed body must reassemble"), b"hello from bun bridge");
 
     let _ = server.close();
 }
@@ -119,8 +134,8 @@ fn bridge_manual_redirect_returns_original_3xx() {
 
     let url = loopback_url(&url);
     let cancel = BunCancelHandle::new();
-    let outcome = spawn_blocking_task::<_, Result<BunHttpResponse, BridgeError>>(async {
-        fetch_core(
+    let outcome = spawn_blocking_task::<_, Result<(u16, Vec<u8>), BridgeError>>(async {
+        let mut response = fetch_core(
             bun_http::Method::GET,
             url,
             Vec::new(),
@@ -132,17 +147,22 @@ fn bridge_manual_redirect_returns_original_3xx() {
             true,
         )
         .await
+        .expect("Manual mode must return the 3xx itself");
+        let location = response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(b"location"))
+            .expect("Location header must be surfaced to servo's redirect loop")
+            .1
+            .clone();
+        assert_eq!(location, b"/final-destination");
+        let body: Vec<u8> = response.collect_body().await?;
+        Ok::<(u16, Vec<u8>), BridgeError>((response.status_code, body))
     });
 
-    let response = outcome.expect("Manual mode must return the 3xx itself");
-    assert_eq!(response.status_code, 301);
-    let location = response
-        .headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(b"location"))
-        .expect("Location header must be surfaced to servo's redirect loop");
-    assert_eq!(location.1, b"/final-destination");
-    assert_eq!(response.body, b"moved");
+    let (status, body) = outcome.expect("3xx exchange must succeed");
+    assert_eq!(status, 301);
+    assert_eq!(body, b"moved");
     // Exactly one request — bun must NOT have followed the redirect.
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 
@@ -187,8 +207,8 @@ fn bridge_abort_yields_load_cancelled() {
         .recv_timeout(Duration::from_secs(10))
         .expect("abort must still produce a terminal callback");
     assert_eq!(
-        outcome,
-        Err(BridgeError::Network(NetworkError::LoadCancelled))
+        outcome.err(),
+        Some(BridgeError::Network(NetworkError::LoadCancelled))
     );
 
     let _ = server.close();
@@ -220,8 +240,17 @@ fn bridge_error_mapping_table() {
         ("Timeout", BridgeError::Network(NetworkError::HttpError("Timeout".into()))),
         ("ETIMEDOUT", BridgeError::Network(NetworkError::HttpError("ETIMEDOUT".into()))),
         // Certificate verification failure → refined by the override manager
-        // in the servo wrapper.
+        // in the servo wrapper. Stage 2: the whole BoringSSL X509
+        // verify-failure family (get_cert_error_from_no tags) maps here, not
+        // just the altname error — wrong-CA / expired / self-signed chains
+        // are certificate failures, exactly as from_hyper_error classified
+        // them via the override manager's failing-verification certificate.
         ("ERR_TLS_CERT_ALTNAME_INVALID", BridgeError::CertificateFailure("ERR_TLS_CERT_ALTNAME_INVALID".into())),
+        ("UNABLE_TO_GET_ISSUER_CERT_LOCALLY", BridgeError::CertificateFailure("UNABLE_TO_GET_ISSUER_CERT_LOCALLY".into())),
+        ("DEPTH_ZERO_SELF_SIGNED_CERT", BridgeError::CertificateFailure("DEPTH_ZERO_SELF_SIGNED_CERT".into())),
+        ("CERT_HAS_EXPIRED", BridgeError::CertificateFailure("CERT_HAS_EXPIRED".into())),
+        ("INVALID_CA", BridgeError::CertificateFailure("INVALID_CA".into())),
+        ("HOSTNAME_MISMATCH", BridgeError::CertificateFailure("HOSTNAME_MISMATCH".into())),
         // Redirects (only reachable outside Manual mode; table stays total).
         ("TooManyRedirects", BridgeError::Network(NetworkError::TooManyRedirects)),
         ("RedirectURLTooLong", BridgeError::Network(NetworkError::RedirectError)),
@@ -301,4 +330,782 @@ fn bridge_flag_spec_parsing() {
         parse_page_net_bun_spec("document"),
         PageNetBunMode::Destinations(vec![Destination::Document])
     );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Stage 2: true streaming, ReasonPhrase/version, TLS info, CA override,
+// devtools parity, h2 fingerprint parity
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Raw-TCP h1 fixture helpers (full control over the status line / chunk
+/// timing — the hyper `make_server` can't drip chunks or forge phrases).
+fn read_request_head(stream: &mut TcpStream) {
+    let mut got = Vec::new();
+    let mut buf = [0u8; 4096];
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    while got.len() < 64 * 1024 {
+        match stream.read(&mut buf) {
+            Ok(0) => return,
+            Ok(n) => {
+                got.extend_from_slice(&buf[..n]);
+                if got.windows(4).any(|w| w == b"\r\n\r\n") {
+                    return;
+                }
+            },
+            Err(_) => return,
+        }
+    }
+}
+
+/// Plain HTTP/1.1 chunked server that drips `chunks` one TCP write at a
+/// time, sleeping `delay` between chunks (the 52634b89 slow-chunked shape).
+fn spawn_slow_chunked_server(chunks: &[&str], delay: Duration) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let chunks: Vec<String> = chunks.iter().map(|s| s.to_string()).collect();
+    thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        read_request_head(&mut stream);
+        let mut resp = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        for chunk in &chunks {
+            thread::sleep(delay);
+            resp.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+            resp.extend_from_slice(chunk.as_bytes());
+            resp.extend_from_slice(b"\r\n");
+            stream.write_all(&resp).expect("write chunk");
+            stream.flush().expect("flush chunk");
+            resp.clear();
+        }
+        thread::sleep(delay / 2);
+        stream.write_all(b"0\r\n\r\n").expect("write terminal");
+        stream.flush().expect("flush terminal");
+    });
+    port
+}
+
+/// One-shot plain HTTP/1.1 server that replies with the exact raw status
+/// line and headers given (no body framing beyond what the caller writes).
+fn spawn_raw_status_server(status_line: &'static str) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        read_request_head(&mut stream);
+        let body = b"ok";
+        let resp = format!(
+            "{status_line}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(resp.as_bytes()).expect("write head");
+        stream.write_all(body).expect("write body");
+        stream.flush().expect("flush");
+    });
+    port
+}
+
+/// True streaming (stage 2, item 4): against a slow chunked server the
+/// response HEAD must arrive while the body is still dripping, and the body
+/// chunks must arrive incrementally (spread over the server's delays), not
+/// as one buffered final delivery — the bridge-level port of
+/// tls_info_and_streaming_tests' streaming_mode_delivers_chunks_incrementally.
+#[test]
+fn bridge_streaming_delivery_incremental() {
+    link_native_seam();
+    const CHUNKS: [&str; 3] = ["alpha-", "beta-", "gamma"];
+    const FULL_BODY: &[u8] = b"alpha-beta-gamma";
+    const DELAY: Duration = Duration::from_millis(150);
+    let port = spawn_slow_chunked_server(&CHUNKS, DELAY);
+
+    let cancel = Arc::new(BunCancelHandle::new());
+    let worker_cancel = Arc::clone(&cancel);
+    let (sender, receiver) = unbounded::<(Instant, Vec<(Instant, Vec<u8>)>)>();
+    spawn_task(async move {
+        let mut response = fetch_core(
+            bun_http::Method::GET,
+            format!("http://127.0.0.1:{}/", port),
+            Vec::new(),
+            None,
+            &worker_cancel,
+            None::<fn() -> bool>,
+            None,
+            false,
+            true,
+        )
+        .await
+        .expect("streaming request must succeed");
+        assert_eq!(response.status_code, 200, "headers must arrive first");
+        let head_at = Instant::now();
+        let mut chunks = Vec::new();
+        while let Some(frame) = response.next_chunk().await {
+            chunks.push((Instant::now(), frame.expect("streaming frame must be Ok")));
+        }
+        let _ = sender.send((head_at, chunks));
+    });
+
+    let (head_at, chunks) = receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("streaming exchange must complete");
+
+    let reassembled: Vec<u8> = chunks.iter().map(|(_, c)| c.as_slice()).collect::<Vec<_>>().concat();
+    assert_eq!(reassembled, FULL_BODY, "reassembled stream must equal the body");
+    assert!(
+        chunks.len() >= 3,
+        "expected >=3 incremental body deliveries (one per server chunk), got {}: {:?}",
+        chunks.len(),
+        chunks.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>()
+    );
+    // Incremental proof #1 (time): first chunk delivery to last chunk
+    // delivery must span at least two server inter-chunk delays — a buffered
+    // one-shot delivery would collapse to ~0.
+    let span = chunks[chunks.len() - 1].0 - chunks[0].0;
+    assert!(
+        span >= DELAY * 2,
+        "chunk deliveries must be spread over the server's delays, got {span:?}"
+    );
+    // Incremental proof #2 (head-first): the head was published before the
+    // last chunk arrived — the server still owed ≥ 2 delays of body when
+    // the future resolved.
+    let head_lead = chunks[chunks.len() - 1].0 - head_at;
+    assert!(
+        head_lead >= DELAY * 2,
+        "head must resolve well before the terminal chunk, lead was {head_lead:?}"
+    );
+}
+
+/// ReasonPhrase + Version surfacing (stage 2, item 5): a non-canonical
+/// status phrase must ride the response as `hyper::ext::ReasonPhrase`
+/// (owned bytes — no &'static leak), and a canonical one must NOT set the
+/// extension (hyper's own client condition). h1 exchanges surface
+/// `Version::HTTP_11`; the h2 flag case needs ALPN and is covered by the
+/// e2e matrix.
+#[test]
+fn bridge_reason_phrase_and_version() {
+    link_native_seam();
+    // Non-canonical phrase.
+    let port = spawn_raw_status_server("HTTP/1.1 200 Sure Thing");
+    let cancel = BunCancelHandle::new();
+    let response = spawn_blocking_task::<_, Result<(), BridgeError>>(async {
+        let response = fetch_core(
+            bun_http::Method::GET,
+            format!("http://127.0.0.1:{}/", port),
+            Vec::new(),
+            None,
+            &cancel,
+            None::<fn() -> bool>,
+            None,
+            false,
+            true,
+        )
+        .await?
+        ;
+        let phrase = response.status_text.clone();
+        let servo_response =
+            to_servo_response(response, false).expect("servo response conversion");
+        let ext = servo_response
+            .extensions()
+            .get::<ReasonPhrase>()
+            .map(|p| p.as_bytes().to_vec());
+        assert_eq!(ext.as_deref(), Some(b"Sure Thing".as_slice()));
+        assert_eq!(phrase, b"Sure Thing");
+        assert_eq!(
+            servo_response.version(),
+            http::Version::HTTP_11,
+            "h1 exchange surfaces HTTP/1.1"
+        );
+        Ok::<(), BridgeError>(())
+    });
+    response.expect("non-canonical phrase exchange must succeed");
+
+    // Canonical phrase: no extension (hyper client parity).
+    let port = spawn_raw_status_server("HTTP/1.1 200 OK");
+    let cancel = BunCancelHandle::new();
+    let response = spawn_blocking_task::<_, Result<(), BridgeError>>(async {
+        let response = fetch_core(
+            bun_http::Method::GET,
+            format!("http://127.0.0.1:{}/", port),
+            Vec::new(),
+            None,
+            &cancel,
+            None::<fn() -> bool>,
+            None,
+            false,
+            true,
+        )
+        .await?;
+        let servo_response =
+            to_servo_response(response, false).expect("servo response conversion");
+        assert!(
+            servo_response.extensions().get::<ReasonPhrase>().is_none(),
+            "canonical phrase must not set the ReasonPhrase extension"
+        );
+        Ok::<(), BridgeError>(())
+    });
+    response.expect("canonical phrase exchange must succeed");
+}
+
+/// `BunTlsInfo` → `TlsHandshakeInfo` mapping (stage 2, item 2): field-for-field
+/// pass-through with the connector's documented BoringSSL limitations
+/// (`kea_group_name` / `signature_scheme_name` stay `None` — no public API),
+/// ALPN bytes → String, chain DER copied, ECH off.
+#[test]
+fn bridge_tls_info_to_handshake_mapping() {
+    let info = bun_http::BunTlsInfo {
+        protocol_version: Some("TLSv1.3".into()),
+        cipher_suite: Some("TLS_AES_256_GCM_SHA384".into()),
+        cipher_version: Some("TLSv1/SSLv3".into()),
+        cipher_bits: Some(256),
+        cipher_alg_bits: Some(256),
+        // AEAD: authentication is integral to the cipher — the separate-MAC
+        // field is None by design and TlsHandshakeInfo has no mac field.
+        mac: None,
+        alpn: Some(b"h2".to_vec()),
+        peer_certificate: None,
+        peer_certificates_der: vec![vec![0x30, 0x03, 0x02, 0x01, 0x01]],
+    };
+    let handshake = bun_tls_info_to_handshake(&info);
+    assert_eq!(handshake.protocol_version.as_deref(), Some("TLSv1.3"));
+    assert_eq!(
+        handshake.cipher_suite.as_deref(),
+        Some("TLS_AES_256_GCM_SHA384")
+    );
+    assert_eq!(handshake.kea_group_name, None, "connector.rs parity: no BoringSSL API");
+    assert_eq!(
+        handshake.signature_scheme_name, None,
+        "connector.rs parity: no BoringSSL API"
+    );
+    assert_eq!(handshake.alpn_protocol.as_deref(), Some("h2"));
+    assert_eq!(
+        handshake.certificate_chain_der,
+        vec![vec![0x30, 0x03, 0x02, 0x01, 0x01]]
+    );
+    assert!(!handshake.used_ech);
+}
+
+/// Per-request CA override (stage 2, item 3), against the rustls
+/// self-signed test server (CN=localhost, no SAN):
+/// - `ca_override = [server cert DER]` + reject_unauthorized=true → verifies
+///   (Override semantics: the listed cert IS the trust list) and the head
+///   carries the connection's `BunTlsInfo` (leaf DER byte-equality with the
+///   server's certificate — the TLS snapshot rides the bridge result).
+/// - `ca_override = []` (Override with an empty/unrelated list) +
+///   reject_unauthorized=true → fails closed as a certificate failure
+///   (the store replaces the system roots; nothing trusts a self-signed
+///   leaf) — the class servo refines via the override manager.
+/// - no override (`Default`) + reject_unauthorized=true against the same
+///   self-signed server → also a certificate failure (not in system roots).
+/// One self-signed rustls server + its https URL (host kept as `localhost` —
+/// the certificate's CN) + its DER certificate list. Each probe gets its OWN
+/// server: bun pools the first probe's keep-alive socket, which would park
+/// the shared rustls server inside hyper's keep-alive read loop and starve
+/// the next probe's TCP connect into the 300s idle timeout.
+fn spawn_ca_probe_server() -> (u16, Vec<Vec<u8>>) {
+    let (server, mut url) = make_ssl_server(|_request, response| {
+        *response.body_mut() = make_body(b"secure hello".to_vec());
+    });
+    url.as_mut_url().set_scheme("https").unwrap();
+    assert!(url.as_str().starts_with("https://localhost:"));
+    let port = url.as_url().port().expect("test server binds an explicit port");
+    let certificates = server
+        .certificates
+        .as_ref()
+        .expect("make_ssl_server must expose its certificate list")
+        .iter()
+        .map(|cert| cert.as_ref().to_vec())
+        .collect::<Vec<Vec<u8>>>();
+    assert!(!certificates.is_empty(), "test server certificate available");
+    // Keep the server alive for the whole probe (dropping `Server` closes it).
+    std::mem::forget(server);
+    (port, certificates)
+}
+
+#[test]
+fn bridge_ca_override_trust_store() {
+    link_native_seam();
+    let (port, certificates) = spawn_ca_probe_server();
+    let url = format!("https://localhost:{}/", port);
+
+    // Right CA: verifies; TLS snapshot rides the head.
+    let ca = certificates.clone();
+    let leaf_der = certificates[0].clone();
+    let cancel = BunCancelHandle::new();
+    let probe_url = url.clone();
+    let outcome = spawn_blocking_task::<_, Result<(), BridgeError>>(async {
+        let ssl = net::fetch::bun_bridge::build_ssl_config(None, None, Some(&ca));
+        let tls_props = Some(bun_http::ssl_config::SharedPtr::new(ssl));
+        let mut response = fetch_core(
+            bun_http::Method::GET,
+            probe_url,
+            Vec::new(),
+            None,
+            &cancel,
+            None::<fn() -> bool>,
+            tls_props,
+            false,
+            true,
+        )
+        .await?;
+        assert_eq!(response.status_code, 200);
+        let body = response.collect_body().await?;
+        assert_eq!(body, b"secure hello");
+        let tls = response
+            .tls_info
+            .as_ref()
+            .expect("TLS exchange must carry a BunTlsInfo snapshot");
+        assert_eq!(
+            tls.peer_certificates_der.first(),
+            Some(&leaf_der),
+            "leaf DER must be byte-identical to the server's certificate"
+        );
+        assert!(tls.protocol_version.is_some(), "negotiated protocol recorded");
+        Ok::<(), BridgeError>(())
+    });
+    outcome.expect("right CA override must verify the self-signed server");
+
+    // Wrong (empty) CA list: fails closed as a certificate failure. Own
+    // server: the right-CA probe's socket is pooled (keep-alive), which
+    // parks the shared rustls server in its h1 keep-alive read loop.
+    let (port, _certs) = spawn_ca_probe_server();
+    let cancel = BunCancelHandle::new();
+    let probe_url = format!("https://localhost:{}/", port);
+    let empty_ca: Vec<Vec<u8>> = Vec::new();
+    let outcome = spawn_blocking_task::<_, Result<(), BridgeError>>(async {
+        let ssl = net::fetch::bun_bridge::build_ssl_config(None, None, Some(&empty_ca));
+        let tls_props = Some(bun_http::ssl_config::SharedPtr::new(ssl));
+        fetch_core(
+            bun_http::Method::GET,
+            probe_url,
+            Vec::new(),
+            None,
+            &cancel,
+            None::<fn() -> bool>,
+            tls_props,
+            false,
+            true,
+        )
+        .await
+        .map(|_| ())
+    });
+    match outcome.expect_err("empty Override must fail closed") {
+        BridgeError::CertificateFailure(message) => {
+            assert!(!message.is_empty(), "certificate failure carries its message");
+        },
+        other => panic!("expected CertificateFailure, got {other:?}"),
+    }
+
+    // Default roots: same self-signed server is equally untrusted. Own
+    // server again (same pooling reason).
+    let (port, _certs) = spawn_ca_probe_server();
+    let cancel = BunCancelHandle::new();
+    let outcome = spawn_blocking_task::<_, Result<(), BridgeError>>(async {
+        fetch_core(
+            bun_http::Method::GET,
+            format!("https://localhost:{}/", port),
+            Vec::new(),
+            None,
+            &cancel,
+            None::<fn() -> bool>,
+            None,
+            false,
+            true,
+        )
+        .await
+        .map(|_| ())
+    });
+    match outcome.expect_err("self-signed server must fail against system roots") {
+        BridgeError::CertificateFailure(_) => (),
+        other => panic!("expected CertificateFailure, got {other:?}"),
+    }
+}
+
+/// Devtools requestWillBeSent-equivalent (stage 2, item 1): the message is
+/// built with hyper-path field parity, gated on the same triple-Option
+/// (request_id / pipeline_id / browsing_context_id).
+#[test]
+fn bridge_devtools_msg_field_parity() {
+    use devtools_traits::NetworkEvent;
+    use http::Method;
+    use servo_base::id::{TEST_BROWSING_CONTEXT_ID, TEST_PIPELINE_ID};
+    let mut headers = http::HeaderMap::new();
+    headers.insert("accept", HeaderValue::from_static("*/*"));
+    let msg = build_devtools_request_msg(
+        Some("req-42"),
+        &servo_url::ServoUrl::parse("http://example.org/x").unwrap(),
+        &Method::GET,
+        &headers,
+        b"payload".to_vec(),
+        Some(TEST_PIPELINE_ID),
+        Duration::from_millis(12),
+        Duration::from_millis(34),
+        Destination::Image,
+        true,
+        Some(TEST_BROWSING_CONTEXT_ID),
+    )
+    .expect("complete ids must produce the devtools message");
+    let devtools_traits::ChromeToDevtoolsControlMsg::NetworkEvent(
+        request_id,
+        NetworkEvent::HttpRequestUpdate(request),
+    ) = msg
+    else {
+        panic!("expected NetworkEvent::HttpRequestUpdate");
+    };
+    assert_eq!(request_id, "req-42");
+    assert_eq!(request.url.as_str(), "http://example.org/x");
+    assert_eq!(request.method, Method::GET);
+    assert_eq!(request.headers, headers);
+    assert_eq!(request.body.as_deref(), Some(&b"payload".to_vec()));
+    assert_eq!(request.pipeline_id, TEST_PIPELINE_ID);
+    assert_eq!(request.connect_time, Duration::from_millis(12));
+    assert_eq!(request.send_time, Duration::from_millis(34));
+    assert_eq!(request.destination, Destination::Image);
+    assert!(request.is_xhr);
+    assert_eq!(request.browsing_context_id, TEST_BROWSING_CONTEXT_ID);
+
+    // Triple-Option gate: any missing id → None (hyper-path gate).
+    assert!(build_devtools_request_msg(
+        None,
+        &servo_url::ServoUrl::parse("http://example.org/x").unwrap(),
+        &Method::GET,
+        &headers,
+        Vec::new(),
+        Some(TEST_PIPELINE_ID),
+        Duration::ZERO,
+        Duration::ZERO,
+        Destination::Image,
+        false,
+        Some(TEST_BROWSING_CONTEXT_ID),
+    )
+    .is_none());
+    assert!(build_devtools_request_msg(
+        Some("req-42"),
+        &servo_url::ServoUrl::parse("http://example.org/x").unwrap(),
+        &Method::GET,
+        &headers,
+        Vec::new(),
+        None,
+        Duration::ZERO,
+        Duration::ZERO,
+        Destination::Image,
+        false,
+        Some(TEST_BROWSING_CONTEXT_ID),
+    )
+    .is_none());
+    assert!(build_devtools_request_msg(
+        Some("req-42"),
+        &servo_url::ServoUrl::parse("http://example.org/x").unwrap(),
+        &Method::GET,
+        &headers,
+        Vec::new(),
+        Some(TEST_PIPELINE_ID),
+        Duration::ZERO,
+        Duration::ZERO,
+        Destination::Image,
+        false,
+        None,
+    )
+    .is_none());
+}
+
+/// SSLConfig parity (stage 2, items 3 + 6): from the stealth wire config +
+/// the profile's Http2Fingerprint snapshot + a CA override, the built config
+/// carries the exact SETTINGS payload (byte-equal to the profile's wire
+/// bytes), the profile's pseudo-header wire order and preface PRIORITY
+/// frames (REQ-STL-002 / REQ-STL-002-C3), and the DER trust list — the
+/// inputs `h2_client::encode::write_preface` / `encode_request_headers`
+/// and `configure_http_client_with_alpn` consume.
+#[test]
+fn bridge_ssl_config_h2_fingerprint_and_ca() {
+    // The connector's wire struct is the bridge's input type; build it from
+    // the same bao_stealth derivation the embedder (runtime_bridge) uses.
+    fn servo_wire(profile: &bao_stealth::StealthProfile) -> net::connector::StealthTlsWireConfig {
+        let stc = bao_stealth::StealthTlsWireConfig::from_profile(profile);
+        net::connector::StealthTlsWireConfig {
+            tls12_cipher_suites: stc.tls12_cipher_suites,
+            tls13_cipher_suites: stc.tls13_cipher_suites,
+            signature_algorithms: stc.signature_algorithms,
+            supported_groups: stc.supported_groups,
+            alpn_protocols: stc.alpn_protocols,
+            h2_settings_payload: stc.h2_settings_payload,
+            h2_initial_stream_size: stc.h2_initial_stream_size,
+            h2_initial_connection_window_size: stc.h2_initial_connection_window_size,
+            h2_max_frame_size: stc.h2_max_frame_size,
+            h2_max_header_list_size: stc.h2_max_header_list_size,
+        }
+    }
+    let profile = bao_stealth::StealthProfile::firefox_default();
+    let wire = bao_stealth::StealthTlsWireConfig::from_profile(&profile);
+    let ca: Vec<Vec<u8>> = vec![vec![0x30, 0x00]];
+    let config = build_ssl_config(
+        Some(&servo_wire(&profile)),
+        Some(&profile.http2),
+        Some(&ca),
+    );
+    // h2 SETTINGS payload: byte-equal to the wire config's (which
+    // stealth_wire derives from the same profile).
+    assert_eq!(
+        config.h2_settings_payload.as_deref(),
+        Some(wire.h2_settings_payload.as_slice()),
+        "bridge h2 SETTINGS payload must equal the profile's"
+    );
+    assert_eq!(config.h2_initial_window_size, wire.h2_initial_stream_size);
+    // Pseudo-header wire order: Firefox's method/path/authority/scheme.
+    let order = config
+        .h2_pseudo_header_order
+        .as_ref()
+        .expect("fingerprint snapshot must set the pseudo-header order");
+    let names: Vec<&str> = order.iter().map(|s| &**s).collect();
+    assert_eq!(names, vec![":method", ":path", ":authority", ":scheme"]);
+    // Preface PRIORITY frames: Firefox reserves streams 3/5/7/11.
+    let frames = config
+        .h2_priority_frames
+        .as_ref()
+        .expect("fingerprint snapshot must set the preface PRIORITY frames");
+    let ids: Vec<u32> = frames.iter().map(|f| f.stream_id).collect();
+    assert_eq!(ids, vec![3, 5, 7, 11]);
+    // CA override rides the config.
+    assert_eq!(
+        config.ca_certs_der.as_deref(),
+        Some(
+            ca.iter()
+                .map(|der| der.as_slice().into())
+                .collect::<Vec<Box<[u8]>>>()
+                .as_slice()
+        )
+    );
+
+    // No fingerprint / no CA: defaults stay clean (None), no phantom config.
+    let bare = build_ssl_config(None, None, None);
+    assert!(bare.h2_settings_payload.is_none());
+    assert!(bare.h2_pseudo_header_order.is_none());
+    assert!(bare.h2_priority_frames.is_none());
+    assert!(bare.ca_certs_der.is_none());
+
+    // Chrome snapshot: pseudo-header order flips, PRIORITY frames drop.
+    let chrome = bao_stealth::StealthProfile::chrome_default();
+    let config = build_ssl_config(Some(&servo_wire(&chrome)), Some(&chrome.http2), None);
+    let order = config.h2_pseudo_header_order.as_ref().unwrap();
+    let names: Vec<&str> = order.iter().map(|s| &**s).collect();
+    assert_eq!(names, vec![":method", ":authority", ":scheme", ":path"]);
+    assert!(
+        config.h2_priority_frames.as_ref().is_some_and(|f| f.is_empty()),
+        "Chrome v106+ sends no PRIORITY frames"
+    );
+}
+
+/// True streaming on a KEEP-ALIVE Content-Length exchange (stage 2): the
+/// terminal delivery must fire from the byte count alone — no connection
+/// close — and a SECOND request must reuse the pooled socket and complete
+/// the same way (the page-level posture: subresource bursts on one pool).
+#[test]
+fn bridge_streaming_keepalive_content_length_and_reuse() {
+    use std::io::{Read, Write};
+    link_native_seam();
+    // Initialize the async runtime (spawn_task silently drops tasks without
+    // it; the raw-TCP fixture below doesn't lazily init like make_server).
+    let (_runtime_server, _runtime_url) = make_server(|_request, _response| {});
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        // Keep-alive server: serves TWO sequential requests on one connection.
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        for request_no in 0..2 {
+            let mut got = Vec::new();
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 { return; }
+                got.extend_from_slice(&buf[..n]);
+                if got.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+            }
+            let body = format!("hello-cl-{}", request_no);
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            stream.write_all(resp.as_bytes()).unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        }
+        // KEEP the connection open — do NOT close for 8s.
+        std::thread::sleep(std::time::Duration::from_secs(8));
+    });
+
+    let (sender, receiver) = unbounded::<Result<(Instant, Vec<Vec<u8>>), String>>();
+    let cancel = Arc::new(BunCancelHandle::new());
+    let worker_cancel = Arc::clone(&cancel);
+    let port_for_task = port;
+    spawn_task(async move {
+        let url = format!("http://127.0.0.1:{}/", port_for_task);
+        let mut response = match fetch_core(
+            bun_http::Method::GET,
+            url,
+            Vec::new(),
+            None,
+            &worker_cancel,
+            None::<fn() -> bool>,
+            None,
+            false,
+            true,
+        ).await {
+            Ok(response) => response,
+            Err(error) => { let _ = sender.send(Err(format!("head failed: {error:?}"))); return; },
+        };
+        let head_at = Instant::now();
+        let mut chunks = Vec::new();
+        while let Some(frame) = response.next_chunk().await {
+            match frame {
+                Ok(bytes) => chunks.push(bytes),
+                Err(error) => { let _ = sender.send(Err(format!("frame failed: {error:?}"))); return; },
+            }
+        }
+        let _ = sender.send(Ok((head_at, chunks)));
+    });
+    match receiver.recv_timeout(Duration::from_secs(6)) {
+        Ok(Ok((head_at, chunks))) => {
+            eprintln!("keepalive #1 chunks={:?} (head {:?} ago)", chunks, head_at.elapsed());
+            assert_eq!(chunks.concat(), b"hello-cl-0");
+        },
+        Ok(Err(message)) => panic!("stream error: {message}"),
+        Err(_) => panic!("stream never completed on keep-alive Content-Length"),
+    }
+
+    // Second request: MUST reuse the pooled socket (same host:port, same
+    // null SSLConfig) and still complete.
+    let (sender2, receiver2) = unbounded::<Result<Vec<u8>, String>>();
+    let cancel2 = Arc::new(BunCancelHandle::new());
+    let worker_cancel2 = Arc::clone(&cancel2);
+    let port_for_task2 = port;
+    spawn_task(async move {
+        let url = format!("http://127.0.0.1:{}/second", port_for_task2);
+        let mut response = match fetch_core(
+            bun_http::Method::GET,
+            url,
+            Vec::new(),
+            None,
+            &worker_cancel2,
+            None::<fn() -> bool>,
+            None,
+            false,
+            true,
+        ).await {
+            Ok(response) => response,
+            Err(error) => { let _ = sender2.send(Err(format!("head failed: {error:?}"))); return; },
+        };
+        match response.collect_body().await {
+            Ok(body) => { let _ = sender2.send(Ok(body)); },
+            Err(error) => { let _ = sender2.send(Err(format!("body failed: {error:?}"))); },
+        }
+    });
+    match receiver2.recv_timeout(Duration::from_secs(6)) {
+        Ok(Ok(body)) => {
+            eprintln!("keepalive #2 (reused socket): body={:?}", body);
+            assert_eq!(body, b"hello-cl-1");
+        },
+        Ok(Err(message)) => panic!("PROBE ERROR #2: {message}"),
+        Err(_) => panic!("second request on the pooled keep-alive socket never completed"),
+    }
+}
+
+/// Full servo fetch pipeline with the bridge flag ON (stage 2 regression):
+/// GET through http_fetch's own consumption loop — status, headers and body
+/// must all arrive (this is the level that caught the missing-header-map
+/// bug: bridge-level assertions never observe response headers).
+#[test]
+fn bridge_servo_pipeline_document_fetch() {
+    use net_traits::request::{Referrer, RequestBuilder, RequestMode};
+    use net_traits::response::ResponseBody;
+    use servo_base::id::{TEST_PIPELINE_ID, TEST_WEBVIEW_ID};
+
+    link_native_seam();
+
+    let (server, url) = make_server(|_request, response| {
+        response.headers_mut().insert(
+            "content-type",
+            HeaderValue::from_static("text/plain"),
+        );
+        *response.body_mut() = make_body(b"pipeline hello".to_vec());
+    });
+    let mut context = crate::new_fetch_context(None, None);
+    // Per-context routing override — NOT the process-global flag (which
+    // would race the suite's concurrent fetch tests).
+    context.force_bun_bridge = true;
+    let request = RequestBuilder::new(
+        Some(TEST_WEBVIEW_ID),
+        url.clone(),
+        Referrer::NoReferrer,
+    )
+    .method(http::Method::GET)
+    .body(None)
+    .destination(Destination::Document)
+    .origin(url.clone().origin())
+    .pipeline_id(Some(TEST_PIPELINE_ID))
+    .mode(RequestMode::NoCors)
+    .policy_container(Default::default())
+    .build();
+
+    let response = crate::fetch_with_context(request, &mut context);
+    let _ = server.close();
+    let status = response.status.code();
+    eprintln!("pipeline: status={status:?} internal={:?}", response.internal_response.is_some());
+    match &*response.body.lock() {
+        ResponseBody::Done(bytes) => {
+            eprintln!("pipeline body: {:?}", String::from_utf8_lossy(bytes));
+            assert_eq!(bytes.as_slice(), b"pipeline hello");
+        },
+        other => panic!("PROBE2: body not Done: {other:?}"),
+    }
+}
+
+/// CORS-mode GET from an OPAQUE origin through the full servo pipeline on
+/// the bridge (stage 2 regression): mirrors the e2e matrix's data:-page XHR
+/// — the ACAO * response must pass servo's CORS check (this exact shape
+/// surfaced as `Error(CORS check failed)` when response headers were lost).
+#[test]
+fn bridge_servo_pipeline_cors_opaque_origin() {
+    use net_traits::request::{Referrer, RequestBuilder, RequestMode};
+    use net_traits::response::ResponseBody;
+    use servo_base::id::{TEST_PIPELINE_ID, TEST_WEBVIEW_ID};
+
+    link_native_seam();
+
+    let (server, url) = make_server(|_request, response| {
+        response.headers_mut().insert(
+            "access-control-allow-origin",
+            HeaderValue::from_static("*"),
+        );
+        *response.body_mut() = make_body(b"cors-data".to_vec());
+    });
+    let mut context = crate::new_fetch_context(None, None);
+    context.force_bun_bridge = true;
+    let request = RequestBuilder::new(
+        Some(TEST_WEBVIEW_ID),
+        url.clone(),
+        Referrer::NoReferrer,
+    )
+    .method(http::Method::GET)
+    .body(None)
+    .destination(Destination::None)
+    // Opaque origin — mirrors the e2e matrix (data: URL page XHR).
+    .origin(servo_url::ImmutableOrigin::new_opaque())
+    .pipeline_id(Some(TEST_PIPELINE_ID))
+    .mode(RequestMode::CorsMode)
+    .policy_container(Default::default())
+    .build();
+
+    let response = crate::fetch_with_context(request, &mut context);
+    let _ = server.close();
+    eprintln!(
+        "cors: status={:?} termination={:?} internal={:?} rtype={:?}",
+        response.status, response.termination_reason, response.internal_response.is_some(), response.response_type
+    );
+    if let Some(internal) = response.internal_response.as_ref() {
+        eprintln!("cors internal: status={:?} headers={:?}", internal.status, internal.headers);
+    }
+    match &*response.body.lock() {
+        ResponseBody::Done(bytes) => {
+            eprintln!("cors body: {:?}", String::from_utf8_lossy(bytes));
+            assert_eq!(bytes.as_slice(), b"cors-data");
+        },
+        other => panic!("cors body not Done: {other:?}"),
+    }
 }

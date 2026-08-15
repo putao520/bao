@@ -853,6 +853,7 @@ impl CoreResourceManager {
                 websocket_chan: None,
                 ca_certificates,
                 ignore_certificate_errors,
+                force_bun_bridge: false,
                 preloaded_resources: preloaded_resources.clone(),
                 in_flight_keep_alive_records,
             };
@@ -952,6 +953,7 @@ impl CoreResourceManager {
                         )))),
                         ca_certificates,
                         ignore_certificate_errors,
+                        force_bun_bridge: false,
                         preloaded_resources,
                         in_flight_keep_alive_records,
                     };

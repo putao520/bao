@@ -492,6 +492,7 @@ dependencies = [
  "bao_engine",
  "bao_stealth",
  "base64 0.22.1",
+ "bun_boringssl_sys",
  "bun_core",
  "bun_http",
  "bun_runtime",

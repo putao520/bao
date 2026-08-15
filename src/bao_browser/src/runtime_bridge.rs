@@ -1210,9 +1210,15 @@ unsafe fn install_all_native(
             h2_max_frame_size: stc.h2_max_frame_size,
             h2_max_header_list_size: stc.h2_max_header_list_size,
         }));
+        // U2 stage 2: the servo-net bun bridge (net thread) reads the h2
+        // pseudo-header order / preface PRIORITY frames from this global —
+        // same lifecycle as the wire-config global above (engine_props'
+        // ScriptThread-scoped profile lookups are unreachable there).
+        bao_stealth::set_global_http2_fingerprint(Some(&profile.http2));
     } else {
         bun_runtime::fetch_api::set_fetch_stealth_profile(None);
         servo::set_stealth_tls_config(None);
+        bao_stealth::set_global_http2_fingerprint(None);
     }
 
     // Install stealth properties using raw JSAPI (no Handle wrapper needed)

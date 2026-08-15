@@ -120,6 +120,7 @@ fn test_bao_config_custom_values() {
         default_viewport_width: 1920,
         default_viewport_height: 1080,
         stealth_profile: None,
+        ignore_certificate_errors: false,
     };
     assert_eq!(config.cdp_port, Some(9222));
     assert_eq!(config.max_pages, 5);

@@ -773,6 +773,30 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
         "bridge and Node fetch must carry the same h2 initial window size"
     );
 
+    // ── U2 stage 2: h2 pseudo-header order / preface PRIORITY frames ─────
+    // The page profile installed the global Http2Fingerprint snapshot (set
+    // alongside set_stealth_tls_config by runtime_bridge); the bridge reads
+    // it into its SSLConfig (`build_ssl_config`), which
+    // h2_client::encode::write_preface / encode_request_headers consume —
+    // the same fields window.fetch's stealth_http sets. Pin the wiring at
+    // e2e level: the snapshot must be the page profile's Firefox fingerprint.
+    let h2fp = bao_stealth::global_http2_fingerprint()
+        .expect("page profile must install the global h2 fingerprint snapshot");
+    assert_eq!(
+        h2fp.pseudo_header_order,
+        profile.http2.pseudo_header_order,
+        "global h2 snapshot pseudo-header order must be the page profile's (Firefox: method/path/authority/scheme)"
+    );
+    assert_eq!(
+        h2fp.priority_frames.len(),
+        profile.http2.priority_frames.len(),
+        "global h2 snapshot must carry the profile's preface PRIORITY frames (Firefox: 3/5/7/11)"
+    );
+    assert!(
+        h2fp.sends_priority_frames(),
+        "Firefox profile must send explicit PRIORITY frames (REQ-STL-002-C3)"
+    );
+
     img_capture.shutdown.store(true, Ordering::SeqCst);
     css_capture.shutdown.store(true, Ordering::SeqCst);
     fetch_capture.shutdown.store(true, Ordering::SeqCst);

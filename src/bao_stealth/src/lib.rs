@@ -16,6 +16,7 @@ pub use canvas::CanvasNoise;
 pub use hooks::StealthHooks;
 pub use http2::Http2Fingerprint;
 pub use http2::{PriorityFrame, PriorityFrameMode};
+pub use http2::{global_http2_fingerprint, set_global_http2_fingerprint};
 pub use navigator::{NavigatorProfile, ScreenProfile};
 pub use profile::StealthProfile;
 pub use profile::{

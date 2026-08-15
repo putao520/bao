@@ -1245,6 +1245,16 @@ impl CertificateErrorOverrideManager {
     pub(crate) fn has_override(&self, der: &[u8]) -> bool {
         self.0.lock().overrides.iter().any(|o| o == der)
     }
+
+    /// The explicitly-accepted override certificates (DER), cloned out.
+    /// U2 bridge consumer: the bun-bridge fetch driver trusts these in its
+    /// per-request verify store so an accepted certificate bypasses chain
+    /// verification exactly as the hyper connector's per-connection
+    /// `has_override(leaf)` check does (`create_tls_config` → verify
+    /// callback). Read-only accessor — no behavior change in this manager.
+    pub(crate) fn override_certs(&self) -> Vec<Vec<u8>> {
+        self.0.lock().overrides.clone()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
