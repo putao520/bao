@@ -444,6 +444,9 @@ fn spawn_raw_status_server(status_line: &'static str) -> u16 {
 #[test]
 fn bridge_streaming_delivery_incremental() {
     link_native_seam();
+    // Initialize the async runtime (spawn_task silently drops tasks without
+    // it; the raw-TCP fixture below doesn't lazily init like make_server).
+    let (_runtime_server, _runtime_url) = make_server(|_request, _response| {});
     const CHUNKS: [&str; 3] = ["alpha-", "beta-", "gamma"];
     const FULL_BODY: &[u8] = b"alpha-beta-gamma";
     const DELAY: Duration = Duration::from_millis(150);
@@ -515,6 +518,9 @@ fn bridge_streaming_delivery_incremental() {
 #[test]
 fn bridge_reason_phrase_and_version() {
     link_native_seam();
+    // Initialize the async runtime (spawn_blocking_task needs the runtime
+    // handle; the raw-TCP fixture below doesn't lazily init like make_server).
+    let (_runtime_server, _runtime_url) = make_server(|_request, _response| {});
     // Non-canonical phrase.
     let port = spawn_raw_status_server("HTTP/1.1 200 Sure Thing");
     let cancel = BunCancelHandle::new();

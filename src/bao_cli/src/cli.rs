@@ -75,9 +75,27 @@ enum Commands {
     External(Vec<String>),
 }
 
+/// Drain buffered JS-side output (console.*, process.stdout/stderr.write)
+/// before any CLI-side printing, so script output and CLI result/error lines
+/// interleave in execution order. Process-exit drainage is covered by the
+/// flush guard held in [`run`]; this only fixes mid-run ordering.
+fn flush_js_output() {
+    bun_core::output::flush();
+}
+
 /// Process entry — parses argv and dispatches to the appropriate command handler.
 /// Returns `Err(exit_code)` on failure; callers should `std::process::exit(code)`.
 pub fn run() -> ::std::result::Result<(), i32> {
+    // Process-owner output bring-up (same contract as `bun_bin` main): publish
+    // the global stdout/stderr stream slots from the real stdio fds and hold a
+    // flush guard for the whole CLI lifetime. JS sink writes (console.*,
+    // process.stdout.write) are buffered by default (`ENABLE_BUFFERING` =
+    // IS_NATIVE); without this guard every buffered byte is silently dropped
+    // at process exit — the script runs, the exit code is correct, but
+    // console.log never reaches stdout.
+    bun_core::output::stdio::init();
+    let _output_flush = bun_core::output::flush_guard();
+
     let cli = Cli::parse();
     // Top-level `-e` / `--eval` (Bun-compatible): runs the code as a script.
     // This is the form used by upstream test harnesses that spawn
@@ -146,12 +164,14 @@ fn run_eval(code: &str) -> ::std::result::Result<(), i32> {
     })?;
     let eval_result = match rt.eval(code, "<eval>") {
         Ok(val) => {
+            flush_js_output();
             if !val.is_undefined() {
                 println!("{}", val.to_display_string());
             }
             Ok(())
         }
         Err(e) => {
+            flush_js_output();
             eprintln!("Error: {}", e);
             Err(1)
         }
@@ -183,8 +203,12 @@ fn run_file(path: &str, force_module: bool) -> ::std::result::Result<(), i32> {
     };
 
     let eval_result = match result {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            flush_js_output();
+            Ok(())
+        }
         Err(e) => {
+            flush_js_output();
             eprintln!("Error: {}", e);
             Err(1)
         }
@@ -204,8 +228,12 @@ fn run_module_eval(code: &str) -> ::std::result::Result<(), i32> {
         1
     })?;
     let eval_result = match rt.eval_module(code, "<module>") {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            flush_js_output();
+            Ok(())
+        }
         Err(e) => {
+            flush_js_output();
             eprintln!("Error: {}", e);
             Err(1)
         }
@@ -313,8 +341,12 @@ fn run_test(eval: Option<&str>, files: &[String]) -> ::std::result::Result<(), i
 
     let test_result = if let Some(code) = eval {
         match rt.eval(code, "<test-eval>") {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                flush_js_output();
+                Ok(())
+            }
             Err(e) => {
+                flush_js_output();
                 eprintln!("FAIL: {}", e);
                 Err(1)
             }
@@ -337,7 +369,9 @@ fn run_test(eval: Option<&str>, files: &[String]) -> ::std::result::Result<(), i
                         {
                             let path_str = path.to_string_lossy().into_owned();
                             eprintln!("\n# {}", path_str);
-                            match rt.run_test_file(&path_str) {
+                            let report = rt.run_test_file(&path_str);
+                            flush_js_output();
+                            match report {
                                 Ok(report) => {
                                     render_report(&report);
                                     total_passed += report.passed;
@@ -368,7 +402,9 @@ fn run_test(eval: Option<&str>, files: &[String]) -> ::std::result::Result<(), i
         let mut total_failed: u32 = 0;
         for file in files {
             eprintln!("\n# {}", file);
-            match rt.run_test_file(file) {
+            let report = rt.run_test_file(file);
+            flush_js_output();
+            match report {
                 Ok(report) => {
                     render_report(&report);
                     total_passed += report.passed;

@@ -17,6 +17,7 @@
 //   5. **Node API 可用**: 脚本内 typeof process === 'object'
 //   6. **退出码传播**: 脚本 process.exit(N) → bao 进程退出码 N
 //   7. **stdout 捕获**: console.log → bao stdout
+//   8. **双向流归属**: console.log → stdout 且 console.error → stderr(不串流)
 //
 // **运行约束**: 测试需要预先 `cargo build` 产出 ./target/debug/bao 二进制。
 // 缺失时 skip 而非 fail(避免 CI 在未 build 时直接红)。
@@ -30,7 +31,22 @@ const BAO_BIN: &str = "target/debug/bao";
 // ─── 辅助 — 定位 bao 二进制 ──────────────────────────────────────────────────
 
 fn bao_path() -> Option<PathBuf> {
-    // 测试 cwd 通常是 crate 根目录(bao_browser/),向上一级到 workspace 根
+    // 1. 显式覆盖:CI / 分布式 buildlet 直接指向它产出的二进制
+    if let Ok(override_path) = std::env::var("BAO_BIN") {
+        let candidate = PathBuf::from(override_path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    // 2. CARGO_TARGET_DIR:build-dir 可能不在 workspace 内(如 /var/cargo-builds),
+    //    按 cargo build 的标准布局解析 <target>/debug/bao
+    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
+        let candidate = PathBuf::from(target_dir).join("debug").join("bao");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    // 3. 测试 cwd 通常是 crate 根目录(bao_browser/),向上一级到 workspace 根
     let mut here = std::env::current_dir().ok()?;
     for _ in 0..5 {
         let candidate = here.join(BAO_BIN);
@@ -289,6 +305,44 @@ fn bao_cli_e2e_full_lifecycle() {
         }
     }
 
+    // ── §8 双向流归属 — console.log→stdout 且 console.error→stderr ────────
+    //
+    // Node 流语义:log 走 stdout,error 走 stderr。子进程两路管道分别捕获,
+    // 断言 marker 各归各的流、不串流、不丢失(缓冲未 flush 时整段丢失)。
+    match run_bao(
+        &[
+            "run",
+            "--eval",
+            "console.log('stdout-marker'); console.error('stderr-marker');",
+        ],
+        None,
+    ) {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stdout.contains("stdout-marker")
+                && stderr.contains("stderr-marker")
+                && !stdout.contains("stderr-marker")
+                && !stderr.contains("stdout-marker")
+            {
+                eprintln!("PASS  §8::console_stream_routing");
+                passed += 1;
+            } else {
+                eprintln!(
+                    "FAIL  §8::console_stream_routing  (stdout='{}', stderr='{}', exit={:?})",
+                    stdout.trim(),
+                    stderr.trim(),
+                    output.status.code()
+                );
+                failed += 1;
+            }
+        }
+        Err(e) => {
+            eprintln!("FAIL  §8::console_stream_routing  (spawn failed: {})", e);
+            failed += 1;
+        }
+    }
+
     // ── 清理 ────────────────────────────────────────────────────────────
     let _ = std::fs::remove_file(&script_path);
 
@@ -297,10 +351,10 @@ fn bao_cli_e2e_full_lifecycle() {
         passed, failed
     );
 
-    // 至少 5/8 通过(允许 §1 help 格式差异等少数容忍)
+    // 至少 5/9 通过(允许 §1 help 格式差异等少数容忍)
     assert!(
         passed >= 5,
-        "too few CLI E2E sub-assertions passed: {}/8",
+        "too few CLI E2E sub-assertions passed: {}/9",
         passed
     );
     assert_eq!(

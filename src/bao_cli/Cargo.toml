@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 bun_runtime.workspace = true
+bun_core.workspace = true
 bao_browser = { path = "../bao_browser" }
 bao_stealth = { path = "../bao_stealth" }
 bao_bundler = { path = "../bao_bundler" }

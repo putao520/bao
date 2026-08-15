@@ -570,6 +570,7 @@ dependencies = [
  "bao_bundler",
  "bao_stealth",
  "bun_ast",
+ "bun_core",
  "bun_options_types",
  "bun_runtime",
  "clap",
@@ -1214,8 +1215,6 @@ dependencies = [
 name = "bun_core"
 version = "0.1.0-alpha.1"
 dependencies = [
- "bao_native_stubs",
- "bao_uloop",
  "bstr",
  "bun_alloc",
  "bun_core_macros",
@@ -1225,7 +1224,6 @@ dependencies = [
  "bun_opaque",
  "bun_output_tags",
  "bun_simdutf_sys",
- "bun_sys",
  "bun_windows_sys",
  "bun_wyhash",
  "bytemuck",

@@ -608,8 +608,36 @@ fn test_full_chain_tls_config_boringssl_strings() {
     let ch_config = TlsFingerprintConfig::from_fingerprint(&chrome.tls);
     assert!(ch_config.has_fingerprint());
 
-    // Firefox and Chrome must produce different TLS 1.2 cipher lists
-    assert_ne!(ff_config.tls12_cipher_list, ch_config.tls12_cipher_list);
+    // Firefox/Chrome TLS 1.2 sets differ only in DHE suites, which BoringSSL
+    // cannot offer — the exposed lists converge (design result, same as
+    // bun_runtime stealth_http's converge test). Each list equals its own
+    // profile's DHE-filtered set; differentiation survives via offered groups
+    // (Firefox keeps P-521) and JA3/JA4.
+    assert_eq!(
+        ff_config.tls12_cipher_list, ch_config.tls12_cipher_list,
+        "Firefox/Chrome TLS 1.2 lists must converge after DHE filtering"
+    );
+    assert_eq!(
+        ff_config.tls12_cipher_list,
+        firefox.tls.tls12_cipher_list_string(),
+        "exposed list must equal Firefox's DHE-filtered set"
+    );
+    assert_eq!(
+        ch_config.tls12_cipher_list,
+        chrome.tls.tls12_cipher_list_string(),
+        "exposed list must equal Chrome's DHE-filtered set"
+    );
+    assert_ne!(
+        ff_config.curves_list, ch_config.curves_list,
+        "Firefox/Chrome curves must differ (Firefox keeps P-521)"
+    );
+    assert!(ff_config.curves_list.contains("P-521"));
+    assert!(!ch_config.curves_list.contains("P-521"));
+    assert_ne!(
+        firefox.tls.compute_ja4(),
+        chrome.tls.compute_ja4(),
+        "JA4 must keep distinguishing the profiles"
+    );
 }
 
 #[test]
