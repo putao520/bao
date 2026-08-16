@@ -453,9 +453,27 @@ const NET_JS: &str = r#"
   }
   Socket.prototype = Object.create(EE.prototype);
   Socket.prototype.constructor = Socket;
-  Socket.prototype.connect = function(port, host, cb) {
+  Socket.prototype.connect = function(a0, a1, a2) {
+    // Node normalizeArgs semantics (net.html#socketconnectoptions-connectlistener):
+    //   connect(options[, connectListener]) | connect(port[, host][, connectListener])
+    // The options form MUST be unwrapped here — handing the raw object to
+    // __net_connect made the native read a heap pointer as the port payload.
+    var port, host, cb;
+    if (a0 && typeof a0 === "object") {
+      port = a0.port;
+      host = a0.host || a0.hostname;
+      cb = a1;
+    } else {
+      port = a0;
+      if (typeof a1 === "function") { cb = a1; }
+      else { host = a1; cb = a2; }
+    }
     if (typeof host === "function") { cb = host; host = "127.0.0.1"; }
     if (!host) host = "127.0.0.1";
+    // Node accepts numeric strings for port ("8080"); coerce so the native
+    // always receives a Number. Malformed values fall through and the native
+    // throws (NaN / out-of-range are rejected there with a Node-style message).
+    if (typeof port === "string") port = Number(port);
     this.connecting = true;
     if (typeof __net_connect === "function") {
       var ptr = __net_connect(port, host);
@@ -606,6 +624,15 @@ const NET_JS: &str = r#"
     for (var i = 0; i < arguments.length; i++) {
       var arg = arguments[i];
       if (typeof arg === "function") cb = arg;
+      else if (arg && typeof arg === "object") {
+        // Node options form: server.listen({ port, host }, [cb]). The object
+        // matched none of the typeof branches before, so listen({port: N})
+        // silently bound a RANDOM port (0) instead of N.
+        if (typeof arg.port === "number") port = arg.port;
+        else if (typeof arg.port === "string") port = Number(arg.port);
+        if (typeof arg.host === "string") host = arg.host;
+        else if (typeof arg.hostname === "string") host = arg.hostname;
+      }
       else if (typeof arg === "number") port = arg;
       else if (typeof arg === "string") host = arg;
     }
@@ -728,8 +755,8 @@ const NET_JS: &str = r#"
     Socket: Socket,
     Server: Server,
     createServer: function(opts, cb) { return new Server(opts, cb); },
-    connect: function(port, host, cb) { var s = new Socket(); return s.connect(port, host, cb); },
-    createConnection: function(port, host, cb) { var s = new Socket(); return s.connect(port, host, cb); },
+    connect: function(a0, a1, a2) { var s = new Socket(); return s.connect(a0, a1, a2); },
+    createConnection: function(a0, a1, a2) { var s = new Socket(); return s.connect(a0, a1, a2); },
     isIP: isIP,
     isIPv4: function(input) { return isIP(input) === 4; },
     isIPv6: function(input) { return isIP(input) === 6; },
@@ -784,8 +811,27 @@ fn ensure_server_group(loop_: *mut Loop) -> *mut SocketGroup {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let port = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+
+    // Same tag-safety as net_connect: `to_int32()` on a non-int32-tagged
+    // value reinterprets the payload (f64 bits / heap pointer) as i32.
+    let port: i32 = if argc > 0 {
+        let port_val = *args.get(0).ptr;
+        if !port_val.is_number() {
+            JS_ReportErrorUTF8(
+                cx,
+                c"The 'port' argument must be a number. Received a non-number value."
+                    .as_ptr(),
+            );
+            return false;
+        }
+        let d = port_val.to_number();
+        if !d.is_finite() || d < 0.0 || d > 65535.0 {
+            let msg = format!("Port should be >= 0 and < 65536. Received {}.", d);
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), (*c_msg).as_ptr());
+            return false;
+        }
+        d as i32
     } else {
         0
     };
@@ -871,11 +917,35 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let port = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+
+    // BCE: port must be extracted tag-safely. The old `to_int32()` call
+    // reinterpreted the raw JSVal payload as i32 regardless of the tag —
+    // a double-tagged Number (payload = f64 bits) or an options Object
+    // (payload = heap pointer) produced a garbage port or SIGSEGV'd.
+    // `to_number` is only valid after `is_number()` (it reads the numeric
+    // payload); non-number ports throw instead of corrupting the connect.
+    let port: i32 = if argc > 0 {
+        let port_val = *args.get(0).ptr;
+        if !port_val.is_number() {
+            JS_ReportErrorUTF8(
+                cx,
+                c"The 'port' argument must be a number. Received a non-number value."
+                    .as_ptr(),
+            );
+            return false;
+        }
+        let d = port_val.to_number();
+        if !d.is_finite() || d < 0.0 || d > 65535.0 {
+            let msg = format!("Port should be >= 0 and < 65536. Received {}.", d);
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), (*c_msg).as_ptr());
+            return false;
+        }
+        d as i32
     } else {
         0
     };
+
     let addr = if argc > 1 && (*args.get(1).ptr).is_string() {
         unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
     } else {

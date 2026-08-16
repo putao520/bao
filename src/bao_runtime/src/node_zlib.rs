@@ -170,7 +170,7 @@ unsafe fn extract_compression_level(cx: *mut JSContext, opts_val: JSVal) -> flat
 // ---------------------------------------------------------------------------
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn zlib_deflate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn zlib_deflate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let data = if argc > 0 {
         extract_bytes(cx, *args.get(0).ptr)
@@ -194,7 +194,7 @@ unsafe extern "C" fn zlib_deflate_sync(cx: *mut JSContext, argc: u32, vp: *mut J
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn zlib_inflate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn zlib_inflate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let data = if argc > 0 {
         extract_bytes(cx, *args.get(0).ptr)
@@ -254,7 +254,11 @@ unsafe extern "C" fn zlib_crc32(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let mut hasher = crc32fast::Hasher::new_with_initial(prior);
     hasher.update(&data);
     let crc = hasher.finalize();
-    args.rval().set(mozjs::jsval::Int32Value(crc as i32));
+    // Node contract: zlib.crc32 returns an UNSIGNED 32-bit integer (0..2^32-1)
+    // as a JS Number. Int32Value would sign-flip results ≥ 2^31 (e.g.
+    // crc32(0xFF×4) = 4294967295 would surface as -1); f64 represents the
+    // full u32 range exactly.
+    args.rval().set(mozjs::jsval::DoubleValue(crc as f64));
     true
 }
 
@@ -302,7 +306,7 @@ unsafe extern "C" fn zlib_inflate_raw_sync(cx: *mut JSContext, argc: u32, vp: *m
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn zlib_gzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn zlib_gzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let data = if argc > 0 {
         extract_bytes(cx, *args.get(0).ptr)
@@ -326,7 +330,7 @@ unsafe extern "C" fn zlib_gzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn zlib_gunzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn zlib_gunzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let data = if argc > 0 {
         extract_bytes(cx, *args.get(0).ptr)

@@ -675,7 +675,8 @@ impl ShellOutput {
         self.exit_code == 0
     }
 
-    /// Build a JS ShellOutput object on the given cx.
+    /// Build the JS ShellOutput VALUE object on the given cx (no then —
+    /// this is what promises resolve with; see to_js_promise).
     /// @trace REQ-BAO-API-018 [api:Bun.Shell/$ ShellOutput]
     unsafe fn to_js_object(&self, cx: *mut JSContext) -> *mut JSObject {
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -685,6 +686,71 @@ impl ShellOutput {
         if obj.get().is_null() {
             return ptr::null_mut();
         }
+
+        self.stamp_result_face(cx_ref, obj.handle());
+
+        obj.get()
+    }
+
+    /// Build the awaitable result face: a NATIVE Promise already settled —
+    /// resolved with the value object on exit 0, rejected with a ShellError
+    /// (carrying stdout/stderr/exitCode) on non-zero exit. The sync result
+    /// props (stdout/stderr/exitCode/success) and methods (text/json/lines/
+    /// bytes) are stamped directly on the promise object so direct sync
+    /// access keeps working alongside then/catch/finally/await.
+    ///
+    /// Why a native promise and not a custom thenable: a thenable that
+    /// resolves with ITSELF (the value would have to be this same object)
+    /// sends the engine's assimilation into an infinite job chain — every
+    /// PromiseResolveThenableJob run mints fresh resolving closures and the
+    /// cycle is never detected (Bun.$ await crash, stack exhaustion). With a
+    /// real promise the settlement value is a distinct value object; the
+    /// engine never re-assimilates it.
+    ///
+    /// @trace REQ-BAO-API-018 [api:Bun.Shell/$ Promise face]
+    unsafe fn to_js_promise(&self, cx: *mut JSContext) -> *mut JSObject {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+
+        rooted!(&in(cx_ref) let promise = JS::NewPromiseObject(cx, HandleObject::null()));
+        if promise.get().is_null() {
+            return self.to_js_object(cx);
+        }
+
+        // Settle the promise first (value object / ShellError).
+        rooted!(&in(cx_ref) let settle_val = if self.success() {
+            ObjectValue(self.to_js_object(cx))
+        } else {
+            let err = shell_error_object(cx, self.exit_code, &String::from_utf8_lossy(&self.stdout), &String::from_utf8_lossy(&self.stderr));
+            if err.is_null() {
+                UndefinedValue()
+            } else {
+                ObjectValue(err)
+            }
+        });
+        if self.success() {
+            let _ = JS::ResolvePromise(cx, promise.handle().into(), settle_val.handle().into());
+        } else {
+            let _ = JS::RejectPromise(cx, promise.handle().into(), settle_val.handle().into());
+        }
+
+        // Stamp the sync result face onto the promise itself (direct
+        // `result.stdout` / `result.text()` without awaiting).
+        self.stamp_result_face(cx_ref, promise.handle());
+
+        promise.get()
+    }
+
+    /// Define the sync result properties + methods on `obj` (used both for
+    /// the value object in `to_js_object` and the promise in
+    /// `to_js_promise`; method callbacks read the props off `this`).
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn stamp_result_face(
+        &self,
+        cx_ref: &mut mozjs::context::JSContext,
+        obj: mozjs::rust::Handle<*mut JSObject>,
+    ) {
+        let cx = cx_ref.raw_cx();
 
         // stdout (lossy UTF-8 → JS string)
         let stdout_str = String::from_utf8_lossy(&self.stdout);
@@ -697,7 +763,7 @@ impl ShellOutput {
             rooted!(&in(cx_ref) let sv = StringValue(&*stdout_js));
             JS_DefineProperty(
                 cx,
-                obj.handle().into(),
+                obj.into(),
                 c"stdout".as_ptr(),
                 sv.handle().into(),
                 JSPROP_ENUMERATE as u32,
@@ -715,7 +781,7 @@ impl ShellOutput {
             rooted!(&in(cx_ref) let sv = StringValue(&*stderr_js));
             JS_DefineProperty(
                 cx,
-                obj.handle().into(),
+                obj.into(),
                 c"stderr".as_ptr(),
                 sv.handle().into(),
                 JSPROP_ENUMERATE as u32,
@@ -726,7 +792,7 @@ impl ShellOutput {
         rooted!(&in(cx_ref) let ecv = Int32Value(self.exit_code));
         JS_DefineProperty(
             cx,
-            obj.handle().into(),
+            obj.into(),
             c"exitCode".as_ptr(),
             ecv.handle().into(),
             JSPROP_ENUMERATE as u32,
@@ -736,55 +802,119 @@ impl ShellOutput {
         rooted!(&in(cx_ref) let sv = BooleanValue(self.success()));
         JS_DefineProperty(
             cx,
-            obj.handle().into(),
+            obj.into(),
             c"success".as_ptr(),
             sv.handle().into(),
             JSPROP_ENUMERATE as u32,
         );
 
-        // text() method — returns stdout as string
         w2::JS_DefineFunction(
             cx_ref,
-            obj.handle(),
+            obj,
             c"text".as_ptr(),
             Some(shell_output_text),
             0,
             JSPROP_ENUMERATE as u32,
         );
-
-        // json() method — parses stdout as JSON
         w2::JS_DefineFunction(
             cx_ref,
-            obj.handle(),
+            obj,
             c"json".as_ptr(),
             Some(shell_output_json),
             0,
             JSPROP_ENUMERATE as u32,
         );
-
-        // lines() method — splits stdout by newline
         w2::JS_DefineFunction(
             cx_ref,
-            obj.handle(),
+            obj,
             c"lines".as_ptr(),
             Some(shell_output_lines),
             0,
             JSPROP_ENUMERATE as u32,
         );
-
-        // bytes() method — returns stdout as Uint8Array
         w2::JS_DefineFunction(
             cx_ref,
-            obj.handle(),
+            obj,
             c"bytes".as_ptr(),
             Some(shell_output_bytes),
             0,
             JSPROP_ENUMERATE as u32,
         );
-
-        obj.get()
     }
 }
+
+// ──────────────────── ShellOutput Promise settlement ────────────────────
+
+/// ZBox-backed NUL-terminated name helper (JS_DefineProperty wants C strings).
+struct ZBoxLikeName {
+    inner: bun_core::ZBox,
+}
+
+impl ZBoxLikeName {
+    fn from(s: &str) -> Self {
+        ZBoxLikeName {
+            inner: bun_core::ZBox::from_bytes(s.as_bytes()),
+        }
+    }
+    fn as_ptr(&self) -> *const ::std::os::raw::c_char {
+        self.inner.as_ptr() as *const _
+    }
+}
+
+/// Build the ShellError rejection object: `name`/`message` Error-like face
+/// plus the full result payload (exitCode/stdout/stderr) so failure handlers
+/// and uncaught-await reporting can inspect the command outcome.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn shell_error_object(cx: *mut JSContext, exit_code: i32, stdout: &str, stderr: &str) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let err = w2::JS_NewPlainObject(cx_ref));
+    if err.get().is_null() {
+        return ptr::null_mut();
+    }
+    let message = format!("Failed with exit code: {}", exit_code);
+    let defs: [(&str, String); 4] = [
+        ("name", "ShellError".to_string()),
+        ("message", message),
+        ("stdout", stdout.to_string()),
+        ("stderr", stderr.to_string()),
+    ];
+    for (key, value) in defs {
+        let c_v = bun_core::ZBox::from_bytes(value.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_v.as_ptr());
+        if !js_str.is_null() {
+            rooted!(&in(cx_ref) let sv = StringValue(&*js_str));
+            let c_key = ZBoxLikeName::from(key);
+            JS_DefineProperty(
+                cx,
+                err.handle().into(),
+                c_key.as_ptr(),
+                sv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+    rooted!(&in(cx_ref) let fv = BooleanValue(false));
+    JS_DefineProperty(
+        cx,
+        err.handle().into(),
+        c"success".as_ptr(),
+        fv.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    // exitCode as a NUMBER (matches the ShellOutput face; strict equality
+    // `e.exitCode === 7` must hold).
+    rooted!(&in(cx_ref) let ecv = Int32Value(exit_code));
+    JS_DefineProperty(
+        cx,
+        err.handle().into(),
+        c"exitCode".as_ptr(),
+        ecv.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    err.get()
+}
+
 
 // ──────────────────── ShellOutput method callbacks ────────────────────
 
@@ -1311,7 +1441,7 @@ unsafe extern "C" fn bun_dollar(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         command = words.join(" ");
         let interpreter = ShellInterpreter::new(None, None);
         let output = interpreter.parse_and_run(&command);
-        let js_output = output.to_js_object(cx);
+        let js_output = output.to_js_promise(cx);
         if js_output.is_null() {
             args.rval().set(UndefinedValue());
             return true;
@@ -1350,7 +1480,7 @@ unsafe extern "C" fn bun_dollar(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     // Execute using ShellInterpreter (reuses bun_shell_parser + bun_spawn)
     let interpreter = ShellInterpreter::new(None, None);
     let output = interpreter.parse_and_run(&command);
-    let js_output = output.to_js_object(cx);
+    let js_output = output.to_js_promise(cx);
     if js_output.is_null() {
         args.rval().set(UndefinedValue());
         return true;

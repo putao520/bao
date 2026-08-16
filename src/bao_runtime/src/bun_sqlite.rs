@@ -12,7 +12,8 @@ use bun_core::ZBox;
 use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
-    BooleanValue, DoubleValue, JSVal, NullValue, ObjectValue, PrivateValue, UndefinedValue,
+    BooleanValue, DoubleValue, JSVal, NullValue, ObjectValue, PrivateValue, StringValue,
+    UndefinedValue,
 };
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
@@ -1717,7 +1718,17 @@ unsafe extern "C" fn database_backup(cx: *mut JSContext, argc: u32, vp: *mut JSV
     let db = &*db_ptr;
     match db.backup_to_path(&path) {
         Ok(()) => {
-            args.rval().set(UndefinedValue());
+            // Success must be observable: return the resolved destination
+            // path (the VACUUM INTO snapshot was written there). Callers use
+            // it to locate/verify the snapshot; silent undefined reads as a
+            // failed backup.
+            let c_path = ZBox::from_bytes(path.as_bytes());
+            let js = JS_NewStringCopyZ(cx, c_path.as_ptr());
+            if js.is_null() {
+                args.rval().set(UndefinedValue());
+            } else {
+                args.rval().set(StringValue(&*js));
+            }
             true
         }
         Err(e) => {

@@ -581,9 +581,27 @@ const DGRAM_JS: &str = r#"
   Socket.prototype = Object.create(EventEmitter.prototype);
   Socket.prototype.constructor = Socket;
 
-  Socket.prototype.bind = function(port, addr, cb) {
-    if (this._fd >= 0) { var e = new Error('Already bound'); if (cb) cb(e); this.emit('error', e); return this; }
-    var res = __dgram_bind(port || 0, addr || '0.0.0.0');
+  // Node signature: socket.bind([port][, address][, callback]) — every
+  // argument optional, ANY position, plus bind(options[, callback]) with
+  // { port, address }. Classify by shape (Node does the same): number-ish →
+  // port, string → address, plain object → options, function → callback.
+  // The old positional-only (port, addr, cb) form dropped the callback when
+  // it was passed second (`s.bind(0, cb)`) — cb landed in the addr slot and
+  // never fired.
+  Socket.prototype.bind = function() {
+    var port = 0, addr = '0.0.0.0', cb = null;
+    for (var i = 0; i < arguments.length; i++) {
+      var a = arguments[i];
+      if (typeof a === 'function') { if (!cb) cb = a; }
+      else if (typeof a === 'object' && a !== null) {
+        if (typeof a.port === 'number') port = a.port;
+        if (typeof a.address === 'string') addr = a.address;
+      }
+      else if (typeof a === 'string') { addr = a; }
+      else if (typeof a === 'number') { port = a; }
+    }
+    if (this._fd >= 0) { var eb = new Error('Already bound'); if (cb) cb(eb); this.emit('error', eb); return this; }
+    var res = __dgram_bind(port || 0, addr);
     if (res && typeof res === 'object') {
       this._fd = res.fd;
       var self = this;
@@ -598,7 +616,7 @@ const DGRAM_JS: &str = r#"
       if (cb) cb(null);
       this.emit('listening');
     } else {
-      var e = new Error('bind failed');
+      var e = new Error('bind failed: ' + addr + ':' + port);
       if (cb) cb(e);
       this.emit('error', e);
     }

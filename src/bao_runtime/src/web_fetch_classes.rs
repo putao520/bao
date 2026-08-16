@@ -563,7 +563,16 @@ pub fn install_fetch_classes(
         );
         if !opts.is_null() {
             let mut src_text = mozjs::rust::transform_str_to_source_text(src);
-            mozjs_sys::jsapi::JS::Evaluate2(
+            // BCE (P0 browser startup panic, servo error.rs:74): a failed
+            // evaluation returns false WITH the thrown exception pending on
+            // the context. This install runs on servo's ScriptThread inside
+            // page init; an unconsumed pending exception detonates servo's
+            // `assert!(!JS_IsExceptionPending)` in `throw_dom_exception` on
+            // the next error path, killing the ScriptThread (browser dies at
+            // startup, CDP never listens). The classes this blob fails to
+            // install are absent; the failure itself is a handled outcome —
+            // consume the exception, never leak it into servo's loop.
+            let evaluated = mozjs_sys::jsapi::JS::Evaluate2(
                 raw,
                 opts,
                 &mut src_text,
@@ -572,6 +581,9 @@ pub fn install_fetch_classes(
                     ptr: &mut rval,
                 },
             );
+            if !evaluated {
+                JS_ClearPendingException(raw);
+            }
             libc::free(opts as *mut _);
         }
     }

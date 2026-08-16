@@ -230,37 +230,38 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                 method = m;
             }
             let mut h_val = UndefinedValue();
-            JS_GetProperty(
+            // BCE (error.rs:74): clearing probe — user init object on the
+            // servo ScriptThread context; a throwing `headers` accessor
+            // must read as "absent", not leak a pending exception.
+            bao_stealth::engine_props::get_property_clearing(
                 cx,
                 opts_obj.handle().into(),
-                c"headers".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut h_val,
-                },
+                c"headers",
+                &mut h_val,
             );
             if h_val.is_object() {
                 headers = parse_headers_init(cx, h_val);
             }
             // body: only an explicitly present init.body overrides (null
             // clears it), matching the WHATWG "init wins when present" rule.
+            // BCE (error.rs:74): both probes run against the caller-supplied
+            // init object on the servo ScriptThread context (browser mode) —
+            // a throwing `body` accessor makes them fail WITH the exception
+            // pending. Clearing probes: failure reads as "absent"/undefined.
             let mut has_body = false;
-            JS_HasProperty(
+            bao_stealth::engine_props::has_property_clearing(
                 cx,
                 opts_obj.handle().into(),
-                c"body".as_ptr(),
+                c"body",
                 &mut has_body,
             );
             if has_body {
                 let mut b_val = UndefinedValue();
-                JS_GetProperty(
+                bao_stealth::engine_props::get_property_clearing(
                     cx,
                     opts_obj.handle().into(),
-                    c"body".as_ptr(),
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut b_val,
-                    },
+                    c"body",
+                    &mut b_val,
                 );
                 match extract_body_bytes(cx, b_val, &mut headers) {
                     Ok(b) => body = b,
@@ -917,7 +918,7 @@ unsafe fn register_abort_listener(cx: *mut JSContext, signal_val: JSVal, abort_i
             elements_: call_args_arr.as_ptr(),
         };
         let mut rval = UndefinedValue();
-        JS_CallFunctionName(
+        let added = JS_CallFunctionName(
             cx,
             signal_obj.handle().into(),
             c"addEventListener".as_ptr(),
@@ -927,6 +928,28 @@ unsafe fn register_abort_listener(cx: *mut JSContext, signal_val: JSVal, abort_i
                 ptr: &mut rval,
             },
         );
+        if !added {
+            // BCE (P0 browser startup panic, servo error.rs:74): the signal
+            // can be a caller-supplied duck-typed AbortSignal running on the
+            // servo ScriptThread context (browser mode) — a throwing
+            // addEventListener leaves the exception pending. Capture, clear,
+            // and route it (same contract as timers.rs fire_callback);
+            // swallowing it silently would leave a stale exception to
+            // detonate servo's `assert!(!JS_IsExceptionPending)`.
+            let mut exn = UndefinedValue();
+            JS_GetPendingException(
+                cx,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut exn,
+                },
+            );
+            JS_ClearPendingException(cx);
+            rooted!(&in(cx_ref) let reason_root = exn);
+            if !exn.is_undefined() {
+                crate::uncaught::route_uncaught_exception(cx, exn);
+            }
+        }
     }
 }
 
@@ -970,14 +993,19 @@ unsafe fn get_string_prop(
     unsafe {
         let c_name = ZBox::from_bytes(name.as_bytes());
         let mut v = UndefinedValue();
-        JS_GetProperty(
+        // BCE (P0 browser startup panic, servo error.rs:74): this reader
+        // probes caller-supplied objects (fetch init / Request inputs).
+        // In browser mode it runs on the servo ScriptThread context, where a
+        // throwing getter makes JS_GetProperty return false WITH the
+        // exception pending; an unconsumed pending exception detonates
+        // servo's `assert!(!JS_IsExceptionPending)` in `throw_dom_exception`
+        // on the next error path. Clearing helper: failed probe reads as
+        // "property absent".
+        bao_stealth::engine_props::get_property_clearing(
             cx,
             obj.into(),
-            c_name.as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut v,
-            },
+            c_name.as_cstr(),
+            &mut v,
         );
         if v.is_string() {
             Some(crate::js_to_rust_string(cx, v))
@@ -1274,14 +1302,14 @@ unsafe fn get_val_prop(
     unsafe {
         let c_name = ZBox::from_bytes(name.as_bytes());
         let mut v = UndefinedValue();
-        JS_GetProperty(
+        // BCE (error.rs:74): same clearing-probe contract as get_string_prop
+        // — a failed read on a caller-supplied object consumes its pending
+        // exception instead of leaking it onto the ScriptThread context.
+        bao_stealth::engine_props::get_property_clearing(
             cx,
             obj.into(),
-            c_name.as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut v,
-            },
+            c_name.as_cstr(),
+            &mut v,
         );
         v
     }

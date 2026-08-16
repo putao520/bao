@@ -3703,7 +3703,6 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     #[derive(Clone, Copy)]
     struct ConcatEntry {
         obj: *mut JSObject,
-        is_view: bool,
     }
     // GC-trace the element objects so they survive across loop iterations
     // (JS_GetElement triggers user-defined getters which can trigger GC).
@@ -3720,26 +3719,39 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
                 ptr: &mut elem,
             },
         );
+        // Node contract: every list[i] must be a Buffer/Uint8Array (any
+        // ArrayBufferView). Strings, numbers, null and plain objects throw
+        // ERR_INVALID_ARG_TYPE — the old code silently dropped non-object
+        // items (Buffer.concat(["hi"]) returned an EMPTY buffer).
         if !elem.is_object() {
-            entries.push(ConcatEntry {
-                obj: ::std::ptr::null_mut(),
-                is_view: false,
-            });
-            continue;
+            let msg = format!(
+                "The \"list[{}]\" argument must be an instance of Buffer or Uint8Array",
+                i
+            );
+            let c_msg =
+                ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
+                    ::std::ffi::CString::new("list argument must be Buffer or Uint8Array")
+                        .unwrap()
+                });
+            mozjs::error::throw_type_error(cx, c_msg.as_ref());
+            return false;
         }
         let elem_obj = elem.to_object();
+        if !mozjs_sys::jsapi::JS_IsArrayBufferViewObject(elem_obj) {
+            let msg = format!(
+                "The \"list[{}]\" argument must be an instance of Buffer or Uint8Array",
+                i
+            );
+            let c_msg =
+                ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
+                    ::std::ffi::CString::new("list argument must be Buffer or Uint8Array")
+                        .unwrap()
+                });
+            mozjs::error::throw_type_error(cx, c_msg.as_ref());
+            return false;
+        }
         rooted_vec.append(elem_obj);
-        // Use a typed-array probe to mark this element. We do not yet read
-        // the final length — getters that fire on later indices may still
-        // mutate this element's backing store. The probe is only used to
-        // distinguish typed-array views (subject to detach/resize
-        // semantics) from legacy array inputs.
-        let (probe_len, probe_data) = buffer_view_bytes(elem_obj);
-        let is_view = probe_len > 0 || !probe_data.is_null();
-        entries.push(ConcatEntry {
-            obj: elem_obj,
-            is_view,
-        });
+        entries.push(ConcatEntry { obj: elem_obj });
     }
 
     // Second sweep: read each element's final length & data. Now every
@@ -3748,82 +3760,46 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let mut element_data: Vec<*mut u8> = Vec::with_capacity(list_len);
     let mut total: usize = 0;
     for entry in entries.iter() {
-        if entry.obj.is_null() {
-            element_lengths.push(0);
-            element_data.push(::std::ptr::null_mut());
-            continue;
+        // All entries are ArrayBufferViews (validated in sweep one). The
+        // generic view accessor covers Uint8Array AND DataView/DataView-like
+        // views; the byteOffset-adjusted data pointer is returned directly.
+        let mut cur_len: usize = 0;
+        let mut is_shared = false;
+        let mut cur_data: *mut u8 = ::std::ptr::null_mut();
+        let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+            entry.obj,
+            &mut cur_len,
+            &mut is_shared,
+            &mut cur_data,
+        );
+        // Detach detection: a view whose backing store has been detached
+        // reports a null data pointer. Bun throws TypeError — without this
+        // guard we'd skip the element and potentially expose uninitialized
+        // heap in the output.
+        if unwrapped.is_null() || cur_data.is_null() {
+            let c_msg = c"Cannot perform Buffer.concat on a detached ArrayBuffer";
+            mozjs::error::throw_type_error(cx, c_msg.as_ref());
+            return false;
         }
-        if entry.is_view {
-            let (cur_len, cur_data) = buffer_view_bytes(entry.obj);
-            // Detach detection: a typed-array view whose backing store has
-            // been detached reports length 0 and a null data pointer. Bun
-            // throws TypeError — without this guard we'd skip the element
-            // and potentially expose uninitialized heap in the output.
-            if cur_data.is_null() {
-                let c_msg = c"Cannot perform Buffer.concat on a detached ArrayBuffer";
-                mozjs::error::throw_type_error(cx, c_msg.as_ref());
-                return false;
-            }
-            // @trace REQ-ENG-005 [entity:Buffer] — refuse concat that would
-            // overflow MAX_BUFFER_SIZE. `Buffer.concat([huge, huge, ...])` is
-            // the common abuse vector (bun/test/js/node/buffer-concat.test.ts
-            // allocates 1024 × 64 MiB), so we bail out as soon as the running
-            // total crosses the ceiling rather than waiting for OOM.
-            if cur_len > MAX_BUFFER_SIZE || total.saturating_add(cur_len) > MAX_BUFFER_SIZE {
-                let msg = format!(
-                    "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
-                    MAX_BUFFER_SIZE
-                );
-                let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
-                    ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap()
-                });
-                mozjs::error::throw_range_error(cx, c_msg.as_ref());
-                return false;
-            }
-            element_lengths.push(cur_len);
-            element_data.push(cur_data);
-            total = total.saturating_add(cur_len);
-        } else {
-            // Legacy non-typed-array input: read the JS `length` property
-            // and copy element-by-element. No detach semantics apply.
-            rooted!(&in(cx_ref) let entry_root = entry.obj);
-            let mut blen = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                entry_root.handle().into(),
-                c"length".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut blen,
-                },
+        // @trace REQ-ENG-005 [entity:Buffer] — refuse concat that would
+        // overflow MAX_BUFFER_SIZE. `Buffer.concat([huge, huge, ...])` is
+        // the common abuse vector (bun/test/js/node/buffer-concat.test.ts
+        // allocates 1024 × 64 MiB), so we bail out as soon as the running
+        // total crosses the ceiling rather than waiting for OOM.
+        if cur_len > MAX_BUFFER_SIZE || total.saturating_add(cur_len) > MAX_BUFFER_SIZE {
+            let msg = format!(
+                "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
+                MAX_BUFFER_SIZE
             );
-            let b_len = if blen.is_int32() {
-                blen.to_int32().max(0) as usize
-            } else if blen.is_double() {
-                let d = blen.to_double();
-                if d.is_finite() && d > 0.0 {
-                    d as usize
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-            if b_len > MAX_BUFFER_SIZE || total.saturating_add(b_len) > MAX_BUFFER_SIZE {
-                let msg = format!(
-                    "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
-                    MAX_BUFFER_SIZE
-                );
-                let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
-                    ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap()
-                });
-                mozjs::error::throw_range_error(cx, c_msg.as_ref());
-                return false;
-            }
-            element_lengths.push(b_len);
-            element_data.push(::std::ptr::null_mut());
-            total = total.saturating_add(b_len);
+            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
+                ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap()
+            });
+            mozjs::error::throw_range_error(cx, c_msg.as_ref());
+            return false;
         }
+        element_lengths.push(cur_len);
+        element_data.push(cur_data);
+        total = total.saturating_add(cur_len);
     }
 
     // @trace REQ-ENG-005 [algorithm:buffer_concat]
@@ -3880,12 +3856,9 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 
     let mut all_bytes = vec![0u8; target_total];
     let mut cursor: usize = 0;
-    for (i, entry) in entries.iter().enumerate() {
+    for (i, _entry) in entries.iter().enumerate() {
         if cursor >= target_total {
             break;
-        }
-        if entry.obj.is_null() {
-            continue;
         }
         let b_len = *element_lengths.get(i).unwrap_or(&0);
         if b_len == 0 {
@@ -3896,29 +3869,10 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             cursor = cursor.saturating_add(b_len);
             continue;
         }
+        // Sweep two guarantees non-null data for every entry (detach already
+        // threw TypeError there) — plain memcpy, no element-copy fallback.
         let data = *element_data.get(i).unwrap_or(&::std::ptr::null_mut());
-        if !data.is_null() {
-            ::std::ptr::copy_nonoverlapping(data, all_bytes.as_mut_ptr().add(cursor), copy_len);
-        } else {
-            rooted!(&in(cx_ref) let entry_root = entry.obj);
-            for j in 0..copy_len {
-                let mut byte_val = UndefinedValue();
-                JS_GetElement(
-                    cx,
-                    entry_root.handle().into(),
-                    j as u32,
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut byte_val,
-                    },
-                );
-                all_bytes[cursor + j] = if byte_val.is_int32() {
-                    byte_val.to_int32() as u8
-                } else {
-                    0
-                };
-            }
-        }
+        ::std::ptr::copy_nonoverlapping(data, all_bytes.as_mut_ptr().add(cursor), copy_len);
         cursor = cursor.saturating_add(b_len);
     }
     create_buffer_from_bytes(cx, &args, &all_bytes)
@@ -6236,12 +6190,21 @@ if (typeof _g.History === 'undefined') {
     if (i >= 0 && i < this._states.length) { this._index = i; this._dispatchPopState(); }
   };
   History.prototype._dispatchPopState = function() {
-    if (typeof this.dispatchEvent === 'function') {
-      var PopStateEvent = (typeof _g.PopStateEvent !== 'undefined') ? _g.PopStateEvent : Event;
-      this.dispatchEvent(new PopStateEvent('popstate', { state: this.state }));
+    // BCE (error.rs:74 residue): bare `Event` reference throws
+    // ReferenceError on globals that lack the Event constructor (e.g. the
+    // bare Node Realm global) — the throwing polyfill left a pending
+    // exception that leaked into servo's ScriptThread. Guard the fallback.
+    var __popCtor = (typeof _g.PopStateEvent !== 'undefined')
+      ? _g.PopStateEvent
+      : (typeof Event !== 'undefined' ? Event : null);
+    if (this.dispatchEvent === 'function') {
+      this.dispatchEvent(__popCtor
+        ? new __popCtor('popstate', { state: this.state })
+        : { type: 'popstate', state: this.state });
     } else if (typeof _g.dispatchEvent === 'function') {
-      var PopStateEvent2 = (typeof _g.PopStateEvent !== 'undefined') ? _g.PopStateEvent : Event;
-      _g.dispatchEvent(new PopStateEvent2('popstate', { state: this.state }));
+      _g.dispatchEvent(__popCtor
+        ? new __popCtor('popstate', { state: this.state })
+        : { type: 'popstate', state: this.state });
     }
   };
   _g.History = History;
@@ -6258,7 +6221,13 @@ if (typeof _g.PopStateEvent === 'undefined') {
     this.bubbles = !!(options && options.bubbles);
     this.cancelable = !!(options && options.cancelable);
   }
-  PopStateEvent.prototype = Object.create(Event.prototype);
+  // BCE (error.rs:74 residue): `Object.create(Event.prototype)` executes at
+  // install time and threw ReferenceError("Event is not defined") on the
+  // bare Node Realm global — leaving a pending exception that detonated
+  // servo's error.rs:74 assert. Fall back to a plain prototype there.
+  PopStateEvent.prototype = (typeof Event !== 'undefined' && Event.prototype)
+    ? Object.create(Event.prototype)
+    : {};
   PopStateEvent.prototype.constructor = PopStateEvent;
   _g.PopStateEvent = PopStateEvent;
 }
@@ -6269,7 +6238,15 @@ if (typeof _g.PopStateEvent === 'undefined') {
         let opts = mozjs::glue::NewCompileOptions(raw, c"web_api_constructors".as_ptr(), 1);
         if !opts.is_null() {
             let mut src_text = mozjs::rust::transform_str_to_source_text(src);
-            mozjs_sys::jsapi::JS::Evaluate2(
+            // BCE (P0 browser startup panic, servo error.rs:74): a failed
+            // evaluation returns false WITH the thrown exception pending on
+            // the context. This install runs on the ScriptThread during page
+            // init; an unconsumed pending exception detonates servo's
+            // `assert!(!JS_IsExceptionPending)` in `throw_dom_exception` on
+            // the next error path, killing the ScriptThread. A polyfill that
+            // fails to install is absent — the failure is a handled outcome;
+            // consume the exception, never leak it into servo's loop.
+            let evaluated = mozjs_sys::jsapi::JS::Evaluate2(
                 raw,
                 opts,
                 &mut src_text,
@@ -6278,6 +6255,9 @@ if (typeof _g.PopStateEvent === 'undefined') {
                     ptr: &mut rval,
                 },
             );
+            if !evaluated {
+                JS_ClearPendingException(raw);
+            }
             libc::free(opts as *mut _);
         }
     }

@@ -450,14 +450,19 @@ fn value_display(cx: *mut JSContext, val: JSVal) -> String {
         let read_prop = |name: &::std::ffi::CStr| -> Option<String> {
             let mut v = UndefinedValue();
             unsafe {
-                JS_GetProperty(
+                // BCE (P0 browser startup panic, servo error.rs:74): the
+                // thrown value is a caller-supplied object; a hostile
+                // `stack`/`message` getter makes JS_GetProperty fail WITH
+                // the exception pending. This runs on the servo
+                // ScriptThread context mid-routing — a leaked second
+                // exception detonates servo's
+                // `assert!(!JS_IsExceptionPending)` on the next error path.
+                // Clearing probe: failed read = "absent" diagnostic.
+                bao_stealth::engine_props::get_property_clearing(
                     cx,
                     obj.handle().into(),
-                    name.as_ptr(),
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut v,
-                    },
+                    name,
+                    &mut v,
                 );
             }
             if v.is_string() {

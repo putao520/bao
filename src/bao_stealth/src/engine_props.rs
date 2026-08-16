@@ -13,6 +13,7 @@
 // servo's event-loop isolation flag.
 
 use ::std::cell::RefCell;
+use ::std::ffi::CStr;
 use ::std::marker::PhantomData;
 use ::std::ptr;
 use ::std::sync::OnceLock;
@@ -932,10 +933,13 @@ unsafe extern "C" fn webgl_get_parameter_override(
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_root = this_val.to_object());
     let mut has: bool = false;
-    if !JS_HasProperty(
+    // BCE (error.rs:74): `this` is a servo DOM WebGL context instance — a
+    // failed HasProperty probe leaves a pending exception on the context
+    // (cleared here); "probe failed" reads as "no original saved".
+    if !has_property_clearing(
         cx,
         this_root.handle().into(),
-        c"__originalGetParameter__".as_ptr(),
+        c"__originalGetParameter__",
         &mut has,
     ) || !has
     {
@@ -943,15 +947,10 @@ unsafe extern "C" fn webgl_get_parameter_override(
         return true;
     }
     let mut fn_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        this_root.handle().into(),
-        c"__originalGetParameter__".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: PhantomData,
-            ptr: &mut fn_val,
-        },
-    );
+    if !get_property_clearing(cx, this_root.handle().into(), c"__originalGetParameter__", &mut fn_val) {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
     if !fn_val.is_object() {
         args.rval().set(UndefinedValue());
         return true;
@@ -1055,29 +1054,87 @@ unsafe fn define_permanent_getter(
         // Delete failed — property may already be PERMANENT.
         // The subsequent JS_DefineProperty1 will also fail safely,
         // returning false without corrupting state.
+        //
+        // BCE (P0 browser startup panic, servo error.rs:74): a failed
+        // delete on a DOM host object (unforgeable / intercepted by the
+        // DOM proxy) can leave a pending exception — a throwing delete
+        // hook returns false WITH the exception pending. Consume it:
+        // "delete refused" is a handled outcome here, not an error to
+        // propagate, and a stale pending exception detonates servo's
+        // `assert!(!JS_IsExceptionPending)` in `throw_dom_exception`
+        // on the next error path, killing the ScriptThread at page init.
+        JS_ClearPendingException(cx);
     }
     let attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
     let ok = JS_DefineProperty1(cx, obj, c_name.as_ptr(), getter, None, attrs);
+    if !ok && JS_IsExceptionPending(cx) {
+        // BCE (error.rs:74): same contract — a refused define may leave
+        // the exception pending. This is a best-effort override; a
+        // rejected define must not poison the shared ScriptThread cx.
+        JS_ClearPendingException(cx);
+    }
     ok
 }
 
 /// Get a sub-object property (e.g., global.navigator) as a raw *mut JSObject.
+
+/// BCE (P0 browser startup panic, servo error.rs:74): probing a DOM accessor
+/// can THROW — e.g. opaque-origin (data:/about:blank) storage getters raise
+/// SecurityError. The JSAPI contract on failure is "returns false + pending
+/// exception"; an unobserved pending exception left on the context detonates
+/// servo's `assert!(!JS_IsExceptionPending)` in `throw_dom_exception` on the
+/// next error path and kills the ScriptThread at page init (pipeline never
+/// ready, CDP never listens). Every capability probe in this module goes
+/// through here: a throwing getter reads as "property not available", with
+/// the exception consumed.
+pub unsafe fn get_property_clearing(cx: *mut JSContext, obj: HandleObject, name: &CStr, out: &mut JSVal) -> bool {
+    if JS_GetProperty(
+        cx,
+        obj,
+        name.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: PhantomData,
+            ptr: out,
+        },
+    ) {
+        true
+    } else {
+        JS_ClearPendingException(cx);
+        *out = UndefinedValue();
+        false
+    }
+}
+
+/// `JS_HasProperty` sibling of [`get_property_clearing`]: a failed probe
+/// (throwing accessor / proxy hook) returns `false` WITH the pending
+/// exception consumed — "property not present" is the only observable
+/// outcome, never a leaked exception on the context.
+pub unsafe fn has_property_clearing(cx: *mut JSContext, obj: HandleObject, name: &CStr, has: &mut bool) -> bool {
+    if JS_HasProperty(cx, obj, name.as_ptr(), has) {
+        true
+    } else {
+        JS_ClearPendingException(cx);
+        *has = false;
+        false
+    }
+}
+
 unsafe fn get_subobject(cx: *mut JSContext, obj: HandleObject, prop: &str) -> *mut JSObject {
     let c_prop = bun_core::ZBox::from_bytes(prop.as_bytes());
     let mut has: bool = false;
-    if !JS_HasProperty(cx, obj, c_prop.as_ptr(), &mut has) || !has {
+    if !JS_HasProperty(cx, obj, c_prop.as_ptr(), &mut has) {
+        // BCE (error.rs:74): a failed HasProperty probe also leaves a pending
+        // exception — consume it here, never leak it into servo's loop.
+        JS_ClearPendingException(cx);
+        return ptr::null_mut();
+    }
+    if !has {
         return ptr::null_mut();
     }
     let mut val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj,
-        c_prop.as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: PhantomData,
-            ptr: &mut val,
-        },
-    );
+    if !get_property_clearing(cx, obj, c_prop.as_cstr(), &mut val) {
+        return ptr::null_mut();
+    }
     if val.is_object() {
         val.to_object()
     } else {
@@ -1110,6 +1167,14 @@ unsafe fn ensure_subobject(cx: *mut JSContext, obj: HandleObject, prop: &str) ->
         new_obj_root.handle().into(),
         attrs,
     ) {
+        // BCE (P0 browser startup panic, servo error.rs:74): a refused
+        // define — e.g. `navigator` on a servo Window whose own
+        // non-configurable WebIDL attribute occupies the name — leaves a
+        // pending "can't redefine non-configurable property" exception.
+        // Consume it: "could not install the subobject" is the handled
+        // outcome; the stale exception would detonate servo's
+        // `assert!(!JS_IsExceptionPending)` on its next error path.
+        JS_ClearPendingException(cx);
         return ptr::null_mut();
     }
     new_obj
@@ -1123,19 +1188,16 @@ unsafe fn ensure_subobject(cx: *mut JSContext, obj: HandleObject, prop: &str) ->
 /// native function that intercepts vendor/renderer queries.
 unsafe fn install_webgl_override(cx: *mut JSContext, global: HandleObject) -> bool {
     let mut has: bool = false;
-    if !JS_HasProperty(cx, global, c"WebGLRenderingContext".as_ptr(), &mut has) || !has {
+    // BCE (error.rs:74): a failed HasProperty probe on the servo Window
+    // global (proxy resolve hook) leaves a pending exception — consume it;
+    // "probe failed" reads as "WebGL unavailable here" (non-fatal).
+    if !has_property_clearing(cx, global, c"WebGLRenderingContext", &mut has) || !has {
         return true;
     }
     let mut ctor_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        global,
-        c"WebGLRenderingContext".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: PhantomData,
-            ptr: &mut ctor_val,
-        },
-    );
+    if !get_property_clearing(cx, global, c"WebGLRenderingContext", &mut ctor_val) {
+        return true; // BCE (error.rs:74): throwing probe consumed, non-fatal
+    }
     if !ctor_val.is_object() {
         return true;
     }
@@ -1144,15 +1206,9 @@ unsafe fn install_webgl_override(cx: *mut JSContext, global: HandleObject) -> bo
     rooted!(&in(wrapped_cx) let ctor_root = ctor_val.to_object());
 
     let mut proto_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        ctor_root.handle().into(),
-        c"prototype".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: PhantomData,
-            ptr: &mut proto_val,
-        },
-    );
+    if !get_property_clearing(cx, ctor_root.handle().into(), c"prototype", &mut proto_val) {
+        return true; // BCE (error.rs:74): throwing probe consumed, non-fatal
+    }
     if !proto_val.is_object() {
         return true;
     }
@@ -1160,15 +1216,7 @@ unsafe fn install_webgl_override(cx: *mut JSContext, global: HandleObject) -> bo
 
     // Save original getParameter as __originalGetParameter__
     let mut orig_gp = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        proto_root.handle().into(),
-        c"getParameter".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: PhantomData,
-            ptr: &mut orig_gp,
-        },
-    );
+    let _ = get_property_clearing(cx, proto_root.handle().into(), c"getParameter", &mut orig_gp);
 
     if orig_gp.is_object() {
         rooted!(&in(wrapped_cx) let orig_fn_root = orig_gp.to_object());
@@ -1246,26 +1294,33 @@ unsafe fn delete_cdp_leaked_properties(cx: *mut JSContext, global: HandleObject)
     // Delete chrome.runtime — ChromeDriver exposes chrome.runtime on window
     {
         let mut has_chrome: bool = false;
-        if JS_HasProperty(cx, global, c"chrome".as_ptr(), &mut has_chrome) && has_chrome {
+        // BCE (error.rs:74): failed HasProperty probes on the servo Window
+        // global consume their pending exception ("absent" outcome only).
+        if has_property_clearing(cx, global, c"chrome", &mut has_chrome) && has_chrome {
             let chrome_obj = get_subobject(cx, global, "chrome");
             if !chrome_obj.is_null() {
                 let mut wrapped_cx =
                     mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
                 rooted!(&in(wrapped_cx) let chrome_root = chrome_obj);
                 let mut has_runtime: bool = false;
-                if JS_HasProperty(
+                if has_property_clearing(
                     cx,
                     chrome_root.handle().into(),
-                    c"runtime".as_ptr(),
+                    c"runtime",
                     &mut has_runtime,
                 ) && has_runtime
                 {
-                    JS_DeleteProperty(
+                    // BCE (error.rs:74): a refused delete on a host object
+                    // can leave a pending exception — consume it (the
+                    // outcome "still present" is handled/acceptable).
+                    if !JS_DeleteProperty(
                         cx,
                         chrome_root.handle().into(),
                         c"runtime".as_ptr(),
                         &mut op_result,
-                    );
+                    ) {
+                        JS_ClearPendingException(cx);
+                    }
                 }
             }
         }
@@ -1281,8 +1336,12 @@ unsafe fn delete_cdp_leaked_properties(cx: *mut JSContext, global: HandleObject)
     for cdc_name in &cdc_globals {
         let c_name = bun_core::ZBox::from_bytes(cdc_name.as_bytes());
         let mut has: bool = false;
-        if JS_HasProperty(cx, global, c_name.as_ptr(), &mut has) && has {
-            JS_DeleteProperty(cx, global, c_name.as_ptr(), &mut op_result);
+        if has_property_clearing(cx, global, c_name.as_cstr(), &mut has) && has {
+            // BCE (error.rs:74): consume any exception a refused delete
+            // leaves pending (handled outcome, not an error to propagate).
+            if !JS_DeleteProperty(cx, global, c_name.as_ptr(), &mut op_result) {
+                JS_ClearPendingException(cx);
+            }
         }
     }
 
@@ -1356,6 +1415,18 @@ unsafe fn inject_js_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool 
             // JS evaluation failed (e.g., DOM APIs not yet available) — non-fatal
             // Audio hooks are best-effort; the engine-layer getters
             // (navigator/screen/WebGL) still provide core anti-fingerprinting.
+            //
+            // BCE (P0 browser startup panic, servo error.rs:74): a failed
+            // evaluation leaves the thrown exception PENDING on the context.
+            // This arm used to return `true` without consuming it; the stale
+            // exception then detonated servo's `assert!(!JS_IsExceptionPending)`
+            // in `throw_dom_exception` on the next error path, killing the
+            // ScriptThread at page init (pipeline never ready, CDP never
+            // listening). Consume it — the failure is already handled as
+            // best-effort above.
+            unsafe {
+                mozjs::jsapi::JS_ClearPendingException(cx.raw_cx());
+            }
             true
         }
     }
@@ -1376,6 +1447,7 @@ pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let global_root = global);
     let mut all_ok = true;
+
 
     // --- Navigator properties ---
     let nav = ensure_subobject(cx, global_root.handle().into(), "navigator");

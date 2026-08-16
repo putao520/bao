@@ -18,13 +18,37 @@ use mozjs::rust::wrappers2 as w2;
 use crate::require::cache_builtin;
 
 /// Pure worker-id predicate (no env access; testable without global state).
+///
+/// Strict form (BCE hardening for the "isPrimary occasionally flips false"
+/// class): fork() only ever issues ids 1, 2, 3… (see the `_nextId` counter in
+/// cluster_fork), so a well-formed worker env is a parseable integer ≥ 1.
+/// Anything else — var present but EMPTY (e.g. `BAO_CLUSTER_WORKER_ID= bao`),
+/// "0", or garbage — was never issued by our fork and must classify as
+/// primary. The previous `is_some()` predicate flipped primary→worker on any
+/// stray/empty env entry.
 fn is_worker_env(worker_id: Option<&str>) -> bool {
-    worker_id.is_some()
+    match worker_id {
+        Some(s) => s.parse::<u32>().map(|n| n >= 1).unwrap_or(false),
+        None => false,
+    }
 }
+
+/// Process-wide frozen worker classification.
+///
+/// `process.env.X = v` in JS bridges to `std::env::set_var` (bun_api env
+/// setter), so a per-install env read would let a user env write in one realm
+/// flip `isPrimary` for every realm created afterwards (browser PagePool /
+/// multi-context processes create realms lazily). Freezing at first install
+/// makes the classification a property of process birth (exec env), which is
+/// the Node semantic (NODE_WORKER_ID is decided by how the process was
+/// started, never by later env writes).
+static IS_WORKER_FROZEN: ::std::sync::OnceLock<bool> = ::std::sync::OnceLock::new();
 
 /// Check if this process is a cluster worker (started with --cluster-worker env).
 fn is_cluster_worker() -> bool {
-    is_worker_env(::std::env::var("BAO_CLUSTER_WORKER_ID").ok().as_deref())
+    *IS_WORKER_FROZEN.get_or_init(|| {
+        is_worker_env(::std::env::var("BAO_CLUSTER_WORKER_ID").ok().as_deref())
+    })
 }
 
 // ─── Module install ────────────────────────────────────────────────────────
@@ -1471,8 +1495,22 @@ mod tests {
 
     #[test]
     fn test_is_cluster_worker_with_env() {
+        // fork() issues ids 1, 2, 3… — anything ≥ 1 is a worker.
+        assert!(is_worker_env(Some("1")));
         assert!(is_worker_env(Some("3")));
-        assert!(is_worker_env(Some("0")));
+        // "0" is never issued by fork (first id is 1): classify as primary.
+        assert!(!is_worker_env(Some("0")));
+    }
+
+    #[test]
+    fn test_is_cluster_worker_strict_predicate() {
+        // Empty / malformed env entries (e.g. `BAO_CLUSTER_WORKER_ID= bao`)
+        // must NOT flip a primary into a worker — fork never issues these.
+        assert!(!is_worker_env(Some("")));
+        assert!(!is_worker_env(Some("garbage")));
+        assert!(!is_worker_env(Some("-1")));
+        assert!(!is_worker_env(Some("1.5")));
+        assert!(!is_worker_env(Some("1x")));
     }
 
     #[test]

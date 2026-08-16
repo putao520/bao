@@ -54,7 +54,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use servo::{Opts, Servo, ServoBuilder};
+use servo::{Opts, Preferences, Servo, ServoBuilder};
 
 use bao_cdp::domains::ServoTargetProvider;
 use bao_cdp::servo_bridge::bridge_channel;
@@ -166,6 +166,24 @@ impl BaoRuntime {
         // `force_isolate_event_loops == false`). Our config sets it `true`,
         // so observing `true` here means a prior BaoRuntime already won.
         let servo_already_initialized = servo::opts::is_initialized();
+
+        // Pref override surface (bao is the embedder; vendor defaults stay
+        // untouched). `Servo::new` ends with
+        // `prefs::set(preferences.unwrap_or_default())` — passing NO builder
+        // preferences resets every pref to `Preferences::default()`. So the
+        // only durable injection point is `ServoBuilder::preferences`, on
+        // BOTH branches (the already-initialized branch would otherwise wipe
+        // the flip below on the next BaoRuntime). Both branches start from
+        // `Preferences::default()` — exactly what `Servo::new` would install
+        // without a builder override — so the only delta is the flip.
+        //
+        // `dom_indexeddb_enabled` defaults to false upstream (experimental),
+        // but bao is a full browser runtime and servo ships a real IDB
+        // implementation; `GlobalScope::obtain_storage_key` reads this pref
+        // at runtime per IDB open, so every page (and worker) scope gets it.
+        let mut preferences = Preferences::default();
+        preferences.dom_indexeddb_enabled = true;
+
         let servo: Rc<Servo> = Rc::new(if servo_already_initialized {
             // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls
             // `initialize_options(opts.unwrap_or_default())` — if we pass no
@@ -188,9 +206,13 @@ impl BaoRuntime {
             // "conflicting config" panic.
             ServoBuilder::default()
                 .opts(servo::opts::get().clone())
+                .preferences(preferences)
                 .build()
         } else {
-            ServoBuilder::default().opts(desired_opts).build()
+            ServoBuilder::default()
+                .opts(desired_opts)
+                .preferences(preferences)
+                .build()
         });
 
         let delegate = Rc::new(BaoServoDelegate::new());

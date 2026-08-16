@@ -36,6 +36,9 @@ bun_core = { path = "../bun_core" }
 bun_url = { path = "../url" }
 bun_uws = { path = "../uws" }
 bun_uws_sys = { path = "../uws_sys" }
+# @trace REQ-ENG-006 [api:Bun.semver.order] — Bun's own semver implementation
+# (parse + orderWithoutBuild), the same engine install/resolver use.
+bun_semver = { path = "../semver" }
 # Real owner of liblsquic.a / liblshpack.a — product force_link (not via stubs).
 # @trace STUB-INVENTORY: replaces bao_native_stubs::force_c_lib_stubs lsquic leg
 bun_lsquic_sys = { path = "../lsquic_sys" }

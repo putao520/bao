@@ -226,7 +226,9 @@ pub unsafe fn install(
     cx: &mut mozjs::context::JSContext,
     bun_obj: mozjs::rust::Handle<*mut JSObject>,
 ) {
-    // Instance class: `new Mime(type, subtype, params)` with essence()/toString().
+    // Instance class: `new Mime(type, subtype, params)` with essence()/toString()
+    // plus getType/getExtension/normalizeKind instance delegates to the global
+    // server table (npm-mime instances expose the lookup API too).
     let ctor_src = r#"(function() {
   function Mime(type, subtype, params) {
     this.type = String(type || '');
@@ -243,6 +245,17 @@ pub unsafe fn install(
   };
   Mime.prototype.essence = function() {
     return this.type + '/' + this.subtype;
+  };
+  // npm-mime instance face: instances carry the same lookups as the class
+  // (they consult the shared Bun.Mime statics — the global server table).
+  Mime.prototype.getType = function getType(pathOrExt) {
+    return Mime.getType(pathOrExt);
+  };
+  Mime.prototype.getExtension = function getExtension(type) {
+    return Mime.getExtension(type);
+  };
+  Mime.prototype.normalizeKind = function normalizeKind(kind) {
+    return Mime.normalizeKind(kind);
   };
   return Mime;
 })()"#;

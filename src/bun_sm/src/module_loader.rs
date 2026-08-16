@@ -431,8 +431,18 @@ impl ModuleLoader {
 
         drain_job_queue(realm_cx);
 
+        // BCE (module timer keepalive): drive the hook UNBOUNDED, exactly
+        // like the script path (`JsContext::eval`'s `loop {}`). The former
+        // `for _ in 0..1000` cap killed `bao run app.mjs` after ~1000 ticks
+        // while an active Bun.serve/timer still held the loop alive — with a
+        // server registered, `drain_and_check` takes the non-blocking
+        // `tick_without_idle` branch (~1ms/iteration), so the cap expired in
+        // ~1.2s and the process exited mid-serve. Node semantics: an active
+        // handle (server) or pending timer keeps the loop — and therefore the
+        // process — alive; only the hook's own `false` (no pending work, or
+        // process.exit) ends it.
         if let Some(hook) = post_eval_hook {
-            for _ in 0..1000 {
+            loop {
                 if !hook(realm_cx) {
                     break;
                 }
@@ -549,6 +559,14 @@ impl ModuleLoader {
 
         drain_job_queue(realm_cx);
 
+        // `_then` variants (test-runner hand-off): the pre-callback pump
+        // stays BOUNDED. The `after_eval` callback (bun:test runner) owns the
+        // loop from here — suites commonly clear module-top-level timers
+        // inside test bodies, so an unbounded pre-test pump would spin on
+        // those timers forever and never reach the runner (regression caught
+        // by `bao test` on a file with a top-level setInterval). The run
+        // paths (`eval_module` / `eval_module_in_realm`) are unbounded —
+        // Node process semantics; see their BCE notes.
         if let Some(hook) = post_eval_hook {
             for _ in 0..1000 {
                 if !hook(realm_cx) {
@@ -660,8 +678,18 @@ impl ModuleLoader {
 
         drain_job_queue(realm_cx);
 
+        // BCE (module timer keepalive): drive the hook UNBOUNDED, exactly
+        // like the script path (`JsContext::eval`'s `loop {}`). The former
+        // `for _ in 0..1000` cap killed `bao run app.mjs` after ~1000 ticks
+        // while an active Bun.serve/timer still held the loop alive — with a
+        // server registered, `drain_and_check` takes the non-blocking
+        // `tick_without_idle` branch (~1ms/iteration), so the cap expired in
+        // ~1.2s and the process exited mid-serve. Node semantics: an active
+        // handle (server) or pending timer keeps the loop — and therefore the
+        // process — alive; only the hook's own `false` (no pending work, or
+        // process.exit) ends it.
         if let Some(hook) = post_eval_hook {
-            for _ in 0..1000 {
+            loop {
                 if !hook(realm_cx) {
                     break;
                 }
@@ -765,6 +793,14 @@ impl ModuleLoader {
 
         drain_job_queue(realm_cx);
 
+        // `_then` variants (test-runner hand-off): the pre-callback pump
+        // stays BOUNDED. The `after_eval` callback (bun:test runner) owns the
+        // loop from here — suites commonly clear module-top-level timers
+        // inside test bodies, so an unbounded pre-test pump would spin on
+        // those timers forever and never reach the runner (regression caught
+        // by `bao test` on a file with a top-level setInterval). The run
+        // paths (`eval_module` / `eval_module_in_realm`) are unbounded —
+        // Node process semantics; see their BCE notes.
         if let Some(hook) = post_eval_hook {
             for _ in 0..1000 {
                 if !hook(realm_cx) {

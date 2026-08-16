@@ -592,32 +592,46 @@ unsafe fn wrap_and_install_dom_proxy(
 
     // Get the property from Page Realm's Window global.
     let c_name = bun_core::ZBox::from_bytes(property_name.as_bytes());
-    rooted!(&in(cx) let mut prop_val = UndefinedValue());
-    JS_GetProperty(
+    // BCE (P0 browser startup panic, servo error.rs:74): probing the Page
+    // Realm Window global for window/document/navigator can hit a throwing
+    // accessor (opaque-origin pages throw SecurityError from storage/DOM
+    // getters). A failed JS_GetProperty leaves the exception pending on the
+    // shared ScriptThread context — consume it here ("absent" is the handled
+    // outcome), never leak it into servo's error path.
+    let mut raw_prop_val = UndefinedValue();
+    let got = bao_stealth::engine_props::get_property_clearing(
         raw_cx,
         page_global_root.handle().into(),
-        c_name.as_ptr(),
-        prop_val.handle_mut().into(),
+        c_name.as_cstr(),
+        &mut raw_prop_val,
     );
+    rooted!(&in(cx) let mut prop_val = raw_prop_val);
 
     // If the property is an object, wrap it for the Node Realm.
-    if prop_val.get().is_object() {
+    if got && prop_val.get().is_object() {
         // Follow servo's pattern: rooted!(&in(cx) let mut element = obj.get())
         rooted!(&in(cx) let mut prop_obj = prop_val.get().to_object());
 
         // JS_WrapObject creates a cross-Compartment proxy.
         if !JS_WrapObject(cx, prop_obj.handle_mut().into()) {
+            // BCE (error.rs:74): a failed wrap also leaves a pending
+            // exception — consume it (proxy simply not installed).
+            mozjs::jsapi::JS_ClearPendingException(raw_cx);
             return;
         }
 
         // Install the wrapped proxy on the Node Realm's global.
         rooted!(&in(cx) let mut wrapped_val = ObjectValue(prop_obj.get()));
-        JS_SetProperty(
+        // BCE (error.rs:74): a refused set leaves a pending exception —
+        // consume it (handled outcome, not an error to propagate).
+        if !JS_SetProperty(
             raw_cx,
             node_global.into(),
             c_name.as_ptr(),
             wrapped_val.handle_mut().into(),
-        );
+        ) {
+            mozjs::jsapi::JS_ClearPendingException(raw_cx);
+        }
     }
 }
 
@@ -663,24 +677,45 @@ unsafe fn install_lazy_dom_getters(
         (c"ServiceWorker", Some(lazy_dom_getter_service_worker)),
     ];
     for &(name, getter) in obj_getters {
-        JS_DefineProperty1(
+        // BCE (P0 browser startup panic, servo error.rs:74): on the Node
+        // Realm global, `navigator`/`screen` may ALREADY be installed as
+        // JSPROP_PERMANENT plain values by `install_stealth_props →
+        // ensure_subobject` (which runs earlier in `install_web_apis`; the
+        // PERMANENT flag there guards against double-install corruption).
+        // Redefining a non-configurable property throws
+        // "TypeError: can't redefine non-configurable property" — the failed
+        // define leaves that exception PENDING on the ScriptThread cx; an
+        // unconsumed pending exception later detonates servo's
+        // `assert!(!JS_IsExceptionPending)` in `throw_dom_exception` and
+        // kills the ScriptThread. The stealth-supplied PERMANENT value is a
+        // valid (fingerprint-consistent) supply for the Node Realm, so a
+        // refused lazy-getter override is a handled outcome — consume the
+        // exception instead of leaking it into servo's loop.
+        if !JS_DefineProperty1(
             raw_cx,
             node_global.into(),
             name.as_ptr(),
             getter,
             None,
             obj_attrs,
-        );
+        ) {
+            mozjs::jsapi::JS_ClearPendingException(raw_cx);
+        }
     }
     for &(name, getter) in ctor_getters {
-        JS_DefineProperty1(
+        // BCE (error.rs:74): same refused-define contract as obj_getters —
+        // a PERMANENT `Worker`-family constructor from a prior install
+        // refuses the redefine; consume the pending exception.
+        if !JS_DefineProperty1(
             raw_cx,
             node_global.into(),
             name.as_ptr(),
             getter,
             None,
             ctor_attrs,
-        );
+        ) {
+            mozjs::jsapi::JS_ClearPendingException(raw_cx);
+        }
     }
 }
 
@@ -830,15 +865,21 @@ unsafe fn lazy_constructor_getter_impl(
     // Get the constructor from Page Realm's Window global
     rooted!(&in(cx) let page_global_root = page_global);
     let c_name = bun_core::ZBox::from_bytes(property_name.as_bytes());
-    rooted!(&in(cx) let mut prop_val = UndefinedValue());
-    JS_GetProperty(
+    // BCE (P0 browser startup panic, servo error.rs:74): probing the Page
+    // Realm Window global can hit a throwing accessor; a failed
+    // JS_GetProperty leaves the exception pending on the shared ScriptThread
+    // context. Consume it here — the ReferenceError branch below then throws
+    // its own clean diagnostic instead of stacking on a stale exception.
+    let mut raw_prop_val = UndefinedValue();
+    let got = bao_stealth::engine_props::get_property_clearing(
         raw_cx,
         page_global_root.handle().into(),
-        c_name.as_ptr(),
-        prop_val.handle_mut().into(),
+        c_name.as_cstr(),
+        &mut raw_prop_val,
     );
+    rooted!(&in(cx) let mut prop_val = raw_prop_val);
 
-    if !prop_val.get().is_object() {
+    if !got || !prop_val.get().is_object() {
         // The constructor property doesn't exist on the Page Realm's Window.
         // This means servo's DOM bindings haven't installed it (e.g., the
         // page hasn't finished loading, or the API is not available).
@@ -1012,21 +1053,34 @@ unsafe fn lazy_dom_getter_impl(
     rooted!(&in(cx) let page_global_root = page_global);
 
     let c_name = bun_core::ZBox::from_bytes(property_name.as_bytes());
-    rooted!(&in(cx) let mut prop_val = UndefinedValue());
-    JS_GetProperty(
+    // BCE (P0 browser startup panic, servo error.rs:74): this getter runs on
+    // the servo ScriptThread context EVERY time Node Realm script reads
+    // `window`/`document`/`navigator`. The probe targets the Page Realm
+    // Window global — a throwing accessor (opaque-origin storage/DOM
+    // getters) makes JS_GetProperty return false WITH the exception
+    // pending. The old code ignored the return and reported success
+    // (`return true`), leaving the stale exception to detonate servo's
+    // `assert!(!JS_IsExceptionPending)` in `throw_dom_exception` on the
+    // next error path. Consume it — "absent" reads as `undefined`.
+    let mut raw_prop_val = UndefinedValue();
+    let got = bao_stealth::engine_props::get_property_clearing(
         raw_cx,
         page_global_root.handle().into(),
-        c_name.as_ptr(),
-        prop_val.handle_mut().into(),
+        c_name.as_cstr(),
+        &mut raw_prop_val,
     );
+    rooted!(&in(cx) let mut prop_val = raw_prop_val);
 
-    if !prop_val.get().is_object() {
+    if !got || !prop_val.get().is_object() {
         return true;
     }
 
     // Wrap the DOM object for the current Realm (Node Realm)
     rooted!(&in(cx) let mut prop_obj = prop_val.get().to_object());
     if !JS_WrapObject(&mut cx, prop_obj.handle_mut().into()) {
+        // BCE (error.rs:74): failed wrap leaves a pending exception — a
+        // getter must not report success (`return true`) with one pending.
+        mozjs::jsapi::JS_ClearPendingException(raw_cx);
         return true;
     }
 
@@ -1221,6 +1275,7 @@ unsafe fn install_all_native(
         bao_stealth::set_global_http2_fingerprint(None);
     }
 
+
     // Install stealth properties using raw JSAPI (no Handle wrapper needed)
     bao_stealth::engine_props::install_stealth_props(raw_cx, raw_global);
 
@@ -1264,7 +1319,7 @@ unsafe fn install_all_native(
         // as evaluate_in_node_realm above).
         options.set_hide_script_from_debugger(true);
         rooted!(&in(cx) let mut wasm_rval = mozjs::jsval::UndefinedValue());
-        let _ = mozjs::rust::evaluate_script(
+        let wasm_probe = mozjs::rust::evaluate_script(
             &mut cx,
             global_handle,
             wasm_check,
@@ -1275,6 +1330,18 @@ unsafe fn install_all_native(
         // A failure here is benign (WebAssembly unavailable), so the Err is
         // intentionally discarded. BCE-20260627-007: not an error swallow — the
         // probe is informational only, not a functional script.
+        //
+        // BCE (P0 browser startup panic, servo error.rs:74): "discard the Err"
+        // must still consume the pending exception a failed evaluate leaves on
+        // the context — this runs on servo's ScriptThread during page init, and
+        // a stale pending exception detonates servo's
+        // `assert!(!JS_IsExceptionPending)` in `throw_dom_exception` on the
+        // next error path, killing the ScriptThread (browser dies at startup,
+        // CDP never listens). The install_all_native borrow of this cx must
+        // return it clean.
+        if wasm_probe.is_err() {
+            mozjs::jsapi::JS_ClearPendingException(cx.raw_cx());
+        }
     }
 }
 

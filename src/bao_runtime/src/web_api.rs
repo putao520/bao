@@ -681,7 +681,7 @@ unsafe fn ws_trigger_event(
                     elements_: &ev_val,
                 };
                 let mut rval = UndefinedValue();
-                let _ = JS_CallFunctionValue(
+                let ok = JS_CallFunctionValue(
                     cx,
                     ws_obj_root.handle().into(),
                     handler_jsval.handle().into(),
@@ -691,6 +691,28 @@ unsafe fn ws_trigger_event(
                         ptr: &mut rval,
                     },
                 );
+                if !ok {
+                    // BCE (P0 browser startup panic, servo error.rs:74): the
+                    // user handler threw. The old `let _ =` left the pending
+                    // exception on the ScriptThread context (browser mode
+                    // kills the ScriptThread via servo's
+                    // `assert!(!JS_IsExceptionPending)`; node mode silently
+                    // swallowed the throw). Capture, clear, and route it —
+                    // same contract as timers.rs fire_callback.
+                    let mut exn = UndefinedValue();
+                    JS_GetPendingException(
+                        cx,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut exn,
+                        },
+                    );
+                    JS_ClearPendingException(cx);
+                    rooted!(&in(cx_ref) let reason_root = exn);
+                    if !exn.is_undefined() {
+                        crate::uncaught::route_uncaught_exception(cx, exn);
+                    }
+                }
             }
         }
     }
@@ -1702,53 +1724,58 @@ unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut
     }
 
     let input = *args.get(0).ptr;
+    // Primitive input (number/string/null) is not a BufferSource — spec
+    // TypeError. Guard BEFORE to_object(): to_object() on a non-object
+    // asserts.
+    if !input.is_object() {
+        mozjs::error::throw_type_error(
+            cx,
+            c"The provided value is not an instance of ArrayBuffer or ArrayBufferView".as_ref(),
+        );
+        return false;
+    }
 
-    let bytes = if input.is_object() {
+    // WHATWG BufferSource extraction: ArrayBufferView (Uint8Array & every
+    // other view, byteOffset-adjusted) OR ArrayBuffer. Both take the direct
+    // data-pointer path — the previous generic length+GetElement loop read
+    // view ELEMENTS one by one and produced "" for a bare ArrayBuffer (it
+    // has no `length` property). Anything that is not a BufferSource is a
+    // TypeError per spec (decode() with no args returns "" above).
+    let bytes: Vec<u8> = {
         let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let obj = input.to_object());
-        let mut len_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            obj.handle().into(),
-            c"length".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut len_val,
-            },
-        );
-        let len = if len_val.is_int32() {
-            len_val.to_int32() as u32
+        let mut len: usize = 0;
+        let mut is_shared = false;
+        let mut data: *mut u8 = ::std::ptr::null_mut();
+        let unwrapped =
+            mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(obj.get(), &mut len, &mut is_shared, &mut data);
+        if !unwrapped.is_null() && !data.is_null() {
+            // Detached views surface as length 0 + null data (handled below);
+            // a live view yields the byteOffset-adjusted pointer directly.
+            ::std::slice::from_raw_parts(data, len).to_vec()
+        } else if !unwrapped.is_null() {
+            Vec::new() // detached view: empty byte sequence per spec
         } else {
-            0
-        };
-        let mut result = Vec::with_capacity(len as usize);
-        for i in 0..len {
-            let mut elem = UndefinedValue();
-            JS_GetElement(
-                cx,
-                obj.handle().into(),
-                i,
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut elem,
-                },
-            );
-            if elem.is_int32() {
-                result.push(elem.to_int32() as u8);
+            let ab_unwrapped =
+                mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj.get(), &mut len, &mut data);
+            if !ab_unwrapped.is_null() && !data.is_null() {
+                ::std::slice::from_raw_parts(data, len).to_vec()
+            } else if !ab_unwrapped.is_null() {
+                Vec::new() // detached ArrayBuffer
+            } else {
+                mozjs::error::throw_type_error(
+                    cx,
+                    c"The provided value is not an instance of ArrayBuffer or ArrayBufferView"
+                        .as_ref(),
+                );
+                return false;
             }
         }
-        result
-    } else {
-        Vec::new()
     };
 
-    let decoded = match String::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(_) => {
-            JS_ReportErrorUTF8(cx, c"The encoded data was not valid".as_ptr());
-            return false;
-        }
-    };
+    // TextDecoder defaults to fatal:false — invalid sequences become U+FFFD
+    // replacement characters instead of throwing.
+    let decoded = String::from_utf8_lossy(&bytes).into_owned();
 
     let utf16: Vec<u16> = decoded.encode_utf16().collect();
     let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
@@ -1804,7 +1831,13 @@ pub fn install_crypto_subtle(cx: &mut mozjs::context::JSContext, global: mozjs::
     unsafe {
         rooted!(&in(cx) let global_root = global.get());
         let mut crypto_val = UndefinedValue();
-        JS_GetProperty(
+        // BCE (P0 browser startup panic, servo error.rs:74): a capability
+        // probe that hits a throwing getter returns false WITH the exception
+        // pending; an unconsumed pending exception detonates servo's
+        // `assert!(!JS_IsExceptionPending)` in `throw_dom_exception` on the
+        // next error path, killing the ScriptThread at page init. Read as
+        // "not available" and consume the exception.
+        let crypto_found = JS_GetProperty(
             cx.raw_cx(),
             global_root.handle().into(),
             c"crypto".as_ptr(),
@@ -1813,12 +1846,17 @@ pub fn install_crypto_subtle(cx: &mut mozjs::context::JSContext, global: mozjs::
                 ptr: &mut crypto_val,
             },
         );
+        if !crypto_found {
+            JS_ClearPendingException(cx.raw_cx());
+            return;
+        }
         if !crypto_val.is_object() {
             return;
         }
         rooted!(&in(cx) let crypto_obj = crypto_val.to_object());
         let mut subtle_val = UndefinedValue();
-        JS_GetProperty(
+        // BCE (error.rs:74): same probe contract as `crypto` above.
+        let subtle_found = JS_GetProperty(
             cx.raw_cx(),
             crypto_obj.handle().into(),
             c"subtle".as_ptr(),
@@ -1827,6 +1865,10 @@ pub fn install_crypto_subtle(cx: &mut mozjs::context::JSContext, global: mozjs::
                 ptr: &mut subtle_val,
             },
         );
+        if !subtle_found {
+            JS_ClearPendingException(cx.raw_cx());
+            return;
+        }
         if !subtle_val.is_object() {
             return;
         }
@@ -1928,16 +1970,12 @@ unsafe fn subtle_str_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str) ->
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_r = obj);
+    let c_name = ZBox::from_bytes(name.as_bytes());
     let mut v = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_r.handle().into(),
-        ZBox::from_bytes(name.as_bytes()).as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut v,
-        },
-    );
+    // BCE (error.rs:74): caller-supplied algorithm objects can carry
+    // throwing getters; a failed probe must consume its pending exception
+    // (browser mode runs this on the servo ScriptThread context).
+    bao_stealth::engine_props::get_property_clearing(cx, obj_r.handle().into(), c_name.as_cstr(), &mut v);
     if v.is_string() {
         Some(crate::js_to_rust_string(cx, v))
     } else {
@@ -1951,16 +1989,10 @@ unsafe fn subtle_u32_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str) ->
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_r = obj);
+    let c_name = ZBox::from_bytes(name.as_bytes());
     let mut v = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_r.handle().into(),
-        ZBox::from_bytes(name.as_bytes()).as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut v,
-        },
-    );
+    // BCE (error.rs:74): clearing probe — see subtle_str_prop.
+    bao_stealth::engine_props::get_property_clearing(cx, obj_r.handle().into(), c_name.as_cstr(), &mut v);
     if v.is_int32() && v.to_int32() >= 0 {
         Some(v.to_int32() as u32)
     } else if v.is_double() && v.to_double() >= 0.0 {
@@ -1976,16 +2008,10 @@ unsafe fn subtle_bytes_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str) 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_r = obj);
+    let c_name = ZBox::from_bytes(name.as_bytes());
     let mut v = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_r.handle().into(),
-        ZBox::from_bytes(name.as_bytes()).as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut v,
-        },
-    );
+    // BCE (error.rs:74): clearing probe — see subtle_str_prop.
+    bao_stealth::engine_props::get_property_clearing(cx, obj_r.handle().into(), c_name.as_cstr(), &mut v);
     if v.is_object() {
         Some(subtle_bytes(cx, v))
     } else {
@@ -3071,7 +3097,7 @@ pub fn install_local_storage(cx: &mut mozjs::context::JSContext, global: mozjs::
     unsafe {
         rooted!(&in(cx) let global_root = global.get());
         let mut existing = UndefinedValue();
-        JS_GetProperty(
+        let found = JS_GetProperty(
             cx.raw_cx(),
             global_root.handle().into(),
             c"localStorage".as_ptr(),
@@ -3080,6 +3106,21 @@ pub fn install_local_storage(cx: &mut mozjs::context::JSContext, global: mozjs::
                 ptr: &mut existing,
             },
         );
+        // BCE (browser startup panic, servo error.rs:74): the probe's failure
+        // return MUST be consumed. On an opaque-origin page (data:/about:
+        // blank) servo's `window.localStorage` getter THROWS SecurityError —
+        // JS_GetProperty returns false with the exception pending. The old
+        // code ignored the return, leaving the pending exception on the
+        // context; the next servo error path (`throw_dom_exception`) then
+        // tripped `assert!(!JS_IsExceptionPending)` and killed Script#1 at
+        // startup (pipeline never ready, CDP never listening). This is a
+        // Rust-side capability probe, so a throwing getter means "servo owns
+        // storage here, possibly origin-blocked" — clear the exception and
+        // leave the page's storage semantics to servo.
+        if !found {
+            JS_ClearPendingException(cx.raw_cx());
+            return; // browser page context — servo's storage stays
+        }
         if existing.is_object() {
             return; // browser page context — servo's storage stays
         }

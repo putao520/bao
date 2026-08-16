@@ -53,15 +53,18 @@ static FFI_CSTRING_CLASS: JSClass = JSClass {
 };
 
 /// Userdata held by the libffi closure. The C entry point uses `cx` and
-/// `js_fn` to invoke the JavaScript callback via JS_CallFunctionValue.
+/// `js_fn` to invoke the JavaScript callback via JS_CallFunctionValue, and
+/// `arg_types`/`ret` to marshal C args → JS numbers and the JS return → C.
 /// @trace REQ-ENG-009 [entity:FfiCallback]
 struct FfiCallbackData {
     cx: *mut JSContext,
     js_fn: *mut JSObject,
+    arg_types: Vec<TypeSpec>,
+    ret: TypeSpec,
 }
 
 /// FfiCallback owns a libffi Closure that exposes a C-callable
-/// `extern "C" fn(c_void)` which dispatches to a JavaScript function. The
+/// `extern "C" fn(...)` which dispatches to a JavaScript function. The
 /// closure's userdata is heap-allocated and kept alive for the lifetime of
 /// this struct, so the closure (and its code pointer) stay valid until
 /// `.close()` is called or the JS wrapper is GC'd.
@@ -77,13 +80,26 @@ pub struct FfiCallback {
 }
 
 impl FfiCallback {
-    /// Build a no-argument, void-return callback that invokes `js_fn` on `cx`.
-    /// Returns the C code pointer the closure exposes (suitable for handing to
-    /// `dlsym`-resolved call sites that accept `extern "C" fn()`).
-    pub fn new(cx: *mut JSContext, js_fn: *mut JSObject) -> Self {
-        // CIF: no arguments, void return.
-        let cif = Cif::new(::std::iter::empty(), Type::void());
-        let data = Box::new(FfiCallbackData { cx, js_fn });
+    /// Build a callback with the given argument types and return type that
+    /// invokes `js_fn` on `cx`. Returns the C code pointer the closure
+    /// exposes (suitable for handing to `dlsym`-resolved call sites that
+    /// accept `extern "C" fn(...)` — e.g. qsort comparators, atexit hooks).
+    pub fn new(
+        cx: *mut JSContext,
+        js_fn: *mut JSObject,
+        arg_types: Vec<TypeSpec>,
+        ret: TypeSpec,
+    ) -> Self {
+        let cif = Cif::new(
+            arg_types.iter().map(|t| t.libffi_type()),
+            ret.libffi_type(),
+        );
+        let data = Box::new(FfiCallbackData {
+            cx,
+            js_fn,
+            arg_types,
+            ret,
+        });
         // Safety: we extend the data's borrow to `'static` for the closure.
         // This is sound because `_data` outlives `_closure` in this struct
         // (drop order is declaration order; `_closure` is declared first).
@@ -107,14 +123,43 @@ impl FfiCallback {
     }
 }
 
-/// libffi trampoline: invoked from C with no args, dispatches to the JS
-/// function stored in `userdata`. Any JS exception is silently cleared — a C
-/// caller has no way to observe a JS exception value.
+/// Read one C argument slot as a JS number per its TypeSpec. Every supported
+/// callback arg type marshals to a primitive JSVal (int32/double) — immediate
+/// values the GC never moves, so the args Vec needs no rooting.
+unsafe fn c_arg_to_jsval(spec: TypeSpec, slot: *const c_void) -> Value {
+    unsafe {
+        match spec {
+            TypeSpec::Bool => mozjs::jsval::BooleanValue(*(slot as *const u8) != 0),
+            TypeSpec::U8 => mozjs::jsval::Int32Value(*(slot as *const u8) as i32),
+            TypeSpec::I8 => mozjs::jsval::Int32Value(*(slot as *const i8) as i32),
+            TypeSpec::U16 => mozjs::jsval::Int32Value(*(slot as *const u16) as i32),
+            TypeSpec::I16 => mozjs::jsval::Int32Value(*(slot as *const i16) as i32),
+            TypeSpec::U32 => mozjs::jsval::DoubleValue(*(slot as *const u32) as f64),
+            TypeSpec::I32 => mozjs::jsval::Int32Value(*(slot as *const i32)),
+            TypeSpec::U64 | TypeSpec::Usize | TypeSpec::Ptr | TypeSpec::CString | TypeSpec::JsFunction => {
+                mozjs::jsval::DoubleValue(*(slot as *const u64) as f64)
+            }
+            TypeSpec::I64 | TypeSpec::Isize => {
+                mozjs::jsval::DoubleValue(*(slot as *const i64) as f64)
+            }
+            TypeSpec::F32 => mozjs::jsval::DoubleValue(*(slot as *const f32) as f64),
+            TypeSpec::F64 => mozjs::jsval::DoubleValue(*(slot as *const f64)),
+            TypeSpec::Void => UndefinedValue(),
+        }
+    }
+}
+
+/// libffi trampoline: invoked from C, marshals the C args to JS numbers,
+/// dispatches to the JS function stored in `userdata`, and writes the JS
+/// return value back to the C result slot per the callback's return spec.
+/// Any JS exception is silently cleared — a C caller has no way to observe a
+/// JS exception value (a non-void result slot keeps its zero-initialized
+/// value, matching "callback failed ⇒ 0").
 /// @trace REQ-ENG-009 [entity:FfiCallback]
 unsafe extern "C" fn ffi_callback_dispatch(
     _cif: &libffi::low::ffi_cif,
-    _result: &mut c_void,
-    _args: *const *const c_void,
+    result: &mut c_void,
+    args: *const *const c_void,
     userdata: &FfiCallbackData,
 ) {
     let cx = userdata.cx;
@@ -130,8 +175,20 @@ unsafe extern "C" fn ffi_callback_dispatch(
     rooted!(&in(wrapped_cx) let fn_root = js_fn);
     let fn_val = ObjectValue(fn_root.get());
     rooted!(&in(wrapped_cx) let fn_val_root = fn_val);
+
+    // C arg slots → primitive JSVals (no allocation, no GC exposure).
+    let js_args: Vec<Value> = userdata
+        .arg_types
+        .iter()
+        .enumerate()
+        .map(|(i, t)| c_arg_to_jsval(*t, *args.add(i)))
+        .collect();
+    let call_args = HandleValueArray {
+        length_: js_args.len(),
+        elements_: js_args.as_ptr(),
+    };
+
     let mut rval = UndefinedValue();
-    let call_args = HandleValueArray::empty();
     JS_CallFunctionValue(
         cx,
         global.handle().into(),
@@ -144,6 +201,38 @@ unsafe extern "C" fn ffi_callback_dispatch(
     );
     if JS_IsExceptionPending(cx) {
         JS_ClearPendingException(cx);
+    }
+    // Return conversion — write the JS number into the C result slot.
+    unsafe {
+        let num = if rval.is_int32() {
+            rval.to_int32() as f64
+        } else if rval.is_double() {
+            rval.to_double()
+        } else {
+            ::std::f64::NAN
+        };
+        let slot = result as *mut c_void;
+        match userdata.ret {
+            TypeSpec::Void => {}
+            TypeSpec::Bool => {
+                *(slot as *mut u8) = (rval.is_boolean() && rval.to_boolean()) as u8
+            }
+            TypeSpec::U8 => *(slot as *mut u8) = num as u8,
+            TypeSpec::I8 => *(slot as *mut i8) = num as i8,
+            TypeSpec::U16 => *(slot as *mut u16) = num as u16,
+            TypeSpec::I16 => *(slot as *mut i16) = num as i16,
+            TypeSpec::U32 => *(slot as *mut u32) = num as u32,
+            TypeSpec::I32 => *(slot as *mut i32) = num as i32,
+            TypeSpec::U64 | TypeSpec::Usize => *(slot as *mut u64) = num as u64,
+            TypeSpec::I64 | TypeSpec::Isize => *(slot as *mut i64) = num as i64,
+            TypeSpec::F32 => *(slot as *mut f32) = num as f32,
+            TypeSpec::F64 => *(slot as *mut f64) = num,
+            TypeSpec::Ptr | TypeSpec::CString | TypeSpec::JsFunction => {
+                if num.is_finite() && num >= 0.0 {
+                    *(slot as *mut usize) = num as usize;
+                }
+            }
+        }
     }
 }
 
@@ -237,6 +326,9 @@ enum TypeSpec {
     F32,
     F64,
     Ptr,
+    /// A C callback slot: the JS argument must be a `callback(...)`-built
+    /// FfiCallback object; its closure code pointer is passed to the callee.
+    JsFunction,
     CString,
 }
 
@@ -263,6 +355,7 @@ impl TypeSpec {
                 "f64" | "double" => "f64",
                 "ptr" | "pointer" => "ptr",
                 "cstring" | "char*" => "cstring",
+                "js_function" | "callback" => "js_function",
                 other => return Err(format!("unknown FFI type: {}", other)),
             });
         }
@@ -305,6 +398,7 @@ impl TypeSpec {
             "f64" => TypeSpec::F64,
             "ptr" => TypeSpec::Ptr,
             "cstring" => TypeSpec::CString,
+            "js_function" => TypeSpec::JsFunction,
             other => return Err(format!("unknown FFI type: {}", other)),
         })
     }
@@ -324,7 +418,7 @@ impl TypeSpec {
             TypeSpec::Isize => Type::isize(),
             TypeSpec::F32 => Type::f32(),
             TypeSpec::F64 => Type::f64(),
-            TypeSpec::Ptr | TypeSpec::CString => Type::pointer(),
+            TypeSpec::Ptr | TypeSpec::CString | TypeSpec::JsFunction => Type::pointer(),
         }
     }
 }
@@ -387,7 +481,15 @@ core::arch::global_asm!(
     "    mov  rcx, r8",
     "    mov  r8,  r9",
     "    mov  r9,  r11",
+    // SysV: rsp must be 16-byte aligned AT the call instruction. We enter as
+    // an extern "C" fn (rsp ≡ 8 mod 16) and have pushed nothing, so align
+    // down 8 before the call and restore after. Without this, every callee
+    // is entered misaligned and any aligned-SSE stack access inside it
+    // (e.g. glibc qsort → libffi closure's `movdqa` prologue) SIGSEGVs —
+    // leaf-ish targets like getpid never noticed.
+    "    sub  rsp, 8",
     "    call r10",
+    "    add  rsp, 8",
     "    ret",
 );
 
@@ -463,6 +565,14 @@ unsafe fn jsval_to_usize(cx: *mut JSContext, v: JSVal) -> Result<usize, String> 
             return Err("pointer must be a non-negative integer".to_string());
         }
         Ok(d as usize)
+    } else if v.is_int32() {
+        // Small integer literals (e.g. qsort's scratch base 0x100000) are
+        // int32-tagged in SM — a Number is a Number regardless of tag.
+        let n = v.to_int32();
+        if n < 0 {
+            return Err("pointer must be a non-negative integer".to_string());
+        }
+        Ok(n as usize)
     } else if v.is_bigint() {
         let s = {
             let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -610,6 +720,27 @@ unsafe fn spec_arg(
             let p = jsval_to_usize(cx, v)?;
             Ok(FfiArgSlot::Ptr(p))
         }
+        // Callback slot: accept ONLY a callback()-built FfiCallback wrapper —
+        // its closure code pointer is what crosses the boundary. (Raw
+        // pointers still go through `ptr`; functions would be silently
+        // truncated to an address here, so anything callable is rejected.)
+        TypeSpec::JsFunction => {
+            if !v.is_object() {
+                return Err(bad("a bun:ffi callback object"));
+            }
+            let obj = v.to_object();
+            let mut slot = UndefinedValue();
+            JS_GetReservedSlot(obj, SLOT_CB, &mut slot);
+            if !(slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0) {
+                return Err(bad("a bun:ffi callback object"));
+            }
+            let cb_ptr = slot.to_private() as *mut FfiCallback;
+            if cb_ptr.is_null() {
+                return Err(bad("a bun:ffi callback object"));
+            }
+            let code = (*cb_ptr).code_ptr() as usize;
+            Ok(FfiArgSlot::Ptr(code))
+        }
         TypeSpec::CString => {
             if !v.is_string() {
                 // Null pointer passthrough for optional cstring args.
@@ -645,7 +776,9 @@ unsafe fn val_to_u64_bigint_ok(cx: *mut JSContext, v: JSVal) -> Result<u64, Stri
             .parse::<u64>()
             .map_err(|_| "u64 argument out of range".to_string())
     } else if v.is_number() {
-        let d = v.to_double();
+        // to_number() covers BOTH int32- and double-tagged numbers — calling
+        // to_double() directly asserts on int32-tagged literals (e.g. 2, 4).
+        let d = v.to_number();
         if d.fract() != 0.0 || d < 0.0 {
             return Err("u64 argument must be a non-negative integer".to_string());
         }
@@ -672,7 +805,8 @@ unsafe fn val_to_i64(cx: *mut JSContext, v: JSVal) -> Result<i64, String> {
             .parse::<i64>()
             .map_err(|_| "i64 argument out of range".to_string())
     } else if v.is_number() {
-        let d = v.to_double();
+        // to_number(): int32- and double-tagged safe (see val_to_u64_bigint_ok).
+        let d = v.to_number();
         if d.fract() != 0.0 {
             return Err("i64 argument must be an integer".to_string());
         }
@@ -824,6 +958,12 @@ unsafe extern "C" fn ffi_fn_call(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             args.rval().set(DoubleValue(ret.xmm0));
         }
         TypeSpec::Ptr => {
+            args.rval().set(DoubleValue(ret.rax as f64));
+        }
+        // A C function returning a function pointer surfaces it as a raw
+        // address (same numeric shape as Ptr) — building a JS wrapper for an
+        // untyped foreign fn is out of scope for the descriptor contract.
+        TypeSpec::JsFunction => {
             args.rval().set(DoubleValue(ret.rax as f64));
         }
         TypeSpec::CString => {
@@ -1026,6 +1166,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     "f64",
                     "ptr",
                     "cstring",
+                    "js_function",
                 ] {
                     rooted!(&in(cx) let token = w2::JS_NewPlainObject(cx));
                     if token.get().is_null() {
@@ -1508,6 +1649,19 @@ unsafe extern "C" fn ffi_dlopen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         );
     }
 
+    // Dual entry: the exports object carries its symbols directly (Bun
+    // contract `lib.getpid()`) AND as a `lib.symbols` namespace (Deno/Koffi
+    // convention `lib.symbols.getpid()`). The self-reference exposes the
+    // SAME callable objects — one registration, two faces, no divergence.
+    rooted!(&in(cx_ref) let self_v = ObjectValue(exports_obj.get()));
+    JS_DefineProperty(
+        cx,
+        exports_obj.handle().into(),
+        c"symbols".as_ptr(),
+        self_v.handle().into(),
+        (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+    );
+
     args.rval().set(ObjectValue(exports_obj.get()));
     true
 }
@@ -1593,28 +1747,108 @@ unsafe extern "C" fn ffi_library_symbol(cx: *mut JSContext, argc: u32, vp: *mut 
 /// function pointer as a Number) and `.close()` to release the closure.
 /// @trace REQ-ENG-009 [entity:FfiCallback] [api:POST /ffi/load]
 #[allow(unsafe_op_in_unsafe_fn)]
+/// `callback(...)` — wrap a JS function as a C-callable closure.
+///
+/// Accepted shapes (Bun contract `callback(argCount, returns, fn)` plus
+/// explicit per-arg typing):
+///   - `callback(fn)`                       → 0 args, void return
+///   - `callback(argCount, returns, fn)`    → argCount × f64 args
+///   - `callback([types], returns, fn)`     → per-type args
+/// Every non-function argument is classified by shape (array → arg type
+/// list, number → arg count, anything TypeSpec::parse accepts → return
+/// type) so any argument order works.
 unsafe extern "C" fn ffi_callback(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    // Validate the JS callback argument is callable.
-    let js_fn = if argc >= 1 {
-        let fn_val = *args.get(0).ptr;
-        if !(fn_val.is_object() && IsCallable(fn_val.to_object())) {
-            let msg = ZBox::from_bytes("bun:ffi callback: argument must be a function".as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-            return false;
+    let mut js_fn: *mut JSObject = ::std::ptr::null_mut();
+    let mut arg_types: Vec<TypeSpec> = Vec::new();
+    let mut ret_spec = TypeSpec::Void;
+    let mut have_arg_shape = false;
+
+    for i in 0..argc {
+        let v = *args.get(i).ptr;
+        if v.is_object() && IsCallable(v.to_object()) {
+            js_fn = v.to_object();
+            continue;
         }
-        fn_val.to_object()
-    } else {
+        if js_fn.is_null() && !have_arg_shape && v.is_object() {
+            // Could be an arg-type array or a `types` token — tokens carry
+            // __ffiType and parse via TypeSpec::parse, arrays parse
+            // element-wise.
+            let obj = v.to_object();
+            let mut len: u32 = 0;
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let arr_root = obj);
+            if w2::GetArrayLength(cx_ref, arr_root.handle().into(), &mut len) {
+                for j in 0..len {
+                    let mut tv = UndefinedValue();
+                    JS_GetElement(
+                        cx,
+                        arr_root.handle().into(),
+                        j,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut tv,
+                        },
+                    );
+                    match TypeSpec::parse(cx, tv) {
+                        Ok(t) => arg_types.push(t),
+                        Err(e) => {
+                            let msg = ZBox::from_vec(
+                                format!("bun:ffi callback: args[{}]: {}", j, e).into_bytes(),
+                            );
+                            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                            return false;
+                        }
+                    }
+                }
+                have_arg_shape = true;
+                continue;
+            }
+        }
+        if v.is_int32() || v.is_double() {
+            // argCount form: N × f64 (JS numbers — the Bun-documented shape).
+            let n = if v.is_int32() {
+                v.to_int32()
+            } else {
+                v.to_double() as i32
+            };
+            if n < 0 || n > 16 {
+                let msg = ZBox::from_bytes(
+                    "bun:ffi callback: arg count must be 0..=16".as_bytes(),
+                );
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                return false;
+            }
+            if !have_arg_shape {
+                arg_types = ::std::iter::repeat(TypeSpec::F64).take(n as usize).collect();
+                have_arg_shape = true;
+            }
+            continue;
+        }
+        // Anything else must parse as the return type (string name or token).
+        match TypeSpec::parse(cx, v) {
+            Ok(t) => ret_spec = t,
+            Err(e) => {
+                let msg =
+                    ZBox::from_vec(format!("bun:ffi callback: returns: {}", e).into_bytes());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                return false;
+            }
+        }
+    }
+
+    if js_fn.is_null() {
         let msg = ZBox::from_bytes("bun:ffi callback: function argument required".as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
         return false;
-    };
+    }
 
     // Build the FfiCallback and stash it in a heap Box whose pointer is stored
     // in the JS wrapper's reserved slot.
     let cb = match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
-        FfiCallback::new(cx, js_fn)
+        FfiCallback::new(cx, js_fn, arg_types, ret_spec)
     })) {
         Ok(c) => c,
         Err(_) => {
@@ -1872,16 +2106,17 @@ unsafe extern "C" fn cstring_toprimitive(cx: *mut JSContext, _argc: u32, vp: *mu
 /// ArrayBuffer is collected — must not touch JSAPI.
 unsafe extern "C" fn external_free_fn(
     contents: *mut c_void,
-    _user: *mut c_void,
+    user: *mut c_void,
 ) {
-    // user carries the free() function pointer itself.
-    if _user.is_null() {
-        libc::free(contents);
-    } else {
-        let free_fn: extern "C" fn(*mut c_void) =
-            ::std::mem::transmute(_user as *const ());
-        free_fn(contents);
+    // user carries the free() function pointer itself. NULL user = BORROWED
+    // memory (no opts.free): the view does not own it, so release NOTHING —
+    // the previous libc::free here freed foreign pointers at GC time
+    // (invalid frees / heap corruption for any borrowed view).
+    if user.is_null() {
+        return;
     }
+    let free_fn: extern "C" fn(*mut c_void) = ::std::mem::transmute(user as *const ());
+    free_fn(contents);
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1948,6 +2183,12 @@ unsafe extern "C" fn ffi_to_buffer(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         }
     }
 
+    // Ownership contract (doc above: "the view does NOT own it" without
+    // opts.free): the deleter is ALWAYS registered (this SM build's
+    // BufferContentsDeleter unconditionally calls freeFunc — a null fn
+    // pointer crashes at GC), but external_free_fn releases NOTHING when no
+    // free pointer was supplied. Previously it libc::free'd every borrowed
+    // view at GC time (invalid frees / heap corruption).
     let ab = mozjs_sys::jsapi::glue::NewExternalArrayBuffer(
         cx,
         len,
@@ -2102,7 +2343,7 @@ mod tests {
     /// @trace REQ-ENG-009 [test:TEST-ENG-009]
     #[test]
     fn test_ffi_callback_constructs_nonnull_code_ptr() {
-        let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut());
+        let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);
         assert!(
             !cb.code_ptr().is_null(),
             "FfiCallback must expose a non-null C code pointer"
@@ -2114,7 +2355,7 @@ mod tests {
     /// @trace REQ-ENG-009 [test:TEST-ENG-009]
     #[test]
     fn test_ffi_callback_code_ptr_is_stable() {
-        let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut());
+        let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);
         let p1 = cb.code_ptr();
         let p2 = cb.code_ptr();
         assert_eq!(p1, p2, "code_ptr() must return the same value while alive");
@@ -2126,7 +2367,7 @@ mod tests {
     /// @trace REQ-ENG-009 [test:TEST-ENG-009]
     #[test]
     fn test_ffi_callback_drop_does_not_panic() {
-        let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut());
+        let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);
         let _ptr = cb.code_ptr();
         drop(cb); // must not panic — exercises drop order (closure before data)
     }
@@ -2136,8 +2377,8 @@ mod tests {
     /// @trace REQ-ENG-009 [test:TEST-ENG-009]
     #[test]
     fn test_ffi_callback_multiple_distinct_pointers() {
-        let cb1 = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut());
-        let cb2 = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut());
+        let cb1 = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);
+        let cb2 = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);
         assert_ne!(
             cb1.code_ptr(),
             cb2.code_ptr(),
@@ -2150,7 +2391,7 @@ mod tests {
     /// @trace REQ-ENG-009 [test:TEST-ENG-009]
     #[test]
     fn test_ffi_callback_dispatch_null_userdata_is_noop() {
-        let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut());
+        let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);
         let fun: extern "C" fn() = unsafe { *cb._closure.instantiate_code_ptr() };
         // Must not crash — null cx/js_fn triggers the early return.
         fun();

@@ -347,34 +347,79 @@ unsafe fn populate_bun_object(
         crate::bun_hash_api::install(cx, bun_obj);
     }
 
+    // @trace REQ-ENG-006 [api:Bun.gzipSync/gunzipSync/deflateSync/inflateSync]
+    // — name aliases over the node:zlib sync natives (same compressors; no
+    // second implementation). Upstream Bun exposes these directly on Bun.*.
+    for (name, native, nargs) in [
+        ("gzipSync", crate::node_zlib::zlib_gzip_sync as unsafe extern "C" fn(_, _, _) -> bool, 2),
+        (
+            "gunzipSync",
+            crate::node_zlib::zlib_gunzip_sync,
+            1,
+        ),
+        (
+            "deflateSync",
+            crate::node_zlib::zlib_deflate_sync,
+            2,
+        ),
+        (
+            "inflateSync",
+            crate::node_zlib::zlib_inflate_sync,
+            1,
+        ),
+    ] {
+        JS_DefineFunction(
+            cx,
+            bun_obj,
+            ZBox::from_bytes(name.as_bytes()).as_ptr(),
+            Some(native),
+            nargs,
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
     // @trace REQ-ENG-006 [api:Bun.CryptoHasher] — streaming hash constructor.
     // new CryptoHasher(algorithm) creates a hasher; .update(data) feeds data;
     // .digest(encoding?) returns hex/base64 digest. Uses bun_sha_hmac.
-    JS_DefineFunction(
-        cx,
-        bun_obj,
-        c"CryptoHasher".as_ptr(),
-        Some(bun_crypto_hasher_ctor),
-        1,
-        JSPROP_ENUMERATE as u32,
-    );
-
-    // Bun.SHA = Bun.CryptoHasher (alias)
+    // JSFUN_CONSTRUCTOR: `new Bun.CryptoHasher(algorithm)` must construct
+    // (audit: a plain JS_DefineFunction install made `new` throw
+    // "not a constructor"). Direct calls still work — the ctor body builds
+    // and returns the instance object either way.
     {
-        rooted!(&in(cx) let mut sha_val = UndefinedValue());
-        let _ok = JS_GetProperty(
+        let ctor_fn = JS_NewFunction(
             cx.raw_cx(),
-            bun_obj.into(),
+            Some(bun_crypto_hasher_ctor),
+            1,
+            JSFUN_CONSTRUCTOR as u32,
             c"CryptoHasher".as_ptr(),
-            sha_val.handle_mut().into(),
         );
-        JS_DefineProperty(
-            cx.raw_cx(),
-            bun_obj.into(),
-            c"SHA".as_ptr(),
-            sha_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
+        if !ctor_fn.is_null() {
+            let ctor_obj = JS_GetFunctionObject(ctor_fn);
+            rooted!(&in(cx) let ctor_root = ctor_obj);
+            JS_DefineProperty3(
+                cx,
+                bun_obj,
+                c"CryptoHasher".as_ptr(),
+                ctor_root.handle(),
+                JSPROP_ENUMERATE as u32,
+            );
+
+            // Bun.SHA = Bun.CryptoHasher (alias)
+            rooted!(&in(cx) let mut sha_val = UndefinedValue());
+            let _ok = JS_GetProperty(
+                cx.raw_cx(),
+                bun_obj.into(),
+                c"CryptoHasher".as_ptr(),
+                sha_val.handle_mut().into(),
+            );
+            JS_DefineProperty(
+                cx.raw_cx(),
+                bun_obj.into(),
+                c"SHA".as_ptr(),
+                sha_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
     }
 
     // @trace REQ-ENG-006 [api:Bun.gzip/deflate/inflate/gunzip] — compression.
@@ -2508,15 +2553,7 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             let opts_h = opts_obj.handle().into();
 
             let mut port_val = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                opts_h,
-                c"port".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut port_val,
-                },
-            );
+            let _ = bao_stealth::engine_props::get_property_clearing(cx, opts_h, c"port", &mut port_val);
             if port_val.is_int32() {
                 port = port_val.to_int32().max(0) as u16;
             } else if port_val.is_double() {
@@ -2524,29 +2561,13 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             }
 
             let mut hn_val = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                opts_h,
-                c"hostname".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut hn_val,
-                },
-            );
+            let _ = bao_stealth::engine_props::get_property_clearing(cx, opts_h, c"hostname", &mut hn_val);
             if hn_val.is_string() {
                 hostname = crate::js_to_rust_string(cx, hn_val);
             }
 
             let mut fetch_val = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                opts_h,
-                c"fetch".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut fetch_val,
-                },
-            );
+            let _ = bao_stealth::engine_props::get_property_clearing(cx, opts_h, c"fetch", &mut fetch_val);
             if fetch_val.is_object() {
                 rooted!(&in(cx_ref_opts) let fetch_obj = fetch_val.to_object());
                 if JS_ObjectIsFunction(fetch_obj.get()) {
@@ -2554,22 +2575,19 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                 }
             }
 
-            // REQ-ENG-006 criterion 5: WebSocket upgrade handler
+            // REQ-ENG-006 criterion 5: WebSocket handler object. Upstream
+            // Bun.serve takes the BEHAVIOR OBJECT — `websocket: { open,
+            // message, close, … }` — and ws_on_open/message/close resolve
+            // those methods off the stored object (GcStore). Audit: the old
+            // detection required a FUNCTION here, so the object form never
+            // registered the app.ws() route and upgrades fell through to the
+            // fetch/426 path (no handshake). Any object is accepted; a
+            // function would carry no .open/.message methods and never fire.
             let mut ws_val = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                opts_h,
-                c"websocket".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut ws_val,
-                },
-            );
+            let _ = bao_stealth::engine_props::get_property_clearing(cx, opts_h, c"websocket", &mut ws_val);
             if ws_val.is_object() {
                 rooted!(&in(cx_ref_opts) let ws_obj = ws_val.to_object());
-                if JS_ObjectIsFunction(ws_obj.get()) {
-                    websocket_handler = Some(ws_obj.get());
-                }
+                websocket_handler = Some(ws_obj.get());
             }
         }
     }
@@ -3503,12 +3521,16 @@ unsafe extern "C" fn ws_js_terminate(cx: *mut JSContext, _argc: u32, vp: *mut JS
 /// uWS upgrade callback — called when a client sends a WebSocket upgrade request.
 /// Creates the JS WebSocket wrapper object, stores it in GcStore, and calls
 /// `res.upgrade()` to hand the connection over to uWS's WS protocol engine.
+/// The `context` argument IS the per-route WebSocketContext created by
+/// `app.ws()` — it must be forwarded to `res.upgrade()` (the socket
+/// transitions into that context; null would hand the connection to no
+/// protocol engine and kill the 101 handshake).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn ws_on_upgrade(
     user_data: *mut ::std::ffi::c_void,
     res: *mut uws_res,
     req: *mut Request,
-    _context: *mut WebSocketUpgradeContext,
+    context: *mut WebSocketUpgradeContext,
     _id: usize,
 ) {
     let ud = &*(user_data as *const BunServeUserData);
@@ -3581,11 +3603,20 @@ unsafe extern "C" fn ws_on_upgrade(
         }
     }
 
-    // Perform the actual uWS WebSocket upgrade. This creates the native
-    // WebSocket and calls on_open immediately after.
+    // Perform the actual uWS WebSocket upgrade. This writes the 101
+    // Switching Protocols handshake (Sec-WebSocket-Accept) and transitions
+    // the socket into the route's WebSocketContext — which then fires
+    // on_open. The context argument comes from uWS itself (the same
+    // WebSocketContext `app.ws()` created for this route).
     // SAFETY: res is a valid uws_res handle from uWS; ws_ud_ptr is a live
     // heap allocation that will be the socket's user-data for its lifetime.
-    (*res_mut).upgrade::<BunWsUserData>(ws_ud_ptr, &ws_key, &ws_protocol, &ws_extensions, None);
+    (*res_mut).upgrade::<BunWsUserData>(
+        ws_ud_ptr,
+        &ws_key,
+        &ws_protocol,
+        &ws_extensions,
+        Some(&mut *context),
+    );
 }
 
 /// uWS open callback — called when a WebSocket connection is fully established.
@@ -3667,14 +3698,11 @@ unsafe extern "C" fn ws_on_open(raw_ws: *mut RawWebSocket) {
     // Get the `open` method from the websocket handler.
     rooted!(&in(cx_ref) let ws_handler_root = ws_handler);
     let mut open_val = UndefinedValue();
-    JS_GetProperty(
+    let _ = bao_stealth::engine_props::get_property_clearing(
         cx,
         ws_handler_root.handle().into(),
-        c"open".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut open_val,
-        },
+        c"open",
+        &mut open_val,
     );
     if !open_val.is_object() {
         // No open handler — nothing to call.
@@ -3755,14 +3783,11 @@ unsafe extern "C" fn ws_on_message(
     rooted!(&in(cx_ref) let ws_handler_root = ws_handler);
 
     let mut msg_val = UndefinedValue();
-    JS_GetProperty(
+    let _ = bao_stealth::engine_props::get_property_clearing(
         cx,
         ws_handler_root.handle().into(),
-        c"message".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut msg_val,
-        },
+        c"message",
+        &mut msg_val,
     );
     if !msg_val.is_object() {
         return;
@@ -3904,14 +3929,11 @@ unsafe extern "C" fn ws_on_close(
     if !ws_handler.is_null() {
         rooted!(&in(cx_ref) let ws_handler_root = ws_handler);
         let mut close_val = UndefinedValue();
-        JS_GetProperty(
+        let _ = bao_stealth::engine_props::get_property_clearing(
             cx,
             ws_handler_root.handle().into(),
-            c"close".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut close_val,
-            },
+            c"close",
+            &mut close_val,
         );
         if close_val.is_object() {
             rooted!(&in(cx_ref) let close_fn = close_val.to_object());
@@ -4216,13 +4238,34 @@ unsafe fn serve_build_request_object(
                     _phantom_0: ::std::marker::PhantomData,
                     ptr: &mut call_rval,
                 };
-                let _ = JS_CallFunctionValue(
+                let called = JS_CallFunctionValue(
                     raw_cx,
                     null_obj.handle().into(),
                     factory_val.handle().into(),
                     &HandleValueArray::empty(),
                     call_rval_h,
                 );
+                if !called {
+                    // BCE (P0 browser startup panic, servo error.rs:74): the
+                    // factory wraps caller-authored body code — a throw inside
+                    // it leaves the exception pending on the ScriptThread
+                    // context (browser mode). Capture, clear, route — same
+                    // contract as timers.rs fire_callback; the old `let _ =`
+                    // swallowed the throw AND leaked the exception.
+                    let mut exn = UndefinedValue();
+                    JS_GetPendingException(
+                        raw_cx,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut exn,
+                        },
+                    );
+                    JS_ClearPendingException(raw_cx);
+                    rooted!(&in(cx_ref) let reason_root = exn);
+                    if !exn.is_undefined() {
+                        crate::uncaught::route_uncaught_exception(raw_cx, exn);
+                    }
+                }
                 if call_rval.is_object() {
                     rooted!(&in(cx_ref) let body_obj = call_rval.to_object());
                     let body_val = ObjectValue(body_obj.get());
@@ -4370,15 +4413,7 @@ unsafe fn serve_is_response_like(
     let cx_r = &mut wrapped_cx;
     rooted!(&in(cx_r) let obj_r = obj);
     let mut status_val = UndefinedValue();
-    JS_GetProperty(
-        raw_cx,
-        obj_r.handle().into(),
-        c"status".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut status_val,
-        },
-    );
+    let _ = bao_stealth::engine_props::get_property_clearing(raw_cx, obj_r.handle().into(), c"status", &mut status_val);
     // Response objects always have a numeric `status`. This is sufficient
     // to distinguish a Response from a Promise/array/other object.
     status_val.is_int32() || status_val.is_double()
@@ -4406,15 +4441,7 @@ unsafe fn serve_write_response_object(
 
     // status (default 200 if missing/invalid)
     let mut status_val = UndefinedValue();
-    JS_GetProperty(
-        raw_cx,
-        obj.handle().into(),
-        c"status".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut status_val,
-        },
-    );
+    let _ = bao_stealth::engine_props::get_property_clearing(raw_cx, obj.handle().into(), c"status", &mut status_val);
     let status_code: i32 = if status_val.is_int32() {
         status_val.to_int32()
     } else if status_val.is_double() {
@@ -4428,78 +4455,243 @@ unsafe fn serve_write_response_object(
     let status_line = status_line_for(clamped);
     res_mut.write_status(status_line.as_bytes());
 
-    // headers (plain object) — iterate enumerable string keys.
+    // headers — a fetch-handler Response carries a WHATWG `Headers` instance
+    // (entries live in an internal Map, invisible to own-key enumeration), so
+    // first try the Headers face (`forEach` present → collect pairs by calling
+    // it with `arr.push` — forEach invokes callback(value, name) and push
+    // appends both, yielding a flat [v0, n0, v1, n1, …] array). Plain-object
+    // header maps (legacy/diy handler returns) keep the own-key enumeration.
     let mut headers_val = UndefinedValue();
-    JS_GetProperty(
-        raw_cx,
-        obj.handle().into(),
-        c"headers".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut headers_val,
-        },
-    );
+    let _ = bao_stealth::engine_props::get_property_clearing(raw_cx, obj.handle().into(), c"headers", &mut headers_val);
     if headers_val.is_object() {
         rooted!(&in(cx_ref_resp) let headers_obj = headers_val.to_object());
-        // @trace REQ-ENG-006 [api:Bun.serve fetch handler]
-        // Property enumeration via `GetPropertyKeys` (mozjs Rust wrapper)
-        // + `IdVector`. This is the canonical pattern used in
-        // node_url.rs / node_util.rs for iterating JS object keys without
-        // raw AutoIdArray struct layout assumptions.
-        let mut ids = mozjs::rust::IdVector::new(raw_cx);
-        let ok = GetPropertyKeys(
+
+        let mut for_each_val = UndefinedValue();
+        let has_for_each = JS_GetProperty(
             raw_cx,
             headers_obj.handle().into(),
-            JSITER_OWNONLY,
-            ids.handle_mut(),
+            c"forEach".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut for_each_val,
+            },
         );
-        if ok {
-            for jsid in &*ids {
-                if !jsid.is_string() {
-                    continue;
-                }
-                let key_str_ptr = jsid.to_string();
-                let key = unsafe_jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr));
-                let mut header_val = UndefinedValue();
-                let c_key = ZBox::from_bytes(key.as_bytes());
-                JS_GetProperty(
-                    raw_cx,
-                    headers_obj.handle().into(),
-                    c_key.as_ptr(),
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut header_val,
-                    },
-                );
-                let val_str = if header_val.is_string() {
-                    crate::js_to_rust_string(raw_cx, header_val)
-                } else {
-                    continue;
-                };
+        let headers_face = has_for_each
+            && for_each_val.is_object()
+            && JS_ObjectIsFunction(for_each_val.to_object());
 
-                // Skip Content-Length — uWS recomputes it from the body bytes
-                // we pass to `end`. Trusting a stale value would corrupt the
-                // response framing.
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        if headers_face {
+            rooted!(&in(cx_ref_resp) let for_each_fn = for_each_val.to_object());
+            // Drive the JS `entries()` iterator (Headers.prototype.entries
+            // yields pre-joined [name, value] pairs). forEach(push, arr)
+            // would also append the 3rd callback arg (the Headers object
+            // itself) — push has no fixed arity — so the iterator protocol
+            // is the precise collector.
+            let mut entries_val = UndefinedValue();
+            let entries_ok = JS_GetProperty(
+                raw_cx,
+                headers_obj.handle().into(),
+                c"entries".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut entries_val,
+                },
+            );
+            if entries_ok && entries_val.is_object() {
+                rooted!(&in(cx_ref_resp) let entries_fn = entries_val.to_object());
+                rooted!(&in(cx_ref_resp) let iter_val = {
+                    let mut r = UndefinedValue();
+                    let r_h = MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut r,
+                    };
+                    let empty_args = HandleValueArray {
+                        length_: 0,
+                        elements_: ::std::ptr::null(),
+                    };
+                    rooted!(&in(cx_ref_resp) let entries_cb = ObjectValue(entries_fn.get()));
+                    if !JS_CallFunctionValue(
+                        raw_cx,
+                        headers_obj.handle().into(),
+                        entries_cb.handle().into(),
+                        &empty_args,
+                        r_h,
+                    ) {
+                        // A throwing Headers subclass must not poison the
+                        // serializer's subsequent reads.
+                        JS_ClearPendingException(raw_cx);
+                    }
+                    r
+                });
+                if iter_val.is_object() {
+                    rooted!(&in(cx_ref_resp) let iter_obj = iter_val.to_object());
+                    // Bounded walk (defensive: a broken iterator must not
+                    // spin the serializer forever).
+                    for _ in 0..256 {
+                        rooted!(&in(cx_ref_resp) let next_val = {
+                            let mut r = UndefinedValue();
+                            let r_h = MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut r,
+                            };
+                            let empty_args = HandleValueArray {
+                                length_: 0,
+                                elements_: ::std::ptr::null(),
+                            };
+                            let mut next_fn = UndefinedValue();
+                            let got_next = JS_GetProperty(
+                                raw_cx,
+                                iter_obj.handle().into(),
+                                c"next".as_ptr(),
+                                MutableHandle::<Value> {
+                                    _phantom_0: ::std::marker::PhantomData,
+                                    ptr: &mut next_fn,
+                                },
+                            );
+                            if !got_next || !next_fn.is_object() {
+                                r = UndefinedValue();
+                            } else {
+                                rooted!(&in(cx_ref_resp) let next_cb = ObjectValue(next_fn.to_object()));
+                                if !JS_CallFunctionValue(
+                                    raw_cx,
+                                    iter_obj.handle().into(),
+                                    next_cb.handle().into(),
+                                    &empty_args,
+                                    r_h,
+                                ) {
+                                    JS_ClearPendingException(raw_cx);
+                                }
+                            }
+                            r
+                        });
+                        if !next_val.is_object() {
+                            break;
+                        }
+                        rooted!(&in(cx_ref_resp) let next_obj = next_val.to_object());
+                        let mut done_val = UndefinedValue();
+                        let got_done = JS_GetProperty(
+                            raw_cx,
+                            next_obj.handle().into(),
+                            c"done".as_ptr(),
+                            MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut done_val,
+                            },
+                        );
+                        if !got_done {
+                            JS_ClearPendingException(raw_cx);
+                            break;
+                        }
+                        if done_val.is_boolean() && done_val.to_boolean() {
+                            break;
+                        }
+                        let mut pair_val = UndefinedValue();
+                        let got_pair = JS_GetProperty(
+                            raw_cx,
+                            next_obj.handle().into(),
+                            c"value".as_ptr(),
+                            MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut pair_val,
+                            },
+                        );
+                        if !got_pair || !pair_val.is_object() {
+                            JS_ClearPendingException(raw_cx);
+                            break;
+                        }
+                        rooted!(&in(cx_ref_resp) let pair_obj = pair_val.to_object());
+                        let mut name_v = UndefinedValue();
+                        let mut value_v = UndefinedValue();
+                        let got_name = JS_GetElement(
+                            raw_cx,
+                            pair_obj.handle().into(),
+                            0,
+                            MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut name_v,
+                            },
+                        );
+                        let got_value = JS_GetElement(
+                            raw_cx,
+                            pair_obj.handle().into(),
+                            1,
+                            MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut value_v,
+                            },
+                        );
+                        if got_name && got_value && name_v.is_string() && value_v.is_string() {
+                            pairs.push((
+                                crate::js_to_rust_string(raw_cx, name_v),
+                                crate::js_to_rust_string(raw_cx, value_v),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        if headers_face && !pairs.is_empty() {
+            for (key, val_str) in pairs {
                 if key.eq_ignore_ascii_case("content-length") {
                     continue;
                 }
+                let c_key = ZBox::from_bytes(key.as_bytes());
                 let c_v = ZBox::from_bytes(val_str.as_bytes());
                 res_mut.write_header(c_key.as_bytes(), c_v.as_bytes());
+            }
+        } else {
+            // Plain-object headers: property enumeration via `GetPropertyKeys`
+            // (mozjs Rust wrapper) + `IdVector` — the canonical pattern used in
+            // node_url.rs / node_util.rs for iterating JS object keys without
+            // raw AutoIdArray struct layout assumptions.
+            let mut ids = mozjs::rust::IdVector::new(raw_cx);
+            let ok = GetPropertyKeys(
+                raw_cx,
+                headers_obj.handle().into(),
+                JSITER_OWNONLY,
+                ids.handle_mut(),
+            );
+            if ok {
+                for jsid in &*ids {
+                    if !jsid.is_string() {
+                        continue;
+                    }
+                    let key_str_ptr = jsid.to_string();
+                    let key = unsafe_jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr));
+                    let mut header_val = UndefinedValue();
+                    let c_key = ZBox::from_bytes(key.as_bytes());
+                    JS_GetProperty(
+                        raw_cx,
+                        headers_obj.handle().into(),
+                        c_key.as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut header_val,
+                        },
+                    );
+                    let val_str = if header_val.is_string() {
+                        crate::js_to_rust_string(raw_cx, header_val)
+                    } else {
+                        continue;
+                    };
+
+                    // Skip Content-Length — uWS recomputes it from the body
+                    // bytes passed to `end`.
+                    if key.eq_ignore_ascii_case("content-length") {
+                        continue;
+                    }
+                    let c_v = ZBox::from_bytes(val_str.as_bytes());
+                    res_mut.write_header(c_key.as_bytes(), c_v.as_bytes());
+                }
             }
         }
     }
 
     // body — read `_bodyText` (string). If absent, empty body.
     let mut body_val = UndefinedValue();
-    JS_GetProperty(
-        raw_cx,
-        obj.handle().into(),
-        c"_bodyText".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut body_val,
-        },
-    );
+    let _ = bao_stealth::engine_props::get_property_clearing(raw_cx, obj.handle().into(), c"_bodyText", &mut body_val);
     let body_bytes: Vec<u8> = if body_val.is_string() {
         let s = crate::js_to_rust_string(raw_cx, body_val);
         s.into_bytes()
@@ -4507,14 +4699,8 @@ unsafe fn serve_write_response_object(
         Vec::new()
     };
 
-    // Content-Length (only when body is non-empty; for empty bodies HEAD/etc.
-    // we still emit 0 via `end(b"", …)`).
-    if !body_bytes.is_empty() {
-        let cl = body_bytes.len().to_string();
-        let cl_c = ZBox::from_bytes(cl.as_bytes());
-        res_mut.write_header(b"Content-Length", cl_c.as_bytes());
-    }
-
+    // Content-Length is left to uWS `end()` (it derives framing from the
+    // final body write). Writing it here produced a duplicated header.
     res_mut.end(&body_bytes, true);
 }
 
@@ -5218,12 +5404,96 @@ unsafe extern "C" fn bun_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         return true;
     }
     let path_val = *args.get(0).ptr;
-    if !path_val.is_string() {
+
+    let mut wrapped_cx_early = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_early = &mut wrapped_cx_early;
+
+    // Integer fd form: `Bun.file(fd)` (upstream BunFile supports raw file
+    // descriptors; Bun.stdin/stdout/stderr are Bun.file(0/1/2)). The object
+    // carries fd/path/readable/writable plus the same exists() face as the
+    // path form (added inside make_bun_file_for_fd).
+    if path_val.is_int32() || path_val.is_double() {
+        let fd = if path_val.is_int32() {
+            path_val.to_int32()
+        } else {
+            path_val.to_double() as i32
+        };
+        let fd_obj = make_bun_file_for_fd(cx_early, fd);
+        if fd_obj.is_null() {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        args.rval().set(mozjs::jsval::ObjectValue(fd_obj));
+        return true;
+    }
+
+    // URL-object form: `Bun.file(new URL("file:///path"))`. file: URLs map to
+    // their decoded pathname (same conversion as Bun.fileURLToPath); other
+    // schemes are an explicit error — the lazy remote-BunFile face of
+    // upstream is not implemented here and must not silently fake a path.
+    // Detection is structural (`href` string property), so URL instances from
+    // any realm/constructor are accepted without instanceof coupling.
+    let mut s: String;
+    if !path_val.is_string() && path_val.is_object() {
+        rooted!(&in(cx_early) let url_obj = path_val.to_object());
+        let mut href_val = UndefinedValue();
+        let href_ok = JS_GetProperty(
+            cx,
+            url_obj.handle().into(),
+            c"href".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut href_val,
+            },
+        );
+        if !href_ok || !href_val.is_string() {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        let href = crate::js_to_rust_string(cx, href_val);
+        let mut protocol_val = UndefinedValue();
+        let proto_ok = JS_GetProperty(
+            cx,
+            url_obj.handle().into(),
+            c"protocol".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut protocol_val,
+            },
+        );
+        let protocol = if proto_ok && protocol_val.is_string() {
+            crate::js_to_rust_string(cx, protocol_val)
+        } else {
+            String::new()
+        };
+        if protocol == "file:" {
+            let bun_str = bun_core::String::borrow_utf8(href.as_bytes());
+            let result = bun_url::whatwg::path_from_file_url(&bun_str);
+            let path = if result.tag() == bun_core::Tag::Dead {
+                href.clone()
+            } else {
+                let utf8 = result.to_utf8();
+                let p = ::std::str::from_utf8(utf8.slice()).unwrap_or(&href).to_string();
+                result.deref();
+                p
+            };
+            s = percent_decode_path(&path);
+        } else {
+            let msg = format!(
+                "Bun.file() does not support {} URLs in this runtime (only file: URLs)",
+                if protocol.is_empty() { "this" } else { protocol.as_str() }
+            );
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+    } else if path_val.is_string() {
+        s = crate::js_to_rust_string(cx, path_val);
+    } else {
         args.rval().set(UndefinedValue());
         return true;
     }
-    let _path_str = JS_NewStringCopyZ(cx, c"".as_ptr());
-    let s = crate::js_to_rust_string(cx, path_val);
+
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let file_obj = JS_NewPlainObject(cx_ref));
@@ -6773,14 +7043,11 @@ unsafe extern "C" fn crypto_hasher_update(cx: *mut JSContext, argc: u32, vp: *mu
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this_obj = this.to_object());
     let mut state_val = UndefinedValue();
-    JS_GetProperty(
+    let _ = bao_stealth::engine_props::get_property_clearing(
         cx,
         this_obj.handle().into(),
-        c"_statePtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut state_val,
-        },
+        c"_statePtr",
+        &mut state_val,
     );
     if !state_val.is_double() || (state_val.asBits_ & 0xFFFF000000000000) != 0 {
         args.rval().set(*args.thisv().ptr);
@@ -6859,14 +7126,11 @@ unsafe extern "C" fn crypto_hasher_digest(cx: *mut JSContext, argc: u32, vp: *mu
 
     // Read state pointer
     let mut state_val = UndefinedValue();
-    JS_GetProperty(
+    let _ = bao_stealth::engine_props::get_property_clearing(
         cx,
         this_obj.handle().into(),
-        c"_statePtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut state_val,
-        },
+        c"_statePtr",
+        &mut state_val,
     );
     if !state_val.is_double() || (state_val.asBits_ & 0xFFFF000000000000) != 0 {
         args.rval().set(UndefinedValue());
@@ -7333,13 +7597,26 @@ unsafe fn install_bun_semver(
   function parseSemver(v) {
     var m = String(v).trim().match(/^(\d+)\.(\d+)\.(\d+)(.*)$/);
     if (!m) return null;
-    return { major: +m[1], minor: +m[2], patch: +m[3], prerelease: m[4] };
+    // Split trailing build metadata (`+…`) off the prerelease tail so
+    // order() can apply SemVer 2.0 precedence (build is ignored).
+    var rest = m[4];
+    var plus = rest.indexOf('+');
+    var pre = plus === -1 ? rest : rest.slice(0, plus);
+    return {
+      major: +m[1],
+      minor: +m[2],
+      patch: +m[3],
+      prerelease: pre,
+    };
   }
   function cmpSemver(a, b) {
     if (a.major !== b.major) return a.major - b.major;
     if (a.minor !== b.minor) return a.minor - b.minor;
     return a.patch - b.patch;
   }
+  // `order` is a NATIVE function defined after evaluation (see
+  // install_bun_semver): Bun's own bun_semver crate, mirroring upstream
+  // SemverObject.order (parse → max() → orderWithoutBuild).
   semver.satisfies = function satisfies(version, range) {
     var v = parseSemver(version);
     if (!v) return false;
@@ -7395,6 +7672,17 @@ unsafe fn install_bun_semver(
     libc::free(opts as *mut _);
     if ok && rval.is_object() {
         rooted!(&in(cx) let semver_obj = rval.to_object());
+        // `order` — native, backed by the bun_semver crate (Bun's own
+        // engine; the same parser install/resolver use). Mirrors upstream
+        // SemverObject.order: parse → max() → orderWithoutBuild.
+        JS_DefineFunction(
+            cx,
+            semver_obj.handle(),
+            c"order".as_ptr(),
+            Some(bun_semver_order),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
         JS_DefineProperty3(
             cx,
             bun_obj,
@@ -7403,6 +7691,69 @@ unsafe fn install_bun_semver(
             JSPROP_ENUMERATE as u32,
         );
     }
+}
+
+/// `Bun.semver.order(a, b)` → -1 | 0 | 1.
+///
+/// Mirrors upstream `semver_jsc/SemverObject.zig order`: two string
+/// arguments (else throw "Expected two arguments"); non-ASCII input → 0;
+/// each side parsed by `bun_semver::Version::parse_utf8` (invalid → throw
+/// "Invalid SemVer: {s}"); partial versions canonicalize via `.max()`;
+/// comparison via `order_without_build` (build metadata ignored, SemVer
+/// 2.0).
+///
+/// @trace REQ-ENG-006 [api:Bun.semver.order] [reuse:bun_semver]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_semver_order(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    use bun_semver::version::VersionInt;
+    use ::std::cmp::Ordering;
+
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 {
+        JS_ReportErrorUTF8(cx, c"Expected two arguments".as_ptr());
+        return false;
+    }
+    let a_val = *args.get(0).ptr;
+    let b_val = *args.get(1).ptr;
+    if !a_val.is_string() || !b_val.is_string() {
+        JS_ReportErrorUTF8(cx, c"Expected two arguments".as_ptr());
+        return false;
+    }
+    let a_str = crate::js_to_rust_string(cx, a_val);
+    let b_str = crate::js_to_rust_string(cx, b_val);
+
+    // Upstream: non-ASCII input short-circuits to 0 (semver is ASCII-only).
+    if !a_str.is_ascii() || !b_str.is_ascii() {
+        args.rval().set(Int32Value(0));
+        return true;
+    }
+
+    let a_bytes = a_str.as_bytes().to_vec();
+    let b_bytes = b_str.as_bytes().to_vec();
+    let a_result = bun_semver::VersionType::<u32>::parse_utf8(&a_bytes);
+    let b_result = bun_semver::VersionType::<u32>::parse_utf8(&b_bytes);
+    if !a_result.valid {
+        let msg = format!("Invalid SemVer: {}", a_str);
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        return false;
+    }
+    if !b_result.valid {
+        let msg = format!("Invalid SemVer: {}", b_str);
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        return false;
+    }
+
+    let a_version = a_result.version.max();
+    let b_version = b_result.version.max();
+    let out = match a_version.order_without_build(b_version, &a_bytes, &b_bytes) {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    };
+    args.rval().set(Int32Value(out));
+    true
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -7473,12 +7824,17 @@ unsafe fn make_bun_file_for_fd(cx: &mut mozjs::context::JSContext, fd: i32) -> *
         JSPROP_ENUMERATE as u32,
     );
 
-    // Add a path property for the fd
+    // Add a path property for the fd. Non-std fds use their /proc/self/fd/N
+    // link so the shared exists() face stats the real descriptor.
+    let proc_path;
     let path_str = match fd {
         0 => "/dev/stdin",
         1 => "/dev/stdout",
         2 => "/dev/stderr",
-        _ => "",
+        _ => {
+            proc_path = format!("/proc/self/fd/{}", fd);
+            proc_path.as_str()
+        }
     };
     let c_path = ZBox::from_bytes(path_str.as_bytes());
     let js_path = JS_NewStringCopyZ(cx.raw_cx(), c_path.as_ptr());
@@ -7513,6 +7869,18 @@ unsafe fn make_bun_file_for_fd(cx: &mut mozjs::context::JSContext, fd: i32) -> *
         file_obj.handle().into(),
         c"writable".as_ptr(),
         wv.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    // exists() — same Promise<boolean> face as the path form. Std streams
+    // always exist; arbitrary fds stat their /proc/self/fd/N link (Linux).
+    // @trace REQ-ENG-006 [api:Bun.file(fd) exists face]
+    JS_DefineFunction(
+        cx,
+        file_obj.handle(),
+        c"exists".as_ptr(),
+        Some(bun_file_exists),
+        0,
         JSPROP_ENUMERATE as u32,
     );
 

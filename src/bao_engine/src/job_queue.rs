@@ -173,7 +173,16 @@ unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
         rooted!(&in(realm_cx) let global_root = global);
         let mut job_val = UndefinedValue();
         unsafe {
-            JS_GetProperty(
+            // BCE (P0 browser startup panic, servo error.rs:74): the job pump
+            // probes the per-thread global (servo Window in browser mode) for
+            // the queued job closure. A failed JS_GetProperty (throwing
+            // accessor / proxy hook) returns false WITH the exception
+            // pending; the old code ignored the return, so the stale
+            // exception leaked onto the ScriptThread context and detonated
+            // servo's `assert!(!JS_IsExceptionPending)` in
+            // `throw_dom_exception` on the next error path. Consume it — the
+            // job reads as absent and is skipped.
+            if !JS_GetProperty(
                 cx,
                 global_root.handle().into(),
                 prop.as_ptr(),
@@ -181,7 +190,10 @@ unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
                     _phantom_0: ::std::marker::PhantomData,
                     ptr: &mut job_val,
                 },
-            );
+            ) {
+                JS_ClearPendingException(cx);
+                continue;
+            }
         }
 
         if !job_val.is_object() {

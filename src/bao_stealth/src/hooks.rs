@@ -334,24 +334,44 @@ impl StealthHooks {
 
         format!(
             r#"(function() {{
-  Object.defineProperty(navigator, 'userAgent', {{ get: function() {{ return {ua:?}; }}, configurable: false }});
-  Object.defineProperty(navigator, 'platform', {{ get: function() {{ return {platform:?}; }}, configurable: false }});
-  Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: function() {{ return {hwc}; }}, configurable: false }});
-  Object.defineProperty(navigator, 'language', {{ get: function() {{ return {lang:?}; }}, configurable: false }});
-  Object.defineProperty(navigator, 'languages', {{ get: function() {{ return {langs}; }}, configurable: false }});
-  Object.defineProperty(navigator, 'vendor', {{ get: function() {{ return {vendor:?}; }}, configurable: false }});
-  Object.defineProperty(navigator, 'deviceMemory', {{ get: function() {{ return {dm}; }}, configurable: false }});
-  Object.defineProperty(navigator, 'maxTouchPoints', {{ get: function() {{ return {mtp}; }}, configurable: false }});
-  Object.defineProperty(navigator, 'webdriver', {{ get: function() {{ return false; }}, configurable: false }});
+  // BCE (error.rs:74 residue): every defineProperty below must tolerate a
+  // refused redefine — on servo's Page Realm the WebIDL [LegacyUnforgeable]
+  // navigator/screen members (and any property already installed
+  // configurable:false by a prior install) throw
+  // "TypeError: can't redefine non-configurable property". A mid-template
+  // throw aborted the whole hooks blob AND left the exception pending on
+  // the ScriptThread cx (detonating servo's error.rs:74 assert). A refused
+  // define means the target state is already in effect — swallow it.
+  var __bao_def = function(obj, name, desc) {{
+    try {{ Object.defineProperty(obj, name, desc); }} catch (e) {{ /* already non-configurable */ }}
+  }};
+  var nav = (typeof navigator !== 'undefined') ? navigator : null;
+  var scr = (typeof screen !== 'undefined') ? screen : null;
+  var win = (typeof window !== 'undefined') ? window : (typeof globalThis !== 'undefined' ? globalThis : null);
 
-  Object.defineProperty(screen, 'width', {{ get: function() {{ return {sw}; }}, configurable: false }});
-  Object.defineProperty(screen, 'height', {{ get: function() {{ return {sh}; }}, configurable: false }});
-  Object.defineProperty(screen, 'availWidth', {{ get: function() {{ return {aw}; }}, configurable: false }});
-  Object.defineProperty(screen, 'availHeight', {{ get: function() {{ return {ah}; }}, configurable: false }});
-  Object.defineProperty(screen, 'colorDepth', {{ get: function() {{ return {cd}; }}, configurable: false }});
-  Object.defineProperty(screen, 'pixelDepth', {{ get: function() {{ return {pd}; }}, configurable: false }});
-  Object.defineProperty(window, 'devicePixelRatio', {{ get: function() {{ return {dpr}; }}, configurable: false }});
+  if (nav) {{
+  __bao_def(nav, 'userAgent', {{ get: function() {{ return {ua:?}; }}, configurable: false }});
+  __bao_def(nav, 'platform', {{ get: function() {{ return {platform:?}; }}, configurable: false }});
+  __bao_def(nav, 'hardwareConcurrency', {{ get: function() {{ return {hwc}; }}, configurable: false }});
+  __bao_def(nav, 'language', {{ get: function() {{ return {lang:?}; }}, configurable: false }});
+  __bao_def(nav, 'languages', {{ get: function() {{ return {langs}; }}, configurable: false }});
+  __bao_def(nav, 'vendor', {{ get: function() {{ return {vendor:?}; }}, configurable: false }});
+  __bao_def(nav, 'deviceMemory', {{ get: function() {{ return {dm}; }}, configurable: false }});
+  __bao_def(nav, 'maxTouchPoints', {{ get: function() {{ return {mtp}; }}, configurable: false }});
+  __bao_def(nav, 'webdriver', {{ get: function() {{ return false; }}, configurable: false }});
+  }}
 
+  if (scr) {{
+  __bao_def(scr, 'width', {{ get: function() {{ return {sw}; }}, configurable: false }});
+  __bao_def(scr, 'height', {{ get: function() {{ return {sh}; }}, configurable: false }});
+  __bao_def(scr, 'availWidth', {{ get: function() {{ return {aw}; }}, configurable: false }});
+  __bao_def(scr, 'availHeight', {{ get: function() {{ return {ah}; }}, configurable: false }});
+  __bao_def(scr, 'colorDepth', {{ get: function() {{ return {cd}; }}, configurable: false }});
+  __bao_def(scr, 'pixelDepth', {{ get: function() {{ return {pd}; }}, configurable: false }});
+  }}
+  if (win) __bao_def(win, 'devicePixelRatio', {{ get: function() {{ return {dpr}; }}, configurable: false }});
+
+  if (typeof WebGLRenderingContext === 'undefined') return;
   var origGetParameter = WebGLRenderingContext.prototype.getParameter;
   WebGLRenderingContext.prototype.getParameter = function(param) {{
     var dbgRenderer = 0x9246;
@@ -1412,8 +1432,15 @@ mod tests {
         let hooks = firefox_hooks();
         let js = hooks.navigator_js();
         assert!(
-            js.contains("Object.defineProperty(navigator, 'userAgent'"),
+            js.contains("__bao_def(nav, 'userAgent'"),
             "navigator JS must define userAgent"
+        );
+        // BCE (error.rs:74): every define goes through the __bao_def
+        // swallow-guard — a refused non-configurable define must NOT leave
+        // a pending exception on the ScriptThread context.
+        assert!(
+            js.contains("var __bao_def = function(obj, name, desc)"),
+            "navigator JS defines must be guarded by __bao_def"
         );
     }
 
@@ -1422,7 +1449,7 @@ mod tests {
         let hooks = firefox_hooks();
         let js = hooks.navigator_js();
         assert!(
-            js.contains("Object.defineProperty(navigator, 'platform'"),
+            js.contains("__bao_def(nav, 'platform'"),
             "navigator JS must define platform"
         );
     }
@@ -1432,7 +1459,7 @@ mod tests {
         let hooks = firefox_hooks();
         let js = hooks.navigator_js();
         assert!(
-            js.contains("Object.defineProperty(navigator, 'hardwareConcurrency'"),
+            js.contains("__bao_def(nav, 'hardwareConcurrency'"),
             "navigator JS must define hardwareConcurrency"
         );
     }
@@ -1442,7 +1469,7 @@ mod tests {
         let hooks = firefox_hooks();
         let js = hooks.navigator_js();
         assert!(
-            js.contains("navigator, 'webdriver'") && js.contains("return false"),
+            js.contains("__bao_def(nav, 'webdriver'") && js.contains("return false"),
             "navigator JS must set webdriver to false"
         );
     }
@@ -1452,15 +1479,15 @@ mod tests {
         let hooks = firefox_hooks();
         let js = hooks.navigator_js();
         assert!(
-            js.contains("Object.defineProperty(screen, 'width'"),
+            js.contains("__bao_def(scr, 'width'"),
             "navigator JS must define screen.width"
         );
         assert!(
-            js.contains("Object.defineProperty(screen, 'height'"),
+            js.contains("__bao_def(scr, 'height'"),
             "navigator JS must define screen.height"
         );
         assert!(
-            js.contains("Object.defineProperty(window, 'devicePixelRatio'"),
+            js.contains("__bao_def(win, 'devicePixelRatio'"),
             "navigator JS must define window.devicePixelRatio"
         );
     }
@@ -1512,7 +1539,7 @@ mod tests {
             "combined JS must contain audio hooks"
         );
         assert!(
-            combined.contains("Object.defineProperty(navigator, 'userAgent'"),
+            combined.contains("__bao_def(nav, 'userAgent'"),
             "combined JS must contain navigator hooks"
         );
         assert!(
