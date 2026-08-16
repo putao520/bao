@@ -478,9 +478,17 @@ fn window_fetch_js_layer_h2_roundtrip_with_tls_ca() {
             fetch("https://localhost:{port}/js-layer-h2-tls-ca", {{
                 tls: {{ ca: "{pem}" }}
             }}).then(
-                // The runtime Response's text() returns the body string
-                // synchronously (not a Promise) — read it in place.
-                function(r) {{ globalThis.__out = r.status + "|" + r.text(); }},
+                // The fetch Promise resolves with the realm's real WHATWG
+                // Response class (build_response_js was migrated off the old
+                // hand-built sync-text() plain object), so text() returns a
+                // Promise per spec — chain it. The settle loop below drives
+                // microtasks, so the inner .then lands before DONE.
+                function(r) {{
+                    r.text().then(
+                        function(t) {{ globalThis.__out = r.status + "|" + t; }},
+                        function(e) {{ globalThis.__err = "text: " + ((e && e.message) || String(e)); }}
+                    );
+                }},
                 function(e) {{ globalThis.__err = (e && e.message) || String(e); }}
             );
             return "scheduled";

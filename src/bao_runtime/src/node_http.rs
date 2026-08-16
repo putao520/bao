@@ -37,8 +37,10 @@ static NEXT_SERVER_ID: AtomicU64 = AtomicU64::new(1);
 //   - cb / 'response' listener receives an IncomingMessage
 //     {statusCode, statusMessage, headers, httpVersion, complete} with
 //     plain-object lower-cased headers and 'data'/'end' delivered once
-//     Response#text() settles (body fully buffered by the time the
-//     response settles; text() resolves on the following microtask).
+//     Response#arrayBuffer() settles (body fully buffered by the time the
+//     response settles; it resolves on the following microtask). 'data'
+//     chunks are Buffers — byte views of the wire body (Node semantics;
+//     setEncoding() switches to decoded strings).
 //   - rejection → 'error' on the ClientRequest; no listener = loud
 //     console.error (never a silent drop).
 //   - Direct `new http.ClientRequest/IncomingMessage/OutgoingMessage`
@@ -114,20 +116,39 @@ const HTTP_CLIENT_JS: &str = r#"(function(h){
     res.headers = headersToNode(resp && resp.headers);
     res.httpVersion = '1.1';
     res.complete = true;
-    // The transport buffers the whole body before the response settles, but
-    // the realm's Response class hands it over via text() — a Promise that
-    // settles on the following microtask. There is exactly one chunk:
+    // The transport buffers the whole body before the response settles, and
+    // the realm's Response class hands it over via arrayBuffer() — a Promise
+    // that settles on the following microtask. There is exactly one chunk:
     // listeners registered before it settles are queued and fired in
     // registration order (data, then end) once it does; listeners registered
     // after settle receive data/end on registration.
-    res._bodyText = null;
+    //
+    // Node semantics: 'data' chunks are Buffers — byte views of the wire
+    // body. Consuming via text() folded every invalid-UTF-8 byte into
+    // U+FFFD (a 256-byte all-values body came back corrupted), so the body
+    // travels as an ArrayBuffer and is materialised as
+    // Buffer.from(arrayBuffer) (shares the backing store, no copy).
+    // setEncoding() switches delivery to a decoded string.
+    res._bodyAB = null;
     res._bodySettled = false;
+    res._encoding = null;
+    res._chunk = function () {
+      if (res._bodyAB === null) return null;
+      if (res._encoding !== null) {
+        return Buffer.from(res._bodyAB).toString(res._encoding);
+      }
+      if (typeof Buffer !== 'undefined' && typeof Buffer.from === 'function') {
+        return Buffer.from(res._bodyAB);
+      }
+      return new Uint8Array(res._bodyAB);
+    };
     res._deliverBody = function () {
       if (res._bodySettled) return;
       res._bodySettled = true;
+      var chunk = res._chunk();
       var ds = res._hh['data'];
-      if (ds && res._bodyText !== '') {
-        for (var i = 0; i < ds.length; i++) ds[i].call(res, res._bodyText);
+      if (ds && chunk !== null && chunk.length !== 0) {
+        for (var i = 0; i < ds.length; i++) ds[i].call(res, chunk);
       }
       var es = res._hh['end'];
       if (es) for (var j = 0; j < es.length; j++) es[j].call(res);
@@ -136,7 +157,8 @@ const HTTP_CLIENT_JS: &str = r#"(function(h){
       (res._hh[ev] || (res._hh[ev] = [])).push(fn);
       if (res._bodySettled) {
         if (ev === 'data') {
-          if (res._bodyText !== null && res._bodyText !== '') fn.call(res, res._bodyText);
+          var c = res._chunk();
+          if (c !== null && c.length !== 0) fn.call(res, c);
         } else if (ev === 'end') {
           fn.call(res);
         }
@@ -146,11 +168,24 @@ const HTTP_CLIENT_JS: &str = r#"(function(h){
     res.addListener = res.on;
     res.resume = function () { return res; };
     res.pause = function () { return res; };
-    res.setEncoding = function () { return res; };
+    // Node's readable setEncoding: switches 'data' delivery to decoded
+    // strings (Buffer#toString encodings). Unknown encodings throw at call
+    // time (Node's ERR_UNKNOWN_ENCODING), never a silent no-op.
+    res.setEncoding = function (enc) {
+      var e = (enc === undefined || enc === null) ? 'utf8' : String(enc);
+      var n = e.toLowerCase();
+      var ok = n === '' || n === 'utf8' || n === 'utf-8' || n === 'ascii' ||
+               n === 'latin1' || n === 'binary' || n === 'base64' ||
+               n === 'base64url' || n === 'hex' ||
+               n === 'ucs2' || n === 'ucs-2' || n === 'utf16le' || n === 'utf-16le';
+      if (!ok) throw new TypeError('Unknown encoding: ' + e);
+      res._encoding = (n === '' || n === 'utf-8') ? 'utf8' : n;
+      return res;
+    };
     res.destroy = function () { res.complete = true; return res; };
     var done = onDone;
-    var settleBody = function (text) {
-      res._bodyText = text;
+    var settleBody = function (ab) {
+      res._bodyAB = ab;
       res._deliverBody();
       if (done) { var f = done; done = null; f(); }
     };
@@ -162,19 +197,67 @@ const HTTP_CLIENT_JS: &str = r#"(function(h){
       if (!had && typeof console !== 'undefined' && console.error) {
         console.error('http: response body read failed:', e.message);
       }
-      settleBody('');
+      settleBody(new ArrayBuffer(0));
     };
     try {
-      if (!resp || typeof resp.text !== 'function') {
-        throw new Error('http: transport resolved without a Response body (text() missing)');
+      if (!resp || typeof resp.arrayBuffer !== 'function') {
+        throw new Error('http: transport resolved without a Response body (arrayBuffer() missing)');
       }
-      resp.text().then(function (t) {
-        settleBody(typeof t === 'string' ? t : '');
+      resp.arrayBuffer().then(function (ab) {
+        settleBody(ab instanceof ArrayBuffer ? ab : new ArrayBuffer(0));
       }, failBody);
     } catch (e) {
       failBody(e);
     }
     return res;
+  }
+
+  // Request body parts: strings are stored as-is; Buffer/TypedArray/DataView/
+  // ArrayBuffer parts are stored verbatim (byte-exact) and assembled into one
+  // Uint8Array at fire time. Anything else throws at the write/end call —
+  // the previous `String(data)` coercion turned a Buffer into "72,101,108"
+  // (comma-joined bytes) and silently corrupted every binary request body.
+  function isBytePart(v) {
+    return !!v && typeof v === 'object' &&
+      (v instanceof ArrayBuffer || (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(v)));
+  }
+  function pushBodyPart(req, data) {
+    if (data === undefined || data === null) return;
+    if (typeof data === 'string' || isBytePart(data)) {
+      req._bodyParts.push(data);
+      return;
+    }
+    throw new TypeError('http: request body chunk must be a string, Buffer, TypedArray or ArrayBuffer');
+  }
+  // Transport body argument: all-string parts keep the string fast path
+  // (identical wire bytes to the historical join); any binary part switches
+  // to byte-exact assembly — strings encode UTF-8 (TextEncoder), byte parts
+  // copy their view verbatim.
+  function buildBodyArg(parts) {
+    var hasBinary = false;
+    for (var i = 0; i < parts.length; i++) {
+      if (typeof parts[i] !== 'string') { hasBinary = true; break; }
+    }
+    if (!hasBinary) return parts.join('');
+    var enc = new TextEncoder();
+    var chunks = [];
+    var total = 0;
+    for (var j = 0; j < parts.length; j++) {
+      var p = parts[j];
+      var u;
+      if (typeof p === 'string') u = enc.encode(p);
+      else if (p instanceof ArrayBuffer) u = new Uint8Array(p);
+      else u = new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
+      chunks.push(u);
+      total += u.length;
+    }
+    var out = new Uint8Array(total);
+    var off = 0;
+    for (var k = 0; k < chunks.length; k++) {
+      out.set(chunks[k], off);
+      off += chunks[k].length;
+    }
+    return out;
   }
 
   function fireRequest(req) {
@@ -186,7 +269,7 @@ const HTTP_CLIENT_JS: &str = r#"(function(h){
     try { tlsOptsJSON = JSON.stringify(req._tlsOpts || {}); } catch (e) {}
     var p;
     try {
-      p = req._transport(req._url, req.method, headersJSON, req._bodyParts.join(''), tlsOptsJSON);
+      p = req._transport(req._url, req.method, headersJSON, buildBodyArg(req._bodyParts), tlsOptsJSON);
     } catch (e) {
       settleError(req, e);
       return req;
@@ -235,9 +318,9 @@ const HTTP_CLIENT_JS: &str = r#"(function(h){
     for (var k in src) { if (Object.prototype.hasOwnProperty.call(src, k)) req.headers[k] = src[k]; }
     req._headers = req.headers;
     req._bodyParts = [];
-    if (opts.body !== undefined && opts.body !== null) {
-      req._bodyParts.push(typeof opts.body === 'string' ? opts.body : String(opts.body));
-    }
+    // Validated eagerly so an invalid opts.body surfaces at request()
+    // construction, not on a later .end().
+    pushBodyPart(req, opts.body);
     req._url = url;
     req._cb = cb || null;
     // Node TLS options (https): rejectUnauthorized / ca / servername —
@@ -252,13 +335,11 @@ const HTTP_CLIENT_JS: &str = r#"(function(h){
     req.res = null;
     req.write = function (data) {
       if (req._fired) { throw new Error('http: write() after end() — the request is already sent'); }
-      if (data !== undefined && data !== null) req._bodyParts.push(typeof data === 'string' ? data : String(data));
+      pushBodyPart(req, data);
       return req;
     };
     req.end = function (data) {
-      if (data !== undefined && data !== null && !req._fired) {
-        req._bodyParts.push(typeof data === 'string' ? data : String(data));
-      }
+      if (!req._fired) pushBodyPart(req, data);
       fireRequest(req);
       return req;
     };
@@ -1391,6 +1472,185 @@ unsafe extern "C" fn res_write_head(
     true
 }
 
+/// Append one response-body chunk to the res object's `_bodyChunks` array,
+/// byte-exactly. Strings are stored as JS strings (encoded UTF-8 at flush);
+/// Buffer/TypedArray/DataView/ArrayBuffer chunks are copied into a Uint8Array
+/// part via `node_buffer::collect_byte_view` — the house byte-extraction
+/// helper (Buffer IS a Uint8Array with a rebound prototype, so the previous
+/// string-only branch silently dropped every binary body: `res.end(Buffer)`
+/// answered Content-Length: 0 with zero wire bytes).
+///
+/// `undefined`/`null` mean "no data" (Node's `res.end()` with no chunk).
+/// Any other unsupported type reports a TypeError — never a silent drop.
+/// Returns false with a pending exception on unsupported chunk types or on
+/// write-after-end (Node's ERR_STREAM_WRITE_AFTER_END).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn res_append_chunk(cx: *mut JSContext, obj: *mut JSObject, v: JSVal) -> bool {
+    if v.is_undefined() || v.is_null() {
+        return true;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+
+    // The chunk value to append: JS string as-is, or a fresh Uint8Array part.
+    let part_val: Value = if v.is_string() {
+        v
+    } else if let Some(bytes) = crate::node_buffer::collect_byte_view(cx, v) {
+        let ta = crate::globals::create_buffer_object(cx, &bytes);
+        if ta.is_null() {
+            JS_ReportErrorUTF8(
+                cx,
+                c"%s".as_ptr(),
+                c"[node:http] failed to allocate response body chunk".as_ptr(),
+            );
+            return false;
+        }
+        ObjectValue(ta)
+    } else {
+        let msg = ZBox::from_bytes(
+            "[node:http] res.write/end chunk must be a string, Buffer, TypedArray or ArrayBuffer"
+                .as_bytes(),
+        );
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    };
+    rooted!(&in(cx_ref) let part_root = part_val);
+
+    // `_bodyChunks` starts as a missing/undefined property — create on first
+    // append, then grow by defining the element at the current length
+    // (SpiderMonkey extends the array's length for out-of-bounds indexes).
+    let mut chunks_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"_bodyChunks".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut chunks_val,
+        },
+    );
+    if !chunks_val.is_object() {
+        rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, 0));
+        if arr.get().is_null() {
+            JS_ReportErrorUTF8(
+                cx,
+                c"%s".as_ptr(),
+                c"[node:http] failed to allocate response body chunk list".as_ptr(),
+            );
+            return false;
+        }
+        let av = ObjectValue(arr.get());
+        rooted!(&in(cx_ref) let av_root = av);
+        JS_SetProperty(
+            cx,
+            obj_root.handle().into(),
+            c"_bodyChunks".as_ptr(),
+            av_root.handle().into(),
+        );
+        rooted!(&in(cx_ref) let arr2 = arr.get());
+        return JS_DefineElement(
+            cx,
+            arr2.handle().into(),
+            0,
+            part_root.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    rooted!(&in(cx_ref) let chunks_obj = chunks_val.to_object());
+    let mut len_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        chunks_obj.handle().into(),
+        c"length".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut len_val,
+        },
+    );
+    let next_index: u32 = if len_val.is_int32() {
+        len_val.to_int32().max(0) as u32
+    } else {
+        0
+    };
+    JS_DefineElement(
+        cx,
+        chunks_obj.handle().into(),
+        next_index,
+        part_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    )
+}
+
+/// Concatenate the res object's `_bodyChunks` into the exact wire bytes:
+/// string parts encode UTF-8, Uint8Array parts copy verbatim (0x00 and all
+/// non-UTF-8 byte values survive — the previous single-string accumulator
+/// could not represent them).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn res_collect_body(cx: *mut JSContext, obj: *mut JSObject) -> Vec<u8> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+
+    let mut chunks_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"_bodyChunks".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut chunks_val,
+        },
+    );
+    if !chunks_val.is_object() {
+        return Vec::new();
+    }
+    rooted!(&in(cx_ref) let chunks_obj = chunks_val.to_object());
+    let mut len_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        chunks_obj.handle().into(),
+        c"length".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut len_val,
+        },
+    );
+    let count: u32 = if len_val.is_int32() {
+        len_val.to_int32().max(0) as u32
+    } else {
+        0
+    };
+
+    let mut out: Vec<u8> = Vec::new();
+    for i in 0..count {
+        let mut elem = UndefinedValue();
+        if !JS_GetElement(
+            cx,
+            chunks_obj.handle().into(),
+            i,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            },
+        ) {
+            break;
+        }
+        if elem.is_string() {
+            out.extend_from_slice(crate::js_to_rust_string(cx, elem).as_bytes());
+        } else if elem.is_object() {
+            match crate::node_buffer::collect_byte_view(cx, elem) {
+                Some(bytes) => out.extend_from_slice(&bytes),
+                // Unreachable in practice: res_append_chunk only stores
+                // strings and Uint8Array parts. Skip nothing silently — the
+                // count is logged so a future regression is visible.
+                None => eprintln!("[node:http] response body chunk {} was not extractable", i),
+            }
+        }
+    }
+    out
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn res_write(
     cx: *mut JSContext,
@@ -1401,52 +1661,36 @@ unsafe extern "C" fn res_write(
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = args.thisv().to_object());
 
+    // Node contract: write() after end() throws ERR_STREAM_WRITE_AFTER_END.
+    let mut ended_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"_ended".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ended_val,
+        },
+    );
+    if ended_val.is_boolean() && ended_val.to_boolean() {
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c"write after end".as_ptr());
+        return false;
+    }
+
+    // Buffer the chunk byte-exactly; the whole body flushes once in end().
+    // The response model is synchronous (the handler must call end() before
+    // returning), so an immediate uWS write() here bought nothing and, after
+    // writeHead(), duplicated every chunk on the wire (write() streamed it,
+    // end() then re-sent the accumulated body).
     if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_string() {
-            let data = crate::js_to_rust_string(cx, v);
-            let this = args.thisv();
-            rooted!(&in(cx_ref) let obj = this.to_object());
-
-            // Stream data immediately via uWS Response::write.
-            let uws_res = get_uws_res(cx, obj.get());
-            if !uws_res.is_null() {
-                let res_mut = Response::<false>::cast_res(uws_res);
-                (*res_mut).write(data.as_bytes());
-            }
-
-            // Also accumulate in _body for res.end() to access if needed.
-            let mut body_val = UndefinedValue();
-            let body_mh = MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut body_val,
-            };
-            JS_GetProperty(cx, obj.handle().into(), c"_body".as_ptr(), body_mh);
-            let existing = if body_val.is_string() {
-                crate::js_to_rust_string(cx, body_val)
-            } else {
-                String::new()
-            };
-            let mut combined = existing;
-            combined.push_str(&data);
-            let c_combined = ZBox::from_bytes(combined.as_bytes());
-            let js_combined = JS_NewStringCopyZ(cx, c_combined.as_ptr());
-            if !js_combined.is_null() {
-                let cv = StringValue(&*js_combined);
-                rooted!(&in(cx_ref) let cv_root = cv);
-                JS_SetProperty(
-                    cx,
-                    obj.handle().into(),
-                    c"_body".as_ptr(),
-                    cv_root.handle().into(),
-                );
-            }
+        if !res_append_chunk(cx, obj.get(), v) {
+            return false;
         }
     }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let this_root = args.thisv().to_object());
-    args.rval().set(ObjectValue(this_root.get()));
+    args.rval().set(ObjectValue(obj.get()));
     true
 }
 
@@ -1456,57 +1700,34 @@ unsafe extern "C" fn res_end(cx: *mut JSContext, argc: u32, vp: *mut mozjs::jsva
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = args.thisv().to_object());
 
-    // Append final data if provided.
+    // Node contract: end() after end() is a no-op (a second uWS end() on the
+    // same response is a use-after-answer crash class).
+    let mut ended_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"_ended".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ended_val,
+        },
+    );
+    if ended_val.is_boolean() && ended_val.to_boolean() {
+        args.rval().set(ObjectValue(obj.get()));
+        return true;
+    }
+
+    // Append the final chunk if provided, then flush the exact bytes.
     if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_string() {
-            let data = crate::js_to_rust_string(cx, v);
-            let this = args.thisv();
-            rooted!(&in(cx_ref) let obj = this.to_object());
-            let mut body_val = UndefinedValue();
-            let body_mh = MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut body_val,
-            };
-            JS_GetProperty(cx, obj.handle().into(), c"_body".as_ptr(), body_mh);
-            let existing = if body_val.is_string() {
-                crate::js_to_rust_string(cx, body_val)
-            } else {
-                String::new()
-            };
-            let mut combined = existing;
-            combined.push_str(&data);
-            let c_combined = ZBox::from_bytes(combined.as_bytes());
-            let js_combined = JS_NewStringCopyZ(cx, c_combined.as_ptr());
-            if !js_combined.is_null() {
-                let cv = StringValue(&*js_combined);
-                rooted!(&in(cx_ref) let cv_root = cv);
-                JS_SetProperty(
-                    cx,
-                    obj.handle().into(),
-                    c"_body".as_ptr(),
-                    cv_root.handle().into(),
-                );
-            }
+        if !res_append_chunk(cx, obj.get(), v) {
+            return false;
         }
     }
 
-    // Send response via uWS Response.
-    let this = args.thisv();
-    rooted!(&in(cx_ref) let obj = this.to_object());
-
-    let mut body_val = UndefinedValue();
-    let body_mh = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut body_val,
-    };
-    JS_GetProperty(cx, obj.handle().into(), c"_body".as_ptr(), body_mh);
-    let body = if body_val.is_string() {
-        crate::js_to_rust_string(cx, body_val)
-    } else {
-        String::new()
-    };
+    let body = res_collect_body(cx, obj.get());
 
     let uws_res = get_uws_res(cx, obj.get());
     if !uws_res.is_null() {
@@ -1531,8 +1752,18 @@ unsafe extern "C" fn res_end(cx: *mut JSContext, argc: u32, vp: *mut mozjs::jsva
             (*res_mut).write_status(status_str.as_bytes());
         }
 
-        (*res_mut).end(body.as_bytes(), false);
+        // uWS computes Content-Length from data.len() — binary bodies hit the
+        // wire byte-for-byte (previously CL:0 for every Buffer/Uint8Array).
+        (*res_mut).end(&body, false);
     }
+
+    rooted!(&in(cx_ref) let ended_flag = mozjs::jsval::BooleanValue(true));
+    JS_SetProperty(
+        cx,
+        obj.handle().into(),
+        c"_ended".as_ptr(),
+        ended_flag.handle().into(),
+    );
 
     args.rval().set(ObjectValue(obj.get()));
     true
@@ -2307,16 +2538,6 @@ unsafe extern "C" fn http_request(
     } else {
         String::new()
     };
-    let body = if argc > 3 {
-        let v = *args.get(3).ptr;
-        if v.is_string() {
-            crate::js_to_rust_string(cx, v)
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
     let headers_vec: Vec<(String, String)> = if !headers_json.is_empty() {
         serde_json::from_str::<::std::collections::HashMap<String, String>>(&headers_json)
             .unwrap_or_default()
@@ -2325,10 +2546,40 @@ unsafe extern "C" fn http_request(
     } else {
         Vec::new()
     };
-    let body_bytes: Option<Vec<u8>> = if body.is_empty() {
-        None
+    // Body (arg 3): string (UTF-8) or Buffer/TypedArray/DataView/ArrayBuffer
+    // — byte-exact via the house extractor. The previous string-only read
+    // silently emptied every binary request body (the JS shim's Uint8Array
+    // form hit the `else { String::new() }` branch). Unrecognized objects
+    // fail loudly, never a silent empty body.
+    let body_bytes: Option<Vec<u8>> = if argc > 3 {
+        let v = *args.get(3).ptr;
+        if v.is_undefined() || v.is_null() {
+            None
+        } else if v.is_string() {
+            let s = crate::js_to_rust_string(cx, v);
+            (!s.is_empty()).then(|| s.into_bytes())
+        } else if v.is_object() {
+            match crate::node_buffer::collect_byte_view(cx, v) {
+                Some(bytes) => (!bytes.is_empty()).then_some(bytes),
+                None => {
+                    JS_ReportErrorUTF8(
+                        cx,
+                        c"%s".as_ptr(),
+                        c"http: request body must be a string, Buffer, TypedArray or ArrayBuffer".as_ptr(),
+                    );
+                    return false;
+                }
+            }
+        } else {
+            JS_ReportErrorUTF8(
+                cx,
+                c"%s".as_ptr(),
+                c"http: request body must be a string, Buffer, TypedArray or ArrayBuffer".as_ptr(),
+            );
+            return false;
+        }
     } else {
-        Some(body.into_bytes())
+        None
     };
 
     // Create the PENDING Promise *while cx_ref holds a rooting context*,

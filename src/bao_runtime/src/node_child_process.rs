@@ -258,6 +258,84 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
     }
 }
 
+/// Register a spawned child in `CP_ASYNC_STATES` and start its
+/// `pipe_poll_thread`. Single constructor shared by every async spawn site
+/// (cp_spawn, cluster fork, Bun.spawn in bun_api) so they all get the same
+/// drain-before-publish exit semantics.
+///
+/// fd ownership: `stdout_fd`/`stderr_fd` (parent-side read ends) transfer to
+/// the pump thread, which closes them at EOF. Pass `-1` for unpiped slots.
+/// `stdin_fd` is NOT owned by the pump (parent keeps the write end;
+/// `CP_STDIN_FDS` is managed per call site).
+pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int, stdin_fd: c_int) -> bool {
+    let async_state = Arc::new(Mutex::new(AsyncChildState {
+        pid,
+        stdout_fd,
+        stderr_fd,
+        stdin_fd,
+        stdout_eof: stdout_fd < 0,
+        stderr_eof: stderr_fd < 0,
+        child_exited: false,
+        stdout_data: Vec::new(),
+        stderr_data: Vec::new(),
+        reaped: None,
+        exit_info: None,
+    }));
+    if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
+        registry.insert(pid, Arc::clone(&async_state));
+    }
+    let state_clone = Arc::clone(&async_state);
+    match ::std::thread::Builder::new()
+        .name(format!("cp-poll-{}", pid))
+        .stack_size(128 * 1024)
+        .spawn(move || pipe_poll_thread(state_clone))
+    {
+        Ok(_) => true,
+        Err(e) => {
+            // Fail-closed visibility: the child's pipes will not drain — say so
+            // loudly instead of letting a 64KB pipe-buffer deadlock surface as
+            // a silent hang.
+            eprintln!(
+                "[bao] FATAL: failed to spawn cp-poll-{} thread: {} — child stdout/stderr will not drain, process may block on 64KB pipe buffer",
+                pid, e
+            );
+            false
+        }
+    }
+}
+
+/// Published exit info for an async child: `Some((exit_code, signal))` once
+/// the child was reaped AND its pipes fully drained (drain-before-publish —
+/// see `cp_try_publish`). `None` while running. Cross-module read for
+/// Bun.spawn's `_pollExitInfo` native.
+pub(crate) fn poll_exit_info(pid: i32) -> Option<(i32, i32)> {
+    CP_ASYNC_STATES
+        .lock()
+        .ok()
+        .and_then(|registry| registry.get(&pid).cloned())
+        .and_then(|state| state.lock().ok().and_then(|s| s.exit_info))
+}
+
+/// Clone the bytes accumulated so far on a child's pipe WITHOUT consuming
+/// them (unlike `__cp_drain`, which empties the buffer — cp's JS emits each
+/// chunk once). Capture-at-exit readers (Bun.spawn's text()/data events) read
+/// repeatedly and must see the full buffer every time.
+pub(crate) fn peek_output(pid: i32, stdout: bool) -> Option<Vec<u8>> {
+    CP_ASYNC_STATES
+        .lock()
+        .ok()
+        .and_then(|registry| registry.get(&pid).cloned())
+        .and_then(|state| {
+            state.lock().ok().map(|s| {
+                if stdout {
+                    s.stdout_data.clone()
+                } else {
+                    s.stderr_data.clone()
+                }
+            })
+        })
+}
+
 // ─── Module install ────────────────────────────────────────────────────────
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
@@ -794,33 +872,7 @@ pub(crate) fn spawn_cluster_worker(
                 }
 
                 // Exit-only tracking (no pipes to drain — stdio is inherited).
-                let async_state = Arc::new(Mutex::new(AsyncChildState {
-                    pid,
-                    stdout_fd: -1,
-                    stderr_fd: -1,
-                    stdin_fd: -1,
-                    stdout_eof: true,
-                    stderr_eof: true,
-                    child_exited: false,
-                    stdout_data: Vec::new(),
-                    stderr_data: Vec::new(),
-                    reaped: None,
-                    exit_info: None,
-                }));
-                if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
-                    registry.insert(pid, Arc::clone(&async_state));
-                }
-                let state_clone = Arc::clone(&async_state);
-                if let Err(e) = ::std::thread::Builder::new()
-                    .name(format!("cluster-poll-{}", pid))
-                    .stack_size(128 * 1024)
-                    .spawn(move || pipe_poll_thread(state_clone))
-                {
-                    eprintln!(
-                        "[bao] FATAL: failed to spawn cluster-poll-{} thread: {} — worker exit will not be reaped",
-                        pid, e
-                    );
-                }
+                let _ = register_async_child(pid, -1, -1, -1);
 
                 Ok(pid)
             }
@@ -1249,42 +1301,16 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             }
 
             // Build the shared state and register it globally for __cp_drain / __cp_poll_exit.
-            let async_state = Arc::new(Mutex::new(AsyncChildState {
+            let _ = register_async_child(
                 pid,
-                stdout_fd: if pipe_stdout { stdout_pipe[0] } else { -1 },
-                stderr_fd: if pipe_stderr { stderr_pipe[0] } else { -1 },
-                stdin_fd: if pipe_stdin { stdin_pipe[1] } else { -1 },
-                stdout_eof: false,
-                stderr_eof: false,
-                child_exited: false,
-                stdout_data: Vec::new(),
-                stderr_data: Vec::new(),
-                reaped: None,
-                exit_info: None,
-            }));
-
-            // Register in global registry so __cp_drain / __cp_poll_exit can find it.
-            if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
-                registry.insert(pid, Arc::clone(&async_state));
-            }
+                if pipe_stdout { stdout_pipe[0] } else { -1 },
+                if pipe_stderr { stderr_pipe[0] } else { -1 },
+                if pipe_stdin { stdin_pipe[1] } else { -1 },
+            );
 
             // Store stdin_fd on a thread-local map for __cp_stdin_write/__cp_stdin_close.
             // Parent holds the write end (stdin_pipe[1]) to write to child's stdin.
             CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[1]));
-
-            {
-                let state_clone = Arc::clone(&async_state);
-                if let Err(e) = ::std::thread::Builder::new()
-                    .name(format!("cp-poll-{}", pid))
-                    .stack_size(128 * 1024)
-                    .spawn(move || pipe_poll_thread(state_clone))
-                {
-                    eprintln!(
-                        "[bao] FATAL: failed to spawn cp-poll-{} thread: {} — child stdout/stderr will not drain, process may block on 64KB pipe buffer",
-                        pid, e
-                    );
-                }
-            }
 
             // Build the JS ChildProcess object.
             rooted!(&in(cx_ref) let child_obj = w2::JS_NewPlainObject(cx_ref));

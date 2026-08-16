@@ -370,6 +370,10 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     // cluster IPC pump: primary/worker message + exit polling (replaces the
     // loop-pinning CLUSTER_JS setIntervals — BCE parent-loop stall).
     crate::node_cluster::cluster_pump_all(raw_cx);
+    // Bun.spawn exit watchers: dispatch finish (exit/stdio/close events)
+    // once the child's pump publishes (reaped + pipes drained). Same native
+    // drain-pump pattern as the cluster pump — no JS-timer chain.
+    crate::bun_api::spawn_watch_pump_all(raw_cx);
 
     // BCE-20260619-010: drain_pending_fetches removed. FetchTasklet event-driven
     // paradigm resolves promises via ConcurrentTask (resolve_tasklet), not via
@@ -450,6 +454,7 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
     // test-runner async tests see watch/IPC events with identical semantics.
     crate::node_fs::fs_watch_pump_all(raw_cx);
     crate::node_cluster::cluster_pump_all(raw_cx);
+    crate::bun_api::spawn_watch_pump_all(raw_cx);
     fired
 }
 

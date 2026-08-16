@@ -104,6 +104,10 @@ getrandom = { workspace = true }
 hex = "0.4"
 flate2.workspace = true
 bun_brotli = { path = "../brotli" }
+# @trace REQ-ENG-007 [dep:bun_zlib] — node:zlib sync decompress routes through
+# the same streaming state machine as the HTTP pipeline (multi-member gzip,
+# per-member CRC/ISIZE, node-classified failure reasons).
+bun_zlib = { path = "../zlib" }
 # @trace STUB-INVENTORY: real __bun_regex_* for PnpmMatcher (was always-fail noop)
 regex = "1"
 

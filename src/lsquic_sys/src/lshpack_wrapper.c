@@ -84,6 +84,17 @@ void lshpack_wrapper_enc_set_max_capacity(void *self, unsigned max_capacity)
     lshpack_enc_set_max_capacity(&w->enc, max_capacity);
 }
 
+/* RFC 7541 §4.2: the peer's encoder may grow its dynamic table up to the
+ * SETTINGS_HEADER_TABLE_SIZE this endpoint advertised, signalling each
+ * change with a Dynamic Table Size Update that the decoder must accept up
+ * to that same advertised bound. Independent of the encoder cap, which is
+ * governed by the *peer's* SETTINGS. */
+void lshpack_wrapper_dec_set_max_capacity(void *self, unsigned max_capacity)
+{
+    lshpack_wrapper *w = (lshpack_wrapper *)self;
+    lshpack_dec_set_max_capacity(&w->dec, max_capacity);
+}
+
 size_t lshpack_wrapper_decode(void *self,
                               const unsigned char *src,
                               size_t src_len,

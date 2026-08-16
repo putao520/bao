@@ -1572,8 +1572,206 @@ pub fn install_process_global(
     }
 }
 
+// ─── Bun.spawn (async subprocess) ──────────────────────────────────────────
+//
+// Bun contract (bun.sh/docs/api/spawn):
+//   * shapes: Bun.spawn(["exe", ...args], options?) — primary array form —
+//     plus Bun.spawn({ cmd: [...] }) / Bun.spawn({ cmd: "exe", args: [...] }).
+//     The array form used to fall through to a bare-`echo` default, so every
+//     spawn "worked" but emitted only "\n" (SILENT output loss).
+//   * stdio defaults: stdin "null" (provide no input — a piped default made
+//     stdin-reading children block until parent teardown, so 'close' never
+//     fired), stdout "pipe", stderr "pipe".
+//   * `exited` is a Promise<number>; kill(signal?) defaults to SIGTERM and
+//     accepts a signal name or number.
+//
+// Pump model: every spawn registers the child in CP_ASYNC_STATES (the same
+// drain-before-publish machinery as child_process.spawn / cluster.fork) and
+// a cp-poll thread drains its pipes into capture buffers and reaps it. Exit
+// completion is driven by `spawn_watch_pump_all` (called from the drain
+// hook, the same integration point as cluster_pump_all / ws_pump_all): once
+// the pump publishes (reaped AND pipes drained) the registered finish
+// callback fires — 'exit' at process death, stdout/stderr data+end at pipe
+// EOF, 'close' last — so 'close' is guaranteed once the child is gone,
+// listener registration or not, and no >64KB output can deadlock the pipe.
+//
+// BCE (watcher chain death): the first cut drove the watcher with a chained
+// setTimeout loop; at a ~1/300 rate the chain spontaneously died (timer
+// popped with its gc_store callback silently missing — ticks=0 while the
+// exit was published and later timers fired fine). The native drain pump
+// removes the JS-timer dependency entirely.
 thread_local! {
-    static SPAWNED_PROCS: RefCell<Vec<*mut ::std::process::Child>> = const { RefCell::new(Vec::new()) };
+    static SPAWNED_PROCS: RefCell<Vec<Box<::std::process::Child>>> = const { RefCell::new(Vec::new()) };
+    /// Live exit watchers: one per spawned proc whose finish callback has
+    /// not yet fired. Entries are removed the moment the pump publishes the
+    /// exit (finish fires exactly once).
+    static SPAWN_WATCHES: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drive every live Bun.spawn exit watcher on the JS thread. Called from
+/// `timers::drain_and_check` / `drain_one_pass` — the same integration point
+/// as `cluster_pump_all`. For each watched pid whose exit info is published
+/// (reaped + pipes drained), invokes the registered JS finish callback
+/// exactly once with (exitCode, signal) and drops the watch.
+pub fn spawn_watch_pump_all(raw_cx: *mut JSContext) {
+    let snapshot: Vec<i32> = SPAWN_WATCHES.with(|w| w.borrow().clone());
+    for pid in snapshot {
+        let Some((code, signal)) = crate::node_child_process::poll_exit_info(pid) else {
+            continue;
+        };
+        // Remove the watch BEFORE dispatching JS (re-entrant spawns inside
+        // the finish callback — e.g. a 'close' handler spawning the next
+        // proc — must not see a stale entry for this pid).
+        SPAWN_WATCHES.with(|w| w.borrow_mut().retain(|&p| p != pid));
+        unsafe { fire_spawn_watch_finish(raw_cx, pid, code, signal) };
+    }
+}
+
+/// Invoke the finish callback registered for `pid` (GcStore namespace
+/// "spawn-watch", key = pid). Missing callback (realm teardown) is a silent
+/// no-op — there is nothing left to notify.
+///
+/// # Safety
+/// `raw_cx` must be the live JSContext on this thread.
+unsafe fn fire_spawn_watch_finish(raw_cx: *mut JSContext, pid: i32, code: i32, signal: i32) {
+    unsafe {
+        let key = format!("{}", pid);
+        let Some(finish) = crate::gc_store::gc_store_get_ns(raw_cx, "spawn-watch", &key) else {
+            return;
+        };
+        if finish.is_null() {
+            return;
+        }
+        let global = CurrentGlobalOrNull(raw_cx);
+        if global.is_null() {
+            return;
+        }
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+        rooted!(&in(cx_ref) let global_r = global);
+        rooted!(&in(cx_ref) let fval = ObjectValue(finish));
+        rooted!(&in(cx_ref) let code_v = Int32Value(code));
+        rooted!(&in(cx_ref) let sig_v = Int32Value(signal));
+        let elems = [*code_v.handle(), *sig_v.handle()];
+        let args = HandleValueArray {
+            length_: elems.len(),
+            elements_: elems.as_ptr(),
+        };
+        let mut rval = UndefinedValue();
+        let ok = JS_CallFunctionValue(
+            raw_cx,
+            global_r.handle().into(),
+            fval.handle().into(),
+            &args,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            },
+        );
+        if !ok {
+            // A throwing finish must not kill the pump (other watchers still
+            // deserve delivery) — surface via the uncaught router.
+            JS_ClearPendingException(raw_cx);
+        }
+        crate::gc_store::gc_store_remove_ns(raw_cx, "spawn-watch", &key);
+    }
+}
+
+/// `_watchExit(finishFn)` — proc-object native: registers the JS finish
+/// callback for this proc's pid with the native drain pump.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subproc_watch_exit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let Some(pid) = (unsafe { get_pid_from_this(cx, &args) }) else {
+        args.rval().set(BooleanValue(false));
+        return true;
+    };
+    if argc == 0 || !(*args.get(0).ptr).is_object() {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    let finish = (*args.get(0).ptr).to_object();
+    crate::gc_store::gc_store_insert_ns(cx, "spawn-watch", &format!("{}", pid), finish);
+    SPAWN_WATCHES.with(|w| {
+        let mut watches = w.borrow_mut();
+        if !watches.contains(&pid) {
+            watches.push(pid);
+        }
+    });
+    args.rval().set(BooleanValue(true));
+    true
+}
+
+/// Build a JS string from raw child-output bytes without NUL truncation.
+///
+/// `lossy_text == true` — the `text()` shape: UTF-8 with U+FFFD replacement
+/// (what TextDecoder does; what `JS_NewStringCopyZ` + `from_utf8_lossy` did
+/// before, minus the NUL truncation).
+/// `lossy_text == false` — the data-event shape: the bytes verbatim. Valid
+/// UTF-8 decodes as text; otherwise each byte maps to one UTF-16 code unit
+/// (Latin-1), so `charCodeAt(i) === byte[i]` holds for every chunk.
+unsafe fn js_string_from_child_bytes(
+    cx: *mut JSContext,
+    bytes: &[u8],
+    lossy_text: bool,
+) -> *mut JSString {
+    unsafe {
+        let units: Vec<u16> = if lossy_text {
+            String::from_utf8_lossy(bytes).encode_utf16().collect()
+        } else {
+            match ::std::str::from_utf8(bytes) {
+                Ok(s) => s.encode_utf16().collect(),
+                Err(_) => bytes.iter().map(|&b| b as u16).collect(),
+            }
+        };
+        if units.is_empty() {
+            return JS_NewStringCopyN(cx, c"".as_ptr(), 0);
+        }
+        JS_NewUCStringCopyN(cx, units.as_ptr(), units.len())
+    }
+}
+
+/// Read a JS array value (string | number elements) into Vec<String>.
+/// Shared by the `cmd`-property lookup and the positional array form.
+unsafe fn read_string_array_from_obj(
+    cx: *mut JSContext,
+    arr_h: Handle<*mut JSObject>,
+) -> Vec<String> {
+    unsafe {
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            arr_h,
+            c"length".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            },
+        );
+        let len = if len_val.is_int32() {
+            len_val.to_int32().max(0) as u32
+        } else {
+            0
+        };
+        let mut result = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            let mut elem = UndefinedValue();
+            JS_GetElement(
+                cx,
+                arr_h,
+                i,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut elem,
+                },
+            );
+            if elem.is_string() {
+                result.push(crate::js_to_rust_string(cx, elem));
+            } else if elem.is_number() {
+                result.push(format!("{}", elem.to_double()));
+            }
+        }
+        result
+    }
 }
 
 /// Global counter for generating unique GcStore keys for Bun.serve callbacks.
@@ -1595,54 +1793,141 @@ thread_local! {
 unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, c"Bun.spawn() requires an options object".as_ptr());
-        return false;
-    }
-
-    let opts_val = *args.get(0).ptr;
-    if !opts_val.is_object() {
-        JS_ReportErrorUTF8(cx, c"Bun.spawn() requires an options object".as_ptr());
+        JS_ReportErrorUTF8(
+            cx,
+            c"Bun.spawn() requires a command array or an options object".as_ptr(),
+        );
         return false;
     }
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let opts_obj = opts_val.to_object());
-    let opts_h = opts_obj.handle().into();
 
     // @trace REQ-ENG-005 [api:Bun.spawn cmd shapes] — Bun accepts three
     // shapes for the command:
-    //   1. `Bun.spawn("/path/to/exe", { args: [...] })` — first positional
-    //      arg is the executable path string.
+    //   1. `Bun.spawn(["/path/to/exe", "arg1", ...], options?)` — Bun's
+    //      PRIMARY array signature (docs: "Provide a command as an array of
+    //      strings"). This used to fall into the options-object branch, where
+    //      the array has no `cmd` property → defaults kicked in → bare
+    //      `echo` ran and callers saw only "\n".
     //   2. `Bun.spawn({ cmd: ["/path/to/exe", "arg1", "arg2"] })` — Bun's
-    //      legacy alias where `cmd` is a string array with element 0 as the
-    //      executable and the rest as args.
+    //      options-object alias.
     //   3. `Bun.spawn({ cmd: "/path/to/exe", args: [...] })` — split form
-    //      (current Bao surface, kept for compatibility).
+    //      (current Bao surface, kept for compatibility). A bare first-
+    //      positional string `Bun.spawn("exe", { args })` resolves the same
+    //      way.
+    let first_val = *args.get(0).ptr;
     let cmd_args: Vec<String>;
-    let cmd: String = {
-        // Primary: array `cmd` (shape #2).
-        let cmd_array = get_string_array_prop(cx, opts_h, c"cmd".as_ptr());
-        if !cmd_array.is_empty() {
-            let mut iter = cmd_array.into_iter();
-            let exe = iter.next().unwrap_or_else(|| "echo".to_string());
+    let cmd: String;
+    let opts_val: Value;
+    if first_val.is_object() {
+        rooted!(&in(cx_ref) let first_v = first_val);
+        let first_obj = first_val.to_object();
+        rooted!(&in(cx_ref) let first_r = first_obj);
+        let mut is_arr = false;
+        let checked = IsArrayObject(cx, first_v.handle().into(), &mut is_arr);
+        if checked && is_arr {
+            // Shape #1: positional command array; options ride on args[1].
+            let arr = read_string_array_from_obj(cx, first_r.handle().into());
+            if arr.is_empty() {
+                JS_ReportErrorUTF8(
+                    cx,
+                    c"Bun.spawn() command array must not be empty".as_ptr(),
+                );
+                return false;
+            }
+            let mut iter = arr.into_iter();
+            cmd = iter.next().unwrap_or_else(|| "echo".to_string());
             cmd_args = iter.collect();
-            exe
+            opts_val = if argc > 1 && (*args.get(1).ptr).is_object() {
+                *args.get(1).ptr
+            } else {
+                UndefinedValue()
+            };
         } else {
-            // Shape #3: string `cmd` + separate `args`.
-            let exe =
-                get_string_prop(cx, opts_h, c"cmd".as_ptr()).unwrap_or_else(|| "echo".to_string());
-            cmd_args = get_string_array_prop(cx, opts_h, c"args".as_ptr());
-            exe
+            // Shapes #2/#3: the options object itself.
+            opts_val = first_val;
+            let cmd_array = get_string_array_prop(cx, first_r.handle().into(), c"cmd".as_ptr());
+            if !cmd_array.is_empty() {
+                let mut iter = cmd_array.into_iter();
+                cmd = iter.next().unwrap_or_else(|| "echo".to_string());
+                cmd_args = iter.collect();
+            } else {
+                cmd = get_string_prop(cx, first_r.handle().into(), c"cmd".as_ptr())
+                    .unwrap_or_else(|| "echo".to_string());
+                cmd_args = get_string_array_prop(cx, first_r.handle().into(), c"args".as_ptr());
+            }
         }
+    } else if first_val.is_string() {
+        // `Bun.spawn("exe", { args: [...] })` — exe from the positional
+        // string, args from the options object.
+        cmd = crate::js_to_rust_string(cx, first_val);
+        opts_val = if argc > 1 && (*args.get(1).ptr).is_object() {
+            *args.get(1).ptr
+        } else {
+            UndefinedValue()
+        };
+        if opts_val.is_object() {
+            rooted!(&in(cx_ref) let o = opts_val.to_object());
+            cmd_args = get_string_array_prop(cx, o.handle().into(), c"args".as_ptr());
+        } else {
+            cmd_args = Vec::new();
+        }
+    } else {
+        JS_ReportErrorUTF8(
+            cx,
+            c"Bun.spawn() requires a command array or an options object".as_ptr(),
+        );
+        return false;
+    }
+
+    if cmd.is_empty() {
+        JS_ReportErrorUTF8(cx, c"Bun.spawn() requires a non-empty command".as_ptr());
+        return false;
+    }
+
+    let has_opts = opts_val.is_object();
+    let cwd = if has_opts {
+        rooted!(&in(cx_ref) let o = opts_val.to_object());
+        get_string_prop(cx, o.handle().into(), c"cwd".as_ptr())
+    } else {
+        None
     };
 
-    let cwd = get_string_prop(cx, opts_h, c"cwd".as_ptr());
-    let env_obj = get_env_prop(cx, opts_h);
-
-    let stdin_mode = get_stdio_mode(cx, opts_h, c"stdin".as_ptr());
-    let stdout_mode = get_stdio_mode(cx, opts_h, c"stdout".as_ptr());
-    let stderr_mode = get_stdio_mode(cx, opts_h, c"stderr".as_ptr());
+    // Bun stdio defaults (docs): stdin "null" (provide no input), stdout
+    // "pipe", stderr "pipe". A piped stdin default used to leave the write
+    // end held open forever, so any child reading stdin stalled until
+    // teardown and 'close' never fired.
+    let stdio_of = |name: &str, default_piped: bool| -> ::std::process::Stdio {
+        unsafe {
+            if !has_opts {
+                return if default_piped {
+                    ::std::process::Stdio::piped()
+                } else {
+                    ::std::process::Stdio::null()
+                };
+            }
+            rooted!(&in(cx_ref) let o = opts_val.to_object());
+            let name_c = ZBox::from_bytes(name.as_bytes());
+            let mode = get_string_prop(cx, o.handle().into(), name_c.as_ptr());
+            match mode.as_deref() {
+                Some("pipe") => ::std::process::Stdio::piped(),
+                Some("inherit") => ::std::process::Stdio::inherit(),
+                Some("null") | Some("ignore") => ::std::process::Stdio::null(),
+                // Absent → the documented default; unknown string → pipe
+                // (explicit-but-unrecognized stays closer to "piped" than to
+                // silently discarding output the caller asked to configure).
+                _ => if default_piped {
+                    ::std::process::Stdio::piped()
+                } else {
+                    ::std::process::Stdio::null()
+                },
+            }
+        }
+    };
+    let stdin_mode = stdio_of("stdin", false);
+    let stdout_mode = stdio_of("stdout", true);
+    let stderr_mode = stdio_of("stderr", true);
 
     let mut command = ::std::process::Command::new(&cmd);
     for arg in &cmd_args {
@@ -1651,10 +1936,14 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     if let Some(ref dir) = cwd {
         command.current_dir(dir);
     }
-    if let Some(env) = env_obj {
-        command.env_clear();
-        for (k, v) in env {
-            command.env(k, v);
+    // env: explicit env object replaces the environment when parseable.
+    if has_opts {
+        rooted!(&in(cx_ref) let o = opts_val.to_object());
+        if let Some(env) = get_env_prop(cx, o.handle().into()) {
+            command.env_clear();
+            for (k, v) in env {
+                command.env(k, v);
+            }
         }
     }
     command.stdin(stdin_mode);
@@ -1662,11 +1951,60 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     command.stderr(stderr_mode);
 
     match command.spawn() {
-        Ok(child) => {
-            let pid = child.id();
-            let boxed_child = Box::new(child);
-            let child_ptr = Box::into_raw(boxed_child);
-            SPAWNED_PROCS.with(|p| p.borrow_mut().push(child_ptr));
+        Ok(mut child) => {
+            let pid = child.id() as i32;
+
+            // Hand the piped stdout/stderr read ends to the shared cp-poll
+            // thread (drain-before-publish): output of any size is captured
+            // without a 64KB pipe-buffer deadlock, and the exit info is
+            // published only after both pipes hit EOF.
+            use ::std::os::fd::AsRawFd;
+            let stdout_pipe = child.stdout.take();
+            let stderr_pipe = child.stderr.take();
+            let stdout_fd = stdout_pipe
+                .as_ref()
+                .map(|s| s.as_raw_fd())
+                .unwrap_or(-1);
+            let stderr_fd = stderr_pipe
+                .as_ref()
+                .map(|s| s.as_raw_fd())
+                .unwrap_or(-1);
+            let piped_out = stdout_fd >= 0;
+            let piped_err = stderr_fd >= 0;
+            // ChildStdout/ChildStderr close their fd on drop; ownership
+            // transfers to the pump thread (which closes at EOF) — forget
+            // the wrappers so the fds stay open.
+            if let Some(s) = stdout_pipe {
+                ::std::mem::forget(s);
+            }
+            if let Some(s) = stderr_pipe {
+                ::std::mem::forget(s);
+            }
+            if !crate::node_child_process::register_async_child(pid, stdout_fd, stderr_fd, -1) {
+                // Pump thread failed to start (fail-closed): without it the
+                // pipes never drain — the child would block on a full pipe
+                // and 'close' would never fire. Kill it, close our fds, and
+                // surface a real error instead of a silent hang.
+                if stdout_fd >= 0 {
+                    unsafe {
+                        libc::close(stdout_fd);
+                    }
+                }
+                if stderr_fd >= 0 {
+                    unsafe {
+                        libc::close(stderr_fd);
+                    }
+                }
+                let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+                JS_ReportErrorUTF8(
+                    cx,
+                    c"Bun.spawn(): failed to start the output pump thread".as_ptr(),
+                );
+                return false;
+            }
+            // The Child handle stays alive here for the process lifetime
+            // (ownership of the pid; reaping belongs to the pump thread).
+            SPAWNED_PROCS.with(|p| p.borrow_mut().push(Box::new(child)));
 
             rooted!(&in(cx_ref) let subproc_obj = JS_NewPlainObject(cx_ref));
             if subproc_obj.get().is_null() {
@@ -1674,81 +2012,27 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                 return true;
             }
 
-            let pid_val = Int32Value(pid as i32);
-            rooted!(&in(cx_ref) let pv = pid_val);
-            JS_DefineProperty(
-                cx,
-                subproc_obj.handle().into(),
-                c"pid".as_ptr(),
-                pv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
+            let subproc_h = subproc_obj.handle().into();
+            let define_int = |cx: *mut JSContext, name: *const ::std::os::raw::c_char, v: i32| {
+                unsafe {
+                    rooted!(&in(cx_ref) let rv = Int32Value(v));
+                    JS_DefineProperty(cx, subproc_h, name, rv.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+            };
+            define_int(cx, c"pid".as_ptr(), pid);
+            define_int(cx, c"exitCode".as_ptr(), -1);
+            define_int(cx, c"_pid".as_ptr(), pid as i32);
+            define_int(cx, c"_pipedOut".as_ptr(), if piped_out { 1 } else { 0 });
+            define_int(cx, c"_pipedErr".as_ptr(), if piped_err { 1 } else { 0 });
 
-            let exited_val = BooleanValue(false);
-            rooted!(&in(cx_ref) let ev = exited_val);
-            JS_DefineProperty(
-                cx,
-                subproc_obj.handle().into(),
-                c"exited".as_ptr(),
-                ev.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-
-            let exit_code_val = Int32Value(-1);
-            rooted!(&in(cx_ref) let ecv = exit_code_val);
-            JS_DefineProperty(
-                cx,
-                subproc_obj.handle().into(),
-                c"exitCode".as_ptr(),
-                ecv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-
-            let ptr_bits = child_ptr as u64;
-            let ptr_hi = (ptr_bits >> 32) as i32;
-            let ptr_lo = (ptr_bits & 0xFFFFFFFF) as i32;
-            rooted!(&in(cx_ref) let hi = Int32Value(ptr_hi));
-            JS_DefineProperty(
-                cx,
-                subproc_obj.handle().into(),
-                c"_ptrHi".as_ptr(),
-                hi.handle().into(),
-                0,
-            );
-            rooted!(&in(cx_ref) let lo = Int32Value(ptr_lo));
-            JS_DefineProperty(
-                cx,
-                subproc_obj.handle().into(),
-                c"_ptrLo".as_ptr(),
-                lo.handle().into(),
-                0,
-            );
-
-            let stdout_reader_fn =
-                JS_NewFunction(cx, Some(subproc_stdout_read), 0, 0, c"stdout".as_ptr());
-            if !stdout_reader_fn.is_null() {
-                let fn_obj = JS_GetFunctionObject(stdout_reader_fn);
-                rooted!(&in(cx_ref) let fv = ObjectValue(fn_obj));
+            {
+                rooted!(&in(cx_ref) let kv = BooleanValue(false));
                 JS_DefineProperty(
                     cx,
-                    subproc_obj.handle().into(),
-                    c"_readStdout".as_ptr(),
-                    fv.handle().into(),
-                    0,
-                );
-            }
-
-            let stderr_reader_fn =
-                JS_NewFunction(cx, Some(subproc_stderr_read), 0, 0, c"stderr".as_ptr());
-            if !stderr_reader_fn.is_null() {
-                let fn_obj = JS_GetFunctionObject(stderr_reader_fn);
-                rooted!(&in(cx_ref) let fv = ObjectValue(fn_obj));
-                JS_DefineProperty(
-                    cx,
-                    subproc_obj.handle().into(),
-                    c"_readStderr".as_ptr(),
-                    fv.handle().into(),
-                    0,
+                    subproc_h,
+                    c"killed".as_ptr(),
+                    kv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
                 );
             }
 
@@ -1765,28 +2049,62 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                 subproc_obj.handle(),
                 c"kill".as_ptr(),
                 ::std::option::Option::Some(subproc_kill),
-                0,
+                1,
                 JSPROP_ENUMERATE as u32,
             );
             // Non-blocking exit probe for the event-surface watcher in the
-            // dispose wrapper below: null while running, exit code once done.
+            // wrapper below: null while running, [exitCode, signal] once the
+            // child is reaped AND its pipes are drained.
             JS_DefineFunction(
                 cx_ref,
                 subproc_obj.handle(),
-                c"_pollExited".as_ptr(),
-                ::std::option::Option::Some(subproc_poll_exited),
+                c"_pollExitInfo".as_ptr(),
+                ::std::option::Option::Some(subproc_poll_exit_info),
                 0,
                 0,
             );
-
-            let killed_val = BooleanValue(false);
-            rooted!(&in(cx_ref) let kv = killed_val);
-            JS_DefineProperty(
-                cx,
-                subproc_obj.handle().into(),
-                c"killed".as_ptr(),
-                kv.handle().into(),
-                JSPROP_ENUMERATE as u32,
+            JS_DefineFunction(
+                cx_ref,
+                subproc_obj.handle(),
+                c"_stdoutText".as_ptr(),
+                ::std::option::Option::Some(subproc_stdout_text),
+                0,
+                0,
+            );
+            JS_DefineFunction(
+                cx_ref,
+                subproc_obj.handle(),
+                c"_stdoutRaw".as_ptr(),
+                ::std::option::Option::Some(subproc_stdout_raw),
+                0,
+                0,
+            );
+            JS_DefineFunction(
+                cx_ref,
+                subproc_obj.handle(),
+                c"_stderrText".as_ptr(),
+                ::std::option::Option::Some(subproc_stderr_text),
+                0,
+                0,
+            );
+            JS_DefineFunction(
+                cx_ref,
+                subproc_obj.handle(),
+                c"_stderrRaw".as_ptr(),
+                ::std::option::Option::Some(subproc_stderr_raw),
+                0,
+                0,
+            );
+            // Register the JS finish callback with the native drain pump
+            // (spawn_watch_pump_all) — exit/close delivery without any
+            // JS-timer chain.
+            JS_DefineFunction(
+                cx_ref,
+                subproc_obj.handle(),
+                c"_watchExit".as_ptr(),
+                ::std::option::Option::Some(subproc_watch_exit),
+                1,
+                0,
             );
 
             // @trace REQ-ENG-005 [api:Bun.spawn asyncDispose + stdout/stderr/exited]
@@ -1796,51 +2114,37 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             //   const [stdout, stderr, exitCode] = await Promise.all([
             //     proc.stdout.text(), proc.stderr.text(), proc.exited,
             //   ]);
-            // The proc object needs:
-            //   - `exited`: a thenable (Promise<number>) that resolves once the
-            //     child has terminated. We drive it synchronously by calling the
-            //     native `_wait()` (blocks until exit) the first time `exited`
-            //     is accessed.
-            //   - `stdout` / `stderr`: stream-like objects with a `text()` method
-            //     that synchronously drains the child's piped output and resolves
-            //     with the full string.
-            //   - `Symbol.asyncDispose`: cleanup hook invoked at end of the
-            //     `await using` block. The hook kills (if not exited) and waits
-            //     for the child, then returns a resolved Promise — matching the
-            //     AsyncDisposable contract (dispose may be async).
-            //
-            // All synchronous blocking happens on the JS thread; for the
-            // short-lived `-e script` child processes used by upstream tests
-            // this is acceptable (process exits in milliseconds).
+            // The proc object exposes:
+            //   - `exited`: a Promise<number> resolved by the exit watcher
+            //     (never blocks the JS thread — the old accessor called the
+            //     blocking native wait() on first read).
+            //   - `stdout` / `stderr`: stream-like objects whose `text()`
+            //     resolves the captured output (UTF-8, TextDecoder
+            //     replacement) and whose 'data' events deliver the raw bytes
+            //     (binary-safe: NUL bytes survive; invalid UTF-8 maps
+            //     byte-per-code-unit so charCodeAt(i) === byte[i]).
+            //   - 'exit' at process death, stdout/stderr 'data'/'end' at pipe
+            //     EOF, 'close' last — the watcher starts at spawn time, so
+            //     'close' is guaranteed once the child is gone regardless of
+            //     listener registration (empty stdout included).
+            //   - `Symbol.asyncDispose`: waits for exit, matching the
+            //     AsyncDisposable contract.
             let dispose_src = r#"(function(proc) {
   if (!proc) return proc;
-  // `exited` is exposed as a getter that resolves on first access. After
-  // the first access we cache the resolved Promise so subsequent reads see
-  // the same thenable.
-  var _exitedPromise = null;
+  var _exitResolve = null;
+  var _exitedPromise = new Promise(function(resolve) { _exitResolve = resolve; });
   Object.defineProperty(proc, 'exited', {
     configurable: true,
     enumerable: true,
-    get: function() {
-      if (_exitedPromise) return _exitedPromise;
-      var code = (typeof proc.wait === 'function') ? proc.wait() : -1;
-      _exitedPromise = Promise.resolve(code);
-      return _exitedPromise;
-    },
+    get: function() { return _exitedPromise; },
   });
 
   // ── EventEmitter surface (child_process.spawn parity) ──────────────────
-  // on/once/off/emit plus 'exit'/'close' dispatch and stdout/stderr
-  // 'data'/'end'. The stdio model here is capture-at-exit (the native
-  // readers are read_to_end), so stream 'data' delivers the full captured
-  // output once, then 'end'; 'exit'/'close' carry (exitCode) — polled via
-  // the non-blocking _pollExited native so the loop never stalls.
   var _events = {};
   function _arr(ev) { return _events[ev] || (_events[ev] = []); }
   proc.on = function(ev, cb) {
     if (typeof cb !== 'function') return proc;
     _arr(ev).push(cb);
-    if (ev === 'exit' || ev === 'close') _startExitWatch();
     return proc;
   };
   proc.once = function(ev, cb) {
@@ -1867,59 +2171,55 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     return true;
   };
 
-  var _watching = false;
+  // Exit completion — driven by the NATIVE drain pump: the wrapper registers
+  // `finish` via proc._watchExit; spawn_watch_pump_all (called on every
+  // drain, the same integration point as the cluster pump) invokes it once
+  // the child is reaped AND its pipes drained. No JS-timer chain: the first
+  // cut's chained-setTimeout watcher spontaneously died at a ~1/300 rate
+  // (timer popped with its gc_store callback missing → close never fired).
   var _finished = false;
-  function _startExitWatch() {
-    if (_watching || _finished) return;
-    _watching = true;
-    (function tick() {
-      if (_finished) return;
-      var code = (typeof proc._pollExited === 'function') ? proc._pollExited() : null;
-      if (code !== null && code !== undefined) {
-        _finished = true;
-        _watching = false;
-        _finish(code);
-        return;
-      }
-      setTimeout(tick, 0);
-    })();
+  function _finish(code, signal) {
+    if (_finished) return;
+    _finished = true;
+    proc.exitCode = code;
+    try { _exitResolve(code); } catch (e) {}
+    try { proc.emit('exit', code, signal); } catch (e) {}
+    if (proc._pipedOut) {
+      try {
+        var out = (typeof proc._stdoutRaw === 'function') ? proc._stdoutRaw() : null;
+        if (out !== null && out !== undefined) proc.emit('stdout_data', out);
+        proc.emit('stdout_end');
+      } catch (e) {}
+    }
+    if (proc._pipedErr) {
+      try {
+        var err = (typeof proc._stderrRaw === 'function') ? proc._stderrRaw() : null;
+        if (err !== null && err !== undefined) proc.emit('stderr_data', err);
+        proc.emit('stderr_end');
+      } catch (e) {}
+    }
+    try { proc.emit('close', code, signal); } catch (e) {}
   }
-  function _finish(code) {
-    var out = (typeof proc._readStdout === 'function') ? proc._readStdout() : null;
-    var err = (typeof proc._readStderr === 'function') ? proc._readStderr() : null;
-    if (out !== null && out !== undefined) proc.emit('stdout_data', out);
-    proc.emit('stdout_end');
-    if (err !== null && err !== undefined) proc.emit('stderr_data', err);
-    proc.emit('stderr_end');
-    proc.emit('exit', code);
-    proc.emit('close', code);
+  if (typeof proc._watchExit === 'function') {
+    proc._watchExit(_finish);
   }
 
   // stdout / stderr stream-like wrappers with text() and data/end events.
-  function makeStream(readAllFn, dataEv, endEv) {
+  function makeStream(textFn, dataEv, endEv) {
     return {
       text: function() {
-        var s = (typeof readAllFn === 'function') ? (readAllFn.call(proc) || '') : '';
+        var s = (typeof textFn === 'function') ? (textFn.call(proc) || '') : '';
         if (s && typeof s.then === 'function') return s;
         return Promise.resolve(String(s));
       },
       on: function(ev, cb) {
-        if (ev === 'data') {
-          // Register, then ensure the exit watcher runs (data is delivered
-          // from the captured full output at exit — see the note above).
-          return proc.on(dataEv, cb);
-        }
-        if (ev === 'end') return proc.on(endEv, cb);
-        return proc.on(ev, cb);
+        return proc.on(ev === 'data' ? dataEv : (ev === 'end' ? endEv : ev), cb);
       },
-      // `read` / `pipe`-style accessors are not exercised by upstream
-      // buffer detach tests; provide stubs that surface they're unimplemented
-      // rather than throwing on property lookup.
       read: function() { return Promise.resolve(null); },
     };
   }
-  var _stdoutStream = makeStream(proc._readStdout, 'stdout_data', 'stdout_end');
-  var _stderrStream = makeStream(proc._readStderr, 'stderr_data', 'stderr_end');
+  var _stdoutStream = makeStream(proc._stdoutText, 'stdout_data', 'stdout_end');
+  var _stderrStream = makeStream(proc._stderrText, 'stderr_data', 'stderr_end');
   Object.defineProperty(proc, 'stdout', {
     configurable: true, enumerable: true,
     get: function() { return _stdoutStream; },
@@ -1928,34 +2228,13 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     configurable: true, enumerable: true,
     get: function() { return _stderrStream; },
   });
-  // Stream 'data'/'end' interest also drives the exit watcher (the payload
-  // is delivered at exit in this capture-at-exit stdio model).
-  var _innerOn = proc.on;
-  proc.on = function(e, cb) {
-    var r = _innerOn(e, cb);
-    if (e === 'stdout_data' || e === 'stdout_end' || e === 'stderr_data' || e === 'stderr_end') {
-      _startExitWatch();
-    }
-    return r;
-  };
 
   // Symbol.asyncDispose — invoked at end of `await using proc { ... }`.
-  // Contract (TC39 Explicit Resource Management): the value of
-  // @@asyncDispose must be a function returning a Promise (or void). We
-  // kill (best-effort) + wait so the OS reaps the child, then return a
-  // resolved Promise so the awaiting block completes.
+  // Contract (TC39 Explicit Resource Management): returns a Promise; we
+  // resolve it when the child has exited (the pump-backed watcher reaps).
   if (typeof Symbol === 'function' && Symbol.asyncDispose) {
     proc[Symbol.asyncDispose] = function() {
-      try {
-        if (!proc.killed && typeof proc.kill === 'function') {
-          // Don't kill if already exited — wait() would have set `exited`.
-          // We check the cached exit promise: if not yet accessed, the child
-          // may still be running; kill to be safe then wait for the exit.
-        }
-        // Reap: read `exited` (drives native wait).
-        var _ = proc.exited;
-      } catch (_) {}
-      return Promise.resolve();
+      return Promise.resolve(proc.exited);
     };
   }
   return proc;
@@ -2012,10 +2291,10 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     }
 }
 
-unsafe fn get_child_ptr_from_this(
-    cx: *mut JSContext,
-    args: &CallArgs,
-) -> Option<*mut ::std::process::Child> {
+/// Read the `_pid` int32 property off a Bun.spawn proc object. The pid is
+/// the registry key for the child's CP_ASYNC_STATES entry (pump thread +
+/// captured output + exit info).
+unsafe fn get_pid_from_this(cx: *mut JSContext, args: &CallArgs) -> Option<i32> {
     unsafe {
         let this = args.thisv();
         if !this.is_object() {
@@ -2024,238 +2303,223 @@ unsafe fn get_child_ptr_from_this(
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let obj = this.get().to_object());
-
-        let mut hi_val = UndefinedValue();
+        let mut pid_val = UndefinedValue();
         JS_GetProperty(
             cx,
             obj.handle().into(),
-            c"_ptrHi".as_ptr(),
+            c"_pid".as_ptr(),
             MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut hi_val,
+                ptr: &mut pid_val,
             },
         );
-        let mut lo_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            obj.handle().into(),
-            c"_ptrLo".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut lo_val,
-            },
-        );
-
-        if hi_val.is_int32() && lo_val.is_int32() {
-            let hi = (hi_val.to_int32() as u32) as u64;
-            let lo = (lo_val.to_int32() as u32) as u64;
-            let ptr = ((hi << 32) | lo) as *mut ::std::process::Child;
-            if !ptr.is_null() {
-                return Some(ptr);
+        if pid_val.is_int32() {
+            let pid = pid_val.to_int32();
+            if pid > 0 {
+                return Some(pid);
             }
         }
         None
     }
 }
 
+/// Set an int32 property on `this` (used to publish exitCode from the
+/// natives so the JS surface observes it before the events dispatch).
+unsafe fn set_int_prop_on_this(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    name: *const ::std::os::raw::c_char,
+    v: i32,
+) {
+    unsafe {
+        let this = args.thisv();
+        if !this.is_object() {
+            return;
+        }
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj = this.to_object());
+        rooted!(&in(cx_ref) let v_root = Int32Value(v));
+        JS_SetProperty(cx, obj.handle().into(), name, v_root.handle().into());
+    }
+}
+
+/// `proc.wait()` — block until the pump publishes exit info (reaped + pipes
+/// drained), then return the exit code (signal deaths → -1). The pump thread
+/// owns reaping, so this must NOT touch Child::wait (its waitpid would steal
+/// the status out from under the pump).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn subproc_wait(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let child_ptr = match get_child_ptr_from_this(cx, &args) {
-        Some(p) => p,
-        None => {
-            args.rval().set(Int32Value(-1));
-            return true;
+    let Some(pid) = get_pid_from_this(cx, &args) else {
+        args.rval().set(Int32Value(-1));
+        return true;
+    };
+    // Bounded-frequency poll of the published exit info. The pump always
+    // publishes (drain-before-publish invariant), so this terminates when
+    // the child does.
+    let info = loop {
+        if let Some(info) = crate::node_child_process::poll_exit_info(pid) {
+            break info;
         }
+        ::std::thread::sleep(::std::time::Duration::from_millis(2));
+    };
+    set_int_prop_on_this(cx, &args, c"exitCode".as_ptr(), info.0);
+    args.rval().set(Int32Value(info.0));
+    true
+}
+
+/// `proc._pollExitInfo()` — non-blocking probe for the event-surface
+/// watcher: `null` while the child runs or its pipes are still draining,
+/// `[exitCode, signal]` once published. Also mirrors the exit code onto the
+/// `exitCode` property.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subproc_poll_exit_info(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let Some(pid) = get_pid_from_this(cx, &args) else {
+        args.rval().set(NullValue());
+        return true;
+    };
+    let Some((code, signal)) = crate::node_child_process::poll_exit_info(pid) else {
+        args.rval().set(NullValue());
+        return true;
+    };
+    set_int_prop_on_this(cx, &args, c"exitCode".as_ptr(), code);
+    let vals = [Int32Value(code), Int32Value(signal)];
+    let hva = HandleValueArray {
+        length_: vals.len(),
+        elements_: vals.as_ptr(),
+    };
+    // SAFETY: `hva` points at the rooted-by-scope local `vals` for the
+    // duration of this single engine call.
+    let arr = unsafe { NewArrayObject(cx, &hva) };
+    args.rval().set(if arr.is_null() {
+        NullValue()
+    } else {
+        ObjectValue(arr)
+    });
+    true
+}
+
+/// `proc.kill(signal?)` — Bun contract: default SIGTERM; accepts a signal
+/// name string or number; returns whether the signal was sent. Never marks
+/// the proc exited — exit state comes from the pump (the old version set
+/// `exited=true` here, which lied about a child that was still dying).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subproc_kill(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let Some(pid) = get_pid_from_this(cx, &args) else {
+        args.rval().set(BooleanValue(false));
+        return true;
     };
 
-    let child = &mut *child_ptr;
-    match child.wait() {
-        Ok(status) => {
-            let exit_code = status.code().unwrap_or(-1);
-            let this = args.thisv();
-            if this.is_object() {
-                let mut wrapped_cx_w =
-                    mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-                let cx_ref_w = &mut wrapped_cx_w;
-                rooted!(&in(cx_ref_w) let obj = this.to_object());
-                rooted!(&in(cx_ref_w) let exited_root = BooleanValue(true));
-                JS_SetProperty(
-                    cx,
-                    obj.handle().into(),
-                    c"exited".as_ptr(),
-                    exited_root.handle().into(),
-                );
-                rooted!(&in(cx_ref_w) let ec_root = Int32Value(exit_code));
-                JS_SetProperty(
-                    cx,
-                    obj.handle().into(),
-                    c"exitCode".as_ptr(),
-                    ec_root.handle().into(),
-                );
+    let sig: i32 = if argc > 0 {
+        let v = *args.get(0).ptr;
+        if v.is_int32() {
+            v.to_int32()
+        } else if v.is_string() {
+            let name = crate::js_to_rust_string(cx, v).to_uppercase();
+            match name.as_str() {
+                "SIGHUP" => libc::SIGHUP as i32,
+                "SIGINT" => libc::SIGINT as i32,
+                "SIGQUIT" => libc::SIGQUIT as i32,
+                "SIGABRT" => libc::SIGABRT as i32,
+                "SIGKILL" => libc::SIGKILL as i32,
+                "SIGUSR1" => libc::SIGUSR1 as i32,
+                "SIGUSR2" => libc::SIGUSR2 as i32,
+                "SIGTERM" => libc::SIGTERM as i32,
+                _ => {
+                    let msg = format!("Bun.spawn kill(): unknown signal name");
+                    let c_msg = ZBox::from_bytes(msg.as_bytes());
+                    JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                    return false;
+                }
             }
-            args.rval().set(Int32Value(exit_code));
+        } else {
+            libc::SIGTERM as i32
         }
-        Err(e) => {
-            let msg = format!("wait() failed: {}", e);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
-            return false;
+    } else {
+        libc::SIGTERM as i32
+    };
+
+    // SAFETY: pid > 0 and sig came from libc constants or a caller-supplied
+    // i32 — the kernel validates both operands.
+    let sent = unsafe { libc::kill(pid, sig) } == 0;
+    if sent {
+        let this = args.thisv();
+        if this.is_object() {
+            let mut wrapped_cx_k =
+                mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref_k = &mut wrapped_cx_k;
+            rooted!(&in(cx_ref_k) let obj = this.to_object());
+            rooted!(&in(cx_ref_k) let killed_root = BooleanValue(true));
+            JS_SetProperty(
+                cx,
+                obj.handle().into(),
+                c"killed".as_ptr(),
+                killed_root.handle().into(),
+            );
         }
     }
+    args.rval().set(BooleanValue(sent));
     true
 }
 
-/// Non-blocking exit probe for the Bun.spawn event surface: `null` while the
-/// child runs, the exit code (number) once it has terminated. Does NOT block
-/// (unlike `wait`) so the wrapper's setTimeout watcher can poll without
-/// stalling the JS thread. Mirrors subproc_wait's exitCode convention
-/// (signal deaths → -1; std::process doesn't expose the full status shape).
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn subproc_poll_exited(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let child_ptr = match get_child_ptr_from_this(cx, &args) {
-        Some(p) => p,
-        None => {
+/// Shared body for the four capture readers (stdout/stderr × text/raw).
+/// `stdout` selects the pipe; `lossy_text` selects the decoding (see
+/// `js_string_from_child_bytes`). Returns null only when the pid is not in
+/// the registry (never for a registered child — empty capture is "").
+unsafe fn subproc_output_common(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    stdout: bool,
+    lossy_text: bool,
+) -> bool {
+    unsafe {
+        let Some(pid) = get_pid_from_this(cx, args) else {
             args.rval().set(NullValue());
             return true;
-        }
-    };
-
-    let child = &mut *child_ptr;
-    match child.try_wait() {
-        Ok(Some(status)) => {
-            let exit_code = status.code().unwrap_or(-1);
-            let this = args.thisv();
-            if this.is_object() {
-                let mut wrapped_cx_p =
-                    mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-                let cx_ref_p = &mut wrapped_cx_p;
-                rooted!(&in(cx_ref_p) let obj = this.to_object());
-                rooted!(&in(cx_ref_p) let exited_root = BooleanValue(true));
-                JS_SetProperty(
-                    cx,
-                    obj.handle().into(),
-                    c"exited".as_ptr(),
-                    exited_root.handle().into(),
-                );
-                rooted!(&in(cx_ref_p) let ec_root = Int32Value(exit_code));
-                JS_SetProperty(
-                    cx,
-                    obj.handle().into(),
-                    c"exitCode".as_ptr(),
-                    ec_root.handle().into(),
-                );
-            }
-            args.rval().set(Int32Value(exit_code));
-        }
-        Ok(None) => {
-            args.rval().set(NullValue());
-        }
-        Err(_) => {
-            args.rval().set(Int32Value(-1));
-        }
-    }
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn subproc_kill(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let child_ptr = match get_child_ptr_from_this(cx, &args) {
-        Some(p) => p,
-        None => {
-            args.rval().set(BooleanValue(false));
-            return true;
-        }
-    };
-
-    let child = &mut *child_ptr;
-    let result = child.kill().is_ok();
-
-    let this = args.thisv();
-    if this.is_object() && result {
-        let mut wrapped_cx_k = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref_k = &mut wrapped_cx_k;
-        rooted!(&in(cx_ref_k) let obj = this.to_object());
-        rooted!(&in(cx_ref_k) let killed_root = BooleanValue(true));
-        JS_SetProperty(
-            cx,
-            obj.handle().into(),
-            c"killed".as_ptr(),
-            killed_root.handle().into(),
-        );
-        rooted!(&in(cx_ref_k) let exited_root = BooleanValue(true));
-        JS_SetProperty(
-            cx,
-            obj.handle().into(),
-            c"exited".as_ptr(),
-            exited_root.handle().into(),
-        );
-    }
-
-    args.rval().set(BooleanValue(result));
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn subproc_stdout_read(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let child_ptr = match get_child_ptr_from_this(cx, &args) {
-        Some(p) => p,
-        None => {
+        };
+        let Some(bytes) = crate::node_child_process::peek_output(pid, stdout) else {
             args.rval().set(NullValue());
             return true;
-        }
-    };
-
-    let child = &mut *child_ptr;
-    if let Some(ref mut stdout) = child.stdout {
-        let mut buf = Vec::new();
-        use ::std::io::Read;
-        stdout.read_to_end(&mut buf).ok();
-        let s = String::from_utf8_lossy(&buf).into_owned();
-        let c_s = ZBox::from_vec(s.into_bytes());
-        let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
+        };
+        let js_str = js_string_from_child_bytes(cx, &bytes, lossy_text);
         args.rval().set(if js_str.is_null() {
             NullValue()
         } else {
             StringValue(&*js_str)
         });
-    } else {
-        args.rval().set(NullValue());
+        true
     }
-    true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn subproc_stderr_read(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn subproc_stdout_text(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let child_ptr = match get_child_ptr_from_this(cx, &args) {
-        Some(p) => p,
-        None => {
-            args.rval().set(NullValue());
-            return true;
-        }
-    };
+    subproc_output_common(cx, &args, true, true)
+}
 
-    let child = &mut *child_ptr;
-    if let Some(ref mut stderr) = child.stderr {
-        let mut buf = Vec::new();
-        use ::std::io::Read;
-        stderr.read_to_end(&mut buf).ok();
-        let s = String::from_utf8_lossy(&buf).into_owned();
-        let c_s = ZBox::from_vec(s.into_bytes());
-        let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
-        args.rval().set(if js_str.is_null() {
-            NullValue()
-        } else {
-            StringValue(&*js_str)
-        });
-    } else {
-        args.rval().set(NullValue());
-    }
-    true
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subproc_stdout_raw(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    subproc_output_common(cx, &args, true, false)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subproc_stderr_text(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    subproc_output_common(cx, &args, false, true)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subproc_stderr_raw(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    subproc_output_common(cx, &args, false, false)
 }
 
 unsafe fn get_string_prop(
@@ -2296,30 +2560,7 @@ unsafe fn get_string_array_prop(
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let arr = val.to_object());
-        let mut len_val = UndefinedValue();
-        let len_mh = MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut len_val,
-        };
-        JS_GetProperty(cx, arr.handle().into(), c"length".as_ptr(), len_mh);
-        let len = if len_val.is_int32() {
-            len_val.to_int32() as u32
-        } else {
-            0
-        };
-        let mut result = Vec::with_capacity(len as usize);
-        for i in 0..len {
-            let mut elem = UndefinedValue();
-            let elem_mh = MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut elem,
-            };
-            JS_GetElement(cx, arr.handle().into(), i, elem_mh);
-            if elem.is_string() {
-                result.push(crate::js_to_rust_string(cx, elem));
-            }
-        }
-        result
+        read_string_array_from_obj(cx, arr.handle().into())
     }
 }
 
@@ -2357,22 +2598,6 @@ unsafe fn get_env_prop(
             return None;
         }
         None
-    }
-}
-
-unsafe fn get_stdio_mode(
-    cx: *mut JSContext,
-    obj_h: Handle<*mut JSObject>,
-    name: *const ::std::os::raw::c_char,
-) -> ::std::process::Stdio {
-    unsafe {
-        let mode_str = get_string_prop(cx, obj_h, name);
-        match mode_str.as_deref() {
-            Some("pipe") => ::std::process::Stdio::piped(),
-            Some("inherit") => ::std::process::Stdio::inherit(),
-            Some("null") | Some("ignore") => ::std::process::Stdio::null(),
-            _ => ::std::process::Stdio::piped(),
-        }
     }
 }
 
@@ -4689,14 +4914,25 @@ unsafe fn serve_write_response_object(
         }
     }
 
-    // body — read `_bodyText` (string). If absent, empty body.
+    // body — fetch-handler Responses carry one of the body slots the
+    // Request/Response constructors write: `_bodyText` (string) or
+    // `_bodyBytes` (Uint8Array), read in that precedence (mirrors
+    // fetch_fn's Request-side read). Byte-exact: `_bodyBytes` goes to the
+    // wire verbatim via collect_byte_view — reading only `_bodyText` used
+    // to silently empty-body every ArrayBuffer/typed-array/Buffer response
+    // (`new Response(new Uint8Array(...))` stored its body in `_bodyBytes`).
     let mut body_val = UndefinedValue();
     let _ = bao_stealth::engine_props::get_property_clearing(raw_cx, obj.handle().into(), c"_bodyText", &mut body_val);
     let body_bytes: Vec<u8> = if body_val.is_string() {
-        let s = crate::js_to_rust_string(raw_cx, body_val);
-        s.into_bytes()
+        crate::js_to_rust_string(raw_cx, body_val).into_bytes()
     } else {
-        Vec::new()
+        let mut bytes_val = UndefinedValue();
+        let _ = bao_stealth::engine_props::get_property_clearing(raw_cx, obj.handle().into(), c"_bodyBytes", &mut bytes_val);
+        if bytes_val.is_object() {
+            crate::node_buffer::collect_byte_view(raw_cx, bytes_val).unwrap_or_default()
+        } else {
+            Vec::new()
+        }
     };
 
     // Content-Length is left to uWS `end()` (it derives framing from the

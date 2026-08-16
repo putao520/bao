@@ -124,10 +124,40 @@ unsafe extern "C" fn https_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         "{}".to_string()
     };
 
-    let body = if argc > 3 && (*args.get(3).ptr).is_string() {
-        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(3).ptr).to_string()))
+    // Body (arg 3): string (UTF-8) or Buffer/TypedArray/DataView/ArrayBuffer —
+    // byte-exact via the house extractor (same contract as node_http's
+    // http_request). The previous string-only read silently emptied every
+    // binary request body; unrecognized objects fail loudly.
+    let body_bytes: Option<Vec<u8>> = if argc > 3 {
+        let v = *args.get(3).ptr;
+        if v.is_undefined() || v.is_null() {
+            None
+        } else if v.is_string() {
+            let s = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(v.to_string()));
+            (!s.is_empty()).then(|| s.into_bytes())
+        } else if v.is_object() {
+            match crate::node_buffer::collect_byte_view(cx, v) {
+                Some(bytes) => (!bytes.is_empty()).then_some(bytes),
+                None => {
+                    JS_ReportErrorUTF8(
+                        cx,
+                        c"%s".as_ptr(),
+                        c"https: request body must be a string, Buffer, TypedArray or ArrayBuffer"
+                            .as_ptr(),
+                    );
+                    return false;
+                }
+            }
+        } else {
+            JS_ReportErrorUTF8(
+                cx,
+                c"%s".as_ptr(),
+                c"https: request body must be a string, Buffer, TypedArray or ArrayBuffer".as_ptr(),
+            );
+            return false;
+        }
     } else {
-        String::new()
+        None
     };
 
     // Node TLS options (arg 4, JSON from the client shim):
@@ -208,12 +238,6 @@ unsafe extern "C" fn https_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     } else {
         Vec::new()
     };
-    let body_bytes: Option<Vec<u8>> = if body.is_empty() {
-        None
-    } else {
-        Some(body.into_bytes())
-    };
-
     // No stealth profile for https.request (Node API parity). Stealth applies
     // to the stealth_http / fetch path.
     let profile: Option<bao_stealth::StealthProfile> = None;

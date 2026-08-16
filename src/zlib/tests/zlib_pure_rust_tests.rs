@@ -352,3 +352,206 @@ fn uncompress_buffer_too_small() {
     let rc = uncompress(dest.as_mut_ptr(), &mut dest_len, compressed.as_ptr(), compressed.len() as _);
     assert_ne!(rc, ReturnCode::Ok as i32, "should fail with too-small buffer");
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// inflate_decompress_checked — node-classified failures + multi-member gzip
+// (the node:zlib sync bindings route through this; returning Err with a
+// reason instead of None is what makes gunzipSync etc. throw ZlibError
+// rather than silently returning undefined).
+// ──────────────────────────────────────────────────────────────────────────
+
+use bun_zlib::{inflate_decompress_checked, InflateFailure};
+
+fn gz_member(input: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
+    enc.write_all(input).unwrap();
+    enc.finish().unwrap()
+}
+
+fn zlib_member(input: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+    enc.write_all(input).unwrap();
+    enc.finish().unwrap()
+}
+
+fn raw_member(input: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(6));
+    enc.write_all(input).unwrap();
+    enc.finish().unwrap()
+}
+
+#[test]
+fn checked_zlib_roundtrip_ok() {
+    let body = b"checked zlib roundtrip payload";
+    let out = inflate_decompress_checked(&zlib_member(body), 15).expect("decode");
+    assert_eq!(out, body);
+}
+
+#[test]
+fn checked_zlib_truncated_is_unexpected_eof() {
+    let mut compressed = zlib_member(b"truncation target payload, repeated repeated");
+    compressed.truncate(compressed.len() - 5); // cut mid-stream
+    let err = inflate_decompress_checked(&compressed, 15).unwrap_err();
+    assert_eq!(err, InflateFailure::Truncated);
+    assert_eq!(err.message(), "unexpected end of file");
+}
+
+#[test]
+fn checked_zlib_bad_fcheck_is_header_check() {
+    // CM=8 but the u16 is not a multiple of 31 → zlib's first header check.
+    let err = inflate_decompress_checked(&[0x78, 0x9e, 0x00, 0x00], 15).unwrap_err();
+    assert_eq!(err, InflateFailure::HeaderCheck);
+    assert_eq!(err.message(), "incorrect header check");
+}
+
+#[test]
+fn checked_zlib_bad_cm_is_unknown_method() {
+    // 0x7918: FCHECK ok (31000 = 31 * 1000) but CM = 9.
+    let err = inflate_decompress_checked(&[0x79, 0x18, 0x00, 0x00], 15).unwrap_err();
+    assert_eq!(err, InflateFailure::UnknownMethod);
+    assert_eq!(err.message(), "unknown compression method");
+}
+
+#[test]
+fn checked_zlib_cinfo_too_large_is_window_size() {
+    // 0x881c: FCHECK ok (34844 = 31 * 1124), CM = 8, but CINFO = 8 > 7.
+    let err = inflate_decompress_checked(&[0x88, 0x1c, 0x00, 0x00], 15).unwrap_err();
+    assert_eq!(err, InflateFailure::WindowSize);
+    assert_eq!(err.message(), "invalid window size");
+}
+
+#[test]
+fn checked_zlib_short_input_is_unexpected_eof() {
+    let one = inflate_decompress_checked(&[0x78], 15).unwrap_err();
+    assert_eq!(one, InflateFailure::Truncated);
+    let empty = inflate_decompress_checked(&[], 15).unwrap_err();
+    assert_eq!(empty, InflateFailure::Truncated);
+}
+
+#[test]
+fn checked_gzip_roundtrip_ok() {
+    let body = b"checked gzip roundtrip payload";
+    let out = inflate_decompress_checked(&gz_member(body), 16).expect("decode");
+    assert_eq!(out, body);
+}
+
+#[test]
+fn checked_gzip_bad_magic_is_header_check() {
+    let mut member = gz_member(b"magic corruption target");
+    member[0] ^= 0xff;
+    let err = inflate_decompress_checked(&member, 16).unwrap_err();
+    assert_eq!(err, InflateFailure::HeaderCheck);
+    assert_eq!(err.message(), "incorrect header check");
+}
+
+#[test]
+fn checked_gzip_garbage_is_header_check() {
+    let garbage = [0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8, 0xf7, 0xf6, 0xf5, 0xf4];
+    let err = inflate_decompress_checked(&garbage, 16).unwrap_err();
+    assert_eq!(err, InflateFailure::HeaderCheck);
+}
+
+#[test]
+fn checked_gzip_truncated_trailer_is_unexpected_eof() {
+    let mut member = gz_member(b"trailer truncation target payload");
+    member.truncate(member.len() - 4); // into the CRC/ISIZE trailer
+    let err = inflate_decompress_checked(&member, 16).unwrap_err();
+    assert_eq!(err, InflateFailure::Truncated);
+}
+
+#[test]
+fn checked_gzip_corrupt_crc_is_data_check() {
+    let mut member = gz_member(b"crc corruption target payload");
+    let last = member.len() - 1;
+    member[last] ^= 0xff; // flip ISIZE/CRC trailer bits
+    let err = inflate_decompress_checked(&member, 16).unwrap_err();
+    assert!(
+        err == InflateFailure::DataCheck || err == InflateFailure::LengthCheck,
+        "trailer corruption must surface, got {err:?}"
+    );
+}
+
+#[test]
+fn checked_gzip_multi_member_all_members() {
+    // RFC 1952 §2.2: concatenated members decompress to the concatenation —
+    // the sync path previously stopped after the FIRST member.
+    let mut two = gz_member(b"first-member|");
+    two.extend_from_slice(&gz_member(b"second-member"));
+    let out = inflate_decompress_checked(&two, 16).expect("both members");
+    assert_eq!(out, b"first-member|second-member");
+
+    let mut three = gz_member(b"A-");
+    three.extend_from_slice(&gz_member(b"B-"));
+    three.extend_from_slice(&gz_member(b"C"));
+    let out = inflate_decompress_checked(&three, 16).expect("three members");
+    assert_eq!(out, b"A-B-C");
+}
+
+#[test]
+fn checked_gzip_multi_member_corrupt_second_crc_fails() {
+    // CRC verification must span EVERY member: corrupt only the second
+    // member's trailer — the whole call must fail (the old single-member
+    // decode silently returned member one's data).
+    let first = gz_member(b"member-one-");
+    let mut second = gz_member(b"member-two");
+    let crc_off = second.len() - 8;
+    second[crc_off] ^= 0xff;
+    let mut both = first.clone();
+    both.extend_from_slice(&second);
+    let err = inflate_decompress_checked(&both, 16).unwrap_err();
+    assert!(
+        err == InflateFailure::DataCheck || err == InflateFailure::LengthCheck,
+        "second-member CRC must be verified, got {err:?}"
+    );
+}
+
+#[test]
+fn checked_gzip_empty_member_decodes_empty() {
+    // Empty output is a legitimate result, not a failure.
+    let out = inflate_decompress_checked(&gz_member(b""), 16).expect("empty member is valid");
+    assert!(out.is_empty());
+}
+
+#[test]
+fn checked_raw_roundtrip_and_garbage() {
+    let body = b"checked raw deflate roundtrip payload";
+    let out = inflate_decompress_checked(&raw_member(body), -15).expect("decode");
+    assert_eq!(out, body);
+
+    let garbage = [0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8];
+    let err = inflate_decompress_checked(&garbage, -15).unwrap_err();
+    assert_eq!(err, InflateFailure::Corrupt, "0xff block header is reserved BTYPE=3");
+    assert_eq!(err.message(), "invalid deflate data");
+}
+
+#[test]
+fn checked_raw_truncated_is_unexpected_eof() {
+    let mut compressed = raw_member(b"raw truncation target payload repeated repeated");
+    compressed.truncate(compressed.len() - 3);
+    let err = inflate_decompress_checked(&compressed, -15).unwrap_err();
+    assert_eq!(err, InflateFailure::Truncated);
+}
+
+#[test]
+fn checked_auto_detect_gzip_zlib_raw() {
+    let gz = inflate_decompress_checked(&gz_member(b"auto-gzip"), 47).expect("auto gzip");
+    assert_eq!(gz, b"auto-gzip");
+    let zl = inflate_decompress_checked(&zlib_member(b"auto-zlib"), 47).expect("auto zlib");
+    assert_eq!(zl, b"auto-zlib");
+    // raw fallback is bao's superset of node's gzip|zlib auto-detect
+    let rw = inflate_decompress_checked(&raw_member(b"auto-raw"), 47).expect("auto raw");
+    assert_eq!(rw, b"auto-raw");
+}
+
+#[test]
+fn checked_auto_garbage_is_header_check() {
+    // node's auto-detect only knows gzip|zlib wrappers: undetectable input
+    // reports as a header error.
+    let garbage = [0x33, 0x32, 0x31, 0x30, 0x2f, 0x2e, 0x2d, 0x2c];
+    let err = inflate_decompress_checked(&garbage, 47).unwrap_err();
+    assert_eq!(err, InflateFailure::HeaderCheck);
+    assert!(inflate_decompress_checked(&[], 47).is_err());
+}

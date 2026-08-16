@@ -162,6 +162,59 @@ pub enum ZlibError {
 bun_core::impl_tag_error!(ZlibError);
 bun_core::named_error_set!(ZlibError);
 
+// ──────────────────────────────────────────────────────────────────────────
+// InflateFailure — fine-grained one-shot decompress failure classification
+//
+// zlib C surfaces `stream.msg` ("incorrect header check", "unexpected end of
+// file", …) which node surfaces verbatim as the thrown ZlibError message;
+// flate2 collapses every failure into one opaque error. The classification
+// below restores the message classes (same strings zlib uses) so the
+// node:zlib sync bindings can throw with a reason instead of swallowing.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InflateFailure {
+    /// zlib/gzip header magic or FCHECK invalid → "incorrect header check"
+    HeaderCheck,
+    /// CM != 8 → "unknown compression method"
+    UnknownMethod,
+    /// CINFO > 7 → "invalid window size"
+    WindowSize,
+    /// reserved FLG bits set → "unknown header flags set"
+    UnknownFlags,
+    /// stream ended before the current block/trailer completed →
+    /// "unexpected end of file"
+    Truncated,
+    /// deflate payload itself corrupt → "invalid deflate data"
+    Corrupt,
+    /// gzip CRC32 mismatch → "incorrect data check"
+    DataCheck,
+    /// gzip ISIZE mismatch → "incorrect length check"
+    LengthCheck,
+}
+
+impl InflateFailure {
+    /// The zlib message string node shows for this failure class.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::HeaderCheck => "incorrect header check",
+            Self::UnknownMethod => "unknown compression method",
+            Self::WindowSize => "invalid window size",
+            Self::UnknownFlags => "unknown header flags set",
+            Self::Truncated => "unexpected end of file",
+            Self::Corrupt => "invalid deflate data",
+            Self::DataCheck => "incorrect data check",
+            Self::LengthCheck => "incorrect length check",
+        }
+    }
+}
+
+/// zlib 2-byte header plausibility: CM == 8 (deflate) and FCHECK modulus
+/// (RFC 1950: the big-endian u16 must be a multiple of 31).
+fn looks_like_zlib_header(b0: u8, b1: u8) -> bool {
+    b0 & 0x0f == 8 && u16::from_be_bytes([b0, b1]) % 31 == 0
+}
+
 // State enum for streaming types
 pub use bun_core::compress::State;
 pub type ZlibReaderState = State;
@@ -271,6 +324,90 @@ fn try_raw_decode(input: &[u8]) -> Option<Vec<u8>> {
     let mut output = Vec::with_capacity(if input.len() > 512 { input.len() * 4 } else { 256 });
     decoder.read_to_end(&mut output).ok()?;
     Some(output)
+}
+
+/// One-shot decompress through the streaming state machine
+/// (`ZlibReaderArrayList` — multi-member gzip, per-member CRC32/ISIZE
+/// verification, zlib/raw framing) with a node-compatible failure
+/// classification. `window_bits` follows zlib conventions: `0`/>30 auto,
+/// 16..=30 gzip, 1..=15 zlib, negative raw.
+///
+/// Pre-checks mirror zlib's own header validation order so short buffers
+/// still classify exactly like zlib would (e.g. a 1-byte input is
+/// "unexpected end of file", a bad FCHECK is "incorrect header check")
+/// instead of the state machine's chunk-agnostic "need more bytes".
+pub fn inflate_decompress_checked(
+    input: &[u8],
+    window_bits: c_int,
+) -> Result<Vec<u8>, InflateFailure> {
+    if window_bits > 0 && window_bits <= 15 {
+        // zlib wrapper: RFC 1950 header checks in zlib's own order.
+        if input.len() < 2 {
+            return Err(InflateFailure::Truncated);
+        }
+        let (b0, b1) = (input[0], input[1]);
+        if u16::from_be_bytes([b0, b1]) % 31 != 0 {
+            return Err(InflateFailure::HeaderCheck);
+        }
+        if b0 & 0x0f != 8 {
+            return Err(InflateFailure::UnknownMethod);
+        }
+        if b0 >> 4 > 7 {
+            return Err(InflateFailure::WindowSize);
+        }
+    } else if window_bits > 15 && window_bits <= 30 {
+        // gzip wrapper: magic first, like gzread.
+        if input.len() < 2 {
+            return Err(InflateFailure::Truncated);
+        }
+        if input[0] != 0x1f || input[1] != 0x8b {
+            return Err(InflateFailure::HeaderCheck);
+        }
+    } else if input.len() < 2 {
+        // auto-detect sniff needs 2 bytes.
+        return Err(InflateFailure::Truncated);
+    }
+
+    let mut out = Vec::new();
+    // Scope the reader so its `&mut out` borrow (held until drop) ends
+    // before `out` is returned.
+    let outcome: Result<(), InflateFailure> = {
+        let mut reader = ZlibReaderArrayList::init_with_options(
+            input,
+            &mut out,
+            Options { window_bits, ..Default::default() },
+        )
+        .map_err(|_| InflateFailure::Corrupt)?;
+        let result = reader.read_all(true);
+        let reason = reader.last_failure();
+        result.map_err(|e| {
+            if e == ZlibError::ShortRead {
+                // Unreachable with is_done=true (every ShortRead path checks
+                // it first and fails) — classified defensively.
+                InflateFailure::Truncated
+            } else {
+                reason.unwrap_or(InflateFailure::Corrupt)
+            }
+        })
+    };
+    match outcome {
+        Ok(()) => Ok(out),
+        Err(reason) => {
+            if (window_bits == 0 || window_bits > 30)
+                && input.len() >= 2
+                && (input[0] != 0x1f || input[1] != 0x8b)
+                && !looks_like_zlib_header(input[0], input[1])
+            {
+                // Auto-detect fell through to the raw-deflate superset and
+                // that failed (corrupt OR ran dry): node's auto-detect only
+                // knows gzip|zlib wrappers, so it reports this same input as
+                // a header error — match it. (Gzip/zlib-sniffed inputs keep
+                // their own truncation/data-check classes above.)
+                return Err(InflateFailure::HeaderCheck);
+            }
+            Err(reason)
+        }
+    }
 }
 
 pub fn deflate_bound(input_len: usize, _window_bits: c_int, gzip: bool) -> usize {
@@ -445,6 +582,9 @@ pub struct ZlibReaderArrayList<'a> {
     members_completed: u32,
     /// Set once the stream (all gzip members / zlib / raw) is fully inflated.
     finished: bool,
+    /// Classification of the terminal error (zlib message semantics); set by
+    /// every fatal path so one-shot callers can report WHY the stream failed.
+    failure: Option<InflateFailure>,
 }
 
 impl<'a> Drop for ZlibReaderArrayList<'a> {
@@ -492,6 +632,7 @@ impl<'a> ZlibReaderArrayList<'a> {
             stream_ended: false,
             members_completed: 0,
             finished: false,
+            failure: None,
         }))
     }
 
@@ -499,9 +640,15 @@ impl<'a> ZlibReaderArrayList<'a> {
         None
     }
 
-    fn fail(&mut self) -> ZlibError {
+    fn fail_reason(&mut self, reason: InflateFailure) -> ZlibError {
         self.state = ZlibReaderArrayListState::Error;
+        self.failure = Some(reason);
         ZlibError::ZlibError
+    }
+
+    /// Why the last fatal `read_all` failed (zlib message semantics).
+    pub fn last_failure(&self) -> Option<InflateFailure> {
+        self.failure
     }
 
     /// Decide the wire format from `window_bits` (and, for auto-detect
@@ -517,7 +664,7 @@ impl<'a> ZlibReaderArrayList<'a> {
             let head = &self.pending[self.cursor..self.cursor + 2];
             if head[0] == 0x1f && head[1] == 0x8b {
                 Ok(WireFormat::Gzip)
-            } else if head[0] & 0x0f == 8 && (u16::from_be_bytes([head[0], head[1]]) % 31 == 0) {
+            } else if looks_like_zlib_header(head[0], head[1]) {
                 Ok(WireFormat::Zlib)
             } else {
                 Ok(WireFormat::Raw)
@@ -533,13 +680,21 @@ impl<'a> ZlibReaderArrayList<'a> {
 
     /// Whether the gzip header occupying `pending[cursor - parsed..cursor]`
     /// is complete (fixed 10 bytes + FLG-dependent optional fields all in).
-    fn header_complete(head: &[u8]) -> Result<bool, ZlibError> {
+    /// Errors carry the zlib message class (magic vs method vs flags).
+    fn header_complete(head: &[u8]) -> Result<bool, InflateFailure> {
         if head.len() < 10 {
             return Ok(false);
         }
-        // Fixed-field validity: magic, CM=8, reserved FLG bits clear.
-        if head[0] != 0x1f || head[1] != 0x8b || head[2] != 8 || head[3] & 0xe0 != 0 {
-            return Err(ZlibError::ZlibError);
+        // Fixed-field validity, in zlib's own check order: magic, CM=8,
+        // reserved FLG bits clear.
+        if head[0] != 0x1f || head[1] != 0x8b {
+            return Err(InflateFailure::HeaderCheck);
+        }
+        if head[2] != 8 {
+            return Err(InflateFailure::UnknownMethod);
+        }
+        if head[3] & 0xe0 != 0 {
+            return Err(InflateFailure::UnknownFlags);
         }
         let flg = head[3];
         let mut pos = 10usize;
@@ -585,7 +740,7 @@ impl<'a> ZlibReaderArrayList<'a> {
     /// `Ok(true)` when the (complete) header has been consumed. Validated
     /// bytes accumulate in `header_buf`, which survives `pending`
     /// compaction — a header split across network chunks resumes cleanly.
-    fn parse_gzip_header(&mut self) -> Result<bool, ZlibError> {
+    fn parse_gzip_header(&mut self) -> Result<bool, InflateFailure> {
         loop {
             match Self::header_complete(&self.header_buf) {
                 Ok(true) => return Ok(true),
@@ -640,7 +795,7 @@ impl<'a> ZlibReaderArrayList<'a> {
                 None => {
                     self.compact();
                     if is_done {
-                        return Err(self.fail());
+                        return Err(self.fail_reason(InflateFailure::Truncated));
                     }
                     return Err(ZlibError::ShortRead);
                 }
@@ -670,11 +825,11 @@ impl<'a> ZlibReaderArrayList<'a> {
                         }
                         self.compact();
                         if is_done {
-                            return Err(self.fail());
+                            return Err(self.fail_reason(InflateFailure::Truncated));
                         }
                         return Err(ZlibError::ShortRead);
                     }
-                    Err(e) => return Err(e),
+                    Err(reason) => return Err(self.fail_reason(reason)),
                 }
             }
 
@@ -689,13 +844,13 @@ impl<'a> ZlibReaderArrayList<'a> {
                         &mut out,
                         flate2::FlushDecompress::None,
                     )
-                    .map_err(|_| self.fail())?;
+                    .map_err(|_| self.fail_reason(InflateFailure::Corrupt))?;
                 let consumed = (self.inflater.total_in() - in_before) as usize;
                 let written = (self.inflater.total_out() - out_before) as usize;
                 self.cursor += consumed;
                 if written > 0 {
                     if self.list_ptr.len() + written > self.max_output_size {
-                        return Err(self.fail());
+                        return Err(self.fail_reason(InflateFailure::Corrupt));
                     }
                     if format == WireFormat::Gzip {
                         self.member_crc.update(&out[..written]);
@@ -722,7 +877,7 @@ impl<'a> ZlibReaderArrayList<'a> {
                         // Ran out of input mid-payload.
                         self.compact();
                         if is_done {
-                            return Err(self.fail());
+                            return Err(self.fail_reason(InflateFailure::Truncated));
                         }
                         return Err(ZlibError::ShortRead);
                     }
@@ -730,7 +885,7 @@ impl<'a> ZlibReaderArrayList<'a> {
                     if self.pending.len() - self.cursor < 8 {
                         self.compact();
                         if is_done {
-                            return Err(self.fail());
+                            return Err(self.fail_reason(InflateFailure::Truncated));
                         }
                         return Err(ZlibError::ShortRead);
                     }
@@ -740,10 +895,11 @@ impl<'a> ZlibReaderArrayList<'a> {
                         .expect("8 trailer bytes");
                     let crc = u32::from_le_bytes(tr[0..4].try_into().expect("4"));
                     let isize_wire = u32::from_le_bytes(tr[4..8].try_into().expect("4"));
-                    if crc != self.member_crc.clone().finalize()
-                        || isize_wire != (self.member_out & 0xffff_ffff) as u32
-                    {
-                        return Err(self.fail());
+                    if crc != self.member_crc.clone().finalize() {
+                        return Err(self.fail_reason(InflateFailure::DataCheck));
+                    }
+                    if isize_wire != (self.member_out & 0xffff_ffff) as u32 {
+                        return Err(self.fail_reason(InflateFailure::LengthCheck));
                     }
                     self.cursor += 8;
                     self.members_completed += 1;
@@ -767,7 +923,7 @@ impl<'a> ZlibReaderArrayList<'a> {
                     if !self.stream_ended {
                         self.compact();
                         if is_done {
-                            return Err(self.fail());
+                            return Err(self.fail_reason(InflateFailure::Truncated));
                         }
                         return Err(ZlibError::ShortRead);
                     }

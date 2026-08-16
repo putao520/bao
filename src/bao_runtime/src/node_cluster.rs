@@ -1342,6 +1342,21 @@ unsafe extern "C" fn cluster_worker_boot(_cx: *mut JSContext, argc: u32, vp: *mu
         args.rval().set(BooleanValue(false));
         return true;
     }
+
+    // BCE (cluster kill swallow): the PosixStdio::Ipc spawn path clones the
+    // child while the C++ spawner holds ALL signals blocked in the parent —
+    // the worker inherits that mask across exec (strace: first worker syscall
+    // reports ~[KILL STOP]), so a directed SIGTERM from worker.kill() could
+    // never be delivered to ANY thread: the signal stayed pending forever,
+    // the worker lived on, and the primary never saw 'exit'. Restore the
+    // default (empty) mask here — the first thing the worker boot runs on
+    // the JS thread — so signals reach this process again.
+    unsafe {
+        let mut empty_mask: libc::sigset_t = ::std::mem::zeroed();
+        libc::sigemptyset(&mut empty_mask);
+        libc::sigprocmask(libc::SIG_SETMASK, &empty_mask, ::std::ptr::null_mut());
+    }
+
     // SAFETY: fd comes from PosixStdio::Ipc — a live AF_UNIX socket inherited
     // from the primary; from_raw_fd takes sole ownership of it.
     let sock = unsafe {
@@ -1647,14 +1662,29 @@ const CLUSTER_JS: &str = r#"
             try { nativeDisconnect.call(result); } catch (e) {}
           };
         }
+        // worker.kill([signal]) — Node semantics: SEND the signal; lifecycle
+        // state (isDead / exitedAfterDisconnect / cluster.workers membership /
+        // 'exit' event) is decided by the observed exit in handleExit, not
+        // here. BCE (kill 永不达 exit): this used to set isDead=true
+        // immediately, and handleExit early-returns on isDead — so the REAL
+        // exit was dropped, 'exit' never fired, the worker stayed in
+        // cluster.workers, and the primary's loop-liveness leak spun forever.
         worker.kill = function(signal) {
           var sig = typeof signal === 'number' ? signal : (SIG[String(signal).toUpperCase()] || 15);
           if (cluster.__cluster_worker_kill) {
             try { cluster.__cluster_worker_kill(worker._pid, sig); } catch (e) {}
           }
-          worker.isDead = true;
-          worker.isConnected = false;
-          worker.exitedAfterDisconnect = worker._disconnecting;
+          if (sig === 9) return;
+          // Grace escalation: SIGTERM is deliverable now (worker boot resets
+          // the inherited all-blocked signal mask), but a worker wedged mid-
+          // script must still die — after 1s, escalate to SIGKILL so
+          // kill() ⇒ child dead ⇒ parent 'exit' is unconditional.
+          var pid = worker._pid;
+          setTimeout(function () {
+            if (!worker.isDead && cluster.__cluster_worker_kill) {
+              try { cluster.__cluster_worker_kill(pid, 9); } catch (e) {}
+            }
+          }, 1000);
         };
         worker.destroy = function(signal) { worker.kill(signal); };
 

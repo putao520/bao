@@ -2094,6 +2094,7 @@ dependencies = [
  "bun_uws",
  "bun_uws_sys",
  "bun_wyhash",
+ "bun_zlib",
  "bytes",
  "cdp-server",
  "compact_str 0.8.2",

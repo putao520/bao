@@ -27,6 +27,32 @@ pub(crate) const LOCAL_MAX_HEADER_LIST_SIZE: u32 = 256 * 1024;
 /// `NGHTTP2_DEFAULT_MAX_CONTINUATIONS` (CVE-2024-28182).
 pub(crate) const LOCAL_MAX_CONTINUATIONS: u8 = 8;
 
+/// HPACK dynamic-table size used when neither side negotiates otherwise
+/// (RFC 7541 §4.3: `INITIAL_DYNAMIC_TABLE_SIZE` = 4096). This is both the
+/// decoder cap when the preface advertises no SETTINGS_HEADER_TABLE_SIZE and
+/// the encoder cap until the server's SETTINGS raises it
+/// (`pending_hpack_enc_capacity`).
+pub const DEFAULT_HPACK_TABLE_SIZE: u32 = 4096;
+
+/// The SETTINGS_HEADER_TABLE_SIZE value carried in a client-preface SETTINGS
+/// payload (wire form: `u16` setting id BE + `u32` value BE per 6-byte unit),
+/// i.e. the maximum dynamic-table size this endpoint told the peer its
+/// encoder may use (RFC 9113 §6.5.2). RFC 7541 §4.2 then entitles the peer to
+/// signal any table size up to this value with a Dynamic Table Size Update,
+/// so the connection's HPACK decoder must be capped at exactly this value —
+/// not at [`DEFAULT_HPACK_TABLE_SIZE`].
+///
+/// Returns `None` when the payload is absent or carries no 0x0001 unit
+/// (the 4096 default applies). When several 0x0001 units are present the
+/// last wins, mirroring in-order SETTINGS processing by the peer.
+pub fn advertised_hpack_table_size(settings_payload: &[u8]) -> Option<u32> {
+    settings_payload
+        .chunks_exact(6)
+        .filter(|unit| u16::from_be_bytes([unit[0], unit[1]]) == 0x0001)
+        .next_back()
+        .map(|unit| u32::from_be_bytes([unit[2], unit[3], unit[4], unit[5]]))
+}
+
 /// `write_buffer` high-water mark. `writeDataWindowed` stops queueing once the
 /// userland send buffer crosses this even if flow-control window remains, so a
 /// large grant doesn't duplicate the whole body in memory before the first

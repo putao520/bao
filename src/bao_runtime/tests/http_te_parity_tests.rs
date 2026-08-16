@@ -439,16 +439,16 @@ fn test_bun_serve_accepts_http11_chunked_control() {
 /// immediately — node drops a stream as soon as both halves close, and the
 /// upstream bug leaked one stream per request for the whole session
 /// lifetime (WeakRef never cleared). Bao's release points are the JS
-/// session registry (`_streams`): eviction on synchronous client-request
-/// completion inside `request()`, and on `stream.close()` /
+/// session registry (`_streams`): eviction when the client bridge settles
+/// (response delivered or fetch failed — the bridge returns the fetch
+/// Promise, not the old synchronous placeholder), and on `stream.close()` /
 /// `stream.destroy()` (session close sweeps via per-stream close).
 ///
 /// The open-stream cases hide the global fetch bridge so `request()` leaves
 /// the stream in flight (that is the only local way to hold an open
-/// stream); the completed-request case exercises the bridge's synchronous
-/// completion (its placeholder response ends the stream inside request()).
-/// The fetch target is a closed local port, so no real network peer is
-/// involved.
+/// stream); the completed-request case drives the loop until the refused
+/// port fetches settle (the rejection path evicts too). The fetch target is
+/// a closed local port, so no real network peer is involved.
 #[test]
 fn test_node_http2_streams_released_from_session_registry_on_close() {
     bun_runtime::install_exit_handler();
@@ -456,22 +456,53 @@ fn test_node_http2_streams_released_from_session_registry_on_close() {
     let mut ctx = JsContext::for_test().expect("JsContext init");
     ctx.set_global_setup(bun_runtime::globals::install_all);
 
+    // Case 1 (release-on-completion, the upstream core scenario): N
+    // completed outbound requests must not linger in the registry. The
+    // fetches to the refused port settle asynchronously — pump the loop
+    // (ConcurrentTask dispatch + microtasks) until the registry drains.
+    let scheduled = eval_str(
+        &mut ctx,
+        r#"
+        var http2 = require('http2');
+        globalThis.__h2reg = http2.connect('127.0.0.1:9');
+        for (var i = 0; i < 5; i++) {
+          globalThis.__h2reg.request({ ':method': 'GET', ':path': '/' });
+        }
+        'scheduled'
+        "#,
+    );
+    assert_eq!(scheduled, "scheduled");
+    let drained = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            let n = eval_str(
+                &mut ctx,
+                "String(Object.keys(globalThis.__h2reg._streams).length)",
+            );
+            if n == "0" || std::time::Instant::now() > deadline {
+                break n;
+            }
+            let cx_raw = ctx.raw_cx();
+            unsafe {
+                mozjs_sys::jsapi::js::RunJobs(cx_raw);
+            }
+            let mut cxm = ctx.cx();
+            bun_runtime::timers::drain_and_check(&mut cxm);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    assert_eq!(
+        drained, "0",
+        "5 settled outbound requests must not linger in the session registry"
+    );
+
+    // Cases 2-4: open streams, released by close()/destroy()/session
+    // close. Hide the fetch bridge to keep requests in flight.
     let result = eval_str(
         &mut ctx,
         r#"
         (function() {
           var http2 = require('http2');
-
-          // Case 1 (release-on-completion, the upstream core scenario): N
-          // completed outbound requests must not linger in the registry.
-          var sess = http2.connect('127.0.0.1:9');
-          for (var i = 0; i < 5; i++) {
-            sess.request({ ':method': 'GET', ':path': '/' });
-          }
-          var afterCompletedRequests = Object.keys(sess._streams).length;
-
-          // Cases 2-4: open streams, released by close()/destroy()/session
-          // close. Hide the fetch bridge to keep requests in flight.
           var savedFetch = globalThis.__http2_fetch;
           delete globalThis.__http2_fetch;
           var out;
@@ -497,16 +528,16 @@ fn test_node_http2_streams_released_from_session_registry_on_close() {
           } finally {
             globalThis.__http2_fetch = savedFetch;
           }
-
-          return afterCompletedRequests + ',' + out;
+          delete globalThis.__h2reg;
+          return out;
         })()
         "#,
     );
-    // afterCompletedRequests=0, openRegistered=2 (premise: open streams ARE
-    // registered — otherwise the zeros pass vacuously), afterStreamClose=1,
-    // afterDestroy=0, beforeSessionClose=2 (premise), afterSessionClose=0.
+    // openRegistered=2 (premise: open streams ARE registered — otherwise
+    // the zeros pass vacuously), afterStreamClose=1, afterDestroy=0,
+    // beforeSessionClose=2 (premise), afterSessionClose=0.
     assert_eq!(
-        result, "0,2,1,0,2,0",
+        result, "2,1,0,2,0",
         "node:http2 session registry must release completed/closed streams (f7ad274e3 parity); got: {}",
         result
     );

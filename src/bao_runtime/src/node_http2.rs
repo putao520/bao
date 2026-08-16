@@ -151,6 +151,51 @@ const HTTP2_JS: &str = r#"
     return this;
   };
 
+  // ── byte-exact body helpers (same contract as the node:http client) ──
+  // Buffers/TypedArrays/ArrayBuffers are byte bodies; the historical
+  // `String(data)` coercion turned them into "72,101,108" comma strings.
+  function isByteValue(v) {
+    return !!v && typeof v === 'object' &&
+      (v instanceof ArrayBuffer ||
+       (typeof ArrayBuffer !== 'undefined' && typeof ArrayBuffer.isView === 'function' && ArrayBuffer.isView(v)));
+  }
+  function pushBodyChunk(stream, data) {
+    if (data === undefined || data === null) return;
+    if (typeof data === 'string' || isByteValue(data)) {
+      (stream._bodyChunks || (stream._bodyChunks = [])).push(data);
+      return;
+    }
+    throw new TypeError('http2: stream chunk must be a string, Buffer, TypedArray or ArrayBuffer');
+  }
+  // Transport body argument: all-string parts join (fast path, identical
+  // bytes); any binary part switches to byte-exact Uint8Array assembly.
+  function buildBodyArg(parts) {
+    var hasBinary = false;
+    for (var i = 0; i < parts.length; i++) {
+      if (typeof parts[i] !== 'string') { hasBinary = true; break; }
+    }
+    if (!hasBinary) return parts.join('');
+    var enc = new TextEncoder();
+    var chunks = [];
+    var total = 0;
+    for (var j = 0; j < parts.length; j++) {
+      var p = parts[j];
+      var u;
+      if (typeof p === 'string') u = enc.encode(p);
+      else if (p instanceof ArrayBuffer) u = new Uint8Array(p);
+      else u = new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
+      chunks.push(u);
+      total += u.length;
+    }
+    var out = new Uint8Array(total);
+    var off = 0;
+    for (var k = 0; k < chunks.length; k++) {
+      out.set(chunks[k], off);
+      off += chunks[k].length;
+    }
+    return out;
+  }
+
   // ── Http2Stream ─────────────────────────────────────────────────────
   function Http2Stream(session, id) {
     this._session = session;
@@ -162,7 +207,8 @@ const HTTP2_JS: &str = r#"
     this._events = Object.create(null);
     this.readable = true;
     this.writable = true;
-    this._bodyText = "";
+    // Ordered string|byte parts — byte-exact request-body accumulation.
+    this._bodyChunks = [];
   }
   Http2Stream.prototype = Object.create(null);
   // Mix in EventEmitter
@@ -216,9 +262,7 @@ const HTTP2_JS: &str = r#"
   Http2Stream.prototype.end = function(data, cb) {
     if (this._ended) return this;
     if (typeof data === 'function') { cb = data; data = undefined; }
-    if (data != null) {
-      this._bodyText += (typeof data === 'string') ? data : String(data);
-    }
+    pushBodyChunk(this, data);
     this._ended = true;
     this.writable = false;
     this.emit('end');
@@ -402,7 +446,13 @@ const HTTP2_JS: &str = r#"
     var stream = new Http2Stream(this, streamId);
     stream._headers = Object.assign({}, headers);
 
-    // If this is a client session, perform the fetch via __http2_fetch
+    // If this is a client session, perform the fetch via __http2_fetch.
+    // The bridge returns the fetch Promise, which resolves with the realm's
+    // real WHATWG Response — response headers become the 'response' event
+    // (with ':status'), the body is consumed via arrayBuffer() and delivered
+    // as ONE Buffer 'data' chunk (Node http2 stream semantics), then 'end'.
+    // (The old bridge returned a statusCode:0 placeholder JSON synchronously
+    // — every http2 client response was a silent fake.)
     if (this._mode === 'client' && typeof __http2_fetch === 'function') {
       var method = headers[':method'] || 'GET';
       var path = headers[':path'] || '/';
@@ -421,40 +471,65 @@ const HTTP2_JS: &str = r#"
       var headersJSON = '{}';
       try { headersJSON = JSON.stringify(reqHeaders); } catch(e) {}
 
-      var body = options.body || '';
-      if (body && typeof body !== 'string') {
-        try { body = String(body); } catch(e) { body = ''; }
+      // Request body: validated eagerly (string or byte body — anything
+      // else throws, never a silent comma-string/empty), then assembled
+      // byte-exactly. The fire-once bridge carries the body via options.body
+      // only — stream.write/end after request() cannot retro-send (the
+      // fetch is already in flight).
+      if (options.body !== undefined && options.body !== null &&
+          typeof options.body !== 'string' && !isByteValue(options.body)) {
+        throw new TypeError('http2: request body must be a string, Buffer, TypedArray or ArrayBuffer');
       }
+      var bodyArg = buildBodyArg(
+        options.body === undefined || options.body === null ? [] : [options.body]
+      );
 
-      var resultJSON = __http2_fetch(url, method, headersJSON, body);
-      var result = {};
-      try { result = JSON.parse(resultJSON); } catch(e) {
-        result = { statusCode: 0, headers: {}, body: resultJSON };
-      }
-
-      // Build response headers from result
-      var respHeaders = {};
-      if (result.headers) {
-        for (var hk in result.headers) {
-          if (result.headers.hasOwnProperty(hk)) {
-            respHeaders[hk] = result.headers[hk];
-          }
-        }
-      }
-      respHeaders[':status'] = String(result.statusCode || 0);
-
-      stream._responseHeaders = respHeaders;
-      stream._responseBody = result.body || '';
-
-      // Emit response event asynchronously via setImmediate-like pattern
-      var self = stream;
       var sess = this;
-      // Synchronous emit for now (matches Node.js http2.request behavior)
-      self.emit('response', respHeaders);
-      if (self._responseBody) {
-        self.emit('data', self._responseBody);
+      var settle = function (resp) {
+        var respHeaders = {};
+        try {
+          if (resp && resp.headers && typeof resp.headers.forEach === 'function') {
+            resp.headers.forEach(function (v, hk) { respHeaders[hk] = v; });
+          }
+        } catch (e) {}
+        respHeaders[':status'] = String(resp && typeof resp.status === 'number' ? resp.status : 0);
+        stream._responseHeaders = respHeaders;
+        if (!resp || typeof resp.arrayBuffer !== 'function') {
+          failStream(new Error('http2: transport resolved without a Response body'));
+          return;
+        }
+        resp.arrayBuffer().then(function (ab) {
+          stream.emit('response', respHeaders);
+          // One Buffer chunk over the exact wire bytes (Node 'data'
+          // semantics — byte view, never a lossy decoded string).
+          var chunk;
+          if (typeof Buffer !== 'undefined' && typeof Buffer.from === 'function') {
+            chunk = Buffer.from(ab);
+          } else {
+            chunk = new Uint8Array(ab);
+          }
+          stream._responseBody = chunk;
+          if (chunk.length !== 0) stream.emit('data', chunk);
+          stream.end();
+          // Release-on-completion (same eviction the synchronous path used).
+          if (sess._streams) delete sess._streams[streamId];
+        }, failStream);
+      };
+      var failStream = function (err) {
+        var e = err instanceof Error ? err : new Error(String(err && err.message ? err.message : err));
+        stream.emit('error', e);
+        stream.close();
+        if (sess._streams) delete sess._streams[streamId];
+      };
+      var p;
+      try {
+        p = __http2_fetch(url, method, headersJSON, bodyArg);
+      } catch (e) {
+        failStream(e);
       }
-      self.end();
+      if (p !== undefined && p !== null && typeof p.then === 'function' && !stream._closed) {
+        p.then(settle, failStream);
+      }
     }
 
     this._streams[streamId] = stream;
@@ -3154,10 +3229,42 @@ unsafe extern "C" fn http2_fetch(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         "{}".to_string()
     };
 
-    let body = if argc > 3 && (*args.get(3).ptr).is_string() {
-        crate::js_to_rust_string(cx, *args.get(3).ptr)
+    // Body (arg 3): string (UTF-8) or Buffer/TypedArray/DataView/ArrayBuffer —
+    // byte-exact via the house extractor (same contract as node_http's
+    // http_request / node_https's https_request). The previous string-only
+    // read silently emptied every binary request body; the JS layer's
+    // `String(body)` coercion also turned Buffers into "72,101,108".
+    // Unrecognized objects fail loudly.
+    let body_bytes: Option<Vec<u8>> = if argc > 3 {
+        let v = *args.get(3).ptr;
+        if v.is_undefined() || v.is_null() {
+            None
+        } else if v.is_string() {
+            let s = crate::js_to_rust_string(cx, v);
+            (!s.is_empty()).then(|| s.into_bytes())
+        } else if v.is_object() {
+            match crate::node_buffer::collect_byte_view(cx, v) {
+                Some(bytes) => (!bytes.is_empty()).then_some(bytes),
+                None => {
+                    JS_ReportErrorUTF8(
+                        cx,
+                        c"%s".as_ptr(),
+                        c"http2: request body must be a string, Buffer, TypedArray or ArrayBuffer"
+                            .as_ptr(),
+                    );
+                    return false;
+                }
+            }
+        } else {
+            JS_ReportErrorUTF8(
+                cx,
+                c"%s".as_ptr(),
+                c"http2: request body must be a string, Buffer, TypedArray or ArrayBuffer".as_ptr(),
+            );
+            return false;
+        }
     } else {
-        String::new()
+        None
     };
 
     // Parse headers from JSON
@@ -3188,28 +3295,24 @@ unsafe extern "C" fn http2_fetch(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         mozjs_sys::jsapi::JS::NewPromiseObject(cx, null_global.handle().into())
     });
     if promise.get().is_null() {
-        // Fallback: return empty JSON result synchronously
-        let empty_result = r#"{"statusCode":0,"headers":{},"body":""}"#;
-        let c_result = ZBox::from_bytes(empty_result.as_bytes());
-        let js_result = JS_NewStringCopyZ(cx, c_result.as_ptr());
-        if !js_result.is_null() {
-            args.rval().set(StringValue(&*js_result));
-        } else {
-            args.rval().set(UndefinedValue());
-        }
-        return true;
+        // Fail closed: without the Promise there is no honest result shape.
+        // (The old path returned a statusCode:0 placeholder JSON here — a
+        // silent-fake the JS layer then delivered as a real response.)
+        JS_ReportErrorUTF8(
+            cx,
+            c"%s".as_ptr(),
+            c"http2: failed to create fetch promise".as_ptr(),
+        );
+        return false;
     }
 
     let promise_obj = promise.get();
     let promise_val = ObjectValue(promise_obj);
 
-    let body_bytes = if body.is_empty() {
-        None
-    } else {
-        Some(body.into_bytes())
-    };
-
-    // Schedule async fetch
+    // Schedule async fetch — the returned Promise resolves with the realm's
+    // real WHATWG Response (status/headers/arrayBuffer), exactly like the
+    // node:http / node:https client transports. The JS layer consumes it
+    // (response headers → 'response', arrayBuffer → Buffer 'data' chunk).
     unsafe {
         crate::fetch_async::start(
             cx,
@@ -3222,18 +3325,7 @@ unsafe extern "C" fn http2_fetch(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         );
     }
 
-    // For the JS IIFE's synchronous __http2_fetch pattern, we need to
-    // return a JSON string. Since fetch_async is async, we return a
-    // placeholder that the JS layer handles gracefully.
-    let placeholder = r#"{"statusCode":0,"headers":{},"body":""}"#;
-    let c_placeholder = ZBox::from_bytes(placeholder.as_bytes());
-    let js_placeholder = JS_NewStringCopyZ(cx, c_placeholder.as_ptr());
-    if !js_placeholder.is_null() {
-        args.rval().set(StringValue(&*js_placeholder));
-    } else {
-        args.rval().set(UndefinedValue());
-    }
-
+    args.rval().set(promise_val);
     true
 }
 

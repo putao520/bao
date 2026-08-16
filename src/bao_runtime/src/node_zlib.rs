@@ -1,11 +1,10 @@
 // @trace REQ-ENG-007
-use ::std::io::Read;
 use ::std::io::Write;
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue};
+use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -166,6 +165,95 @@ unsafe fn extract_compression_level(cx: *mut JSContext, opts_val: JSVal) -> flat
 }
 
 // ---------------------------------------------------------------------------
+// ZlibError construction — node throws `ZlibError` with zlib's own message
+// ("incorrect header check", "unexpected end of file", …) plus the
+// code/errno pair (Z_DATA_ERROR/-3 for data errors, Z_STREAM_ERROR/-2 for
+// the encoder path). Same harvest-a-pending-exception pattern as
+// bun_api::make_coded_error_value.
+// ---------------------------------------------------------------------------
+
+/// Build a ZlibError-shaped Error VALUE (message + code + errno stamped),
+/// leaving no pending exception behind.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn zlib_error_value(cx: *mut JSContext, message: &str, code: &str, errno: i32) -> JSVal {
+    let c_msg = ZBox::from_bytes(message.as_bytes());
+    JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+    let mut exn = UndefinedValue();
+    let exn_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut exn,
+    };
+    if !JS_GetPendingException(cx, exn_h) || !exn.is_object() {
+        JS_ClearPendingException(cx);
+        return UndefinedValue();
+    }
+    JS_ClearPendingException(cx);
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let exn_obj = exn.to_object());
+    let c_code = ZBox::from_bytes(code.as_bytes());
+    let code_js = JS_NewStringCopyZ(cx, c_code.as_ptr());
+    if !code_js.is_null() {
+        rooted!(&in(cx_ref) let code_val = StringValue(unsafe { &*code_js }));
+        JS_DefineProperty(
+            cx,
+            exn_obj.handle().into(),
+            c"code".as_ptr(),
+            code_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    rooted!(&in(cx_ref) let errno_val = mozjs::jsval::Int32Value(errno));
+    JS_DefineProperty(
+        cx,
+        exn_obj.handle().into(),
+        c"errno".as_ptr(),
+        errno_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    ObjectValue(exn_obj.get())
+}
+
+/// Throw a ZlibError with a reason; `false` propagates out of the native so
+/// the exception reaches JS (node contract: corrupt input throws loudly —
+/// returning undefined was a silent swallow).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn throw_zlib_error(cx: *mut JSContext, message: &str, code: &str, errno: i32) -> bool {
+    let err_val = zlib_error_value(cx, message, code, errno);
+    if err_val.is_object() {
+        let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped;
+        rooted!(&in(cx_ref) let err_ev = err_val);
+        JS_SetPendingException(cx, err_ev.handle().into(), ExceptionStackBehavior::DoNotCapture);
+    } else {
+        // Error-object construction failed: still fail-closed with a plain
+        // pending error instead of returning a success value.
+        let c_msg = ZBox::from_bytes(message.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+    }
+    false
+}
+
+/// One-shot decompress through the bun_zlib streaming state machine
+/// (multi-member gzip, per-member CRC/ISIZE) with node-classified failures.
+/// `window_bits`: 15 zlib, 16 gzip, -15 raw, 47 auto. Throws ZlibError on
+/// corrupt/truncated input; `None` means "exception pending, return false".
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn decompress_checked_or_throw(
+    cx: *mut JSContext,
+    data: &[u8],
+    window_bits: core::ffi::c_int,
+) -> Option<Vec<u8>> {
+    match bun_zlib::inflate_decompress_checked(data, window_bits) {
+        Ok(decompressed) => Some(decompressed),
+        Err(failure) => {
+            throw_zlib_error(cx, failure.message(), "Z_DATA_ERROR", -3);
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Native sync functions — accept buffer-like, return Buffer
 // ---------------------------------------------------------------------------
 
@@ -186,10 +274,7 @@ pub(crate) unsafe extern "C" fn zlib_deflate_sync(cx: *mut JSContext, argc: u32,
     let _ = encoder.write_all(&data);
     match encoder.finish() {
         Ok(compressed) => return_bytes(cx, &args, compressed),
-        Err(_) => {
-            args.rval().set(UndefinedValue());
-            true
-        }
+        Err(_) => throw_zlib_error(cx, "deflate error", "Z_STREAM_ERROR", -2),
     }
 }
 
@@ -201,14 +286,9 @@ pub(crate) unsafe extern "C" fn zlib_inflate_sync(cx: *mut JSContext, argc: u32,
     } else {
         Vec::new()
     };
-    let mut decoder = flate2::read::ZlibDecoder::new(&data[..]);
-    let mut decompressed = Vec::new();
-    match decoder.read_to_end(&mut decompressed) {
-        Ok(_) => return_bytes(cx, &args, decompressed),
-        Err(_) => {
-            args.rval().set(UndefinedValue());
-            true
-        }
+    match decompress_checked_or_throw(cx, &data, 15) {
+        Some(decompressed) => return_bytes(cx, &args, decompressed),
+        None => false,
     }
 }
 
@@ -279,10 +359,7 @@ unsafe extern "C" fn zlib_deflate_raw_sync(cx: *mut JSContext, argc: u32, vp: *m
     let _ = encoder.write_all(&data);
     match encoder.finish() {
         Ok(compressed) => return_bytes(cx, &args, compressed),
-        Err(_) => {
-            args.rval().set(UndefinedValue());
-            true
-        }
+        Err(_) => throw_zlib_error(cx, "deflateRaw error", "Z_STREAM_ERROR", -2),
     }
 }
 
@@ -294,14 +371,9 @@ unsafe extern "C" fn zlib_inflate_raw_sync(cx: *mut JSContext, argc: u32, vp: *m
     } else {
         Vec::new()
     };
-    let mut decoder = flate2::read::DeflateDecoder::new(&data[..]);
-    let mut decompressed = Vec::new();
-    match decoder.read_to_end(&mut decompressed) {
-        Ok(_) => return_bytes(cx, &args, decompressed),
-        Err(_) => {
-            args.rval().set(UndefinedValue());
-            true
-        }
+    match decompress_checked_or_throw(cx, &data, -15) {
+        Some(decompressed) => return_bytes(cx, &args, decompressed),
+        None => false,
     }
 }
 
@@ -322,13 +394,15 @@ pub(crate) unsafe extern "C" fn zlib_gzip_sync(cx: *mut JSContext, argc: u32, vp
     let _ = encoder.write_all(&data);
     match encoder.finish() {
         Ok(compressed) => return_bytes(cx, &args, compressed),
-        Err(_) => {
-            args.rval().set(UndefinedValue());
-            true
-        }
+        Err(_) => throw_zlib_error(cx, "gzip error", "Z_STREAM_ERROR", -2),
     }
 }
 
+// gunzipSync — forced gzip (node windowBits 15|16) through the streaming
+// state machine: multi-member streams decode ALL members (RFC 1952 §2.2
+// concatenation, same engine as the HTTP pipeline), each member's CRC32 +
+// ISIZE verified; corrupt input throws ZlibError instead of returning
+// undefined (was: single member + silent swallow).
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe extern "C" fn zlib_gunzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -337,17 +411,17 @@ pub(crate) unsafe extern "C" fn zlib_gunzip_sync(cx: *mut JSContext, argc: u32, 
     } else {
         Vec::new()
     };
-    let mut decoder = flate2::read::GzDecoder::new(&data[..]);
-    let mut decompressed = Vec::new();
-    match decoder.read_to_end(&mut decompressed) {
-        Ok(_) => return_bytes(cx, &args, decompressed),
-        Err(_) => {
-            args.rval().set(UndefinedValue());
-            true
-        }
+    match decompress_checked_or_throw(cx, &data, 16) {
+        Some(decompressed) => return_bytes(cx, &args, decompressed),
+        None => false,
     }
 }
 
+// unzipSync — auto-detect (node windowBits 15+32) through the same state
+// machine: sniffs gzip/zlib headers, falls back to raw deflate, and THROWS
+// on input none of them can parse. The old three-decoder cascade treated a
+// successful decode of EMPTY output as failure, so unzipSync(gzipSync(''))
+// returned undefined; empty members are legitimate and now decode.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_unzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -356,31 +430,10 @@ unsafe extern "C" fn zlib_unzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSV
     } else {
         Vec::new()
     };
-    // unzip auto-detects gzip/zlib/deflate header
-    // Try gzip first, then zlib, then raw deflate
-    let mut decompressed = Vec::new();
-    {
-        let mut decoder = flate2::read::GzDecoder::new(&data[..]);
-        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
-            return return_bytes(cx, &args, decompressed);
-        }
+    match decompress_checked_or_throw(cx, &data, 47) {
+        Some(decompressed) => return_bytes(cx, &args, decompressed),
+        None => false,
     }
-    decompressed.clear();
-    {
-        let mut decoder = flate2::read::ZlibDecoder::new(&data[..]);
-        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
-            return return_bytes(cx, &args, decompressed);
-        }
-    }
-    decompressed.clear();
-    {
-        let mut decoder = flate2::read::DeflateDecoder::new(&data[..]);
-        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
-            return return_bytes(cx, &args, decompressed);
-        }
-    }
-    args.rval().set(UndefinedValue());
-    true
 }
 
 // ---------------------------------------------------------------------------
@@ -471,10 +524,7 @@ unsafe extern "C" fn zlib_brotli_decompress_sync(
     };
     match bun_brotli::decompress(&data) {
         Ok(decompressed) => return_bytes(cx, &args, decompressed),
-        Err(_) => {
-            args.rval().set(UndefinedValue());
-            true
-        }
+        Err(e) => throw_zlib_error(cx, &format!("brotli decompress failed: {e}"), "Z_DATA_ERROR", -3),
     }
 }
 
@@ -611,10 +661,8 @@ unsafe extern "C" fn zlib_deflate(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         }
         Err(_) => {
             if callback.is_object() {
-                let err_msg = mozjs::jsval::StringValue(unsafe {
-                    &*JS_NewStringCopyZ(cx, c"deflate error".as_ptr())
-                });
-                call_callback(cx, callback, err_msg, UndefinedValue());
+                let err_val = zlib_error_value(cx, "deflate error", "Z_STREAM_ERROR", -2);
+                call_callback(cx, callback, err_val, UndefinedValue());
             }
         }
     }
@@ -638,21 +686,17 @@ unsafe extern "C" fn zlib_inflate(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         UndefinedValue()
     };
 
-    let mut decoder = flate2::read::ZlibDecoder::new(&data[..]);
-    let mut decompressed = Vec::new();
-    match decoder.read_to_end(&mut decompressed) {
-        Ok(_) => {
+    match bun_zlib::inflate_decompress_checked(&data, 15) {
+        Ok(decompressed) => {
             if callback.is_object() {
                 let buf_val = make_buffer_val(cx, &decompressed);
                 call_callback(cx, callback, UndefinedValue(), buf_val);
             }
         }
-        Err(_) => {
+        Err(failure) => {
             if callback.is_object() {
-                let err_msg = mozjs::jsval::StringValue(unsafe {
-                    &*JS_NewStringCopyZ(cx, c"inflate error".as_ptr())
-                });
-                call_callback(cx, callback, err_msg, UndefinedValue());
+                let err_val = zlib_error_value(cx, failure.message(), "Z_DATA_ERROR", -3);
+                call_callback(cx, callback, err_val, UndefinedValue());
             }
         }
     }
@@ -692,10 +736,8 @@ unsafe extern "C" fn zlib_gzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         }
         Err(_) => {
             if callback.is_object() {
-                let err_msg = mozjs::jsval::StringValue(unsafe {
-                    &*JS_NewStringCopyZ(cx, c"gzip error".as_ptr())
-                });
-                call_callback(cx, callback, err_msg, UndefinedValue());
+                let err_val = zlib_error_value(cx, "gzip error", "Z_STREAM_ERROR", -2);
+                call_callback(cx, callback, err_val, UndefinedValue());
             }
         }
     }
@@ -719,21 +761,20 @@ unsafe extern "C" fn zlib_gunzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         UndefinedValue()
     };
 
-    let mut decoder = flate2::read::GzDecoder::new(&data[..]);
-    let mut decompressed = Vec::new();
-    match decoder.read_to_end(&mut decompressed) {
-        Ok(_) => {
+    // Same engine as gunzipSync: multi-member + per-member CRC/ISIZE; the
+    // callback receives a ZlibError-shaped Error (was: bare string, and the
+    // old GzDecoder silently dropped every member after the first).
+    match bun_zlib::inflate_decompress_checked(&data, 16) {
+        Ok(decompressed) => {
             if callback.is_object() {
                 let buf_val = make_buffer_val(cx, &decompressed);
                 call_callback(cx, callback, UndefinedValue(), buf_val);
             }
         }
-        Err(_) => {
+        Err(failure) => {
             if callback.is_object() {
-                let err_msg = mozjs::jsval::StringValue(unsafe {
-                    &*JS_NewStringCopyZ(cx, c"gunzip error".as_ptr())
-                });
-                call_callback(cx, callback, err_msg, UndefinedValue());
+                let err_val = zlib_error_value(cx, failure.message(), "Z_DATA_ERROR", -3);
+                call_callback(cx, callback, err_val, UndefinedValue());
             }
         }
     }
@@ -757,36 +798,21 @@ unsafe extern "C" fn zlib_unzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         UndefinedValue()
     };
 
-    let mut decompressed = Vec::new();
-    let mut success = false;
-    {
-        let mut decoder = flate2::read::GzDecoder::new(&data[..]);
-        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
-            success = true;
+    // Auto-detect through the same state machine as unzipSync (empty
+    // members are legitimate output, failures carry a ZlibError value).
+    match bun_zlib::inflate_decompress_checked(&data, 47) {
+        Ok(decompressed) => {
+            if callback.is_object() {
+                let buf_val = make_buffer_val(cx, &decompressed);
+                call_callback(cx, callback, UndefinedValue(), buf_val);
+            }
         }
-    }
-    if !success {
-        decompressed.clear();
-        let mut decoder = flate2::read::ZlibDecoder::new(&data[..]);
-        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
-            success = true;
+        Err(failure) => {
+            if callback.is_object() {
+                let err_val = zlib_error_value(cx, failure.message(), "Z_DATA_ERROR", -3);
+                call_callback(cx, callback, err_val, UndefinedValue());
+            }
         }
-    }
-    if !success {
-        decompressed.clear();
-        let mut decoder = flate2::read::DeflateDecoder::new(&data[..]);
-        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
-            success = true;
-        }
-    }
-
-    if success && callback.is_object() {
-        let buf_val = make_buffer_val(cx, &decompressed);
-        call_callback(cx, callback, UndefinedValue(), buf_val);
-    } else if !success && callback.is_object() {
-        let err_msg =
-            mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"unzip error".as_ptr()) });
-        call_callback(cx, callback, err_msg, UndefinedValue());
     }
     args.rval().set(UndefinedValue());
     true
@@ -845,12 +871,15 @@ unsafe extern "C" fn zlib_brotli_decompress(cx: *mut JSContext, argc: u32, vp: *
                 call_callback(cx, callback, UndefinedValue(), buf_val);
             }
         }
-        Err(_) => {
+        Err(e) => {
             if callback.is_object() {
-                let err_msg = mozjs::jsval::StringValue(unsafe {
-                    &*JS_NewStringCopyZ(cx, c"brotli decompress error".as_ptr())
-                });
-                call_callback(cx, callback, err_msg, UndefinedValue());
+                let err_val = zlib_error_value(
+                    cx,
+                    &format!("brotli decompress failed: {e}"),
+                    "Z_DATA_ERROR",
+                    -3,
+                );
+                call_callback(cx, callback, err_val, UndefinedValue());
             }
         }
     }
@@ -1010,6 +1039,9 @@ const ZLIB_JS: &str = r#"
   };
 
   // ── Patch end() on all transform classes to process + emit data/finish ──
+  // The native sync bridges throw ZlibError on corrupt input; end() turns
+  // that into the node 'error' event (and does NOT emit end/finish after a
+  // failure — a bad stream must surface, not silently END with len=0).
   var classes = [Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, BrotliCompress, BrotliDecompress];
   classes.forEach(function(Cls) {
     var origEnd = Cls.prototype.end;
@@ -1017,14 +1049,16 @@ const ZLIB_JS: &str = r#"
       if (chunk) this.write(chunk);
       this._writableState.ended = true;
       this.writable = false;
+      var result;
       try {
-        var result = this._process();
-        if (result !== undefined && result !== null) {
-          this.bytesRead += result.length;
-          this.push(result);
-        }
-      } catch(e) {
-        this.emit("error", e);
+        result = this._process();
+      } catch (e) {
+        this.destroy(e);
+        return this;
+      }
+      if (result !== undefined && result !== null) {
+        this.bytesRead += result.length;
+        this.push(result);
       }
       this.push(null);
       this.emit("finish");

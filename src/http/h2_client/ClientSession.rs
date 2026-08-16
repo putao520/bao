@@ -341,10 +341,29 @@ impl ClientSession {
                 .as_ref()
                 .and_then(|cfg| cfg.h2_priority_frames.as_deref()),
         );
+        // RFC 7541 §4.2: the server's encoder may size its dynamic table up
+        // to the SETTINGS_HEADER_TABLE_SIZE this preface advertises (stealth
+        // profiles advertise 65536; e.g. Google's GFE answers the first
+        // HEADERS with a Dynamic Table Size Update to 12288). Cap the decoder
+        // at that advertised value so the update decodes; updates above it
+        // stay a COMPRESSION_ERROR. The encoder keeps the 4096 default until
+        // the server's own SETTINGS raises it (`pending_hpack_enc_capacity`).
+        let hpack = {
+            let mut h = lshpack::HpackHandle::new(super::DEFAULT_HPACK_TABLE_SIZE);
+            let advertised = client
+                .tls_props
+                .as_ref()
+                .and_then(|cfg| cfg.get().h2_settings_payload.as_deref())
+                .and_then(super::advertised_hpack_table_size);
+            if let Some(cap) = advertised {
+                h.set_decoder_max_capacity(cap);
+            }
+            h
+        };
         let this = bun_core::heap::into_raw(Box::new(ClientSession {
             ref_count: Cell::new(1),
             socket_ref_owed: Cell::new(false),
-            hpack: lshpack::HpackHandle::new(4096),
+            hpack,
             socket,
             ctx,
             hostname: Box::<[u8]>::from(client.connected_url.hostname),
