@@ -203,23 +203,33 @@ fn test_platform_surface_e2e() {
                       function(e) { if (String(e.message).indexOf('oct only') === -1) throw e; });
             })());
 
-            // A6 ECDSA P-256 generateKey + sign(raw r||s) + verify
+            // A6 ECDSA P-256 generateKey (CryptoKeyPair) + sign(raw r||s) with
+            // privateKey + verify with publicKey + tamper rejection
             step('A6-ecdsa', S.generateKey({name:'ECDSA', namedCurve:'P-256'}, false, ['sign','verify'])
-            .then(function(k) {
-                return S.sign({name:'ECDSA', hash:'SHA-256'}, k, enc.encode('ec-data')).then(function(sig) {
+            .then(function(kp) {
+                if (!kp.privateKey || !kp.publicKey) throw new Error('ECDSA generateKey must resolve with a CryptoKeyPair');
+                if (kp.privateKey.type !== 'private' || kp.publicKey.type !== 'public') throw new Error('key pair types');
+                if (kp.privateKey.algorithm.name !== 'ECDSA' || kp.privateKey.algorithm.namedCurve !== 'P-256') throw new Error('key pair algorithm');
+                return S.sign({name:'ECDSA', hash:'SHA-256'}, kp.privateKey, enc.encode('ec-data')).then(function(sig) {
                     if (sig.byteLength !== 64) throw new Error('ECDSA raw sig length: ' + sig.byteLength);
-                    return S.verify({name:'ECDSA', hash:'SHA-256'}, k, sig, enc.encode('ec-data'));
-                }).then(function(ok) {
-                    if (!ok) throw new Error('ECDSA verify failed');
+                    return S.verify({name:'ECDSA', hash:'SHA-256'}, kp.publicKey, sig, enc.encode('ec-data')).then(function(ok) {
+                        if (!ok) throw new Error('ECDSA verify failed');
+                        // COPY before tampering — a Uint8Array view would mutate the original.
+                        var bad = new Uint8Array(sig).slice(); bad[0] ^= 1;
+                        return S.verify({name:'ECDSA', hash:'SHA-256'}, kp.publicKey, bad, enc.encode('ec-data'));
+                    }).then(function(okT) {
+                        if (okT) throw new Error('tampered ECDSA verified (must be false)');
+                    });
                 });
             }));
 
-            // A7 RSA-RSASSA generateKey + sign + verify
+            // A7 RSA-RSASSA generateKey (CryptoKeyPair) + sign with privateKey + verify with publicKey
             step('A7-rsa', S.generateKey({name:'RSA-RSASSA-PKCS1-v1_5', modulusLength:2048, publicExponent:new Uint8Array([1,0,1]), hash:'SHA-256'}, false, ['sign','verify'])
-            .then(function(k) {
-                return S.sign({name:'RSA-RSASSA-PKCS1-v1_5'}, k, enc.encode('rsa-data')).then(function(sig) {
+            .then(function(kp) {
+                if (!kp.privateKey || !kp.publicKey) throw new Error('RSA generateKey must resolve with a CryptoKeyPair');
+                return S.sign({name:'RSA-RSASSA-PKCS1-v1_5'}, kp.privateKey, enc.encode('rsa-data')).then(function(sig) {
                     if (sig.byteLength !== 256) throw new Error('RSA-2048 sig length: ' + sig.byteLength);
-                    return S.verify({name:'RSA-RSASSA-PKCS1-v1_5'}, k, sig, enc.encode('rsa-data'));
+                    return S.verify({name:'RSA-RSASSA-PKCS1-v1_5'}, kp.publicKey, sig, enc.encode('rsa-data'));
                 }).then(function(ok) {
                     if (!ok) throw new Error('RSA verify failed');
                 });
@@ -263,6 +273,62 @@ fn test_platform_surface_e2e() {
         "crypto.subtle steps did not all pass: status={} errs={}",
         status,
         errs
+    );
+
+    // ── A-crash. non-object key args must REJECT, never abort the process ──
+    // P0 regression: generateKey resolved with a single key where spec code
+    // expects a CryptoKeyPair, so `kp.privateKey` was `undefined`, and
+    // sign/verify called JSVal::to_object() on it — a debug-assert abort
+    // (jsval.rs `assertion failed: self.is_object()`), i.e. a process crash
+    // instead of a rejected promise. Same hazard class swept across
+    // encrypt/decrypt/generateKey/importKey usages/key args.
+    let crash_setup = eval_string(
+        &mut ctx,
+        r#"
+        (function() {
+            globalThis.__c = { done: 0, errs: [] };
+            // Each step must REJECT with a message containing `needle`;
+            // resolving or rejecting with anything else lands in errs.
+            function cstep(name, needle, p) {
+                return p.then(
+                    function() { globalThis.__c.errs.push(name + ': resolved (must reject)'); },
+                    function(e) {
+                        var m = String(e && e.message || e);
+                        if (m.indexOf(needle) === -1) globalThis.__c.errs.push(name + ': wrong message: ' + m);
+                    }
+                ).then(function() { globalThis.__c.done++; });
+            }
+            var enc = new TextEncoder();
+            var S = crypto.subtle;
+            var alg = {name:'ECDSA', hash:'SHA-256'};
+
+            // c1 the exact abort trigger: sign with a non-object key rejects
+            cstep('c1', 'CryptoKey', S.sign(alg, undefined, enc.encode('x')));
+
+            // c2 verify with a non-object key rejects
+            cstep('c2', 'CryptoKey', S.verify(alg, undefined, new Uint8Array(64), enc.encode('x')));
+
+            // c3 sign with the PUBLIC half of the pair rejects (InvalidAccess path)
+            cstep('c3', 'private', S.generateKey({name:'ECDSA', namedCurve:'P-256'}, false, ['sign','verify'])
+            .then(function(kp) { return S.sign(alg, kp.publicKey, enc.encode('x')); }));
+
+            return 'scheduled';
+        })()
+        "#,
+    );
+    assert!(crash_setup.contains("scheduled"), "subtle crash-path setup failed: {}", crash_setup);
+    let c_status = drive_until(
+        &mut ctx,
+        r#"globalThis.__c.done + ':' + globalThis.__c.errs.length"#,
+        |s| s.starts_with("3:"),
+        Duration::from_secs(30),
+    );
+    let c_errs = eval_string(&mut ctx, r#"JSON.stringify(globalThis.__c.errs)"#);
+    assert!(
+        c_status.starts_with("3:0"),
+        "subtle non-object-key rejections missing: status={} errs={}",
+        c_status,
+        c_errs
     );
 
     // ── B. bun:sqlite transaction / iterate / serialize / backup ────────────

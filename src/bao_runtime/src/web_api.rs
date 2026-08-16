@@ -2016,8 +2016,8 @@ unsafe fn bytes_to_arraybuffer_val(cx: *mut JSContext, bytes: &[u8]) -> JSVal {
 }
 
 /// Build a CryptoKey JS object. `material` names the hidden bytes slot:
-/// `_raw` for symmetric keys, `_der` (pkcs8/spki) for asymmetric, with
-/// `_pub` carrying the private key's SPKI public half when present.
+/// `_raw` for symmetric keys, `_der` (pkcs8 for private, spki for public)
+/// for asymmetric.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn make_crypto_key(
     cx: *mut JSContext,
@@ -2028,7 +2028,6 @@ unsafe fn make_crypto_key(
     usages: *mut JSObject,
     material_slot: &str,
     material: &[u8],
-    public_material: Option<&[u8]>,
 ) -> *mut JSObject {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -2115,10 +2114,50 @@ unsafe fn make_crypto_key(
         );
     };
     stash(material_slot, material);
-    if let Some(pub_bytes) = public_material {
-        stash("_pub", pub_bytes);
-    }
     key.get()
+}
+
+/// Build the WebCrypto CryptoKeyPair `{ privateKey, publicKey }` that
+/// generateKey resolves with for asymmetric algorithms. Each half carries
+/// its own `_der` material: pkcs8 on the private key, spki on the public.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn make_crypto_key_pair(
+    cx: *mut JSContext,
+    alg_name: &str,
+    extra_alg: &[(&str, String)],
+    extractable: bool,
+    usages: *mut JSObject,
+    private_der: &[u8],
+    public_der: &[u8],
+) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let pair = JS_NewPlainObject(cx_ref));
+    if pair.get().is_null() {
+        return ::std::ptr::null_mut();
+    }
+    let ph = pair.handle().into();
+    let private_key = make_crypto_key(cx, "private", alg_name, extra_alg, extractable, usages, "_der", private_der);
+    let public_key = make_crypto_key(cx, "public", alg_name, extra_alg, extractable, usages, "_der", public_der);
+    if private_key.is_null() || public_key.is_null() {
+        return ::std::ptr::null_mut();
+    }
+    rooted!(&in(cx_ref) let pv = ObjectValue(private_key));
+    JS_DefineProperty(cx, ph, c"privateKey".as_ptr(), pv.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+    rooted!(&in(cx_ref) let uv = ObjectValue(public_key));
+    JS_DefineProperty(cx, ph, c"publicKey".as_ptr(), uv.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+    pair.get()
+}
+
+/// Caller-supplied JSVal coerced to an object — None on non-object input
+/// (a rejected promise) instead of the JSVal::to_object debug assert abort
+/// that a stray `undefined` key argument used to trigger.
+unsafe fn subtle_arg_object(val: JSVal) -> Option<*mut JSObject> {
+    if val.is_object() {
+        Some(val.to_object())
+    } else {
+        None
+    }
 }
 
 /// Read a hidden bytes slot off a CryptoKey.
@@ -2367,7 +2406,8 @@ unsafe extern "C" fn subtle_encrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVa
             return Err("encrypt(algorithm, key, data) requires 3 arguments".to_string());
         }
         let (name, alg_obj) = subtle_algo_name(cx, *args.get(0).ptr)?;
-        let key_obj = (*args.get(1).ptr).to_object();
+        let key_obj = subtle_arg_object(*args.get(1).ptr)
+            .ok_or("encrypt: key must be a CryptoKey".to_string())?;
         let data = subtle_bytes(cx, *args.get(2).ptr);
         let raw = key_material(cx, key_obj, "_raw")
             .ok_or("encrypt: not a symmetric CryptoKey".to_string())?;
@@ -2434,7 +2474,8 @@ unsafe extern "C" fn subtle_decrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVa
             return Err("decrypt(algorithm, key, data) requires 3 arguments".to_string());
         }
         let (name, alg_obj) = subtle_algo_name(cx, *args.get(0).ptr)?;
-        let key_obj = (*args.get(1).ptr).to_object();
+        let key_obj = subtle_arg_object(*args.get(1).ptr)
+            .ok_or("decrypt: key must be a CryptoKey".to_string())?;
         let data = subtle_bytes(cx, *args.get(2).ptr);
         let raw = key_material(cx, key_obj, "_raw")
             .ok_or("decrypt: not a symmetric CryptoKey".to_string())?;
@@ -2512,7 +2553,8 @@ unsafe extern "C" fn subtle_generate_key(cx: *mut JSContext, argc: u32, vp: *mut
         }
         let (name, alg_obj) = subtle_algo_name(cx, *args.get(0).ptr)?;
         let extractable = (*args.get(1).ptr).to_boolean();
-        let usages = (*args.get(2).ptr).to_object();
+        let usages = subtle_arg_object(*args.get(2).ptr)
+            .ok_or("generateKey: usages must be an array".to_string())?;
 
         match name.as_str() {
             "AES-GCM" | "AES-CBC" => {
@@ -2532,7 +2574,6 @@ unsafe extern "C" fn subtle_generate_key(cx: *mut JSContext, argc: u32, vp: *mut
                     usages,
                     "_raw",
                     &raw,
-                    None,
                 ))
             }
             "RSA-RSASSA-PKCS1-v1_5" => {
@@ -2543,16 +2584,14 @@ unsafe extern "C" fn subtle_generate_key(cx: *mut JSContext, argc: u32, vp: *mut
                     .unwrap_or_else(|| "SHA-256".to_string());
                 let kp = bao_crypto::keypair::generate_key_pair(&bao_crypto::keypair::KeyPairType::Rsa { bits })
                     .map_err(|e| e.to_string())?;
-                Ok(make_crypto_key(
+                Ok(make_crypto_key_pair(
                     cx,
-                    "private",
                     &name,
                     &[("hash", hash)],
                     extractable,
                     usages,
-                    "_der",
                     &kp.private_key_der,
-                    Some(&kp.public_key_der),
+                    &kp.public_key_der,
                 ))
             }
             "ECDSA" => {
@@ -2566,16 +2605,14 @@ unsafe extern "C" fn subtle_generate_key(cx: *mut JSContext, argc: u32, vp: *mut
                 };
                 let kp = bao_crypto::keypair::generate_key_pair(&bao_crypto::keypair::KeyPairType::Ec { curve: ec_curve })
                     .map_err(|e| e.to_string())?;
-                Ok(make_crypto_key(
+                Ok(make_crypto_key_pair(
                     cx,
-                    "private",
                     &name,
                     &[("namedCurve", curve)],
                     extractable,
                     usages,
-                    "_der",
                     &kp.private_key_der,
-                    Some(&kp.public_key_der),
+                    &kp.public_key_der,
                 ))
             }
             other => Err(format!("subtle.generateKey: unsupported algorithm {}", other)),
@@ -2613,7 +2650,8 @@ unsafe extern "C" fn subtle_import_key(cx: *mut JSContext, argc: u32, vp: *mut J
         let format = crate::js_to_rust_string(cx, *args.get(0).ptr);
         let (name, _alg_obj) = subtle_algo_name(cx, *args.get(2).ptr)?;
         let extractable = (*args.get(3).ptr).to_boolean();
-        let usages = (*args.get(4).ptr).to_object();
+        let usages = subtle_arg_object(*args.get(4).ptr)
+            .ok_or("importKey: usages must be an array".to_string())?;
 
         match format.as_str() {
             "raw" => {
@@ -2626,13 +2664,13 @@ unsafe extern "C" fn subtle_import_key(cx: *mut JSContext, argc: u32, vp: *mut J
                         if !matches!(raw.len() * 8, 128 | 192 | 256) {
                             return Err(format!("invalid AES key length {} bits", raw.len() * 8));
                         }
-                        Ok(make_crypto_key(cx, "secret", &name, &[("length", (raw.len() * 8).to_string())], extractable, usages, "_raw", &raw, None))
+                        Ok(make_crypto_key(cx, "secret", &name, &[("length", (raw.len() * 8).to_string())], extractable, usages, "_raw", &raw))
                     }
                     "HMAC" => {
                         let hash = subtle_str_prop(cx, _alg_obj, "hash")
                             .or_else(|| subtle_str_prop(cx, _alg_obj, "hash.name"))
                             .ok_or("HMAC import requires algorithm.hash".to_string())?;
-                        Ok(make_crypto_key(cx, "secret", "HMAC", &[("hash", hash)], extractable, usages, "_raw", &raw, None))
+                        Ok(make_crypto_key(cx, "secret", "HMAC", &[("hash", hash)], extractable, usages, "_raw", &raw))
                     }
                     other => Err(format!("subtle.importKey raw: unsupported algorithm {}", other)),
                 }
@@ -2658,7 +2696,7 @@ unsafe extern "C" fn subtle_import_key(cx: *mut JSContext, argc: u32, vp: *mut J
                     other => return Err(format!("subtle.importKey pkcs8: unsupported algorithm {}", other)),
                 };
                 let extras_ref: Vec<(&str, String)> = extras.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-                Ok(make_crypto_key(cx, "private", &name, &extras_ref, extractable, usages, "_der", &der, None))
+                Ok(make_crypto_key(cx, "private", &name, &extras_ref, extractable, usages, "_der", &der))
             }
             "spki" => {
                 let der = subtle_bytes(cx, *args.get(1).ptr);
@@ -2681,7 +2719,7 @@ unsafe extern "C" fn subtle_import_key(cx: *mut JSContext, argc: u32, vp: *mut J
                     other => return Err(format!("subtle.importKey spki: unsupported algorithm {}", other)),
                 };
                 let extras_ref: Vec<(&str, String)> = extras.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-                Ok(make_crypto_key(cx, "public", &name, &extras_ref, extractable, usages, "_der", &der, None))
+                Ok(make_crypto_key(cx, "public", &name, &extras_ref, extractable, usages, "_der", &der))
             }
             "jwk" => {
                 // Symmetric oct keys: { kty: "oct", k: <base64url> }. Asymmetric
@@ -2709,13 +2747,13 @@ unsafe extern "C" fn subtle_import_key(cx: *mut JSContext, argc: u32, vp: *mut J
                         if !matches!(out.len() * 8, 128 | 192 | 256) {
                             return Err(format!("invalid AES key length {} bits from JWK", out.len() * 8));
                         }
-                        Ok(make_crypto_key(cx, "secret", &name, &[("length", (out.len() * 8).to_string())], extractable, usages, "_raw", &out, None))
+                        Ok(make_crypto_key(cx, "secret", &name, &[("length", (out.len() * 8).to_string())], extractable, usages, "_raw", &out))
                     }
                     "HMAC" => {
                         let hash = subtle_str_prop(cx, _alg_obj, "hash")
                             .or_else(|| subtle_str_prop(cx, _alg_obj, "hash.name"))
                             .ok_or("HMAC import requires algorithm.hash".to_string())?;
-                        Ok(make_crypto_key(cx, "secret", "HMAC", &[("hash", hash)], extractable, usages, "_raw", &out, None))
+                        Ok(make_crypto_key(cx, "secret", "HMAC", &[("hash", hash)], extractable, usages, "_raw", &out))
                     }
                     other => Err(format!("subtle.importKey jwk: unsupported algorithm {}", other)),
                 }
@@ -2774,7 +2812,8 @@ unsafe extern "C" fn subtle_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             return Err("sign(algorithm, key, data) requires 3 arguments".to_string());
         }
         let (name, alg_obj) = subtle_algo_name(cx, *args.get(0).ptr)?;
-        let key_obj = (*args.get(1).ptr).to_object();
+        let key_obj = subtle_arg_object(*args.get(1).ptr)
+            .ok_or("sign: key must be a CryptoKey".to_string())?;
         // BCE-root discipline: the handle must outlive the GetProperty call —
         // a rooted! binding inside a block expression un-roots at the block's
         // closing brace, leaving JS_GetProperty with a dangling Handle.
@@ -2798,6 +2837,7 @@ unsafe extern "C" fn subtle_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             v.to_object()
         };
         let key_alg_name = subtle_str_prop(cx, key_alg, "name").unwrap_or_default();
+        let ktype = subtle_str_prop(cx, key_obj, "type").unwrap_or_default();
 
         match name.as_str() {
             "HMAC" => {
@@ -2811,6 +2851,9 @@ unsafe extern "C" fn subtle_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 Ok(mac.to_vec())
             }
             "RSA-RSASSA-PKCS1-v1_5" | "RSASSA-PKCS1-v1_5" => {
+                if ktype != "private" {
+                    return Err("sign: not a private CryptoKey".to_string());
+                }
                 let der = key_material(cx, key_obj, "_der")
                     .ok_or("sign: not a private CryptoKey".to_string())?;
                 let hash = subtle_str_prop(cx, if name == "HMAC" { alg_obj } else { key_alg }, "hash")
@@ -2825,6 +2868,9 @@ unsafe extern "C" fn subtle_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     .map_err(|e| e.to_string())
             }
             "ECDSA" => {
+                if ktype != "private" {
+                    return Err("sign: not a private CryptoKey".to_string());
+                }
                 let der = key_material(cx, key_obj, "_der")
                     .ok_or("sign: not a private CryptoKey".to_string())?;
                 let curve = subtle_str_prop(cx, key_alg, "namedCurve").unwrap_or_else(|| "P-256".to_string());
@@ -2870,7 +2916,8 @@ unsafe extern "C" fn subtle_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             return Err("verify(algorithm, key, signature, data) requires 4 arguments".to_string());
         }
         let (name, _alg_obj) = subtle_algo_name(cx, *args.get(0).ptr)?;
-        let key_obj = (*args.get(1).ptr).to_object();
+        let key_obj = subtle_arg_object(*args.get(1).ptr)
+            .ok_or("verify: key must be a CryptoKey".to_string())?;
         // Same root discipline as subtle_sign — no block-scoped roots in args.
         rooted!(&in(cx_ref) let key_obj_root = key_obj);
         let signature = subtle_bytes(cx, *args.get(2).ptr);
