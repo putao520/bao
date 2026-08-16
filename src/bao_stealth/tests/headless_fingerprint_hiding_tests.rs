@@ -399,7 +399,7 @@ fn headless_webdriver_forced_false_in_hooks() {
 
     // Assert — must override webdriver to false
     assert!(
-        js.contains("navigator, 'webdriver'") && js.contains("return false"),
+        js.contains("__bao_def(nav, 'webdriver'") && js.contains("return false"),
         "navigator.webdriver must be overridden to false — headless webdriver leak"
     );
     // Override must be configurable:false (anti-anti-detect)

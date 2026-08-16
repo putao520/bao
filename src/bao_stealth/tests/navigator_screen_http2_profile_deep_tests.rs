@@ -255,9 +255,9 @@ fn test_http2_firefox_settings_payload() {
     let payload = h2.settings_frame_payload();
     assert_eq!(payload.len(), 6);
     assert_eq!(payload[0], (0x01, 65536));
-    assert_eq!(payload[1], (0x03, 0)); // enable_push = false
-    assert_eq!(payload[2], (0x04, 100));
-    assert_eq!(payload[3], (0x02, 131072));
+    assert_eq!(payload[1], (0x02, 0)); // enable_push = false
+    assert_eq!(payload[2], (0x03, 100));
+    assert_eq!(payload[3], (0x04, 131072));
     assert_eq!(payload[4], (0x05, 16384));
     assert_eq!(payload[5], (0x06, 262144));
 }
@@ -441,7 +441,7 @@ fn test_http2_custom() {
     };
     let fp = h2.akamai_fingerprint();
     assert!(fp.starts_with("4096:1:200:65535:8192:32768"));
-    assert_eq!(h2.settings_frame_payload()[1], (0x03, 1)); // enable_push = true
+    assert_eq!(h2.settings_frame_payload()[1], (0x02, 1)); // enable_push = true
 }
 
 // ---- Http2Fingerprint settings_frame_payload ----
@@ -451,7 +451,7 @@ fn test_settings_payload_frame_ids() {
     let h2 = Http2Fingerprint::firefox();
     let payload = h2.settings_frame_payload();
     let frame_ids: Vec<u16> = payload.iter().map(|(id, _)| *id).collect();
-    assert_eq!(frame_ids, vec![0x01, 0x03, 0x04, 0x02, 0x05, 0x06]);
+    assert_eq!(frame_ids, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
 }
 
 // ---- StealthProfile firefox_default ----

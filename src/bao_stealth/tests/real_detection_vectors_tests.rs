@@ -57,7 +57,7 @@ fn sannysoft_webdriver_flag_hidden_in_hooks_js() {
     // Act — bot.sannysoft.com probes `navigator.webdriver`
     // Assert — hook must force navigator.webdriver to false (NOT undefined, NOT true)
     assert!(
-        js.contains("navigator, 'webdriver'"),
+        js.contains("__bao_def(nav, 'webdriver'"),
         "navigator JS must override navigator.webdriver — sannysoft WebDriver row"
     );
     // Must return literal false (boolean), not "false" string, not undefined
@@ -153,13 +153,13 @@ fn sannysoft_navigator_languages_is_nonempty_array() {
     );
     let js = hooks.navigator_js();
     assert!(
-        js.contains("navigator, 'languages'"),
+        js.contains("__bao_def(nav, 'languages'"),
         "navigator JS must override languages — sannysoft Languages row"
     );
     // Languages JSON literal must start with [ and end with ]
     let langs_line = js
         .lines()
-        .find(|l| l.contains("navigator, 'languages'"))
+        .find(|l| l.contains("__bao_def(nav, 'languages'"))
         .unwrap_or("");
     assert!(
         langs_line.contains("[") || js.contains("[\"en-US\""),

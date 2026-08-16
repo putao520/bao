@@ -130,7 +130,20 @@ pub struct BrotliReaderArrayList<'a> {
     pub total_out: usize,
     pub total_in: usize,
     pub max_output_size: usize,
-    decompressor: brotli::Decompressor<&'a [u8]>,
+    /// Incremental brotli decoder state carried across chunks. The
+    /// `brotli::Decompressor` io-wrapper this replaces signals
+    /// truncation-at-input-end as `InvalidData` (indistinguishable from
+    /// real corruption), so every multi-chunk brotli body without
+    /// Content-Length died mid-stream; `BrotliDecompressStream` returns
+    /// `NeedsMoreInput` instead — exactly the multi-chunk contract the
+    /// HTTP pipeline needs (`ShortRead` until more bytes arrive).
+    decoder: brotli::BrotliState<
+        brotli::HeapAlloc<u8>,
+        brotli::HeapAlloc<u32>,
+        brotli::HeapAlloc<brotli::HuffmanCode>,
+    >,
+    /// Set once the stream reported `ResultSuccess`.
+    finished: bool,
 }
 
 impl<'a> BrotliReaderArrayList<'a> {
@@ -155,9 +168,6 @@ impl<'a> BrotliReaderArrayList<'a> {
         list: &'a mut Vec<u8>,
         _options: &DecoderOptions,
     ) -> Result<Self, Error> {
-        let buf_size = input.len().max(4096);
-        let decompressor = brotli::Decompressor::new(input, buf_size);
-
         Ok(Self {
             input,
             list_ptr: list,
@@ -165,7 +175,12 @@ impl<'a> BrotliReaderArrayList<'a> {
             total_out: 0,
             total_in: 0,
             max_output_size: usize::MAX,
-            decompressor,
+            decoder: brotli::BrotliState::new(
+                brotli::HeapAlloc::<u8>::default(),
+                brotli::HeapAlloc::<u32>::default(),
+                brotli::HeapAlloc::<brotli::HuffmanCode>::default(),
+            ),
+            finished: false,
         })
     }
 
@@ -173,47 +188,74 @@ impl<'a> BrotliReaderArrayList<'a> {
         self.state = ReaderState::End;
     }
 
+    fn fail(&mut self) -> Error {
+        self.state = ReaderState::Error;
+        err!("BrotliDecompressionError")
+    }
+
+    /// Append one decompressed slice, enforcing the decompression-bomb cap.
+    fn append_output(&mut self, slice: &[u8]) -> Result<(), Error> {
+        if slice.is_empty() {
+            return Ok(());
+        }
+        if self.list_ptr.len() + slice.len() > self.max_output_size {
+            self.state = ReaderState::Error;
+            return Err(err!("BrotliDecompressionError"));
+        }
+        self.list_ptr.extend_from_slice(slice);
+        self.total_out += slice.len();
+        Ok(())
+    }
+
     pub fn read_all(&mut self, is_done: bool) -> Result<(), Error> {
         if self.state == ReaderState::End || self.state == ReaderState::Error {
             return Ok(());
         }
+        if self.finished {
+            self.state = ReaderState::End;
+            return Ok(());
+        }
+        self.state = ReaderState::Inflating;
 
-        let mut buf = [0u8; 4096];
+        // Each `input` seat carries only the bytes accumulated since the
+        // previous call (the HTTP pipeline clears `compressed_body` after
+        // every delivery); feed it from offset 0.
+        let mut available_in = self.input.len();
+        let mut input_offset = 0usize;
+        let mut out = [0u8; 16 * 1024];
         loop {
-            match self.decompressor.read(&mut buf) {
-                Ok(0) => {
-                    self.end();
+            let mut available_out = out.len();
+            let mut output_offset = 0usize;
+            let mut total_out_call = 0usize;
+            let result = brotli::BrotliDecompressStream(
+                &mut available_in,
+                &mut input_offset,
+                self.input,
+                &mut available_out,
+                &mut output_offset,
+                &mut out,
+                &mut total_out_call,
+                &mut self.decoder,
+            );
+            self.total_in += input_offset;
+            self.append_output(&out[..output_offset])?;
+            match result {
+                brotli::BrotliResult::NeedsMoreOutput => continue,
+                brotli::BrotliResult::ResultSuccess => {
+                    self.finished = true;
+                    self.state = ReaderState::End;
                     return Ok(());
                 }
-                Ok(n) => {
-                    self.total_out += n;
-                    self.list_ptr.extend_from_slice(&buf[..n]);
-
-                    if self.list_ptr.len() > self.max_output_size {
-                        self.state = ReaderState::Error;
-                        return Err(err!("BrotliDecompressionError"));
-                    }
+                brotli::BrotliResult::NeedsMoreInput => {
                     self.state = ReaderState::Inflating;
-                }
-                Err(ref _e) if _e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     if is_done {
-                        self.state = ReaderState::Error;
-                        return Err(err!("BrotliDecompressionError"));
+                        // Truncated stream at the final chunk.
+                        return Err(self.fail());
                     }
-                    self.state = ReaderState::Inflating;
                     return Err(err!("ShortRead"));
                 }
-                Err(ref _e) if _e.kind() == std::io::ErrorKind::WriteZero => {
-                    if self.list_ptr.len() >= self.max_output_size {
-                        self.state = ReaderState::Error;
-                        return Err(err!("BrotliDecompressionError"));
-                    }
-                    self.list_ptr.reserve(4096);
-                    self.state = ReaderState::Inflating;
-                }
-                Err(io_err) => {
-                    self.state = ReaderState::Error;
-                    return Err(Error::from(io_err));
+                brotli::BrotliResult::ResultFailure => {
+                    return Err(self.fail());
                 }
             }
         }

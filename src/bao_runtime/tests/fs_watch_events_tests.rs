@@ -320,6 +320,132 @@ catch (e) { return 'throw:' + String(e && e.message).slice(0, 60); } })()"#,
     bun_runtime::shutdown_thread_sm();
 }
 
+/// Same-path multi-watcher independence (Node semantics: every fs.watch
+/// watcher on a path receives its own events). inotify returns the SAME wd
+/// for repeated add_watch on one path within one fd — a wd→single-id map made
+/// the FIRST registrant silently lose all events to the overwrite, and an
+/// unrefcounted close of one watcher tore down the shared kernel watch. This
+/// test covers BOTH registration orders, per-watcher event delivery, and
+/// close independence (closed watcher goes silent, survivor keeps receiving).
+#[test]
+fn test_fs_watch_multi_watcher_same_path_independent() {
+    let mut ctx = setup_ctx();
+    let dir = scratch_dir("bao_fswatch_multi");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("multi.txt");
+    std::fs::write(&file, "init").unwrap();
+    let f = js_escape(&file);
+
+    // Order 1: listener-only first, then a second listener-only watcher.
+    let script = format!(
+        r#"
+var fs = require('fs');
+globalThis.__a = []; globalThis.__b = []; globalThis.__c = []; globalThis.__d = [];
+globalThis.__w1 = fs.watch("{f}", function (et) {{ __a.push(et); }});
+globalThis.__w2 = fs.watch("{f}", function (et) {{ __b.push(et); }});
+'ok'
+"#,
+        f = f
+    );
+    assert_eq!(eval_string(&mut ctx, &script), "ok");
+
+    // Phase 1: one append must reach BOTH watchers (>= 1 each).
+    let _ = eval_string(
+        &mut ctx,
+        &format!(r#"require('fs').appendFileSync("{}", "-p1"); 'wrote'"#, f),
+    );
+    let both = wait_until(
+        &mut ctx,
+        "(globalThis.__a.length >= 1 && globalThis.__b.length >= 1) ? 'y' : 'n'",
+        80,
+    );
+    let a1 = eval_string(&mut ctx, "JSON.stringify(globalThis.__a)");
+    let b1 = eval_string(&mut ctx, "JSON.stringify(globalThis.__b)");
+    assert!(
+        both && a1.contains("change") && b1.contains("change"),
+        "same-path multi-watch order1: BOTH watchers must receive the append, first={} second={}",
+        a1,
+        b1
+    );
+
+    // Phase 2: close independence — w1 closes, w2 must keep receiving while
+    // w1 stays silent (refcounted kernel-watch teardown).
+    let _ = eval_string(
+        &mut ctx,
+        &format!(
+            r#"(function () {{
+globalThis.__aF = globalThis.__a.length;
+globalThis.__bF = globalThis.__b.length;
+globalThis.__w1.close();
+require('fs').appendFileSync("{f}", "-p2");
+return 'closed'; }})()"#,
+            f = f
+        ),
+    );
+    let survivor = wait_until(
+        &mut ctx,
+        "(globalThis.__b.length > globalThis.__bF) ? 'y' : 'n'",
+        80,
+    );
+    // Silence window for the closed watcher: pump timers, then assert frozen.
+    std::thread::sleep(Duration::from_millis(300));
+    HOOK_BUDGET.with(|b| b.set(50));
+    let _ = eval_string(
+        &mut ctx,
+        "(function(){ for(var i=0;i<20;i++) setTimeout(function(){}, 1); return 'pumped'; })()",
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    let frozen = eval_string(
+        &mut ctx,
+        "globalThis.__a.length + '/' + globalThis.__aF + '|' + globalThis.__b.length + '/' + globalThis.__bF",
+    );
+    // "a/aF|b/bF": closed w1 frozen (a == aF), survivor w2 grew (b > bF).
+    let parts: Vec<&str> = frozen.split('|').collect();
+    let closed_silent = parts.len() == 2
+        && parts[0].split('/').count() == 2
+        && parts[0].split('/').nth(0) == parts[0].split('/').nth(1);
+    assert!(
+        survivor && closed_silent,
+        "close independence: closed watcher must stay silent (a==aF) while the survivor keeps receiving: {}",
+        frozen
+    );
+
+    // Phase 3: reverse order — options-object watcher FIRST, listener-only
+    // second. The first registrant must not lose events here either.
+    let _ = eval_string(
+        &mut ctx,
+        &format!(
+            r#"(function () {{
+globalThis.__w3 = require('fs').watch("{f}", {{}}, function (et) {{ __c.push(et); }});
+globalThis.__w4 = require('fs').watch("{f}", function (et) {{ __d.push(et); }});
+require('fs').appendFileSync("{f}", "-p3");
+return 'registered'; }})()"#,
+            f = f
+        ),
+    );
+    let both_rev = wait_until(
+        &mut ctx,
+        "(globalThis.__c.length >= 1 && globalThis.__d.length >= 1) ? 'y' : 'n'",
+        80,
+    );
+    let c1 = eval_string(&mut ctx, "JSON.stringify(globalThis.__c)");
+    let d1 = eval_string(&mut ctx, "JSON.stringify(globalThis.__d)");
+    assert!(
+        both_rev && c1.contains("change") && d1.contains("change"),
+        "same-path multi-watch reverse order: BOTH watchers must receive, optsFirst={} listenerSecond={}",
+        c1,
+        d1
+    );
+
+    let _ = eval_string(
+        &mut ctx,
+        "(function(){ [globalThis.__w2, globalThis.__w3, globalThis.__w4].forEach(function (w) { try { w.close(); } catch (e) {} }); return 'closed'; })()",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    bun_runtime::shutdown_thread_sm();
+}
+
 /// The watcher object surface: EventEmitter methods + close; watchFile
 /// returns a StatWatcher with close(); unwatchFile stops polling.
 #[test]

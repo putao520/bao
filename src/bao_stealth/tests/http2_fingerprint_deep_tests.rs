@@ -104,12 +104,13 @@ fn test_settings_frame_payload_firefox_count() {
 fn test_settings_frame_payload_firefox_values() {
     let fp = Http2Fingerprint::firefox();
     let payload = fp.settings_frame_payload();
-    // Verify setting IDs: 0x01=HEADER_TABLE_SIZE, 0x03=ENABLE_PUSH, 0x04=MAX_CONCURRENT,
-    // 0x02=INITIAL_WINDOW_SIZE, 0x05=MAX_FRAME_SIZE, 0x06=MAX_HEADER_LIST_SIZE
+    // RFC 7540 §6.5.2 setting IDs: 0x01=HEADER_TABLE_SIZE, 0x02=ENABLE_PUSH,
+    // 0x03=MAX_CONCURRENT_STREAMS, 0x04=INITIAL_WINDOW_SIZE,
+    // 0x05=MAX_FRAME_SIZE, 0x06=MAX_HEADER_LIST_SIZE
     assert_eq!(payload[0], (0x01, 65536));
-    assert_eq!(payload[1], (0x03, 0)); // enable_push=false → 0
-    assert_eq!(payload[2], (0x04, 100));
-    assert_eq!(payload[3], (0x02, 131072));
+    assert_eq!(payload[1], (0x02, 0)); // enable_push=false → 0
+    assert_eq!(payload[2], (0x03, 100));
+    assert_eq!(payload[3], (0x04, 131072));
     assert_eq!(payload[4], (0x05, 16384));
     assert_eq!(payload[5], (0x06, 262144));
 }
@@ -119,8 +120,8 @@ fn test_settings_frame_payload_chrome_values() {
     let fp = Http2Fingerprint::chrome();
     let payload = fp.settings_frame_payload();
     assert_eq!(payload[0], (0x01, 65536));
-    assert_eq!(payload[2], (0x04, 1000));
-    assert_eq!(payload[3], (0x02, 6291456));
+    assert_eq!(payload[2], (0x03, 1000));
+    assert_eq!(payload[3], (0x04, 6291456));
 }
 
 #[test]
@@ -138,7 +139,7 @@ fn test_settings_frame_payload_enable_push_true() {
         priority_frames: Vec::new(),
     };
     let payload = fp.settings_frame_payload();
-    assert_eq!(payload[1], (0x03, 1));
+    assert_eq!(payload[1], (0x02, 1));
 }
 
 #[test]
@@ -414,7 +415,7 @@ fn test_custom_fingerprint_settings_payload() {
     };
     let payload = fp.settings_frame_payload();
     assert_eq!(payload[0], (0x01, 2048));
-    assert_eq!(payload[1], (0x03, 1)); // enable_push=true → 1
+    assert_eq!(payload[1], (0x02, 1)); // enable_push=true → 1
 }
 
 // ---- Edge: zero values ----

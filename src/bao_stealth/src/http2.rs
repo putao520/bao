@@ -132,12 +132,18 @@ impl Http2Fingerprint {
         )
     }
 
+    /// RFC 7540 §6.5.2 setting ids: 0x02 = ENABLE_PUSH, 0x03 =
+    /// MAX_CONCURRENT_STREAMS, 0x04 = INITIAL_WINDOW_SIZE. The pairs MUST
+    /// keep each value under its own id — a client advertising
+    /// ENABLE_PUSH ∉ {0, 1} (e.g. a window size landing in the 0x02 slot)
+    /// is a mandatory connection-error PROTOCOL_ERROR for the peer
+    /// (verified against 1.1.1.1: GOAWAY(0x1) before any HEADERS).
     pub fn settings_frame_payload(&self) -> Vec<(u16, u32)> {
         vec![
             (0x01, self.header_table_size),
-            (0x03, if self.enable_push { 1 } else { 0 }),
-            (0x04, self.max_concurrent_streams),
-            (0x02, self.initial_window_size),
+            (0x02, if self.enable_push { 1 } else { 0 }),
+            (0x03, self.max_concurrent_streams),
+            (0x04, self.initial_window_size),
             (0x05, self.max_frame_size),
             (0x06, self.max_header_list_size),
         ]
@@ -282,17 +288,17 @@ mod tests {
     }
 
     #[test]
-    fn settings_frame_payload_chrome_third_is_0x04_1000() {
+    fn settings_frame_payload_chrome_third_is_0x03_1000() {
         let fp = Http2Fingerprint::chrome();
         let payload = fp.settings_frame_payload();
-        assert_eq!(payload[2], (0x04, 1000));
+        assert_eq!(payload[2], (0x03, 1000));
     }
 
     #[test]
     fn settings_frame_payload_enable_push_0_when_false() {
         let fp = Http2Fingerprint::firefox();
         let payload = fp.settings_frame_payload();
-        assert_eq!(payload[1], (0x03, 0));
+        assert_eq!(payload[1], (0x02, 0));
     }
 
     #[test]

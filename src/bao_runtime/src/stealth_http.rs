@@ -876,11 +876,11 @@ mod tests {
     fn test_h2_settings_wire_format_chrome_window_size() {
         let profile = StealthProfile::chrome_default();
         let wire = h2_settings_wire_format(&profile.http2);
-        // Find INITIAL_WINDOW_SIZE (0x02) in the wire format
+        // Find INITIAL_WINDOW_SIZE (0x04) in the wire format
         let mut found_iws = false;
         for i in (0..wire.len()).step_by(6) {
             let id = u16::from_be_bytes([wire[i], wire[i + 1]]);
-            if id == 0x02 {
+            if id == 0x04 {
                 let value =
                     u32::from_be_bytes([wire[i + 2], wire[i + 3], wire[i + 4], wire[i + 5]]);
                 assert_eq!(value, 6291456, "Chrome INITIAL_WINDOW_SIZE = 6291456");
@@ -897,7 +897,7 @@ mod tests {
         let wire = h2_settings_wire_format(&profile.http2);
         for i in (0..wire.len()).step_by(6) {
             let id = u16::from_be_bytes([wire[i], wire[i + 1]]);
-            if id == 0x03 {
+            if id == 0x02 {
                 let value =
                     u32::from_be_bytes([wire[i + 2], wire[i + 3], wire[i + 4], wire[i + 5]]);
                 assert_eq!(value, 0, "ENABLE_PUSH must be 0");
@@ -913,7 +913,8 @@ mod tests {
         let wire = h2_settings_wire_format(&profile.http2);
         for i in (0..wire.len()).step_by(6) {
             let id = u16::from_be_bytes([wire[i], wire[i + 1]]);
-            if id == 0x04 {
+            // RFC 7540 §6.5.2: 0x03 = SETTINGS_MAX_CONCURRENT_STREAMS
+            if id == 0x03 {
                 let value =
                     u32::from_be_bytes([wire[i + 2], wire[i + 3], wire[i + 4], wire[i + 5]]);
                 assert_eq!(value, 1000, "Chrome MAX_CONCURRENT_STREAMS = 1000");
@@ -1002,19 +1003,22 @@ mod tests {
             Some(65536),
             "Firefox HEADER_TABLE_SIZE = 65536"
         );
-        let iws = decoded.iter().find(|(id, _)| *id == 0x02);
-        assert_eq!(
-            iws.map(|(_, v)| *v),
-            Some(131072),
-            "Firefox INITIAL_WINDOW_SIZE = 131072"
-        );
-        let ep = decoded.iter().find(|(id, _)| *id == 0x03);
+        // RFC 7540 §6.5.2: 0x02 = SETTINGS_ENABLE_PUSH,
+        // 0x03 = SETTINGS_MAX_CONCURRENT_STREAMS,
+        // 0x04 = SETTINGS_INITIAL_WINDOW_SIZE
+        let ep = decoded.iter().find(|(id, _)| *id == 0x02);
         assert_eq!(ep.map(|(_, v)| *v), Some(0), "Firefox ENABLE_PUSH = 0");
-        let mcs = decoded.iter().find(|(id, _)| *id == 0x04);
+        let mcs = decoded.iter().find(|(id, _)| *id == 0x03);
         assert_eq!(
             mcs.map(|(_, v)| *v),
             Some(100),
             "Firefox MAX_CONCURRENT_STREAMS = 100"
+        );
+        let iws = decoded.iter().find(|(id, _)| *id == 0x04);
+        assert_eq!(
+            iws.map(|(_, v)| *v),
+            Some(131072),
+            "Firefox INITIAL_WINDOW_SIZE = 131072"
         );
         let mfs = decoded.iter().find(|(id, _)| *id == 0x05);
         assert_eq!(
@@ -1049,18 +1053,19 @@ mod tests {
             })
             .collect();
         assert_eq!(decoded.len(), 6, "Chrome must have exactly 6 settings");
-        // Chrome-specific values
-        let iws = decoded.iter().find(|(id, _)| *id == 0x02);
-        assert_eq!(
-            iws.map(|(_, v)| *v),
-            Some(6291456),
-            "Chrome INITIAL_WINDOW_SIZE = 6291456"
-        );
-        let mcs = decoded.iter().find(|(id, _)| *id == 0x04);
+        // Chrome-specific values (RFC 7540 §6.5.2:
+        // 0x03 = MAX_CONCURRENT_STREAMS, 0x04 = INITIAL_WINDOW_SIZE)
+        let mcs = decoded.iter().find(|(id, _)| *id == 0x03);
         assert_eq!(
             mcs.map(|(_, v)| *v),
             Some(1000),
             "Chrome MAX_CONCURRENT_STREAMS = 1000"
+        );
+        let iws = decoded.iter().find(|(id, _)| *id == 0x04);
+        assert_eq!(
+            iws.map(|(_, v)| *v),
+            Some(6291456),
+            "Chrome INITIAL_WINDOW_SIZE = 6291456"
         );
     }
 

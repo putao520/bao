@@ -827,6 +827,20 @@ fn on_http_done(
     // here is safe regardless of later partial moves.
     let result_is_terminal = !result.has_more;
 
+    // A buffered fetch delivers exactly ONE outcome, on the terminal
+    // callback. Mid-response progress callbacks (`has_more=true` — e.g. an
+    // h2 response without Content-Length whose gzip body spans several TCP
+    // reads, so the h2 session reports each decompressed slice) exist for
+    // streaming consumers only. Treating one as the result here would write
+    // a partial-body outcome, schedule `resolve_tasklet` — which resolves
+    // the Promise early and FREES the PendingFetch — and the later terminal
+    // callback would then lock `this.outcome` on freed memory (observed
+    // SIGSEGV at the Mutex lock). Skip them: the terminal callback carries
+    // the full body.
+    if !result_is_terminal {
+        return;
+    }
+
     // 1. Convert HTTPClientResult → FetchOutcome (pure Rust).
     let outcome: FetchOutcome = if let Some(fail) = result.fail {
         Err(format!("{:?}", fail))

@@ -2555,6 +2555,7 @@ unsafe extern "C" fn url_format_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         let mut path_val = UndefinedValue();
         let mut pathname_val = UndefinedValue();
         let mut search_val = UndefinedValue();
+        let mut query_val = UndefinedValue();
         let mut hash_val = UndefinedValue();
         let mut auth_val = UndefinedValue();
         JS_GetProperty(
@@ -2623,6 +2624,15 @@ unsafe extern "C" fn url_format_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         JS_GetProperty(
             cx,
             obj.handle().into(),
+            c"query".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut query_val,
+            },
+        );
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
             c"hash".as_ptr(),
             MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
@@ -2656,6 +2666,18 @@ unsafe extern "C" fn url_format_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         } else {
             String::new()
         };
+        // @trace REQ-ENG-007 [api:url.format] — Node urlFormat search/query
+        // semantics (Node 24 ground truth):
+        //   * the legacy `path` string keeps precedence over
+        //     pathname/search/query wholesale;
+        //   * otherwise a non-empty string `search` wins over `query` (Node:
+        //     `search || ('?' + querystring.stringify(query))` — an
+        //     empty-string search is falsy and falls through to the query
+        //     object);
+        //   * an object `query` serializes with querystring.stringify
+        //     semantics ([`qs_stringify_query_object`]); a *string* query is
+        //     ignored here (Node only serializes object queries);
+        //   * a bare search gains its leading '?' (Node CHAR_QUESTION rule).
         let path = if path_val.is_string() {
             crate::js_to_rust_string(cx, path_val)
         } else {
@@ -2664,11 +2686,23 @@ unsafe extern "C" fn url_format_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             } else {
                 "/".to_string()
             };
-            let s = if search_val.is_string() {
-                crate::js_to_rust_string(cx, search_val)
-            } else {
-                String::new()
-            };
+            let mut s = String::new();
+            if search_val.is_string() {
+                let raw = crate::js_to_rust_string(cx, search_val);
+                if !raw.is_empty() {
+                    s = if raw.starts_with('?') {
+                        raw
+                    } else {
+                        format!("?{}", raw)
+                    };
+                }
+            }
+            if s.is_empty() && query_val.is_object() {
+                let qs = qs_stringify_query_object(cx, query_val.to_object());
+                if !qs.is_empty() {
+                    s = format!("?{}", qs);
+                }
+            }
             format!("{}{}", pn, s)
         };
         let hash = if hash_val.is_string() {
@@ -2700,6 +2734,156 @@ unsafe extern "C" fn url_format_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     }
     args.rval().set(UndefinedValue());
     true
+}
+
+// ── url.format `query` object serialization (querystring.stringify) ──────────
+
+/// `encodeURIComponent`-equivalent percent-encoding for the `query`
+/// serialization: unescaped set is ALPHA / DIGIT / `-._~!*'()`; everything
+/// else (spaces included → `%20`) encodes per UTF-8 byte.
+///
+/// Distinct from [`url_encode`], which uses the `+`-for-space
+/// application/x-www-form-urlencoded convention of URLSearchParams.
+// @trace REQ-ENG-007 [api:url.format] — querystring.stringify encoder.
+fn qs_encode_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*'
+            | b'\'' | b'(' | b')' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// Serialize `url.format`'s `query` object with Node's
+/// `querystring.stringify` semantics (Node 24 ground truth): own
+/// enumerable properties in property order; string/number/boolean/bigint
+/// values encode via `String(value)`; array values repeat the key per
+/// element (element null/undefined/object → bare `key=`); null / undefined
+/// / nested-object / function / symbol values emit the bare `key=`.
+/// Returns the pairs joined with `&` (empty for an empty query).
+///
+/// # Safety
+///
+/// `cx` must be live and `obj` a valid JSObject protected by the caller.
+// @trace REQ-ENG-007 [api:url.format] — query object → search string.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn qs_stringify_query_object(cx: *mut JSContext, obj: *mut JSObject) -> String {
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+    let mut parts: Vec<String> = Vec::new();
+    let mut ids = IdVector::new(cx);
+    if !GetPropertyKeys(cx, obj_root.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
+        return String::new();
+    }
+    for jsid in &*ids {
+        // Key form: string jsid → literal; int jsid (array index) → decimal.
+        rooted!(&in(cx_ref) let mut id_val = UndefinedValue());
+        if !w2::JS_IdToValue(cx_ref, *jsid, id_val.handle_mut()) {
+            continue;
+        }
+        let key = if id_val.get().is_string() {
+            crate::js_to_rust_string(cx, id_val.get())
+        } else if id_val.get().is_int32() {
+            id_val.get().to_int32().to_string()
+        } else {
+            // Symbol keys never reach querystring.stringify's output.
+            continue;
+        };
+        let mut val = UndefinedValue();
+        let c_key = ZBox::from_bytes(key.as_bytes());
+        JS_GetProperty(
+            cx,
+            obj_root.handle().into(),
+            c_key.as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut val,
+            },
+        );
+        qs_push_query_pair(cx, &mut parts, &qs_encode_component(&key), val);
+    }
+    parts.join("&")
+}
+
+/// Append one `key[=value]` pair per Node's stringify type dispatch.
+///
+/// # Safety
+///
+/// `cx` must be live; `val` must be a GC-safe value (caller-rooted).
+// @trace REQ-ENG-007 [api:url.format] — one query pair, Node type dispatch.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn qs_push_query_pair(cx: *mut JSContext, parts: &mut Vec<String>, enc_key: &str, val: JSVal) {
+    if val.is_object() {
+        // Arrays repeat the key per element; every other object shape
+        // (nested object, function) serializes as the bare key.
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let val_obj = val.to_object());
+        let mut is_arr = false;
+        if w2::IsArrayObject1(cx_ref, val_obj.handle().into(), &mut is_arr) && is_arr {
+            let mut len: u32 = 0;
+            if !w2::GetArrayLength(cx_ref, val_obj.handle().into(), &mut len) {
+                len = 0;
+            }
+            for i in 0..len {
+                rooted!(&in(cx_ref) let mut el = UndefinedValue());
+                w2::JS_GetElement(
+                    cx_ref,
+                    val_obj.handle().into(),
+                    i,
+                    el.handle_mut(),
+                );
+                let s = qs_value_to_string(cx, el.get()).unwrap_or_default();
+                parts.push(format!("{}={}", enc_key, qs_encode_component(&s)));
+            }
+            return;
+        }
+        parts.push(format!("{}=", enc_key));
+        return;
+    }
+    // Scalars (string/number/boolean/bigint) carry the String(value) form;
+    // everything else (null/undefined/symbol) is the bare key.
+    let scalar = val.is_string()
+        || val.is_boolean()
+        || val.is_int32()
+        || val.is_double()
+        || val.is_bigint();
+    let s = if scalar {
+        qs_value_to_string(cx, val).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    parts.push(format!("{}={}", enc_key, qs_encode_component(&s)));
+}
+
+/// `String(value)` for a scalar JSVal via SM's ToString (GC-triggering, so
+/// the caller passes a rooted value). Returns None when ToString fails.
+///
+/// # Safety
+///
+/// `cx` must be live; `val` must be a scalar (never null/undefined/symbol,
+/// whose ToString throws or is absent).
+// @trace REQ-ENG-007 [api:url.format] — scalar String() conversion.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn qs_value_to_string(cx: *mut JSContext, val: JSVal) -> Option<String> {
+    if val.is_string() {
+        return Some(crate::js_to_rust_string(cx, val));
+    }
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let val_root = val);
+    let jsstr = mozjs::rust::ToString(cx_ref, val_root.handle());
+    if jsstr.is_null() {
+        return None;
+    }
+    Some(crate::jsstr_to_rust_string(cx, jsstr))
 }
 
 #[cfg(test)]

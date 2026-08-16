@@ -313,23 +313,23 @@ fn cloudflare_js_challenge_navigator_overrides_present() {
     // Act — cf-chl probes navigator properties
     // Assert — all cf-chl probe targets must be overridden
     assert!(
-        js.contains("navigator, 'userAgent'"),
+        js.contains("__bao_def(nav, 'userAgent'"),
         "navigator.userAgent must be overridden — cf-chl probe target"
     );
     assert!(
-        js.contains("navigator, 'platform'"),
+        js.contains("__bao_def(nav, 'platform'"),
         "navigator.platform must be overridden — cf-chl probe target"
     );
     assert!(
-        js.contains("navigator, 'vendor'"),
+        js.contains("__bao_def(nav, 'vendor'"),
         "navigator.vendor must be overridden — cf-chl probe target"
     );
     assert!(
-        js.contains("navigator, 'hardwareConcurrency'"),
+        js.contains("__bao_def(nav, 'hardwareConcurrency'"),
         "navigator.hardwareConcurrency must be overridden — cf-chl probe target"
     );
     assert!(
-        js.contains("navigator, 'webdriver'"),
+        js.contains("__bao_def(nav, 'webdriver'"),
         "navigator.webdriver must be overridden — cf-chl bot signal"
     );
 }
@@ -364,11 +364,11 @@ fn cloudflare_js_challenge_screen_overrides_present() {
 
     // Assert — cf-chl probes screen dimensions
     assert!(
-        js.contains("screen, 'width'") && js.contains("screen, 'height'"),
+        js.contains("__bao_def(scr, 'width'") && js.contains("__bao_def(scr, 'height'"),
         "screen.width/height must be overridden — cf-chl probe"
     );
     assert!(
-        js.contains("window, 'devicePixelRatio'"),
+        js.contains("__bao_def(win, 'devicePixelRatio'"),
         "window.devicePixelRatio must be overridden — cf-chl probe"
     );
 }

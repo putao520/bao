@@ -258,7 +258,7 @@ fn test_settings_frame_payload_ids() {
     let h2 = Http2Fingerprint::firefox();
     let payload = h2.settings_frame_payload();
     let ids: Vec<u16> = payload.iter().map(|(id, _)| *id).collect();
-    assert_eq!(ids, vec![0x01, 0x03, 0x04, 0x02, 0x05, 0x06]);
+    assert_eq!(ids, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
 }
 
 #[test]

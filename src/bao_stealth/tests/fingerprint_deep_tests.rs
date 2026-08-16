@@ -244,8 +244,8 @@ fn test_firefox_settings_frame() {
 fn test_chrome_settings_has_push_disabled() {
     let h2 = Http2Fingerprint::chrome();
     let settings = h2.settings_frame_payload();
-    // SETTINGS_ENABLE_PUSH (0x03) should be 0
-    let push_setting = settings.iter().find(|(id, _)| *id == 0x03);
+    // SETTINGS_ENABLE_PUSH (0x02) should be 0
+    let push_setting = settings.iter().find(|(id, _)| *id == 0x02);
     assert!(push_setting.is_some());
     assert_eq!(push_setting.unwrap().1, 0);
 }

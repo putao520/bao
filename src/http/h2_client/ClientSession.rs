@@ -1180,7 +1180,19 @@ impl ClientSession {
                     client.h2_progress_update(self.ctx, self.socket);
                     return true;
                 }
-                client.h2_progress_update(self.ctx, self.socket);
+                // Mid-body progress wakes the consumer per delivered slice;
+                // only streaming consumers opt in. A buffered consumer would
+                // have its one-shot `cloned_metadata` consumed by the
+                // intermediate `to_result` (final callback then reports
+                // status 0) — and a single-buffer JS tasklet cannot consume
+                // partial bodies anyway. Mirrors the h1 chunked gate at
+                // lib.rs `handle_response_body_chunked_encoding`.
+                if client
+                    .signals
+                    .get(signals::Field::ResponseBodyStreaming)
+                {
+                    client.h2_progress_update(self.ctx, self.socket);
+                }
             }
             return false;
         }

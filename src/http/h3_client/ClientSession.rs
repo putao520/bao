@@ -214,8 +214,29 @@ impl ClientSession {
         // `Stream.client` is a live backref while attached; `ParentRef::from`
         // (NonNull → shared deref) reads the Copy `flags` field without
         // forming `&mut HTTPClient` across the `detach()` below.
-        if bun_ptr::ParentRef::from(client_ptr).flags.h3_retried || st.is_streaming_body {
+        let parent = bun_ptr::ParentRef::from(client_ptr);
+        // A JS-stream request body may already be consumed; it cannot be
+        // replayed onto another connection.
+        if st.is_streaming_body {
             return self.fail(stream, err);
+        }
+        // Explicit `protocol: "http3"` is a user contract — fail loud rather
+        // than silently downgrading the transport.
+        if parent.flags.force_http3 {
+            return self.fail(stream, err);
+        }
+        // QUIC never handshook (UDP blocked / version mismatch — a fresh
+        // connection to the same endpoint cannot change that), or the one
+        // fresh-h3-session retry already burned: REQ-H3-001 keeps TCP as the
+        // fallback for the *opportunistic* upgrade, so re-dispatch the
+        // request on h1/h2 instead of failing it.
+        if parent.flags.h3_retried || err == bun_core::err!(HTTP3HandshakeFailed) {
+            self.closed = true;
+            st.abort();
+            self.detach(stream);
+            // SAFETY: re-derive — detach() invalidated the prior Unique tag.
+            client_mut(client_ptr).retry_from_h3_to_tcp();
+            return;
         }
         let Some(ctx) = ClientContext::get() else {
             return self.fail(stream, err);

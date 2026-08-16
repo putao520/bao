@@ -215,6 +215,11 @@ pub struct Flags {
     /// Set after the first H3 retry so a stale-session/GOAWAY race retries
     /// once on a fresh connection but never loops.
     pub h3_retried: bool,
+    /// Set when an opportunistic Alt-Svc h3 upgrade failed and the request
+    /// fell back to TCP (`retry_from_h3_to_tcp`). Blocks `can_try_h3_alt_svc`
+    /// for the rest of this request's life so the fallback can't loop back
+    /// into the same dead QUIC endpoint.
+    pub h3_alt_svc_fallback: bool,
     pub is_node_http_client: bool,
     /// Bao fusion (U2): omit the default `Connection: keep-alive` header on
     /// the h1 wire. Bun's Node-side client sends it (upstream wire contract);
@@ -252,6 +257,7 @@ impl Default for Flags {
             force_http1: false,
             force_http3: false,
             h3_retried: false,
+            h3_alt_svc_fallback: false,
             is_node_http_client: false,
             is_page_egress: false,
             omit_connection_header: false,
@@ -1877,6 +1883,12 @@ impl<'a> HTTPClient<'a> {
     /// specific protocol). When true, `start_()` consults `H3.AltSvc.lookup`
     /// before opening TCP.
     pub fn can_try_h3_alt_svc(&self) -> bool {
+        // A previous opportunistic upgrade for this request already failed
+        // and fell back to TCP — don't loop back into the same dead QUIC
+        // endpoint (see `retry_from_h3_to_tcp`).
+        if self.flags.h3_alt_svc_fallback {
+            return false;
+        }
         // The h3 client never routes through `check_server_identity`, so a JS
         // `checkServerIdentity` callback could never run; stay on TCP.
         if self.signals.get(signals::Field::CertErrors) {
@@ -1988,6 +2000,28 @@ impl<'a> HTTPClient<'a> {
         self.unregister_abort_tracker();
         self.flags.protocol = Protocol::Http1_1;
         self.h2_retries += 1;
+        let body = core::mem::replace(
+            &mut self.state.original_request_body,
+            HTTPRequestBody::Bytes(b""),
+        );
+        let body_out = self.state.body_out_str.take().unwrap();
+        self.state.reset();
+        self.start(body, body_out::as_mut(body_out));
+    }
+
+    /// An opportunistic Alt-Svc h3 upgrade failed before any response
+    /// arrived (e.g. UDP/QUIC blocked on the path). REQ-H3-001's protocol
+    /// selection keeps TCP as the fallback — re-enter the connect path on
+    /// h1/h2 instead of failing the request. The replayable-body guard is
+    /// the caller's (`h3::ClientSession::retry_or_fail` skips streaming
+    /// bodies), and `flags.force_http3` must never land here (an explicit
+    /// `protocol:"http3"` choice fails loud, it does not silently downgrade).
+    pub fn retry_from_h3_to_tcp(&mut self) {
+        debug_assert!(self.h3.is_none());
+        debug_assert!(!self.flags.force_http3);
+        self.unregister_abort_tracker();
+        self.flags.protocol = Protocol::Http1_1;
+        self.flags.h3_alt_svc_fallback = true;
         let body = core::mem::replace(
             &mut self.state.original_request_body,
             HTTPRequestBody::Bytes(b""),
@@ -3550,6 +3584,17 @@ impl<'a> HTTPClient<'a> {
             };
 
             if report_progress {
+                // Mid-body (not yet is_done) progress wakes the consumer per
+                // delivered slice; only streaming consumers opt in — a
+                // buffered consumer would have its one-shot `cloned_metadata`
+                // consumed by the intermediate `to_result` (final callback
+                // then reports status 0). Mirrors the h2 gate in
+                // ClientSession::deliver_stream and the chunked gate below.
+                if !self.state.is_done()
+                    && !self.signals.get(signals::Field::ResponseBodyStreaming)
+                {
+                    return;
+                }
                 self.progress_update::<IS_SSL>(ctx, socket);
                 return;
             }

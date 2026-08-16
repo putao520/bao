@@ -5605,6 +5605,31 @@ if (typeof _g.AbortController === 'undefined') {
       }
     };
   };
+  // @trace REQ-ENG-006 [api:AbortSignal.timeout] — Node 17+/WHATWG DOM
+  // static: a fresh signal that fires itself after `milliseconds` of
+  // event-loop time (timer via the runtime's setTimeout). The abort reason
+  // is a DOMException named "TimeoutError" with the WHATWG message
+  // "signal timed out" (Node semantics; .code 23 via the DOMException
+  // code map). Validation mirrors Node: a non-number / non-finite /
+  // negative delay throws TypeError up front; a 0 delay is legal.
+  _g.AbortSignal.timeout = function timeout(milliseconds) {
+    if (typeof milliseconds !== 'number' || !isFinite(milliseconds) || milliseconds < 0) {
+      throw new TypeError('The "milliseconds" argument must be a non-negative finite number');
+    }
+    var signal = new _g.AbortSignal();
+    setTimeout(function() {
+      if (signal.aborted) return;
+      signal.aborted = true;
+      signal.reason = new _g.DOMException('signal timed out', 'TimeoutError');
+      // Snapshot: a listener removing itself/peers mid-dispatch must not
+      // skip the still-registered ones (same invoke order as EventTarget).
+      var listeners = signal._listeners.slice();
+      for (var i = 0; i < listeners.length; i++) {
+        listeners[i]({ type: 'abort', target: signal });
+      }
+    }, milliseconds);
+    return signal;
+  };
 }
 
 // @trace REQ-ENG-005 [api:EventTarget/Event/CustomEvent] — WHATWG DOM event

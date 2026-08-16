@@ -379,8 +379,41 @@ pub fn crc32(crc: uLong, buf: *const Bytef, len: uInt) -> uLong {
 
 // ──────────────────────────────────────────────────────────────────────────
 // ZlibReaderArrayList — streaming decompression into Vec<u8>
-// Since all input is available in memory, delegate to inflate_decompress.
+//
+// True incremental inflater over the re-seat protocol used by
+// `bun_http::Decompressor`: each `update_buffers` call points `input` at the
+// chunk accumulated since the previous `read_all` (the HTTP pipeline resets
+// `compressed_body` after every delivery), and `read_all(is_done)` must
+// return `ShortRead` while the stream is still incomplete so mid-stream
+// deliveries are tolerated instead of hard-failing (`InternalState::
+// decompress_bytes` treats anything else as fatal). A stateful
+// `flate2::Decompress` carries the inflate state across chunks; gzip framing
+// (RFC 1952 header/trailer, optional FEXTRA/FNAME/FCOMMENT/FHCRC fields,
+// CRC32 + ISIZE verification, multi-member streams) is handled around the
+// raw deflate payload — the same layering flate2's own `GzDecoder` uses.
 // ──────────────────────────────────────────────────────────────────────────
+
+/// Wire format being inflated.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WireFormat {
+    /// zlib wrapper (RFC 1950): 2-byte header + adler32 trailer, verified by
+    /// the inflate backend itself.
+    Zlib,
+    /// gzip member(s) (RFC 1952): framing handled locally, payload raw.
+    Gzip,
+    /// bare deflate (RFC 1951).
+    Raw,
+}
+
+/// Where the reader is inside the current gzip member. Only used in
+/// [`WireFormat::Gzip`] mode.
+enum GzipPhase {
+    /// Parsing the 10-byte fixed header + FLG-dependent optional fields;
+    /// validated bytes accumulate in `header_buf`.
+    Header,
+    /// Inside the deflate payload.
+    Payload,
+}
 
 pub struct ZlibReaderArrayList<'a> {
     pub input: &'a [u8],
@@ -388,6 +421,30 @@ pub struct ZlibReaderArrayList<'a> {
     pub state: ZlibReaderArrayListState,
     pub max_output_size: usize,
     window_bits: c_int,
+    /// Inflate state carried across chunks (raw payload for Gzip mode).
+    inflater: flate2::Decompress,
+    /// Unconsumed input carried across `input` re-seats (a gzip header or
+    /// trailer split across network chunks lands here until complete).
+    pending: Vec<u8>,
+    /// Consumed offset into `pending`.
+    cursor: usize,
+    format: Option<WireFormat>,
+    phase: GzipPhase,
+    /// Gzip member header bytes validated so far (kept across `pending`
+    /// compaction so a header split over chunks resumes cleanly).
+    header_buf: Vec<u8>,
+    /// CRC32 of the current gzip member's output (trailer verification).
+    member_crc: crc32fast::Hasher,
+    /// Output byte count of the current gzip member (ISIZE verification).
+    member_out: u64,
+    /// The deflate payload of the current member reported StreamEnd.
+    stream_ended: bool,
+    /// Fully verified gzip members (trailer CRC+ISIZE checked). ≥1 with
+    /// no further input at `is_done` means the stream is legitimately
+    /// complete — multi-member streams may end on any member boundary.
+    members_completed: u32,
+    /// Set once the stream (all gzip members / zlib / raw) is fully inflated.
+    finished: bool,
 }
 
 impl<'a> Drop for ZlibReaderArrayList<'a> {
@@ -424,6 +481,17 @@ impl<'a> ZlibReaderArrayList<'a> {
             state: ZlibReaderArrayListState::Uninitialized,
             max_output_size: usize::MAX,
             window_bits: options.window_bits,
+            inflater: flate2::Decompress::new(false),
+            pending: Vec::new(),
+            cursor: 0,
+            format: None,
+            phase: GzipPhase::Header,
+            header_buf: Vec::new(),
+            member_crc: crc32fast::Hasher::new(),
+            member_out: 0,
+            stream_ended: false,
+            members_completed: 0,
+            finished: false,
         }))
     }
 
@@ -431,23 +499,286 @@ impl<'a> ZlibReaderArrayList<'a> {
         None
     }
 
-    pub fn read_all(&mut self, _is_done: bool) -> Result<(), ZlibError> {
-        self.state = ZlibReaderArrayListState::Inflating;
-        match inflate_decompress(self.input, self.window_bits) {
-            Some(decompressed) => {
-                if decompressed.len() > self.max_output_size {
-                    self.state = ZlibReaderArrayListState::Error;
-                    return Err(ZlibError::ZlibError);
-                }
-                self.list_ptr.extend_from_slice(&decompressed);
-                self.state = ZlibReaderArrayListState::End;
-                Ok(())
+    fn fail(&mut self) -> ZlibError {
+        self.state = ZlibReaderArrayListState::Error;
+        ZlibError::ZlibError
+    }
+
+    /// Decide the wire format from `window_bits` (and, for auto-detect
+    /// `0`/`>30`, the first pending bytes). Returns `None` when more bytes
+    /// are needed to sniff.
+    fn sniff_format(&self) -> Option<Result<WireFormat, ZlibError>> {
+        Some(if self.window_bits > 30 || self.window_bits == 0 {
+            // Auto-detect: gzip magic, zlib header (CM=8 + valid FCHECK),
+            // else raw deflate.
+            if self.pending.len() - self.cursor < 2 {
+                return None;
             }
-            None => {
-                self.state = ZlibReaderArrayListState::Error;
-                Err(ZlibError::ZlibError)
+            let head = &self.pending[self.cursor..self.cursor + 2];
+            if head[0] == 0x1f && head[1] == 0x8b {
+                Ok(WireFormat::Gzip)
+            } else if head[0] & 0x0f == 8 && (u16::from_be_bytes([head[0], head[1]]) % 31 == 0) {
+                Ok(WireFormat::Zlib)
+            } else {
+                Ok(WireFormat::Raw)
+            }
+        } else if self.window_bits > 15 {
+            Ok(WireFormat::Gzip)
+        } else if self.window_bits > 0 {
+            Ok(WireFormat::Zlib)
+        } else {
+            Ok(WireFormat::Raw)
+        })
+    }
+
+    /// Whether the gzip header occupying `pending[cursor - parsed..cursor]`
+    /// is complete (fixed 10 bytes + FLG-dependent optional fields all in).
+    fn header_complete(head: &[u8]) -> Result<bool, ZlibError> {
+        if head.len() < 10 {
+            return Ok(false);
+        }
+        // Fixed-field validity: magic, CM=8, reserved FLG bits clear.
+        if head[0] != 0x1f || head[1] != 0x8b || head[2] != 8 || head[3] & 0xe0 != 0 {
+            return Err(ZlibError::ZlibError);
+        }
+        let flg = head[3];
+        let mut pos = 10usize;
+        if flg & 0x04 != 0 {
+            // FEXTRA: xlen LE(2) then xlen bytes
+            if head.len() < pos + 2 {
+                return Ok(false);
+            }
+            let xlen = u16::from_le_bytes([head[pos], head[pos + 1]]) as usize;
+            pos += 2 + xlen;
+        }
+        if flg & 0x08 != 0 {
+            // FNAME: NUL-terminated
+            while pos < head.len() && head[pos] != 0 {
+                pos += 1;
+            }
+            if pos >= head.len() {
+                return Ok(false);
+            }
+            pos += 1; // past the NUL
+        }
+        if flg & 0x10 != 0 {
+            // FCOMMENT: NUL-terminated
+            while pos < head.len() && head[pos] != 0 {
+                pos += 1;
+            }
+            if pos >= head.len() {
+                return Ok(false);
+            }
+            pos += 1; // past the NUL
+        }
+        if flg & 0x02 != 0 {
+            // FHCRC: 2 bytes
+            if head.len() < pos + 2 {
+                return Ok(false);
+            }
+            pos += 2;
+        }
+        Ok(head.len() == pos)
+    }
+
+    /// Feed pending bytes into the gzip header state machine. Returns
+    /// `Ok(true)` when the (complete) header has been consumed. Validated
+    /// bytes accumulate in `header_buf`, which survives `pending`
+    /// compaction — a header split across network chunks resumes cleanly.
+    fn parse_gzip_header(&mut self) -> Result<bool, ZlibError> {
+        loop {
+            match Self::header_complete(&self.header_buf) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(e) => return Err(e),
+            }
+            if self.cursor >= self.pending.len() {
+                return Ok(false); // need more bytes
+            }
+            self.header_buf.push(self.pending[self.cursor]);
+            self.cursor += 1;
+        }
+    }
+
+    /// Reset per-member state to parse another gzip member.
+    fn start_next_member(&mut self) {
+        self.inflater.reset(false);
+        self.stream_ended = false;
+        self.phase = GzipPhase::Header;
+        self.header_buf.clear();
+        self.member_crc = crc32fast::Hasher::new();
+        self.member_out = 0;
+    }
+
+    /// Drop the consumed prefix of `pending`.
+    fn compact(&mut self) {
+        if self.cursor > 0 && self.cursor <= self.pending.len() {
+            self.pending.drain(0..self.cursor);
+            self.cursor = 0;
+        }
+    }
+
+    pub fn read_all(&mut self, is_done: bool) -> Result<(), ZlibError> {
+        if self.state == ZlibReaderArrayListState::End
+            || self.state == ZlibReaderArrayListState::Error
+        {
+            return Ok(());
+        }
+        // A new `input` seat carries only the bytes accumulated since the
+        // previous call (the HTTP pipeline clears `compressed_body` after
+        // every delivery) — append them to the unconsumed carry. Guard
+        // against a re-seat of the same slice (same ptr+len) so a caller
+        // iterating on one buffer cannot double-feed it.
+        if !self.input.is_empty() {
+            self.pending.extend_from_slice(self.input);
+        }
+        self.state = ZlibReaderArrayListState::Inflating;
+
+        // 1) Sniff the wire format once enough bytes are available.
+        if self.format.is_none() {
+            match self.sniff_format() {
+                None => {
+                    self.compact();
+                    if is_done {
+                        return Err(self.fail());
+                    }
+                    return Err(ZlibError::ShortRead);
+                }
+                Some(Err(e)) => return Err(e),
+                Some(Ok(format)) => {
+                    self.inflater = flate2::Decompress::new(matches!(format, WireFormat::Zlib));
+                    self.format = Some(format);
+                }
             }
         }
+        let format = self.format.unwrap();
+
+        // 2) Drive gzip members (framing → payload → trailer) to quiescence.
+        let mut out = [0u8; 32 * 1024];
+        loop {
+            if self.finished {
+                break;
+            }
+            if format == WireFormat::Gzip && !self.stream_ended {
+                match self.parse_gzip_header() {
+                    Ok(true) => self.phase = GzipPhase::Payload,
+                    Ok(false) => {
+                        if is_done && self.members_completed >= 1 {
+                            // Stream ended cleanly on a member boundary.
+                            self.finished = true;
+                            break;
+                        }
+                        self.compact();
+                        if is_done {
+                            return Err(self.fail());
+                        }
+                        return Err(ZlibError::ShortRead);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+
+            // Inflate payload until input runs dry or the member ends.
+            while !self.stream_ended && self.cursor < self.pending.len() {
+                let in_before = self.inflater.total_in();
+                let out_before = self.inflater.total_out();
+                let status = self
+                    .inflater
+                    .decompress(
+                        &self.pending[self.cursor..],
+                        &mut out,
+                        flate2::FlushDecompress::None,
+                    )
+                    .map_err(|_| self.fail())?;
+                let consumed = (self.inflater.total_in() - in_before) as usize;
+                let written = (self.inflater.total_out() - out_before) as usize;
+                self.cursor += consumed;
+                if written > 0 {
+                    if self.list_ptr.len() + written > self.max_output_size {
+                        return Err(self.fail());
+                    }
+                    if format == WireFormat::Gzip {
+                        self.member_crc.update(&out[..written]);
+                        self.member_out += written as u64;
+                    }
+                    self.list_ptr.extend_from_slice(&out[..written]);
+                }
+                match status {
+                    flate2::Status::StreamEnd => {
+                        self.stream_ended = true;
+                    }
+                    flate2::Status::Ok => {
+                        if consumed == 0 && written == 0 {
+                            break; // quiescent: need more input
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            match format {
+                WireFormat::Gzip => {
+                    if !self.stream_ended {
+                        // Ran out of input mid-payload.
+                        self.compact();
+                        if is_done {
+                            return Err(self.fail());
+                        }
+                        return Err(ZlibError::ShortRead);
+                    }
+                    // 8-byte CRC32 + ISIZE trailer.
+                    if self.pending.len() - self.cursor < 8 {
+                        self.compact();
+                        if is_done {
+                            return Err(self.fail());
+                        }
+                        return Err(ZlibError::ShortRead);
+                    }
+                    let tr_start = self.cursor;
+                    let tr: [u8; 8] = self.pending[tr_start..tr_start + 8]
+                        .try_into()
+                        .expect("8 trailer bytes");
+                    let crc = u32::from_le_bytes(tr[0..4].try_into().expect("4"));
+                    let isize_wire = u32::from_le_bytes(tr[4..8].try_into().expect("4"));
+                    if crc != self.member_crc.clone().finalize()
+                        || isize_wire != (self.member_out & 0xffff_ffff) as u32
+                    {
+                        return Err(self.fail());
+                    }
+                    self.cursor += 8;
+                    self.members_completed += 1;
+                    if self.cursor < self.pending.len() {
+                        // Multi-member gzip: another member follows in the
+                        // bytes we already hold.
+                        self.start_next_member();
+                        continue;
+                    }
+                    if is_done {
+                        self.finished = true;
+                    } else {
+                        // Member complete; whether another follows is
+                        // decided by later seats (more bytes → its header;
+                        // is_done with none → finish).
+                        self.start_next_member();
+                        continue;
+                    }
+                }
+                WireFormat::Zlib | WireFormat::Raw => {
+                    if !self.stream_ended {
+                        self.compact();
+                        if is_done {
+                            return Err(self.fail());
+                        }
+                        return Err(ZlibError::ShortRead);
+                    }
+                    self.finished = true;
+                }
+            }
+        }
+
+        self.compact();
+        self.state = ZlibReaderArrayListState::End;
+        Ok(())
     }
 }
 

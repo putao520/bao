@@ -52,8 +52,9 @@ fn cdp_webdriver_override_forced_false() {
     let js = hooks.navigator_js();
 
     // Assert — must override webdriver to false
+    // (guarded define: __bao_def(nav, ...) — receiver alias for navigator)
     assert!(
-        js.contains("navigator, 'webdriver'"),
+        js.contains("__bao_def(nav, 'webdriver'"),
         "navigator.webdriver override must be present in hooks — CDP webdriver leak"
     );
     // Must return boolean false (not "false" string, not undefined)
@@ -95,7 +96,7 @@ fn cdp_webdriver_override_non_configurable() {
     // Find the webdriver line
     let webdriver_line = js
         .lines()
-        .find(|l| l.contains("navigator, 'webdriver'"))
+        .find(|l| l.contains("__bao_def(nav, 'webdriver'"))
         .unwrap_or("");
 
     // Assert — must use configurable: false (anti-anti-detect)
@@ -328,11 +329,11 @@ fn cdp_combined_js_has_all_overrides() {
         "Combined JS must include audio getChannelData override"
     );
     assert!(
-        combined.contains("navigator, 'userAgent'"),
+        combined.contains("__bao_def(nav, 'userAgent'"),
         "Combined JS must include navigator.userAgent override"
     );
     assert!(
-        combined.contains("navigator, 'webdriver'"),
+        combined.contains("__bao_def(nav, 'webdriver'"),
         "Combined JS must include navigator.webdriver override (CDP leak prevention)"
     );
 }
@@ -522,14 +523,14 @@ fn cdp_all_screen_properties_overridden() {
         "pixelDepth",
     ] {
         assert!(
-            js.contains(&format!("screen, '{}'", prop)),
+            js.contains(&format!("__bao_def(scr, '{}'", prop)),
             "screen.{} must be overridden — CDP screen probe",
             prop
         );
     }
     // devicePixelRatio on window
     assert!(
-        js.contains("window, 'devicePixelRatio'"),
+        js.contains("__bao_def(win, 'devicePixelRatio'"),
         "window.devicePixelRatio must be overridden — CDP DPR probe"
     );
 }
@@ -579,7 +580,7 @@ fn cdp_all_navigator_properties_overridden() {
         "webdriver",
     ] {
         assert!(
-            js.contains(&format!("navigator, '{}'", prop)),
+            js.contains(&format!("__bao_def(nav, '{}'", prop)),
             "navigator.{} must be overridden — CDP navigator probe",
             prop
         );

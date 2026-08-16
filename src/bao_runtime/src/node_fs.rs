@@ -3016,9 +3016,13 @@ enum FswCommand {
 struct FswShared {
     queue: VecDeque<PendingFsEvent>,
     commands: VecDeque<FswCommand>,
-    /// wd → watcher id (inotify watch descriptor map; the JS thread writes on
-    /// add/remove, the worker reads when decoding events).
-    wd_map: HashMap<i32, u64>,
+    /// wd → watcher ids sharing that kernel watch (inotify returns the SAME
+    /// wd for repeated add_watch on one path within one fd; Node semantics =
+    /// every fs.watch watcher is independent, so one wd fans out to ALL
+    /// watchers registered on it — a wd→single-id map made the first
+    /// registrant silently lose events to the overwrite). The JS thread
+    /// writes on add/remove, the worker reads when decoding events.
+    wd_map: HashMap<i32, Vec<u64>>,
 }
 
 impl FswShared {
@@ -3297,8 +3301,14 @@ fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, inotify_fd: i32, wake_r: i32) 
                     } else {
                         None
                     };
-                    let id = shared.lock().ok().and_then(|g| g.wd_map.get(&ev.wd).copied());
-                    if let Some(id) = id {
+                    // Fan out to EVERY watcher sharing this wd (same-path
+                    // multi-watch: all watchers get their own event copy).
+                    let ids: Vec<u64> = shared
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.wd_map.get(&ev.wd).cloned())
+                        .unwrap_or_default();
+                    for id in ids {
                         let event_type = if ev.mask & (libc::IN_MODIFY | libc::IN_ATTRIB) != 0 {
                             "change"
                         } else {
@@ -3310,7 +3320,7 @@ fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, inotify_fd: i32, wake_r: i32) 
                             guard.queue.push_back(PendingFsEvent::Inotify {
                                 id,
                                 event_type,
-                                filename: name,
+                                filename: name.clone(),
                             });
                         }
                     }
@@ -3394,7 +3404,9 @@ fn fsw_register_watch(id: u64, wd: i32, path: String, is_dir: bool, persistent: 
     FSW_HUB.with(|h| {
         if let Some(hub) = h.borrow().as_ref() {
             if let Ok(mut guard) = hub.shared.lock() {
-                guard.wd_map.insert(wd, id);
+                // Append, never overwrite: same-path add_watch returns the
+                // same wd, and every watcher on that wd keeps its events.
+                guard.wd_map.entry(wd).or_default().push(id);
             }
         }
     });
@@ -3452,12 +3464,24 @@ unsafe fn fsw_close_entry(cx: *mut JSContext, id: u64) {
 
     if let Some(idx) = watch {
         let entry = FSW_WATCHERS.with(|w| w.borrow_mut().remove(idx));
-        // rm the kernel watch + wd mapping.
+        // Refcounted teardown: other watchers may share this wd (same-path
+        // multi-watch). The kernel watch + wd mapping go away only when the
+        // LAST watcher on the wd closes — dropping them earlier would silence
+        // the surviving watchers.
         FSW_HUB.with(|h| {
             if let Some(hub) = h.borrow().as_ref() {
-                unsafe { libc::inotify_rm_watch(hub.inotify_fd, entry.wd) };
+                let mut last_on_wd = false;
                 if let Ok(mut guard) = hub.shared.lock() {
-                    guard.wd_map.remove(&entry.wd);
+                    if let Some(ids) = guard.wd_map.get_mut(&entry.wd) {
+                        ids.retain(|&i| i != id);
+                        last_on_wd = ids.is_empty();
+                    }
+                    if last_on_wd {
+                        guard.wd_map.remove(&entry.wd);
+                    }
+                }
+                if last_on_wd {
+                    unsafe { libc::inotify_rm_watch(hub.inotify_fd, entry.wd) };
                 }
             }
         });

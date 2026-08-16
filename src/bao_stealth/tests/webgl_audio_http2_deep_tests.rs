@@ -248,7 +248,7 @@ fn test_http2_settings_frame_contains_window_size() {
     let payload = h.settings_frame_payload();
     assert!(payload
         .iter()
-        .any(|(id, val)| *id == 0x02 && *val == 6291456));
+        .any(|(id, val)| *id == 0x04 && *val == 6291456));
 }
 
 #[test]
