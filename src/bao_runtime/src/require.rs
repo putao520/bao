@@ -149,6 +149,7 @@ pub unsafe fn install_require_on_target(
     if require_val.get().is_object() {
         rooted!(&in(cx) let require_obj = require_val.get().to_object());
         unsafe { attach_require_resolve(cx, require_obj.handle()) };
+        unsafe { attach_require_cache(cx, require_obj.handle()) };
     }
 }
 
@@ -176,8 +177,215 @@ pub fn install_require(
         if require_val.get().is_object() {
             rooted!(&in(cx) let require_obj = require_val.get().to_object());
             attach_require_resolve(cx, require_obj.handle());
+            attach_require_cache(cx, require_obj.handle());
         }
     }
+}
+
+/// gc_store key for the shared require.cache object (one per JSContext).
+const REQUIRE_CACHE_KEY: &str = "require:module-cache";
+
+/// Get (or lazily create) the shared `require.cache` object. A single object
+/// per context is shared by every require surface (global and scope targets)
+/// so `require.cache` singleton semantics hold across scopes.
+///
+/// # Safety
+/// Caller must ensure `cx` is a valid JSContext pointer.
+unsafe fn get_or_create_require_cache(cx: *mut JSContext) -> *mut JSObject {
+    if let Some(existing) = gc_store::gc_store_get(cx, REQUIRE_CACHE_KEY)
+        && !existing.is_null()
+    {
+        return existing;
+    }
+    let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if !obj.is_null() {
+        gc_store::gc_store_insert(cx, REQUIRE_CACHE_KEY, obj);
+    }
+    obj
+}
+
+/// Attach `require.cache` to a require function object.
+///
+/// # Safety
+/// Caller must ensure `cx` is a valid JSContext and `require_obj` is a valid
+/// handle to the require function object.
+unsafe fn attach_require_cache(
+    cx: &mut mozjs::context::JSContext,
+    require_obj: mozjs::rust::Handle<*mut JSObject>,
+) {
+    let cache = get_or_create_require_cache(cx.raw_cx());
+    if cache.is_null() {
+        return;
+    }
+    rooted!(&in(cx) let cache_root = cache);
+    mozjs::rust::wrappers2::JS_DefineProperty3(
+        cx,
+        require_obj,
+        c"cache".as_ptr(),
+        cache_root.handle(),
+        JSPROP_ENUMERATE as u32,
+    );
+}
+
+/// Record a loaded file module in `require.cache` under its canonical path:
+/// `require.cache[path] = { id, filename, exports, loaded }`. Node semantics —
+/// builtins are NOT recorded (they never appear in require.cache).
+///
+/// # Safety
+/// Caller must ensure `cx` is a valid JSContext pointer and `exports_val` is
+/// rooted or otherwise protected from GC.
+unsafe fn record_module_in_cache(cx: *mut JSContext, canonical_path: &str, exports_val: Value) {
+    let cache = get_or_create_require_cache(cx);
+    if cache.is_null() {
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let cache_root = cache);
+
+    let module_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if module_obj.is_null() {
+        return;
+    }
+    rooted!(&in(cx_ref) let module_root = module_obj);
+    rooted!(&in(cx_ref) let exports_root = exports_val);
+    unsafe {
+        JS_DefineProperty(
+            cx,
+            module_root.handle().into(),
+            c"exports".as_ptr(),
+            exports_root.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+        let path_str = JS_NewStringCopyN(
+            cx,
+            canonical_path.as_ptr() as *const ::std::os::raw::c_char,
+            canonical_path.len(),
+        );
+        if !path_str.is_null() {
+            rooted!(&in(cx_ref) let pv = mozjs::jsval::StringValue(&*path_str));
+            JS_DefineProperty(
+                cx,
+                module_root.handle().into(),
+                c"id".as_ptr(),
+                pv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            JS_DefineProperty(
+                cx,
+                module_root.handle().into(),
+                c"filename".as_ptr(),
+                pv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        rooted!(&in(cx_ref) let loaded = mozjs::jsval::BooleanValue(true));
+        JS_DefineProperty(
+            cx,
+            module_root.handle().into(),
+            c"loaded".as_ptr(),
+            loaded.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+        // Property keys are two-byte (UTF-16) names.
+        let utf16: Vec<u16> = canonical_path.encode_utf16().collect();
+        let ok = JS_DefineUCProperty4(
+            cx,
+            cache_root.handle().into(),
+            utf16.as_ptr(),
+            utf16.len(),
+            module_root.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+        let _ = ok;
+    }
+}
+
+/// Look up `canonical_path` in the JS-visible `require.cache` of the require
+/// function that is currently executing (`args.callee()`). Returns the cached
+/// exports value when present. Checking the JS-visible cache (instead of the
+/// internal gc_store) makes `delete require.cache[path]` force a reload —
+/// Node semantics.
+///
+/// # Safety
+/// Standard JSNative context — `cx` valid, `args` live.
+unsafe fn lookup_require_cache(cx: *mut JSContext, args: &CallArgs, canonical_path: &str) -> Option<Value> {
+    let callee_obj = args.callee();
+    if callee_obj.is_null() {
+        return None;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let callee_root = callee_obj);
+    let mut cache_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        callee_root.handle().into(),
+        c"cache".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut cache_val,
+        },
+    );
+    if !cache_val.is_object() {
+        return None;
+    }
+    rooted!(&in(cx_ref) let cache_obj = cache_val.to_object());
+    let utf16: Vec<u16> = canonical_path.encode_utf16().collect();
+    let mut module_val = UndefinedValue();
+    let got = JS_GetUCProperty(
+        cx,
+        cache_obj.handle().into(),
+        utf16.as_ptr(),
+        utf16.len(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut module_val,
+        },
+    );
+    if !got || !module_val.is_object() {
+        return None;
+    }
+    rooted!(&in(cx_ref) let module_obj = module_val.to_object());
+    let mut exports_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        module_obj.handle().into(),
+        c"exports".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut exports_val,
+        },
+    );
+    // A module object under the path IS the cache hit; exports may legitimately
+    // be undefined when the module exported a primitive-ish value.
+    Some(exports_val)
+}
+
+/// Whether the executing require function object carries the JS-visible
+/// `require.cache` property (installed by attach_require_cache).
+///
+/// # Safety
+/// Standard JSNative context — `cx` valid, `args` live.
+unsafe fn callee_has_require_cache(cx: *mut JSContext, args: &CallArgs) -> bool {
+    let callee_obj = args.callee();
+    if callee_obj.is_null() {
+        return false;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let callee_root = callee_obj);
+    let mut cache_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        callee_root.handle().into(),
+        c"cache".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut cache_val,
+        },
+    );
+    cache_val.is_object()
 }
 
 /// Attach `require.resolve(specifier)` as a property of the require function object.
@@ -435,7 +643,24 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     };
     let cache_key = canonical.to_string_lossy().into_owned();
 
-    let cached = gc_store::gc_store_get(cx, &cache_key);
+    // @trace REQ-ENG-006 [api:require.cache] — the JS-visible require.cache
+    // (read off the executing require function object) is AUTHORITATIVE when
+    // present: a hit serves the cached exports, and a miss (including after
+    // `delete require.cache[path]`) bypasses the internal gc_store entry so
+    // the module re-evaluates — Node's delete-forces-reload semantics. The
+    // gc_store fallback only serves require functions without a cache
+    // property (legacy/internal surfaces).
+    let js_cache_authoritative = callee_has_require_cache(cx, &args);
+    if let Some(hit) = lookup_require_cache(cx, &args, &cache_key) {
+        args.rval().set(hit);
+        return true;
+    }
+
+    let cached = if js_cache_authoritative {
+        None
+    } else {
+        gc_store::gc_store_get(cx, &cache_key)
+    };
     if let Some(existing) = cached
         && !existing.is_null()
     {
@@ -529,6 +754,12 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     if !cache_obj.is_null() {
         gc_store::gc_store_insert(cx, &cache_key, cache_obj);
     }
+
+    // @trace REQ-ENG-006 [api:require.cache] — register the module under its
+    // canonical path: require.cache[path] = { id, filename, exports, loaded }.
+    // The JS-visible cache and the internal gc_store entry stay in sync; the
+    // JS-visible one is authoritative (see the lookup above).
+    record_module_in_cache(cx, &cache_key, exports_val);
 
     args.rval().set(exports_val);
     true

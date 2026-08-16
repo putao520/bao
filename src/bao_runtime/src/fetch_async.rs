@@ -1295,158 +1295,175 @@ unsafe fn build_tls_socket_js(cx: *mut JSContext, host: &str) -> *mut JSObject {
     obj.get()
 }
 
-/// Construct the JS Response object from a `StealthSyncResult`. Shape mirrors
-/// fetch_api's Response: `status`/`ok`/`statusText`/`headers`/`_bodyText`/
-/// `text()`.
+/// Construct the JS Response object from a `StealthSyncResult` via the realm's
+/// WHATWG `Response` class (web_fetch_classes) — `new Response(body, init)`.
+/// The wire path used to hand-build a plain object with flattened plain-object
+/// headers, so `resp.headers.get/has/forEach` threw (`headers.get is not a
+/// function`) and json()/arrayBuffer()/blob() were absent. Constructing the
+/// real class gives the full surface with binary-safe Uint8Array body storage.
+/// Headers travel as a sequence of [name, value] pairs so repeated response
+/// headers (multiple set-cookie) survive via Headers#append semantics.
+///
+/// Returns null when the realm has no `Response` class — the caller rejects
+/// fail-closed (no silent degraded Response shape).
 ///
 /// # Safety
 ///
-/// `cx` must be a live `JSContext*` on the current thread.
+/// `cx` must be a live `JSContext*` on the current thread with the Promise's
+/// realm entered (the caller's AutoRealm window).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mut JSObject {
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj = JS_NewPlainObject(cx));
-    if obj.is_null() {
-        return obj.get();
-    }
-    let obj_handle = obj.handle().into();
 
-    // status: int32
+    // Realm's Response class — must exist (web_fetch_classes installs it on
+    // every Bao global; fail-closed otherwise).
+    let global = JS::CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        return ::std::ptr::null_mut();
+    }
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut resp_ctor_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        c"Response".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut resp_ctor_val,
+        },
+    );
+    if !resp_ctor_val.is_object() {
+        return ::std::ptr::null_mut();
+    }
+    rooted!(&in(cx_ref) let resp_ctor = resp_ctor_val.to_object());
+    rooted!(&in(cx_ref) let resp_fn = ObjectValue(resp_ctor.get()));
+
+    // Body: Uint8Array over the wire bytes (binary-safe; the class's
+    // text()/json() decode, arrayBuffer()/blob() pass through).
+    rooted!(&in(cx_ref) let body_arr = JS_NewUint8Array(cx, resp.body.len()));
+    if body_arr.is_null() {
+        return ::std::ptr::null_mut();
+    }
+    if !resp.body.is_empty() {
+        let mut ta_len: usize = 0;
+        let mut shared = false;
+        let mut data: *mut u8 = ::std::ptr::null_mut();
+        let unwrapped =
+            JS_GetObjectAsUint8Array(body_arr.get(), &mut ta_len, &mut shared, &mut data);
+        if unwrapped.is_null() || data.is_null() || ta_len < resp.body.len() {
+            return ::std::ptr::null_mut();
+        }
+        ::std::ptr::copy_nonoverlapping(resp.body.as_ptr(), data, resp.body.len());
+    }
+
+    // init: { status, statusText, headers: [[name, value], ...] }
+    rooted!(&in(cx_ref) let init_obj = JS_NewPlainObject(cx));
+    if init_obj.is_null() {
+        return ::std::ptr::null_mut();
+    }
+    let init_h = init_obj.handle().into();
     rooted!(&in(cx_ref) let status_val = mozjs::jsval::Int32Value(resp.status_code as i32));
     JS_DefineProperty(
         cx,
-        obj_handle,
+        init_h,
         c"status".as_ptr(),
         status_val.handle().into(),
         JSPROP_ENUMERATE as u32,
     );
+    let c_st = ZBox::from_bytes(resp.status_text.as_bytes());
+    let st_js = JS_NewStringCopyZ(cx, c_st.as_ptr());
+    if !st_js.is_null() {
+        rooted!(&in(cx_ref) let st_val = StringValue(&*st_js));
+        JS_DefineProperty(
+            cx,
+            init_h,
+            c"statusText".as_ptr(),
+            st_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
 
-    // ok: boolean (2xx)
-    rooted!(&in(cx_ref) let ok_val = mozjs::jsval::BooleanValue((200..300).contains(&resp.status_code)));
+    rooted!(&in(cx_ref) let headers_arr = mozjs_sys::jsapi::JS::NewArrayObject1(cx, resp.headers.len()));
+    if headers_arr.is_null() {
+        return ::std::ptr::null_mut();
+    }
+    let hdrs_h = headers_arr.handle().into();
+    for (i, (k, v)) in resp.headers.iter().enumerate() {
+        let pair_len = 2u32;
+        rooted!(&in(cx_ref) let pair = mozjs_sys::jsapi::JS::NewArrayObject1(cx, pair_len as usize));
+        if pair.is_null() {
+            continue;
+        }
+        let pair_h = pair.handle().into();
+        let c_k = ZBox::from_bytes(k.as_bytes());
+        let k_js = JS_NewStringCopyZ(cx, c_k.as_ptr());
+        if !k_js.is_null() {
+            rooted!(&in(cx_ref) let kv = StringValue(&*k_js));
+            JS_DefineElement(
+                cx,
+                pair_h,
+                0,
+                kv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        let c_v = ZBox::from_bytes(v.as_bytes());
+        let v_js = JS_NewStringCopyZ(cx, c_v.as_ptr());
+        if !v_js.is_null() {
+            rooted!(&in(cx_ref) let vv = StringValue(&*v_js));
+            JS_DefineElement(
+                cx,
+                pair_h,
+                1,
+                vv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        rooted!(&in(cx_ref) let pv = ObjectValue(pair.get()));
+        JS_DefineElement(
+            cx,
+            hdrs_h,
+            i as u32,
+            pv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    rooted!(&in(cx_ref) let hv = ObjectValue(headers_arr.get()));
     JS_DefineProperty(
         cx,
-        obj_handle,
-        c"ok".as_ptr(),
-        ok_val.handle().into(),
+        init_h,
+        c"headers".as_ptr(),
+        hv.handle().into(),
         JSPROP_ENUMERATE as u32,
     );
 
-    // statusText
-    {
-        let c_st = ZBox::from_bytes(resp.status_text.as_bytes());
-        let st_js = JS_NewStringCopyZ(cx, c_st.as_ptr());
-        if !st_js.is_null() {
-            rooted!(&in(cx_ref) let st_val = StringValue(&*st_js));
-            JS_DefineProperty(
-                cx,
-                obj_handle,
-                c"statusText".as_ptr(),
-                st_val.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
-
-    // headers (flattened to a plain enumerable object)
-    {
-        rooted!(&in(cx_ref) let headers_obj = JS_NewPlainObject(cx));
-        if !headers_obj.is_null() {
-            let hdr_handle = headers_obj.handle().into();
-            for (k, v) in resp.headers.iter() {
-                let c_k = ZBox::from_bytes(k.as_bytes());
-                let k_js = JS_NewStringCopyZ(cx, c_k.as_ptr());
-                if k_js.is_null() {
-                    continue;
-                }
-                rooted!(&in(cx_ref) let kv = StringValue(&*k_js));
-                let c_v = ZBox::from_bytes(v.as_bytes());
-                let v_js = JS_NewStringCopyZ(cx, c_v.as_ptr());
-                if v_js.is_null() {
-                    continue;
-                }
-                rooted!(&in(cx_ref) let vv = StringValue(&*v_js));
-                let c_key = ZBox::from_bytes(k.as_bytes());
-                JS_DefineProperty(
-                    cx,
-                    hdr_handle,
-                    c_key.as_ptr(),
-                    vv.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-                let _ = kv; // suppress unused-assign
-            }
-            rooted!(&in(cx_ref) let hv = ObjectValue(headers_obj.get()));
-            JS_DefineProperty(
-                cx,
-                obj_handle,
-                c"headers".as_ptr(),
-                hv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
-
-    // body -- stored as `_bodyText` (lossy UTF-8), surfaced via `.text()`.
-    {
-        let body_lossy = String::from_utf8_lossy(&resp.body);
-        let c_body = ZBox::from_bytes(body_lossy.as_bytes());
-        let body_js = JS_NewStringCopyZ(cx, c_body.as_ptr());
-        if !body_js.is_null() {
-            rooted!(&in(cx_ref) let bv = StringValue(&*body_js));
-            JS_DefineProperty(cx, obj_handle, c"_bodyText".as_ptr(), bv.handle().into(), 0);
-        }
-    }
-
-    // text() -- no-arg JS function returning `_bodyText`.
-    {
-        let text_fn = JS_NewFunction(cx, Some(response_text_fn), 0, 0, c"text".as_ptr());
-        if !text_fn.is_null() {
-            let fn_obj = JS_GetFunctionObject(text_fn);
-            if !fn_obj.is_null() {
-                rooted!(&in(cx_ref) let fv = ObjectValue(fn_obj));
-                JS_DefineProperty(
-                    cx,
-                    obj_handle,
-                    c"text".as_ptr(),
-                    fv.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-        }
-    }
-
-    obj.get()
-}
-
-/// `.text()` method: reads `_bodyText` off the Response and returns it.
-#[allow(non_snake_case)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn response_text_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let this_obj = this.to_object());
-    let this_h = this_obj.handle().into();
-    let mut bt = UndefinedValue();
-    let bt_h = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut bt,
+    let elems = [
+        ObjectValue(body_arr.get()),
+        ObjectValue(init_obj.get()),
+    ];
+    let call_args = HandleValueArray {
+        length_: 2,
+        elements_: elems.as_ptr(),
     };
-    JS_GetProperty(cx, this_h, c"_bodyText".as_ptr(), bt_h);
-    if bt.is_string() {
-        args.rval().set(bt);
-    } else {
-        args.rval().set(UndefinedValue());
+    rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
+    let mut resp_val = UndefinedValue();
+    let called = JS_CallFunctionValue(
+        cx,
+        undef_this.handle().into(),
+        resp_fn.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut resp_val,
+        },
+    );
+    if !called || !resp_val.is_object() {
+        return ::std::ptr::null_mut();
     }
-    true
+    rooted!(&in(cx_ref) let resp_root = resp_val);
+    resp_root.get().to_object()
 }
 
 /// Reject a Promise with a DOMException AbortError — the WHATWG fetch

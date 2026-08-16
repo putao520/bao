@@ -9,8 +9,14 @@ use crate::require::cache_builtin;
 
 const QS_JS: &str = r#"
 (function() {
+  // BCE-20260816-QS-ESCAPE — Node's querystring.escape/stringify percent-encode
+  // spaces as %20 (documented equivalent of encodeURIComponent). The old
+  // encoder emitted '+' (application/x-www-form-urlencoded shape, the
+  // URLSearchParams convention) so stringify({q:'x y'}) produced 'q=x+y' and
+  // escape('a b') produced 'a+b'. parse() keeps decoding BOTH '+' and %20 as
+  // space, matching Node's lenient decoder.
   function encode(s) {
-    return encodeURIComponent(s).replace(/%20/g, '+');
+    return encodeURIComponent(s);
   }
 
   function decode(s) {

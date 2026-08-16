@@ -212,6 +212,52 @@ unsafe extern "C" fn zlib_inflate_sync(cx: *mut JSContext, argc: u32, vp: *mut J
     }
 }
 
+/// `zlib.crc32(data[, value])` — Node 18+ zlib CRC-32 checksum with
+/// continuation. `value` is a previously returned CRC (default 0); the result
+/// equals the CRC of `previous_data + data` (zlib `crc32(crc, buf, len)`
+/// semantics). `crc32fast::Hasher` stores the running FINALIZED-crc state
+/// (`new()` ⇒ 0 == crc of empty input), so continuing from a prior result
+/// seeds with that result directly.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_crc32(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(
+            cx,
+            c"crc32() requires a data argument (string, Buffer, TypedArray, or DataView)"
+                .as_ptr(),
+        );
+        return false;
+    }
+    let prior: u32 = if argc > 1 {
+        let v = *args.get(1).ptr;
+        if v.is_int32() {
+            v.to_int32() as u32
+        } else if v.is_double() {
+            let d = v.to_double();
+            if d < 0.0 || d > u32::MAX as f64 || !d.is_finite() {
+                JS_ReportErrorUTF8(cx, c"crc32() value must be a valid unsigned 32-bit integer".as_ptr());
+                return false;
+            }
+            d as u32
+        } else if v.is_undefined() {
+            0
+        } else {
+            JS_ReportErrorUTF8(cx, c"crc32() value must be a number".as_ptr());
+            return false;
+        }
+    } else {
+        0
+    };
+
+    let data = extract_bytes(cx, *args.get(0).ptr);
+    let mut hasher = crc32fast::Hasher::new_with_initial(prior);
+    hasher.update(&data);
+    let crc = hasher.finalize();
+    args.rval().set(mozjs::jsval::Int32Value(crc as i32));
+    true
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_deflate_raw_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1062,6 +1108,17 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             c"inflateSync".as_ptr(),
             Some(zlib_inflate_sync),
             1,
+            JSPROP_ENUMERATE as u32,
+        );
+        // @trace REQ-ENG-007 [api:zlib.crc32] — Node 18+: crc32(data[, value])
+        // computes/continues the zlib CRC-32 (crc32fast, same backend as
+        // bun_zlib per REQ-BAO-API-010).
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"crc32".as_ptr(),
+            Some(zlib_crc32),
+            2,
             JSPROP_ENUMERATE as u32,
         );
         w2::JS_DefineFunction(

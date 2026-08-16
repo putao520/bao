@@ -105,7 +105,7 @@ fn sc_clone_policy() -> CloneDataPolicy {
 /// contains anything the structured clone algorithm cannot clone — the caller
 /// must report a DataCloneError (Node ERR_DATACLONE_ERROR semantics).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn sc_serialize(raw_cx: *mut JSContext, value: JSVal) -> ::std::result::Result<Vec<u8>, ()> {
+pub(crate) unsafe fn sc_serialize(raw_cx: *mut JSContext, value: JSVal) -> ::std::result::Result<Vec<u8>, ()> {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
     let cx = &mut wrapped_cx;
 
@@ -152,7 +152,7 @@ unsafe fn sc_serialize(raw_cx: *mut JSContext, value: JSVal) -> ::std::result::R
 /// entered the realm the resulting objects should live in (objects are
 /// created in the current realm).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn sc_deserialize(
+pub(crate) unsafe fn sc_deserialize(
     raw_cx: *mut JSContext,
     bytes: &[u8],
     rval: mozjs::gc::MutableHandleValue<'_>,

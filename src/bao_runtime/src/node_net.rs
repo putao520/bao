@@ -577,8 +577,12 @@ const NET_JS: &str = r#"
       // __net_read returns an ArrayBuffer (transfer-owned) — length lives on
       // .byteLength; the old `.length` check was always undefined and 'data'
       // never fired.
+      // BCE-20260816-NET-DATABUFFER — Node delivers 'data' chunks as Buffer,
+      // not ArrayBuffer (audit: net chunk arrived as ArrayBuffer so
+      // Buffer.isBuffer(chunk) === false and .toString(enc) was missing).
+      // Buffer.view over the transferred ArrayBuffer (zero-copy).
       if (buf && buf.byteLength > 0) {
-        this.emit("data", buf);
+        this.emit("data", Buffer.from(buf));
       }
     }
     // Schedule next poll via setTimeout(0) to yield to other events

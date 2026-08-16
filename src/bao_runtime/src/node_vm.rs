@@ -44,23 +44,31 @@ use crate::require::cache_builtin;
 // ──────────────────────────────────────────────────────────────────────────
 
 // Tracks contextified objects on this thread so `vm.isContext()` can
-// recognise them. Each entry maps a JSObject* to its sandbox global and
-// the active code-generation policy (REQ-ENG-011 criterion 8).
+// recognise them. Each entry maps a JSObject* to its sandbox global, the
+// active code-generation policy (REQ-ENG-011 criterion 8), and the baseline
+// set of the realm global's own keys at creation time (standard classes +
+// realm intrinsics — captured BEFORE sandbox seeding so that seeded and
+// code-created keys both propagate back on write-through).
 thread_local! {
-    static VM_CONTEXT_MAP: RefCell<Vec<(*mut JSObject, *mut JSObject, CodeGenerationFlags)>> = RefCell::new(Vec::new());
+    static VM_CONTEXT_MAP: RefCell<Vec<(*mut JSObject, *mut JSObject, CodeGenerationFlags, ::std::rc::Rc<Vec<String>>)>> = RefCell::new(Vec::new());
 }
 
-/// Register a sandbox object as contextified, with its associated global and
-/// code-generation policy.
-fn register_context(sandbox: *mut JSObject, global: *mut JSObject, flags: CodeGenerationFlags) {
+/// Register a sandbox object as contextified, with its associated global,
+/// code-generation policy, and global-key baseline.
+fn register_context(
+    sandbox: *mut JSObject,
+    global: *mut JSObject,
+    flags: CodeGenerationFlags,
+    baseline: ::std::rc::Rc<Vec<String>>,
+) {
     VM_CONTEXT_MAP.with(|m| {
-        m.borrow_mut().push((sandbox, global, flags));
+        m.borrow_mut().push((sandbox, global, flags, baseline));
     });
 }
 
 /// Check whether an object has been contextified.
 fn is_context_registered(obj: *mut JSObject) -> bool {
-    VM_CONTEXT_MAP.with(|m| m.borrow().iter().any(|&(s, _, _)| ptr::eq(s, obj)))
+    VM_CONTEXT_MAP.with(|m| m.borrow().iter().any(|&(s, ..)| ptr::eq(s, obj)))
 }
 
 /// Look up the sandbox global for a contextified object.
@@ -68,8 +76,18 @@ fn get_context_global(obj: *mut JSObject) -> Option<*mut JSObject> {
     VM_CONTEXT_MAP.with(|m| {
         m.borrow()
             .iter()
-            .find(|&&(s, _, _)| ptr::eq(s, obj))
-            .map(|&(_, g, _)| g)
+            .find(|&&(s, ..)| ptr::eq(s, obj))
+            .map(|&(_, g, ..)| g)
+    })
+}
+
+/// Look up the global-key baseline for a contextified object.
+fn get_context_baseline(obj: *mut JSObject) -> Option<::std::rc::Rc<Vec<String>>> {
+    VM_CONTEXT_MAP.with(|m| {
+        m.borrow()
+            .iter()
+            .find(|&&(s, ..)| ptr::eq(s, obj))
+            .map(|&(_, _, _, ref b)| b.clone())
     })
 }
 
@@ -279,6 +297,14 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(
             cx,
             vm_obj.handle(),
+            c"runInContext".as_ptr(),
+            Some(vm_run_in_context),
+            3,
+            0,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            vm_obj.handle(),
             c"createContext".as_ptr(),
             Some(vm_create_context),
             2,
@@ -444,17 +470,25 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
         let mut realm = AutoRealm::new_from_handle(cx_ref, sandbox_global.handle());
         let realm_cx: &mut mozjs::context::JSContext = &mut realm;
 
-        // Init standard classes (Object, Array, Function, etc.)
-        rooted!(&in(realm_cx) let g = sandbox_global.get());
+        // Baseline the global's own keys BEFORE seeding sandbox properties.
+        // The enumeration itself force-resolves every standard class (see
+        // capture_global_baseline), so later lazy resolutions cannot leak
+        // into the write-back set.
+        let baseline = capture_global_baseline(realm_cx, sandbox_global.get());
 
         define_properties_on_global(realm_cx, sandbox_global.get(), &sandbox_props);
 
         // Apply code-generation restrictions (eval/Function/WebAssembly).
         apply_code_generation_restrictions(realm_cx, sandbox_global.get(), cgen_flags);
-    }
 
-    // Register as contextified.
-    register_context(sandbox, sandbox_global.get(), cgen_flags);
+        // Register as contextified (baseline captured pre-seed).
+        register_context(
+            sandbox,
+            sandbox_global.get(),
+            cgen_flags,
+            ::std::rc::Rc::new(baseline),
+        );
+    }
 
     // Mark with __isVMContext for isContext() backwards compat.
     rooted!(&in(cx_ref) let sandbox_root = sandbox);
@@ -580,6 +614,151 @@ fn define_properties_on_global(
     }
 }
 
+/// Capture the realm global's own string keys. MUST run inside the sandbox
+/// AutoRealm. SIMPLE_GLOBAL_CLASS's enumerate hook is
+/// JS_EnumerateStandardClasses, so the first enumeration force-resolves every
+/// standard class — after this call the key set is deterministic (standard
+/// classes + realm intrinsics), which is exactly what the write-back filter
+/// needs to skip.
+///
+/// Captured BEFORE sandbox seeding: seeded keys must NOT be in the baseline so
+/// later in-sandbox mutations of them propagate back to the sandbox object.
+unsafe fn capture_global_baseline(
+    realm_cx: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+) -> Vec<String> {
+    let mut keys = Vec::new();
+    if global.is_null() {
+        return keys;
+    }
+    let raw_cx = unsafe { realm_cx.raw_cx() };
+    rooted!(&in(realm_cx) let global_root = global);
+    let mut ids = unsafe { IdVector::new(raw_cx) };
+    let ok = unsafe {
+        GetPropertyKeys(
+            raw_cx,
+            global_root.handle().into(),
+            JSITER_OWNONLY,
+            ids.handle_mut(),
+        )
+    };
+    if !ok {
+        return keys;
+    }
+    for jsid in &*ids {
+        if !jsid.is_string() {
+            continue;
+        }
+        let key_str_ptr = jsid.to_string();
+        if key_str_ptr.is_null() {
+            continue;
+        }
+        let key = unsafe {
+            unsafe_jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr))
+        };
+        keys.push(key);
+    }
+    keys
+}
+
+/// Copy the sandbox object's own enumerable string-keyed properties onto the
+/// realm global (sandbox → global). Runs before each evaluation so properties
+/// added to the sandbox object after createContext are visible inside the
+/// realm (Node semantics: the contextified object is the realm's global view).
+unsafe fn sync_sandbox_into_global(
+    cx: &mut mozjs::context::JSContext,
+    sandbox: *mut JSObject,
+    global: *mut JSObject,
+) {
+    if sandbox.is_null() || global.is_null() {
+        return;
+    }
+    // Phase 1: collect in the CALLER's realm (sandbox lives there).
+    let props = collect_sandbox_properties(cx, sandbox);
+    // Phase 2: define inside the sandbox realm.
+    {
+        rooted!(&in(cx) let global_h = global);
+        let mut realm = AutoRealm::new_from_handle(cx, global_h.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+        define_properties_on_global(realm_cx, global, &props);
+    }
+}
+
+/// Write global → sandbox: after evaluating code in the realm, copy every own
+/// string-keyed global property that is NOT in the creation-time baseline back
+/// onto the sandbox object. This is the write-through half of the vm contract:
+/// `script.runInContext(ctx)` leaves `sandbox.x === <value assigned in vm>`.
+/// Values belonging to the realm are wrapped as CCWs automatically.
+///
+/// MUST be called with no exception pending (after a successful evaluation).
+unsafe fn copy_global_writes_to_sandbox(
+    cx: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+    sandbox: *mut JSObject,
+    baseline: &[String],
+) {
+    if global.is_null() || sandbox.is_null() {
+        return;
+    }
+    rooted!(&in(cx) let global_h = global);
+    let mut realm = AutoRealm::new_from_handle(cx, global_h.handle());
+    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+    let raw_cx = unsafe { realm_cx.raw_cx() };
+
+    rooted!(&in(realm_cx) let global_root = global);
+    rooted!(&in(realm_cx) let sandbox_root = sandbox);
+
+    let mut ids = unsafe { IdVector::new(raw_cx) };
+    let ok = unsafe {
+        GetPropertyKeys(
+            raw_cx,
+            global_root.handle().into(),
+            JSITER_OWNONLY,
+            ids.handle_mut(),
+        )
+    };
+    if !ok {
+        return;
+    }
+    for jsid in &*ids {
+        if !jsid.is_string() {
+            continue;
+        }
+        let key_str_ptr = jsid.to_string();
+        if key_str_ptr.is_null() {
+            continue;
+        }
+        let key =
+            unsafe { unsafe_jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr)) };
+        if baseline.iter().any(|b| b == &key) {
+            continue;
+        }
+        let id_h = Handle::<jsid> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: jsid as *const jsid as *mut jsid,
+        };
+        let mut val = UndefinedValue();
+        let val_h = MutableHandle::<JS::Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        };
+        if !unsafe { JS_GetPropertyById(raw_cx, global_root.handle().into(), id_h, val_h) } {
+            continue;
+        }
+        // Set through the cross-compartment wrapper onto the caller-realm
+        // sandbox object; SM wraps realm-owned values automatically.
+        rooted!(&in(realm_cx) let val_root = val);
+        unsafe {
+            JS_SetPropertyById(
+                raw_cx,
+                sandbox_root.handle().into(),
+                id_h,
+                val_root.handle().into(),
+            );
+        }
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // vm.runInNewContext — createContext + evaluate in sandbox Realm
 // ──────────────────────────────────────────────────────────────────────────
@@ -671,34 +850,146 @@ unsafe extern "C" fn vm_run_in_new_context(cx: *mut JSContext, argc: u32, vp: *m
         "vm.js".to_string()
     };
 
+    // Write-through (sandbox → global): pick up properties added to the
+    // sandbox object since createContext before evaluating.
+    sync_sandbox_into_global(cx_ref, sandbox, sandbox_global);
+
     // Enter the sandbox Realm, evaluate code, return result.
     rooted!(&in(cx_ref) let global_h = sandbox_global);
+    rooted!(&in(cx_ref) let mut rval = UndefinedValue());
 
-    let mut realm = AutoRealm::new_from_handle(cx_ref, global_h.handle());
-    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+    {
+        let mut realm = AutoRealm::new_from_handle(cx_ref, global_h.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
 
-    // Evaluate in the sandbox Realm.
-    let c_filename = ::std::ffi::CString::new(filename.clone())
-        .unwrap_or_else(|_| ::std::ffi::CString::new("vm.js").unwrap());
-    let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
+        // Evaluate in the sandbox Realm.
+        let c_filename = ::std::ffi::CString::new(filename.clone())
+            .unwrap_or_else(|_| ::std::ffi::CString::new("vm.js").unwrap());
+        let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
 
-    rooted!(&in(realm_cx) let mut rval = UndefinedValue());
+        let result = mozjs::rust::evaluate_script(
+            realm_cx,
+            global_h.handle(),
+            &code,
+            rval.handle_mut(),
+            compile_opts,
+        );
 
-    let result = mozjs::rust::evaluate_script(
-        realm_cx,
-        global_h.handle(),
-        &code,
-        rval.handle_mut(),
-        compile_opts,
-    );
+        if result.is_err() {
+            return false;
+        }
 
-    if result.is_err() {
-        return false;
+        // Run pending jobs (microtasks, etc.).
+        unsafe {
+            mozjs::jsapi::js::RunJobs(realm_cx.raw_cx());
+        }
     }
 
-    // Run pending jobs (microtasks, etc.).
-    unsafe {
-        mozjs::jsapi::js::RunJobs(realm_cx.raw_cx());
+    // Write-through (global → sandbox): vm writes land on the sandbox object.
+    if let Some(baseline) = get_context_baseline(sandbox) {
+        copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox, &baseline);
+    }
+
+    args.rval().set(rval.get());
+    true
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// vm.runInContext — evaluate in an existing contextified sandbox Realm
+// ──────────────────────────────────────────────────────────────────────────
+
+/// `vm.runInContext(code, contextifiedSandbox[, options])` — evaluates `code`
+/// in the Realm of an already-contextified sandbox. Mirrors
+/// `Script.runInContext` (including the write-through contract): sandbox
+/// properties added after createContext are visible inside the realm, and
+/// global writes inside the code land back on the sandbox object.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn vm_run_in_context(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 || !(*args.get(0).ptr).is_string() {
+        JS_ReportErrorUTF8(cx, c"runInContext requires a code string".as_ptr());
+        return false;
+    }
+    if argc < 2 || !(*args.get(1).ptr).is_object() {
+        JS_ReportErrorUTF8(
+            cx,
+            c"runInContext requires a contextified sandbox argument".as_ptr(),
+        );
+        return false;
+    }
+    let code = crate::js_to_rust_string(cx, *args.get(0).ptr);
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let sandbox = (*args.get(1).ptr).to_object());
+
+    let sandbox_global = match get_context_global(sandbox.get()) {
+        Some(g) if !g.is_null() => g,
+        _ => {
+            JS_ReportErrorUTF8(
+                cx,
+                c"runInContext: sandbox is not a contextified object".as_ptr(),
+            );
+            return false;
+        }
+    };
+
+    // options (arg 2): filename override.
+    let filename = if argc > 2 && (*args.get(2).ptr).is_object() {
+        rooted!(&in(cx_ref) let opts = (*args.get(2).ptr).to_object());
+        let mut fn_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            opts.handle().into(),
+            c"filename".as_ptr(),
+            MutableHandle::<JSVal> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut fn_val,
+            },
+        );
+        if fn_val.is_string() {
+            crate::js_to_rust_string(cx, fn_val)
+        } else {
+            "vm.js".to_string()
+        }
+    } else {
+        "vm.js".to_string()
+    };
+
+    // Write-through (sandbox → global) before evaluating.
+    sync_sandbox_into_global(cx_ref, sandbox.get(), sandbox_global);
+
+    rooted!(&in(cx_ref) let global_h = sandbox_global);
+    rooted!(&in(cx_ref) let mut rval = UndefinedValue());
+
+    {
+        let mut realm = AutoRealm::new_from_handle(cx_ref, global_h.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+        let c_filename = ::std::ffi::CString::new(filename.clone())
+            .unwrap_or_else(|_| ::std::ffi::CString::new("vm.js").unwrap());
+        let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
+
+        let result = mozjs::rust::evaluate_script(
+            realm_cx,
+            global_h.handle(),
+            &code,
+            rval.handle_mut(),
+            compile_opts,
+        );
+
+        if result.is_err() {
+            return false;
+        }
+
+        unsafe {
+            mozjs::jsapi::js::RunJobs(realm_cx.raw_cx());
+        }
+    }
+
+    // Write-through (global → sandbox).
+    if let Some(baseline) = get_context_baseline(sandbox.get()) {
+        copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox.get(), &baseline);
     }
 
     args.rval().set(rval.get());
@@ -820,13 +1111,59 @@ unsafe extern "C" fn vm_compile_function(cx: *mut JSContext, argc: u32, vp: *mut
     }
 
     let code = crate::js_to_rust_string(cx, *args.get(0).ptr);
-    let fn_name = if argc > 1 && (*args.get(1).ptr).is_string() {
-        crate::js_to_rust_string(cx, *args.get(1).ptr)
-    } else {
-        "anonymous".to_string()
-    };
+    // Node semantics: `vm.compileFunction(code[, params[, options]])` — the
+    // second argument is the array of parameter names
+    // (`compileFunction('return a+b', ['a','b'])` → `function(a,b){...}`).
+    // A plain string is accepted as a function name (bao extension).
+    let mut params = Vec::new();
+    let mut fn_name = "anonymous".to_string();
+    if argc > 1 {
+        let pval = *args.get(1).ptr;
+        if pval.is_object() {
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let arr = pval.to_object());
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                arr.handle().into(),
+                c"length".as_ptr(),
+                MutableHandle::<JSVal> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut len_val,
+                },
+            );
+            let len = if len_val.is_int32() {
+                len_val.to_int32().max(0) as u32
+            } else {
+                0
+            };
+            for i in 0..len {
+                let mut elem = UndefinedValue();
+                JS_GetElement(
+                    cx,
+                    arr.handle().into(),
+                    i,
+                    MutableHandle::<JSVal> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut elem,
+                    },
+                );
+                if elem.is_string() {
+                    params.push(crate::js_to_rust_string(cx, elem));
+                }
+            }
+        } else if pval.is_string() {
+            fn_name = crate::js_to_rust_string(cx, pval);
+        }
+    }
 
-    let wrapped = format!("(function {}() {{ {} }})", fn_name, code);
+    let wrapped = format!(
+        "(function {}({}) {{ {} }})",
+        fn_name,
+        params.join(", "),
+        code
+    );
 
     let c_filename = bun_core::ZBox::from_bytes("vm.js".as_bytes());
     let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr() as *const _, 1);
@@ -1115,31 +1452,42 @@ unsafe extern "C" fn vm_script_run_in_context(
     }
 
     // Enter sandbox Realm, evaluate code.
+    // Write-through (sandbox → global) first: properties added to the sandbox
+    // object since createContext must be visible inside the realm.
+    sync_sandbox_into_global(cx_ref, sandbox.get(), global_ptr);
+
     rooted!(&in(cx_ref) let global_h = global_ptr);
+    rooted!(&in(cx_ref) let mut rval = UndefinedValue());
 
-    let mut realm = AutoRealm::new_from_handle(cx_ref, global_h.handle());
-    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+    {
+        let mut realm = AutoRealm::new_from_handle(cx_ref, global_h.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
 
-    let c_filename = ::std::ffi::CString::new(filename.clone())
-        .unwrap_or_else(|_| ::std::ffi::CString::new("vm.js").unwrap());
-    let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
+        let c_filename = ::std::ffi::CString::new(filename.clone())
+            .unwrap_or_else(|_| ::std::ffi::CString::new("vm.js").unwrap());
+        let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
 
-    rooted!(&in(realm_cx) let mut rval = UndefinedValue());
+        let result = mozjs::rust::evaluate_script(
+            realm_cx,
+            global_h.handle(),
+            &code,
+            rval.handle_mut(),
+            compile_opts,
+        );
 
-    let result = mozjs::rust::evaluate_script(
-        realm_cx,
-        global_h.handle(),
-        &code,
-        rval.handle_mut(),
-        compile_opts,
-    );
+        if result.is_err() {
+            return false;
+        }
 
-    if result.is_err() {
-        return false;
+        unsafe {
+            mozjs::jsapi::js::RunJobs(realm_cx.raw_cx());
+        }
     }
 
-    unsafe {
-        mozjs::jsapi::js::RunJobs(realm_cx.raw_cx());
+    // Write-through (global → sandbox): assignments inside the script land on
+    // the contextified sandbox object (the vm contract this function owes).
+    if let Some(baseline) = get_context_baseline(sandbox.get()) {
+        copy_global_writes_to_sandbox(cx_ref, global_ptr, sandbox.get(), &baseline);
     }
 
     args.rval().set(rval.get());
@@ -1230,31 +1578,41 @@ unsafe extern "C" fn vm_script_run_in_new_context(
     }
 
     // Enter sandbox Realm, evaluate code.
+    // Write-through (sandbox → global) first, then evaluate, then copy
+    // vm writes back onto the sandbox object (same contract as
+    // vm.runInNewContext / Script.runInContext).
+    sync_sandbox_into_global(cx_ref, sandbox, sandbox_global);
+
     rooted!(&in(cx_ref) let global_h = sandbox_global);
+    rooted!(&in(cx_ref) let mut rval = UndefinedValue());
 
-    let mut realm = AutoRealm::new_from_handle(cx_ref, global_h.handle());
-    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+    {
+        let mut realm = AutoRealm::new_from_handle(cx_ref, global_h.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
 
-    let c_filename = ::std::ffi::CString::new(filename.clone())
-        .unwrap_or_else(|_| ::std::ffi::CString::new("vm.js").unwrap());
-    let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
+        let c_filename = ::std::ffi::CString::new(filename.clone())
+            .unwrap_or_else(|_| ::std::ffi::CString::new("vm.js").unwrap());
+        let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
 
-    rooted!(&in(realm_cx) let mut rval = UndefinedValue());
+        let result = mozjs::rust::evaluate_script(
+            realm_cx,
+            global_h.handle(),
+            &code,
+            rval.handle_mut(),
+            compile_opts,
+        );
 
-    let result = mozjs::rust::evaluate_script(
-        realm_cx,
-        global_h.handle(),
-        &code,
-        rval.handle_mut(),
-        compile_opts,
-    );
+        if result.is_err() {
+            return false;
+        }
 
-    if result.is_err() {
-        return false;
+        unsafe {
+            mozjs::jsapi::js::RunJobs(realm_cx.raw_cx());
+        }
     }
 
-    unsafe {
-        mozjs::jsapi::js::RunJobs(realm_cx.raw_cx());
+    if let Some(baseline) = get_context_baseline(sandbox) {
+        copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox, &baseline);
     }
 
     args.rval().set(rval.get());

@@ -137,7 +137,23 @@ unsafe fn invoke_js_callback(cx: *mut JSContext, cb_key: &Option<String>, args: 
         rval_h,
     );
     if !ok {
+        // The socket callback threw. Capture the pending exception, clear it,
+        // and route it (process.on('uncaughtException') or stderr + exit 1) —
+        // Node semantics; NOT silently swallowed (same routing as timer and
+        // EventEmitter listener throws).
+        let mut exn = UndefinedValue();
+        JS_GetPendingException(
+            realm_cx.raw_cx(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut exn,
+            },
+        );
         JS_ClearPendingException(realm_cx.raw_cx());
+        rooted!(&in(realm_cx) let reason_root = exn);
+        if !exn.is_undefined() {
+            crate::uncaught::route_uncaught_exception(realm_cx.raw_cx(), exn);
+        }
     }
     ok
 }
@@ -1579,10 +1595,12 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         true
     }
 
-    // socket.end()
+    // socket.end([data]) — Bun semantics: optional final payload FIRST, then
+    // graceful close. The data argument used to be silently discarded, so
+    // `sock.end(chunk)` peers received a bare FIN and never the bytes.
     #[allow(unsafe_op_in_unsafe_fn)]
-    unsafe extern "C" fn socket_end(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-        let args = CallArgs::from_vp(vp, _argc);
+    unsafe extern "C" fn socket_end(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        let args = CallArgs::from_vp(vp, argc);
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
@@ -1600,6 +1618,21 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         );
         if ptr_val.is_double() {
             let socket_ptr = ptr_val.to_double() as usize as *mut us_socket_t;
+            if argc > 0 {
+                let data: Vec<u8> = if (*args.get(0).ptr).is_string() {
+                    crate::js_to_rust_string(cx, *args.get(0).ptr).into_bytes()
+                } else {
+                    match crate::node_buffer::collect_byte_view(cx, *args.get(0).ptr) {
+                        Some(b) => b,
+                        None => Vec::new(),
+                    }
+                };
+                if !data.is_empty() {
+                    unsafe {
+                        (*socket_ptr).write(&data);
+                    }
+                }
+            }
             unsafe {
                 (*socket_ptr).close(CloseCode::normal);
             }
@@ -2249,10 +2282,13 @@ unsafe extern "C" fn tcp_sock_write(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     true
 }
 
-/// socket.end() — graceful close (FIN).
+/// socket.end([data]) — Bun semantics: optional final payload FIRST, then
+/// graceful close (FIN). The listen-side variant dropped the data argument the
+/// same way the connect-side one did, so echo servers replying with
+/// `sock.end(data)` sent a bare FIN and the peer's data callback never fired.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn tcp_sock_end(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
+unsafe extern "C" fn tcp_sock_end(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
@@ -2270,6 +2306,21 @@ unsafe extern "C" fn tcp_sock_end(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
     );
     if ptr_val.is_double() {
         let socket_ptr = ptr_val.to_double() as usize as *mut us_socket_t;
+        if argc > 0 {
+            // Same collect_byte_view contract as tcp_sock_write: string or
+            // Buffer/Uint8Array/ArrayBuffer payload.
+            let data: Vec<u8> = if (*args.get(0).ptr).is_string() {
+                crate::js_to_rust_string(cx, *args.get(0).ptr).into_bytes()
+            } else {
+                match crate::node_buffer::collect_byte_view(cx, *args.get(0).ptr) {
+                    Some(b) => b,
+                    None => Vec::new(),
+                }
+            };
+            if !data.is_empty() {
+                (*socket_ptr).write(&data);
+            }
+        }
         (*socket_ptr).close(CloseCode::normal);
     }
     args.rval().set(UndefinedValue());

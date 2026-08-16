@@ -2069,6 +2069,7 @@ dependencies = [
  "bun_core",
  "bun_dns",
  "bun_event_loop",
+ "bun_glob",
  "bun_hash",
  "bun_http",
  "bun_http_types",
@@ -2076,6 +2077,7 @@ dependencies = [
  "bun_io",
  "bun_lsquic_sys",
  "bun_opaque",
+ "bun_parsers",
  "bun_paths",
  "bun_picohttp",
  "bun_resolver",
@@ -2090,6 +2092,7 @@ dependencies = [
  "bun_url",
  "bun_uws",
  "bun_uws_sys",
+ "bun_wyhash",
  "bytes",
  "cdp-server",
  "compact_str 0.8.2",
@@ -2109,6 +2112,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "tempfile",
+ "unicode-width",
 ]
 
 [[package]]

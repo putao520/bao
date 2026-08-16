@@ -12,6 +12,15 @@ pub mod bao_browser_global;
 pub mod bun_api;
 pub mod bun_build;
 pub mod bun_builtins;
+// @trace REQ-ENG-006 [api:Bun.* Bun-face completion wave] — per-domain Bun
+// API modules mounted by populate_bun_object (bun_api.rs).
+pub mod bun_glob_api;
+pub mod bun_hash_api;
+pub mod bun_inspect_api;
+pub mod bun_mime_api;
+pub mod bun_serde_api;
+pub mod bun_spawn_sync;
+pub mod bun_util_api;
 pub mod bun_ffi;
 pub mod bun_sqlite;
 pub mod bun_test;

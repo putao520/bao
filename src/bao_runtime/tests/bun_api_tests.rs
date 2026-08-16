@@ -142,13 +142,33 @@ fn test_bun_api_all() {
         "Bun.read alias"
     );
 
-    // --- Bun.hash ---
-    let sha256 = eval_string(&mut ctx, r#"Bun.hash("hello", "sha256")"#);
-    assert_eq!(sha256.len(), 64, "SHA-256 hash should be 64 hex chars");
-    let sha256_default = eval_string(&mut ctx, r#"Bun.hash("hello")"#);
-    assert!(!sha256_default.is_empty(), "Bun.hash() default algo");
-    let sha512 = eval_string(&mut ctx, r#"Bun.hash("hello", "sha512")"#);
-    assert_eq!(sha512.len(), 128, "SHA-512 hash should be 128 hex chars");
+    // --- Bun.hash (wyhash → BigInt; named variants; docs: "64-bit hashes
+    // return a bigint, 32-bit hashes return a number") ---
+    assert!(
+        eval_bool(&mut ctx, r#"typeof Bun.hash("hello") === "bigint""#),
+        "Bun.hash() default (wyhash) returns a BigInt"
+    );
+    assert!(
+        eval_bool(
+            &mut ctx,
+            r#"Bun.hash("hello") === Bun.hash("hello") && Bun.hash("hello") === Bun.hash.wyhash("hello")"#
+        ),
+        "Bun.hash is deterministic and equals the wyhash variant"
+    );
+    assert!(
+        eval_bool(
+            &mut ctx,
+            r#"typeof Bun.hash.crc32("hello") === "number" && Bun.hash.crc32("hello") === Bun.hash.crc32("hello")"#
+        ),
+        "Bun.hash.crc32 returns a stable number"
+    );
+    assert!(
+        eval_bool(
+            &mut ctx,
+            r#"typeof Bun.hash.xxHash64 === "function" && typeof Bun.hash.rapidhash === "function""#
+        ),
+        "Bun.hash named variants exist"
+    );
 
     // --- Bun.inspect ---
     let inspected = eval_string(&mut ctx, r#"Bun.inspect("hello")"#);
@@ -194,10 +214,13 @@ fn test_bun_api_all() {
         eval_bool(&mut ctx, &format!(r#"Bun.file("{}").size === 9"#, path)),
         "Bun.file size"
     );
+    // BunFile.exists() is the upstream method form (Promise<boolean>) —
+    // the audit row "file(missing).exists undefined instead of false" is
+    // covered by bun_face_e2e_tests (missing → Promise<false>).
     assert!(
         eval_bool(
             &mut ctx,
-            &format!(r#"Bun.file("{}").exists === true"#, path)
+            &format!(r#"typeof Bun.file("{}").exists === "function""#, path)
         ),
         "Bun.file exists"
     );

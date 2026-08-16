@@ -546,6 +546,14 @@ pub fn install_fetch_classes(
 })();
 "#;
     unsafe {
+        // Same-phase WebCrypto/SSE/storage surfaces — installed here (the tail
+        // of the web-API phase) so crypto.subtle lands after
+        // globals::install_crypto_global created the shared subtle object, and
+        // EventSource/localStorage see fetch/timers already installed.
+        crate::web_api::install_crypto_subtle(cx, _global);
+        crate::web_api::install_event_source(cx, _global);
+        crate::web_api::install_local_storage(cx, _global);
+
         let raw = cx.raw_cx();
         let mut rval = UndefinedValue();
         let opts = mozjs::glue::NewCompileOptions(

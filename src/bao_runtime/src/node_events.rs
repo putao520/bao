@@ -826,6 +826,26 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         Some(l) => l.clone(),
         None => {
             // No mutation — nothing to write back (get_state only cloned).
+            //
+            // Node semantics (BCE-20260816-EE-ERRORTHROW): emit('error', err)
+            // with NO 'error' listener THROWS the error from the emit() call
+            // site — a synchronous try/catch around emit() catches it, and an
+            // uncaught throw propagates through the engine/timer dispatchers
+            // to the unified uncaught-exception router
+            // (process.on('uncaughtException') or stderr + exit 1). Everything
+            // else is a silent no-op returning false.
+            if event_name == "error" && argc > 1 {
+                let err = *args.get(1).ptr;
+                if !err.is_undefined() {
+                    rooted!(&in(wrapped_cx) let err_root = err);
+                    JS_SetPendingException(
+                        cx,
+                        err_root.handle().into(),
+                        ExceptionStackBehavior::DoNotCapture,
+                    );
+                    return false;
+                }
+            }
             args.rval().set(BooleanValue(false));
             return true;
         }
@@ -836,6 +856,22 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         .cloned()
         .unwrap_or_default();
     let had_listeners = !listener_keys.is_empty();
+
+    // Same rule for a registered-but-empty 'error' listener list.
+    if !had_listeners && event_name == "error" && argc > 1 {
+        let err = *args.get(1).ptr;
+        if !err.is_undefined() {
+            rooted!(&in(wrapped_cx) let err_root2 = err);
+            JS_SetPendingException(
+                cx,
+                err_root2.handle().into(),
+                ExceptionStackBehavior::DoNotCapture,
+            );
+            return false;
+        }
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
 
     let emit_args: Vec<JSVal> = if argc > 1 {
         (1..argc).map(|i| *args.get(i).ptr).collect()

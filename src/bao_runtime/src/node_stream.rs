@@ -47,6 +47,13 @@ const STREAM_JS: &str = r#"
   EE.prototype.emit = function(e) {
     var a = Array.prototype.slice.call(arguments, 1);
     var ls = this._events[e];
+    // Node semantics: emitting 'error' with no 'error' listener throws the
+    // error (uncaught-exception path). pipeline()/pipe() install error
+    // forwarders first, so composed streams still propagate instead of
+    // throwing at the source. BCE-20260816-EE-ERRORTHROW.
+    if (e === "error" && !(ls && ls.length > 0)) {
+      throw a[0];
+    }
     if (ls) { ls = ls.slice(); for (var i = 0; i < ls.length; i++) ls[i].apply(this, a); }
     return !!ls;
   };
@@ -590,10 +597,46 @@ const STREAM_JS: &str = r#"
     stream.on("close", function() { done(finished ? null : new Error("premature close")); });
   }
 
+  // BCE-20260816-STREAM-PIPELINE — pipeline previously called streams[i].on()
+  // directly, so any non-stream source crashed with "streams[i].on is not a
+  // function" before the callback err path could report it (async generator /
+  // iterable sources are core Node pipeline inputs). normalizeStream adapts
+  // them the way Node does: generator/async-iterable/iterable → Readable.from,
+  // function (generator fn / duplex factory) → invoked and normalized.
+  function normalizeStream(x) {
+    if (typeof x === "function") x = x();
+    if (x && typeof x.on === "function") return x;
+    if (x && (typeof x[Symbol.asyncIterator] === "function" || typeof x[Symbol.iterator] === "function")) {
+      return Readable.from(x);
+    }
+    return x;
+  }
+
   function pipeline() {
     var streams = Array.prototype.slice.call(arguments);
     var cb = typeof streams[streams.length - 1] === "function" ? streams.pop() : null;
     if (streams.length < 2) { if (cb) cb(new Error("pipeline requires at least 2 streams")); return; }
+    // Adapt iterable/generator sources before any .on() wiring. A stream
+    // argument that is neither stream nor iterable keeps its type so the
+    // callback receives the real error instead of a crash.
+    var badStream = null;
+    for (var ni = 0; ni < streams.length; ni++) {
+      try {
+        streams[ni] = normalizeStream(streams[ni]);
+      } catch (normErr) {
+        badStream = normErr;
+        break;
+      }
+      if (!streams[ni] || typeof streams[ni].on !== "function") {
+        badStream = new Error("pipeline: stream at index " + ni + " is not a stream");
+        break;
+      }
+    }
+    if (badStream) {
+      if (cb) cb(badStream);
+      else throw badStream;
+      return;
+    }
     var source = streams[0];
     var dest = streams[streams.length - 1];
     var errored = false;

@@ -101,6 +101,18 @@ pub unsafe fn install_node_apis(
     install_buffer_global(cx, global);
     crate::require::install_require(cx, global);
     install_module_global(cx, global);
+    // @trace REQ-ENG-006 [api:global alias] — Node exposes `global` as an own
+    // enumerable property of globalThis; `global === globalThis` is always true.
+    {
+        rooted!(&in(cx) let gself = global.get());
+        JS_DefineProperty3(
+            cx,
+            global,
+            c"global".as_ptr(),
+            gself.handle(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
 
     // Node.js built-in module registrations
     crate::node_events::install(cx);

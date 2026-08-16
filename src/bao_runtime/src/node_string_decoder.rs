@@ -7,44 +7,85 @@ use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
+// BCE-20260816-STRINGDECODER — the old implementation buffered DECODED
+// STRINGS, but decoding a buffer whose last multi-byte UTF-8 sequence is
+// split across write() boundaries happens eagerly in Buffer.toString(): the
+// partial bytes become U+FFFD before any "partial" bookkeeping, so
+// write([0xE4,0xB8]) + write([0xAD]) returned two replacement characters
+// instead of '' + '中'. Correct StringDecoder semantics hang the INCOMPLETE
+// TRAILING BYTES and re-decode them joined with the next write — that
+// requires byte-level buffering, implemented here on top of Buffer.
 const STRING_DECODER_JS: &str = r#"
 (function() {
+  function toBytes(buf) {
+    if (buf instanceof Uint8Array) return buf;
+    if (typeof buf === 'string') return Buffer.from(buf, 'utf8');
+    return new Uint8Array(0);
+  }
+
+  // Length of the longest prefix of `bytes` that ends on a complete UTF-8
+  // character boundary. A trailing partial sequence (lead byte + only some of
+  // its continuation bytes) is NOT included; malformed sequences are treated
+  // as complete (Buffer.toString renders U+FFFD, matching Node).
+  function completeUtf8Length(bytes) {
+    var n = bytes.length;
+    if (n === 0) return 0;
+    var i = n - 1;
+    var back = 0;
+    while (i > 0 && (bytes[i] & 0xC0) === 0x80 && back < 3) { i--; back++; }
+    var b = bytes[i];
+    var need = 1;
+    if (b >= 0xF0) need = 4;
+    else if (b >= 0xE0) need = 3;
+    else if (b >= 0xC0) need = 2;
+    if (n - i >= need) return n;
+    for (var j = i + 1; j < n; j++) {
+      if ((bytes[j] & 0xC0) !== 0x80) return n;
+    }
+    return i;
+  }
+
   function StringDecoder(encoding) {
-    this.encoding = (encoding || 'utf-8').toLowerCase().replace(/[-_]/g, '');
-    this._buffer = '';
-    this._partial = '';
+    var enc = (encoding || 'utf8').toLowerCase();
+    if (enc === 'utf-8' || enc === 'utf_8') enc = 'utf8';
+    if (enc === 'ucs2' || enc === 'ucs-2') enc = 'utf16le';
+    this.encoding = enc;
+    this._partial = new Uint8Array(0);
   }
 
   StringDecoder.prototype.write = function(buf) {
-    var str = typeof buf === 'string' ? buf : (buf && buf.toString ? buf.toString() : '');
-    if (this.encoding === 'utf8' || this.encoding === 'utf-8') {
-      var combined = this._partial + str;
-      this._partial = '';
-      var lastChar = combined.charCodeAt(combined.length - 1);
-      if (lastChar >= 0xD800 && lastChar <= 0xDBFF) {
-        this._partial = combined.slice(combined.length - 1);
-        combined = combined.slice(0, combined.length - 1);
-      }
-      return combined;
+    if (this.encoding !== 'utf8') {
+      return Buffer.from(toBytes(buf)).toString(this.encoding);
     }
-    return str;
+    var bytes = toBytes(buf);
+    var combined = new Uint8Array(this._partial.length + bytes.length);
+    combined.set(this._partial, 0);
+    combined.set(bytes, this._partial.length);
+    var complete = completeUtf8Length(combined);
+    this._partial = combined.slice(complete);
+    if (complete === 0) return '';
+    return Buffer.from(combined.buffer, combined.byteOffset, complete).toString('utf8');
   };
 
   StringDecoder.prototype.end = function(buf) {
-    var str = '';
-    if (buf) str = this.write(buf);
-    str += this._partial;
-    this._partial = '';
+    var str = buf ? this.write(buf) : '';
+    if (this._partial.length > 0) {
+      // Leftover partial bytes decode as U+FFFD (Node semantics) and clear.
+      str += Buffer.from(this._partial).toString('utf8');
+      this._partial = new Uint8Array(0);
+    }
     return str;
   };
 
   StringDecoder.prototype.text = function(buf, offset) {
-    if (!offset) offset = 0;
-    var str = typeof buf === 'string' ? buf : (buf && buf.toString ? buf.toString() : '');
-    if (offset > 0 && offset < str.length) {
-      str = str.slice(offset);
+    if (!offset || offset < 0) offset = 0;
+    var bytes = toBytes(buf);
+    if (offset >= bytes.length) {
+      var keep = this._partial;
+      this._partial = new Uint8Array(0);
+      return keep.length ? Buffer.from(keep).toString('utf8') : '';
     }
-    return this._partial + str;
+    return this.write(bytes.subarray(offset));
   };
 
   StringDecoder.prototype.fill = function(buf) {

@@ -3198,6 +3198,171 @@ mod tests {
     }
 }
 
+// url.resolve(from, to) — Node legacy resolution. This is the pure RFC 3986
+// §5 string algorithm, NOT WHATWG URL parsing: the legacy API accepts
+// scheme-less bases like '/one/two/three' (WHATWG base parsing would fail)
+// and resolves '../' via remove_dot_segments. BCE-20260816-URL-RESOLVE —
+// delegating to parse_url(relative, Some(base)) returned `relative` verbatim
+// whenever the base had no scheme, and never collapsed dot segments
+// ('http://a/b/../d' instead of 'http://a/d').
+
+/// RFC 3986 §5.2.4 remove_dot_segments.
+fn rfc3986_remove_dot_segments(input: &str) -> String {
+    let mut output: Vec<&str> = Vec::new();
+    let mut rest = input;
+    while !rest.is_empty() {
+        let bytes = rest.as_bytes();
+        // A. "../" or "./" prefix
+        if rest.starts_with("../") {
+            rest = &rest[3..];
+        } else if rest.starts_with("./") {
+            rest = &rest[2..];
+        // B. "/./" or "/" exact or "/." suffix forms
+        } else if rest.starts_with("/./") {
+            rest = &rest[2..];
+        } else if rest == "/." {
+            rest = "/";
+        // C. "/../" or "/."
+        } else if rest.starts_with("/../") {
+            rest = &rest[3..];
+            output.pop();
+        } else if rest == "/.." {
+            rest = "/";
+            output.pop();
+        // D. "." or ".." exact → drop
+        } else if rest == "." || rest == ".." {
+            rest = "";
+        // E. move first segment (incl. leading '/') to output
+        } else {
+            let start = if bytes[0] == b'/' { 1 } else { 0 };
+            let end = match rest[start..].find('/') {
+                Some(i) => start + i,
+                None => rest.len(),
+            };
+            output.push(&rest[..end]);
+            rest = &rest[end..];
+        }
+    }
+    output.concat()
+}
+
+/// Split a URI reference into (scheme, authority, path, query, fragment).
+fn rfc3986_split(
+    s: &str,
+) -> (Option<String>, Option<String>, String, Option<String>, Option<String>) {
+    let mut rest = s;
+    let fragment = match rest.find('#') {
+        Some(i) => {
+            let f = Some(rest[i + 1..].to_string());
+            rest = &rest[..i];
+            f
+        }
+        None => None,
+    };
+    let query = match rest.find('?') {
+        Some(i) => {
+            let q = Some(rest[i + 1..].to_string());
+            rest = &rest[..i];
+            q
+        }
+        None => None,
+    };
+    let scheme = if let Some(colon) = rest.find(':') {
+        let candidate = &rest[..colon];
+        // scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+        let valid = !candidate.is_empty()
+            && candidate.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
+            && candidate
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.');
+        if valid {
+            let sc = Some(candidate.to_ascii_lowercase());
+            rest = &rest[colon + 1..];
+            sc
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let authority = if rest.starts_with("//") {
+        let body = &rest[2..];
+        let end = body.find('/').unwrap_or(body.len());
+        let auth = Some(body[..end].to_string());
+        rest = &body[end..];
+        auth
+    } else {
+        None
+    };
+    (scheme, authority, rest.to_string(), query, fragment)
+}
+
+/// RFC 3986 §5.2.2 reference resolution, reassembled as a string.
+fn rfc3986_resolve(base: &str, reference: &str) -> String {
+    let (b_scheme, b_auth, b_path, b_query, _b_frag) = rfc3986_split(base);
+    let (r_scheme, r_auth, r_path, r_query, r_frag) = rfc3986_split(reference);
+
+    let (scheme, authority, mut path, query): (Option<String>, Option<String>, String, Option<String>);
+    if let Some(rs) = r_scheme {
+        scheme = Some(rs);
+        authority = r_auth;
+        path = rfc3986_remove_dot_segments(&r_path);
+        query = r_query;
+    } else {
+        scheme = b_scheme.clone();
+        if let Some(ra) = r_auth {
+            authority = Some(ra);
+            path = rfc3986_remove_dot_segments(&r_path);
+            query = r_query;
+        } else {
+            authority = b_auth.clone();
+            if r_path.is_empty() {
+                path = b_path.clone();
+                query = r_query.or(b_query);
+            } else {
+                if r_path.starts_with('/') {
+                    path = rfc3986_remove_dot_segments(&r_path);
+                } else {
+                    // §5.2.3 merge
+                    let merged = match b_auth.is_some() && b_path.is_empty() {
+                        true => format!("/{}", r_path),
+                        false => match b_path.rfind('/') {
+                            Some(i) => format!("{}{}", &b_path[..=i], r_path),
+                            None => r_path.clone(),
+                        },
+                    };
+                    path = rfc3986_remove_dot_segments(&merged);
+                }
+                query = r_query;
+            }
+            // §5.2.2: authority present and path empty → "/"
+            if path.is_empty() && authority.is_some() {
+                path = "/".to_string();
+            }
+        }
+    }
+
+    let mut out = String::new();
+    if let Some(s) = &scheme {
+        out.push_str(s);
+        out.push(':');
+    }
+    if let Some(a) = &authority {
+        out.push_str("//");
+        out.push_str(a);
+    }
+    out.push_str(&path);
+    if let Some(q) = &query {
+        out.push('?');
+        out.push_str(q);
+    }
+    if let Some(f) = &r_frag {
+        out.push('#');
+        out.push_str(f);
+    }
+    out
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn url_resolve_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -3207,10 +3372,7 @@ unsafe extern "C" fn url_resolve_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     }
     let base = crate::js_to_rust_string(cx, *args.get(0).ptr);
     let relative = crate::js_to_rust_string(cx, *args.get(1).ptr);
-    let resolved = match parse_url(&relative, Some(&base)) {
-        Some(s) => s.href,
-        None => relative,
-    };
+    let resolved = rfc3986_resolve(&base, &relative);
     let c_str = ZBox::from_bytes(resolved.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
     args.rval().set(if js_str.is_null() {

@@ -88,34 +88,18 @@ unsafe fn populate_bun_object(
         );
     }
 
-    // Bun.env → copy of process.env (same data source)
-    {
-        rooted!(&in(cx) let env_obj = JS_NewPlainObject(cx));
-        if !env_obj.get().is_null() {
-            for (key, value) in ::std::env::vars() {
-                let c_key = ZBox::from_bytes(key.as_bytes());
-                let c_val = ZBox::from_bytes(value.as_bytes());
-                let val_str = JS_NewStringCopyZ(cx.raw_cx(), c_val.as_ptr());
-                if !val_str.is_null() {
-                    rooted!(&in(cx) let v = StringValue(&*val_str));
-                    JS_DefineProperty(
-                        cx.raw_cx(),
-                        env_obj.handle().into(),
-                        c_key.as_ptr(),
-                        v.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-            }
-            JS_DefineProperty3(
-                cx,
-                bun_obj,
-                c"env".as_ptr(),
-                env_obj.handle(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
+    // Bun.env → accessor resolving the realm's process.env proxy at access
+    // time (audit: the old static snapshot copy made `Bun.env.X = 1`
+    // invisible to process.env). Both surfaces share the same proxy →
+    // writes route to std::env through the process.env set trap.
+    JS_DefineProperty1(
+        cx.raw_cx(),
+        bun_obj.into(),
+        c"env".as_ptr(),
+        ::std::option::Option::Some(bun_env_getter),
+        None,
+        JSPROP_ENUMERATE as u32,
+    );
 
     // Bun.argv → process.argv (same data source)
     {
@@ -218,14 +202,11 @@ unsafe fn populate_bun_object(
         1,
         JSPROP_ENUMERATE as u32,
     );
-    JS_DefineFunction(
-        cx,
-        bun_obj,
-        c"inspect".as_ptr(),
-        Some(bun_inspect),
-        1,
-        JSPROP_ENUMERATE as u32,
-    );
+    // @trace REQ-ENG-006 [api:Bun.inspect] — depth/colors formatter
+    // (bun_inspect_api; the old face rendered every object as "[object]").
+    unsafe {
+        crate::bun_inspect_api::install(cx, bun_obj);
+    }
     JS_DefineFunction(
         cx,
         bun_obj,
@@ -324,10 +305,28 @@ unsafe fn populate_bun_object(
         }
     }
 
-    // Bun.main
+    // Bun.main — absolute path of the entry script in run mode. Bao's argv
+    // semantics put the main-session script at argv[2] (`bao run x.js`);
+    // canonicalize it when it exists (audit: the old face returned the
+    // script's *directory*). Non-run modes fall back to the require dir.
     {
-        let main_path = crate::require::get_require_dir()
-            .unwrap_or_else(|| ::std::env::current_dir().unwrap_or_default());
+        let argv: Vec<::std::string::String> = ::std::env::args().collect();
+        let main_path: ::std::path::PathBuf = argv
+            .get(2)
+            .filter(|p| {
+                ::std::path::Path::new(p).is_file()
+            })
+            .map(|p| {
+                if ::std::path::Path::new(p).is_absolute() {
+                    ::std::path::PathBuf::from(p)
+                } else {
+                    ::std::env::current_dir().unwrap_or_default().join(p)
+                }
+            })
+            .unwrap_or_else(|| {
+                crate::require::get_require_dir()
+                    .unwrap_or_else(|| ::std::env::current_dir().unwrap_or_default())
+            });
         let c_main = ZBox::from_vec(main_path.to_string_lossy().into_owned().into_bytes());
         let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_main.as_ptr());
         if !js_str.is_null() {
@@ -342,15 +341,11 @@ unsafe fn populate_bun_object(
         }
     }
 
-    // Bun.hash
-    JS_DefineFunction(
-        cx,
-        bun_obj,
-        c"hash".as_ptr(),
-        Some(bun_hash),
-        2,
-        JSPROP_ENUMERATE as u32,
-    );
+    // @trace REQ-ENG-006 [api:Bun.hash] — wyhash + named variants
+    // (bun_hash_api; the old sha256-hex face was a silent fake).
+    unsafe {
+        crate::bun_hash_api::install(cx, bun_obj);
+    }
 
     // @trace REQ-ENG-006 [api:Bun.CryptoHasher] — streaming hash constructor.
     // new CryptoHasher(algorithm) creates a hasher; .update(data) feeds data;
@@ -450,8 +445,29 @@ unsafe fn populate_bun_object(
         JSPROP_ENUMERATE as u32,
     );
 
-    // @trace REQ-ENG-006 [api:Bun.Mime] — MIME type utility class (JS IIFE).
-    install_bun_mime(cx, bun_obj);
+    // @trace REQ-ENG-006 [api:Bun.Mime] — MIME type utility class with the
+    // getType/getExtension/normalizeKind statics (bun_mime_api).
+    unsafe {
+        crate::bun_mime_api::install(cx, bun_obj);
+    }
+    // @trace REQ-ENG-006 [api:Bun.TOML/YAML/JSONC] — parser bridge over
+    // bun_parsers (bun_serde_api).
+    unsafe {
+        crate::bun_serde_api::install(cx, bun_obj);
+    }
+    // @trace REQ-ENG-006 [api:Bun.Glob] — glob pattern object (bun_glob_api).
+    unsafe {
+        crate::bun_glob_api::install(cx, bun_obj);
+    }
+    // @trace REQ-ENG-006 [api:Bun.spawnSync] — synchronous subprocess.
+    unsafe {
+        crate::bun_spawn_sync::install(cx, bun_obj);
+    }
+    // @trace REQ-ENG-006 [api:Bun.peek/stringWidth/RegExp.escape/
+    // readableStreamToArray/tcpSocket] — utility face (bun_util_api).
+    unsafe {
+        crate::bun_util_api::install(cx, bun_obj);
+    }
 
     // @trace REQ-ENG-006 [api:Bun.stdin/stdout/stderr] — typed stream wrappers.
     // Bun.stdin = Bun.file(0), Bun.stdout = Bun.file(1), Bun.stderr = Bun.file(2).
@@ -2629,8 +2645,14 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 
         // REQ-ENG-006 criterion 5: WebSocket upgrade requests are handled by
         // the `app.ws()` route registered before this `app.any()` route.
-        // If a WS upgrade reaches here, it means no ws route was registered
-        // (no websocket handler) — return 426 Upgrade Required.
+        // If a WS upgrade reaches here, no ws route was registered (no
+        // websocket handler). Upstream Bun semantics: the upgrade request is
+        // delivered to the FETCH handler in that case (the handler sees the
+        // request with `Upgrade: websocket` and decides — typically
+        // answering 4xx or upgrading manually). Only when there is no fetch
+        // handler either do we answer 426 ourselves (audit row
+        // "serve websocket upgrade — client errors before fetch handler
+        // invoked").
         // A proper WebSocket handshake requires BOTH "Upgrade: websocket" AND
         // "Sec-WebSocket-Key" headers (RFC 6455 §4.1). Checking only Upgrade
         // would misclassify non-WS requests that happen to carry an Upgrade
@@ -2642,8 +2664,8 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         let is_ws_upgrade = upgrade_header.eq_ignore_ascii_case(b"websocket")
             && req_ref.header(b"sec-websocket-key").is_some();
 
-        if is_ws_upgrade {
-            // No WebSocket handler registered — return 426 Upgrade Required.
+        if is_ws_upgrade && ud.fetch_cb_key.is_none() {
+            // Neither handler registered — explicit 426 Upgrade Required.
             (*res_mut).write_status(b"426 Upgrade Required");
             (*res_mut).write_header(b"Content-Type", b"text/plain");
             (*res_mut).end(b"Upgrade Required: no WebSocket handler registered", true);
@@ -4724,46 +4746,6 @@ unsafe extern "C" fn bun_which(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn bun_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        let js_str = JS_NewStringCopyZ(cx, c"undefined".as_ptr());
-        if !js_str.is_null() {
-            args.rval().set(StringValue(&*js_str));
-        } else {
-            args.rval().set(UndefinedValue());
-        }
-        return true;
-    }
-    let val = *args.get(0).ptr;
-    let s = if val.is_undefined() {
-        "undefined".to_string()
-    } else if val.is_null() {
-        "null".to_string()
-    } else if val.is_boolean() {
-        if val.to_boolean() { "true" } else { "false" }.to_string()
-    } else if val.is_int32() {
-        format!("{}", val.to_int32())
-    } else if val.is_double() {
-        format!("{}", val.to_double())
-    } else if val.is_string() {
-        let rust_str = crate::js_to_rust_string(cx, val);
-        format!("'{}'", rust_str)
-    } else if val.is_object() {
-        "[object]".to_string()
-    } else {
-        "undefined".to_string()
-    };
-    let c_s = ZBox::from_vec(s.into_bytes());
-    let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
-    if !js_str.is_null() {
-        args.rval().set(StringValue(&*js_str));
-    } else {
-        args.rval().set(UndefinedValue());
-    }
-    true
-}
-
 // @trace REQ-ENG-006 [api:Bun.build] — Bun.build(config) JS face.
 //
 // Parses the upstream `BuildConfig` object into the Rust-only
@@ -5261,6 +5243,7 @@ unsafe extern "C" fn bun_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             JSPROP_ENUMERATE as u32,
         );
     }
+    // size — snapshot when the target exists (stat at file() time).
     if let Ok(meta) = bun_sys::fs::metadata(&s) {
         rooted!(&in(cx_ref) let size_root = DoubleValue(meta.size as f64));
         JS_DefineProperty(
@@ -5270,16 +5253,70 @@ unsafe extern "C" fn bun_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             size_root.handle().into(),
             JSPROP_ENUMERATE as u32,
         );
-        rooted!(&in(cx_ref) let exists_root = mozjs::jsval::BooleanValue(true));
-        JS_DefineProperty(
-            cx,
-            file_obj.handle().into(),
-            c"exists".as_ptr(),
-            exists_root.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
     }
+    // exists() — Promise<boolean> over a live stat (upstream BunFile shape).
+    // Audit: the old data prop was omitted entirely for missing files
+    // (undefined instead of false); the method form resolves false without
+    // throwing for missing paths, true for existing ones.
+    JS_DefineFunction(
+        cx_ref,
+        file_obj.handle(),
+        c"exists".as_ptr(),
+        Some(bun_file_exists),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(file_obj.get()));
+    true
+}
+
+/// `BunFile.exists()` — resolves to a live-stat boolean. Always defined on
+/// every BunFile instance (missing file → `Promise.resolve(false)`, never a
+/// throw).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_exists(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let obj = this.to_object());
+    let mut path_v = UndefinedValue();
+    let mut path = String::new();
+    if JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"path".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut path_v,
+        },
+    ) && path_v.is_string()
+    {
+        path = crate::js_to_rust_string(cx, path_v);
+    }
+    let exists = !path.is_empty() && bun_sys::fs::metadata(&path).is_ok();
+
+    rooted!(&in(cx_ref) let promise = JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() {
+        args.rval().set(mozjs::jsval::BooleanValue(exists));
+        return true;
+    }
+    rooted!(&in(cx_ref) let bv = mozjs::jsval::BooleanValue(exists));
+    let ok = JS::ResolvePromise(
+        cx,
+        promise.handle().into(),
+        bv.handle().into(),
+    );
+    args.rval().set(if ok {
+        mozjs::jsval::ObjectValue(promise.get())
+    } else {
+        JS_ClearPendingException(cx);
+        mozjs::jsval::BooleanValue(exists)
+    });
     true
 }
 
@@ -6214,17 +6251,57 @@ unsafe extern "C" fn bun_sleep_sync(_cx: *mut JSContext, argc: u32, vp: *mut JSV
     true
 }
 
-// @trace REQ-ENG-006 [api:Bun.nanoseconds] — process-start Instant captured
-// once via OnceLock. Subsequent calls diff against this baseline and return
-// the elapsed nanoseconds as a JS number. The Instant is monotonic so
-// repeated calls always yield non-decreasing values; precision is platform-
-// dependent but matches Bun's surface (high-resolution monotonic timer).
-static BAO_PROCESS_START: ::std::sync::OnceLock<::std::time::Instant> =
-    ::std::sync::OnceLock::new();
+// @trace REQ-ENG-006 [api:Bun.nanoseconds] — nanoseconds elapsed since the
+// process was STARTED (upstream: `bunVM().origin_timer.read()`).
+//
+// Audit found the old face returning a OnceLock-diff captured at FIRST CALL
+// (~43ns), i.e. elapsed-since-first-JS-call, not since process start. The
+// true process start is recovered from /proc/self/stat field 22 (starttime,
+// clock ticks since boot) differenced against CLOCK_BOOTTIME — the kernel's
+// own account of when this process began, with no initialization-order
+// dependency.
+static BAO_PROCESS_START_NS: ::std::sync::OnceLock<Option<u64>> = ::std::sync::OnceLock::new();
+
+fn process_start_ns_since_boot() -> Option<u64> {
+    let stat = ::std::fs::read_to_string("/proc/self/stat").ok()?;
+    // Field 22 (starttime) sits after the last ')' (comm may contain spaces).
+    let after = stat.rsplit(')').next()?;
+    let fields: Vec<&str> = after.split_whitespace().collect();
+    // after-paren fields start at field 3 (state) → starttime is index 22-3.
+    let ticks: u64 = fields.get(19)?.parse().ok()?;
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
+    if hz == 0 {
+        return None;
+    }
+    Some(ticks * 1_000_000_000 / hz)
+}
+
+fn boottime_now_ns() -> Option<u64> {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // CLOCK_BOOTTIME matches the /proc starttime reference frame.
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } != 0 {
+        return None;
+    }
+    Some(ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64)
+}
+
 unsafe extern "C" fn bun_nanoseconds(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let start = BAO_PROCESS_START.get_or_init(::std::time::Instant::now);
-    let elapsed_ns = start.elapsed().as_nanos();
+    let start = BAO_PROCESS_START_NS.get_or_init(process_start_ns_since_boot);
+    let elapsed_ns = match (start, boottime_now_ns()) {
+        (Some(s), Some(now)) => now.saturating_sub(*s),
+        // /proc or clock unavailable — monotonic fallback anchored at first
+        // call (explicit degradation path, Linux targets always take the
+        // real arm above).
+        _ => {
+            static FALLBACK_START: ::std::sync::OnceLock<::std::time::Instant> =
+                ::std::sync::OnceLock::new();
+            FALLBACK_START
+                .get_or_init(::std::time::Instant::now)
+                .elapsed()
+                .as_nanos() as u64
+        }
+    };
     // f64 carries the value; Number precision is sufficient for ~104 days of
     // uptime at nanosecond scale (Number.MAX_SAFE_INTEGER ≈ 9e15 ns ≈ 104d).
     let v = mozjs::jsval::DoubleValue(elapsed_ns as f64);
@@ -6233,90 +6310,55 @@ unsafe extern "C" fn bun_nanoseconds(cx: *mut JSContext, _argc: u32, vp: *mut JS
     true
 }
 
+/// Bun.env getter — resolves `process.env` off the current global at access
+/// time so both surfaces share one proxy (writes propagate to std::env).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn bun_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
+unsafe extern "C" fn bun_env_getter(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-    let input = *args.get(0).ptr;
-    let algo = if argc > 1 && (*args.get(1).ptr).is_string() {
-        crate::js_to_rust_string(cx, *args.get(1).ptr)
-    } else {
-        "sha256".to_string()
-    };
-    let data = if input.is_string() {
-        crate::js_to_rust_string(cx, input).into_bytes()
-    } else if input.is_object() {
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-        rooted!(&in(cx_ref) let obj = input.to_object());
-        let mut len_val = mozjs::jsval::UndefinedValue();
-        JS_GetProperty(
-            cx,
-            obj.handle().into(),
-            c"length".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut len_val,
-            },
-        );
-        let len = if len_val.is_int32() {
-            len_val.to_int32() as u32
-        } else {
-            0
-        };
-        let mut bytes = Vec::with_capacity(len as usize);
-        for i in 0..len {
-            let mut byte_val = mozjs::jsval::Int32Value(0);
-            JS_GetElement(
-                cx,
-                obj.handle().into(),
-                i,
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut byte_val,
-                },
-            );
-            bytes.push(if byte_val.is_int32() {
-                byte_val.to_int32() as u8
-            } else {
-                0
-            });
-        }
-        bytes
-    } else {
-        Vec::new()
-    };
-    use bun_sha_hmac;
-    let result = match algo.as_str() {
-        "sha512" => {
-            let mut hasher = bun_sha_hmac::SHA512::init();
-            hasher.update(&data);
-            let mut out = [0u8; bun_sha_hmac::SHA512::DIGEST];
-            hasher.r#final(&mut out);
-            out.to_vec()
-        }
-        _ => {
-            let mut hasher = bun_sha_hmac::SHA256::init();
-            hasher.update(&data);
-            let mut out = [0u8; bun_sha_hmac::SHA256::DIGEST];
-            hasher.r#final(&mut out);
-            out.to_vec()
-        }
-    };
-    let hex: String = bun_core::fmt::bytes_to_hex_lower_string(&result);
-    let c_hex = ZBox::from_bytes(hex.as_bytes());
-    let js_str = JS_NewStringCopyZ(cx, c_hex.as_ptr());
-    args.rval().set(if js_str.is_null() {
-        UndefinedValue()
-    } else {
-        StringValue(&*js_str)
-    });
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut process_v = UndefinedValue();
+    if !JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        c"process".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut process_v,
+        },
+    ) || !process_v.is_object()
+    {
+        JS_ClearPendingException(cx);
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    rooted!(&in(cx_ref) let proc_obj = process_v.to_object());
+    let mut env_v = UndefinedValue();
+    if !JS_GetProperty(
+        cx,
+        proc_obj.handle().into(),
+        c"env".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut env_v,
+        },
+    ) || env_v.is_null_or_undefined()
+    {
+        JS_ClearPendingException(cx);
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    args.rval().set(env_v);
     true
 }
 
+#[allow(unsafe_op_in_unsafe_fn)]
 /// `Bun.concatArrayBuffers(buffers, totalLength?, asUint8Array?)` — merge an
 /// iterable of ArrayBuffer / TypedArray / DataView into a single buffer.
 ///
@@ -7409,54 +7451,6 @@ unsafe extern "C" fn bun_escape_html(cx: *mut JSContext, argc: u32, vp: *mut JSV
 // ──────────────────────────────────────────────────────────────────────────
 // @trace REQ-ENG-006 [api:Bun.Mime] — MIME type utility class (JS IIFE)
 // ──────────────────────────────────────────────────────────────────────────
-
-unsafe fn install_bun_mime(
-    cx: &mut mozjs::context::JSContext,
-    bun_obj: mozjs::rust::Handle<*mut JSObject>,
-) {
-    let src = r#"(function() {
-  function Mime(type, subtype, params) {
-    this.type = String(type || '');
-    this.subtype = String(subtype || '');
-    this.params = (params && typeof params === 'object') ? params : {};
-  }
-  Mime.prototype.toString = function() {
-    var s = this.type + '/' + this.subtype;
-    var keys = Object.keys(this.params);
-    if (keys.length > 0) {
-      s += '; ' + keys.map(function(k) { return k + '=' + this.params[k]; }.bind(this)).join('; ');
-    }
-    return s;
-  };
-  Mime.prototype.essence = function() {
-    return this.type + '/' + this.subtype;
-  };
-  return Mime;
-})()"#;
-
-    let mut text = mozjs::rust::transform_str_to_source_text(src);
-    let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<bun:Mime>".as_ptr(), 1);
-    if opts.is_null() {
-        return;
-    }
-    let mut rval = UndefinedValue();
-    let rval_h = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut rval,
-    };
-    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut text, rval_h);
-    libc::free(opts as *mut _);
-    if ok && rval.is_object() {
-        rooted!(&in(cx) let mime_ctor = rval.to_object());
-        JS_DefineProperty3(
-            cx,
-            bun_obj,
-            c"Mime".as_ptr(),
-            mime_ctor.handle(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // @trace REQ-ENG-006 [api:Bun.stdin/stdout/stderr] — Bun.file(fd) wrappers

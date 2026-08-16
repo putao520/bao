@@ -49,12 +49,19 @@ const BUN_TEST_SHIM: &str = r#"
     return _suiteStack.length > 0 ? _suiteStack[_suiteStack.length - 1] : null;
   }
 
-  function _registerTest(name, fn) {
+  function _registerTest(name, fn, expectFail) {
     // Snapshot the ancestor chain at registration time so hooks defined in
-    // ancestor describes run in registration order (outer → inner).
+    // ancestor describes run in registration order (outer → inner). `owner`
+    // is the suite whose body called it()/test() (null at top level) — the
+    // runner drains per-owner so a suite's tests run inside that suite's
+    // beforeAll/afterAll window, never inside another suite's.
     var hookChain = [];
     for (var i = 0; i < _suiteStack.length; i++) hookChain.push(_suiteStack[i]);
-    _pendingTests.push({ name: name, fn: fn, suiteChain: hookChain });
+    var owner = _suiteStack.length > 0 ? _suiteStack[_suiteStack.length - 1] : null;
+    _pendingTests.push({
+      name: name, fn: fn, expectFail: !!expectFail,
+      suiteChain: hookChain, owner: owner
+    });
   }
 
   // Run a single test (sync or async) — always returns a Promise<void>.
@@ -619,8 +626,8 @@ const BUN_TEST_SHIM: &str = r#"
         }
         return e;
       },
-      resolves: {},
-      rejects: {},
+      // resolves / rejects are attached after the literal — see the async
+      // matcher section below (they need the finished matcher set to chain).
       not: {
         toBe: function(expected) {
           if (actual === expected) {
@@ -728,6 +735,91 @@ const BUN_TEST_SHIM: &str = r#"
         }
       }
     };
+
+    // @trace REQ-ENG-006 [api:bun:test] — expect(p).resolves / .rejects.
+    // The previous shape was `resolves: {}` — a plain object, so
+    // `.resolves.toBe(...)` died with "toBe is not a function". These now
+    // chain the FULL matcher set against the settled value and return a
+    // Promise (Jest contract): the promise resolves when the matcher passes
+    // and rejects with the matcher's error otherwise. `.not` is supported on
+    // both sides.
+    var _throwMatcherNames = { toThrow: 1, toThrowError: 1, toThrowWithCode: 1 };
+    function _matchThrownError(err, expected) {
+      var msg = (err && (err.message || err.toString())) || String(err);
+      if (expected === undefined) return true;
+      if (typeof expected === 'string') {
+        return msg.indexOf(expected) !== -1 || (err && err.name === expected);
+      }
+      if (expected instanceof RegExp) return expected.test(msg);
+      if (typeof expected === 'function') return err instanceof expected;
+      if (expected && typeof expected === 'object' && expected.message !== undefined) {
+        return msg.indexOf(expected.message) !== -1;
+      }
+      return false;
+    }
+    function _runAsyncMatcher(expectRejection, negate, name, args, value) {
+      // For `rejects` + the toThrow family the settled value IS the error:
+      // match it directly instead of calling it as a function.
+      if (expectRejection && _throwMatcherNames[name]) {
+        var pass;
+        if (name === 'toThrowWithCode') {
+          pass = true;
+          if (typeof args[0] === 'function' && !(value instanceof args[0])) pass = false;
+          if (args[1] !== undefined && (!value || value.code !== args[1])) pass = false;
+        } else {
+          pass = _matchThrownError(value, args[0]);
+        }
+        if (negate ? pass : !pass) {
+          throw new Error("Expected promise " + (negate ? "not " : "") + "to reject with " +
+            JSON.stringify(args[0]) + " but rejected with " +
+            ((value && (value.message || value.toString())) || String(value)));
+        }
+        return undefined;
+      }
+      var ex = _makeExpect(value);
+      var target = negate ? ex.not : ex;
+      var m = target[name];
+      if (typeof m !== 'function') {
+        throw new Error("expect(...)." + (expectRejection ? "rejects" : "resolves") +
+          (negate ? ".not" : "") + "." + name + " is not a matcher");
+      }
+      return m.apply(target, args);
+    }
+    function _asyncMatcherSettle(expectRejection, negate, name) {
+      return function() {
+        var args = Array.prototype.slice.call(arguments);
+        if (!actual || typeof actual.then !== 'function') {
+          throw new Error("expect(...)." + (expectRejection ? "rejects" : "resolves") +
+            " requires a Promise");
+        }
+        return actual.then(function(v) {
+          if (expectRejection) {
+            throw new Error("promise resolved unexpectedly with " + JSON.stringify(v) +
+              " — .rejects expected a rejection");
+          }
+          return _runAsyncMatcher(expectRejection, negate, name, args, v);
+        }, function(err) {
+          if (!expectRejection) throw err;
+          return _runAsyncMatcher(expectRejection, negate, name, args, err);
+        });
+      };
+    }
+    function _buildAsyncSide(expectRejection) {
+      var side = {};
+      side.not = {};
+      for (var k in e) {
+        if (k === 'resolves' || k === 'rejects' || k === 'not') continue;
+        if (typeof e[k] !== 'function') continue;
+        (function(name) {
+          side[name] = _asyncMatcherSettle(expectRejection, false, name);
+          side.not[name] = _asyncMatcherSettle(expectRejection, true, name);
+        })(k);
+      }
+      return side;
+    }
+    e.resolves = _buildAsyncSide(false);
+    e.rejects = _buildAsyncSide(true);
+
     return e;
   }
 
@@ -888,8 +980,15 @@ const BUN_TEST_SHIM: &str = r#"
   // the runner executes later. Hooks (beforeEach/afterEach/beforeAll/afterAll)
   // called inside the body attach to this suite. The runner manages the
   // _suiteStack so hooks resolve to their lexically enclosing describe.
+  // `parent` records the enclosing suite at registration so the runner can
+  // rebuild the FULL ancestor chain when a nested suite's body executes —
+  // nested tests inherit ancestor beforeEach/afterEach (Jest semantics).
   function describeFn(name, fn) {
-    _suites.push({ name: name, fn: fn, beforeEach: [], afterEach: [], beforeAll: [], afterAll: [] });
+    _suites.push({
+      name: name, fn: fn,
+      parent: _suiteStack.length > 0 ? _suiteStack[_suiteStack.length - 1] : null,
+      beforeEach: [], afterEach: [], beforeAll: [], afterAll: []
+    });
   }
   describeFn.skip = function(name, fn) { /* no-op */ };
   describeFn.todo = function(name, fn) { /* no-op */ };
@@ -922,9 +1021,7 @@ const BUN_TEST_SHIM: &str = r#"
     // In failing mode, we expect the test to throw (sync) or reject (async).
     // Defer to the runner so async failing tests work too.
     var fullName = _currentDescribe ? (_currentDescribe + " > " + name) : name;
-    var hookChain = [];
-    for (var i = 0; i < _suiteStack.length; i++) hookChain.push(_suiteStack[i]);
-    _pendingTests.push({ name: fullName, fn: fn, expectFail: true, suiteChain: hookChain });
+    _registerTest(fullName, fn, true);
   };
 
   function testFn(name, fn) {
@@ -1055,81 +1152,141 @@ const BUN_TEST_SHIM: &str = r#"
       })(_topLevelBeforeAll[i]);
     }
 
-    // Walk each describe suite: push it onto _suiteStack, run its body
-    // (which runs suite-scoped beforeAll + registers it() entries into
-    // _pendingTests), then await the collected tests sequentially.
-    for (var s = 0; s < _suites.length; s++) {
-      (function(suite) {
-        // Phase 1: push suite, run beforeAll hooks, run suite body.
-        chain = chain.then(function() {
-          _currentDescribe = suite.name;
-          _suiteStack.push(suite);
-          var bchain = Promise.resolve();
-          for (var b = 0; b < suite.beforeAll.length; b++) {
-            (function(hook) {
-              bchain = bchain.then(function() {
-                return _runHook(hook).then(function(res) {
-                  if (!res.ok) { _emitError(suite.name + " beforeAll", res.error); }
-                });
-              });
-            })(suite.beforeAll[b]);
-          }
-          return bchain;
-        }).then(function() {
-          // Run the suite body synchronously (it() calls register into
-          // _pendingTests). If the body returns a Promise, await it.
-          try {
-            var r = suite.fn();
-            if (r && typeof r.then === 'function') {
-              return r.then(function() {}, function(e) { _emitError(suite.name, e); });
-            }
-          } catch (e) {
-            _emitError(suite.name, e);
-          }
-          return undefined;
-        }).then(function() {
-          // Phase 2: drain tests registered during this suite's describe body.
-          var inner = Promise.resolve();
-          function _drainNext() {
-            if (_pendingTests.length === 0) { return inner; }
-            var t = _pendingTests.shift();
-            inner = inner.then(function() {
-              return _runOneTest(t.name, t.fn, t.expectFail, t.suiteChain);
-            });
-            return _drainNext();
-          }
-          return _drainNext();
-        }).then(function() {
-          // Phase 3: afterAll hooks, then pop the suite.
-          var achain = Promise.resolve();
-          for (var a = 0; a < suite.afterAll.length; a++) {
-            (function(hook) {
-              achain = achain.then(function() {
-                return _runHook(hook).then(function(res) {
-                  if (!res.ok) { _emitError(suite.name + " afterAll", res.error); }
-                });
-              });
-            })(suite.afterAll[a]);
-          }
-          return achain;
-        }).then(function() {
-          _suiteStack.pop();
-          _currentDescribe = null;
-        });
-      })(_suites[s]);
-    }
-
-    // If there were top-level it() calls (no enclosing describe), drain them
-    // here as well — they sit in _pendingTests after the suite loop.
+    // Top-level it() tests run BEFORE suite bodies: they registered during
+    // file evaluation (before any deferred describe body executes), matching
+    // the collection order Jest runs them in.
     chain = chain.then(function() {
       var inner = Promise.resolve();
       function _drainTopLevel() {
-        if (_pendingTests.length === 0) { return inner; }
-        var t = _pendingTests.shift();
+        var t = null;
+        for (var i = 0; i < _pendingTests.length; i++) {
+          if (_pendingTests[i].owner === null) { t = _pendingTests.splice(i, 1)[0]; break; }
+        }
+        if (!t) { return inner; }
         inner = inner.then(function() { return _runOneTest(t.name, t.fn, t.expectFail, t.suiteChain); });
         return _drainTopLevel();
       }
       return _drainTopLevel();
+    });
+
+    // Rebuild a suite's full ancestor chain from the parent links captured
+    // at registration, so nested suites inherit ancestor hooks.
+    function _suiteAncestors(suite) {
+      var chainUp = [];
+      var p = suite.parent;
+      while (p) { chainUp.unshift(p); p = p.parent; }
+      return chainUp;
+    }
+
+    // Walk each describe suite: install it (plus ancestors) on _suiteStack,
+    // run its body (which runs suite-scoped beforeAll + registers it()
+    // entries into _pendingTests), then await THIS suite's tests only.
+    //
+    // A suite BODY may register NEW suites (nested describe) — and bodies run
+    // inside promise callbacks, i.e. AFTER the synchronous walk below has
+    // finished. The old flat `for` loop completed synchronously and never saw
+    // them, so nested describes' bodies never executed and their tests were
+    // silently dropped (audit item 7). _appendRemaining re-checks for newly
+    // appended suites every time the known chain settles, until no new suite
+    // appears — nested describes at any depth get their own phase.
+    var _processedSuites = 0;
+    function _suitePhases(chain, suite) {
+      // Snapshot the ancestor chain synchronously — suites discovered
+      // later (nested describe calls inside a running body) are appended
+      // to _suites and build their own chains when their turn comes.
+      var ancestorChain = _suiteAncestors(suite);
+      // Phase 1: install suite stack, then run the suite BODY FIRST. Hooks
+      // (beforeAll/beforeEach/...) attach to the suite DURING the body, so
+      // the body must run before beforeAll hooks execute — running beforeAll
+      // before the body left every describe-scoped beforeAll permanently
+      // unfired (audit item 7). The body registers it() entries into
+      // _pendingTests (awaited in its own phase below).
+      chain = chain.then(function() {
+        _currentDescribe = suite.name;
+        _suiteStack = ancestorChain.concat([suite]);
+        try {
+          var r = suite.fn();
+          if (r && typeof r.then === 'function') {
+            return r.then(function() {}, function(e) { _emitError(suite.name, e); });
+          }
+        } catch (e) {
+          _emitError(suite.name, e);
+        }
+        return undefined;
+      }).then(function() {
+        // Phase 2: beforeAll hooks (now collected by the body above).
+        var bchain = Promise.resolve();
+        for (var b = 0; b < suite.beforeAll.length; b++) {
+          (function(hook) {
+            bchain = bchain.then(function() {
+              return _runHook(hook).then(function(res) {
+                if (!res.ok) { _emitError(suite.name + " beforeAll", res.error); }
+              });
+            });
+          })(suite.beforeAll[b]);
+        }
+        return bchain;
+      }).then(function() {
+        // Phase 2: drain tests registered during this suite's describe
+        // body (owner === suite). Other suites' tests and top-level tests
+        // stay queued for their own phase.
+        var inner = Promise.resolve();
+        function _drainNext() {
+          var t = null;
+          for (var i = 0; i < _pendingTests.length; i++) {
+            if (_pendingTests[i].owner === suite) { t = _pendingTests.splice(i, 1)[0]; break; }
+          }
+          if (!t) { return inner; }
+          inner = inner.then(function() {
+            return _runOneTest(t.name, t.fn, t.expectFail, t.suiteChain);
+          });
+          return _drainNext();
+        }
+        return _drainNext();
+      }).then(function() {
+        // Phase 3: afterAll hooks, then clear the suite stack.
+        var achain = Promise.resolve();
+        for (var a = 0; a < suite.afterAll.length; a++) {
+          (function(hook) {
+            achain = achain.then(function() {
+              return _runHook(hook).then(function(res) {
+                if (!res.ok) { _emitError(suite.name + " afterAll", res.error); }
+              });
+            });
+          })(suite.afterAll[a]);
+        }
+        return achain;
+      }).then(function() {
+        _suiteStack = [];
+        _currentDescribe = null;
+      });
+      return chain;
+    }
+    function _appendRemaining(chain) {
+      while (_processedSuites < _suites.length) {
+        chain = _suitePhases(chain, _suites[_processedSuites++]);
+      }
+      // Suite bodies run inside the chain; re-check for suites they appended
+      // once everything known so far has settled.
+      return chain.then(function() {
+        if (_processedSuites < _suites.length) {
+          return _appendRemaining(Promise.resolve());
+        }
+      });
+    }
+    chain = _appendRemaining(chain);
+
+    // Safety net: drain anything still queued (should be empty — belt and
+    // braces so no registered test is ever silently skipped).
+    chain = chain.then(function() {
+      var inner = Promise.resolve();
+      function _drainRest() {
+        if (_pendingTests.length === 0) { return inner; }
+        var t = _pendingTests.shift();
+        inner = inner.then(function() { return _runOneTest(t.name, t.fn, t.expectFail, t.suiteChain); });
+        return _drainRest();
+      }
+      return _drainRest();
     });
 
     // afterAll hooks (top-level, in registration order).

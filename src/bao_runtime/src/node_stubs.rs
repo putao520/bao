@@ -27,7 +27,7 @@
 
 use ::std::ptr::NonNull;
 use mozjs::jsapi::*;
-use mozjs::jsval::ObjectValue;
+use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -85,6 +85,120 @@ fn register_stub(cx: &mut mozjs::context::JSContext, name: &str) {
     cache_builtin(cx, name, obj.get());
 }
 
+/// `v8.serialize(value)` → Buffer of SM structured-clone bytes, and
+/// `v8.deserialize(buf)` → value. Reuses the SAME engine structured-clone
+/// facility worker_threads postMessage is built on
+/// (`node_worker_threads::sc_serialize` / `sc_deserialize` — SM
+/// JS_Write/ReadStructuredClone, DifferentProcess scope). Node's own
+/// serialize/deserialize output is only guaranteed round-trippable by the
+/// same engine version — cross-engine byte compatibility is not a contract.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn v8_serialize(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"v8.serialize() requires a value argument".as_ptr());
+        return false;
+    }
+    let value = *args.get(0).ptr;
+    match crate::node_worker_threads::sc_serialize(cx, value) {
+        Ok(bytes) => {
+            let buf = crate::globals::create_buffer_object(cx, &bytes);
+            if buf.is_null() {
+                JS_ReportErrorUTF8(cx, c"v8.serialize(): failed to allocate output Buffer".as_ptr());
+                return false;
+            }
+            args.rval().set(ObjectValue(buf));
+            true
+        }
+        Err(()) => {
+            JS_ReportErrorUTF8(
+                cx,
+                c"v8.serialize(): value could not be serialized by the structured clone algorithm"
+                    .as_ptr(),
+            );
+            false
+        }
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn v8_deserialize(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(
+            cx,
+            c"v8.deserialize() requires a serialized Buffer argument".as_ptr(),
+        );
+        return false;
+    }
+    let buf_val = *args.get(0).ptr;
+    if !buf_val.is_object() {
+        JS_ReportErrorUTF8(
+            cx,
+            c"v8.deserialize() argument must be a Buffer, TypedArray, or ArrayBuffer".as_ptr(),
+        );
+        return false;
+    }
+
+    // Accept Uint8Array/Buffer (incl. views with byteOffset) and ArrayBuffer.
+    let bytes: Vec<u8> = {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj = buf_val.to_object());
+        let mut length: usize = 0;
+        let mut is_shared = false;
+        let mut data_ptr: *mut u8 = ::std::ptr::null_mut();
+        let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+            obj.get(),
+            &mut length,
+            &mut is_shared,
+            &mut data_ptr,
+        );
+        if !unwrapped.is_null() {
+            if length == 0 || data_ptr.is_null() {
+                Vec::new()
+            } else {
+                ::std::slice::from_raw_parts(data_ptr, length).to_vec()
+            }
+        } else {
+            let mut ab_length: usize = 0;
+            let mut ab_data: *mut u8 = ::std::ptr::null_mut();
+            let ab_unwrapped = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(
+                obj.get(),
+                &mut ab_length,
+                &mut ab_data,
+            );
+            if !ab_unwrapped.is_null() {
+                if ab_length == 0 || ab_data.is_null() {
+                    Vec::new()
+                } else {
+                    ::std::slice::from_raw_parts(ab_data, ab_length).to_vec()
+                }
+            } else {
+                JS_ReportErrorUTF8(
+                    cx,
+                    c"v8.deserialize() argument must be a Buffer, TypedArray, or ArrayBuffer"
+                        .as_ptr(),
+                );
+                return false;
+            }
+        }
+    };
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let mut rval = UndefinedValue());
+    if !crate::node_worker_threads::sc_deserialize(cx, &bytes, rval.handle_mut()) {
+        JS_ReportErrorUTF8(
+            cx,
+            c"v8.deserialize(): unable to deserialize malformed serialized data".as_ptr(),
+        );
+        return false;
+    }
+    args.rval().set(rval.get());
+    true
+}
+
 /// Install node:v8 methods (`getHeapStatistics`, `setFlagsFromString`,
 /// `serialize`/`deserialize`, `Serializer`/`Deserializer`,
 /// `cachedDataVersionTag`, `writeHeapSnapshot`). The non-throwing ones are
@@ -131,6 +245,44 @@ unsafe fn install_v8_methods(cx: &mut mozjs::context::JSContext, obj_h: Handle<*
             raw_cx,
             obj_h,
             c"cachedDataVersionTag".as_ptr(),
+            val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    // serialize/deserialize — real, backed by the same-engine structured
+    // clone facility (SM JS_Write/ReadStructuredClone via worker_threads).
+    let ser_fn = JS_NewFunction(
+        raw_cx,
+        Some(v8_serialize),
+        1,
+        0,
+        c"serialize".as_ptr(),
+    );
+    if !ser_fn.is_null() {
+        let fn_obj = JS_GetFunctionObject(ser_fn);
+        rooted!(&in(cx) let val = ObjectValue(fn_obj));
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj_h,
+            c"serialize".as_ptr(),
+            val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    let deser_fn = JS_NewFunction(
+        raw_cx,
+        Some(v8_deserialize),
+        1,
+        0,
+        c"deserialize".as_ptr(),
+    );
+    if !deser_fn.is_null() {
+        let fn_obj = JS_GetFunctionObject(deser_fn);
+        rooted!(&in(cx) let val = ObjectValue(fn_obj));
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj_h,
+            c"deserialize".as_ptr(),
             val.handle().into(),
             JSPROP_ENUMERATE as u32,
         );

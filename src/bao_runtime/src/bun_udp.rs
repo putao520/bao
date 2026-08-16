@@ -121,7 +121,23 @@ unsafe fn invoke_js_callback(cx: *mut JSContext, cb_key: &Option<String>, args: 
         rval_h,
     );
     if !ok {
+        // The UDP callback threw. Capture the pending exception, clear it, and
+        // route it (process.on('uncaughtException') or stderr + exit 1) —
+        // Node semantics; NOT silently swallowed (same routing as timer and
+        // EventEmitter listener throws).
+        let mut exn = UndefinedValue();
+        JS_GetPendingException(
+            cx,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut exn,
+            },
+        );
         JS_ClearPendingException(cx);
+        rooted!(&in(cx_ref) let reason_root = exn);
+        if !exn.is_undefined() {
+            crate::uncaught::route_uncaught_exception(cx, exn);
+        }
     }
     ok
 }

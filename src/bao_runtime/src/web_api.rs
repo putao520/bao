@@ -17,7 +17,7 @@ use bun_uws::ws_codec::apply_mask;
 
 use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{
@@ -1786,6 +1786,1601 @@ unsafe extern "C" fn queue_microtask_fn(cx: *mut JSContext, argc: u32, vp: *mut 
     );
     args.rval().set(UndefinedValue());
     true
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// crypto.subtle — WebCrypto surface bridged onto the REAL primitives the
+// node:crypto layer already uses (bao_crypto + bun_sha_hmac + bun_base64).
+// @trace REQ-ENG-006 [api:crypto.subtle]
+//
+// The subtle object is the SAME object globals::install_crypto_global put on
+// globalThis.crypto (so require("crypto").subtle — aliased by node_crypto —
+// upgrades with it). Installed at the tail of the web-API phase; defining the
+// methods on the existing object preserves every alias.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Define the full WebCrypto method set on globalThis.crypto.subtle.
+pub fn install_crypto_subtle(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*mut JSObject>) {
+    unsafe {
+        rooted!(&in(cx) let global_root = global.get());
+        let mut crypto_val = UndefinedValue();
+        JS_GetProperty(
+            cx.raw_cx(),
+            global_root.handle().into(),
+            c"crypto".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut crypto_val,
+            },
+        );
+        if !crypto_val.is_object() {
+            return;
+        }
+        rooted!(&in(cx) let crypto_obj = crypto_val.to_object());
+        let mut subtle_val = UndefinedValue();
+        JS_GetProperty(
+            cx.raw_cx(),
+            crypto_obj.handle().into(),
+            c"subtle".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut subtle_val,
+            },
+        );
+        if !subtle_val.is_object() {
+            return;
+        }
+        rooted!(&in(cx) let subtle = subtle_val.to_object());
+        for (name, op, nargs) in [
+            ("encrypt", subtle_encrypt as unsafe extern "C" fn(*mut JSContext, u32, *mut JSVal) -> bool, 3),
+            ("decrypt", subtle_decrypt, 3),
+            ("generateKey", subtle_generate_key, 3),
+            ("importKey", subtle_import_key, 5),
+            ("sign", subtle_sign, 3),
+            ("verify", subtle_verify, 4),
+            // digest: the pre-existing globals.rs implementation returned the
+            // raw bytes instead of a Promise (spec violation — every
+            // `subtle.digest().then` threw). Redefined here on the SAME subtle
+            // object with Promise semantics over the real BoringSSL hashers.
+            ("digest", subtle_digest, 2),
+        ] {
+            JS_DefineFunction(
+                cx,
+                subtle.handle(),
+                ZBox::from_bytes(name.as_bytes()).as_ptr(),
+                Some(op),
+                nargs,
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+}
+
+// ── subtle helpers ──────────────────────────────────────────────────────────
+
+/// Constant-time byte equality (signature verification must not leak).
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Extract BufferSource bytes: TypedArray/DataView fast path, then BARE
+/// ArrayBuffer (subtle results are bare ArrayBuffers — the node_crypto
+/// extractor misses those), then empty.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn subtle_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
+    if !val.is_object() {
+        return Vec::new();
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = val.to_object());
+    let mut length: usize = 0;
+    let mut is_shared = false;
+    let mut data_ptr: *mut u8 = ::std::ptr::null_mut();
+    let u8_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+        obj_root.get(),
+        &mut length,
+        &mut is_shared,
+        &mut data_ptr,
+    );
+    if !u8_unwrapped.is_null() && !data_ptr.is_null() && length > 0 {
+        return ::std::slice::from_raw_parts(data_ptr, length).to_vec();
+    }
+    let mut view_length: usize = 0;
+    let mut view_shared = false;
+    let mut view_data: *mut u8 = ::std::ptr::null_mut();
+    let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+        obj_root.get(),
+        &mut view_length,
+        &mut view_shared,
+        &mut view_data,
+    );
+    if !view_unwrapped.is_null() && !view_data.is_null() && view_length > 0 {
+        return ::std::slice::from_raw_parts(view_data, view_length).to_vec();
+    }
+    // Bare ArrayBuffer (length via ByteLength; data ptr valid while rooted,
+    // copied before any further JSAPI call).
+    let ab_len = mozjs_sys::jsapi::JS::GetArrayBufferByteLength(obj_root.get());
+    if ab_len > 0 {
+        let mut ab_shared = false;
+        let ab_data = mozjs_sys::jsapi::JS::GetArrayBufferData(
+            obj_root.get(),
+            &mut ab_shared,
+            ::std::ptr::null(),
+        );
+        if !ab_data.is_null() {
+            return ::std::slice::from_raw_parts(ab_data, ab_len).to_vec();
+        }
+    }
+    Vec::new()
+}
+
+/// Read a string-valued property off a JS object.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn subtle_str_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str) -> Option<String> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_r = obj);
+    let mut v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_r.handle().into(),
+        ZBox::from_bytes(name.as_bytes()).as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if v.is_string() {
+        Some(crate::js_to_rust_string(cx, v))
+    } else {
+        None
+    }
+}
+
+/// Read a numeric property as u32.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn subtle_u32_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str) -> Option<u32> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_r = obj);
+    let mut v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_r.handle().into(),
+        ZBox::from_bytes(name.as_bytes()).as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if v.is_int32() && v.to_int32() >= 0 {
+        Some(v.to_int32() as u32)
+    } else if v.is_double() && v.to_double() >= 0.0 {
+        Some(v.to_double() as u32)
+    } else {
+        None
+    }
+}
+
+/// Read a BufferSource-valued property (iv / additionalData / data).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn subtle_bytes_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str) -> Option<Vec<u8>> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_r = obj);
+    let mut v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_r.handle().into(),
+        ZBox::from_bytes(name.as_bytes()).as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if v.is_object() {
+        Some(subtle_bytes(cx, v))
+    } else {
+        None
+    }
+}
+
+/// Copy bytes into a fresh ArrayBuffer value.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn bytes_to_arraybuffer_val(cx: *mut JSContext, bytes: &[u8]) -> JSVal {
+    // glue::NewArrayBufferWithContents takes ownership of a malloc'd buffer
+    // (JS frees it) — copy into a fresh malloc block, zero-copy from there.
+    if bytes.is_empty() {
+        let ab = mozjs_sys::jsapi::JS::NewArrayBuffer(cx, 0);
+        return if ab.is_null() { UndefinedValue() } else { ObjectValue(ab) };
+    }
+    let buf = libc::malloc(bytes.len()) as *mut u8;
+    if buf.is_null() {
+        return UndefinedValue();
+    }
+    ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len());
+    let ab = mozjs_sys::jsapi::glue::NewArrayBufferWithContents(cx, bytes.len(), buf as *mut core::ffi::c_void);
+    if ab.is_null() {
+        libc::free(buf as *mut core::ffi::c_void);
+        return UndefinedValue();
+    }
+    ObjectValue(ab)
+}
+
+/// Build a CryptoKey JS object. `material` names the hidden bytes slot:
+/// `_raw` for symmetric keys, `_der` (pkcs8/spki) for asymmetric, with
+/// `_pub` carrying the private key's SPKI public half when present.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn make_crypto_key(
+    cx: *mut JSContext,
+    ktype: &str,
+    alg_name: &str,
+    extra_alg: &[(&str, String)],
+    extractable: bool,
+    usages: *mut JSObject,
+    material_slot: &str,
+    material: &[u8],
+    public_material: Option<&[u8]>,
+) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let key = JS_NewPlainObject(cx_ref));
+    if key.get().is_null() {
+        return ::std::ptr::null_mut();
+    }
+    let kh = key.handle().into();
+
+    let c_t = ZBox::from_bytes(ktype.as_bytes());
+    let t_js = JS_NewStringCopyZ(cx, c_t.as_ptr());
+    if !t_js.is_null() {
+        rooted!(&in(cx_ref) let tv = StringValue(&*t_js));
+        JS_DefineProperty(cx, kh, c"type".as_ptr(), tv.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+    }
+    rooted!(&in(cx_ref) let ev = BooleanValue(extractable));
+    JS_DefineProperty(cx, kh, c"extractable".as_ptr(), ev.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+    rooted!(&in(cx_ref) let uv = ObjectValue(usages));
+    JS_DefineProperty(cx, kh, c"usages".as_ptr(), uv.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+
+    // algorithm: { name, ...extras }
+    rooted!(&in(cx_ref) let alg_obj = JS_NewPlainObject(cx_ref));
+    if !alg_obj.get().is_null() {
+        let ah = alg_obj.handle().into();
+        let c_n = ZBox::from_bytes(alg_name.as_bytes());
+        let n_js = JS_NewStringCopyZ(cx, c_n.as_ptr());
+        if !n_js.is_null() {
+            rooted!(&in(cx_ref) let nv = StringValue(&*n_js));
+            JS_DefineProperty(cx, ah, c"name".as_ptr(), nv.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+        }
+        for (k, v) in extra_alg {
+            if *k == "length" {
+                // Numeric algorithm member (AES key length) per spec.
+                if let Ok(n) = v.parse::<i32>() {
+                    rooted!(&in(cx_ref) let nv = Int32Value(n));
+                    JS_DefineProperty(
+                        cx,
+                        ah,
+                        ZBox::from_bytes(k.as_bytes()).as_ptr(),
+                        nv.handle().into(),
+                        (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
+                    );
+                }
+                continue;
+            }
+            let c_v = ZBox::from_bytes(v.as_bytes());
+            let v_js = JS_NewStringCopyZ(cx, c_v.as_ptr());
+            if !v_js.is_null() {
+                rooted!(&in(cx_ref) let vv = StringValue(&*v_js));
+                JS_DefineProperty(
+                    cx,
+                    ah,
+                    ZBox::from_bytes(k.as_bytes()).as_ptr(),
+                    vv.handle().into(),
+                    (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
+                );
+            }
+        }
+        rooted!(&in(cx_ref) let av = ObjectValue(alg_obj.get()));
+        JS_DefineProperty(cx, kh, c"algorithm".as_ptr(), av.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+    }
+
+    // Hidden material slots (Uint8Array over copied bytes).
+    let stash = |slot: &str, bytes: &[u8]| {
+        let u8v = mozjs_sys::jsapi::JS_NewUint8Array(cx, bytes.len());
+        if u8v.is_null() {
+            return;
+        }
+        let mut len: usize = 0;
+        let mut shared = false;
+        let mut data: *mut u8 = ::std::ptr::null_mut();
+        let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(u8v, &mut len, &mut shared, &mut data);
+        if unwrapped.is_null() || data.is_null() || len < bytes.len() {
+            return;
+        }
+        ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
+        rooted!(&in(cx_ref) let mv = ObjectValue(u8v));
+        JS_DefineProperty(
+            cx,
+            kh,
+            ZBox::from_bytes(slot.as_bytes()).as_ptr(),
+            mv.handle().into(),
+            0,
+        );
+    };
+    stash(material_slot, material);
+    if let Some(pub_bytes) = public_material {
+        stash("_pub", pub_bytes);
+    }
+    key.get()
+}
+
+/// Read a hidden bytes slot off a CryptoKey.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn key_material(cx: *mut JSContext, key: *mut JSObject, slot: &str) -> Option<Vec<u8>> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let key_r = key);
+    let mut v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        key_r.handle().into(),
+        ZBox::from_bytes(slot.as_bytes()).as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if v.is_object() {
+        Some(subtle_bytes(cx, v))
+    } else {
+        None
+    }
+}
+
+/// Fresh pending Promise, set as the method's rval. Expands to a block
+/// evaluating to the rooted promise object (null on allocation failure).
+macro_rules! subtle_promise {
+    ($cx:expr, $cx_ref:expr, $args:expr) => {{
+        rooted!(&in($cx_ref) let null_global = ::std::ptr::null_mut::<JSObject>());
+        let promise = mozjs_sys::jsapi::JS::NewPromiseObject($cx, null_global.handle().into());
+        if promise.is_null() {
+            $args.rval().set(UndefinedValue());
+            ::std::ptr::null_mut::<JSObject>()
+        } else {
+            $args.rval().set(ObjectValue(promise));
+            promise
+        }
+    }};
+}
+
+// ── subtle.digest (Promise-returning redefinition over real hashers) ───────
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subtle_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let promise = subtle_promise!(cx, cx_ref, &args);
+    if promise.is_null() {
+        return true;
+    }
+    rooted!(&in(cx_ref) let promise_root = promise);
+
+    let result: ::std::result::Result<Vec<u8>, String> = (|| {
+        use bun_sha_hmac::sha::hashers;
+        if argc < 2 {
+            return Err("digest(algorithm, data) requires 2 arguments".to_string());
+        }
+        let alg_val = *args.get(0).ptr;
+        let name = if alg_val.is_string() {
+            crate::js_to_rust_string(cx, alg_val).to_uppercase()
+        } else if alg_val.is_object() {
+            let obj = alg_val.to_object();
+            subtle_str_prop(cx, obj, "name").unwrap_or_default().to_uppercase()
+        } else {
+            return Err("digest algorithm must be a string or {name}".to_string());
+        };
+        let data = subtle_bytes(cx, *args.get(1).ptr);
+        match name.as_str() {
+            "SHA-1" | "SHA1" => {
+                let mut out = [0u8; hashers::SHA1::DIGEST];
+                hashers::SHA1::hash(&data, &mut out);
+                Ok(out.to_vec())
+            }
+            "SHA-256" | "SHA256" => {
+                let mut out = [0u8; hashers::SHA256::DIGEST];
+                hashers::SHA256::hash(&data, &mut out);
+                Ok(out.to_vec())
+            }
+            "SHA-384" | "SHA384" => {
+                let mut out = [0u8; hashers::SHA384::DIGEST];
+                hashers::SHA384::hash(&data, &mut out);
+                Ok(out.to_vec())
+            }
+            "SHA-512" | "SHA512" => {
+                let mut out = [0u8; hashers::SHA512::DIGEST];
+                hashers::SHA512::hash(&data, &mut out);
+                Ok(out.to_vec())
+            }
+            other => Err(format!("subtle.digest: unsupported algorithm {}", other)),
+        }
+    })();
+
+    match result {
+        Ok(bytes) => {
+            let v = bytes_to_arraybuffer_val(cx, &bytes);
+            subtle_resolve(cx, promise_root.get(), v);
+        }
+        Err(msg) => subtle_reject(cx, promise_root.get(), &format!("subtle.digest: {}", msg)),
+    }
+    true
+}
+
+/// Reject the promise with a REAL TypeError from the realm's constructor.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn subtle_reject(cx: *mut JSContext, promise: *mut JSObject, msg: &str) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise_root = promise);
+    let global = CurrentGlobalOrNull(cx);
+    let err_obj = if !global.is_null() {
+        rooted!(&in(cx_ref) let global_root = global);
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+        let mut err = UndefinedValue();
+        if !msg_js.is_null() {
+            rooted!(&in(cx_ref) let mv = StringValue(&*msg_js));
+            let elems = [*mv.handle()];
+            let call_args = HandleValueArray {
+                length_: 1,
+                elements_: elems.as_ptr(),
+            };
+            let mut type_error_fn = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                global_root.handle().into(),
+                c"TypeError".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut type_error_fn,
+                },
+            );
+            if type_error_fn.is_object() {
+                rooted!(&in(cx_ref) let fn_val = type_error_fn);
+                rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
+                if JS_CallFunctionValue(
+                    cx,
+                    undef_this.handle().into(),
+                    fn_val.handle().into(),
+                    &call_args,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut err,
+                    },
+                ) && err.is_object() {
+                    err.to_object()
+                } else {
+                    JS_ClearPendingException(cx);
+                    ::std::ptr::null_mut()
+                }
+            } else {
+                ::std::ptr::null_mut()
+            }
+        } else {
+            ::std::ptr::null_mut()
+        }
+    } else {
+        ::std::ptr::null_mut()
+    };
+    if err_obj.is_null() {
+        // Degraded shape only when the realm has no TypeError at all — the
+        // message still reaches the rejection.
+        rooted!(&in(cx_ref) let obj = JS_NewPlainObject(cx_ref));
+        if !obj.get().is_null() {
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            let m_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+            if !m_js.is_null() {
+                rooted!(&in(cx_ref) let mv = StringValue(&*m_js));
+                JS_DefineProperty(cx, obj.handle().into(), c"message".as_ptr(), mv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            let c_n = ZBox::from_bytes("TypeError".as_bytes());
+            let n_js = JS_NewStringCopyZ(cx, c_n.as_ptr());
+            if !n_js.is_null() {
+                rooted!(&in(cx_ref) let nv = StringValue(&*n_js));
+                JS_DefineProperty(cx, obj.handle().into(), c"name".as_ptr(), nv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            rooted!(&in(cx_ref) let ev = ObjectValue(obj.get()));
+            mozjs_sys::jsapi::JS::RejectPromise(cx, promise_root.handle().into(), ev.handle().into());
+            return;
+        }
+        return;
+    }
+    rooted!(&in(cx_ref) let ev = ObjectValue(err_obj));
+    mozjs_sys::jsapi::JS::RejectPromise(cx, promise_root.handle().into(), ev.handle().into());
+}
+
+/// Resolve the promise with a value.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn subtle_resolve(cx: *mut JSContext, promise: *mut JSObject, val: JSVal) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise_root = promise);
+    rooted!(&in(cx_ref) let v = val);
+    mozjs_sys::jsapi::JS::ResolvePromise(cx, promise_root.handle().into(), v.handle().into());
+}
+
+/// algo.name string from the first argument (algorithm identifier object).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn subtle_algo_name(cx: *mut JSContext, val: JSVal) -> ::std::result::Result<(String, *mut JSObject), String> {
+    if !val.is_object() {
+        return Err("algorithm identifier must be an object".to_string());
+    }
+    let obj = val.to_object();
+    let name = subtle_str_prop(cx, obj, "name")
+        .ok_or_else(|| "algorithm.name is required".to_string())?;
+    Ok((name, obj))
+}
+
+/// Map an algorithm name + symmetric key length to the cipher algorithm.
+fn aes_cipher_algo(name: &str, key_len: usize) -> ::std::result::Result<bao_crypto::cipher::CipherAlgorithm, String> {
+    let bits = key_len * 8;
+    let qualified = match name {
+        "AES-GCM" => match bits {
+            128 => "aes-128-gcm",
+            192 => "aes-192-gcm",
+            256 => "aes-256-gcm",
+            _ => return Err(format!("invalid AES-GCM key length: {} bits", bits)),
+        },
+        "AES-CBC" => match bits {
+            128 => "aes-128-cbc",
+            192 => "aes-192-cbc",
+            256 => "aes-256-cbc",
+            _ => return Err(format!("invalid AES-CBC key length: {} bits", bits)),
+        },
+        other => return Err(format!("unsupported cipher algorithm: {}", other)),
+    };
+    bao_crypto::cipher::parse_algorithm(qualified).map_err(|e| e.to_string())
+}
+
+// ── subtle.encrypt / subtle.decrypt ─────────────────────────────────────────
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subtle_encrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let promise = subtle_promise!(cx, cx_ref, &args);
+    if promise.is_null() {
+        return true;
+    }
+    rooted!(&in(cx_ref) let promise_root = promise);
+
+    let result: ::std::result::Result<Vec<u8>, String> = (|| {
+        if argc < 3 {
+            return Err("encrypt(algorithm, key, data) requires 3 arguments".to_string());
+        }
+        let (name, alg_obj) = subtle_algo_name(cx, *args.get(0).ptr)?;
+        let key_obj = (*args.get(1).ptr).to_object();
+        let data = subtle_bytes(cx, *args.get(2).ptr);
+        let raw = key_material(cx, key_obj, "_raw")
+            .ok_or("encrypt: not a symmetric CryptoKey".to_string())?;
+
+        match name.as_str() {
+            "AES-GCM" => {
+                let iv = subtle_bytes_prop(cx, alg_obj, "iv")
+                    .ok_or("AES-GCM requires an iv".to_string())?;
+                let aad = subtle_bytes_prop(cx, alg_obj, "additionalData");
+                if let Some(tl) = subtle_u32_prop(cx, alg_obj, "tagLength") {
+                    if tl != 128 {
+                        return Err(format!("AES-GCM tagLength {} is not supported (128 only)", tl));
+                    }
+                }
+                let algo = aes_cipher_algo("AES-GCM", raw.len())?;
+                let out = bao_crypto::cipher::encrypt(algo, &raw, &iv, aad.as_deref(), &data)
+                    .map_err(|e| e.to_string())?;
+                let mut combined = out.ciphertext;
+                combined.extend_from_slice(&out.auth_tag);
+                Ok(combined)
+            }
+            "AES-CBC" => {
+                let iv = subtle_bytes_prop(cx, alg_obj, "iv")
+                    .ok_or("AES-CBC requires an iv".to_string())?;
+                let algo = aes_cipher_algo("AES-CBC", raw.len())?;
+                let mut ctx = bao_crypto::cipher::CipherCtx::new(
+                    algo,
+                    &raw,
+                    &iv,
+                    bao_crypto::cipher::Direction::Encrypt,
+                )
+                .map_err(|e| e.to_string())?;
+                let mut out = ctx.update(&data).map_err(|e| e.to_string())?;
+                out.extend_from_slice(&ctx.final_ex().map_err(|e| e.to_string())?);
+                Ok(out)
+            }
+            other => Err(format!("subtle.encrypt: unsupported algorithm {}", other)),
+        }
+    })();
+
+    match result {
+        Ok(bytes) => {
+            let v = bytes_to_arraybuffer_val(cx, &bytes);
+            subtle_resolve(cx, promise_root.get(), v);
+        }
+        Err(msg) => subtle_reject(cx, promise_root.get(), &format!("subtle.encrypt: {}", msg)),
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subtle_decrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let promise = subtle_promise!(cx, cx_ref, &args);
+    if promise.is_null() {
+        return true;
+    }
+    rooted!(&in(cx_ref) let promise_root = promise);
+
+    let result: ::std::result::Result<Vec<u8>, String> = (|| {
+        if argc < 3 {
+            return Err("decrypt(algorithm, key, data) requires 3 arguments".to_string());
+        }
+        let (name, alg_obj) = subtle_algo_name(cx, *args.get(0).ptr)?;
+        let key_obj = (*args.get(1).ptr).to_object();
+        let data = subtle_bytes(cx, *args.get(2).ptr);
+        let raw = key_material(cx, key_obj, "_raw")
+            .ok_or("decrypt: not a symmetric CryptoKey".to_string())?;
+
+        match name.as_str() {
+            "AES-GCM" => {
+                let iv = subtle_bytes_prop(cx, alg_obj, "iv")
+                    .ok_or("AES-GCM requires an iv".to_string())?;
+                let aad = subtle_bytes_prop(cx, alg_obj, "additionalData");
+                let tag_len = subtle_u32_prop(cx, alg_obj, "tagLength")
+                    .map_or(16usize, |bits| bits as usize / 8);
+                if tag_len != 16 {
+                    return Err(format!("AES-GCM tagLength {} bits is not supported (128 only)", tag_len * 8));
+                }
+                if data.len() < tag_len {
+                    return Err("AES-GCM ciphertext shorter than the auth tag".to_string());
+                }
+                let split = data.len() - tag_len;
+                let algo = aes_cipher_algo("AES-GCM", raw.len())?;
+                bao_crypto::cipher::decrypt(
+                    algo,
+                    &raw,
+                    &iv,
+                    aad.as_deref(),
+                    &data[..split],
+                    &data[split..],
+                )
+                .map_err(|_| "decryption failed (authentication or parameters)".to_string())
+            }
+            "AES-CBC" => {
+                let iv = subtle_bytes_prop(cx, alg_obj, "iv")
+                    .ok_or("AES-CBC requires an iv".to_string())?;
+                let algo = aes_cipher_algo("AES-CBC", raw.len())?;
+                let mut ctx = bao_crypto::cipher::CipherCtx::new(
+                    algo,
+                    &raw,
+                    &iv,
+                    bao_crypto::cipher::Direction::Decrypt,
+                )
+                .map_err(|e| e.to_string())?;
+                let mut out = ctx.update(&data).map_err(|e| e.to_string())?;
+                out.extend_from_slice(&ctx.final_ex().map_err(|e| e.to_string())?);
+                Ok(out)
+            }
+            other => Err(format!("subtle.decrypt: unsupported algorithm {}", other)),
+        }
+    })();
+
+    match result {
+        Ok(bytes) => {
+            let v = bytes_to_arraybuffer_val(cx, &bytes);
+            subtle_resolve(cx, promise_root.get(), v);
+        }
+        Err(msg) => subtle_reject(cx, promise_root.get(), &format!("subtle.decrypt: {}", msg)),
+    }
+    true
+}
+
+// ── subtle.generateKey ──────────────────────────────────────────────────────
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subtle_generate_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let promise = subtle_promise!(cx, cx_ref, &args);
+    if promise.is_null() {
+        return true;
+    }
+    rooted!(&in(cx_ref) let promise_root = promise);
+
+    let result: ::std::result::Result<*mut JSObject, String> = (|| {
+        if argc < 3 {
+            return Err("generateKey(algorithm, extractable, usages) requires 3 arguments".to_string());
+        }
+        let (name, alg_obj) = subtle_algo_name(cx, *args.get(0).ptr)?;
+        let extractable = (*args.get(1).ptr).to_boolean();
+        let usages = (*args.get(2).ptr).to_object();
+
+        match name.as_str() {
+            "AES-GCM" | "AES-CBC" => {
+                let bits = subtle_u32_prop(cx, alg_obj, "length")
+                    .ok_or("AES generateKey requires algorithm.length".to_string())?;
+                if !matches!(bits, 128 | 192 | 256) {
+                    return Err(format!("invalid AES key length {} (128/192/256)", bits));
+                }
+                let mut raw = vec![0u8; bits as usize / 8];
+                bao_crypto::random::rand_bytes(&mut raw).map_err(|e| e.to_string())?;
+                Ok(make_crypto_key(
+                    cx,
+                    "secret",
+                    &name,
+                    &[("length", bits.to_string())],
+                    extractable,
+                    usages,
+                    "_raw",
+                    &raw,
+                    None,
+                ))
+            }
+            "RSA-RSASSA-PKCS1-v1_5" => {
+                let bits = subtle_u32_prop(cx, alg_obj, "modulusLength")
+                    .ok_or("RSA generateKey requires modulusLength".to_string())? as usize;
+                let hash = subtle_str_prop(cx, alg_obj, "hash")
+                    .or_else(|| subtle_str_prop(cx, alg_obj, "hash.name"))
+                    .unwrap_or_else(|| "SHA-256".to_string());
+                let kp = bao_crypto::keypair::generate_key_pair(&bao_crypto::keypair::KeyPairType::Rsa { bits })
+                    .map_err(|e| e.to_string())?;
+                Ok(make_crypto_key(
+                    cx,
+                    "private",
+                    &name,
+                    &[("hash", hash)],
+                    extractable,
+                    usages,
+                    "_der",
+                    &kp.private_key_der,
+                    Some(&kp.public_key_der),
+                ))
+            }
+            "ECDSA" => {
+                let curve = subtle_str_prop(cx, alg_obj, "namedCurve")
+                    .or_else(|| subtle_str_prop(cx, alg_obj, "namedCurve.name"))
+                    .ok_or("ECDSA generateKey requires namedCurve".to_string())?;
+                let ec_curve = match curve.as_str() {
+                    "P-256" => bao_crypto::keypair::EcCurve::P256,
+                    "P-384" => bao_crypto::keypair::EcCurve::P384,
+                    other => return Err(format!("unsupported ECDSA curve {}", other)),
+                };
+                let kp = bao_crypto::keypair::generate_key_pair(&bao_crypto::keypair::KeyPairType::Ec { curve: ec_curve })
+                    .map_err(|e| e.to_string())?;
+                Ok(make_crypto_key(
+                    cx,
+                    "private",
+                    &name,
+                    &[("namedCurve", curve)],
+                    extractable,
+                    usages,
+                    "_der",
+                    &kp.private_key_der,
+                    Some(&kp.public_key_der),
+                ))
+            }
+            other => Err(format!("subtle.generateKey: unsupported algorithm {}", other)),
+        }
+    })();
+
+    match result {
+        Ok(key) if !key.is_null() => {
+            let v = ObjectValue(key);
+            subtle_resolve(cx, promise_root.get(), v);
+        }
+        Ok(_) => subtle_reject(cx, promise_root.get(), "subtle.generateKey: key construction failed"),
+        Err(msg) => subtle_reject(cx, promise_root.get(), &format!("subtle.generateKey: {}", msg)),
+    }
+    true
+}
+
+// ── subtle.importKey ────────────────────────────────────────────────────────
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subtle_import_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let promise = subtle_promise!(cx, cx_ref, &args);
+    if promise.is_null() {
+        return true;
+    }
+    rooted!(&in(cx_ref) let promise_root = promise);
+
+    let result: ::std::result::Result<*mut JSObject, String> = (|| {
+        if argc < 5 {
+            return Err("importKey(format, keyData, algorithm, extractable, usages) requires 5 arguments".to_string());
+        }
+        let format = crate::js_to_rust_string(cx, *args.get(0).ptr);
+        let (name, _alg_obj) = subtle_algo_name(cx, *args.get(2).ptr)?;
+        let extractable = (*args.get(3).ptr).to_boolean();
+        let usages = (*args.get(4).ptr).to_object();
+
+        match format.as_str() {
+            "raw" => {
+                let raw = subtle_bytes(cx, *args.get(1).ptr);
+                if raw.is_empty() {
+                    return Err("raw import requires key bytes".to_string());
+                }
+                match name.as_str() {
+                    "AES-GCM" | "AES-CBC" => {
+                        if !matches!(raw.len() * 8, 128 | 192 | 256) {
+                            return Err(format!("invalid AES key length {} bits", raw.len() * 8));
+                        }
+                        Ok(make_crypto_key(cx, "secret", &name, &[("length", (raw.len() * 8).to_string())], extractable, usages, "_raw", &raw, None))
+                    }
+                    "HMAC" => {
+                        let hash = subtle_str_prop(cx, _alg_obj, "hash")
+                            .or_else(|| subtle_str_prop(cx, _alg_obj, "hash.name"))
+                            .ok_or("HMAC import requires algorithm.hash".to_string())?;
+                        Ok(make_crypto_key(cx, "secret", "HMAC", &[("hash", hash)], extractable, usages, "_raw", &raw, None))
+                    }
+                    other => Err(format!("subtle.importKey raw: unsupported algorithm {}", other)),
+                }
+            }
+            "pkcs8" => {
+                let der = subtle_bytes(cx, *args.get(1).ptr);
+                if der.is_empty() {
+                    return Err("pkcs8 import requires DER bytes".to_string());
+                }
+                let extras: Vec<(String, String)> = match name.as_str() {
+                    "RSA-RSASSA-PKCS1-v1_5" => {
+                        let hash = subtle_str_prop(cx, _alg_obj, "hash")
+                            .or_else(|| subtle_str_prop(cx, _alg_obj, "hash.name"))
+                            .unwrap_or_else(|| "SHA-256".to_string());
+                        vec![("hash".to_string(), hash)]
+                    }
+                    "ECDSA" => {
+                        let curve = subtle_str_prop(cx, _alg_obj, "namedCurve")
+                            .or_else(|| subtle_str_prop(cx, _alg_obj, "namedCurve.name"))
+                            .unwrap_or_else(|| "P-256".to_string());
+                        vec![("namedCurve".to_string(), curve)]
+                    }
+                    other => return Err(format!("subtle.importKey pkcs8: unsupported algorithm {}", other)),
+                };
+                let extras_ref: Vec<(&str, String)> = extras.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+                Ok(make_crypto_key(cx, "private", &name, &extras_ref, extractable, usages, "_der", &der, None))
+            }
+            "spki" => {
+                let der = subtle_bytes(cx, *args.get(1).ptr);
+                if der.is_empty() {
+                    return Err("spki import requires DER bytes".to_string());
+                }
+                let extras: Vec<(String, String)> = match name.as_str() {
+                    "RSA-RSASSA-PKCS1-v1_5" => {
+                        let hash = subtle_str_prop(cx, _alg_obj, "hash")
+                            .or_else(|| subtle_str_prop(cx, _alg_obj, "hash.name"))
+                            .unwrap_or_else(|| "SHA-256".to_string());
+                        vec![("hash".to_string(), hash)]
+                    }
+                    "ECDSA" => {
+                        let curve = subtle_str_prop(cx, _alg_obj, "namedCurve")
+                            .or_else(|| subtle_str_prop(cx, _alg_obj, "namedCurve.name"))
+                            .unwrap_or_else(|| "P-256".to_string());
+                        vec![("namedCurve".to_string(), curve)]
+                    }
+                    other => return Err(format!("subtle.importKey spki: unsupported algorithm {}", other)),
+                };
+                let extras_ref: Vec<(&str, String)> = extras.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+                Ok(make_crypto_key(cx, "public", &name, &extras_ref, extractable, usages, "_der", &der, None))
+            }
+            "jwk" => {
+                // Symmetric oct keys: { kty: "oct", k: <base64url> }. Asymmetric
+                // JWK import requires JWK→DER assembly which is NOT wired —
+                // explicit NotSupported error, never a silent fallback.
+                if !(*args.get(1).ptr).is_object() {
+                    return Err("jwk import requires a JWK object".to_string());
+                }
+                let jwk = (*args.get(1).ptr).to_object();
+                let kty = subtle_str_prop(cx, jwk, "kty").unwrap_or_default();
+                if kty != "oct" {
+                    return Err(format!("jwk import for kty \"{}\" is not supported (oct only); use pkcs8/spki DER import", kty));
+                }
+                let k = subtle_str_prop(cx, jwk, "k").ok_or("oct JWK requires the k field".to_string())?;
+                let src = k.as_bytes();
+                let upper = bun_base64::decode_lenient_len(src.len());
+                let mut out = vec![0u8; upper];
+                let n = bun_base64::decode_lenient(&mut out, src, true);
+                out.truncate(n);
+                if out.is_empty() {
+                    return Err("oct JWK k field decoded to zero bytes".to_string());
+                }
+                match name.as_str() {
+                    "AES-GCM" | "AES-CBC" => {
+                        if !matches!(out.len() * 8, 128 | 192 | 256) {
+                            return Err(format!("invalid AES key length {} bits from JWK", out.len() * 8));
+                        }
+                        Ok(make_crypto_key(cx, "secret", &name, &[("length", (out.len() * 8).to_string())], extractable, usages, "_raw", &out, None))
+                    }
+                    "HMAC" => {
+                        let hash = subtle_str_prop(cx, _alg_obj, "hash")
+                            .or_else(|| subtle_str_prop(cx, _alg_obj, "hash.name"))
+                            .ok_or("HMAC import requires algorithm.hash".to_string())?;
+                        Ok(make_crypto_key(cx, "secret", "HMAC", &[("hash", hash)], extractable, usages, "_raw", &out, None))
+                    }
+                    other => Err(format!("subtle.importKey jwk: unsupported algorithm {}", other)),
+                }
+            }
+            other => Err(format!("subtle.importKey: unsupported format {}", other)),
+        }
+    })();
+
+    match result {
+        Ok(key) if !key.is_null() => {
+            let v = ObjectValue(key);
+            subtle_resolve(cx, promise_root.get(), v);
+        }
+        Ok(_) => subtle_reject(cx, promise_root.get(), "subtle.importKey: key construction failed"),
+        Err(msg) => subtle_reject(cx, promise_root.get(), &format!("subtle.importKey: {}", msg)),
+    }
+    true
+}
+
+// ── subtle.sign / subtle.verify ─────────────────────────────────────────────
+
+fn subtle_hmac_algorithm(hash: &str) -> ::std::result::Result<bun_sha_hmac::sha::evp::Algorithm, String> {
+    use bun_sha_hmac::sha::evp::Algorithm;
+    Ok(match hash.to_uppercase().as_str() {
+        "SHA-1" => Algorithm::Sha1,
+        "SHA-224" => Algorithm::Sha224,
+        "SHA-256" => Algorithm::Sha256,
+        "SHA-384" => Algorithm::Sha384,
+        "SHA-512" => Algorithm::Sha512,
+        other => return Err(format!("unsupported HMAC hash {}", other)),
+    })
+}
+
+fn subtle_rsa_hash(hash: &str) -> ::std::result::Result<bao_crypto::sign::RsaHash, String> {
+    Ok(match hash.to_uppercase().as_str() {
+        "SHA-256" => bao_crypto::sign::RsaHash::Sha256,
+        "SHA-384" => bao_crypto::sign::RsaHash::Sha384,
+        "SHA-512" => bao_crypto::sign::RsaHash::Sha512,
+        other => return Err(format!("unsupported RSA hash {}", other)),
+    })
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subtle_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let promise = subtle_promise!(cx, cx_ref, &args);
+    if promise.is_null() {
+        return true;
+    }
+    rooted!(&in(cx_ref) let promise_root = promise);
+
+    let result: ::std::result::Result<Vec<u8>, String> = (|| {
+        if argc < 3 {
+            return Err("sign(algorithm, key, data) requires 3 arguments".to_string());
+        }
+        let (name, alg_obj) = subtle_algo_name(cx, *args.get(0).ptr)?;
+        let key_obj = (*args.get(1).ptr).to_object();
+        // BCE-root discipline: the handle must outlive the GetProperty call —
+        // a rooted! binding inside a block expression un-roots at the block's
+        // closing brace, leaving JS_GetProperty with a dangling Handle.
+        rooted!(&in(cx_ref) let key_obj_root = key_obj);
+        let data = subtle_bytes(cx, *args.get(2).ptr);
+
+        let key_alg = {
+            let mut v = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                key_obj_root.handle().into(),
+                c"algorithm".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut v,
+                },
+            );
+            if !v.is_object() {
+                return Err("sign: not a CryptoKey".to_string());
+            }
+            v.to_object()
+        };
+        let key_alg_name = subtle_str_prop(cx, key_alg, "name").unwrap_or_default();
+
+        match name.as_str() {
+            "HMAC" => {
+                let raw = key_material(cx, key_obj, "_raw")
+                    .ok_or("sign: not a symmetric CryptoKey".to_string())?;
+                let hash = subtle_str_prop(cx, key_alg, "hash").unwrap_or_else(|| "SHA-256".to_string());
+                let algo = subtle_hmac_algorithm(&hash)?;
+                let mut out = [0u8; bun_sha_hmac::hmac::EVP_MAX_MD_SIZE];
+                let mac = bun_sha_hmac::hmac::generate(&raw, &data, algo, &mut out)
+                    .ok_or("HMAC computation failed".to_string())?;
+                Ok(mac.to_vec())
+            }
+            "RSA-RSASSA-PKCS1-v1_5" | "RSASSA-PKCS1-v1_5" => {
+                let der = key_material(cx, key_obj, "_der")
+                    .ok_or("sign: not a private CryptoKey".to_string())?;
+                let hash = subtle_str_prop(cx, if name == "HMAC" { alg_obj } else { key_alg }, "hash")
+                    .unwrap_or_else(|| "SHA-256".to_string());
+                let signer = bao_crypto::sign::Signer::from_pkcs8_der(
+                    &bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 { hash: subtle_rsa_hash(&hash)? },
+                    &der,
+                )
+                .map_err(|e| e.to_string())?;
+                signer
+                    .sign(&data, bao_crypto::sign::SignatureFormat::Der)
+                    .map_err(|e| e.to_string())
+            }
+            "ECDSA" => {
+                let der = key_material(cx, key_obj, "_der")
+                    .ok_or("sign: not a private CryptoKey".to_string())?;
+                let curve = subtle_str_prop(cx, key_alg, "namedCurve").unwrap_or_else(|| "P-256".to_string());
+                let algo = match curve.as_str() {
+                    "P-256" => bao_crypto::sign::SignAlgorithm::EcdsaP256,
+                    "P-384" => bao_crypto::sign::SignAlgorithm::EcdsaP384,
+                    other => return Err(format!("unsupported ECDSA curve {}", other)),
+                };
+                let signer = bao_crypto::sign::Signer::from_pkcs8_der(&algo, &der)
+                    .map_err(|e| e.to_string())?;
+                // WebCrypto ECDSA signatures are raw r||s.
+                signer
+                    .sign(&data, bao_crypto::sign::SignatureFormat::Raw)
+                    .map_err(|e| e.to_string())
+            }
+            other => Err(format!("subtle.sign: unsupported algorithm {}", other)),
+        }
+    })();
+
+    match result {
+        Ok(bytes) => {
+            let v = bytes_to_arraybuffer_val(cx, &bytes);
+            subtle_resolve(cx, promise_root.get(), v);
+        }
+        Err(msg) => subtle_reject(cx, promise_root.get(), &format!("subtle.sign: {}", msg)),
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn subtle_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let promise = subtle_promise!(cx, cx_ref, &args);
+    if promise.is_null() {
+        return true;
+    }
+    rooted!(&in(cx_ref) let promise_root = promise);
+
+    let result: ::std::result::Result<bool, String> = (|| {
+        if argc < 4 {
+            return Err("verify(algorithm, key, signature, data) requires 4 arguments".to_string());
+        }
+        let (name, _alg_obj) = subtle_algo_name(cx, *args.get(0).ptr)?;
+        let key_obj = (*args.get(1).ptr).to_object();
+        // Same root discipline as subtle_sign — no block-scoped roots in args.
+        rooted!(&in(cx_ref) let key_obj_root = key_obj);
+        let signature = subtle_bytes(cx, *args.get(2).ptr);
+        let data = subtle_bytes(cx, *args.get(3).ptr);
+
+        let key_alg = {
+            let mut v = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                key_obj_root.handle().into(),
+                c"algorithm".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut v,
+                },
+            );
+            if !v.is_object() {
+                return Err("verify: not a CryptoKey".to_string());
+            }
+            v.to_object()
+        };
+        let key_alg_name = subtle_str_prop(cx, key_alg, "name").unwrap_or_default();
+        let ktype = subtle_str_prop(cx, key_obj, "type").unwrap_or_default();
+
+        match name.as_str() {
+            "HMAC" => {
+                let raw = key_material(cx, key_obj, "_raw")
+                    .ok_or("verify: not a symmetric CryptoKey".to_string())?;
+                let hash = subtle_str_prop(cx, key_alg, "hash").unwrap_or_else(|| "SHA-256".to_string());
+                let algo = subtle_hmac_algorithm(&hash)?;
+                let mut out = [0u8; bun_sha_hmac::hmac::EVP_MAX_MD_SIZE];
+                let Some(mac) = bun_sha_hmac::hmac::generate(&raw, &data, algo, &mut out) else {
+                    return Err("HMAC computation failed".to_string());
+                };
+                Ok(ct_eq(mac, &signature))
+            }
+            "RSA-RSASSA-PKCS1-v1_5" | "RSASSA-PKCS1-v1_5" => {
+                let hash = subtle_str_prop(cx, key_alg, "hash").unwrap_or_else(|| "SHA-256".to_string());
+                let algo = bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 { hash: subtle_rsa_hash(&hash)? };
+                let verifier = if ktype == "private" {
+                    let der = key_material(cx, key_obj, "_der")
+                        .ok_or("verify: key carries no DER material".to_string())?;
+                    bao_crypto::verify::Verifier::from_pkcs8_der(&algo, &der)
+                } else {
+                    let der = key_material(cx, key_obj, "_der")
+                        .ok_or("verify: key carries no DER material".to_string())?;
+                    bao_crypto::verify::Verifier::from_public_der(&algo, &der)
+                }
+                .map_err(|e| e.to_string())?;
+                verifier
+                    .verify(&data, &signature, bao_crypto::sign::SignatureFormat::Der)
+                    .map_err(|e| e.to_string())
+            }
+            "ECDSA" => {
+                let curve = subtle_str_prop(cx, key_alg, "namedCurve").unwrap_or_else(|| "P-256".to_string());
+                let algo = match curve.as_str() {
+                    "P-256" => bao_crypto::sign::SignAlgorithm::EcdsaP256,
+                    "P-384" => bao_crypto::sign::SignAlgorithm::EcdsaP384,
+                    other => return Err(format!("unsupported ECDSA curve {}", other)),
+                };
+                let verifier = if ktype == "private" {
+                    let der = key_material(cx, key_obj, "_der")
+                        .ok_or("verify: key carries no DER material".to_string())?;
+                    bao_crypto::verify::Verifier::from_pkcs8_der(&algo, &der)
+                } else {
+                    let der = key_material(cx, key_obj, "_der")
+                        .ok_or("verify: key carries no DER material".to_string())?;
+                    bao_crypto::verify::Verifier::from_public_der(&algo, &der)
+                }
+                .map_err(|e| e.to_string())?;
+                // WebCrypto ECDSA signatures are raw r||s.
+                verifier
+                    .verify(&data, &signature, bao_crypto::sign::SignatureFormat::Raw)
+                    .map_err(|e| e.to_string())
+            }
+            other => Err(format!("subtle.verify: unsupported algorithm {}", other)),
+        }
+    })();
+
+    match result {
+        Ok(ok) => {
+            let v = BooleanValue(ok);
+            subtle_resolve(cx, promise_root.get(), v);
+        }
+        Err(msg) => subtle_reject(cx, promise_root.get(), &format!("subtle.verify: {}", msg)),
+    }
+    true
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// localStorage — CLI mode. Persisted store at ~/.bao/localstorage.json
+// (browser pages keep servo's own localStorage; this is the CLI surface).
+// @trace REQ-ENG-006 [api:localStorage]
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn localstorage_path() -> ::std::path::PathBuf {
+    let home = ::std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let dir = ::std::path::Path::new(&home).join(".bao");
+    let _ = ::std::fs::create_dir_all(&dir);
+    dir.join("localstorage.json")
+}
+
+::std::thread_local! {
+    static LS_STORE: RefCell<Option<::std::collections::BTreeMap<String, String>>> =
+        const { RefCell::new(None) };
+}
+
+/// Lazy-load the persisted store (missing/corrupt file → empty map; a corrupt
+/// file is reported to stderr but never breaks the API — next mutation
+/// rewrites the file with valid JSON).
+fn ls_with_store<R>(f: impl FnOnce(&mut ::std::collections::BTreeMap<String, String>) -> R) -> R {
+    LS_STORE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if guard.is_none() {
+            let map = ::std::fs::read_to_string(localstorage_path())
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|v| {
+                    let obj = v.as_object()?;
+                    let mut m = ::std::collections::BTreeMap::new();
+                    for (k, val) in obj {
+                        if let Some(s) = val.as_str() {
+                            m.insert(k.clone(), s.to_string());
+                        }
+                    }
+                    Some(m)
+                })
+                .unwrap_or_default();
+            *guard = Some(map);
+        }
+        f(guard.as_mut().unwrap())
+    })
+}
+
+fn ls_persist() {
+    LS_STORE.with(|cell| {
+        if let Some(map) = cell.borrow().as_ref() {
+            if let Ok(text) = serde_json::to_string_pretty(map) {
+                let tmp = localstorage_path().with_extension("json.tmp");
+                if ::std::fs::write(&tmp, text).is_ok() {
+                    let _ = ::std::fs::rename(&tmp, localstorage_path());
+                }
+            }
+        }
+    });
+}
+
+/// Install localStorage on the global (CLI surface; browser pages keep
+/// servo's own implementation, so installation only fills a missing slot).
+pub fn install_local_storage(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*mut JSObject>) {
+    unsafe {
+        rooted!(&in(cx) let global_root = global.get());
+        let mut existing = UndefinedValue();
+        JS_GetProperty(
+            cx.raw_cx(),
+            global_root.handle().into(),
+            c"localStorage".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut existing,
+            },
+        );
+        if existing.is_object() {
+            return; // browser page context — servo's storage stays
+        }
+        rooted!(&in(cx) let ls = JS_NewPlainObject(cx));
+        if ls.get().is_null() {
+            return;
+        }
+        let lh = ls.handle();
+        for (name, op, nargs) in [
+            ("getItem", ls_get_item as unsafe extern "C" fn(*mut JSContext, u32, *mut JSVal) -> bool, 1),
+            ("setItem", ls_set_item, 2),
+            ("removeItem", ls_remove_item, 1),
+            ("clear", ls_clear, 0),
+            ("key", ls_key, 1),
+        ] {
+            JS_DefineFunction(
+                cx,
+                lh,
+                ZBox::from_bytes(name.as_bytes()).as_ptr(),
+                Some(op),
+                nargs,
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        // length getter (JS_DefineProperty1: getter/setter native variant)
+        JS_DefineProperty1(
+            cx.raw_cx(),
+            ls.handle().into(),
+            c"length".as_ptr(),
+            Some(ls_length_getter),
+            None,
+            (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
+        );
+        rooted!(&in(cx) let ls_root = ls.get());
+        JS_DefineProperty3(
+            cx,
+            global,
+            c"localStorage".as_ptr(),
+            ls_root.handle(),
+            (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+        );
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ls_get_item(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 1 || !(*args.get(0).ptr).is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    ls_with_store(|m| {
+        let v = m.get(&key).cloned();
+        match v {
+            Some(s) => {
+                let c_s = ZBox::from_bytes(s.as_bytes());
+                let js = JS_NewStringCopyZ(cx, c_s.as_ptr());
+                args.rval().set(if js.is_null() {
+                    UndefinedValue()
+                } else {
+                    StringValue(&*js)
+                });
+            }
+            None => args.rval().set(NullValue()),
+        }
+    });
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ls_set_item(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 {
+        let c_m = ZBox::from_bytes("localStorage.setItem(key, value) requires 2 arguments".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_m.as_ptr());
+        return false;
+    }
+    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    let val = crate::js_to_rust_string(cx, *args.get(1).ptr);
+    ls_with_store(|m| {
+        m.insert(key, val);
+    });
+    ls_persist();
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ls_remove_item(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 1 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    ls_with_store(|m| {
+        m.remove(&key);
+    });
+    ls_persist();
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ls_clear(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    ls_with_store(|m| {
+        m.clear();
+    });
+    ls_persist();
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ls_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 1 || !(*args.get(0).ptr).is_int32() {
+        args.rval().set(NullValue());
+        return true;
+    }
+    let idx = (*args.get(0).ptr).to_int32();
+    if idx < 0 {
+        args.rval().set(NullValue());
+        return true;
+    }
+    let val = ls_with_store(|m| {
+        m.keys().nth(idx as usize).cloned()
+    });
+    match val {
+        Some(k) => {
+            let c_k = ZBox::from_bytes(k.as_bytes());
+            let js = JS_NewStringCopyZ(cx, c_k.as_ptr());
+            args.rval().set(if js.is_null() {
+                NullValue()
+            } else {
+                StringValue(&*js)
+            });
+        }
+        None => args.rval().set(NullValue()),
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ls_length(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let n = ls_with_store(|m| m.len());
+    args.rval().set(Int32Value(n as i32));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ls_length_getter(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    ls_length(cx, _argc, vp)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EventSource — SSE client over fetch(). Pure-JS class: fetch + TextDecoder
+// + timers are all real runtime surfaces; the SSE framing/retry state
+// machine follows the WHATWG spec's event-stream parsing algorithm.
+//
+// Streaming note: fetch() currently materialises the full body, so events
+// arrive in one batch when the response completes (then auto-reconnect fires
+// per the retry interval). The parser itself is the real spec algorithm and
+// upgrades unchanged once fetch lands response streaming.
+// @trace REQ-ENG-006 [api:EventSource]
+//
+// Also registers the CLI-mode window/document explicit gates (DOMParser
+// style): referencing/typeof works, every METHOD call throws the honest
+// "browser context required" error — no silent empty-DOM fakes.
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn install_event_source(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*mut JSObject>) {
+    let src = r#"
+(function() {
+  var _g = globalThis;
+
+  // ── EventSource ──
+  var CONNECTING = 0, OPEN = 1, CLOSED = 2;
+
+  function EventSource(url) {
+    if (!(this instanceof EventSource)) return new EventSource(url);
+    this.url = String(url);
+    this.readyState = CONNECTING;
+    this._retry = 3000;
+    this._lastEventId = '';
+    this._timer = null;
+    this._listeners = {};
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    var self = this;
+    this._connect();
+  }
+  EventSource.CONNECTING = CONNECTING;
+  EventSource.OPEN = OPEN;
+  EventSource.CLOSED = CLOSED;
+
+  EventSource.prototype._fire = function(type, ev) {
+    ev = ev || {};
+    ev.type = type;
+    var handler = this['on' + type];
+    if (typeof handler === 'function') handler.call(this, ev);
+    var list = this._listeners[type];
+    if (list) {
+      for (var i = 0; i < list.length; i++) list[i].call(this, ev);
+    }
+  };
+
+  EventSource.prototype._connect = function() {
+    var self = this;
+    if (this.readyState === CLOSED) return;
+    this.readyState = CONNECTING;
+    var headers = { 'Accept': 'text/event-stream' };
+    if (this._lastEventId) headers['Last-Event-ID'] = this._lastEventId;
+    fetch(this.url, { headers: headers })
+      .then(function(resp) {
+        if (!resp.ok) {
+          self._fail('EventSource: HTTP ' + resp.status + ' for ' + self.url);
+          return null;
+        }
+        // Spec: the response MIME type must be text/event-stream.
+        var ct = resp.headers && resp.headers.get && resp.headers.get('content-type');
+        if (ct && String(ct).indexOf('text/event-stream') === -1) {
+          self._fail('EventSource: response Content-Type "' + ct + '" is not text/event-stream');
+          return null;
+        }
+        self.readyState = OPEN;
+        self._fire('open');
+        return resp.text();
+      })
+      .then(function(text) {
+        if (text === null || text === undefined) return;
+        self._parse(text);
+        // Server closed the stream — spec: schedule reconnect.
+        self._scheduleReconnect();
+      })
+      .catch(function(err) {
+        self._fail(err && err.message ? err.message : String(err));
+      });
+  };
+
+  EventSource.prototype._fail = function(msg) {
+    if (this.readyState === CLOSED) return;
+    this._fire('error', { message: msg });
+    this._scheduleReconnect();
+  };
+
+  EventSource.prototype._scheduleReconnect = function() {
+    var self = this;
+    if (this.readyState === CLOSED) return;
+    this.readyState = CONNECTING;
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = setTimeout(function() { self._connect(); }, this._retry);
+  };
+
+  // WHATWG event-stream parsing: lines split on CR/LF/CRLF, fields
+  // event/data/id/retry, blank line dispatches the accumulated event.
+  EventSource.prototype._parse = function(text) {
+    var lines = text.split(/\r\n|\r|\n/);
+    var dataLines = [], eventName = '', lastId = this._lastEventId;
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (line === '') {
+        if (dataLines.length > 0) {
+          var ev = { data: dataLines.join('\n'), lastEventId: lastId };
+          if (eventName !== '' && eventName !== 'message') {
+            ev.lastEventId = lastId;
+            this._fire(eventName, ev);
+          } else {
+            this._fire('message', ev);
+          }
+        }
+        dataLines = [];
+        eventName = '';
+        continue;
+      }
+      if (line.charCodeAt(0) === 0x3a /* ':' */) continue; // comment
+      var colon = line.indexOf(':');
+      var field, value;
+      if (colon === -1) { field = line; value = ''; }
+      else {
+        field = line.slice(0, colon);
+        value = line.slice(colon + 1);
+        if (value.charCodeAt(0) === 0x20 /* ' ' */) value = value.slice(1);
+      }
+      if (field === 'event') eventName = value;
+      else if (field === 'data') dataLines.push(value);
+      else if (field === 'id') { if (value.indexOf('\0') === -1) lastId = value; }
+      else if (field === 'retry') {
+        var n = parseInt(value, 10);
+        if (!isNaN(n)) this._retry = n;
+      }
+    }
+    this._lastEventId = lastId;
+    // A trailing non-blank data block without the final blank line is NOT
+    // dispatched (spec: incomplete event at stream end).
+  };
+
+  EventSource.prototype.close = function() {
+    if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+    this.readyState = CLOSED;
+  };
+
+  EventSource.prototype.addEventListener = function(type, cb) {
+    if (typeof cb !== 'function') return;
+    if (!this._listeners[type]) this._listeners[type] = [];
+    this._listeners[type].push(cb);
+  };
+  EventSource.prototype.removeEventListener = function(type, cb) {
+    var list = this._listeners[type];
+    if (!list) return;
+    var i = list.indexOf(cb);
+    if (i !== -1) list.splice(i, 1);
+  };
+
+  _g.EventSource = EventSource;
+
+  // ── window/document: CLI leaves them UNDEFINED (team-lead ruling, Node
+  // parity). An "exists but every property is a throwing placeholder" gate
+  // is itself the silent-fake shape (feature detection sees a window that
+  // lies about existing); honest MISSING — typeof window === 'undefined' —
+  // matches Node and the DOMParser philosophy. Browser pages keep servo's
+  // real window/document; bare references in CLI throw ReferenceError, which
+  // IS the explicit signal.
+})();
+"#;
+    unsafe {
+        let raw = cx.raw_cx();
+        let mut rval = UndefinedValue();
+        let opts = mozjs::glue::NewCompileOptions(raw, c"event_source".as_ptr(), 1);
+        if !opts.is_null() {
+            let mut src_text = mozjs::rust::transform_str_to_source_text(src);
+            mozjs_sys::jsapi::JS::Evaluate2(
+                raw,
+                opts,
+                &mut src_text,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
+            libc::free(opts as *mut _);
+        }
+        let _ = global;
+    }
 }
 
 #[cfg(test)]

@@ -27,16 +27,18 @@ static NEXT_SERVER_ID: AtomicU64 = AtomicU64::new(1);
 // Node-shaped http client surface (request/get + ClientRequest faces)
 //
 // Transport = `__http_request_async(url, method, headersJSON, body)` →
-// pending Promise resolved with a fetch-shaped Response {status, ok,
-// statusText, headers, _bodyText}. This shim layers the Node API contract
-// on top:
+// pending Promise resolved with the realm's WHATWG Response instance
+// (web_fetch_classes, built by fetch_async::build_response_js): headers is
+// a Headers instance and the body is consumed through the class methods
+// (text()/arrayBuffer()). This shim layers the Node API contract on top:
 //   - `http.request(url|opts[, opts][, cb])` → ClientRequest; the request
 //     fires on `.end()` (Node semantics — nothing is sent before then).
 //   - `http.get(...)` = request + immediate `.end()`.
 //   - cb / 'response' listener receives an IncomingMessage
 //     {statusCode, statusMessage, headers, httpVersion, complete} with
-//     'data'/'end' delivered on registration (body fully buffered by the
-//     time the response settles).
+//     plain-object lower-cased headers and 'data'/'end' delivered once
+//     Response#text() settles (body fully buffered by the time the
+//     response settles; text() resolves on the following microtask).
 //   - rejection → 'error' on the ClientRequest; no listener = loud
 //     console.error (never a silent drop).
 //   - Direct `new http.ClientRequest/IncomingMessage/OutgoingMessage`
@@ -90,25 +92,54 @@ const HTTP_CLIENT_JS: &str = r#"(function(h){
     return obj;
   }
 
-  function makeIncoming(resp) {
+  // WHATWG Headers instance (web_fetch_classes) → Node's IncomingMessage
+  // headers shape: a plain object keyed by lower-cased names. Headers#get
+  // normalises case-insensitively and joins repeated values with ', ' —
+  // forEach walks exactly those pairs.
+  function headersToNode(h) {
+    var out = {};
+    if (!h || typeof h !== 'object') return out;
+    if (typeof h.forEach !== 'function') return out;
+    h.forEach(function (v, k) {
+      if (k != null) out[String(k).toLowerCase()] = String(v);
+    });
+    return out;
+  }
+
+  function makeIncoming(resp, onDone) {
     var res = Object.create(IncomingMessage.prototype);
     attachEE(res);
     res.statusCode = resp && typeof resp.status === 'number' ? resp.status : 0;
     res.statusMessage = (resp && resp.statusText) || '';
-    res.headers = (resp && resp.headers) || {};
+    res.headers = headersToNode(resp && resp.headers);
     res.httpVersion = '1.1';
     res.complete = true;
-    // The transport buffers the whole body before the response settles, so
-    // there is exactly one chunk: every 'data' listener receives it on
-    // registration, 'end' likewise (Node's data-then-end order follows the
-    // listener's registration order).
-    res._pendingData = (resp && typeof resp._bodyText === 'string') ? resp._bodyText : '';
+    // The transport buffers the whole body before the response settles, but
+    // the realm's Response class hands it over via text() — a Promise that
+    // settles on the following microtask. There is exactly one chunk:
+    // listeners registered before it settles are queued and fired in
+    // registration order (data, then end) once it does; listeners registered
+    // after settle receive data/end on registration.
+    res._bodyText = null;
+    res._bodySettled = false;
+    res._deliverBody = function () {
+      if (res._bodySettled) return;
+      res._bodySettled = true;
+      var ds = res._hh['data'];
+      if (ds && res._bodyText !== '') {
+        for (var i = 0; i < ds.length; i++) ds[i].call(res, res._bodyText);
+      }
+      var es = res._hh['end'];
+      if (es) for (var j = 0; j < es.length; j++) es[j].call(res);
+    };
     res.on = function (ev, fn) {
       (res._hh[ev] || (res._hh[ev] = [])).push(fn);
-      if (ev === 'data') {
-        if (res._pendingData !== null && res._pendingData !== '') fn.call(res, res._pendingData);
-      } else if (ev === 'end') {
-        fn.call(res);
+      if (res._bodySettled) {
+        if (ev === 'data') {
+          if (res._bodyText !== null && res._bodyText !== '') fn.call(res, res._bodyText);
+        } else if (ev === 'end') {
+          fn.call(res);
+        }
       }
       return res;
     };
@@ -117,6 +148,32 @@ const HTTP_CLIENT_JS: &str = r#"(function(h){
     res.pause = function () { return res; };
     res.setEncoding = function () { return res; };
     res.destroy = function () { res.complete = true; return res; };
+    var done = onDone;
+    var settleBody = function (text) {
+      res._bodyText = text;
+      res._deliverBody();
+      if (done) { var f = done; done = null; f(); }
+    };
+    var failBody = function (err) {
+      // Loud failure — a body read error must never surface as a silent
+      // empty body (fake-green class).
+      var e = err instanceof Error ? err : new Error(String(err && err.message ? err.message : err));
+      var had = res.emit('error', e);
+      if (!had && typeof console !== 'undefined' && console.error) {
+        console.error('http: response body read failed:', e.message);
+      }
+      settleBody('');
+    };
+    try {
+      if (!resp || typeof resp.text !== 'function') {
+        throw new Error('http: transport resolved without a Response body (text() missing)');
+      }
+      resp.text().then(function (t) {
+        settleBody(typeof t === 'string' ? t : '');
+      }, failBody);
+    } catch (e) {
+      failBody(e);
+    }
     return res;
   }
 
@@ -136,11 +193,13 @@ const HTTP_CLIENT_JS: &str = r#"(function(h){
     }
     p.then(function (resp) {
       if (req.destroyed) { req.emit('close'); return; }
-      var res = makeIncoming(resp);
+      // 'close' follows response-body delivery (the request cycle ends when
+      // the response is fully consumed) — makeIncoming fires onDone once
+      // Response#text() has settled and data/end were delivered.
+      var res = makeIncoming(resp, function () { req.emit('close'); });
       req.res = res;
       try { if (req._cb) req._cb(res); } catch (e) { lateError(req, e); }
       req.emit('response', res);
-      req.emit('close');
     }, function (err) {
       if (req.destroyed) { req.emit('close'); return; }
       settleError(req, err);

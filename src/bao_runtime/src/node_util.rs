@@ -489,6 +489,48 @@ t.isCryptoKey=function(){return false};
         }
     }
 
+    // @trace REQ-ENG-006 [api:util TextEncoder/TextDecoder] — Node re-exports
+    // the global classes on the util module with identity preserved:
+    // `util.TextEncoder === globalThis.TextEncoder` is true.
+    {
+        let global = unsafe { CurrentGlobalOrNull(cx.raw_cx()) };
+        if !global.is_null() {
+            // compile-fix by e-node-stdlib (parallel wave): missing unsafe
+            // wrapper on from_ptr/new_unchecked/raw_cx — semantics unchanged.
+            let wrapped_cx = unsafe {
+                mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()))
+            };
+            rooted!(&in(wrapped_cx) let global_root = global);
+            for name in ["TextEncoder", "TextDecoder"] {
+                let cname = ZBox::from_bytes(name.as_bytes());
+                let mut ctor = UndefinedValue();
+                unsafe {
+                    JS_GetProperty(
+                        cx.raw_cx(),
+                        global_root.handle().into(),
+                        cname.as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut ctor,
+                        },
+                    );
+                }
+                if ctor.is_object() {
+                    rooted!(&in(wrapped_cx) let ctor_root = ctor);
+                    unsafe {
+                        JS_DefineProperty(
+                            cx.raw_cx(),
+                            util_obj.handle().into(),
+                            cname.as_ptr(),
+                            ctor_root.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     cache_builtin(cx, "util", util_obj.get());
 }
 
@@ -1529,10 +1571,106 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     true
 }
 
+// @trace REQ-ENG-006 [api:util.callbackify] — real Node semantics. The
+// previous implementation returned the argument unchanged, so the callback
+// never ran (silent fake). Mirrors Node lib/util.js:
+//   - last argument must be a function (else TypeError ERR_INVALID_CALLBACK)
+//   - uses `fn[Symbol.for('nodejs.callbackify.custom')]` when present
+//   - resolved value: undefined → cb(null); Array → cb(null, ...arr);
+//     anything else → cb(null, value)
+//   - rejection: falsy reason is wrapped in an Error carrying `.cause`
+//   - a synchronous throw of the wrapped fn is delivered to the callback on a
+//     microtask (Node defers via process.nextTick)
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn util_callbackify(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn util_callbackify(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    args.rval().set(*args.get(0).ptr);
+    if _argc == 0 || !(*args.get(0).ptr).is_object() {
+        JS_ReportErrorUTF8(cx, c"callbackify requires a function".as_ptr());
+        return false;
+    }
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let fn_val = *args.get(0).ptr);
+
+    let callbackify_src = r#"(function(orig) {
+  var custom = orig[Symbol.for('nodejs.callbackify.custom')];
+  var impl = (typeof custom === 'function') ? function() { return custom.apply(this, arguments); } : orig;
+  function callbackified() {
+    var args = Array.prototype.slice.call(arguments);
+    var maybeCb = args.pop();
+    if (typeof maybeCb !== 'function') {
+      throw new TypeError('The last argument passed to callbackify must be a callback function');
+    }
+    var cb = maybeCb;
+    var ret;
+    try {
+      ret = impl.apply(this, args);
+    } catch (err) {
+      // Node defers the synchronous failure to process.nextTick; a microtask
+      // is the same "after the current call" delivery without nextTick.
+      Promise.resolve().then(function() { cb(err); });
+      return;
+    }
+    Promise.resolve(ret).then(function(value) {
+      if (value === undefined) cb(null);
+      else if (Array.isArray(value)) cb.apply(null, [null].concat(value));
+      else cb(null, value);
+    }, function(err) {
+      var reason = err;
+      if (!reason) {
+        reason = new Error('falsy rejection reason');
+        if (reason && !reason.cause) { try { reason.cause = err; } catch (e) {} }
+      }
+      cb(reason);
+    });
+  }
+  callbackified[Symbol.for('nodejs.callbackify.custom')] = orig[Symbol.for('nodejs.callbackify.custom')];
+  return callbackified;
+})"#;
+    let mut src = mozjs::rust::transform_str_to_source_text(callbackify_src);
+    let mut factory_val = UndefinedValue();
+    let factory_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut factory_val,
+    };
+    let opts = mozjs::glue::NewCompileOptions(cx, c"<callbackify>".as_ptr(), 1);
+    if opts.is_null() {
+        args.rval().set(*args.get(0).ptr);
+        return true;
+    }
+    if !JS::Evaluate2(cx, opts, &mut src, factory_h) || !factory_val.is_object() {
+        libc::free(opts as *mut _);
+        args.rval().set(*args.get(0).ptr);
+        return true;
+    }
+    libc::free(opts as *mut _);
+
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        args.rval().set(*args.get(0).ptr);
+        return true;
+    }
+    rooted!(&in(wrapped_cx) let global_root = global);
+    rooted!(&in(wrapped_cx) let fn_obj = fn_val.get().to_object());
+    rooted!(&in(wrapped_cx) let fn_obj_val = ObjectValue(fn_obj.get()));
+    let args_arr = HandleValueArray {
+        length_: 1,
+        elements_: &fn_obj_val.get() as *const Value,
+    };
+    let mut call_rval = UndefinedValue();
+    let call_rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut call_rval,
+    };
+    rooted!(&in(wrapped_cx) let factory_obj = factory_val.to_object());
+    rooted!(&in(wrapped_cx) let factory_val_h = ObjectValue(factory_obj.get()));
+    JS_CallFunctionValue(
+        cx,
+        global_root.handle().into(),
+        factory_val_h.handle().into(),
+        &args_arr,
+        call_rval_h,
+    );
+    args.rval().set(call_rval);
     true
 }
 

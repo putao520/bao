@@ -440,13 +440,257 @@ unsafe extern "C" fn os_cpus(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> 
     true
 }
 
+// BCE-20260816-OS-NETIF — os_networkInterfaces previously returned a bare
+// empty object (silently fake). Real enumeration via libc getifaddrs(3),
+// grouped per interface name with the Node shape:
+//   { "lo": [{ address, netmask, family: "IPv4"|"IPv6", mac, internal,
+//              cidr, scopeid? }] }
+// mac comes from the AF_PACKET entry (link-layer address), internal is the
+// IFF_LOOPBACK flag, cidr is address/prefixlen (netmask popcount).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn os_network_interfaces(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+
+    struct IfaceEntry {
+        address: String,
+        netmask: String,
+        family: &'static str,
+        prefix_len: u8,
+        scopeid: Option<u32>,
+    }
+    // (name, mac, internal, entries) in getifaddrs order.
+    let mut ifaces: Vec<(String, String, bool, Vec<IfaceEntry>)> = Vec::new();
+    let mut ifap: *mut libc::ifaddrs = ::std::ptr::null_mut();
+    let ok = unsafe { libc::getifaddrs(&mut ifap) } == 0;
+    if ok && !ifap.is_null() {
+        let mut cur = ifap;
+        while !cur.is_null() {
+            let ifa = unsafe { &*cur };
+            cur = ifa.ifa_next;
+            let name = unsafe {
+                if ifa.ifa_name.is_null() {
+                    continue;
+                }
+                ::std::ffi::CStr::from_ptr(ifa.ifa_name).to_string_lossy().into_owned()
+            };
+            let sa = ifa.ifa_addr as *const libc::sockaddr;
+            if sa.is_null() {
+                continue;
+            }
+            let family = unsafe { (*sa).sa_family as i32 };
+            let flags = ifa.ifa_flags;
+            let slot = match ifaces.iter_mut().find(|(n, _, _, _)| *n == name) {
+                Some(s) => s,
+                None => {
+                    ifaces.push((name.clone(), "00:00:00:00:00:00".to_string(), false, Vec::new()));
+                    ifaces.last_mut().unwrap()
+                }
+            };
+            if flags & libc::IFF_LOOPBACK as u32 != 0 {
+                slot.2 = true;
+            }
+            match family {
+                libc::AF_PACKET => {
+                    let sll = sa as *const libc::sockaddr_ll;
+                    let mac = unsafe {
+                        format!(
+                            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                            (*sll).sll_addr[0], (*sll).sll_addr[1], (*sll).sll_addr[2],
+                            (*sll).sll_addr[3], (*sll).sll_addr[4], (*sll).sll_addr[5]
+                        )
+                    };
+                    slot.1 = mac;
+                }
+                libc::AF_INET => {
+                    let sin = sa as *const libc::sockaddr_in;
+                    let addr = unsafe { ipv4_to_string((*sin).sin_addr.s_addr) };
+                    let mask = if ifa.ifa_netmask.is_null() {
+                        "0.0.0.0".to_string()
+                    } else {
+                        let snm = ifa.ifa_netmask as *const libc::sockaddr_in;
+                        unsafe { ipv4_to_string((*snm).sin_addr.s_addr) }
+                    };
+                    let prefix = if ifa.ifa_netmask.is_null() {
+                        0
+                    } else {
+                        let snm = ifa.ifa_netmask as *const libc::sockaddr_in;
+                        unsafe { (*snm).sin_addr.s_addr.count_ones() as u8 }
+                    };
+                    slot.3.push(IfaceEntry {
+                        address: addr,
+                        netmask: mask,
+                        family: "IPv4",
+                        prefix_len: prefix,
+                        scopeid: None,
+                    });
+                }
+                libc::AF_INET6 => {
+                    let sin6 = sa as *const libc::sockaddr_in6;
+                    let addr = unsafe { ipv6_to_string(&(*sin6).sin6_addr) };
+                    let (mask, prefix) = if ifa.ifa_netmask.is_null() {
+                        ("::".to_string(), 0u8)
+                    } else {
+                        let snm = ifa.ifa_netmask as *const libc::sockaddr_in6;
+                        unsafe {
+                            let mut pl = 0u8;
+                            for b in (*snm).sin6_addr.s6_addr.iter() {
+                                pl += b.count_ones() as u8;
+                            }
+                            (ipv6_to_string(&(*snm).sin6_addr), pl)
+                        }
+                    };
+                    let scopeid = unsafe { (*sin6).sin6_scope_id };
+                    slot.3.push(IfaceEntry {
+                        address: addr,
+                        netmask: mask,
+                        family: "IPv6",
+                        prefix_len: prefix,
+                        scopeid: if scopeid > 0 { Some(scopeid) } else { None },
+                    });
+                }
+                _ => {}
+            }
+        }
+        unsafe { libc::freeifaddrs(ifap) };
+    }
+
     rooted!(&in(wrapped_cx) let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
+    if !obj.get().is_null() {
+        for (name, mac, internal, entries) in &ifaces {
+            let mut oscx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(oscx) let arr = w2::NewArrayObject1(&mut oscx, entries.len().max(1)));
+            if arr.get().is_null() {
+                continue;
+            }
+            for (idx, ent) in entries.iter().enumerate() {
+                rooted!(&in(wrapped_cx) let ent_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
+                if ent_obj.get().is_null() {
+                    continue;
+                }
+                for (key, val_str) in &[
+                    ("address", &ent.address),
+                    ("netmask", &ent.netmask),
+                    ("family", &ent.family.to_string()),
+                    ("mac", mac),
+                    ("cidr", &format!("{}/{}", ent.address, ent.prefix_len)),
+                ] {
+                    let c_key = ZBox::from_bytes(key.as_bytes());
+                    let utf16: Vec<u16> = val_str.encode_utf16().collect();
+                    let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
+                    if !js_str.is_null() {
+                        let val = StringValue(&*js_str);
+                        rooted!(&in(wrapped_cx) let v = val);
+                        JS_DefineProperty(
+                            cx,
+                            ent_obj.handle().into(),
+                            c_key.as_ptr(),
+                            v.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
+                }
+                {
+                    let c_key = ZBox::from_bytes(b"internal");
+                    rooted!(&in(wrapped_cx) let v = mozjs::jsval::BooleanValue(*internal));
+                    JS_DefineProperty(
+                        cx,
+                        ent_obj.handle().into(),
+                        c_key.as_ptr(),
+                        v.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+                if let Some(scopeid) = ent.scopeid {
+                    let c_key = ZBox::from_bytes(b"scopeid");
+                    rooted!(&in(wrapped_cx) let v = Int32Value(scopeid as i32));
+                    JS_DefineProperty(
+                        cx,
+                        ent_obj.handle().into(),
+                        c_key.as_ptr(),
+                        v.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+                rooted!(&in(wrapped_cx) let elem = ObjectValue(ent_obj.get()));
+                JS_DefineElement(
+                    cx,
+                    arr.handle().into(),
+                    idx as u32,
+                    elem.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            let c_name = ZBox::from_bytes(name.as_bytes());
+            rooted!(&in(wrapped_cx) let arr_val = ObjectValue(arr.get()));
+            JS_DefineProperty(
+                cx,
+                obj.handle().into(),
+                c_name.as_ptr(),
+                arr_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
     args.rval().set(ObjectValue(obj.get()));
     true
+}
+
+/// Format an IPv4 s_addr (network byte order) as dotted quad.
+unsafe fn ipv4_to_string(s_addr: libc::in_addr_t) -> String {
+    let be = s_addr.to_be();
+    format!(
+        "{}.{}.{}.{}",
+        (be >> 24) & 0xff,
+        (be >> 16) & 0xff,
+        (be >> 8) & 0xff,
+        be & 0xff
+    )
+}
+
+/// Format an IPv6 address in Node style (compressed, lowercase, RFC 5952
+/// longest-zero-run compression — ::1 / fe80::... shapes).
+unsafe fn ipv6_to_string(addr: &libc::in6_addr) -> String {
+    let g = addr.s6_addr;
+    let mut groups = [0u16; 8];
+    for i in 0..8 {
+        groups[i] = ((g[i * 2] as u16) << 8) | g[i * 2 + 1] as u16;
+    }
+    let (mut best_start, mut best_len) = (usize::MAX, 0usize);
+    let mut i = 0;
+    while i < 8 {
+        if groups[i] == 0 {
+            let start = i;
+            while i < 8 && groups[i] == 0 {
+                i += 1;
+            }
+            let len = i - start;
+            if len > best_len {
+                best_len = len;
+                best_start = start;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    let mut out = ::std::string::String::new();
+    let mut j = 0;
+    while j < 8 {
+        if j == best_start && best_len > 1 {
+            out.push_str("::");
+            j += best_len;
+            continue;
+        }
+        if !out.is_empty() && !out.ends_with(':') {
+            out.push(':');
+        }
+        out.push_str(&format!("{:x}", groups[j]));
+        j += 1;
+    }
+    if out.is_empty() {
+        out.push_str("::");
+    }
+    out
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

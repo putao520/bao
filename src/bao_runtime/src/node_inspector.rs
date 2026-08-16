@@ -5,7 +5,7 @@
 // The inspector state is tracked via atomics; actual CDP integration is handled
 // by bao_cdp when the browser/CDP server is active.
 
-use ::std::ptr::NonNull;
+use ::std::ptr::{self, NonNull};
 use ::std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use mozjs::jsapi::*;
@@ -68,9 +68,162 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             0,
             JSPROP_ENUMERATE as u32,
         );
+
+        // inspector.Session — explicit registration (REQ-ENG-006 group:
+        // silent-fake eradication). A REAL Session needs an in-process CDP
+        // embedded session bound to this JSContext. Evaluation: `bao_cdp` is
+        // dep-able from bao_runtime without a cycle, but its CdpRouter/
+        // CdpSession model is servo-bridge-bound — sessions route through a
+        // live CDP server + servo target (BridgeSender/BridgeReceiver), which
+        // does not exist in CLI `bao run` mode. Linking bao_cdp in would
+        // yield a mode-dependent inert session — the exact silent-fake class
+        // this pass eradicates. So the class exists (constructible, real
+        // Node surface shape) and connect() throws with the reason; post()
+        // before connect throws exactly like Node ("Session is not connected").
+        let session_ctor_fn = JS_NewFunction(
+            cx.raw_cx(),
+            Some(inspector_session_ctor),
+            0,
+            JSFUN_CONSTRUCTOR,
+            c"Session".as_ptr(),
+        );
+        if !session_ctor_fn.is_null() {
+            let session_ctor_obj = JS_GetFunctionObject(session_ctor_fn);
+            rooted!(&in(cx) let sc = session_ctor_obj);
+            // Native constructors need an explicit object `prototype`
+            // (methods live on it so instances resolve them through the
+            // prototype chain).
+            rooted!(&in(cx) let proto = unsafe { w2::JS_NewPlainObject(cx) });
+            if !proto.get().is_null() {
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"connect".as_ptr(),
+                    Some(inspector_session_connect),
+                    0,
+                    0,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"post".as_ptr(),
+                    Some(inspector_session_post),
+                    0,
+                    0,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"disconnect".as_ptr(),
+                    Some(inspector_session_disconnect),
+                    0,
+                    0,
+                );
+                rooted!(&in(cx) let pv = ObjectValue(proto.get()));
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    sc.handle().into(),
+                    c"prototype".as_ptr(),
+                    pv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            rooted!(&in(cx) let sv = ObjectValue(session_ctor_obj));
+            JS_DefineProperty(
+                cx.raw_cx(),
+                inspector_obj.handle().into(),
+                c"Session".as_ptr(),
+                sv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
     }
 
     cache_builtin(cx, "inspector", inspector_obj.get());
+}
+
+/// `new inspector.Session()` — constructs a session object. Native
+/// constructors receive a MAGIC `thisv` while constructing (never the
+/// created object), so the session is built explicitly and prototyped from
+/// the explicitly-defined `Session.prototype` (vm.Script pattern), making
+/// `s instanceof inspector.Session` hold.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn inspector_session_ctor(
+    _cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(_cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    rooted!(&in(cx_ref) let ctor = args.callee());
+    let mut proto_val = UndefinedValue();
+    JS_GetProperty(
+        _cx,
+        ctor.handle().into(),
+        c"prototype".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut proto_val,
+        },
+    );
+    if proto_val.is_object() {
+        rooted!(&in(cx_ref) let proto = proto_val.to_object());
+        JS_SetPrototype(_cx, obj.handle().into(), proto.handle().into());
+    }
+    rooted!(&in(cx_ref) let connected = mozjs::jsval::BooleanValue(false));
+    JS_DefineProperty(
+        _cx,
+        obj.handle().into(),
+        c"connected".as_ptr(),
+        connected.handle().into(),
+        0,
+    );
+    args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
+    true
+}
+
+/// session.connect() — explicit throw: an in-process CDP embedded session
+/// bound to this JSContext is required (see install() for the evaluation).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn inspector_session_connect(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let _args = CallArgs::from_vp(vp, _argc);
+    JS_ReportErrorUTF8(
+        cx,
+        c"inspector.Session.connect() is not implemented in Bao: it requires an in-process CDP embedded session bound to this JSContext. bao_cdp's session model targets servo pages through a live CDP server + bridge, which does not exist in CLI runtime mode. Refusing to fake a connected session.".as_ptr(),
+    );
+    false
+}
+
+/// session.post() — Node throws "Session is not connected" when posting
+/// before connect(); mirror that exact contract.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn inspector_session_post(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let _args = CallArgs::from_vp(vp, _argc);
+    JS_ReportErrorUTF8(cx, c"Session is not connected".as_ptr());
+    false
+}
+
+/// session.disconnect() — disconnecting a never-connected session has
+/// nothing to release; a benign no-op is the genuine Node semantic.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn inspector_session_disconnect(
+    _cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(UndefinedValue());
+    true
 }
 
 // ── Native callbacks ──

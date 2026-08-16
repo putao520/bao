@@ -917,6 +917,22 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(
             cx,
             fs_obj.handle(),
+            c"truncateSync".as_ptr(),
+            Some(fs_truncate_sync),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            fs_obj.handle(),
+            c"opendirSync".as_ptr(),
+            Some(fs_opendir_sync),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            fs_obj.handle(),
             c"futimesSync".as_ptr(),
             Some(fs_futimes_sync),
             3,
@@ -4555,15 +4571,22 @@ unsafe extern "C" fn fs_truncate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 2) {
         spawn_fs_async(cx, "truncate", path.clone(), callback, None, move || {
-            fs::File::open(&path)
-                .and_then(|f| f.set_len(len as u64))
+            // write-open: ftruncate(2) rejects read-only fds (EINVAL)
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .and_then(|f| f.set_len(len.max(0) as u64))
                 .map(|_| FsAsyncResult::OkVoid)
         });
         args.rval().set(UndefinedValue());
         return true;
     }
 
-    match fs::File::open(&path).and_then(|f| f.set_len(len as u64)) {
+    match fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .and_then(|f| f.set_len(len.max(0) as u64))
+    {
         ::std::result::Result::Ok(()) => {
             args.rval().set(UndefinedValue());
             true
@@ -5466,7 +5489,8 @@ unsafe extern "C" fn fs_promises_truncate(cx: *mut JSContext, argc: u32, vp: *mu
         args.rval().set(UndefinedValue());
         return false;
     }
-    match fs::File::open(&path).and_then(|f| f.set_len(len)) {
+    // write-open: ftruncate(2) rejects read-only fds (EINVAL)
+    match fs::OpenOptions::new().write(true).open(&path).and_then(|f| f.set_len(len)) {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
             reject_with_error(cx, promise.get(), &format!("truncate '{}': {}", path, e))
@@ -6070,6 +6094,71 @@ unsafe extern "C" fn fs_close_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     }
 }
 
+// BCE-20260816-FS-READSYNC — the old implementation ignored the caller's
+// buffer argument entirely: it read into a throwaway Vec (the created Buffer
+// object was dropped unused) and returned only the byte count, so the
+// canonical `fd = openSync(p, 'r'); readSync(fd, buf, 0, n, 0)` pattern left
+// `buf` zeroed — the "openSync+readSync combo dead" audit item. Node
+// semantics (fs.readSync(fd, buffer, offset, length, position)): bytes are
+// written into the CALLER'S typed array at `offset`, `length` caps the read,
+// and a numeric `position` reads via pread without moving the fd cursor
+// (null/undefined position = current cursor via read).
+// fs.truncateSync(path, len) — path-based truncate (the fd-based
+// ftruncateSync already existed; the path form was missing entirely, so
+// `typeof fs.truncateSync === 'undefined'`). Opened WRITE: ftruncate(2)
+// rejects read-only fds with EINVAL — a read-only File::open + set_len
+// always failed (probe: truncateSync EINVAL).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_truncate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) {
+        ::std::result::Result::Ok(p) => p,
+        ::std::result::Result::Err(b) => return b,
+    };
+    let len_val = if argc > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
+    let len = if len_val.is_int32() {
+        len_val.to_int32() as i64
+    } else if len_val.is_double() {
+        len_val.to_double() as i64
+    } else {
+        0
+    };
+    match fs::OpenOptions::new().write(true).open(&path).and_then(|f| f.set_len(len.max(0) as u64)) {
+        ::std::result::Result::Ok(()) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
+        ::std::result::Result::Err(e) => throw_fs_error(cx, "truncateSync", &path, &e),
+    }
+}
+
+// fs.opendirSync(path) — same Dir object as the async opendir() (readSync /
+// closeSync / async iteration), returned synchronously.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_opendir_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) {
+        ::std::result::Result::Ok(p) => p,
+        ::std::result::Result::Err(b) => return b,
+    };
+    match fs::metadata(&path) {
+        ::std::result::Result::Ok(meta) if meta.is_dir() => {
+            let dir_obj = create_dir_object(cx, &path);
+            args.rval().set(mozjs::jsval::ObjectValue(dir_obj));
+            true
+        }
+        ::std::result::Result::Ok(_) => {
+            JS_ReportErrorUTF8(cx, c"opendirSync: path is not a directory".as_ptr());
+            false
+        }
+        ::std::result::Result::Err(e) => throw_fs_error(cx, "opendirSync", &path, &e),
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fs_read_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -6083,26 +6172,109 @@ unsafe extern "C" fn fs_read_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     } else {
         -1
     };
-    let length = if argc > 3 {
-        let v = *args.get(3).ptr;
-        if v.is_int32() {
-            v.to_int32() as usize
+
+    // Caller-supplied buffer: must be a typed array (Buffer IS a Uint8Array).
+    let buf_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    if !buf_val.is_object() {
+        JS_ReportErrorUTF8(
+            cx,
+            c"readSync: buffer argument must be a Buffer or Uint8Array".as_ptr(),
+        );
+        return false;
+    }
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let buf_obj = buf_val.to_object());
+    if !mozjs_sys::jsapi::JS_IsArrayBufferViewObject(buf_obj.get()) {
+        JS_ReportErrorUTF8(
+            cx,
+            c"readSync: buffer argument must be a Buffer or Uint8Array".as_ptr(),
+        );
+        return false;
+    }
+
+    let byte_len = mozjs_sys::jsapi::JS_GetTypedArrayByteLength(buf_obj.get()) as usize;
+
+    let to_num = |v: JSVal| -> Option<f64> {
+        if v.is_number() {
+            Some(v.to_number())
+        } else if v.is_int32() {
+            Some(v.to_int32() as f64)
         } else {
-            65536
+            None
         }
-    } else {
-        65536
     };
-    let mut buf = vec![0u8; length];
+    let offset = if argc > 2 {
+        to_num(*args.get(2).ptr).unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let length = if argc > 3 {
+        to_num(*args.get(3).ptr)
+            .filter(|n| *n >= 0.0)
+            .map(|n| n as usize)
+            .unwrap_or(byte_len)
+    } else {
+        byte_len
+    };
+    let position_arg = if argc > 4 { *args.get(4).ptr } else { UndefinedValue() };
+    let use_pread = position_arg.is_number() || position_arg.is_int32();
+    let position: i64 = if use_pread {
+        to_num(position_arg).unwrap_or(0.0) as i64
+    } else {
+        -1
+    };
+
+    if offset < 0.0 || offset as usize > byte_len {
+        JS_ReportErrorUTF8(
+            cx,
+            c"readSync: offset is out of bounds".as_ptr(),
+        );
+        return false;
+    }
+    let offset = offset as usize;
+    if length > byte_len - offset {
+        JS_ReportErrorUTF8(
+            cx,
+            c"readSync: length extends beyond buffer".as_ptr(),
+        );
+        return false;
+    }
+    if length == 0 {
+        args.rval().set(mozjs::jsval::Int32Value(0));
+        return true;
+    }
+
     #[cfg(unix)]
     {
-        let bytes_read =
-            unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) };
+        // Rooted view — data pointer stays valid across the read (no JS runs).
+        let mut is_shared = false;
+        let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(
+            buf_obj.get(),
+            &mut is_shared,
+            ::std::ptr::null(),
+        );
+        if data_ptr.is_null() {
+            JS_ReportErrorUTF8(
+                cx,
+                c"readSync: cannot access buffer storage".as_ptr(),
+            );
+            return false;
+        }
+        let dst = unsafe { data_ptr.add(offset) };
+        let bytes_read = if use_pread {
+            unsafe {
+                libc::pread(
+                    fd,
+                    dst as *mut ::std::ffi::c_void,
+                    length,
+                    position,
+                )
+            }
+        } else {
+            unsafe { libc::read(fd, dst as *mut ::std::ffi::c_void, length) }
+        };
         if bytes_read >= 0 {
-            buf.truncate(bytes_read as usize);
-            let _buf_obj = crate::globals::create_buffer_object(cx, &buf);
-            args.rval()
-                .set(mozjs::jsval::DoubleValue(bytes_read as f64));
+            args.rval().set(mozjs::jsval::Int32Value(bytes_read as i32));
             true
         } else {
             throw_fs_error(
@@ -6115,7 +6287,7 @@ unsafe extern "C" fn fs_read_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     }
     #[cfg(not(unix))]
     {
-        args.rval().set(UndefinedValue());
+        args.rval().set(mozjs::jsval::Int32Value(0));
         true
     }
 }
@@ -6699,16 +6871,300 @@ unsafe extern "C" fn fs_writev_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 }
 
 // --- glob ---
+//
+// BCE-20260816-FS-GLOB — the hand-written glob_walk/glob_match walker had two
+// fatal shape defects: (1) `options.cwd` was ignored entirely (patterns were
+// always walked from process CWD — probe: globSync('**/*.ts', {cwd:'/tmp/x'})
+// returned project-tree hits); (2) the matcher was a naive recursive glob
+// with no brace/char-class/dotfile semantics and no `dot` switch. Replaced by
+// the workspace's bun_glob engine (the Bun-faithful GlobWalker powering
+// upstream fs.glob — see ~/code/rust/bun/src/js/internal/fs/glob.ts):
+//   pattern: string | string[]
+//   options: { cwd (default process cwd), root (fallback start dir),
+//              dot (default false), exclude (fn | string[]) }
+// Node/Bun fs.glob yield paths RELATIVE to the start dir; absolute patterns
+// yield absolute paths. onlyFiles defaults to false (dirs match too), matching
+// upstream mapOptions.
+
+/// Options parsed from the JS `options` argument of glob/globSync.
+struct GlobOptions {
+    start_dir: String,
+    dot: bool,
+    /// JS exclude callbacks are applied post-walk (IgnoreFilterFn is a plain
+    /// fn pointer and cannot close over a JS callable).
+    exclude_fn: Option<*mut JSObject>,
+    exclude_globs: Vec<String>,
+}
+
+/// Collect glob matches for one pattern via bun_glob::GlobWalker, applying
+/// JS/glob excludes and the relative-path yield contract.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn glob_collect(
+    cx: *mut JSContext,
+    pattern: &str,
+    opts: &GlobOptions,
+    results: &mut Vec<String>,
+) {
+    type Walker = bun_glob::GlobWalker<bun_glob::walk::SyscallAccessor, false>;
+    let absolute = pattern.starts_with('/');
+    let mut walker = match Walker::init_with_cwd(
+        pattern.as_bytes(),
+        opts.start_dir.as_bytes(),
+        opts.dot,
+        absolute,
+        // followSymlinks: true — upstream fs.glob pins this (mapOptions).
+        true,
+        false,
+        // onlyFiles: false — upstream pins dirs+files (mapOptions).
+        false,
+        None,
+    ) {
+        Ok(Ok(w)) => w,
+        // Malformed pattern (unbalanced brace/class) → no matches for it.
+        _ => return,
+    };
+    let mut iter = bun_glob::walk::Iterator::new(&mut walker);
+    if iter.init().is_err() {
+        return;
+    }
+    let prefix = format!("{}/", opts.start_dir.trim_end_matches('/'));
+    loop {
+        match iter.next() {
+            Ok(Ok(Some(path))) => {
+                let full = String::from_utf8_lossy(&path).into_owned();
+                let shown = if !absolute && full.starts_with(&prefix) {
+                    full[prefix.len()..].to_string()
+                } else {
+                    full
+                };
+                if glob_excluded(cx, &shown, opts) {
+                    continue;
+                }
+                results.push(shown);
+            }
+            _ => break,
+        }
+    }
+}
+
+/// Apply options.exclude: a JS predicate (path => boolean) or a list of glob
+/// patterns (path is excluded when any pattern matches).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn glob_excluded(cx: *mut JSContext, path: &str, opts: &GlobOptions) -> bool {
+    if let Some(cb) = opts.exclude_fn {
+        if !cb.is_null() {
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let cb_root = cb);
+            let path_c = ZBox::from_bytes(path.as_bytes());
+            let path_js = JS_NewStringCopyZ(cx, path_c.as_ptr());
+            if path_js.is_null() {
+                return false;
+            }
+            let arg = mozjs::jsval::StringValue(&*path_js);
+            let args_arr = [arg];
+            let call_args = HandleValueArray {
+                length_: 1,
+                elements_: args_arr.as_ptr(),
+            };
+            let global = CurrentGlobalOrNull(cx);
+            if global.is_null() {
+                return false;
+            }
+            rooted!(&in(wrapped_cx) let global_root = global);
+            rooted!(&in(wrapped_cx) let cb_val = mozjs::jsval::ObjectValue(cb_root.get()));
+            let mut rval = UndefinedValue();
+            let ok = JS_CallFunctionValue(
+                cx,
+                global_root.handle().into(),
+                cb_val.handle().into(),
+                &call_args,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
+            return ok && rval.is_boolean() && rval.to_boolean();
+        }
+    }
+    for pat in &opts.exclude_globs {
+        if let bun_glob::MatchResult::Match = bun_glob::r#match(pat.as_bytes(), path.as_bytes()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Read a string-valued property off a JS options object ("" when absent).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn glob_opt_string(cx: *mut JSContext, obj: *mut JSObject, name: &[u8]) -> Option<String> {
+    let name_z = ZBox::from_bytes(name);
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = obj);
+    let mut val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        name_z.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        },
+    );
+    if val.is_string() {
+        let s = crate::jsstr_to_rust_string(cx, val.to_string());
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+    None
+}
+
+/// Read a boolean-valued property off a JS options object.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn glob_opt_bool(cx: *mut JSContext, obj: *mut JSObject, name: &[u8]) -> bool {
+    let name_z = ZBox::from_bytes(name);
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = obj);
+    let mut val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        name_z.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        },
+    );
+    val.is_boolean() && val.to_boolean()
+}
+
+/// Parse the `options` argument shared by glob/globSync into GlobOptions.
+/// `arg_index` is where the options object may sit (1 for globSync, 1 or 2
+/// for glob depending on callback arity).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn glob_parse_options(cx: *mut JSContext, args: &CallArgs, arg_index: u32) -> GlobOptions {
+    let mut opts = GlobOptions {
+        start_dir: ::std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        dot: false,
+        exclude_fn: None,
+        exclude_globs: Vec::new(),
+    };
+    let val = *args.get(arg_index).ptr;
+    if !val.is_object() {
+        return opts;
+    }
+    let obj = val.to_object();
+    // Node fs.glob: cwd takes precedence, root is the legacy fallback.
+    if let Some(cwd) = glob_opt_string(cx, obj, b"cwd") {
+        opts.start_dir = cwd;
+    } else if let Some(root) = glob_opt_string(cx, obj, b"root") {
+        opts.start_dir = root;
+    }
+    opts.dot = glob_opt_bool(cx, obj, b"dot");
+
+    let excl_z = ZBox::from_bytes(b"exclude");
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = obj);
+    let mut excl = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        excl_z.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut excl,
+        },
+    );
+    if excl.is_object() {
+        let excl_obj = excl.to_object();
+        if mozjs_sys::jsapi::JS::IsCallable(excl_obj) {
+            opts.exclude_fn = Some(excl_obj);
+        } else {
+            // Array of glob patterns.
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                obj_root.handle().into(),
+                c"length".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut len_val,
+                },
+            );
+            if len_val.is_int32() {
+                for i in 0..len_val.to_int32().max(0) as u32 {
+                    let mut elem = UndefinedValue();
+                    if JS_GetElement(
+                        cx,
+                        obj_root.handle().into(),
+                        i,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut elem,
+                        },
+                    ) && elem.is_string()
+                    {
+                        opts.exclude_globs.push(crate::jsstr_to_rust_string(cx, elem.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    opts
+}
+
+/// Expand the pattern argument: a single string or an array of strings.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn glob_patterns(cx: *mut JSContext, args: &CallArgs) -> Vec<String> {
+    let val = *args.get(0).ptr;
+    let mut patterns = Vec::new();
+    if val.is_string() {
+        patterns.push(crate::jsstr_to_rust_string(cx, val.to_string()));
+    } else if val.is_object() {
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let arr = val.to_object());
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            arr.handle().into(),
+            c"length".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            },
+        );
+        if len_val.is_int32() {
+            for i in 0..len_val.to_int32().max(0) as u32 {
+                let mut elem = UndefinedValue();
+                if JS_GetElement(
+                    cx,
+                    arr.handle().into(),
+                    i,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut elem,
+                    },
+                ) && elem.is_string()
+                {
+                    patterns.push(crate::jsstr_to_rust_string(cx, elem.to_string()));
+                }
+            }
+        }
+    }
+    patterns
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fs_glob_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let pattern = match get_path_arg(cx, &args, 0) {
-        ::std::result::Result::Ok(p) => p,
-        ::std::result::Result::Err(b) => return b,
-    };
-    let cwd = ::std::env::current_dir().unwrap_or_default();
-    let results = glob_walk(&cwd, &pattern);
+    let patterns = glob_patterns(cx, &args);
+    let opts = glob_parse_options(cx, &args, 1);
+    let mut results: Vec<String> = Vec::new();
+    for pat in &patterns {
+        glob_collect(cx, pat, &opts, &mut results);
+    }
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -6738,24 +7194,32 @@ unsafe extern "C" fn fs_glob_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fs_glob(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let pattern = match get_path_arg(cx, &args, 0) {
-        ::std::result::Result::Ok(p) => p,
-        ::std::result::Result::Err(b) => return b,
-    };
+    let patterns = glob_patterns(cx, &args);
+
+    // Node fs.glob(pattern, options, callback): options may sit at index 1
+    // (callback at 2) or be skipped (callback at 1).
+    let opts_idx = if argc >= 3 { 1 } else { 1 };
+    let opts = glob_parse_options(cx, &args, opts_idx);
 
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 2) {
-        spawn_fs_async(cx, "glob", pattern.clone(), callback, None, move || {
-            let cwd = ::std::env::current_dir().unwrap_or_default();
-            let results = glob_walk(&cwd, &pattern);
-            Ok(FsAsyncResult::OkDirnames(results))
+        // The JS exclude predicate cannot cross the thread boundary — apply
+        // it synchronously on the collected results instead of in the worker.
+        let mut prefiltered: Vec<String> = Vec::new();
+        for pat in &patterns {
+            glob_collect(cx, pat, &opts, &mut prefiltered);
+        }
+        spawn_fs_async(cx, "glob", patterns.join(","), callback, None, move || {
+            Ok(FsAsyncResult::OkDirnames(prefiltered))
         });
         args.rval().set(UndefinedValue());
         return true;
     }
 
     // No callback — behave like sync
-    let cwd = ::std::env::current_dir().unwrap_or_default();
-    let results = glob_walk(&cwd, &pattern);
+    let mut results: Vec<String> = Vec::new();
+    for pat in &patterns {
+        glob_collect(cx, pat, &opts, &mut results);
+    }
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -8688,75 +9152,7 @@ unsafe fn create_statfs_object(cx: *mut JSContext, sf: &StatfsResult) -> *mut JS
     obj.get()
 }
 
-// --- glob helpers ---
-
-fn glob_walk(root: &Path, pattern: &str) -> Vec<String> {
-    let mut results = Vec::new();
-    glob_walk_recursive(root, pattern, &mut results);
-    results
-}
-
-fn glob_walk_recursive(dir: &Path, pattern: &str, results: &mut Vec<String>) {
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let path = entry.path();
-            let relative = path.to_string_lossy().into_owned();
-            if glob_match(pattern, &relative) || glob_match(pattern, &name) {
-                results.push(relative);
-            }
-            if path.is_dir() {
-                glob_walk_recursive(&path, pattern, results);
-            }
-        }
-    }
-}
-
-fn glob_match(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
-    glob_match_inner(&p, &t, 0, 0)
-}
-
-fn glob_match_inner(pattern: &[char], text: &[char], pi: usize, ti: usize) -> bool {
-    if pi == pattern.len() && ti == text.len() {
-        return true;
-    }
-    if pi == pattern.len() {
-        return false;
-    }
-    if pi + 1 < pattern.len() && pattern[pi] == '*' && pattern[pi + 1] == '*' {
-        let mut next_pi = pi + 2;
-        while next_pi < pattern.len() && pattern[next_pi] == '*' {
-            next_pi += 1;
-        }
-        for k in ti..=text.len() {
-            if glob_match_inner(pattern, text, next_pi, k) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if ti == text.len() {
-        return false;
-    }
-    if pattern[pi] == '?' {
-        return glob_match_inner(pattern, text, pi + 1, ti + 1);
-    }
-    if pattern[pi] == '*' {
-        for k in ti..=text.len() {
-            if glob_match_inner(pattern, text, pi + 1, k) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if pattern[pi] == text[ti] {
-        glob_match_inner(pattern, text, pi + 1, ti + 1)
-    } else {
-        false
-    }
-}
+// --- glob helpers: deleted (BCE-20260816-FS-GLOB) — see fs.glob section above ---
 
 // --- Dir class ---
 //

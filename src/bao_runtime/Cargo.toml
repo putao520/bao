@@ -66,6 +66,10 @@ bun_simdutf_sys = { path = "../simdutf_sys" }
 # based helpers in node_path.rs with bun_paths::resolve_path (Zig-parity
 # normalize_string / join / join_abs_string).
 bun_paths = { path = "../paths" }
+# @trace REQ-ENG-007 [code:bun_glob] — fs.glob/globSync engine (GlobWalker,
+# the Bun-faithful `**`/brace/dot walker). Replaces the hand-written
+# glob_walk/glob_match in node_fs.rs which ignored options.cwd entirely.
+bun_glob = { path = "../glob" }
 bytes.workspace = true
 compact_str.workspace = true
 smallvec.workspace = true
@@ -73,6 +77,18 @@ bao_uloop = { path = "../bao_uloop" }
 bun_sha_hmac = { path = "../sha_hmac" }
 # @trace REQ-BAO-API-010 [dep:bun_hash] — non-cryptographic hash (adler32, xxhash, cityhash, etc.)
 bun_hash = { path = "../hash" }
+# @trace REQ-ENG-006 [dep:bun_wyhash] — Bun.hash default algorithm (std.hash.Wyhash
+# final4, seed 0). Same crate the parser/router HashMaps use.
+bun_wyhash = { path = "../wyhash" }
+# @trace REQ-ENG-006 [dep:bun_parsers] — Bun.TOML.parse / Bun.YAML.parse /
+# Bun.JSONC.parse bridge (upstream TOML/YAML/JSON5 Expr-tree parsers; already
+# in the dep tree via bun_install).
+bun_parsers.workspace = true
+# @trace REQ-ENG-006 [dep:unicode-width] — Bun.stringWidth per-codepoint
+# widths (UAX#11: wide/fullwidth = 2, combining/control = 0). Already in the
+# tree via swc_common; bun_core's C++ visible-width FFI has no linked C++
+# object in bao, so the Rust crate is the engine here.
+unicode-width = "0.2"
 # @trace REQ-BAO-API-010 [dep:crc32fast] — CRC32 via crc32fast (same backend as bun_zlib)
 crc32fast.workspace = true
 # @trace REQ-ENG-014 [dep:argon2] — password hashing (argon2id/argon2i/argon2d via rust-argon2)

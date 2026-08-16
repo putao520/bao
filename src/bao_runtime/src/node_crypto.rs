@@ -60,6 +60,45 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             1,
             JSPROP_ENUMERATE as u32,
         );
+        // @trace REQ-ENG-007 [api:crypto.Hash] — Node also exposes the Hash
+        // class form: `new crypto.Hash(algorithm)` is equivalent to
+        // createHash(algorithm) (deprecated in Node but load-bearing for
+        // upstream code that does `new (require("crypto").Hash)("sha256")`).
+        // JSFUN_CONSTRUCTOR so `new Hash(...)` routes here; the instance gets
+        // Hash.prototype as its prototype so instanceof holds.
+        let hash_ctor_fn = JS_NewFunction(
+            cx.raw_cx(),
+            Some(crypto_hash_ctor),
+            1,
+            JSFUN_CONSTRUCTOR,
+            c"Hash".as_ptr(),
+        );
+        if !hash_ctor_fn.is_null() {
+            let hash_ctor_obj = JS_GetFunctionObject(hash_ctor_fn);
+            rooted!(&in(cx) let hc = hash_ctor_obj);
+            // Native constructors need an explicit object `prototype` —
+            // `new Hash(...)` resolves `this` from it (same pattern as
+            // vm.Script).
+            rooted!(&in(cx) let proto = unsafe { w2::JS_NewPlainObject(cx) });
+            if !proto.get().is_null() {
+                rooted!(&in(cx) let pv = mozjs::jsval::ObjectValue(proto.get()));
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    hc.handle().into(),
+                    c"prototype".as_ptr(),
+                    pv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            rooted!(&in(cx) let hv = mozjs::jsval::ObjectValue(hash_ctor_obj));
+            JS_DefineProperty(
+                cx.raw_cx(),
+                crypto_obj.handle().into(),
+                c"Hash".as_ptr(),
+                hv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
         w2::JS_DefineFunction(
             cx,
             crypto_obj.handle(),
@@ -711,32 +750,90 @@ unsafe extern "C" fn crypto_create_hash(cx: *mut JSContext, argc: u32, vp: *mut 
     HASH_ALGO.with(|a| *a.borrow_mut() = algo);
     HASH_DATA.with(|d| d.borrow_mut().clear());
 
+    attach_hash_methods(cx_ref, hash_obj.handle());
+
+    args.rval().set(mozjs::jsval::ObjectValue(hash_obj.get()));
+    true
+}
+
+/// Attach the update/digest/copy surface to a hash instance object.
+unsafe fn attach_hash_methods(
+    cx: &mut mozjs::context::JSContext,
+    obj: mozjs::rust::Handle<*mut JSObject>,
+) {
     w2::JS_DefineFunction(
-        cx_ref,
-        hash_obj.handle(),
+        cx,
+        obj,
         c"update".as_ptr(),
         Some(hash_update),
         1,
         JSPROP_ENUMERATE as u32,
     );
     w2::JS_DefineFunction(
-        cx_ref,
-        hash_obj.handle(),
+        cx,
+        obj,
         c"digest".as_ptr(),
         Some(hash_digest),
         1,
         JSPROP_ENUMERATE as u32,
     );
     w2::JS_DefineFunction(
-        cx_ref,
-        hash_obj.handle(),
+        cx,
+        obj,
         c"copy".as_ptr(),
         Some(hash_copy),
         0,
         JSPROP_ENUMERATE as u32,
     );
+}
 
-    args.rval().set(mozjs::jsval::ObjectValue(hash_obj.get()));
+/// `new crypto.Hash(algorithm)` — class form of createHash. Native
+/// constructors receive a MAGIC `thisv` while constructing (never the created
+/// object), so the instance is the createHash object re-prototyped from the
+/// explicitly-defined `Hash.prototype` (vm.Script pattern), making
+/// `h instanceof crypto.Hash` hold.
+///
+/// NOTE: `CallArgs::callee()` and `rval()` alias the SAME vp slot in this
+/// engine's CallArgs layout, so the prototype MUST be read off the callee
+/// BEFORE `crypto_create_hash` overwrites rval with the instance.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_hash_ctor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    // Phase 1 (rval untouched): read Hash.prototype off the constructor.
+    let mut proto_val = UndefinedValue();
+    {
+        let pre = CallArgs::from_vp(vp, argc);
+        let callee = pre.callee();
+        if !callee.is_null() {
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let ctor = callee);
+            JS_GetProperty(
+                cx,
+                ctor.handle().into(),
+                c"prototype".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut proto_val,
+                },
+            );
+        }
+    }
+
+    // Phase 2: validate + initialise the shared hash state (TLS algo/data)
+    // and build the plain createHash instance (update/digest/copy attached).
+    if !crypto_create_hash(cx, argc, vp) {
+        return false;
+    }
+    let args = CallArgs::from_vp(vp, argc);
+    if !(*args.rval().ptr).is_object() || !proto_val.is_object() {
+        return true;
+    }
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let instance = (*args.rval().ptr).to_object());
+    rooted!(&in(cx_ref) let proto = proto_val.to_object());
+    JS_SetPrototype(cx, instance.handle().into(), proto.handle().into());
     true
 }
 
@@ -1209,30 +1306,16 @@ unsafe extern "C" fn crypto_pbkdf2_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         Err(e) => return throw_type_error(cx, &format!("pbkdf2Sync() derivation failed: {}", e)),
     };
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-
-    rooted!(&in(cx_ref) let arr = unsafe { w2::NewArrayObject1(cx_ref, result.len()) });
-    if arr.get().is_null() {
+    // @trace REQ-ENG-007 [api:crypto.pbkdf2Sync] — Node returns a Buffer, not
+    // an Array. The previous Array-of-ints return silently broke every Buffer
+    // consumer (`.toString("hex")` missing, `Buffer.isBuffer()` false).
+    // Same surface as the async pbkdf2() path (create_buffer_object).
+    let buf_obj = crate::globals::create_buffer_object(cx, &result);
+    if buf_obj.is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-
-    for (i, &byte) in result.iter().enumerate() {
-        let val = mozjs::jsval::Int32Value(byte as i32);
-        rooted!(&in(cx_ref) let v = val);
-        unsafe {
-            JS_DefineElement(
-                cx,
-                arr.handle().into(),
-                i as u32,
-                v.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
-
-    args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
+    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
     true
 }
 

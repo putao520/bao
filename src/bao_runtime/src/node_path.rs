@@ -120,6 +120,33 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             );
         }
 
+        // path.platform — mirrors process.platform / os.platform() so code
+        // branching on `path.platform === "win32"` behaves like Node's
+        // platform-tagged path modules. Audit item: was entirely missing
+        // (typeof path.platform === 'undefined').
+        let platform_bytes: &[u8] = if cfg!(target_os = "linux") {
+            b"linux"
+        } else if cfg!(target_os = "macos") {
+            b"darwin"
+        } else if cfg!(target_os = "windows") {
+            b"win32"
+        } else {
+            b"unknown"
+        };
+        let platform_cstr = ZBox::from_bytes(platform_bytes);
+        let platform_str = JS_NewStringCopyZ(cx.raw_cx(), platform_cstr.as_ptr());
+        if !platform_str.is_null() {
+            let platform_val = mozjs::jsval::StringValue(&*platform_str);
+            rooted!(&in(cx) let platform_root = platform_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                path_obj.handle().into(),
+                c"platform".as_ptr(),
+                platform_root.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+
         let delim_cstr = ZBox::from_bytes(if cfg!(windows) { b";" } else { b":" });
         let delim_str = JS_NewStringCopyZ(cx.raw_cx(), delim_cstr.as_ptr());
         if !delim_str.is_null() {

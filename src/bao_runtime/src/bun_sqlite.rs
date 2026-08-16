@@ -98,7 +98,63 @@ impl SqliteDatabase {
             None => false,
         }
     }
+
+    /// Serialize the whole database to bytes — a real SQLite snapshot via
+    /// `VACUUM INTO` (SQLite's own consistent-snapshot machinery), read back
+    /// from the temp target and the temp file removed. The produced bytes are
+    /// a valid, standalone database file.
+    pub fn serialize_bytes(&self) -> Result<Vec<u8>, String> {
+        use ::std::sync::atomic::{AtomicU64, Ordering};
+        static SERIALIZE_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = SERIALIZE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = ::std::env::temp_dir().join(format!(
+            "bao-sqlite-ser-{}-{}.db",
+            ::std::process::id(),
+            n
+        ));
+        let path_str = path.to_string_lossy().to_string();
+        // VACUUM INTO requires the target NOT to exist — the counter+pid name
+        // guarantees that for a fresh path.
+        {
+            let borrow = self.conn.borrow();
+            let conn = borrow.as_ref().ok_or("Database is closed")?;
+            conn.execute("VACUUM INTO ?1", [&path_str])
+                .map_err(|e| e.to_string())?;
+        }
+        let bytes = ::std::fs::read(&path).map_err(|e| e.to_string())?;
+        let _ = ::std::fs::remove_file(&path);
+        Ok(bytes)
+    }
+
+    /// Backup (snapshot) the database to `path` via `VACUUM INTO` — SQLite's
+    /// official online-backup equivalent producing a consistent standalone
+    /// database file. Fails when the target already exists (SQLite contract).
+    pub fn backup_to_path(&self, path: &str) -> Result<(), String> {
+        let borrow = self.conn.borrow();
+        let conn = borrow.as_ref().ok_or("Database is closed")?;
+        if ::std::path::Path::new(path).exists() {
+            return Err(format!(
+                "backup target already exists: {} (SQLite VACUUM INTO requires a new file)",
+                path
+            ));
+        }
+        conn.execute("VACUUM INTO ?1", [path])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
+
+/// Live row-cursor for `Statement#iterate()`. The `Rows` borrow is transmuted
+/// to 'static (same lifetime discipline as `SqliteStatement`: the parent
+/// statement must outlive the iterator — the raw stmt pointer pins it).
+pub struct SqliteIterator {
+    rows: RefCell<Option<rusqlite::Rows<'static>>>,
+    col_names: Vec<String>,
+}
+
+/// Savepoint name counter for nested transactions (Bun maps nested
+/// transactions onto SAVEPOINT/RELEASE automatically).
+static SAVEPOINT_COUNTER: ::std::sync::atomic::AtomicU64 = ::std::sync::atomic::AtomicU64::new(0);
 
 /// Result of a .run() call.
 pub struct RunResult {
@@ -173,6 +229,42 @@ const DATABASE_METHODS: &[JSFunctionSpec] = &[
         },
         call: JSNativeWrapper {
             op: Some(database_prepare),
+            info: ::std::ptr::null_mut(),
+        },
+        nargs: 1,
+        flags: JSPROP_ENUMERATE as u16,
+        selfHostedName: ::std::ptr::null_mut(),
+    },
+    JSFunctionSpec {
+        name: JSPropertySpec_Name {
+            string_: c"transaction".as_ptr(),
+        },
+        call: JSNativeWrapper {
+            op: Some(database_transaction),
+            info: ::std::ptr::null_mut(),
+        },
+        nargs: 1,
+        flags: JSPROP_ENUMERATE as u16,
+        selfHostedName: ::std::ptr::null_mut(),
+    },
+    JSFunctionSpec {
+        name: JSPropertySpec_Name {
+            string_: c"serialize".as_ptr(),
+        },
+        call: JSNativeWrapper {
+            op: Some(database_serialize),
+            info: ::std::ptr::null_mut(),
+        },
+        nargs: 0,
+        flags: JSPROP_ENUMERATE as u16,
+        selfHostedName: ::std::ptr::null_mut(),
+    },
+    JSFunctionSpec {
+        name: JSPropertySpec_Name {
+            string_: c"backup".as_ptr(),
+        },
+        call: JSNativeWrapper {
+            op: Some(database_backup),
             info: ::std::ptr::null_mut(),
         },
         nargs: 1,
@@ -1025,6 +1117,14 @@ unsafe extern "C" fn database_prepare(cx: *mut JSContext, argc: u32, vp: *mut JS
                 0,
                 JSPROP_ENUMERATE as u32,
             );
+            JS_DefineFunction(
+                cx,
+                obj_r.handle().into(),
+                c"iterate".as_ptr(),
+                Some(statement_iterate),
+                0,
+                JSPROP_ENUMERATE as u32,
+            );
 
             args.rval().set(ObjectValue(obj_r.get()));
             true
@@ -1290,6 +1390,538 @@ unsafe extern "C" fn database_in_transaction(
     let db = &*db_ptr;
     args.rval().set(BooleanValue(db.in_transaction()));
     true
+}
+
+// ── Database.transaction(fn) → wrapped transaction function ────────────────
+//
+// Bun semantics: `const tx = db.transaction(fn); tx(args...)` runs fn inside
+// BEGIN/COMMIT (ROLLBACK on throw, exception propagates, return value
+// forwarded). Nested calls (tx invoked while another transaction is open on
+// the same connection) map onto SAVEPOINT/RELEASE. The returned function
+// carries `.deferred` / `.immediate` / `.exclusive` variants selecting the
+// BEGIN mode (the plain call is DEFERRED, matching SQLite's default).
+//
+// Trampoline wiring: the wrapper is a native JSFunction with hidden
+// properties — `_dbPtr` (PrivateValue → SqliteDatabase), `_trxFn` (the user
+// function), `_beginMode` ("DEFERRED"|"IMMEDIATE"|"EXCLUSIVE").
+
+/// Read one of the trampoline's hidden properties off its callee function.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn trampoline_prop(cx: *mut JSContext, fn_obj: *mut JSObject, name: &str) -> JSVal {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let fn_root = fn_obj);
+    js_get_prop_val(cx, fn_root.get(), name)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn database_transaction(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let thisv = args.thisv();
+
+    let db_ptr = match get_db_ptr(cx, thisv) {
+        Some(p) => p,
+        None => {
+            let msg = ZBox::from_bytes("Database.transaction: invalid Database object".as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        }
+    };
+    if argc < 1 || !(*args.get(0).ptr).is_object() {
+        let msg = ZBox::from_bytes("transaction requires a function argument".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let fn_arg = (*args.get(0).ptr).to_object());
+    if !JS_ObjectIsFunction(fn_arg.get()) {
+        let msg = ZBox::from_bytes("transaction requires a function argument".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+
+    // Build the wrapper + its mode variants. Each variant is the same native
+    // trampoline; the mode rides along as a hidden property.
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let build_variant = |cx: *mut JSContext,
+                         mode: Option<&'static str>|
+     -> Option<*mut JSObject> {
+        let f = JS_NewFunction(cx, Some(transaction_trampoline), 0, 0, c"transaction".as_ptr());
+        if f.is_null() {
+            return None;
+        }
+        let fobj = JS_GetFunctionObject(f);
+        if fobj.is_null() {
+            return None;
+        }
+        let mut wc = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cr = &mut wc;
+        rooted!(&in(cr) let fo = fobj);
+        let fo_h = fo.handle().into();
+        rooted!(&in(cr) let db_v = PrivateValue(db_ptr as *const ::std::os::raw::c_void));
+        if !JS_DefineProperty(
+            cx,
+            fo_h,
+            c"_dbPtr".as_ptr(),
+            db_v.handle().into(),
+            0,
+        ) {
+            return None;
+        }
+        rooted!(&in(cr) let fn_v = ObjectValue(fn_arg.get()));
+        if !JS_DefineProperty(cx, fo_h, c"_trxFn".as_ptr(), fn_v.handle().into(), 0) {
+            return None;
+        }
+        if let Some(m) = mode {
+            let c_m = ZBox::from_bytes(m.as_bytes());
+            let m_js = JS_NewStringCopyZ(cx, c_m.as_ptr());
+            if m_js.is_null() {
+                return None;
+            }
+            rooted!(&in(cr) let mv = mozjs::jsval::StringValue(&*m_js));
+            if !JS_DefineProperty(cx, fo_h, c"_beginMode".as_ptr(), mv.handle().into(), 0) {
+                return None;
+            }
+        }
+        Some(fo.get())
+    };
+
+    let Some(wrapper) = build_variant(cx, None) else {
+        let msg = ZBox::from_bytes("transaction: failed to create wrapper".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    };
+    rooted!(&in(cx_ref) let wrapper_r = wrapper);
+    let wrapper_h = wrapper_r.handle().into();
+
+    for (prop, mode) in [
+        ("deferred", "DEFERRED"),
+        ("immediate", "IMMEDIATE"),
+        ("exclusive", "EXCLUSIVE"),
+    ] {
+        if let Some(variant) = build_variant(cx, Some(mode)) {
+            rooted!(&in(cx_ref) let vv = ObjectValue(variant));
+            let c_prop = ZBox::from_bytes(prop.as_bytes());
+            JS_DefineProperty(
+                cx,
+                wrapper_h,
+                c_prop.as_ptr(),
+                vv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+
+    args.rval().set(ObjectValue(wrapper_r.get()));
+    true
+}
+
+/// The transaction wrapper body: BEGIN/SAVEPOINT → call user fn with the
+/// caller's args → COMMIT/RELEASE (ROLLBACK on error or JS exception).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn transaction_trampoline(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let callee = args.calleev();
+    if !callee.is_object() {
+        let msg = ZBox::from_bytes("transaction: invalid callee".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let callee_obj = callee.to_object());
+
+    let db_ptr_val = trampoline_prop(cx, callee_obj.get(), "_dbPtr");
+    if !val_is_private(&db_ptr_val) {
+        let msg = ZBox::from_bytes("transaction: invalid Database object".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    let db_ptr = db_ptr_val.to_private() as *mut SqliteDatabase;
+    let db = &*db_ptr;
+
+    let trxfn_val = trampoline_prop(cx, callee_obj.get(), "_trxFn");
+    if !trxfn_val.is_object() {
+        let msg = ZBox::from_bytes("transaction: wrapped function is gone".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    let mode_val = trampoline_prop(cx, callee_obj.get(), "_beginMode");
+    let mode = if mode_val.is_string() {
+        crate::js_to_rust_string(cx, mode_val)
+    } else {
+        "DEFERRED".to_string()
+    };
+    if !matches!(mode.as_str(), "DEFERRED" | "IMMEDIATE" | "EXCLUSIVE") {
+        let msg = ZBox::from_bytes("transaction: unknown BEGIN mode".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+
+    // Open the transaction scope. Borrows are scoped: none may straddle the
+    // JS call (the user fn touches the same connection).
+    let outer = !db.in_transaction();
+    let savepoint = if outer {
+        None
+    } else {
+        let n = SAVEPOINT_COUNTER.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
+        Some(format!("bao_sp_{}", n))
+    };
+    let begin_sql = match (&savepoint, mode.as_str()) {
+        (Some(sp), _) => format!("SAVEPOINT {}", sp),
+        (None, "DEFERRED") => "BEGIN".to_string(),
+        (None, m) => format!("BEGIN {}", m),
+    };
+    {
+        let borrow = db.conn.borrow();
+        let Some(conn) = borrow.as_ref() else {
+            let msg = ZBox::from_bytes("Database is closed".as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        };
+        if let Err(e) = conn.execute_batch(&begin_sql) {
+            let msg = ZBox::from_vec(e.to_string().into_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        }
+    }
+
+    // Call the user function with the wrapper's incoming args.
+    rooted!(&in(cx_ref) let fn_root = trxfn_val.to_object());
+    rooted!(&in(cx_ref) let fn_val = ObjectValue(fn_root.get()));
+    let mut fwd_args: Vec<JSVal> = (0..argc).map(|i| *args.get(i).ptr).collect();
+    let call_args = HandleValueArray {
+        length_: fwd_args.len(),
+        elements_: fwd_args.as_mut_ptr(),
+    };
+    rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
+    let mut rval = UndefinedValue();
+    let called = JS_CallFunctionValue(
+        cx,
+        undef_this.handle().into(),
+        fn_val.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+
+    if !called {
+        // JS exception pending → roll the scope back, propagate the exception.
+        let rollback_sql = match &savepoint {
+            Some(sp) => format!("ROLLBACK TO {}; RELEASE {}", sp, sp),
+            None => "ROLLBACK".to_string(),
+        };
+        let borrow = db.conn.borrow();
+        if let Some(conn) = borrow.as_ref() {
+            let _ = conn.execute_batch(&rollback_sql);
+        }
+        return false;
+    }
+
+    let commit_sql = match &savepoint {
+        Some(sp) => format!("RELEASE {}", sp),
+        None => "COMMIT".to_string(),
+    };
+    {
+        let borrow = db.conn.borrow();
+        let Some(conn) = borrow.as_ref() else {
+            let msg = ZBox::from_bytes("Database is closed".as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        };
+        if let Err(e) = conn.execute_batch(&commit_sql) {
+            let msg = ZBox::from_vec(e.to_string().into_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        }
+    }
+
+    rooted!(&in(cx_ref) let rval_root = rval);
+    args.rval().set(*rval_root.handle());
+    true
+}
+
+// ── Database.serialize() → Buffer (real VACUUM INTO snapshot) ──────────────
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn database_serialize(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let thisv = args.thisv();
+
+    let db_ptr = match get_db_ptr(cx, thisv) {
+        Some(p) => p,
+        None => {
+            let msg = ZBox::from_bytes("Database.serialize: invalid Database object".as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        }
+    };
+
+    let db = &*db_ptr;
+    match db.serialize_bytes() {
+        Ok(bytes) => {
+            let buf = crate::globals::create_buffer_object(cx, &bytes);
+            if buf.is_null() {
+                args.rval().set(NullValue());
+            } else {
+                args.rval().set(ObjectValue(buf));
+            }
+            true
+        }
+        Err(e) => {
+            let msg = ZBox::from_vec(e.into_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            false
+        }
+    }
+}
+
+// ── Database.backup(path) → consistent snapshot file ───────────────────────
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn database_backup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let thisv = args.thisv();
+
+    let db_ptr = match get_db_ptr(cx, thisv) {
+        Some(p) => p,
+        None => {
+            let msg = ZBox::from_bytes("Database.backup: invalid Database object".as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        }
+    };
+    if argc < 1 || !(*args.get(0).ptr).is_string() {
+        let msg = ZBox::from_bytes("backup requires a destination path string".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    let path = crate::js_to_rust_string(cx, *args.get(0).ptr);
+
+    let db = &*db_ptr;
+    match db.backup_to_path(&path) {
+        Ok(()) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
+        Err(e) => {
+            let msg = ZBox::from_vec(e.into_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            false
+        }
+    }
+}
+
+// ── Statement.iterate(...params?) → row iterator ───────────────────────────
+//
+// Bun contract: `for (const row of stmt.iterate(params...))` — each call
+// starts a FRESH iteration (raw_query resets the statement), next() returns
+// the row object and undefined at exhaustion, and the object is itself its
+// own Symbol.iterator.
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn statement_iterate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let thisv = args.thisv();
+
+    let stmt_ptr = match get_stmt_ptr(cx, thisv) {
+        Some(p) => p,
+        None => {
+            let msg = ZBox::from_bytes("Statement.iterate: invalid Statement object".as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        }
+    };
+
+    let sqlite_stmt = &*stmt_ptr;
+    let col_names;
+    let rows;
+    {
+        let mut stmt_borrow = sqlite_stmt.stmt.borrow_mut();
+        let stmt = match stmt_borrow.as_mut() {
+            Some(s) => s,
+            None => {
+                let msg = ZBox::from_bytes("Statement is finalized".as_bytes());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                return false;
+            }
+        };
+
+        col_names = (0..stmt.column_count())
+            .map(|i| stmt.column_name(i).unwrap_or("unknown").to_string())
+            .collect::<Vec<_>>();
+
+        if let Err(e) = bind_stmt_args(cx, stmt, &args, 0, argc) {
+            let msg = ZBox::from_vec(e.into_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        }
+
+        let r = stmt.raw_query();
+        // SAFETY: same lifetime discipline as SqliteStatement — the parent
+        // statement (pinned via stmt_ptr) outlives this cursor; the RefCell
+        // borrows are dropped before any JS re-enters.
+        rows = ::std::mem::transmute::<_, rusqlite::Rows<'static>>(r);
+    }
+
+    let iter = Box::new(SqliteIterator {
+        rows: RefCell::new(Some(rows)),
+        col_names,
+    });
+    let iter_ptr = Box::into_raw(iter) as *const ::std::os::raw::c_void;
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        drop(Box::from_raw(iter_ptr as *mut SqliteIterator));
+        args.rval().set(NullValue());
+        return true;
+    }
+    let obj_h = obj.handle().into();
+    rooted!(&in(cx_ref) let iter_v = PrivateValue(iter_ptr));
+    JS_DefineProperty(cx, obj_h, c"_iterPtr".as_ptr(), iter_v.handle().into(), 0);
+    JS_DefineFunction(
+        cx,
+        obj_h,
+        c"next".as_ptr(),
+        Some(iterator_next),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    // Symbol.iterator → this (for..of support).
+    let sym_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
+        cx,
+        mozjs_sys::jsapi::JS::SymbolCode::iterator,
+    );
+    let fn_js = JS_NewFunction(cx, Some(iterator_self), 0, 0, c"[Symbol.iterator]".as_ptr());
+    if !fn_js.is_null() {
+        let fn_obj = JS_GetFunctionObject(fn_js);
+        if !fn_obj.is_null() {
+            rooted!(&in(cx_ref) let fv = ObjectValue(fn_obj));
+            JS_DefinePropertyById2(
+                cx,
+                obj_h,
+                Handle::from_marked_location(&sym_key),
+                fv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+
+    args.rval().set(ObjectValue(obj.get()));
+    true
+}
+
+/// Symbol.iterator body — returns `this`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn iterator_self(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = *args.thisv();
+    args.rval().set(this);
+    true
+}
+
+/// Iterator next() — the JS iterator protocol result: `{value: row, done:
+/// false}` per row, `{value: undefined, done: true}` at exhaustion (for..of
+/// contract).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn iterator_next(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let thisv = args.thisv();
+    if !thisv.is_object() {
+        let msg = ZBox::from_bytes("iterator.next: invalid iterator object".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = thisv.to_object());
+    let mut iter_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        this_obj.handle().into(),
+        c"_iterPtr".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut iter_val,
+        },
+    );
+    if !val_is_private(&iter_val) {
+        let msg = ZBox::from_bytes("iterator.next: invalid iterator object".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    let iter_ptr = iter_val.to_private() as *mut SqliteIterator;
+    let iter = &*iter_ptr;
+
+    // Row borrows Rows, so the row object is built INSIDE the borrow scope.
+    enum StepOutcome {
+        Row(*mut JSObject),
+        Done,
+        Err(String),
+    }
+    let outcome = {
+        let mut rows_borrow = iter.rows.borrow_mut();
+        match rows_borrow.as_mut() {
+            Some(rows) => match rows.next() {
+                Ok(Some(row)) => {
+                    StepOutcome::Row(row_to_js_object(cx, &row, &iter.col_names, cx_ref))
+                }
+                Ok(None) => StepOutcome::Done,
+                Err(e) => StepOutcome::Err(e.to_string()),
+            },
+            None => StepOutcome::Done,
+        }
+    };
+
+    rooted!(&in(cx_ref) let result_obj = w2::JS_NewPlainObject(cx_ref));
+    if result_obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let rh = result_obj.handle().into();
+    match outcome {
+        StepOutcome::Row(row_obj) => {
+            rooted!(&in(cx_ref) let dv = BooleanValue(false));
+            JS_DefineProperty(cx, rh, c"done".as_ptr(), dv.handle().into(), JSPROP_ENUMERATE as u32);
+            if !row_obj.is_null() {
+                rooted!(&in(cx_ref) let rv = ObjectValue(row_obj));
+                JS_DefineProperty(cx, rh, c"value".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            args.rval().set(ObjectValue(result_obj.get()));
+            true
+        }
+        StepOutcome::Done => {
+            rooted!(&in(cx_ref) let dv = BooleanValue(true));
+            JS_DefineProperty(cx, rh, c"done".as_ptr(), dv.handle().into(), JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx_ref) let uv = UndefinedValue());
+            JS_DefineProperty(cx, rh, c"value".as_ptr(), uv.handle().into(), JSPROP_ENUMERATE as u32);
+            args.rval().set(ObjectValue(result_obj.get()));
+            true
+        }
+        StepOutcome::Err(e) => {
+            let msg = ZBox::from_vec(e.into_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            false
+        }
+    }
 }
 
 // ── Module installation ──
