@@ -464,7 +464,10 @@ unsafe fn copy_sockaddr(
             dst.sin_addr = src.sin_addr;
             entry.info.ai_family = libc::AF_INET;
             entry.info.ai_addrlen = core::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-            entry.info.ai_addr = (&raw mut entry.storage).cast();
+            // ai_addr is NOT set here: this entry is a stack local that gets
+            // moved into the Vec by value — a self-pointer assigned now would
+            // dangle with the frame. link_chain re-points it at the entry's
+            // own storage inside the final Vec (see its BCE note).
             Some(IpAddr::V4(src.sin_addr.s_addr.to_ne_bytes()))
         }
         libc::AF_INET6 => {
@@ -477,7 +480,7 @@ unsafe fn copy_sockaddr(
             dst.sin6_addr = src.sin6_addr;
             entry.info.ai_family = libc::AF_INET6;
             entry.info.ai_addrlen = core::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
-            entry.info.ai_addr = (&raw mut entry.storage).cast();
+            // ai_addr intentionally not set — see the AF_INET arm's note.
             Some(IpAddr::V6(src.sin6_addr.s6_addr))
         }
         _ => None,
@@ -516,14 +519,28 @@ fn other_family(f: c_int) -> c_int {
 
 /// Point each entry's `ai_next` at the following entry and drop the stale
 /// canonname pointer copied from the source chain.
+///
+/// BCE (hostname-connect hang): every producer (`collect_entries`,
+/// `entry_from_ip`) builds an entry as a stack local and only then moves it
+/// (by value) into the Vec. The `ai_addr` stored there points at the
+/// *stack-frame* storage — dangling once the frame dies — so C's
+/// `init_addr_with_port` memcpy'd 16 bytes of stack residue into the connect
+/// address (`0.0.0.0`, `AF_UNSPEC`, …) and every hostname connect through
+/// usockets hung or misdialed. IP literals never see this seam (C
+/// `try_parse_ip` short-circuits before `Bun__addrinfo_get`), which is why
+/// only hostname URLs hung. Re-point `ai_addr` at each entry's *own* storage
+/// in the final Vec, here, the single mandatory tail of both producer paths —
+/// the authoritative redirect, exactly like the `ai_next` fixups below.
 fn link_chain(entries: &mut [AddrInfoResultEntry]) {
     let len = entries.len();
     let base = entries.as_mut_ptr();
     for idx in 0..len {
         // SAFETY: idx < len; single mutable access per iteration, and the
-        // pointers stored into ai_next are raw (no borrow carried across).
+        // pointers stored into ai_next/ai_addr are raw (no borrow carried
+        // across).
         let entry = unsafe { &mut *base.add(idx) };
         entry.info.ai_canonname = core::ptr::null_mut();
+        entry.info.ai_addr = core::ptr::addr_of_mut!(entry.storage).cast();
         if idx + 1 < len {
             entry.info.ai_next = core::ptr::addr_of_mut!(entry.info);
             // SAFETY: idx + 1 < len.
@@ -649,7 +666,8 @@ fn entry_from_ip(ip: &IpAddr, port: u16) -> AddrInfoResultEntry {
             entry.info.ai_addrlen = core::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
         }
     }
-    entry.info.ai_addr = (&raw mut entry.storage).cast();
+    // ai_addr intentionally not set here (stack-local entry moved by value):
+    // link_chain re-points it at the entry's own storage inside the Vec.
     entry
 }
 
@@ -684,12 +702,50 @@ mod tests {
         let entry = unsafe { &*result.entries };
         assert!(entry.info.ai_next.is_null());
         assert_eq!(entry.info.ai_family, libc::AF_INET);
-        // SAFETY: ai_addr points at entry.storage.
+        // BCE (hostname-connect hang) regression lock: ai_addr must point at
+        // THIS entry's storage inside the request-owned Vec — not at a dead
+        // producer stack frame. Pointer identity, plus the content it yields.
+        assert!(core::ptr::eq(
+            entry.info.ai_addr.cast::<u8>(),
+            (&raw const entry.storage).cast::<u8>()
+        ));
+        // SAFETY: ai_addr points at entry.storage (identity-checked above).
         let sa = unsafe { &*(entry.info.ai_addr as *const libc::sockaddr_in) };
         assert_eq!(sa.sin_addr.s_addr, u32::from_ne_bytes([127, 0, 0, 1]));
         assert_eq!(sa.sin_port, 8080u16.to_be());
         // SAFETY: release the handout (single ref → freed).
         unsafe { Bun__addrinfo_freeRequest(req as *mut c_void, 0) };
+    }
+
+    /// BCE (hostname-connect hang) regression lock, multi-entry worker path:
+    /// after collect→interleave→link_chain every entry's ai_addr must point
+    /// at its own storage in the final Vec and dereference to the matching
+    /// address — the invariant C's `init_addr_with_port` memcpy relies on.
+    #[test]
+    fn link_chain_points_ai_addr_at_own_storage() {
+        let mut entries = vec![
+            entry_from_ip(&IpAddr::V4([10, 0, 0, 1]), 80),
+            entry_from_ip(&IpAddr::V6([0x20; 16]), 443),
+        ];
+        link_chain(&mut entries);
+        for entry in &mut entries {
+            assert!(
+                core::ptr::eq(
+                    entry.info.ai_addr.cast::<u8>(),
+                    (&raw const entry.storage).cast::<u8>()
+                ),
+                "ai_addr must point at the entry's own Vec storage, not a producer stack frame"
+            );
+        }
+        // Content survives through the published pointers: v4 first.
+        // SAFETY: identity-checked above; family-checked here.
+        let sa4 = unsafe { &*(entries[0].info.ai_addr as *const libc::sockaddr_in) };
+        assert_eq!(sa4.sin_addr.s_addr, u32::from_ne_bytes([10, 0, 0, 1]));
+        assert_eq!(sa4.sin_port, 80u16.to_be());
+        // SAFETY: same for the v6 entry.
+        let sa6 = unsafe { &*(entries[1].info.ai_addr as *const libc::sockaddr_in6) };
+        assert_eq!(sa6.sin6_addr.s6_addr, [0x20; 16]);
+        assert_eq!(sa6.sin6_port, 443u16.to_be());
     }
 
     /// A miss must hand back a live request (never null / never leave the C

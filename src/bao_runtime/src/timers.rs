@@ -364,6 +364,13 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     // Non-blocking — sockets are polled in non-blocking mode.
     crate::web_api::ws_pump_all(raw_cx);
 
+    // fs.watch / fs.watchFile pump: dispatch inotify + stat-poll events queued
+    // by the fswatch worker thread (same integration pattern as ws_pump_all).
+    crate::node_fs::fs_watch_pump_all(raw_cx);
+    // cluster IPC pump: primary/worker message + exit polling (replaces the
+    // loop-pinning CLUSTER_JS setIntervals — BCE parent-loop stall).
+    crate::node_cluster::cluster_pump_all(raw_cx);
+
     // BCE-20260619-010: drain_pending_fetches removed. FetchTasklet event-driven
     // paradigm resolves promises via ConcurrentTask (resolve_tasklet), not via
     // JS-thread polling. No drain call needed here.
@@ -372,6 +379,10 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
         || has_http
         || has_pending_async_fetch
         || crate::web_api::ws_has_pending()
+        // Persistent fs watchers / live cluster workers keep the loop alive
+        // (Node handle semantics; non-persistent entries never pin).
+        || crate::node_fs::fs_watch_loop_alive()
+        || crate::node_cluster::cluster_loop_alive()
 }
 
 /// Drive a single "wait for promise / timer" iteration in test-runner mode.
@@ -435,6 +446,10 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
     // Page WebSocket pump (connect completion + inbound frames) — same
     // non-blocking poll as drain_and_check.
     crate::web_api::ws_pump_all(raw_cx);
+    // fs.watch / cluster pumps — same dispatch points as drain_and_check so
+    // test-runner async tests see watch/IPC events with identical semantics.
+    crate::node_fs::fs_watch_pump_all(raw_cx);
+    crate::node_cluster::cluster_pump_all(raw_cx);
     fired
 }
 
@@ -445,6 +460,7 @@ pub fn has_pending_work() -> bool {
     bao_has_pending_timers()
         || crate::node_http::has_active_servers()
         || crate::fetch_async::has_pending()
+        || crate::node_fs::fs_watch_loop_alive()
 }
 
 /// Fire a JS callback via `JS_CallFunctionValue`, routing any thrown

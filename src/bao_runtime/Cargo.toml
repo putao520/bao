@@ -176,3 +176,11 @@ path = "tests/fetch_e2e_tests.rs"
 [[test]]
 name = "bun_build_e2e_tests"
 path = "tests/bun_build_e2e_tests.rs"
+
+[[test]]
+name = "fs_watch_events_tests"
+path = "tests/fs_watch_events_tests.rs"
+
+[[test]]
+name = "cluster_pump_loop_tests"
+path = "tests/cluster_pump_loop_tests.rs"

@@ -12,6 +12,12 @@ use mozjs::rooted;
 use mozjs::rust::wrappers2::{
     JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject, NewArrayObject1,
 };
+// Structured-clone engine bridge (structuredClone rides the same
+// JS_WriteStructuredClone / JS_ReadStructuredClone facility as worker
+// postMessage — see structured_clone_fn).
+use mozjs::glue::{CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData};
+use mozjs::rust::wrappers2 as w2;
+use mozjs::rust::JSAutoStructuredCloneBufferWrapper;
 
 /// Maximum byte length of a Buffer.
 ///
@@ -5397,347 +5403,167 @@ pub fn install_structured_clone(
     }
 }
 
+/// Clone data policy for the structuredClone bridge: shared-memory objects
+/// are rejected (no cross-agent SAB semantics on this surface); everything
+/// else clones. Mirrors node_worker_threads::sc_clone_policy.
+fn sc_clone_policy() -> CloneDataPolicy {
+    CloneDataPolicy {
+        allowIntraClusterClonableSharedObjects_: false,
+        allowSharedMemoryObjects_: false,
+    }
+}
+
+/// Clear any pending engine exception and report the DataCloneError — the
+/// deterministic failure surface of the structuredClone bridge (same message
+/// shape as the worker postMessage path in node_worker_threads).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sc_report_data_clone_error(raw_cx: *mut JSContext) -> bool {
+    let wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    if w2::JS_IsExceptionPending(&wrapped) {
+        JS_ClearPendingException(raw_cx);
+    }
+    JS_ReportErrorUTF8(
+        raw_cx,
+        c"DataCloneError: The object could not be cloned.".as_ptr(),
+    );
+    false
+}
+
+/// `structuredClone(value, {transfer})` — the HTML structured clone algorithm
+/// bridged onto SpiderMonkey's own JS_WriteStructuredClone /
+/// JS_ReadStructuredClone (the same engine facility worker postMessage rides —
+/// engine reuse, not a hand-rolled serializer). Date/RegExp/Map/Set/
+/// TypedArray/ArrayBuffer/BigInt keep their prototypes, cyclic graphs
+/// preserve identity (clone.a === clone.b when a === b), and the `transfer`
+/// list detaches (moves) ArrayBuffers via the engine's transfer map.
+/// Non-clonable values (functions, WeakMap, symbols) fail the write →
+/// DataCloneError, matching Node.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn structured_clone_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let val = *args.get(0).ptr;
+    let val = if argc == 0 {
+        UndefinedValue()
+    } else {
+        *args.get(0).ptr
+    };
 
-    // @trace REQ-ENG-005 [api:structuredClone transfer] — Node.js's
-    // structuredClone(value, { transfer: [ab] }) DETACHES every ArrayBuffer in
-    // the transfer list (their byteLength becomes 0 and any TypedArray view
-    // throws on subsequent access). buffer.test.js "slice() on detached buffer
-    // throws TypeError" and "subarray() on detached buffer throws TypeError"
-    // drive this via structuredClone(ab, { transfer: [ab] }).
-    //
-    // We handle the transfer list BEFORE cloning so the source buffers are
-    // detached even if clone is a no-op. For ArrayBuffer inputs we then
-    // return a fresh ArrayBuffer copy of the original bytes.
-    if argc >= 2 && val.is_object() {
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let value = val);
+
+    // `transfer` list → a real Array. SM's parseTransferable only accepts an
+    // actual Array object; the WebIDL input is any array-like sequence, so
+    // non-Array objects are materialized into one. A present-but-scalar
+    // transfer value is a TypeError (Node rejects the options shape before
+    // cloning starts).
+    rooted!(&in(cx_ref) let mut transferable = UndefinedValue());
+    if argc >= 2 {
         let opts = *args.get(1).ptr;
         if opts.is_object() {
-            let cx_ref =
-                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-            rooted!(&in(cx_ref) let opts_root = opts.to_object());
-            let mut transfer_val = UndefinedValue();
+            rooted!(&in(cx_ref) let opts_obj = opts.to_object());
+            let mut tval = UndefinedValue();
             JS_GetProperty(
                 cx,
-                opts_root.handle().into(),
+                opts_obj.handle().into(),
                 c"transfer".as_ptr(),
                 MutableHandle::<Value> {
                     _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut transfer_val,
+                    ptr: &mut tval,
                 },
             );
-            if transfer_val.is_object() {
-                rooted!(&in(cx_ref) let transfer_root = transfer_val.to_object());
-                let mut length_val = UndefinedValue();
-                JS_GetProperty(
-                    cx,
-                    transfer_root.handle().into(),
-                    c"length".as_ptr(),
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut length_val,
-                    },
-                );
-                let list_len: i64 = if length_val.is_int32() {
-                    length_val.to_int32() as i64
-                } else if length_val.is_double() {
-                    length_val.to_double() as i64
+            if !tval.is_undefined() && !tval.is_null() && !tval.is_object() {
+                mozjs::error::throw_type_error(cx, c"The transfer option must be an array");
+                return false;
+            }
+            if tval.is_object() {
+                rooted!(&in(cx_ref) let t_obj = tval.to_object());
+                let mut is_arr = false;
+                rooted!(&in(cx_ref) let t_val_root = tval);
+                IsArrayObject(cx, t_val_root.handle().into(), &mut is_arr);
+                if is_arr {
+                    transferable.set(tval);
                 } else {
-                    0
-                };
-                rooted!(&in(cx_ref) let val_obj_root = if val.is_object() { val.to_object() } else { ::std::ptr::null_mut() });
-                // For each transfer-list item: read its current byteLength,
-                // create a fresh ArrayBuffer of equal size (the "clone"), and
-                // detach the source via SM's JS::DetachArrayBuffer. If the
-                // item is the value being cloned, the clone becomes our
-                // return value.
-                let mut result_for_cloned: ::std::option::Option<*mut JSObject> = None;
-                for i in 0..list_len {
-                    let mut item = UndefinedValue();
-                    JS_GetElement(
+                    let mut length_val = UndefinedValue();
+                    JS_GetProperty(
                         cx,
-                        transfer_root.handle().into(),
-                        i as u32,
+                        t_obj.handle().into(),
+                        c"length".as_ptr(),
                         MutableHandle::<Value> {
                             _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut item,
+                            ptr: &mut length_val,
                         },
                     );
-                    if item.is_object() {
-                        rooted!(&in(cx_ref) let item_root = item.to_object());
-                        // Only ArrayBuffers are transferable per spec.
-                        let is_ab =
-                            mozjs_sys::jsapi::JS::IsArrayBufferObject(item_root.handle().get());
-                        if is_ab {
-                            // Read length + data so we can build a clone.
-                            let mut data_ptr: *mut u8 = ::std::ptr::null_mut();
-                            let mut data_len: usize = 0;
-                            let mut is_shared = false;
-                            mozjs_sys::jsapi::JS::GetArrayBufferLengthAndData(
-                                item_root.handle().get(),
-                                &mut data_len,
-                                &mut is_shared,
-                                &mut data_ptr,
-                            );
-                            // Copy bytes out so they survive detachment.
-                            let bytes_copy: Vec<u8> = if !data_ptr.is_null() && data_len > 0 {
-                                ::std::slice::from_raw_parts(data_ptr, data_len).to_vec()
-                            } else {
-                                Vec::new()
-                            };
-                            // Detach source ArrayBuffer.
-                            mozjs_sys::jsapi::JS::DetachArrayBuffer(cx, item_root.handle().into());
-                            // If this item is the value being cloned, build
-                            // a clone ArrayBuffer and use it as the return.
-                            let is_top = if val_obj_root.get().is_null() {
-                                false
-                            } else {
-                                val_obj_root.handle().get() == item_root.handle().get()
-                            };
-                            if is_top {
-                                let clone =
-                                    mozjs_sys::jsapi::JS::NewArrayBuffer(cx, bytes_copy.len());
-                                if !clone.is_null() {
-                                    if !bytes_copy.is_empty() {
-                                        let mut clone_shared = false;
-                                        let clone_data = mozjs_sys::jsapi::JS::GetArrayBufferData(
-                                            clone,
-                                            &mut clone_shared,
-                                            ::std::ptr::null(),
-                                        );
-                                        if !clone_data.is_null() {
-                                            ::std::ptr::copy_nonoverlapping(
-                                                bytes_copy.as_ptr(),
-                                                clone_data,
-                                                bytes_copy.len(),
-                                            );
-                                        }
-                                    }
-                                    result_for_cloned = Some(clone);
-                                }
-                            }
-                        }
-                    }
-                }
-                // If we cloned the top-level value, return the clone directly.
-                if let Some(clone) = result_for_cloned {
-                    args.rval().set(ObjectValue(clone));
-                    return true;
-                }
-            }
-        }
-    }
-
-    let val = *args.get(0).ptr;
-
-    if val.is_undefined()
-        || val.is_null()
-        || val.is_boolean()
-        || val.is_int32()
-        || val.is_double()
-        || val.is_string()
-    {
-        args.rval().set(val);
-        return true;
-    }
-
-    if val.is_object() {
-        let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-        rooted!(&in(cx_ref) let obj_root = val.to_object());
-
-        let mut ctor_name = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            obj_root.handle().into(),
-            c"constructor".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ctor_name,
-            },
-        );
-        if ctor_name.is_object() {
-            rooted!(&in(cx_ref) let ctor_root = ctor_name.to_object());
-            let mut name_val = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                ctor_root.handle().into(),
-                c"name".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut name_val,
-                },
-            );
-            if name_val.is_string() {
-                let name = crate::js_to_rust_string(cx, name_val);
-                match name.as_str() {
-                    "Date" => {
-                        let mut time_val = UndefinedValue();
-                        JS_GetProperty(
-                            cx,
-                            obj_root.handle().into(),
-                            c"getTime".as_ptr(),
-                            MutableHandle::<Value> {
-                                _phantom_0: ::std::marker::PhantomData,
-                                ptr: &mut time_val,
-                            },
-                        );
-                        if time_val.is_object() {
-                            rooted!(&in(cx_ref) let gt_root = ObjectValue(time_val.to_object()));
-                            let global = CurrentGlobalOrNull(cx);
-                            if !global.is_null() {
-                                rooted!(&in(cx_ref) let global_root = global);
-                                let mut ms_rval = UndefinedValue();
-                                JS_CallFunctionValue(
-                                    cx,
-                                    obj_root.handle().into(),
-                                    gt_root.handle().into(),
-                                    &HandleValueArray::empty(),
-                                    MutableHandle::<Value> {
-                                        _phantom_0: ::std::marker::PhantomData,
-                                        ptr: &mut ms_rval,
-                                    },
-                                );
-                                let ms = if ms_rval.is_double() {
-                                    ms_rval.to_double()
-                                } else if ms_rval.is_int32() {
-                                    ms_rval.to_int32() as f64
-                                } else {
-                                    0.0
-                                };
-                                let src = format!("new Date({})", ms);
-                                let mut eval_rval = UndefinedValue();
-                                let eval_opts =
-                                    mozjs::glue::NewCompileOptions(cx, c"clone".as_ptr(), 1);
-                                if !eval_opts.is_null() {
-                                    let mut src_text =
-                                        mozjs::rust::transform_str_to_source_text(&src);
-                                    JS::Evaluate2(
-                                        cx,
-                                        eval_opts,
-                                        &mut src_text,
-                                        MutableHandle::<Value> {
-                                            _phantom_0: ::std::marker::PhantomData,
-                                            ptr: &mut eval_rval,
-                                        },
-                                    );
-                                    libc::free(eval_opts as *mut _);
-                                }
-                                args.rval().set(eval_rval);
-                                return true;
-                            }
-                        }
-                    }
-                    "RegExp" => {
-                        let mut source_val = UndefinedValue();
-                        JS_GetProperty(
-                            cx,
-                            obj_root.handle().into(),
-                            c"source".as_ptr(),
-                            MutableHandle::<Value> {
-                                _phantom_0: ::std::marker::PhantomData,
-                                ptr: &mut source_val,
-                            },
-                        );
-                        let mut flags_val = UndefinedValue();
-                        JS_GetProperty(
-                            cx,
-                            obj_root.handle().into(),
-                            c"flags".as_ptr(),
-                            MutableHandle::<Value> {
-                                _phantom_0: ::std::marker::PhantomData,
-                                ptr: &mut flags_val,
-                            },
-                        );
-                        let source = if source_val.is_string() {
-                            crate::js_to_rust_string(cx, source_val)
-                        } else {
-                            "".to_string()
-                        };
-                        let flags = if flags_val.is_string() {
-                            crate::js_to_rust_string(cx, flags_val)
-                        } else {
-                            "".to_string()
-                        };
-                        let src = format!(
-                            "new RegExp(\"{}\", \"{}\")",
-                            source.replace('\\', "\\\\").replace('"', "\\\""),
-                            flags
-                        );
-                        let mut eval_rval = UndefinedValue();
-                        let eval_opts = mozjs::glue::NewCompileOptions(cx, c"clone".as_ptr(), 1);
-                        if !eval_opts.is_null() {
-                            let mut src_text = mozjs::rust::transform_str_to_source_text(&src);
-                            JS::Evaluate2(
+                    let list_len: i64 = if length_val.is_int32() {
+                        length_val.to_int32() as i64
+                    } else if length_val.is_double() {
+                        length_val.to_double() as i64
+                    } else {
+                        0
+                    };
+                    let arr = NewArrayObject1(cx_ref, 0);
+                    if !arr.is_null() {
+                        rooted!(&in(cx_ref) let arr_root = arr);
+                        for i in 0..list_len.max(0) {
+                            let mut item = UndefinedValue();
+                            JS_GetElement(
                                 cx,
-                                eval_opts,
-                                &mut src_text,
+                                t_obj.handle().into(),
+                                i as u32,
                                 MutableHandle::<Value> {
                                     _phantom_0: ::std::marker::PhantomData,
-                                    ptr: &mut eval_rval,
+                                    ptr: &mut item,
                                 },
                             );
-                            libc::free(eval_opts as *mut _);
+                            rooted!(&in(cx_ref) let item_root = item);
+                            JS_SetElement(
+                                cx,
+                                arr_root.handle().into(),
+                                i as u32,
+                                item_root.handle().into(),
+                            );
                         }
-                        args.rval().set(eval_rval);
-                        return true;
+                        transferable.set(ObjectValue(arr_root.get()));
                     }
-                    _ => {}
-                }
-            }
-        }
-
-        let mut json_rval = UndefinedValue();
-        let json_rval_h = MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut json_rval,
-        };
-        let json_src = mozjs::rust::transform_str_to_source_text(
-            "(function(o){try{return JSON.parse(JSON.stringify(o))}catch(e){return o}})",
-        );
-        let json_opts = mozjs::glue::NewCompileOptions(cx, c"json_clone".as_ptr(), 1);
-        if !json_opts.is_null() {
-            let mut json_fn_val = UndefinedValue();
-            JS::Evaluate2(
-                cx,
-                json_opts,
-                &mut ::std::mem::MaybeUninit::new(json_src).assume_init(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut json_fn_val,
-                },
-            );
-            libc::free(json_opts as *mut _);
-            if json_fn_val.is_object() {
-                let global = CurrentGlobalOrNull(cx);
-                if !global.is_null() {
-                    rooted!(&in(cx_ref) let global_root = global);
-                    rooted!(&in(cx_ref) let fn_root = ObjectValue(json_fn_val.to_object()));
-                    rooted!(&in(cx_ref) let obj_val_rooted = ObjectValue(obj_root.get()));
-                    let obj_arg = HandleValueArray {
-                        length_: 1,
-                        elements_: &obj_val_rooted.get() as *const Value,
-                    };
-                    JS_CallFunctionValue(
-                        cx,
-                        global_root.handle().into(),
-                        fn_root.handle().into(),
-                        &obj_arg,
-                        json_rval_h,
-                    );
-                    args.rval().set(json_rval);
-                    return true;
                 }
             }
         }
     }
 
-    args.rval().set(val);
+    // Write side: value (+ the engine transfer map, which detaches every
+    // transferred ArrayBuffer) into a DifferentProcess clone buffer → flat
+    // bytes. SAFETY: scbuf owns the clone buffer until the bytes are copied
+    // out below; null callbacks = no host custom types (unsupported → write
+    // fails, the DataCloneError path).
+    let scbuf = JSAutoStructuredCloneBufferWrapper::new(
+        StructuredCloneScope::DifferentProcess,
+        ::std::ptr::null(),
+    );
+    let scdata = &mut ((*scbuf.as_raw_ptr()).data_);
+    let ok = w2::JS_WriteStructuredClone(
+        cx_ref,
+        value.handle(),
+        scdata,
+        StructuredCloneScope::DifferentProcess,
+        &sc_clone_policy(),
+        ::std::ptr::null(),
+        ::std::ptr::null_mut(),
+        transferable.handle(),
+    );
+    if !ok {
+        return sc_report_data_clone_error(cx);
+    }
+    let nbytes = GetLengthOfJSStructuredCloneData(scdata);
+    let mut bytes = Vec::with_capacity(nbytes);
+    CopyJSStructuredCloneData(scdata, bytes.as_mut_ptr());
+    bytes.set_len(nbytes);
+
+    // Read side: the worker postMessage deserializer (same wire format);
+    // objects are created in the caller's realm, which is current here.
+    rooted!(&in(cx_ref) let mut out = UndefinedValue());
+    if !crate::node_worker_threads::sc_deserialize(cx, &bytes, out.handle_mut()) {
+        return sc_report_data_clone_error(cx);
+    }
+    args.rval().set(out.get());
     true
 }
 

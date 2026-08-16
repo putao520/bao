@@ -8,6 +8,9 @@
 // IPC: uses BAO_CLUSTER_WORKER_ID / BAO_CLUSTER_PRIMARY_PID env vars.
 // Workers communicate with primary via stdout/stderr pipe + process.send() over stdin.
 
+use ::std::cell::{Cell, RefCell};
+use ::std::time::Instant;
+
 use mozjs::jsapi::*;
 use mozjs::jsval::{
     BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue, UndefinedValue,
@@ -16,6 +19,180 @@ use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
+
+// ─── Cluster event pump (BCE: parent-loop stall eradication) ────────────────
+//
+// Root cause chain this replaces: the CLUSTER_JS shim drove BOTH IPC polls
+// (primary pollWorkers / worker recv) with `setInterval(..., 10)` timers that
+// are never cleared or unref'd. Because bao's timer registry has no unref
+// concept, those intervals pinned BOTH event loops forever:
+//   worker: script completes → 10ms IPC interval keeps the worker alive →
+//           worker never exits; primary: pollTimer keeps the primary alive
+//           while `cluster.workers` is non-empty → exit never observed →
+//           both processes spin until externally killed (the p2 full-script
+//           fork stall: >200s, zero stdout flush — stdout is block-buffered
+//           and neither process ever exits).
+//
+// Node semantics restored here: the worker's IPC channel NEVER keeps the
+// worker alive (a worker whose event loop drains exits; the primary's
+// ChildProcess handle keeps the PRIMARY alive while a worker runs). The pump
+// below is driven from `timers::drain_and_check` / `drain_one_pass` — the
+// same integration point as web_api::ws_pump_all — at a 10ms cadence, with
+// no JS timer anywhere:
+//   * Primary pump fn (pins=true): polls each worker's IPC + exit status,
+//     dispatches online/message/exit, returns `Object.keys(cluster.workers)
+//     .length > 0` → the loop-liveness contribution.
+//   * Worker pump fn (pins=false): polls the primary→worker channel; never
+//     contributes liveness (returns false; the registry ignores it anyway).
+//
+// The pump functions live in CLUSTER_JS (all event-dispatch logic stays in
+// the shim); Rust only registers, throttles, calls, and tracks liveness.
+
+struct ClusterPumpEntry {
+    /// GcStore key ("cluster-pump" namespace) of the JS pump function.
+    key: String,
+    /// true = a `true` return keeps the eval loop alive (primary); false =
+    /// never pins (worker — Node IPC-channel semantics).
+    pins: bool,
+    /// Last pump return value (liveness for pins entries). Starts true so a
+    /// pins pump registered mid-loop cannot race an exit decision.
+    last_alive: bool,
+}
+
+thread_local! {
+    static CLUSTER_PUMPS: RefCell<Vec<ClusterPumpEntry>> = const { RefCell::new(Vec::new()) };
+    static CLUSTER_PUMP_KEY: Cell<u64> = const { Cell::new(1) };
+    /// Throttle: the pump runs at most every 10ms (matches the old interval
+    /// cadence; drain_and_check ticks at ~1ms).
+    static CLUSTER_PUMP_LAST_TICK: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Native `__cluster_pump_register(fn, pins)` — CLUSTER_JS registers its pump
+/// function. `pins` distinguishes the primary (loop-keeping) pump from the
+/// worker (non-pinning) pump.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cluster_pump_register(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 || !(*args.get(0).ptr).is_object() {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    let pins = if argc > 1 {
+        let v = *args.get(1).ptr;
+        v.is_boolean() && v.to_boolean()
+    } else {
+        false
+    };
+    let fn_obj = (*args.get(0).ptr).to_object();
+    let key = format!("p{}", CLUSTER_PUMP_KEY.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    }));
+    crate::gc_store::gc_store_insert_ns(cx, "cluster-pump", &key, fn_obj);
+    CLUSTER_PUMPS.with(|p| {
+        p.borrow_mut().push(ClusterPumpEntry {
+            key,
+            pins,
+            last_alive: pins,
+        });
+    });
+    args.rval().set(BooleanValue(true));
+    true
+}
+
+/// Drive every registered cluster pump function on the JS thread. Called from
+/// `timers::drain_and_check` / `drain_one_pass`. Pump entries persist for the
+/// realm's lifetime (a primary pump that goes idle must still be present for
+/// the next fork); only their `last_alive` liveness contribution follows the
+/// return value.
+pub fn cluster_pump_all(raw_cx: *mut JSContext) {
+    let due = CLUSTER_PUMP_LAST_TICK.with(|t| match t.get() {
+        Some(last) => last.elapsed().as_millis() >= 10,
+        None => true,
+    });
+    if !due {
+        return;
+    }
+    CLUSTER_PUMP_LAST_TICK.with(|t| t.set(Some(Instant::now())));
+
+    // Snapshot keys to call (no borrow held across JS reentry — a pump fn may
+    // itself touch cluster state / re-register).
+    let snapshot: Vec<(String, bool)> = CLUSTER_PUMPS
+        .with(|p| p.borrow().iter().map(|e| (e.key.clone(), e.pins)).collect());
+    if snapshot.is_empty() {
+        return;
+    }
+
+    for (key, _pins) in snapshot {
+        let Some(pump_fn) = crate::gc_store::gc_store_get_ns(raw_cx, "cluster-pump", &key) else {
+            // Root vanished (realm teardown) — drop the entry.
+            CLUSTER_PUMPS.with(|p| p.borrow_mut().retain(|e| e.key != key));
+            continue;
+        };
+        let alive = unsafe { call_cluster_pump(raw_cx, pump_fn) };
+        CLUSTER_PUMPS.with(|p| {
+            let mut pumps = p.borrow_mut();
+            if let Some(entry) = pumps.iter_mut().find(|e| e.key == key) {
+                // Pumps persist across idle periods (a primary pump that
+                // reports no workers must still be alive for a later fork —
+                // removing it on `false` would strand all future online/exit
+                // events). Only `last_alive` (the liveness contribution)
+                // follows the return value.
+                entry.last_alive = alive;
+            }
+        });
+    }
+}
+
+/// Invoke one pump function; returns its boolean result (false on any JS
+/// error — a throwing pump must not pin the loop forever).
+///
+/// # Safety
+/// `raw_cx` must be the live JSContext on this thread; `pump_fn` a live
+/// function object rooted by GcStore.
+unsafe fn call_cluster_pump(raw_cx: *mut JSContext, pump_fn: *mut JSObject) -> bool {
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+        ::std::ptr::NonNull::new_unchecked(raw_cx),
+    );
+    let global = CurrentGlobalOrNull(raw_cx);
+    if global.is_null() {
+        return false;
+    }
+    rooted!(&in(cx_ref) let global_r = global);
+    rooted!(&in(cx_ref) let fval = ObjectValue(pump_fn));
+    let args = HandleValueArray {
+        length_: 0,
+        elements_: ::std::ptr::null(),
+    };
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionValue(
+        raw_cx,
+        global_r.handle().into(),
+        fval.handle().into(),
+        &args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        JS_ClearPendingException(raw_cx);
+        return false;
+    }
+    rval.is_boolean() && rval.to_boolean()
+}
+
+/// Event-loop liveness contribution (wired into `timers::drain_and_check`'s
+/// return): a pins pump whose last run reported live workers keeps the loop
+/// alive. Worker pumps never contribute.
+pub fn cluster_loop_alive() -> bool {
+    CLUSTER_PUMPS.with(|p| p.borrow().iter().any(|e| e.pins && e.last_alive))
+}
 
 /// Pure worker-id predicate (no env access; testable without global state).
 ///
@@ -340,6 +517,30 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     raw_cx,
                     obj.handle().into(),
                     c"__cluster_ipc_send".as_ptr(),
+                    val.handle().into(),
+                    0,
+                );
+            }
+        }
+        // Event-pump registration: the CLUSTER_JS shim registers its poll
+        // functions here (primary pins=true, worker pins=false) — driven by
+        // cluster_pump_all from the drain hook instead of loop-pinning
+        // setInterval timers (see the module-level BCE note).
+        let pump_register_fn = JS_NewFunction(
+            raw_cx,
+            Some(cluster_pump_register),
+            2,
+            0,
+            c"__cluster_pump_register".as_ptr(),
+        );
+        if !pump_register_fn.is_null() {
+            let fn_obj = JS_GetFunctionObject(pump_register_fn);
+            if !fn_obj.is_null() {
+                rooted!(&in(cx) let val = ObjectValue(fn_obj));
+                let _ = JS_DefineProperty(
+                    raw_cx,
+                    obj.handle().into(),
+                    c"__cluster_pump_register".as_ptr(),
                     val.handle().into(),
                     0,
                 );
@@ -1318,8 +1519,14 @@ const CLUSTER_JS: &str = r#"
       process.disconnect = function() {
         try { process.exit(0); } catch (e) {}
       };
-      // Poll the IPC channel for primary → worker messages.
-      setInterval(function() {
+      // Primary → worker message poll. BCE (parent-loop stall): this used to
+      // be a `setInterval(..., 10)` that — never cleared or unref'd — pinned
+      // the worker's event loop forever, so a worker whose script completed
+      // never exited and the primary (waiting on that exit) never exited
+      // either. The pump function below is driven by the native
+      // cluster_pump_all from the drain hook and NEVER pins: a worker with a
+      // drained loop exits (Node IPC-channel semantics).
+      function workerIpcPump() {
         try {
           var m = cp.__cp_ipc_recv(process.pid);
           while (m && m.json) {
@@ -1337,7 +1544,11 @@ const CLUSTER_JS: &str = r#"
             process.exit(0);
           }
         } catch (e) {}
-      }, 10);
+        return false; // never pins the worker loop
+      }
+      if (typeof cluster.__cluster_pump_register === 'function') {
+        cluster.__cluster_pump_register(workerIpcPump, false);
+      }
       // Online handshake → primary emits worker 'online'.
       try {
         cluster.__cluster_ipc_send(process.pid, JSON.stringify({
@@ -1353,13 +1564,6 @@ const CLUSTER_JS: &str = r#"
   // ─── Primary: wrap fork() results in Worker objects + event pump ─────────
   if (cluster.isPrimary) {
     var _originalFork = cluster.fork;
-    var pollTimer = null;
-
-    function ensurePolling() {
-      if (pollTimer === null && typeof setInterval === 'function') {
-        pollTimer = setInterval(pollWorkers, 10);
-      }
-    }
 
     function dispatchMessage(w, json) {
       var obj = null;
@@ -1388,6 +1592,12 @@ const CLUSTER_JS: &str = r#"
       cluster.emit('exit', w, code, signal);
     }
 
+    // BCE (parent-loop stall): the old pollWorkers setInterval(10) was never
+    // cleared while `cluster.workers` stayed non-empty — and because the
+    // worker side never exited (see workerIpcPump note), the primary spun
+    // forever. The pump function below is driven by the native
+    // cluster_pump_all from the drain hook; its boolean return is the ONLY
+    // loop-liveness contribution (true while any worker is registered).
     function pollWorkers() {
       var ids = Object.keys(cluster.workers);
       for (var i = 0; i < ids.length; i++) {
@@ -1407,10 +1617,10 @@ const CLUSTER_JS: &str = r#"
           } catch (e) {}
         }
       }
-      if (Object.keys(cluster.workers).length === 0 && pollTimer !== null) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
+      return Object.keys(cluster.workers).length > 0;
+    }
+    if (typeof cluster.__cluster_pump_register === 'function') {
+      cluster.__cluster_pump_register(pollWorkers, true);
     }
 
     cluster.fork = function(env) {
@@ -1450,7 +1660,6 @@ const CLUSTER_JS: &str = r#"
 
         if (!cluster.workers) cluster.workers = {};
         cluster.workers[result.id] = worker;
-        ensurePolling();
         cluster.emit('fork', worker);
         return worker;
       }

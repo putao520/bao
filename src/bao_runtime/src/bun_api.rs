@@ -5918,29 +5918,33 @@ unsafe fn file_bytes_to_value(
             Err(FileSettleErr::Coded("ERR", "JSON parse failed".into()))
         }
         BunfileReadMode::ArrayBuffer => {
-            let u8_obj = mozjs_sys::jsapi::JS_NewUint8Array(cx, bytes.len());
-            if u8_obj.is_null() {
-                return Err(bad_alloc("typed array"));
+            // Promise<ArrayBuffer> — the Bun contract: a real ArrayBuffer the
+            // caller can wrap in a DataView / TypedArray view (a Uint8Array
+            // resolve value fails `new DataView(result)` and
+            // `result instanceof ArrayBuffer`).
+            let ab = mozjs_sys::jsapi::JS::NewArrayBuffer(cx, bytes.len());
+            if ab.is_null() {
+                return Err(bad_alloc("array buffer"));
             }
             let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             let cx_ref = &mut wrapped;
-            rooted!(&in(cx_ref) let view = u8_obj);
+            rooted!(&in(cx_ref) let ab_root = ab);
             if !bytes.is_empty() {
                 let mut is_shared = false;
-                let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(
-                    view.get(),
+                let data_ptr = mozjs_sys::jsapi::JS::GetArrayBufferData(
+                    ab_root.get(),
                     &mut is_shared,
                     ::std::ptr::null(),
                 );
                 if data_ptr.is_null() {
                     return Err(FileSettleErr::Coded(
                         "ERR",
-                        "typed array data access failed".into(),
+                        "array buffer data access failed".into(),
                     ));
                 }
                 ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
             }
-            Ok(ObjectValue(view.get()))
+            Ok(ObjectValue(ab_root.get()))
         }
     }
 }
@@ -6021,7 +6025,9 @@ unsafe extern "C" fn bun_file_json(cx: *mut JSContext, _argc: u32, vp: *mut JSVa
     file_read_promise(cx, &args, BunfileReadMode::Json)
 }
 
-/// `BunFile.arrayBuffer()` → Promise<Uint8Array> over the file bytes.
+/// `BunFile.arrayBuffer()` → Promise<ArrayBuffer> over the file bytes (a
+/// real ArrayBuffer — `new DataView(result)` and `result instanceof
+/// ArrayBuffer` must hold).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn bun_file_array_buffer(
     cx: *mut JSContext,

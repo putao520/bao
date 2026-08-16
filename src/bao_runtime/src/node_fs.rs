@@ -1,6 +1,8 @@
 // @trace REQ-ENG-007
+use ::std::cell::{Cell, RefCell};
+use ::std::collections::{HashMap, VecDeque};
 use ::std::fs;
-use ::std::path::Path;
+use ::std::path::{Path, PathBuf};
 use ::std::sync::{Arc, Mutex};
 use bao_engine::context::RawValueRootGuard;
 use bun_core::ZBox;
@@ -9,7 +11,7 @@ use bun_sys::fs as bun_fs;
 
 use mozjs::glue::NewCompileOptions;
 use mozjs::jsapi::*;
-use mozjs::jsval::{DoubleValue, JSVal, StringValue, UndefinedValue};
+use mozjs::jsval::{DoubleValue, Int32Value, JSVal, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -823,6 +825,14 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             fs_obj.handle(),
             c"watchFile".as_ptr(),
             Some(fs_watch_file),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            fs_obj.handle(),
+            c"unwatchFile".as_ptr(),
+            Some(fs_unwatch_file),
             2,
             JSPROP_ENUMERATE as u32,
         );
@@ -2635,52 +2645,311 @@ unsafe extern "C" fn fs_cp(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> boo
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fs_watch(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    // Minimal FSWatcher: returns an EventEmitter-shaped object so consumers
-    // that only need the surface (on/emit/close) work without a real backend.
     let args = CallArgs::from_vp(vp, _argc);
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let watcher = mozjs::rust::wrappers2::JS_NewPlainObject(cx_ref));
-    if !watcher.get().is_null() {
-        // Forward to node_events' EE natives so the returned watcher integrates
-        // with the existing EventEmitter machinery.
-        let on_op: JSNative = Some(crate::node_events::ee_on);
-        let off_op: JSNative = Some(crate::node_events::ee_off);
-        let once_op: JSNative = Some(crate::node_events::ee_once);
-        let emit_op: JSNative = Some(crate::node_events::ee_emit);
-        let close_op: JSNative = Some(fs_noop_native);
-        for (name, op) in [
-            ("on", on_op),
-            ("addListener", on_op),
-            ("off", off_op),
-            ("removeListener", off_op),
-            ("once", once_op),
-            ("emit", emit_op),
-            ("close", close_op),
-        ] {
-            let c_name = ZBox::from_bytes(name.as_bytes());
-            mozjs_sys::jsapi::JS_DefineFunction(
+    let path = match get_path_arg(cx, &args, 0) {
+        ::std::result::Result::Ok(p) => p,
+        ::std::result::Result::Err(b) => return b,
+    };
+
+    // options may be an object (position 1) or an encoding string; the
+    // listener then sits at position 1 or 2 (Node: watch(filename[, options][, listener])).
+    let mut persistent = true;
+    let mut listener_val = UndefinedValue();
+    if _argc > 1 {
+        let opt_val = *args.get(1).ptr;
+        // Node overload: watch(filename[, options][, listener]) — a FUNCTION
+        // at position 1 is the listener, not the options object.
+        let opt_is_fn = opt_val.is_object()
+            && unsafe { mozjs_sys::jsapi::js::IsFunctionObject(opt_val.to_object()) };
+        if opt_val.is_object() && !opt_is_fn {
+            let mut wrapped_opt =
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            let cx_opt = &mut wrapped_opt;
+            rooted!(&in(cx_opt) let opt_obj = opt_val.to_object());
+            // recursive: Node on Linux without recursive inotify support throws
+            // ERR_FEATURE_UNAVAILABLE_ON_PLATFORM — explicit, never a silent fake.
+            let mut recursive_v = UndefinedValue();
+            JS_GetProperty(
                 cx,
-                watcher.handle().into(),
-                c_name.as_ptr(),
-                op,
-                2,
-                JSPROP_ENUMERATE as u32,
+                opt_obj.handle().into(),
+                c"recursive".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut recursive_v,
+                },
             );
+            if recursive_v.is_boolean() && recursive_v.to_boolean() {
+                JS_ReportErrorUTF8(
+                    cx,
+                    c"The value of \"options.recursive\" is not supported on this platform: watch recursive is unavailable (inotify backend covers the watched path only)".as_ptr(),
+                );
+                return false;
+            }
+            let mut persistent_v = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                opt_obj.handle().into(),
+                c"persistent".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut persistent_v,
+                },
+            );
+            if persistent_v.is_boolean() {
+                persistent = persistent_v.to_boolean();
+            }
+            if _argc > 2 {
+                listener_val = *args.get(2).ptr;
+            }
+        } else {
+            listener_val = opt_val;
         }
-        args.rval().set(mozjs::jsval::ObjectValue(watcher.get()));
-        return true;
     }
-    args.rval().set(UndefinedValue());
-    true
+
+    let is_dir = Path::new(&path).metadata().map(|m| m.is_dir()).unwrap_or(false);
+
+    // Register a real inotify watch (kernel events — not polling).
+    let id = fsw_next_id();
+    let wd = fsw_add_inotify_watch(&path);
+    match wd {
+        ::std::result::Result::Ok(wd) => {
+            fsw_register_watch(id, wd, path.clone(), is_dir, persistent);
+            let watcher = fsw_make_watcher_object(cx, id, is_dir);
+            if watcher.is_null() {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
+            let mut wrapped_cx =
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let watcher_r = watcher);
+            if listener_val.is_object() {
+                // Attach the listener via the object's own `on('change', fn)`.
+                let c_ev = ZBox::from_bytes("change".as_bytes());
+                let c_name = ZBox::from_bytes("on".as_bytes());
+                rooted!(&in(cx_ref) let lv = listener_val);
+                let ev_str = JS_NewStringCopyZ(cx, c_ev.as_ptr());
+                if !ev_str.is_null() {
+                    let argv = [mozjs::jsval::StringValue(&*ev_str), lv.get()];
+                    let call_args = HandleValueArray {
+                        length_: argv.len(),
+                        elements_: argv.as_ptr(),
+                    };
+                    let mut rval = UndefinedValue();
+                    JS_CallFunctionName(
+                        cx,
+                        watcher_r.handle().into(),
+                        c_name.as_ptr(),
+                        &call_args,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut rval,
+                        },
+                    );
+                }
+            }
+            args.rval().set(mozjs::jsval::ObjectValue(watcher_r.get()));
+            true
+        }
+        ::std::result::Result::Err(e) => {
+            let _ = fsw_maybe_shutdown_if_idle();
+            throw_fs_error(cx, "watch", &path, &e)
+        }
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn fs_watch_file(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    // watchFile: returns immediately; no polling backend wired (would require a
-    // background timer thread). Conformance suite only checks the API shape.
+unsafe extern "C" fn fs_watch_file(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
+    let path = match get_path_arg(cx, &args, 0) {
+        ::std::result::Result::Ok(p) => p,
+        ::std::result::Result::Err(b) => return b,
+    };
+
+    // watchFile(filename[, options], listener): options at 1, listener at 1/2.
+    let mut interval_ms: u64 = 5007; // Node default
+    let mut persistent = true;
+    let mut listener_val = UndefinedValue();
+    if _argc > 1 {
+        let opt_val = *args.get(1).ptr;
+        // Node overload: watch(filename[, options][, listener]) — a FUNCTION
+        // at position 1 is the listener, not the options object.
+        let opt_is_fn = opt_val.is_object()
+            && unsafe { mozjs_sys::jsapi::js::IsFunctionObject(opt_val.to_object()) };
+        if opt_val.is_object() && !opt_is_fn {
+            let mut wrapped_opt =
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            let cx_opt = &mut wrapped_opt;
+            rooted!(&in(cx_opt) let opt_obj = opt_val.to_object());
+            let mut interval_v = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                opt_obj.handle().into(),
+                c"interval".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut interval_v,
+                },
+            );
+            if interval_v.is_number() {
+                // JSVals carry ints as int32-or-double tags; to_double asserts
+                // the double tag — convert through the numeric union instead.
+                interval_ms = if interval_v.is_int32() {
+                    interval_v.to_int32().max(1) as u64
+                } else {
+                    interval_v.to_double().max(1.0) as u64
+                };
+            }
+            let mut persistent_v = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                opt_obj.handle().into(),
+                c"persistent".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut persistent_v,
+                },
+            );
+            if persistent_v.is_boolean() {
+                persistent = persistent_v.to_boolean();
+            }
+            if _argc > 2 {
+                listener_val = *args.get(2).ptr;
+            }
+        } else {
+            listener_val = opt_val;
+        }
+    }
+
+    let id = fsw_next_id();
+    // Baseline stat on the JS thread; missing file = zeroed stat (fires once
+    // when the file appears — Node parity).
+    let baseline = fsw_stat_path(&path).unwrap_or_else(fsw_zero_stat);
+    fsw_register_poll(id, path.clone(), interval_ms, baseline, persistent);
+
+    let watcher = fsw_make_watcher_object(cx, id, false);
+    if watcher.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let watcher_r = watcher);
+    if listener_val.is_object() {
+        let c_ev = ZBox::from_bytes("change".as_bytes());
+        let c_name = ZBox::from_bytes("on".as_bytes());
+        rooted!(&in(cx_ref) let lv = listener_val);
+        let ev_str = JS_NewStringCopyZ(cx, c_ev.as_ptr());
+        if !ev_str.is_null() {
+            let argv = [mozjs::jsval::StringValue(&*ev_str), lv.get()];
+            let call_args = HandleValueArray {
+                length_: argv.len(),
+                elements_: argv.as_ptr(),
+            };
+            let mut rval = UndefinedValue();
+            JS_CallFunctionName(
+                cx,
+                watcher_r.handle().into(),
+                c_name.as_ptr(),
+                &call_args,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
+        }
+    }
+    args.rval().set(mozjs::jsval::ObjectValue(watcher_r.get()));
+    true
+}
+
+/// fs.unwatchFile(filename[, listener]) — stop watchFile polling for `filename`.
+/// Node semantics: with a listener, remove that listener from each matching
+/// StatWatcher and close watchers left with no 'change' listeners; without,
+/// close every StatWatcher on the path.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_unwatch_file(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let path = match get_path_arg(cx, &args, 0) {
+        ::std::result::Result::Ok(p) => p,
+        ::std::result::Result::Err(b) => return b,
+    };
+    let listener_val = if _argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let canonical = fsw_canonicalize(&path);
+    let ids: Vec<u64> = FSW_POLLERS.with(|p| {
+        p.borrow()
+            .iter()
+            .filter(|e| e.path == canonical)
+            .map(|e| e.id)
+            .collect()
+    });
+    for id in ids {
+        if listener_val.is_object() {
+            // Remove just this listener; close only if 'change' went quiet.
+            if let Some(obj) = crate::gc_store::gc_store_get_ns(cx, "fswatch", &format!("w{}", id))
+            {
+                let mut wrapped_cx =
+                    mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+                let cx_ref = &mut wrapped_cx;
+                rooted!(&in(cx_ref) let obj_r = obj);
+                let c_rm = ZBox::from_bytes("removeListener".as_bytes());
+                let c_ev = ZBox::from_bytes("change".as_bytes());
+                rooted!(&in(cx_ref) let lv = listener_val);
+                let ev_str = JS_NewStringCopyZ(cx, c_ev.as_ptr());
+                if !ev_str.is_null() {
+                    let argv = [mozjs::jsval::StringValue(&*ev_str), lv.get()];
+                    let call_args = HandleValueArray {
+                        length_: argv.len(),
+                        elements_: argv.as_ptr(),
+                    };
+                    let mut rval = UndefinedValue();
+                    JS_CallFunctionName(
+                        cx,
+                        obj_r.handle().into(),
+                        c_rm.as_ptr(),
+                        &call_args,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut rval,
+                        },
+                    );
+                }
+                // Still has 'change' listeners? keep polling — ask the events
+                // module's static listenerCount(emitter, event) (public JS
+                // surface; no EE internals touched from here).
+                if let Some(events_mod) = crate::require::get_builtin(cx, "events") {
+                    if !events_mod.is_null() {
+                        rooted!(&in(cx_ref) let em_r = events_mod);
+                        let c_cnt = ZBox::from_bytes("listenerCount".as_bytes());
+                        let ev2_str = JS_NewStringCopyZ(cx, c_ev.as_ptr());
+                        if !ev2_str.is_null() {
+                            let argv = [mozjs::jsval::ObjectValue(obj_r.get()), mozjs::jsval::StringValue(&*ev2_str)];
+                            let call_args = HandleValueArray {
+                                length_: argv.len(),
+                                elements_: argv.as_ptr(),
+                            };
+                            let mut cnt = UndefinedValue();
+                            let ok = JS_CallFunctionName(
+                                cx,
+                                em_r.handle().into(),
+                                c_cnt.as_ptr(),
+                                &call_args,
+                                MutableHandle::<Value> {
+                                    _phantom_0: ::std::marker::PhantomData,
+                                    ptr: &mut cnt,
+                                },
+                            );
+                            if ok && cnt.is_int32() && cnt.to_int32() > 0 {
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fsw_close_entry(cx, id);
+    }
     args.rval().set(UndefinedValue());
     true
 }
@@ -2690,6 +2959,810 @@ unsafe extern "C" fn fs_noop_native(_cx: *mut JSContext, _argc: u32, vp: *mut JS
     let args = CallArgs::from_vp(vp, _argc);
     args.rval().set(UndefinedValue());
     true
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// fs.watch / fs.watchFile backend (BCE: silent-fake eradication)
+//
+// Architecture (single-threaded JS model + one OS worker thread per JS thread):
+//   * fs.watch     → inotify (kernel events via bun_sys::linux — workspace
+//                    syscall surface, same primitives bun_watcher builds on).
+//   * fs.watchFile → stat polling at the caller's interval on the same worker.
+//   * Worker thread owns the poll loop: poll(2) on [inotify_fd, wake_pipe_r]
+//     with timeout = soonest watchFile deadline. It NEVER touches JS types —
+//     events cross to the JS thread as plain data (PendingFsEvent) through a
+//     Mutex<VecDeque> (cross-thread share: Mutex is the sanctioned tool per
+//     去锁化). JS callbacks fire on the JS thread from
+//     `fs_watch_pump_all` (driven by timers::drain_and_check / drain_one_pass,
+//     same integration point as web_api::ws_pump_all).
+//   * Liveness: a persistent watcher keeps the eval loop alive via
+//     `fs_watch_loop_alive` (Node semantics: persistent=true keeps the
+//     process alive; persistent:false delivers events only while the loop is
+//     alive for other reasons).
+// ══════════════════════════════════════════════════════════════════════════
+
+/// Plain-data event marshalled worker → JS thread. No JS types cross threads.
+enum PendingFsEvent {
+    /// inotify event for an fs.watch entry.
+    Inotify {
+        id: u64,
+        /// "change" (IN_MODIFY/IN_ATTRIB) or "rename" (create/delete/move).
+        event_type: &'static str,
+        /// Event name for directory watches; basename for file watches; None
+        /// when the kernel supplies no name (e.g. IN_DELETE_SELF).
+        filename: Option<String>,
+    },
+    /// watchFile poll detected a stat change (or ENOENT → zeroed curr).
+    StatChange {
+        id: u64,
+        prev: libc::stat,
+        curr: libc::stat,
+    },
+    /// Watch-level failure surfaced to the JS 'error' event.
+    WatchError { id: u64, message: String },
+}
+
+enum FswCommand {
+    AddPoll {
+        id: u64,
+        path: PathBuf,
+        interval_ms: u64,
+        baseline: libc::stat,
+    },
+    RemovePoll { id: u64 },
+    Shutdown,
+}
+
+struct FswShared {
+    queue: VecDeque<PendingFsEvent>,
+    commands: VecDeque<FswCommand>,
+    /// wd → watcher id (inotify watch descriptor map; the JS thread writes on
+    /// add/remove, the worker reads when decoding events).
+    wd_map: HashMap<i32, u64>,
+}
+
+impl FswShared {
+    fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            commands: VecDeque::new(),
+            wd_map: HashMap::new(),
+        }
+    }
+}
+
+/// JS-thread watcher registration (fs.watch entries).
+struct FswWatchEntry {
+    id: u64,
+    wd: i32,
+    path: PathBuf,
+    is_dir: bool,
+    persistent: bool,
+}
+
+/// JS-thread poller registration (fs.watchFile entries).
+struct FswPollEntry {
+    id: u64,
+    path: PathBuf,
+    persistent: bool,
+}
+
+thread_local! {
+    static FSW_NEXT_ID: Cell<u64> = const { Cell::new(1) };
+    static FSW_WATCHERS: RefCell<Vec<FswWatchEntry>> = const { RefCell::new(Vec::new()) };
+    static FSW_POLLERS: RefCell<Vec<FswPollEntry>> = const { RefCell::new(Vec::new()) };
+    /// Hub: worker thread + shared queues + inotify/wake fds. Materialized on
+    /// the first watcher, torn down (joined) when the last watcher closes.
+    static FSW_HUB: RefCell<Option<FswHub>> = const { RefCell::new(None) };
+}
+
+struct FswHub {
+    shared: Arc<Mutex<FswShared>>,
+    inotify_fd: i32,
+    wake_w: i32,
+    handle: Option<::std::thread::JoinHandle<()>>,
+}
+
+impl Drop for FswHub {
+    fn drop(&mut self) {
+        // Best-effort synchronous teardown: signal shutdown, join the worker
+        // (the wake pipe makes the poll return immediately), close fds.
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.commands.push_back(FswCommand::Shutdown);
+        }
+        fsw_write_wake(self.wake_w);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        if self.inotify_fd >= 0 {
+            unsafe { libc::close(self.inotify_fd) };
+        }
+        if self.wake_w >= 0 {
+            unsafe { libc::close(self.wake_w) };
+        }
+    }
+}
+
+fn fsw_write_wake(fd: i32) {
+    if fd < 0 {
+        return;
+    }
+    let byte = [b'p'];
+    // SAFETY: write one byte to a pipe we own; ignore EAGAIN/EINTR — the
+    // worker's poll timeout bounds the worst-case missed wake.
+    unsafe {
+        let _ = libc::write(fd, byte.as_ptr() as *const ::std::ffi::c_void, 1);
+    }
+}
+
+fn fsw_next_id() -> u64 {
+    FSW_NEXT_ID.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    })
+}
+
+fn fsw_zero_stat() -> libc::stat {
+    // SAFETY: libc::stat is plain POD; zeroed() is the "file absent" sentinel
+    // (Node passes zeroed Stats when the watched file is gone).
+    unsafe { ::std::mem::zeroed() }
+}
+
+fn fsw_stat_path(path: &str) -> ::std::option::Option<libc::stat> {
+    let c_path = bun_core::ZBox::from_bytes(path.as_bytes());
+    let mut st: libc::stat = fsw_zero_stat();
+    // SAFETY: c_path is NUL-terminated; st is writable POD of the size stat expects.
+    let rc = unsafe { libc::stat(c_path.as_ptr() as *const ::std::ffi::c_char, &mut st) };
+    if rc == 0 {
+        Some(st)
+    } else {
+        None
+    }
+}
+
+fn fsw_stat_changed(a: &libc::stat, b: &libc::stat) -> bool {
+    // Node/libuv uv_fs_poll change predicate: size, mtime (ns), ino, mode.
+    a.st_size != b.st_size
+        || a.st_mtime != b.st_mtime
+        || a.st_mtime_nsec != b.st_mtime_nsec
+        || a.st_ino != b.st_ino
+        || a.st_mode != b.st_mode
+}
+
+fn fsw_canonicalize(path: &str) -> PathBuf {
+    PathBuf::from(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path))
+}
+
+/// Materialize the hub (worker thread + inotify fd + wake pipe) if absent.
+fn fsw_ensure_hub() -> bool {
+    FSW_HUB.with(|h| {
+        if h.borrow().is_some() {
+            return true;
+        }
+        // SAFETY: raw inotify/pipe setup via libc; fds checked below.
+        unsafe {
+            let inotify_fd = libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK);
+            if inotify_fd < 0 {
+                return false;
+            }
+            let mut pipe_fds = [-1i32, -1];
+            if libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) != 0 {
+                libc::close(inotify_fd);
+                return false;
+            }
+            let (wake_r, wake_w) = (pipe_fds[0], pipe_fds[1]);
+            let shared = Arc::new(Mutex::new(FswShared::new()));
+            let worker_shared = Arc::clone(&shared);
+            let spawned = ::std::thread::Builder::new()
+                .name("bao-fswatch".to_string())
+                .stack_size(128 * 1024)
+                .spawn(move || fsw_worker_main(worker_shared, inotify_fd, wake_r));
+            match spawned {
+                Ok(handle) => {
+                    // wake_r is owned by the worker loop exclusively now.
+                    *h.borrow_mut() = Some(FswHub {
+                        shared,
+                        inotify_fd,
+                        wake_w,
+                        handle: Some(handle),
+                    });
+                    true
+                }
+                Err(_) => {
+                    libc::close(inotify_fd);
+                    libc::close(wake_r);
+                    libc::close(wake_w);
+                    false
+                }
+            }
+        }
+    })
+}
+
+/// Worker thread: poll [inotify, wake] + stat-poll loop. Never touches JS.
+fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, inotify_fd: i32, wake_r: i32) {
+    struct PollSpec {
+        id: u64,
+        path: PathBuf,
+        interval_ms: u64,
+        last: libc::stat,
+        next_due_ms: u128,
+    }
+    let mut polls: Vec<PollSpec> = Vec::new();
+    let mut inotify_buf = [0u8; 64 * 1024];
+
+    loop {
+        // Apply pending commands under a short lock.
+        {
+            let mut commands: VecDeque<FswCommand> = VecDeque::new();
+            let mut shutdown = false;
+            if let Ok(mut guard) = shared.lock() {
+                ::std::mem::swap(&mut commands, &mut guard.commands);
+                shutdown = commands.iter().any(|c| matches!(c, FswCommand::Shutdown));
+                if shutdown {
+                    guard.commands.clear();
+                }
+            }
+            if shutdown {
+                break;
+            }
+            for cmd in commands {
+                match cmd {
+                    FswCommand::AddPoll { id, path, interval_ms, baseline } => {
+                        polls.retain(|p| p.id != id);
+                        polls.push(PollSpec {
+                            id,
+                            path,
+                            interval_ms,
+                            last: baseline,
+                            next_due_ms: monotonic_ms().saturating_add(interval_ms as u128),
+                        });
+                    }
+                    FswCommand::RemovePoll { id } => polls.retain(|p| p.id != id),
+                    FswCommand::Shutdown => unreachable!("handled above"),
+                }
+            }
+        }
+
+        // Timeout: soonest poll deadline, else block until inotify/wake.
+        let now = monotonic_ms();
+        let timeout_ms: i64 = polls
+            .iter()
+            .map(|p| p.next_due_ms.saturating_sub(now) as i64)
+            .min()
+            .unwrap_or(-1);
+        let timeout_i32: i32 = if timeout_ms < 0 {
+            -1
+        } else {
+            timeout_ms.min(i32::MAX as i64) as i32
+        };
+
+        let mut poll_fds = [
+            libc::pollfd { fd: inotify_fd, events: libc::POLLIN as i16, revents: 0 },
+            libc::pollfd { fd: wake_r, events: libc::POLLIN as i16, revents: 0 },
+        ];
+        // SAFETY: poll on fds we own with a bounded (or -1) timeout — woken
+        // by inotify events or the wake pipe, so -1 cannot pin shutdown.
+        let rc = unsafe { libc::poll(poll_fds.as_mut_ptr(), 2, timeout_i32) };
+        if rc < 0 {
+            let errno = unsafe { *libc::__errno_location() };
+            if errno == libc::EINTR {
+                continue;
+            }
+            break;
+        }
+
+        // Drain the wake pipe so it never fills.
+        if poll_fds[1].revents & (libc::POLLIN as i16) != 0 {
+            let mut scratch = [0u8; 64];
+            loop {
+                // SAFETY: read ≤64 bytes from the non-blocking wake pipe.
+                let n = unsafe {
+                    libc::read(wake_r, scratch.as_mut_ptr() as *mut ::std::ffi::c_void, 64)
+                };
+                if n <= 0 {
+                    break;
+                }
+            }
+        }
+
+        // Decode inotify events → queue.
+        if poll_fds[0].revents & (libc::POLLIN as i16 | libc::POLLHUP as i16) != 0 {
+            loop {
+                // SAFETY: read into our buffer from the non-blocking inotify fd.
+                let n = unsafe {
+                    libc::read(inotify_fd, inotify_buf.as_mut_ptr() as *mut ::std::ffi::c_void, inotify_buf.len())
+                };
+                if n <= 0 {
+                    break;
+                }
+                let buf = &inotify_buf[..n as usize];
+                let mut off = 0usize;
+                while off + ::std::mem::size_of::<libc::inotify_event>() <= buf.len() {
+                    // SAFETY: the kernel guarantees struct-aligned inotify_event
+                    // headers at these offsets (that is the inotify ABI).
+                    let ev = unsafe {
+                        &*(buf[off..].as_ptr() as *const libc::inotify_event)
+                    };
+                    let name: Option<String> = if ev.len > 0 {
+                        let name_start = off + ::std::mem::size_of::<libc::inotify_event>();
+                        let name_end = (name_start + ev.len as usize).min(buf.len());
+                        let name_bytes: Vec<u8> = buf[name_start..name_end]
+                            .iter()
+                            .take_while(|&&b| b != 0)
+                            .cloned()
+                            .collect::<Vec<u8>>();
+                        String::from_utf8(name_bytes).ok() // non-utf8 names are surfaced as absent (registered limit)
+                    } else {
+                        None
+                    };
+                    let id = shared.lock().ok().and_then(|g| g.wd_map.get(&ev.wd).copied());
+                    if let Some(id) = id {
+                        let event_type = if ev.mask & (libc::IN_MODIFY | libc::IN_ATTRIB) != 0 {
+                            "change"
+                        } else {
+                            // CREATE / DELETE / MOVED_FROM / MOVED_TO /
+                            // MOVE_SELF / DELETE_SELF / IGNORED → rename (Node).
+                            "rename"
+                        };
+                        if let Ok(mut guard) = shared.lock() {
+                            guard.queue.push_back(PendingFsEvent::Inotify {
+                                id,
+                                event_type,
+                                filename: name,
+                            });
+                        }
+                    }
+                    off += ::std::mem::size_of::<libc::inotify_event>() + ev.len as usize;
+                }
+            }
+        }
+
+        // Due stat polls.
+        let now = monotonic_ms();
+        let mut due: Vec<usize> = Vec::new();
+        for (i, p) in polls.iter().enumerate() {
+            if p.next_due_ms <= now {
+                due.push(i);
+            }
+        }
+        for i in due {
+            let Some(spec) = polls.get_mut(i) else { continue };
+            spec.next_due_ms = now + spec.interval_ms as u128;
+            let curr = match fsw_stat_path(&spec.path.to_string_lossy()) {
+                Some(st) => st,
+                None => fsw_zero_stat(),
+            };
+            if fsw_stat_changed(&spec.last, &curr) {
+                let prev = spec.last;
+                spec.last = curr;
+                if let Ok(mut guard) = shared.lock() {
+                    guard.queue.push_back(PendingFsEvent::StatChange {
+                        id: spec.id,
+                        prev,
+                        curr,
+                    });
+                }
+            } else {
+                spec.last = curr;
+            }
+        }
+    }
+    // Worker exit: drop our copy of the wake read-end.
+    unsafe { libc::close(wake_r) };
+}
+
+fn monotonic_ms() -> u128 {
+    ::std::time::SystemTime::now()
+        .duration_since(::std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+fn fsw_add_inotify_watch(path: &str) -> ::std::result::Result<i32, ::std::io::Error> {
+    if !fsw_ensure_hub() {
+        return ::std::result::Result::Err(::std::io::Error::other(
+            "fs.watch: failed to start the watcher thread",
+        ));
+    }
+    let c_path = bun_core::ZBox::from_bytes(path.as_bytes());
+    // Node/libuv inotify mask for fs.watch.
+    let mask = libc::IN_ATTRIB
+        | libc::IN_CREATE
+        | libc::IN_MODIFY
+        | libc::IN_MOVED_FROM
+        | libc::IN_MOVED_TO
+        | libc::IN_DELETE
+        | libc::IN_DELETE_SELF
+        | libc::IN_MOVE_SELF;
+    // SAFETY: c_path is NUL-terminated; fd is the hub's live inotify fd.
+    let wd = unsafe {
+        libc::inotify_add_watch(
+            FSW_HUB.with(|h| h.borrow().as_ref().map(|hub| hub.inotify_fd).unwrap_or(-1)),
+            c_path.as_ptr() as *const ::std::ffi::c_char,
+            mask,
+        )
+    };
+    if wd < 0 {
+        return ::std::result::Result::Err(::std::io::Error::last_os_error());
+    }
+    ::std::result::Result::Ok(wd)
+}
+
+fn fsw_register_watch(id: u64, wd: i32, path: String, is_dir: bool, persistent: bool) {
+    FSW_HUB.with(|h| {
+        if let Some(hub) = h.borrow().as_ref() {
+            if let Ok(mut guard) = hub.shared.lock() {
+                guard.wd_map.insert(wd, id);
+            }
+        }
+    });
+    FSW_WATCHERS.with(|w| {
+        w.borrow_mut().push(FswWatchEntry {
+            id,
+            wd,
+            path: PathBuf::from(path),
+            is_dir,
+            persistent,
+        });
+    });
+}
+
+fn fsw_register_poll(id: u64, path: String, interval_ms: u64, baseline: libc::stat, persistent: bool) {
+    if !fsw_ensure_hub() {
+        return;
+    }
+    FSW_POLLERS.with(|p| {
+        p.borrow_mut().push(FswPollEntry {
+            id,
+            path: fsw_canonicalize(&path),
+            persistent,
+        });
+    });
+    FSW_HUB.with(|h| {
+        if let Some(hub) = h.borrow().as_ref() {
+            if let Ok(mut guard) = hub.shared.lock() {
+                guard.commands.push_back(FswCommand::AddPoll {
+                    id,
+                    path: PathBuf::from(path),
+                    interval_ms,
+                    baseline,
+                });
+            }
+        }
+    });
+    fsw_wake_worker();
+}
+
+fn fsw_wake_worker() {
+    FSW_HUB.with(|h| {
+        if let Some(hub) = h.borrow().as_ref() {
+            fsw_write_wake(hub.wake_w);
+        }
+    });
+}
+
+/// Close one watcher/poller entry (fs_watch close native / unwatchFile):
+/// deregister, emit 'close' on the JS object, tear the hub down when idle.
+unsafe fn fsw_close_entry(cx: *mut JSContext, id: u64) {
+    let watch = FSW_WATCHERS.with(|w| w.borrow_mut().iter().position(|e| e.id == id));
+    let poll = FSW_POLLERS.with(|p| p.borrow_mut().iter().position(|e| e.id == id));
+    let key = format!("w{}", id);
+
+    if let Some(idx) = watch {
+        let entry = FSW_WATCHERS.with(|w| w.borrow_mut().remove(idx));
+        // rm the kernel watch + wd mapping.
+        FSW_HUB.with(|h| {
+            if let Some(hub) = h.borrow().as_ref() {
+                unsafe { libc::inotify_rm_watch(hub.inotify_fd, entry.wd) };
+                if let Ok(mut guard) = hub.shared.lock() {
+                    guard.wd_map.remove(&entry.wd);
+                }
+            }
+        });
+    }
+    if let Some(idx) = poll {
+        FSW_POLLERS.with(|p| p.borrow_mut().remove(idx));
+        FSW_HUB.with(|h| {
+            if let Some(hub) = h.borrow().as_ref() {
+                if let Ok(mut guard) = hub.shared.lock() {
+                    guard.commands.push_back(FswCommand::RemovePoll { id });
+                }
+            }
+        });
+        fsw_wake_worker();
+    }
+
+    // Emit 'close' (Node: FSWatcher/StatWatcher emit 'close' when closed),
+    // then release the GcStore root.
+    if let Some(obj) = crate::gc_store::gc_store_get_ns(cx, "fswatch", &key) {
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+            ::std::ptr::NonNull::new_unchecked(cx),
+        );
+        rooted!(&in(cx_ref) let obj_r = obj);
+        let c_emit = ZBox::from_bytes("emit".as_bytes());
+        let c_ev = ZBox::from_bytes("close".as_bytes());
+        let ev_str = JS_NewStringCopyZ(cx, c_ev.as_ptr());
+        if !ev_str.is_null() {
+            let argv = [mozjs::jsval::StringValue(&*ev_str)];
+            let call_args = HandleValueArray {
+                length_: argv.len(),
+                elements_: argv.as_ptr(),
+            };
+            let mut rval = UndefinedValue();
+            JS_CallFunctionName(
+                cx,
+                obj_r.handle().into(),
+                c_emit.as_ptr(),
+                &call_args,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
+            JS_ClearPendingException(cx);
+        }
+    }
+    crate::gc_store::gc_store_remove_ns(cx, "fswatch", &key);
+    let _ = fsw_maybe_shutdown_if_idle();
+}
+
+/// Tear the worker hub down when the last entry closed. Returns true if the
+/// hub was torn down (or was already absent).
+fn fsw_maybe_shutdown_if_idle() -> bool {
+    let watchers_empty = FSW_WATCHERS.with(|w| w.borrow().is_empty());
+    let pollers_empty = FSW_POLLERS.with(|p| p.borrow().is_empty());
+    if watchers_empty && pollers_empty {
+        FSW_HUB.with(|h| {
+            *h.borrow_mut() = None; // Drop signals shutdown + joins the worker.
+        });
+        true
+    } else {
+        false
+    }
+}
+
+/// Build the FSWatcher / StatWatcher JS object: EventEmitter-shaped (on/once/
+/// off/emit/listenerCount wired to node_events' EE natives) + a real close().
+unsafe fn fsw_make_watcher_object(cx: *mut JSContext, id: u64, _is_dir: bool) -> *mut JSObject {
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+        ::std::ptr::NonNull::new_unchecked(cx),
+    );
+    rooted!(&in(cx_ref) let watcher = w2::JS_NewPlainObject(cx_ref));
+    if watcher.get().is_null() {
+        return ::std::ptr::null_mut();
+    }
+    let on_op: JSNative = Some(crate::node_events::ee_on);
+    let off_op: JSNative = Some(crate::node_events::ee_off);
+    let once_op: JSNative = Some(crate::node_events::ee_once);
+    let emit_op: JSNative = Some(crate::node_events::ee_emit);
+    let close_op: JSNative = Some(fsw_close_native);
+    for (name, op, nargs) in [
+        ("on", on_op, 2u32),
+        ("addListener", on_op, 2),
+        ("off", off_op, 2),
+        ("removeListener", off_op, 2),
+        ("once", once_op, 2),
+        ("emit", emit_op, 2),
+        ("close", close_op, 0),
+    ] {
+        let c_name = ZBox::from_bytes(name.as_bytes());
+        mozjs_sys::jsapi::JS_DefineFunction(
+            cx,
+            watcher.handle().into(),
+            c_name.as_ptr(),
+            op,
+            nargs,
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    // Hidden numeric id used by fsw_close_native; rooted in GcStore for GC
+    // safety across event-loop iterations.
+    rooted!(&in(cx_ref) let id_v = Int32Value(id as i32));
+    JS_DefineProperty(
+        cx,
+        watcher.handle().into(),
+        c"_fswId".as_ptr(),
+        id_v.handle().into(),
+        0,
+    );
+    crate::gc_store::gc_store_insert_ns(cx, "fswatch", &format!("w{}", id), watcher.get());
+    watcher.get()
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fsw_close_native(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this_v = *args.thisv().ptr;
+    if this_v.is_object() {
+        let obj = this_v.to_object();
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+            ::std::ptr::NonNull::new_unchecked(cx),
+        );
+        rooted!(&in(cx_ref) let obj_r = obj);
+        let mut id_v = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj_r.handle().into(),
+            c"_fswId".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut id_v,
+            },
+        );
+        if id_v.is_int32() {
+            fsw_close_entry(cx, id_v.to_int32() as u64);
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// Event-loop liveness: a persistent fs.watch / fs.watchFile entry keeps the
+/// process alive (Node semantics); non-persistent entries never pin.
+pub fn fs_watch_loop_alive() -> bool {
+    let w = FSW_WATCHERS.with(|w| w.borrow().iter().any(|e| e.persistent));
+    let p = FSW_POLLERS.with(|p| p.borrow().iter().any(|e| e.persistent));
+    w || p
+}
+
+/// Pump all queued watch events on the JS thread. Called from
+/// `timers::drain_and_check` / `drain_one_pass` (same integration point as
+/// `web_api::ws_pump_all`).
+pub fn fs_watch_pump_all(raw_cx: *mut JSContext) {
+    // Fast path: no hub → nothing queued.
+    let events: Vec<PendingFsEvent> = match FSW_HUB.with(|h| h.borrow().as_ref().map(|hub| Arc::clone(&hub.shared))) {
+        Some(shared) => match shared.lock() {
+            Ok(mut guard) => ::std::mem::take(&mut guard.queue).into_iter().collect(),
+            Err(_) => return,
+        },
+        None => return,
+    };
+    if events.is_empty() {
+        return;
+    }
+    for ev in events {
+        // SAFETY: raw_cx is the live JSContext on this thread (drain hook
+        // contract); dispatch only touches JS on this thread.
+        unsafe { fsw_dispatch_event(raw_cx, ev) };
+    }
+}
+
+/// Fire one event on its watcher object. Listener throws route through the
+/// unified uncaught-exception router — never silently swallowed.
+unsafe fn fsw_dispatch_event(raw_cx: *mut JSContext, ev: PendingFsEvent) {
+    let (id, event_name, argv): (u64, &str, Vec<mozjs::jsval::JSVal>) = match ev {
+        PendingFsEvent::Inotify { id, event_type, filename } => {
+            let mut argv = Vec::with_capacity(2);
+            let c_type = ZBox::from_bytes(event_type.as_bytes());
+            let type_str = JS_NewStringCopyZ(raw_cx, c_type.as_ptr());
+            if !type_str.is_null() {
+                argv.push(mozjs::jsval::StringValue(&*type_str));
+            }
+            // Filename resolution (Node semantics): directory watches report
+            // the event's name; FILE watches carry no kernel name — Node
+            // passes the watched file's basename instead of null.
+            let resolved_name: Option<String> = match filename {
+                Some(name) => Some(name),
+                None => FSW_WATCHERS.with(|w| {
+                    w.borrow().iter().find(|e| e.id == id).and_then(|e| {
+                        if e.is_dir {
+                            None
+                        } else {
+                            e.path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                        }
+                    })
+                }),
+            };
+            match resolved_name {
+                Some(name) => {
+                    let c_name = ZBox::from_bytes(name.as_bytes());
+                    let name_str = JS_NewStringCopyZ(raw_cx, c_name.as_ptr());
+                    if !name_str.is_null() {
+                        argv.push(mozjs::jsval::StringValue(&*name_str));
+                    }
+                }
+                None => argv.push(mozjs::jsval::NullValue()),
+            }
+            (id, "change", argv)
+        }
+        PendingFsEvent::StatChange { id, prev, curr } => {
+            let curr_obj = build_stats_object(raw_cx, &curr);
+            let prev_obj = build_stats_object(raw_cx, &prev);
+            let mut argv = Vec::with_capacity(2);
+            if !curr_obj.is_null() {
+                argv.push(mozjs::jsval::ObjectValue(curr_obj));
+            }
+            if !prev_obj.is_null() {
+                argv.push(mozjs::jsval::ObjectValue(prev_obj));
+            }
+            (id, "change", argv)
+        }
+        PendingFsEvent::WatchError { id, message } => {
+            // Error events without an 'error' listener must throw (Node) —
+            // ee_emit's BCE-20260816-EE-ERRORTHROW semantics handle that when
+            // the Error value is a real object; build one here.
+            let c_msg = ZBox::from_bytes(message.as_bytes());
+            let err_obj = JS_NewPlainObject(raw_cx);
+            if !err_obj.is_null() {
+                let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+                    ::std::ptr::NonNull::new_unchecked(raw_cx),
+                );
+                rooted!(&in(cx_ref) let err_r = err_obj);
+                let msg_str = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
+                if !msg_str.is_null() {
+                    rooted!(&in(cx_ref) let mv = mozjs::jsval::StringValue(&*msg_str));
+                    JS_DefineProperty(
+                        raw_cx,
+                        err_r.handle().into(),
+                        c"message".as_ptr(),
+                        mv.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                    let argv = vec![mozjs::jsval::ObjectValue(err_r.get())];
+                    return fsw_emit_on_entry(raw_cx, id, "error", argv);
+                }
+            }
+            return;
+        }
+    };
+    fsw_emit_on_entry(raw_cx, id, event_name, argv);
+}
+
+unsafe fn fsw_emit_on_entry(raw_cx: *mut JSContext, id: u64, event: &str, argv: Vec<mozjs::jsval::JSVal>) {
+    let key = format!("w{}", id);
+    let Some(obj) = crate::gc_store::gc_store_get_ns(raw_cx, "fswatch", &key) else {
+        return; // entry closed while the event was in flight — drop it.
+    };
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+        ::std::ptr::NonNull::new_unchecked(raw_cx),
+    );
+    rooted!(&in(cx_ref) let obj_r = obj);
+    let c_emit = ZBox::from_bytes("emit".as_bytes());
+    let c_ev = ZBox::from_bytes(event.as_bytes());
+    let ev_str = JS_NewStringCopyZ(raw_cx, c_ev.as_ptr());
+    if ev_str.is_null() {
+        return;
+    }
+    rooted!(&in(cx_ref) let ev_root = mozjs::jsval::StringValue(&*ev_str));
+    let mut all_argv: Vec<mozjs::jsval::JSVal> = Vec::with_capacity(argv.len() + 1);
+    all_argv.push(ev_root.get());
+    all_argv.extend(argv);
+    let call_args = HandleValueArray {
+        length_: all_argv.len(),
+        elements_: all_argv.as_ptr(),
+    };
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionName(
+        raw_cx,
+        obj_r.handle().into(),
+        c_emit.as_ptr(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        // Route listener throws exactly like timer callbacks (uncaught router),
+        // then clear so subsequent events still dispatch.
+        let mut exn = UndefinedValue();
+        JS_GetPendingException(
+            raw_cx,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut exn,
+            },
+        );
+        JS_ClearPendingException(raw_cx);
+        if !exn.is_undefined() {
+            rooted!(&in(cx_ref) let reason_root = exn);
+            crate::uncaught::route_uncaught_exception(raw_cx, exn);
+        }
+    }
 }
 
 // --- Async (callback-based) ---

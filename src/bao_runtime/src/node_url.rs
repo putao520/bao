@@ -2170,6 +2170,207 @@ unsafe extern "C" fn sp_get_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+// ── url.parse `query` field ─────────────────────────────────────────────────
+//
+// Node: query is the search string minus its leading '?' (null when there is
+// no search), or — for url.parse(url, true) — the querystring.parse object.
+
+/// querystring.unescape semantics for the query object: '+' → space, '%XX' →
+/// byte, then the byte string is UTF-8-decoded (decodeURIComponent shape;
+/// JS_NewStringCopyN would read the bytes as Latin-1 and mangle multibyte).
+/// Malformed sequences decode leniently (Node's unescape catch path).
+fn qs_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push((h * 16 + l) as u8);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    match String::from_utf8(out) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    }
+}
+
+/// Parsed query value: one value, or many when duplicate keys aggregate.
+enum QueryVal {
+    One(String),
+    Many(Vec<String>),
+}
+
+/// querystring.parse semantics (mirrors the QS_JS parse in
+/// node_querystring.rs): split on '&', split pairs on '=', decode with
+/// qs_decode, duplicate keys aggregate into arrays, maxKeys 1000 pairs.
+fn qs_parse_pairs(search: &str) -> Vec<(String, QueryVal)> {
+    let qs = search.strip_prefix('?').unwrap_or(search);
+    let mut out: Vec<(String, QueryVal)> = Vec::new();
+    if qs.is_empty() {
+        return out;
+    }
+    let mut count = 0usize;
+    for pair in qs.split('&') {
+        if count >= 1000 {
+            break;
+        }
+        let (k, v) = match pair.split_once('=') {
+            Some((k, v)) => (qs_decode(k), qs_decode(v)),
+            None => (qs_decode(pair), String::new()),
+        };
+        match out.iter_mut().find(|(ek, _)| *ek == k) {
+            Some((_, ev)) => match ev {
+                QueryVal::One(s) => *ev = QueryVal::Many(vec![s.clone(), v]),
+                QueryVal::Many(vs) => vs.push(v),
+            },
+            None => out.push((k, QueryVal::One(v))),
+        }
+        count += 1;
+    }
+    out
+}
+
+/// Valid-UTF-8 text → JSString (JS_NewStringCopyN reads bytes as Latin-1 and
+/// mangles multibyte — same discipline as bun_api::js_string_from_utf8).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn qs_js_string_utf8(cx: *mut JSContext, s: &str) -> *mut JSString {
+    let chars = mozjs::conversions::Utf8Chars::from(s);
+    mozjs_sys::jsapi::JS_NewStringCopyUTF8N(
+        cx,
+        &*chars as *const _ as *const mozjs_sys::jsapi::JS::UTF8Chars,
+    )
+}
+
+/// Build the query object for url.parse(url, true): querystring.parse result
+/// (plain object; duplicate keys become arrays). Returns a null object only
+/// on allocation failure.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn build_query_object(cx: *mut JSContext, search: &str) -> *mut JSObject {
+    let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if obj.is_null() {
+        return obj;
+    }
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let obj_r = obj);
+    for (k, v) in qs_parse_pairs(search) {
+        let c_key = ZBox::from_bytes(k.as_bytes());
+        let prop_val: Value = match v {
+            QueryVal::One(s) => {
+                let js = qs_js_string_utf8(cx, &s);
+                if js.is_null() {
+                    continue;
+                }
+                StringValue(unsafe { &*js })
+            }
+            QueryVal::Many(vs) => {
+                let arr = w2::NewArrayObject1(cx_ref, vs.len());
+                if arr.is_null() {
+                    continue;
+                }
+                rooted!(&in(cx_ref) let arr_root = arr);
+                for (i, s) in vs.iter().enumerate() {
+                    let js = qs_js_string_utf8(cx, s);
+                    if js.is_null() {
+                        continue;
+                    }
+                    let sv = StringValue(unsafe { &*js });
+                    rooted!(&in(cx_ref) let sv_root = sv);
+                    JS_DefineElement(
+                        cx,
+                        arr_root.handle().into(),
+                        i as u32,
+                        sv_root.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+                ObjectValue(arr_root.get())
+            }
+        };
+        rooted!(&in(cx_ref) let pv_root = prop_val);
+        JS_DefineProperty(
+            cx,
+            obj_r.handle().into(),
+            c_key.as_ptr(),
+            pv_root.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    obj_r.get()
+}
+
+/// The url.parse `query` property value: search minus the leading '?' as a
+/// string (null when there is no search), or the parsed object when
+/// `as_object` (url.parse(url, true)).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn query_field_value(cx: *mut JSContext, search: &str, as_object: bool) -> Value {
+    if search.is_empty() {
+        return mozjs::jsval::NullValue();
+    }
+    if as_object {
+        let obj = build_query_object(cx, search);
+        if obj.is_null() {
+            return mozjs::jsval::NullValue();
+        }
+        return ObjectValue(obj);
+    }
+    let qs = search.strip_prefix('?').unwrap_or(search);
+    let c_qs = ZBox::from_bytes(qs.as_bytes());
+    let js = JS_NewStringCopyN(
+        cx,
+        c_qs.as_ptr() as *const ::std::os::raw::c_char,
+        qs.len(),
+    );
+    if js.is_null() {
+        return mozjs::jsval::NullValue();
+    }
+    StringValue(unsafe { &*js })
+}
+
+/// Define the `query` property on a freshly built url.parse result object.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn define_query_property(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+    search: &str,
+    as_object: bool,
+) {
+    if obj.is_null() {
+        return;
+    }
+    let query_val = query_field_value(cx, search, as_object);
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let obj_r = obj);
+    rooted!(&in(cx_ref) let q_root = query_val);
+    let c_query = ZBox::from_bytes(b"query");
+    JS_DefineProperty(
+        cx,
+        obj_r.handle().into(),
+        c_query.as_ptr(),
+        q_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+}
+
 unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_string() {
@@ -2177,7 +2378,10 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         return true;
     }
     let input = crate::js_to_rust_string(cx, *args.get(0).ptr);
-    let _parse_slashes = if argc > 1 && (*args.get(1).ptr).is_boolean() {
+    // url.parse(urlString[, parseQueryString[, slashesDenoteHost]]) — the
+    // second argument switches `query` from the raw string to the parsed
+    // querystring object.
+    let parse_query_string = if argc > 1 && (*args.get(1).ptr).is_boolean() {
         (*args.get(1).ptr).to_boolean()
     } else {
         false
@@ -2244,6 +2448,7 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                         JSPROP_ENUMERATE as u32,
                     );
                 }
+                define_query_property(cx, obj_r.get(), &search, parse_query_string);
                 args.rval().set(ObjectValue(obj));
                 return true;
             }
@@ -2302,6 +2507,7 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             );
         }
     }
+    define_query_property(cx, obj_r.get(), &state.search, parse_query_string);
 
     args.rval().set(ObjectValue(obj));
     true

@@ -1565,6 +1565,47 @@ unsafe extern "C" fn http_vt_on_connect_error<const SSL: bool>(
     s
 }
 
+/// `us_dispatch_connecting_error` trampoline — the pre-open failure terminal
+/// of the usockets DNS seam. BCE (hostname-fetch DNS failure swallowed): a
+/// hostname connect that dies before any socket exists (DNS resolution error,
+/// `us_internal_socket_after_resolve` → `us_connecting_socket_close` with an
+/// empty `connecting_head`) terminates exclusively through this vtable slot.
+/// It was `None`, so `us_dispatch_connecting_error` returned without touching
+/// the owner: the `HTTPClient` never failed, `on_http_done` never fired, and
+/// the fetch Promise hung forever (NXDOMAIN never settled). Recover the
+/// `ActiveSocket` tagged pointer from the *connecting* socket's ext slot —
+/// `HTTPSocket::connect_group` stashes it there via
+/// `conn(cs).ext::<Option<NonNull<_>>>()` — and fail the client exactly like
+/// the socket-level `on_connect_error` handler. No socket teardown applies:
+/// by the time `us_connecting_socket_close` dispatches, it has already closed
+/// any `connecting_head` sockets itself and frees `c` right after we return,
+/// so touching socket-level state here would be use-after-free.
+unsafe extern "C" fn http_vt_on_connecting_error<const SSL: bool>(
+    cs: *mut uws::ConnectingSocket,
+    _code: c_int,
+) -> *mut uws::ConnectingSocket {
+    if cs.is_null() {
+        return cs;
+    }
+    // SAFETY: `cs` is a live us_connecting_socket_t per the dispatch contract
+    // (us_connecting_socket_close dispatches before freeing).
+    let ext_slot: Option<NonNull<core::ffi::c_void>> =
+        *unsafe { &mut *cs }.ext::<Option<NonNull<core::ffi::c_void>>>();
+    let Some(tagged_word) = ext_slot else {
+        return cs;
+    };
+    let tagged = HTTPContext::<SSL>::get_tagged(tagged_word.as_ptr());
+    if let Some(client) = tagged.client_mut() {
+        // Same terminal the socket-level path uses: `fail(ConnectionRefused)`
+        // → result callback → on_http_done → JS reject. The errno-style code
+        // is not surfaced (matching Handler::on_connect_error, which ignores
+        // its code argument too); Node maps DNS failure codes at the JS layer
+        // via the fetch rejection's `.cause`.
+        client.on_connect_error();
+    }
+    cs
+}
+
 /// `us_dispatch_handshake` trampoline (TLS handshake completion).
 unsafe extern "C" fn http_vt_on_handshake<const SSL: bool>(
     s: *mut uws::Socket,
@@ -1590,7 +1631,7 @@ static HTTP_VTABLE: uws::SocketGroupVTable = uws::SocketGroupVTable {
     on_long_timeout: Some(http_vt_on_long_timeout::<false>),
     on_end: Some(http_vt_on_end::<false>),
     on_connect_error: Some(http_vt_on_connect_error::<false>),
-    on_connecting_error: None,
+    on_connecting_error: Some(http_vt_on_connecting_error::<false>),
     on_handshake: None,
 };
 
@@ -1607,7 +1648,7 @@ static HTTPS_VTABLE: uws::SocketGroupVTable = uws::SocketGroupVTable {
     on_long_timeout: Some(http_vt_on_long_timeout::<true>),
     on_end: Some(http_vt_on_end::<true>),
     on_connect_error: Some(http_vt_on_connect_error::<true>),
-    on_connecting_error: None,
+    on_connecting_error: Some(http_vt_on_connecting_error::<true>),
     on_handshake: Some(http_vt_on_handshake::<true>),
 };
 
@@ -1674,6 +1715,14 @@ mod tests {
             HTTP_VTABLE.on_long_timeout.is_some(),
             "on_long_timeout must reach Handler::on_long_timeout"
         );
+        // BCE (hostname-fetch DNS failure swallowed): the pre-open failure
+        // terminal of the DNS seam. A missing slot means an NXDOMAIN (or any
+        // resolver-error) connect never fails its HTTPClient — the fetch
+        // Promise hangs forever.
+        assert!(
+            HTTP_VTABLE.on_connecting_error.is_some(),
+            "on_connecting_error must fail the HTTPClient (DNS-error fetch hang)"
+        );
     }
 
     /// `HTTPS_VTABLE` (TLS `http_client_tls`) must additionally wire
@@ -1689,6 +1738,7 @@ mod tests {
             ("on_close", HTTPS_VTABLE.on_close.is_some()),
             ("on_handshake", HTTPS_VTABLE.on_handshake.is_some()),
             ("on_connect_error", HTTPS_VTABLE.on_connect_error.is_some()),
+            ("on_connecting_error", HTTPS_VTABLE.on_connecting_error.is_some()),
         ] {
             assert!(slot, "HTTPS_VTABLE.{label} must reach Handler");
         }

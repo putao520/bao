@@ -1693,7 +1693,7 @@ unsafe extern "C" fn database_serialize(
     }
 }
 
-// ── Database.backup(path) → consistent snapshot file ───────────────────────
+// ── Database.backup(path) → Promise<string> (consistent snapshot file) ─────
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn database_backup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
@@ -1715,28 +1715,56 @@ unsafe extern "C" fn database_backup(cx: *mut JSContext, argc: u32, vp: *mut JSV
     }
     let path = crate::js_to_rust_string(cx, *args.get(0).ptr);
 
+    // Bun contract: Database.backup(path) → Promise<string>, resolving with
+    // the destination path (the VACUUM INTO snapshot was written there).
+    // Runtime failures reject the promise (callers await .then/.catch) —
+    // argument validation above stays a synchronous throw.
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let promise = JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() {
+        JS_ClearPendingException(cx);
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
     let db = &*db_ptr;
-    match db.backup_to_path(&path) {
+    let settled = match db.backup_to_path(&path) {
         Ok(()) => {
-            // Success must be observable: return the resolved destination
-            // path (the VACUUM INTO snapshot was written there). Callers use
-            // it to locate/verify the snapshot; silent undefined reads as a
-            // failed backup.
             let c_path = ZBox::from_bytes(path.as_bytes());
             let js = JS_NewStringCopyZ(cx, c_path.as_ptr());
             if js.is_null() {
-                args.rval().set(UndefinedValue());
+                rooted!(&in(cx_ref) let uv = UndefinedValue());
+                JS::RejectPromise(cx, promise.handle().into(), uv.handle().into())
             } else {
-                args.rval().set(StringValue(&*js));
+                rooted!(&in(cx_ref) let pv = StringValue(&*js));
+                JS::ResolvePromise(cx, promise.handle().into(), pv.handle().into())
             }
-            true
         }
         Err(e) => {
+            // Build the reject reason as an Error value without leaving it
+            // pending (harvest pattern from bun_api::make_coded_error_value).
             let msg = ZBox::from_vec(e.into_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-            false
+            let mut exn = UndefinedValue();
+            let exn_h = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut exn,
+            };
+            if !JS_GetPendingException(cx, exn_h) || !exn.is_object() {
+                JS_ClearPendingException(cx);
+                rooted!(&in(cx_ref) let uv = UndefinedValue());
+                JS::RejectPromise(cx, promise.handle().into(), uv.handle().into())
+            } else {
+                JS_ClearPendingException(cx);
+                rooted!(&in(cx_ref) let ev = exn);
+                JS::RejectPromise(cx, promise.handle().into(), ev.handle().into())
+            }
         }
-    }
+    };
+    let _ = settled;
+    args.rval().set(ObjectValue(promise.get()));
+    true
 }
 
 // ── Statement.iterate(...params?) → row iterator ───────────────────────────

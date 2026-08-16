@@ -114,15 +114,20 @@ fn test_bun_file_method_family() {
         "json() must resolve the parsed object"
     );
 
-    // ── arrayBuffer(): byte-exact Uint8Array (high bytes unmangled) ──
+    // ── arrayBuffer(): byte-exact ArrayBuffer (DataView-usable, high bytes
+    // unmangled — a Uint8Array resolve value fails new DataView(result)) ──
     eval_string(
         &mut ctx,
         &format!(
             r#"
         Bun.file("{b}").arrayBuffer().then(
           function(u) {{
-            __r.ab = (u instanceof Uint8Array) + ':' + u.length + ':' +
-                     Array.prototype.join.call(u, ',');
+            var dv = new DataView(u);
+            var v = new Uint8Array(u);
+            __r.ab = (u instanceof ArrayBuffer) + ':' +
+                     (typeof dv.getUint8(0) === 'number') + ':' +
+                     u.byteLength + ':' + v.length + ':' +
+                     Array.prototype.join.call(v, ',');
           }},
           function(e) {{ __r.ab = 'REJ:' + e.code; }}
         );
@@ -132,8 +137,8 @@ fn test_bun_file_method_family() {
     drive_event_loop(&mut ctx, 10);
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__r.ab"),
-        "true:6:0,1,254,255,65,128",
-        "arrayBuffer() must resolve a byte-exact Uint8Array (0xFE/0xFF/0x80 survive)"
+        "true:true:6:6:0,1,254,255,65,128",
+        "arrayBuffer() must resolve a real ArrayBuffer (instanceof + DataView + byte-exact 0xFE/0xFF/0x80)"
     );
 
     // ── slice(): real Blob, range + negative clamp + contentType ──
@@ -240,7 +245,7 @@ fn test_bun_file_method_family() {
         var shape = (f.fd === fd) + '';
         f.text().then(function(s) {{ __r.fdText1 = s; }});
         f.text().then(function(s) {{ __r.fdText2 = s; }});
-        f.arrayBuffer().then(function(u) {{ __r.fdAb = '' + u.length; }});
+        f.arrayBuffer().then(function(u) {{ __r.fdAb = '' + u.byteLength + ':' + new DataView(u).getUint8(15); }});
         f.json().then(
           function() {{ __r.fdJson = 'RESOLVED'; }},
           function(e) {{ __r.fdJson = 'REJ:' + e.name; }}
@@ -268,8 +273,8 @@ fn test_bun_file_method_family() {
     );
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__r.fdAb"),
-        "16",
-        "fd-form arrayBuffer() must see all 16 bytes"
+        "16:133",
+        "fd-form arrayBuffer() must resolve all 16 bytes as a DataView-usable ArrayBuffer (last byte 0x85 = 133)"
     );
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__r.fdJson"),
