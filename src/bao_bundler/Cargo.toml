@@ -9,6 +9,10 @@ license.workspace = true
 # Core dependency: reuse ALL bundler logic, only provide SM implementations
 # for the CYCLEBREAK symbols and dispatch interfaces.
 bun_bundler = { path = "../bundler" }
+# Arena for the per-build Transpiler lifetime (Bun.build native driver).
+bun_alloc = { path = "../bun_alloc" }
+# Macro-seam CYCLEBREAK types (MacroContext / MacroRemapEntry) for macro_context.rs.
+bun_js_parser = { path = "../js_parser" }
 # SWC-backed transpiler (the real bun_bundler transpiler pipeline). The
 # `bun_bundler::transpiler::*` re-export is the JSC-backed CYCLEBREAK
 # Transpiler; `bun_transpiler::transpile_ts` is the JSC-free SWC strip path

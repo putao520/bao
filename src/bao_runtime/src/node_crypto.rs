@@ -1238,6 +1238,74 @@ unsafe extern "C" fn crypto_pbkdf2_sync(cx: *mut JSContext, argc: u32, vp: *mut 
 
 // --- scryptSync ---
 
+/// Read a numeric property off a JS options object. Returns `default` when the
+/// object or the property is absent. Accepts int32/double per Node semantics.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn read_num_prop(
+    cx: *mut JSContext,
+    obj: Handle<*mut JSObject>,
+    name: *const ::std::os::raw::c_char,
+    default: u64,
+) -> u64 {
+    let mut v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj.into(),
+        name,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if v.is_int32() {
+        let n = v.to_int32();
+        if n >= 0 {
+            return n as u64;
+        }
+    } else if v.is_double() {
+        let d = v.to_double();
+        if d >= 0.0 && d.is_finite() {
+            return d as u64;
+        }
+    }
+    default
+}
+
+/// Parse scrypt options (Node `crypto.scryptSync(pw, salt, keylen[, options])`).
+/// Recognises `N`/`cost`, `r`/`blocksize`, `p`/`parallelization`, and `maxmem`
+/// (accepted for API compatibility; BoringSSL enforces its own memory bound).
+/// Defaults follow Node: N=16384, r=8, p=1.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn parse_scrypt_options(cx: *mut JSContext, val: JSVal) -> (u64, u64, u64) {
+    const DEFAULTS: (u64, u64, u64) = (16384, 8, 1);
+    if !val.is_object() {
+        return DEFAULTS;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = val.to_object());
+
+    let n = read_num_prop(cx_ref.raw_cx(), obj.handle().into(), c"N".as_ptr(), 0);
+    let n = if n == 0 {
+        read_num_prop(cx_ref.raw_cx(), obj.handle().into(), c"cost".as_ptr(), 16384)
+    } else {
+        n
+    };
+    let r = read_num_prop(cx_ref.raw_cx(), obj.handle().into(), c"r".as_ptr(), 0);
+    let r = if r == 0 {
+        read_num_prop(cx_ref.raw_cx(), obj.handle().into(), c"blocksize".as_ptr(), 8)
+    } else {
+        r
+    };
+    let p = read_num_prop(cx_ref.raw_cx(), obj.handle().into(), c"p".as_ptr(), 0);
+    let p = if p == 0 {
+        read_num_prop(cx_ref.raw_cx(), obj.handle().into(), c"parallelization".as_ptr(), 1)
+    } else {
+        p
+    };
+    (n, r, p)
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_scrypt_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1245,64 +1313,63 @@ unsafe extern "C" fn crypto_scrypt_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         return throw_type_error(cx, "scryptSync() requires (password, salt, keylen)");
     }
 
-    let password = match arg_to_string(cx, *args.get(0).ptr) {
-        Some(s) => s.into_bytes(),
-        None => return throw_type_error(cx, "scryptSync() password must be a string"),
+    // Node accepts string | ArrayBuffer | TypedArray | DataView for both
+    // password and salt. Strings are UTF-8 encoded.
+    let password = if (*args.get(0).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(0).ptr).into_bytes()
+    } else if (*args.get(0).ptr).is_object() {
+        extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else {
+        return throw_type_error(cx, "scryptSync() password must be a string or Buffer");
     };
-    let salt = match arg_to_string(cx, *args.get(1).ptr) {
-        Some(s) => s.into_bytes(),
-        None => return throw_type_error(cx, "scryptSync() salt must be a string"),
+    let salt = if (*args.get(1).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(1).ptr).into_bytes()
+    } else if (*args.get(1).ptr).is_object() {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        return throw_type_error(cx, "scryptSync() salt must be a string or Buffer");
     };
     let key_len = {
         let v = *args.get(2).ptr;
         if v.is_int32() {
-            v.to_int32() as usize
+            let n = v.to_int32();
+            if n <= 0 {
+                return throw_type_error(cx, "scryptSync() keylen must be > 0");
+            }
+            n as usize
+        } else if v.is_double() {
+            let d = v.to_double();
+            if !(d > 0.0 && d.is_finite()) {
+                return throw_type_error(cx, "scryptSync() keylen must be > 0");
+            }
+            d as usize
         } else {
             return throw_type_error(cx, "scryptSync() keylen must be a number");
         }
     };
 
-    let log_n: u8 = if argc > 3 {
-        let v = *args.get(3).ptr;
-        if v.is_int32() {
-            (v.to_int32() as f64).log2() as u8
-        } else {
-            14
-        }
+    let (n, r, p) = if argc > 3 {
+        parse_scrypt_options(cx, *args.get(3).ptr)
     } else {
-        14
+        (16384, 8, 1)
     };
-    let n = 1u64 << log_n;
 
-    let out = vec![0u8; key_len];
-    if let Err(e) = bao_crypto::kdf::scrypt(&password, &salt, n, 8, 1, key_len) {
-        return throw_type_error(cx, &format!("scryptSync() failed: {}", e));
-    }
+    // @trace REQ-ENG-007 [api:node:crypto scryptSync] [entity:bao_crypto]
+    // BCE (v-surface P0-1): the Ok(Vec<u8>) from bao_crypto::kdf::scrypt was
+    // discarded and a pre-zeroed `vec![0u8; key_len]` returned — every key was
+    // all-zero bytes. The derivation output IS the return value; use it.
+    let derived = match bao_crypto::kdf::scrypt(&password, &salt, n, r, p, key_len) {
+        Ok(out) => out,
+        Err(e) => return throw_type_error(cx, &format!("scryptSync() failed: {}", e)),
+    };
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-
-    rooted!(&in(cx_ref) let arr = unsafe { w2::NewArrayObject1(cx_ref, out.len()) });
-    if arr.get().is_null() {
+    // Node returns a Buffer instance.
+    let buf_obj = crate::globals::create_buffer_object(cx, &derived);
+    if buf_obj.is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-
-    for (i, &byte) in out.iter().enumerate() {
-        let val = mozjs::jsval::Int32Value(byte as i32);
-        rooted!(&in(cx_ref) let v = val);
-        unsafe {
-            JS_DefineElement(
-                cx,
-                arr.handle().into(),
-                i as u32,
-                v.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
-
-    args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
+    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
     true
 }
 
@@ -2133,9 +2200,6 @@ unsafe extern "C" fn crypto_create_sign(cx: *mut JSContext, argc: u32, vp: *mut 
         "sha256".to_string()
     };
 
-    HASH_ALGO.with(|a| *a.borrow_mut() = algo);
-    HASH_DATA.with(|d| d.borrow_mut().clear());
-
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
@@ -2143,6 +2207,11 @@ unsafe extern "C" fn crypto_create_sign(cx: *mut JSContext, argc: u32, vp: *mut 
         args.rval().set(UndefinedValue());
         return true;
     }
+    // Per-instance algorithm + accumulated data. BCE (v-surface P0-3): the
+    // shared HASH_ALGO/HASH_DATA thread-locals let two interleaved Sign/Verify
+    // instances corrupt each other's state; stashing on the instance makes
+    // `s1.update(); s2.update(); s1.sign()` correct.
+    set_hidden_string_prop(cx, obj.get(), c"_baoAlgo".as_ptr(), &algo);
     w2::JS_DefineFunction(
         cx_ref,
         obj.handle(),
@@ -2163,11 +2232,169 @@ unsafe extern "C" fn crypto_create_sign(cx: *mut JSContext, argc: u32, vp: *mut 
     true
 }
 
+/// Store a non-enumerable string property on a JS object (hidden state slot).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn set_hidden_string_prop(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: *const ::std::os::raw::c_char,
+    value: &str,
+) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+    let c_str = ZBox::from_bytes(value.as_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+    if !js_str.is_null() {
+        rooted!(&in(cx_ref) let v = mozjs::jsval::StringValue(&*js_str));
+        JS_DefineProperty(
+            cx,
+            obj_root.handle().into(),
+            name,
+            v.handle().into(),
+            0, // non-enumerable, configurable (so take_ can delete it)
+        );
+    }
+}
+
+/// Read a string property off a JS object. Returns None when absent/not a string.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_string_prop(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: *const ::std::os::raw::c_char,
+) -> Option<String> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+    let mut v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        name,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if v.is_string() {
+        Some(crate::js_to_rust_string(cx, v))
+    } else {
+        None
+    }
+}
+
+/// Append one chunk of bytes to the instance's accumulated update() data,
+/// stored as a non-enumerable array of Buffers on `this` (GC-safe).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn push_instance_data(cx: *mut JSContext, obj: *mut JSObject, bytes: &[u8]) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+
+    let chunk = crate::globals::create_buffer_object(cx, bytes);
+    if chunk.is_null() {
+        return;
+    }
+    rooted!(&in(cx_ref) let chunk_root = chunk);
+
+    let mut arr_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"_baoData".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut arr_val,
+        },
+    );
+    let arr_ptr: *mut JSObject = if arr_val.is_object() {
+        arr_val.to_object()
+    } else {
+        let a = w2::NewArrayObject1(cx_ref, 0);
+        if a.is_null() {
+            return;
+        }
+        rooted!(&in(cx_ref) let av = mozjs::jsval::ObjectValue(a));
+        JS_DefineProperty(
+            cx,
+            obj_root.handle().into(),
+            c"_baoData".as_ptr(),
+            av.handle().into(),
+            0,
+        );
+        a
+    };
+    rooted!(&in(cx_ref) let arr_root = arr_ptr);
+
+    let mut len: u32 = 0;
+    if w2::GetArrayLength(cx_ref, arr_root.handle().into(), &mut len) {
+        rooted!(&in(cx_ref) let cv = mozjs::jsval::ObjectValue(chunk_root.get()));
+        JS_DefineElement(
+            cx,
+            arr_root.handle().into(),
+            len,
+            cv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+}
+
+/// Consume the instance's accumulated update() data and clear it.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn take_instance_data(cx: *mut JSContext, obj: *mut JSObject) -> Vec<u8> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+
+    let mut arr_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"_baoData".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut arr_val,
+        },
+    );
+    // Clear consumed state regardless of how the read goes.
+    JS_DeleteProperty1(cx, obj_root.handle().into(), c"_baoData".as_ptr());
+    if !arr_val.is_object() {
+        return Vec::new();
+    }
+    rooted!(&in(cx_ref) let arr_root = arr_val.to_object());
+    let mut len: u32 = 0;
+    if !w2::GetArrayLength(cx_ref, arr_root.handle().into(), &mut len) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for i in 0..len {
+        let mut elem = UndefinedValue();
+        JS_GetElement(
+            cx,
+            arr_root.handle().into(),
+            i,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            },
+        );
+        if elem.is_object() {
+            out.extend_from_slice(&extract_buffer_bytes(cx, elem));
+        }
+    }
+    out
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn sign_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         return throw_type_error(cx, "sign.update() requires data");
+    }
+    let this_v = *args.thisv().ptr;
+    if !this_v.is_object() {
+        return throw_type_error(cx, "sign.update() requires a Sign/Verify instance receiver");
     }
     let input = *args.get(0).ptr;
     let data = if input.is_string() {
@@ -2177,8 +2404,8 @@ unsafe extern "C" fn sign_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     } else {
         Vec::new()
     };
-    HASH_DATA.with(|d| d.borrow_mut().extend_from_slice(&data));
-    args.rval().set(*args.thisv().ptr);
+    push_instance_data(cx, this_v.to_object(), &data);
+    args.rval().set(this_v);
     true
 }
 
@@ -2222,6 +2449,150 @@ fn resolve_sign_algorithm(algo: &str) -> Option<bao_crypto::sign::SignAlgorithm>
     None
 }
 
+/// Asymmetric key kinds detectable from PEM/DER bytes via BoringSSL.
+enum AsymKeyKind {
+    Rsa,
+    Ec,
+    Ed25519,
+}
+
+/// BCE (v-surface P0-3): `createSign('sha256')` + RSA key silently fell to the
+/// HMAC path because bare digest names match no family pattern — the signature
+/// family in Node is chosen by the KEY TYPE, the digest only picks the hash.
+/// Parse the key (PEM private/public, DER PKCS#8/SPKI) and report its kind.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn detect_asym_key_kind(key_bytes: &[u8]) -> Option<AsymKeyKind> {
+    use bun_boringssl_sys as bssl;
+
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn pem_to_pkey(key_bytes: &[u8], public: bool) -> *mut bssl::EVP_PKEY {
+        let bio = bssl::BIO_new_mem_buf(
+            key_bytes.as_ptr() as *const core::ffi::c_void,
+            key_bytes.len() as isize,
+        );
+        if bio.is_null() {
+            return core::ptr::null_mut();
+        }
+        let pkey = if public {
+            bssl::PEM_read_bio_PUBKEY(
+                bio,
+                core::ptr::null_mut(),
+                None::<bssl::pem_password_cb>,
+                core::ptr::null_mut(),
+            )
+        } else {
+            bssl::PEM_read_bio_PrivateKey(
+                bio,
+                core::ptr::null_mut(),
+                None::<bssl::pem_password_cb>,
+                core::ptr::null_mut(),
+            )
+        };
+        bssl::BIO_free(bio);
+        pkey
+    }
+
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn der_to_pkey(
+        key_bytes: &[u8],
+        public: bool,
+    ) -> (*mut bssl::EVP_PKEY, *const u8) {
+        let mut inp = key_bytes.as_ptr();
+        let pkey = if public {
+            bssl::d2i_PUBKEY(core::ptr::null_mut(), &mut inp, key_bytes.len() as core::ffi::c_long)
+        } else {
+            bssl::d2i_AutoPrivateKey(
+                core::ptr::null_mut(),
+                &mut inp,
+                key_bytes.len() as core::ffi::c_long,
+            )
+        };
+        (pkey, inp)
+    }
+
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn kind_of(pkey: *mut bssl::EVP_PKEY) -> Option<AsymKeyKind> {
+        if pkey.is_null() {
+            return None;
+        }
+        // BoringSSL's EVP_PKEY_id returns the key's NID. In the vendored
+        // BoringSSL build that NID is 949 for Ed25519 — NOT the
+        // EVP_PKEY_ED25519 type constant (1087, the OpenSSL numbering);
+        // comparing against EVP_PKEY_ED25519 alone never matched and Ed25519
+        // keys silently fell to the HMAC path. (Probing the canonical static
+        // via EVP_PKEY_id(EVP_pkey_ed25519()) segfaults in this build, so
+        // both spellings are accepted. RSA=6 / EC=408 coincide in both
+        // namespaces.)
+        const ED25519_NID_VENDORED_BORINGSSL: core::ffi::c_int = 949;
+        let id = bssl::EVP_PKEY_id(pkey);
+        let kind = if id == bssl::EVP_PKEY_RSA {
+            Some(AsymKeyKind::Rsa)
+        } else if id == bssl::EVP_PKEY_EC {
+            Some(AsymKeyKind::Ec)
+        } else if id == bssl::EVP_PKEY_ED25519 || id == ED25519_NID_VENDORED_BORINGSSL {
+            Some(AsymKeyKind::Ed25519)
+        } else {
+            None
+        };
+        bssl::EVP_PKEY_free(pkey);
+        kind
+    }
+
+    if looks_like_pem_key(key_bytes) {
+        let pkey = pem_to_pkey(key_bytes, false);
+        let pkey = if pkey.is_null() {
+            pem_to_pkey(key_bytes, true)
+        } else {
+            pkey
+        };
+        kind_of(pkey)
+    } else if !key_bytes.is_empty() {
+        let (pkey, _) = der_to_pkey(key_bytes, false);
+        let (pkey, _) = if pkey.is_null() {
+            der_to_pkey(key_bytes, true)
+        } else {
+            (pkey, core::ptr::null())
+        };
+        kind_of(pkey)
+    } else {
+        None
+    }
+}
+
+/// Combined resolution: explicit family names win; otherwise the key type
+/// picks the family and the algorithm string supplies the digest (Node
+/// semantics for `createSign('sha256')` with an asymmetric key).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn resolve_sign_algorithm_for_key(
+    algo: &str,
+    key: &[u8],
+) -> Option<bao_crypto::sign::SignAlgorithm> {
+    use bao_crypto::sign::{RsaHash, SignAlgorithm};
+    if let Some(explicit) = resolve_sign_algorithm(algo) {
+        return Some(explicit);
+    }
+    let kind = detect_asym_key_kind(key)?;
+    let hash = if algo.contains("384") {
+        RsaHash::Sha384
+    } else if algo.contains("512") {
+        RsaHash::Sha512
+    } else {
+        RsaHash::Sha256
+    };
+    match kind {
+        AsymKeyKind::Rsa => Some(SignAlgorithm::RsaPkcs1v15 { hash }),
+        AsymKeyKind::Ec => {
+            // The curve comes from the key itself; the digest picks the md.
+            if algo.contains("384") || algo.contains("512") {
+                Some(SignAlgorithm::EcdsaP384)
+            } else {
+                Some(SignAlgorithm::EcdsaP256)
+            }
+        }
+        AsymKeyKind::Ed25519 => Some(SignAlgorithm::Ed25519),
+    }
+}
+
 /// Detect whether `key_bytes` is a PEM-encoded asymmetric private/public key.
 fn looks_like_pem_key(key_bytes: &[u8]) -> bool {
     if key_bytes.len() < 11 {
@@ -2233,19 +2604,30 @@ fn looks_like_pem_key(key_bytes: &[u8]) -> bool {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let encoding = if argc > 1 {
+    // Node: sign.sign(privateKey[, outputEncoding]) — a Buffer when no
+    // output encoding is given, a string otherwise.
+    let encoding: Option<String> = if argc > 1 {
         match arg_to_string(cx, *args.get(1).ptr) {
-            Some(s) => s,
-            None => "hex".to_string(),
+            Some(s) => Some(s),
+            None => None,
         }
     } else {
-        "hex".to_string()
+        None
     };
     // @trace REQ-ENG-007 [api:node:crypto sign.sign] [entity:bao_crypto]
     // Real asymmetric signing via bao_crypto::sign::Signer for RSA-PKCS1v15/PSS,
     // ECDSA P256/P384, Ed25519. HMAC remains for HMAC algorithms / raw keys.
-    let algo = HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
-    let data = HASH_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
+    let this_v = *args.thisv().ptr;
+    let (algo, data) = if this_v.is_object() {
+        let this_obj = this_v.to_object();
+        (
+            get_string_prop(cx, this_obj, c"_baoAlgo".as_ptr())
+                .unwrap_or_else(|| "sha256".to_string()),
+            take_instance_data(cx, this_obj),
+        )
+    } else {
+        (HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut())), Vec::new())
+    };
     let key = if argc > 0 {
         match arg_to_string(cx, *args.get(0).ptr) {
             Some(s) => s.into_bytes(),
@@ -2255,7 +2637,7 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         Vec::new()
     };
 
-    let result: Vec<u8> = if let Some(sign_algo) = resolve_sign_algorithm(&algo) {
+    let result: Vec<u8> = if let Some(sign_algo) = resolve_sign_algorithm_for_key(&algo, &key) {
         // Asymmetric path. Key must be a PEM or DER private key.
         let signer_res = if looks_like_pem_key(&key) {
             let pem = String::from_utf8_lossy(&key).into_owned();
@@ -2287,28 +2669,27 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             .unwrap_or_default()
     };
 
-    match encoding.to_lowercase().as_str() {
-        "hex" => return_string(cx, &args, &hex::encode(&result)),
-        "base64" => {
-            let encoded_bytes = bun_base64::encode_alloc(&result);
-            let encoded = ::std::str::from_utf8(&encoded_bytes)
-                .unwrap_or("")
-                .to_owned();
-            return_string(cx, &args, &encoded)
-        }
-        "buffer" => {
-            // Return the raw signature as a number[] (Node buffer encoding).
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let _cx_ref = &mut wrapped_cx;
-            let arr = bytes_to_js_array(cx, &result);
-            if arr.is_null() {
+    match encoding.as_deref().map(|s| s.to_lowercase()) {
+        None => {
+            // No output encoding: Node returns a Buffer instance.
+            let buf_obj = crate::globals::create_buffer_object(cx, &result);
+            if buf_obj.is_null() {
                 args.rval().set(UndefinedValue());
             } else {
-                args.rval().set(mozjs::jsval::ObjectValue(arr));
+                args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
             }
             true
         }
-        _ => return_string(cx, &args, &hex::encode(&result)),
+        Some(enc) => match enc.as_str() {
+            "base64" => {
+                let encoded_bytes = bun_base64::encode_alloc(&result);
+                let encoded = ::std::str::from_utf8(&encoded_bytes)
+                    .unwrap_or("")
+                    .to_owned();
+                return_string(cx, &args, &encoded)
+            }
+            _ => return_string(cx, &args, &hex::encode(&result)),
+        },
     }
 }
 
@@ -2323,8 +2704,6 @@ unsafe extern "C" fn crypto_create_verify(cx: *mut JSContext, argc: u32, vp: *mu
     } else {
         "sha256".to_string()
     };
-    HASH_ALGO.with(|a| *a.borrow_mut() = algo);
-    HASH_DATA.with(|d| d.borrow_mut().clear());
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
@@ -2332,6 +2711,8 @@ unsafe extern "C" fn crypto_create_verify(cx: *mut JSContext, argc: u32, vp: *mu
         args.rval().set(UndefinedValue());
         return true;
     }
+    // Per-instance algorithm + accumulated data (see crypto_create_sign).
+    set_hidden_string_prop(cx, obj.get(), c"_baoAlgo".as_ptr(), &algo);
     w2::JS_DefineFunction(
         cx_ref,
         obj.handle(),
@@ -2374,10 +2755,19 @@ unsafe extern "C" fn verify_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         // Try hex first, fall back to raw bytes.
         hex::decode(&sig_str).unwrap_or_else(|_| sig_str.into_bytes())
     };
-    let algo = HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
-    let data = HASH_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
+    let this_v = *args.thisv().ptr;
+    let (algo, data) = if this_v.is_object() {
+        let this_obj = this_v.to_object();
+        (
+            get_string_prop(cx, this_obj, c"_baoAlgo".as_ptr())
+                .unwrap_or_else(|| "sha256".to_string()),
+            take_instance_data(cx, this_obj),
+        )
+    } else {
+        (HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut())), Vec::new())
+    };
 
-    let verified: bool = if let Some(sign_algo) = resolve_sign_algorithm(&algo) {
+    let verified: bool = if let Some(sign_algo) = resolve_sign_algorithm_for_key(&algo, &key) {
         let verifier_res = if looks_like_pem_key(&key) {
             let pem = String::from_utf8_lossy(&key).into_owned();
             bao_crypto::verify::Verifier::from_public_pem(&sign_algo, &pem)

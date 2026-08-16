@@ -23,7 +23,11 @@
 //! | `VmLoaderCtx` | `Runtime` | `BaoVmLoaderCtx` |
 //! | `DevServerHandle` | `Bake` | no-op (Phase 2: Bao bake) |
 
+pub mod build_api;
 pub mod bytecode;
+pub mod macro_context;
+pub mod js_bundler_plugin_seam;
+pub mod transpiler_cache_seam;
 pub mod dev_server;
 pub mod hmr;
 pub mod vm_loader;
@@ -42,6 +46,23 @@ static BAO_BUNDLER_ANCHOR: unsafe extern "C" fn() = __force_link_entry;
 
 unsafe extern "C" {
     fn __force_link_entry();
+}
+
+/// Keep the macro-seam compilation unit (macro_context.rs) on the link
+/// line: `bun_js_parser` references the `#[no_mangle]` bodies from its own
+/// objects, so an explicit Rust-side reference is only needed to defeat
+/// linker GC in binaries that never touch the macro path.
+#[inline(never)]
+pub fn force_link_macro_seam() {
+    // `let f: fn(..) = __bun_macro_context_init;` would be dead code this
+    // optimizer could drop — take the address through a volatile read of a
+    // static slot initialised at first call (same trick as
+    // product_native_symbols::force_link_product_native_symbols).
+    static SLOT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    SLOT.store(
+        macro_context::__bun_macro_context_init as *const () as usize,
+        core::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 /// Bundle result — compatible with the old `bao_bundler::BundleOutput` shape

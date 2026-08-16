@@ -5,15 +5,41 @@ use ::std::ffi::CString;
 use ::std::os::raw::c_void;
 use ::std::ptr;
 use ::std::sync::atomic::{AtomicUsize, Ordering};
+use ::std::sync::OnceLock;
 
 use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps};
 use mozjs::jsapi::*;
-use mozjs::jsval::UndefinedValue;
+use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{RunJobs, SetJobQueue};
 
 static JOB_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+// ── Uncaught-exception / unhandled-rejection hooks ─────────────────────────
+//
+// bao_engine cannot depend on bao_runtime (dependency edge is the other way),
+// so the runtime registers its exception router here after context init —
+// same indirection pattern as `module_loader::set_job_queue_drain`.
+//
+// `uncaught`: invoked when a job's JS_CallFunctionValue failed — the pending
+//             exception has been captured and cleared by the trap; the hook
+//             routes it (process.on('uncaughtException') or print + exit 1).
+// `flush`:    invoked at the run_jobs tail (job queue drained) so the runtime
+//             can dispatch unhandled promise rejections on a clean stack.
+
+pub type UncaughtExceptionHook = unsafe fn(cx: *mut JSContext, reason: JSVal);
+pub type FlushRejectionsHook = unsafe fn(cx: *mut JSContext);
+
+static UNCAUGHT_HOOK: OnceLock<UncaughtExceptionHook> = OnceLock::new();
+static FLUSH_HOOK: OnceLock<FlushRejectionsHook> = OnceLock::new();
+
+/// Register the runtime's exception router. Idempotent (first registration
+/// wins — every bao_runtime context installs the same functions).
+pub fn set_uncaught_hooks(uncaught: UncaughtExceptionHook, flush: FlushRejectionsHook) {
+    let _ = UNCAUGHT_HOOK.set(uncaught);
+    let _ = FLUSH_HOOK.set(flush);
+}
 
 thread_local! {
     // Track job IDs in order — the actual JSObject* is stored as a global property
@@ -180,7 +206,28 @@ unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
                 rval_handle,
             );
             if !ok {
+                // The job threw. Capture the pending exception, clear it, and
+                // hand it to the runtime's uncaught-exception router (Node:
+                // a queueMicrotask/job throw is an uncaught exception — NOT
+                // silently swallowed). `reason_root` keeps the value alive
+                // across the hook's JS dispatch.
+                let mut exn = UndefinedValue();
+                JS_GetPendingException(
+                    cx,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut exn,
+                    },
+                );
                 JS_ClearPendingException(cx);
+                rooted!(&in(realm_cx) let reason_root = exn);
+                if !exn.is_undefined() {
+                    if let Some(&hook) = UNCAUGHT_HOOK.get() {
+                        // SAFETY: cx is live (trap contract); hook roots its
+                        // argument before running JS.
+                        unsafe { hook(cx, exn) };
+                    }
+                }
             }
         }
 
@@ -188,6 +235,14 @@ unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
         unsafe {
             JS_DeleteProperty1(cx, global_root.handle().into(), prop.as_ptr());
         }
+    }
+
+    // Job queue drained — dispatch unhandled promise rejections recorded by
+    // the runtime's rejection tracker. Runs after every drain (all pump
+    // paths funnel through this trap), on a clean JS stack.
+    if let Some(&hook) = FLUSH_HOOK.get() {
+        // SAFETY: cx is live (trap contract).
+        unsafe { hook(cx) };
     }
 }
 

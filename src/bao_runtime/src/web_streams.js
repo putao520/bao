@@ -295,7 +295,21 @@
     if (closedPromise && typeof closedPromise.resolve === "function") {
       closedPromise.resolve(undefined);
     }
-    _readableStreamReaderGenericRelease(reader);
+    // WHATWG ReadableStreamClose: every pending default-reader read request
+    // resolves as (undefined, true), and the reader STAYS attached (the
+    // stream remains locked until releaseLock). The old port released the
+    // reader here, so any read() after close threw "reader is not attached
+    // to a stream" (TransformStream close-then-read hung/threw).
+    if (_isDefaultReader(reader)) {
+      var pending = _getSlot(reader, "readRequests");
+      if (pending && pending.length > 0) {
+        var reqs = pending.slice();
+        _setSlot(reader, "readRequests", []);
+        for (var i = 0; i < reqs.length; i++) {
+          reqs[i].resolve({ value: undefined, done: true });
+        }
+      }
+    }
   }
 
   function _readableStreamError(stream, error) {
@@ -307,7 +321,18 @@
     if (closedPromise && typeof closedPromise.reject === "function") {
       closedPromise.reject(error);
     }
-    _readableStreamReaderGenericRelease(reader);
+    // WHATWG ReadableStreamError: pending default-reader read requests
+    // reject with the stored error; the reader stays attached.
+    if (_isDefaultReader(reader)) {
+      var pending = _getSlot(reader, "readRequests");
+      if (pending && pending.length > 0) {
+        var reqs = pending.slice();
+        _setSlot(reader, "readRequests", []);
+        for (var i = 0; i < reqs.length; i++) {
+          reqs[i].reject(error);
+        }
+      }
+    }
   }
 
   function _readableStreamFulfillReadRequest(stream, chunk, done) {
@@ -646,7 +671,16 @@
     var queue = _getSlot(controller, "queue");
     if (queue && queue.chunks.length > 0) {
       var chunk = _dequeueValue(queue);
-      _readableStreamDefaultControllerCallPullIfNeeded(controller);
+      // WHATWG default-controller pull steps: after dequeuing, a
+      // closeRequested controller with a now-empty queue CLOSES the stream
+      // (write/write/close-then-read must deliver the chunks then done;
+      // the old port never re-evaluated the deferred close, so reads after
+      // the final chunk hung forever).
+      if (_getSlot(controller, "closeRequested") && queue.chunks.length === 0) {
+        _readableStreamClose(stream);
+      } else {
+        _readableStreamDefaultControllerCallPullIfNeeded(controller);
+      }
       return Promise.resolve({ value: chunk, done: false });
     }
     if (_getSlot(stream, "state") === STATE_CLOSED) {
@@ -891,17 +925,27 @@
   function _readableStreamDefaultControllerEnqueue(controller, chunk) {
     var stream = _getSlot(controller, "stream");
     if (_getSlot(stream, "state") !== STATE_READABLE) return;
-    if (_isReadableStreamLocked(stream) && _isDefaultReader(_getSlot(stream, "reader"))) {
-      _readableStreamFulfillReadRequest(stream, chunk, false);
-    } else {
-      var sizeAlgorithm = _getSlot(controller, "sizeAlgorithm");
-      try {
-        var size = sizeAlgorithm(chunk);
-        _enqueueValueWithSize(_getSlot(controller, "queue"), chunk, size);
-      } catch (e) {
-        _readableStreamDefaultControllerError(controller, e);
+    // Hand the chunk to a PENDING read request only; a locked reader with
+    // no waiting read must queue the chunk (the old port fulfilled
+    // unconditionally, and the empty-request shift silently DROPPED every
+    // chunk enqueued before read() was called — TransformStream writes
+    // vanished).
+    var pendingReader = _getSlot(stream, "reader");
+    if (_isReadableStreamLocked(stream) && _isDefaultReader(pendingReader)) {
+      var pending = _getSlot(pendingReader, "readRequests");
+      if (pending && pending.length > 0) {
+        _readableStreamFulfillReadRequest(stream, chunk, false);
+        _readableStreamDefaultControllerCallPullIfNeeded(controller);
         return;
       }
+    }
+    var sizeAlgorithm = _getSlot(controller, "sizeAlgorithm");
+    try {
+      var size = sizeAlgorithm(chunk);
+      _enqueueValueWithSize(_getSlot(controller, "queue"), chunk, size);
+    } catch (e) {
+      _readableStreamDefaultControllerError(controller, e);
+      return;
     }
     _readableStreamDefaultControllerCallPullIfNeeded(controller);
   }

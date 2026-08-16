@@ -322,7 +322,10 @@ fn test_fetch_init_tls_e2e() {
             function phase(name, p) {{
                 return p.then(
                     function(v) {{ globalThis.__r[name] = "OK:" + v; }},
-                    function(e) {{ globalThis.__r[name] = "ERR:" + ((e && e.message) || String(e)); }}
+                    // Rejection shape: TypeError("fetch failed") with the
+                    // transport failure on .cause (p0_refused_net_close_tests
+                    // locks the full shape); surface the cause message.
+                    function(e) {{ globalThis.__r[name] = "ERR:" + ((e && e.cause && e.cause.message) || (e && e.message) || String(e)); }}
                 );
             }}
             (async function() {{

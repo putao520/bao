@@ -872,14 +872,37 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 _phantom_0: ::std::marker::PhantomData,
                 ptr: &mut rval,
             };
-            JS_CallFunctionValue(
+            let ok = JS_CallFunctionValue(
                 cx,
                 global_root.handle().into(),
                 cb_root.handle().into(),
                 &call_args,
                 rval_h,
             );
-            JS_ClearPendingException(cx);
+            if !ok {
+                // The listener threw. Capture and route through the unified
+                // uncaught-exception router (process.on('uncaughtException')
+                // or stderr + exit 1) — Node semantics; remaining listeners
+                // still run (native emit contract keeps its boolean result).
+                //
+                // EXCEPT 'exit': the project's orderly-exit contract
+                // (exit_handler_tests) pins that a throwing 'exit' listener
+                // must NOT block later listeners nor change the exit code —
+                // those throws stay swallowed.
+                let mut exn = UndefinedValue();
+                JS_GetPendingException(
+                    cx,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut exn,
+                    },
+                );
+                JS_ClearPendingException(cx);
+                rooted!(&in(wrapped_cx) let exn_root = exn);
+                if !exn.is_undefined() && event_name != "exit" {
+                    crate::uncaught::route_uncaught_exception(cx, exn);
+                }
+            }
 
             let is_once = once_flags.get(i).copied().unwrap_or(false);
             if is_once {

@@ -9,6 +9,24 @@ use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
+// BCE-20260816-STREAM-PUMP — the old polyfill had three defects that made the
+// stream classes inert ("data 事件全灭"):
+//   1. Flowing-mode entry (on('data') / resume()) set `flowing` but never
+//      drained chunks already in the buffer, so the canonical
+//      push-before-listen pattern (`r.push(x); r.push(null); r.on('data')`)
+//      never emitted anything. Fix: a `_flow()` drain loop invoked from
+//      push(), on('data') and resume(); 'end' fires when the buffer drains
+//      while flowing.
+//   2. The Duplex constructor assigned own `this._write`/`this._final`
+//      no-ops, which SHADOW `Transform.prototype._write` (the `_transform`
+//      delegator) on the prototype chain — the user transform function was
+//      never invoked, so Transform/PassThrough emitted nothing. Fix:
+//      own-assignment only when `opts.write` is provided; prototype-level
+//      defaults on Writable/Duplex keep the plain-Writable path intact.
+//   3. The async iterator dropped the waiter's `resolve` (only `reject` was
+//      captured, and on data/end it was merely nulled), so a `for await`
+//      racing the producer hung forever. Fix: a waiter queue woken on
+//      data/end/error.
 const STREAM_JS: &str = r#"
 (function() {
   function EE() { this._events = {}; this._maxListeners = 10; }
@@ -61,6 +79,10 @@ const STREAM_JS: &str = r#"
   };
   EE.prototype.eventNames = function() { return Object.keys(this._events); };
 
+  function chunkSize(c) {
+    return (typeof c === "string") ? c.length : (c && c.length) || 1;
+  }
+
   function RS(opts) {
     this.buffer = [];
     this.length = 0;
@@ -78,19 +100,45 @@ const STREAM_JS: &str = r#"
     if (!(this instanceof Readable)) return new Readable(opts);
     EE.call(this);
     this._readableState = new RS(opts);
-    this._read = (opts && opts.read) || function() {};
+    if (opts && opts.read) this._read = opts.read;
     this.readable = true;
     this.destroyed = false;
   }
   Readable.prototype = Object.create(EE.prototype);
   Readable.prototype.constructor = Readable;
+  // Prototype-level default so subclasses (Duplex/Transform) that do not pass
+  // opts.read are not shadowed by an own-property no-op.
+  Readable.prototype._read = function() {};
+  // Flowing-mode pump: emits buffered chunks while flowing, then 'end' once
+  // the buffer drains on an ended stream. Re-entrant safe — a data listener
+  // that pauses or pushes re-enters with fresh state each iteration.
+  Readable.prototype._flow = function() {
+    var s = this._readableState;
+    while (s.flowing && !s.paused && s.buffer.length > 0) {
+      var d = s.buffer.shift();
+      s.length -= chunkSize(d);
+      this.emit("data", d);
+    }
+    if (s.flowing && !s.paused && s.ended && s.buffer.length === 0 && !s.endEmitted) {
+      s.endEmitted = true;
+      this.emit("end");
+    }
+  };
   Readable.prototype.on = function(e, fn) {
     EE.prototype.on.call(this, e, fn);
     var s = this._readableState;
     if (e === "data") {
+      var firstEntry = !s.flowing;
       s.flowing = true;
       s.paused = false;
-      this._read(0);
+      if (firstEntry) {
+        // Node starts the flow on process.nextTick, not synchronously in
+        // on(): code that attaches 'end'/'error' after 'data' in the same
+        // tick must observe the whole flow. Pushes landing before the
+        // microtask are buffered and drained by _flow() then.
+        var self = this;
+        Promise.resolve().then(function() { self._read(0); self._flow(); });
+      }
     }
     if (e === "readable") this._read(s.hwm);
     return this;
@@ -99,50 +147,55 @@ const STREAM_JS: &str = r#"
     var s = this._readableState;
     if (chunk === null) {
       s.ended = true;
-      if (s.buffer.length === 0 && !s.endEmitted) { s.endEmitted = true; this.emit("end"); }
+      if (s.flowing && !s.paused) this._flow();
       return false;
     }
     s.buffer.push(chunk);
-    s.length += (typeof chunk === "string") ? chunk.length : (chunk && chunk.length) || 1;
-    if (s.flowing && !s.paused) {
-      var d = s.buffer.shift();
-      s.length -= (typeof d === "string") ? d.length : (d && d.length) || 1;
-      this.emit("data", d);
-      if (s.ended && s.buffer.length === 0 && !s.endEmitted) { s.endEmitted = true; this.emit("end"); }
-    }
+    s.length += chunkSize(chunk);
+    this._flow();
     return s.length < s.hwm;
   };
   Readable.prototype.unshift = function(chunk) {
     var s = this._readableState;
     s.buffer.unshift(chunk);
-    s.length += (typeof chunk === "string") ? chunk.length : 1;
+    s.length += chunkSize(chunk);
     return this;
   };
   Readable.prototype.read = function(n) {
     var s = this._readableState;
     if (s.buffer.length > 0) {
       var d = s.buffer.shift();
-      s.length -= (typeof d === "string") ? d.length : (d && d.length) || 1;
+      s.length -= chunkSize(d);
       if (s.ended && s.buffer.length === 0 && !s.endEmitted) { s.endEmitted = true; this.emit("end"); }
       return d;
     }
+    if (s.ended && !s.endEmitted) { s.endEmitted = true; this.emit("end"); }
     return null;
   };
   Readable.prototype.pipe = function(dest) {
     var src = this;
+    var s = this._readableState;
     src.on("data", ondata);
     src.on("end", onend);
     src.on("error", onerror);
     if (dest.emit) dest.emit("pipe", src);
+    dest.on("drain", function() { src.resume(); });
+    // Source already fully consumed before pipe attached: 'end' has fired
+    // and will not re-fire, so end the destination now.
+    if (s.endEmitted) onend();
     function ondata(c) { if (dest.write(c) === false) src.pause(); }
     function onend() { dest.end(); }
     function onerror(e) { dest.emit("error", e); }
-    dest.on("drain", function() { src.resume(); });
     return dest;
   };
   Readable.prototype.resume = function() {
     var s = this._readableState;
-    if (!s.flowing) { s.flowing = true; s.paused = false; this._read(0); }
+    if (!s.flowing || s.paused) {
+      s.flowing = true;
+      s.paused = false;
+      this._read(0);
+      this._flow();
+    }
     return this;
   };
   Readable.prototype.pause = function() {
@@ -173,15 +226,30 @@ const STREAM_JS: &str = r#"
     var self = this;
     var buf = [];
     var done = false;
-    var reject = null;
-    self.on("data", function(c) { buf.push(c); if (reject) { reject = null; } });
-    self.on("end", function() { done = true; if (reject) { reject = null; } });
-    self.on("error", function(e) { if (reject) reject(e); });
+    var error = null;
+    var waiters = [];
+    // Wake the oldest waiter with data / done / error in priority order.
+    // BCE-20260816-STREAM-PUMP fix 3: the old implementation dropped the
+    // waiter's resolve function, so any `for await` racing the producer
+    // never woke up.
+    function wake() {
+      while (waiters.length > 0) {
+        var w = waiters.shift();
+        if (error) { w.reject(error); return; }
+        if (buf.length > 0) { w.resolve({ value: buf.shift(), done: false }); continue; }
+        if (done) { w.resolve({ value: undefined, done: true }); continue; }
+        return;
+      }
+    }
+    self.on("data", function(c) { buf.push(c); wake(); });
+    self.on("end", function() { done = true; wake(); });
+    self.on("error", function(e) { error = e; wake(); });
     return {
       next: function() {
+        if (error) return Promise.reject(error);
         if (buf.length > 0) return Promise.resolve({ value: buf.shift(), done: false });
         if (done) return Promise.resolve({ value: undefined, done: true });
-        return new Promise(function(res, rej) { reject = rej; });
+        return new Promise(function(res, rej) { waiters.push({ resolve: res, reject: rej }); });
       },
       return: function() { self.destroy(); return Promise.resolve({ done: true }); },
       [Symbol.asyncIterator]: function() { return this; },
@@ -252,8 +320,8 @@ const STREAM_JS: &str = r#"
   };
 
   function WS(opts) {
-    this.buffer = [];
-    this.writing = false;
+    this.pending = 0;
+    this.needDrain = false;
     this.ended = false;
     this.finished = false;
     this.hwm = (opts && opts.highWaterMark) || 16384;
@@ -268,25 +336,34 @@ const STREAM_JS: &str = r#"
     if (!(this instanceof Writable)) return new Writable(opts);
     EE.call(this);
     this._writableState = new WS(opts);
-    this._write = (opts && opts.write) || function(c, e, cb) { cb(); };
-    this._writev = (opts && opts.writev) || null;
-    this._final = (opts && opts.final) || function(cb) { cb(); };
+    // Own-property assignment only when the user supplied one, so subclass
+    // prototype overrides (Transform.prototype._write) are never shadowed.
+    if (opts && opts.write) this._write = opts.write;
+    if (opts && opts.writev) this._writev = opts.writev;
+    if (opts && opts.final) this._final = opts.final;
     this.writable = true;
     this.destroyed = false;
   }
   Writable.prototype = Object.create(EE.prototype);
   Writable.prototype.constructor = Writable;
+  Writable.prototype._write = function(c, e, cb) { cb(); };
+  Writable.prototype._final = function(cb) { cb(); };
   Writable.prototype.write = function(chunk, encoding, cb) {
+    if (typeof encoding === "function") { cb = encoding; encoding = null; }
     var s = this._writableState;
     if (s.ended) { if (cb) cb(new Error("write after end")); return false; }
     if (s.corked > 0) { s.corkBuffer.push({ chunk: chunk, cb: cb }); return true; }
     var self = this;
+    s.pending++;
     this._write(chunk, encoding || null, function(err) {
+      s.pending--;
       if (err) self.emit("error", err);
-      else self.emit("drain");
+      else if (s.pending === 0 && s.needDrain) { s.needDrain = false; self.emit("drain"); }
       if (cb) cb(err);
     });
-    return s.buffer.length < s.hwm;
+    var ok = s.pending < s.hwm;
+    if (!ok) s.needDrain = true;
+    return ok;
   };
   Writable.prototype.setDefaultEncoding = function(enc) { this._writableState.defaultEncoding = enc; return this; };
   Writable.prototype.cork = function() { this._writableState.corked++; };
@@ -307,15 +384,21 @@ const STREAM_JS: &str = r#"
     var s = this._writableState;
     if (typeof chunk === "function") { cb = chunk; chunk = null; }
     if (typeof encoding === "function") { cb = encoding; encoding = null; }
-    if (chunk) this.write(chunk, encoding);
+    if (chunk !== null && chunk !== undefined) this.write(chunk, encoding);
+    if (s.corked > 0) this.uncork();
     s.ended = true;
     this.writable = false;
     var self = this;
     this._final(function(err) {
-      s.finished = true;
-      if (cb) cb(err);
-      self.emit("finish");
-      self.emit("close");
+      // finish/close fire on a microtask (Node: process.nextTick after the
+      // final write callback), so listeners attached later in the same tick
+      // as end() still observe them.
+      Promise.resolve().then(function() {
+        s.finished = true;
+        if (cb) cb(err);
+        self.emit("finish");
+        self.emit("close");
+      });
     });
     return this;
   };
@@ -323,7 +406,6 @@ const STREAM_JS: &str = r#"
     if (this.destroyed) return this;
     this.destroyed = true;
     this._writableState.destroyed = true;
-    this._writableState.buffer = [];
     this.writable = false;
     if (err) this.emit("error", err);
     this.emit("close");
@@ -375,8 +457,13 @@ const STREAM_JS: &str = r#"
     if (!(this instanceof Duplex)) return new Duplex(opts);
     Readable.call(this, opts);
     this._writableState = new WS(opts);
-    this._write = (opts && opts.write) || function(c, e, cb) { cb(); };
-    this._final = (opts && opts.final) || function(cb) { cb(); };
+    // BCE-20260816-STREAM-PUMP fix 2: only take own `_write`/`_final` when
+    // the user supplied them. The old unconditional no-op assignment here
+    // shadowed Transform.prototype._write on every Transform/PassThrough,
+    // so transform functions were never invoked.
+    if (opts && opts.write) this._write = opts.write;
+    if (opts && opts.writev) this._writev = opts.writev;
+    if (opts && opts.final) this._final = opts.final;
     this.writable = true;
   }
   Duplex.prototype = Object.create(Readable.prototype);
@@ -454,27 +541,30 @@ const STREAM_JS: &str = r#"
     if (typeof chunk === "function") { cb = chunk; chunk = null; }
     if (typeof enc === "function") { cb = enc; enc = null; }
     var s = this._writableState;
+    function finish(err) {
+      // finish/close on a microtask — same rationale as Writable.end.
+      Promise.resolve().then(function() {
+        if (err) self.emit("error", err);
+        if (cb) cb(err);
+        self.emit("finish");
+        self.emit("close");
+      });
+    }
     if (chunk) {
       this._writeTransform(chunk, enc, function() {
         self._flush(function(err) {
-          if (err) self.emit("error", err);
           self.push(null);
           s.ended = true;
           self.writable = false;
-          if (cb) cb(err);
-          self.emit("finish");
-          self.emit("close");
+          finish(err);
         });
       });
     } else {
       self._flush(function(err) {
-        if (err) self.emit("error", err);
         self.push(null);
         s.ended = true;
         self.writable = false;
-        if (cb) cb(err);
-        self.emit("finish");
-        self.emit("close");
+        finish(err);
       });
     }
     return this;
@@ -656,16 +746,24 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
         // Web Streams API exposure on node:stream — Node.js re-exports the
         // global Web Streams constructors (ReadableStream, WritableStream,
-        // TransformStream) as named properties of `require('stream')`. We
-        // first try to forward whatever the global already provides (servo
-        // installs the real WHATWG streams); if missing (CLI mode), we attach
-        // a minimal pure-JS polyfill so downstream code that uses streams has
-        // a working surface. See ~/code/rust/bun/src/js/node/stream.ts (Bun
-        // forwards the same way).
+        // TransformStream) as named properties of `require('stream')`.
+        //
+        // BCE-20260816-STREAM-WEB: realms without servo's native page streams
+        // (CLI mode, browser privileged evaluate realm) previously fell back
+        // to an inline polyfill whose WritableStream.prototype.write
+        // referenced an out-of-scope `controller` (ReferenceError — every
+        // TransformStream write rejected) while ReadableStream.read() fell
+        // into a setTimeout(tick, 0) poll that never terminated — any
+        // TransformStream usage hung the whole event loop. The full
+        // WHATWG implementation ported from Bun (web_streams.js) exists for
+        // exactly this; install it and re-export the real globals.
         let global = CurrentGlobalOrNull(cx_raw);
         if !global.is_null() {
             rooted!(&in(cx) let global_root = global);
-            let mut has_readable = false;
+            // Idempotent: web_streams.js guards every constructor with
+            // `typeof _g.X === "undefined"`, so realms that already carry
+            // servo's native streams keep them untouched.
+            crate::web_streams::install_web_streams(cx, global_root.handle());
             for name in &[
                 "ReadableStream",
                 "WritableStream",
@@ -685,9 +783,6 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     },
                 );
                 if val.is_object() {
-                    if name == &"ReadableStream" {
-                        has_readable = true;
-                    }
                     rooted!(&in(cx) let val_root = val);
                     JS_DefineProperty(
                         cx_raw,
@@ -696,178 +791,6 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                         val_root.handle().into(),
                         JSPROP_ENUMERATE as u32,
                     );
-                }
-            }
-            // If no global ReadableStream was found (CLI mode), install a
-            // pure-JS WHATWG-flavoured polyfill directly on the stream module
-            // and re-export it as a global so subsequent code (e.g. Blob's
-            // `stream()` method in globals.rs) sees the same constructor.
-            if !has_readable {
-                let web_streams_src = r#"(function(){
-  function ReadableStream(underlyingSource, strategy) {
-    this._state = 'readable';
-    this._disturbed = false;
-    this._reader = undefined;
-    this._storedError = undefined;
-    this._chunks = [];
-    this._closed = false;
-    this._started = false;
-    var self = this;
-    var controller = {
-      desiredSize: (strategy && typeof strategy.highWaterMark === 'number') ? strategy.highWaterMark : 1,
-      enqueue: function(chunk) { if (!self._closed) self._chunks.push(chunk); },
-      close: function() { self._closed = true; self._state = 'closed'; },
-      error: function(e) { self._storedError = e; self._state = 'errored'; }
-    };
-    this._controller = controller;
-    if (underlyingSource && typeof underlyingSource.start === 'function') {
-      try { var r = underlyingSource.start(controller); if (r && typeof r.then === 'function') r.then(function(){ self._started = true; }); else self._started = true; } catch(e) { controller.error(e); }
-    } else { self._started = true; }
-  }
-  ReadableStream.prototype.getReader = function() {
-    var stream = this;
-    return {
-      get closed() {
-        return stream._closed ? Promise.resolve() : new Promise(function(_, rej){ stream._rejectClose = rej; });
-      },
-      read: function() {
-        stream._disturbed = true;
-        return new Promise(function(resolve, reject) {
-          function tick() {
-            if (stream._chunks.length > 0) resolve({ value: stream._chunks.shift(), done: false });
-            else if (stream._closed) resolve({ value: undefined, done: true });
-            else if (stream._state === 'errored') reject(stream._storedError);
-            else setTimeout(tick, 0);
-          }
-          tick();
-        });
-      },
-      cancel: function(reason) { stream._closed = true; return Promise.resolve(); },
-      releaseLock: function() {}
-    };
-  };
-  ReadableStream.prototype.cancel = function(reason) { this._closed = true; return Promise.resolve(); };
-  ReadableStream.prototype.pipeTo = function(dest) {
-    var reader = this.getReader();
-    var self = this;
-    function pump() {
-      return reader.read().then(function(r) {
-        if (r.done) { if (typeof dest.close === 'function') dest.close(); return; }
-        if (typeof dest.write === 'function') dest.write(r.value);
-        return pump();
-      });
-    }
-    return pump();
-  };
-  ReadableStream.prototype.pipeThrough = function(transform) {
-    this.pipeTo(transform.writable);
-    return transform.readable;
-  };
-  ReadableStream.prototype.tee = function() {
-    return [this, this];
-  };
-  Object.defineProperty(ReadableStream.prototype, 'locked', { get: function() { return !!this._reader; } });
-
-  function WritableStream(underlyingSink, strategy) {
-    this._state = 'writable';
-    this._written = [];
-    this._closed = false;
-    this._sink = underlyingSink || {};
-    var self = this;
-    var controller = {
-      error: function(e) { self._state = 'errored'; self._storedError = e; }
-    };
-    this._controller = controller;
-  }
-  WritableStream.prototype.write = function(chunk) {
-    var self = this;
-    return new Promise(function(resolve, reject) {
-      try {
-        if (typeof self._sink.write === 'function') {
-          var r = self._sink.write(chunk, controller);
-          if (r && typeof r.then === 'function') r.then(resolve, reject);
-          else { self._written.push(chunk); resolve(); }
-        } else { self._written.push(chunk); resolve(); }
-      } catch(e) { reject(e); }
-    });
-  };
-  WritableStream.prototype.close = function() { this._closed = true; this._state = 'closed'; return Promise.resolve(); };
-  WritableStream.prototype.abort = function(reason) { this._state = 'errored'; return Promise.resolve(); };
-  Object.defineProperty(WritableStream.prototype, 'locked', { get: function() { return false; } });
-  WritableStream.prototype.getWriter = function() {
-    var stream = this;
-    return {
-      get closed() { return stream._closed ? Promise.resolve() : new Promise(function(){}); },
-      write: function(chunk) { return stream.write(chunk); },
-      close: function() { return stream.close(); },
-      releaseLock: function() {},
-      abort: function(r) { return stream.abort(r); }
-    };
-  };
-
-  function TransformStream(transformer, strategy) {
-    var self = this;
-    this._transformer = transformer || {};
-    this.readable = new ReadableStream();
-    this.writable = new WritableStream({
-      write: function(chunk) {
-        if (typeof self._transformer.transform === 'function') {
-          self._transformer.transform(chunk, {
-            enqueue: function(c) { self.readable._controller.enqueue(c); },
-            error: function(e) { self.readable._controller.error(e); }
-          });
-        } else {
-          self.readable._controller.enqueue(chunk);
-        }
-      }
-    });
-  }
-
-  return { ReadableStream: ReadableStream, WritableStream: WritableStream, TransformStream: TransformStream };
-})()"#;
-                let mut wsrc = mozjs::rust::transform_str_to_source_text(web_streams_src);
-                let mut wval = UndefinedValue();
-                let wh = MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut wval,
-                };
-                let wopts = NewCompileOptions(cx_raw, c"<web-streams>".as_ptr(), 1);
-                if !wopts.is_null() {
-                    if JS::Evaluate2(cx_raw, wopts, &mut wsrc, wh) && wval.is_object() {
-                        let exports = wval.to_object();
-                        rooted!(&in(cx) let exports_root = exports);
-                        for name in &["ReadableStream", "WritableStream", "TransformStream"] {
-                            let cname = ZBox::from_bytes(name.as_bytes());
-                            let mut v = UndefinedValue();
-                            JS_GetProperty(
-                                cx_raw,
-                                exports_root.handle().into(),
-                                cname.as_ptr(),
-                                MutableHandle::<Value> {
-                                    _phantom_0: ::std::marker::PhantomData,
-                                    ptr: &mut v,
-                                },
-                            );
-                            if v.is_object() {
-                                rooted!(&in(cx) let vr = v);
-                                JS_DefineProperty(
-                                    cx_raw,
-                                    mod_obj.handle().into(),
-                                    cname.as_ptr(),
-                                    vr.handle().into(),
-                                    JSPROP_ENUMERATE as u32,
-                                );
-                                JS_DefineProperty(
-                                    cx_raw,
-                                    global_root.handle().into(),
-                                    cname.as_ptr(),
-                                    vr.handle().into(),
-                                    (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
-                                );
-                            }
-                        }
-                    }
-                    libc::free(wopts as *mut _);
                 }
             }
             // WebStream alias (Node.js sometimes uses this name).

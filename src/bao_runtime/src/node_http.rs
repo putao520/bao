@@ -23,13 +23,295 @@ use crate::require::cache_builtin;
 /// Monotonic server ID for GcStore key namespacing.
 static NEXT_SERVER_ID: AtomicU64 = AtomicU64::new(1);
 
+// ──────────────────────────────────────────────────────────────────────
+// Node-shaped http client surface (request/get + ClientRequest faces)
+//
+// Transport = `__http_request_async(url, method, headersJSON, body)` →
+// pending Promise resolved with a fetch-shaped Response {status, ok,
+// statusText, headers, _bodyText}. This shim layers the Node API contract
+// on top:
+//   - `http.request(url|opts[, opts][, cb])` → ClientRequest; the request
+//     fires on `.end()` (Node semantics — nothing is sent before then).
+//   - `http.get(...)` = request + immediate `.end()`.
+//   - cb / 'response' listener receives an IncomingMessage
+//     {statusCode, statusMessage, headers, httpVersion, complete} with
+//     'data'/'end' delivered on registration (body fully buffered by the
+//     time the response settles).
+//   - rejection → 'error' on the ClientRequest; no listener = loud
+//     console.error (never a silent drop).
+//   - Direct `new http.ClientRequest/IncomingMessage/OutgoingMessage`
+//     still throws (silent-fake-eradication contract: request() is the
+//     entry point); instances handed out by request()/get() use the real
+//     prototypes so `instanceof` holds.
+// ──────────────────────────────────────────────────────────────────────
+const HTTP_CLIENT_JS: &str = r#"(function(h){
+  function ClientRequest(opts, cb) {
+    throw new Error("require('http').ClientRequest is not an entry point in bao: constructing it directly would bypass the request pipeline. Use require('http').request() — the real network path — instead.");
+  }
+  function IncomingMessage(socket) {
+    throw new Error("require('http').IncomingMessage is not an entry point in bao: response objects are handed to you by require('http').request(). Use require('http').request() — the real network path — instead.");
+  }
+  function OutgoingMessage() {
+    throw new Error("require('http').OutgoingMessage is not an entry point in bao: use require('http').request() — the real network path — instead.");
+  }
+  h.ClientRequest = ClientRequest;
+  h.IncomingMessage = IncomingMessage;
+  h.OutgoingMessage = OutgoingMessage;
+
+  function attachEE(obj) {
+    obj._hh = {};
+    obj.on = function (ev, fn) {
+      (obj._hh[ev] || (obj._hh[ev] = [])).push(fn);
+      return obj;
+    };
+    obj.once = function (ev, fn) {
+      var wrap = function () { obj.off(ev, wrap); fn.apply(obj, arguments); };
+      (obj._hh[ev] || (obj._hh[ev] = [])).push(wrap);
+      return obj;
+    };
+    obj.addListener = obj.on;
+    obj.off = function (ev, fn) {
+      var ls = obj._hh[ev];
+      if (ls) { var i = ls.indexOf(fn); if (i >= 0) ls.splice(i, 1); }
+      return obj;
+    };
+    obj.removeListener = obj.off;
+    obj.removeAllListeners = function (ev) {
+      if (ev) { delete obj._hh[ev]; } else { obj._hh = {}; }
+      return obj;
+    };
+    obj.emit = function (ev) {
+      var ls = (obj._hh[ev] || []).slice();
+      var args = Array.prototype.slice.call(arguments, 1);
+      for (var i = 0; i < ls.length; i++) ls[i].apply(obj, args);
+      return ls.length > 0;
+    };
+    obj.listenerCount = function (ev) { return (obj._hh[ev] || []).length; };
+    return obj;
+  }
+
+  function makeIncoming(resp) {
+    var res = Object.create(IncomingMessage.prototype);
+    attachEE(res);
+    res.statusCode = resp && typeof resp.status === 'number' ? resp.status : 0;
+    res.statusMessage = (resp && resp.statusText) || '';
+    res.headers = (resp && resp.headers) || {};
+    res.httpVersion = '1.1';
+    res.complete = true;
+    // The transport buffers the whole body before the response settles, so
+    // there is exactly one chunk: every 'data' listener receives it on
+    // registration, 'end' likewise (Node's data-then-end order follows the
+    // listener's registration order).
+    res._pendingData = (resp && typeof resp._bodyText === 'string') ? resp._bodyText : '';
+    res.on = function (ev, fn) {
+      (res._hh[ev] || (res._hh[ev] = [])).push(fn);
+      if (ev === 'data') {
+        if (res._pendingData !== null && res._pendingData !== '') fn.call(res, res._pendingData);
+      } else if (ev === 'end') {
+        fn.call(res);
+      }
+      return res;
+    };
+    res.addListener = res.on;
+    res.resume = function () { return res; };
+    res.pause = function () { return res; };
+    res.setEncoding = function () { return res; };
+    res.destroy = function () { res.complete = true; return res; };
+    return res;
+  }
+
+  function fireRequest(req) {
+    if (req._fired || req.destroyed) return req;
+    req._fired = true;
+    var headersJSON = '{}';
+    try { headersJSON = JSON.stringify(req._headers); } catch (e) {}
+    var tlsOptsJSON = '{}';
+    try { tlsOptsJSON = JSON.stringify(req._tlsOpts || {}); } catch (e) {}
+    var p;
+    try {
+      p = req._transport(req._url, req.method, headersJSON, req._bodyParts.join(''), tlsOptsJSON);
+    } catch (e) {
+      settleError(req, e);
+      return req;
+    }
+    p.then(function (resp) {
+      if (req.destroyed) { req.emit('close'); return; }
+      var res = makeIncoming(resp);
+      req.res = res;
+      try { if (req._cb) req._cb(res); } catch (e) { lateError(req, e); }
+      req.emit('response', res);
+      req.emit('close');
+    }, function (err) {
+      if (req.destroyed) { req.emit('close'); return; }
+      settleError(req, err);
+    });
+    return req;
+  }
+
+  function settleError(req, err) {
+    var e = err instanceof Error ? err : new Error(String(err && err.message ? err.message : err));
+    var had = req.emit('error', e);
+    if (!had && typeof console !== 'undefined' && console.error) {
+      console.error('http: unhandled request error:', e && e.message);
+    }
+    req.emit('close');
+  }
+
+  function lateError(req, e) {
+    if (typeof console !== 'undefined' && console.error) {
+      console.error('http: response callback threw:', e && e.message);
+    }
+  }
+
+  function makeRequest(scheme, url, opts, cb, transport) {
+    var req = Object.create(ClientRequest.prototype);
+    attachEE(req);
+    req.method = (opts.method || 'GET').toUpperCase();
+    req.path = opts.path || '/';
+    req.host = opts.hostname || opts.host || 'localhost';
+    req.port = opts.port != null ? Number(opts.port) : (scheme === 'https:' ? 443 : 80);
+    req._transport = transport;
+    req.headers = {};
+    var src = opts.headers || {};
+    for (var k in src) { if (Object.prototype.hasOwnProperty.call(src, k)) req.headers[k] = src[k]; }
+    req._headers = req.headers;
+    req._bodyParts = [];
+    if (opts.body !== undefined && opts.body !== null) {
+      req._bodyParts.push(typeof opts.body === 'string' ? opts.body : String(opts.body));
+    }
+    req._url = url;
+    req._cb = cb || null;
+    // Node TLS options (https): rejectUnauthorized / ca / servername —
+    // forwarded to the transport (ignored by plain-http transports).
+    req._tlsOpts = {};
+    if (opts.rejectUnauthorized !== undefined) req._tlsOpts.rejectUnauthorized = !!opts.rejectUnauthorized;
+    if (opts.ca !== undefined && opts.ca !== null) req._tlsOpts.ca = opts.ca;
+    if (opts.servername) req._tlsOpts.servername = String(opts.servername);
+    req.aborted = false;
+    req.destroyed = false;
+    req._fired = false;
+    req.res = null;
+    req.write = function (data) {
+      if (req._fired) { throw new Error('http: write() after end() — the request is already sent'); }
+      if (data !== undefined && data !== null) req._bodyParts.push(typeof data === 'string' ? data : String(data));
+      return req;
+    };
+    req.end = function (data) {
+      if (data !== undefined && data !== null && !req._fired) {
+        req._bodyParts.push(typeof data === 'string' ? data : String(data));
+      }
+      fireRequest(req);
+      return req;
+    };
+    req.setHeader = function (k, v) { req._headers[k] = v; return req; };
+    req.getHeader = function (k) { return req._headers[k]; };
+    req.removeHeader = function (k) { delete req._headers[k]; return req; };
+    req.flushHeaders = function () { return req; };
+    req.abort = function () { req.aborted = true; req.destroyed = true; return req; };
+    req.destroy = function () { req.destroyed = true; return req; };
+    req.setNoDelay = function () { return req; };
+    req.setSocketKeepAlive = function () { return req; };
+    req.setTimeout = function (ms, cb2) {
+      if (cb2) req.on('timeout', cb2);
+      setTimeout(function () { if (!req.res && !req.destroyed) req.emit('timeout'); }, ms);
+      return req;
+    };
+    return req;
+  }
+
+  function normalizeArgs(a, b, c) {
+    var url = null, opts = {}, cb = null;
+    if (typeof a === 'string') {
+      url = a;
+      if (typeof b === 'function') cb = b;
+      else if (b && typeof b === 'object') opts = b;
+      if (!cb && typeof c === 'function') cb = c;
+    } else if (a && typeof a === 'object') {
+      opts = a;
+      if (typeof b === 'function') cb = b;
+    } else {
+      throw new Error('http: request() expects a URL string or an options object');
+    }
+    return { url: url, opts: opts, cb: cb };
+  }
+
+  function buildURL(scheme, url, opts) {
+    if (url) {
+      if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = scheme + '//' + url;
+      return url;
+    }
+    var host = opts.hostname || opts.host || 'localhost';
+    var port = '';
+    if (opts.port != null && String(host).indexOf(':') < 0) port = ':' + opts.port;
+    return scheme + '//' + host + port + (opts.path || '/');
+  }
+
+  h.request = function (a, b, c) {
+    var n = normalizeArgs(a, b, c);
+    var url = buildURL('http:', n.url, n.opts);
+    return makeRequest('http:', url, n.opts, n.cb, h.__http_request_async);
+  };
+  h.get = function (a, b, c) {
+    var n = normalizeArgs(a, b, c);
+    if (!n.opts.method) n.opts.method = 'GET';
+    var url = buildURL('http:', n.url, n.opts);
+    var req = makeRequest('http:', url, n.opts, n.cb, h.__http_request_async);
+    req.end();
+    return req;
+  };
+  // Client-factory for sibling schemes (node:https): same Node contract,
+  // different transport + URL scheme. Returns {request, get}.
+  h.__makeClient = function (transport, scheme) {
+    return {
+      request: function (a, b, c) {
+        var n = normalizeArgs(a, b, c);
+        var url = buildURL(scheme, n.url, n.opts);
+        return makeRequest(scheme, url, n.opts, n.cb, transport);
+      },
+      get: function (a, b, c) {
+        var n = normalizeArgs(a, b, c);
+        if (!n.opts.method) n.opts.method = 'GET';
+        var url = buildURL(scheme, n.url, n.opts);
+        var req = makeRequest(scheme, url, n.opts, n.cb, transport);
+        req.end();
+        return req;
+      },
+    };
+  };
+})"#;
+
 thread_local! {
     /// Active uWS App handles. Each `server.listen()` creates one App.
     static ACTIVE_APPS: RefCell<Vec<*mut App<false>>> = const { RefCell::new(Vec::new()) };
+    /// BCE-007 unified-liveness extension: off-thread subsystems whose
+    /// completion tasklets ride the MiniEventLoop's ConcurrentTask queue
+    /// register a probe here. `drain_and_check` ticks the loop (the ONLY
+    /// consumer of that queue via `tick_without_idle`) only while
+    /// `has_active_servers()` is true — without a probe, a TLS-only script
+    /// (no HTTP server, no timers) never drains the queue and every TLS
+    /// event (SecureConnection/Data/error) parks forever: the driver
+    /// exchanges real handshake bytes on the wire while the JS thread
+    /// sleeps past them. Rooted as a class: any module with cross-thread
+    /// tasklets registers liveness, not just uWS apps.
+    static LIVENESS_PROBES: RefCell<Vec<fn() -> bool>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Register a liveness probe (idempotent). Called by subsystem installers
+/// (node_tls). Probes run on the JS thread only.
+pub fn register_liveness_probe(probe: fn() -> bool) {
+    LIVENESS_PROBES.with(|p| {
+        let mut p = p.borrow_mut();
+        if !p.contains(&probe) {
+            p.push(probe);
+        }
+    });
 }
 
 pub fn has_active_servers() -> bool {
-    ACTIVE_APPS.with(|s| !s.borrow().is_empty())
+    if ACTIVE_APPS.with(|s| !s.borrow().is_empty()) {
+        return true;
+    }
+    LIVENESS_PROBES.with(|p| p.borrow().iter().any(|probe| probe()))
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -109,21 +391,17 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             1,
             JSPROP_ENUMERATE as u32,
         );
+        // Hidden async transport used by the JS-level request/get shim below.
+        // (url, method, headersJSON, body) → pending Promise resolved with a
+        // fetch-shaped Response. The Node-shaped ClientRequest/IncomingMessage
+        // faces live in HTTP_CLIENT_JS — this native is the raw pipe.
         w2::JS_DefineFunction(
             cx,
             http_obj.handle(),
-            c"request".as_ptr(),
+            c"__http_request_async".as_ptr(),
             Some(http_request),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            http_obj.handle(),
-            c"get".as_ptr(),
-            Some(http_get),
-            2,
-            JSPROP_ENUMERATE as u32,
+            4,
+            0,
         );
 
         {
@@ -398,33 +676,14 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        // http.ClientRequest / IncomingMessage / OutgoingMessage — Node.js
-        // surfaces these as named classes, and conformance checks key on
-        // `typeof require('http').ClientRequest === 'function'`. Bao has no
-        // real streaming implementation of these classes: http.request()
-        // drives the real fetch_async network path. The previous phantom
-        // objects accepted write()/end()/on() and reported success while
-        // silently dropping everything. Fail closed on construction (same
-        // disposition as _http_client's ClientRequest, silent-fake
-        // eradication group D); the function objects themselves keep the
-        // typeof surface intact. (See ~/code/rust/bun/src/js/node/
-        // _http_client.ts / _http_incoming.ts / _http_outgoing.ts for the
-        // full Bun impls a future port would bring.)
+        // Node-shaped http client: request()/get() with the Node callback and
+        // ClientRequest forms, layered on the real `__http_request_async`
+        // transport. Direct `new` of the named classes still fails closed
+        // (they are not entry points — request() is), keeping the
+        // silent-fake-eradication contract, while instances handed out by
+        // request()/get() carry real prototypes so `instanceof` holds.
         {
-            let classes_src = r#"(function(h){
-  function ClientRequest(opts, cb) {
-    throw new Error("require('http').ClientRequest is not implemented in bao: constructing it would silently drop the request (write()/end()/on() have no transport). Use require('http').request() — the real network path — instead.");
-  }
-  function IncomingMessage(socket) {
-    throw new Error("require('http').IncomingMessage is not implemented in bao: it has no real socket/stream to read from. Response data arrives through require('http').request() — the real network path.");
-  }
-  function OutgoingMessage() {
-    throw new Error("require('http').OutgoingMessage is not implemented in bao: it has no transport, so write()/end()/setHeader() would silently drop the message. Use require('http').request() — the real network path — instead.");
-  }
-  h.ClientRequest = ClientRequest;
-  h.IncomingMessage = IncomingMessage;
-  h.OutgoingMessage = OutgoingMessage;
-})"#;
+            let classes_src = HTTP_CLIENT_JS;
             let mut csrc = mozjs::rust::transform_str_to_source_text(classes_src);
             let mut cval = UndefinedValue();
             let ch = MutableHandle::<Value> {
@@ -634,11 +893,14 @@ unsafe extern "C" fn uws_route_handler(
     };
     rooted!(&in(cx_ref) let handler_val_root = ObjectValue(handler));
 
-    // Read method/url from uWS Request (C++ already parsed).
+    // Read method/url from uWS Request (C++ already parsed). uWS stores the
+    // method token lowercased internally; Node's `req.method` carries the
+    // client-sent uppercase token, so restore it here.
     let req_ref = bun_opaque::opaque_deref_mut(req);
     let method_bytes = req_ref.method();
     let url_bytes = req_ref.url();
-    let method_str = ::std::str::from_utf8_unchecked(method_bytes);
+    let method_upper = method_bytes.to_ascii_uppercase();
+    let method_str = ::std::str::from_utf8_unchecked(&method_upper);
     let url_str = ::std::str::from_utf8_unchecked(url_bytes);
 
     // Build JS request object.
@@ -721,6 +983,13 @@ unsafe extern "C" fn uws_route_handler(
     let is_ws_upgrade = upgrade_header.eq_ignore_ascii_case(b"websocket");
 
     if is_ws_upgrade {
+        // Node semantics: an http.Server without an 'upgrade' handler never
+        // speaks WebSocket — bao answers with an explicit 426 Upgrade
+        // Required instead. The uWS contract makes this mandatory: returning
+        // from the route handler with neither a response nor an abort
+        // handler attached is `std::terminate` (process crash), so every
+        // path below must leave the uWS Response answered or handed off.
+        let mut had_upgrade_listener = false;
         // Build a JS socket info object for the upgrade event.
         rooted!(&in(cx_ref) let socket_obj = w2::JS_NewPlainObject(cx_ref));
         if !socket_obj.get().is_null() {
@@ -815,9 +1084,26 @@ unsafe extern "C" fn uws_route_handler(
                                 rval_h,
                             );
                             JS_ClearPendingException(raw_cx);
+                            // ee_emit returns Node's "had listeners" boolean.
+                            had_upgrade_listener = rval.is_boolean() && rval.to_boolean();
                         }
                     }
                 }
+            }
+        }
+        // Crash-class guard (uWS invariant): nobody accepted the upgrade —
+        // either the server has no 'upgrade' listener at all, or the
+        // listener returned without writing a response (this server's
+        // response model is synchronous). Answer 426 Upgrade Required and
+        // close, mirroring bun_listen's explicit-error pattern.
+        {
+            let res_mut = Response::<false>::cast_res(res);
+            let responded = (*res_mut).state().is_http_status_called();
+            if !had_upgrade_listener || !responded {
+                // end(.., close=true) appends uWS's own Connection: close —
+                // do not double-write the header.
+                (*res_mut).write_status(b"426 Upgrade Required");
+                (*res_mut).end(b"Upgrade Required", true);
             }
         }
         return;
@@ -1587,6 +1873,23 @@ unsafe extern "C" fn server_close(
     let this = args.thisv();
     rooted!(&in(cx_ref) let server_obj = this.to_object());
 
+    // Node close(callback): the callback fires once the server has closed,
+    // and the server emits 'close'. Capture the optional callback up-front —
+    // the teardown below clears the app/userdata pointers that identify a
+    // live server, and the re-close path needs it to deliver Node's
+    // ERR_SERVER_NOT_RUNNING shape.
+    let close_cb = if argc > 0 && (*args.get(0).ptr).is_object() {
+        let cb_obj = (*args.get(0).ptr).to_object();
+        if unsafe { JS_ObjectIsFunction(cb_obj) } {
+            Some(cb_obj)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let had_live_app: bool;
+
     // Destroy the uWS App if it exists.
     let mut app_ptr_val = UndefinedValue();
     JS_GetProperty(
@@ -1606,6 +1909,7 @@ unsafe extern "C" fn server_close(
     } else {
         core::ptr::null_mut()
     };
+    had_live_app = !app_ptr.is_null();
     if !app_ptr.is_null() {
         (*app_ptr).close();
         App::<false>::destroy(app_ptr);
@@ -1666,6 +1970,145 @@ unsafe extern "C" fn server_close(
             c"_udPtr".as_ptr(),
             undef_root2.handle().into(),
         );
+    }
+
+    // Node close() delivery: the teardown above is synchronous (listen socket
+    // closed, live connections destroyed — the closeAllConnections shape), so
+    // 'close' and the callback fire now. Before this, close(cb) swallowed the
+    // callback silently and the server object never emitted 'close' — scripts
+    // coordinating shutdown on those signals hung forever (the unconsumed-
+    // response srv.close() class). Re-close / never-listened keeps Node's
+    // shape: callback receives Error("Server is not running"), no 'close'
+    // re-emit.
+    if let Some(cb) = close_cb {
+        rooted!(&in(cx_ref) let cb_root = cb);
+        rooted!(&in(cx_ref) let cb_fn = ObjectValue(cb_root.get()));
+        rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
+        if had_live_app {
+            let empty_args = HandleValueArray {
+                length_: 0,
+                elements_: [].as_ptr(),
+            };
+            let mut rval = UndefinedValue();
+            let _ = JS_CallFunctionValue(
+                cx,
+                undef_this.handle().into(),
+                cb_fn.handle().into(),
+                &empty_args,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
+        } else {
+            // Node ERR_SERVER_NOT_RUNNING: cb(Error) — build via the realm's
+            // Error constructor so instanceof works; fall back to undefined
+            // (plain-object fallback would just fake instanceof).
+            let mut err_val = UndefinedValue();
+            let mut built_err = false;
+            let global = JS::CurrentGlobalOrNull(cx);
+            if !global.is_null() {
+                rooted!(&in(cx_ref) let global_root = global);
+                let mut ctor_val = UndefinedValue();
+                JS_GetProperty(
+                    cx,
+                    global_root.handle().into(),
+                    c"Error".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut ctor_val,
+                    },
+                );
+                if ctor_val.is_object() {
+                    rooted!(&in(cx_ref) let ctor_obj = ctor_val.to_object());
+                    rooted!(&in(cx_ref) let ctor_fn = ObjectValue(ctor_obj.get()));
+                    let c_msg = ZBox::from_bytes(b"Server is not running");
+                    let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+                    if !msg_js.is_null() {
+                        rooted!(&in(cx_ref) let msg_root = StringValue(&*msg_js));
+                        let elems = [msg_root.get()];
+                        let call_args = HandleValueArray {
+                            length_: 1,
+                            elements_: elems.as_ptr(),
+                        };
+                        let mut e_val = UndefinedValue();
+                        if JS_CallFunctionValue(
+                            cx,
+                            undef_this.handle().into(),
+                            ctor_fn.handle().into(),
+                            &call_args,
+                            MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut e_val,
+                            },
+                        ) && e_val.is_object()
+                        {
+                            err_val = e_val;
+                            built_err = true;
+                        }
+                    }
+                }
+            }
+            rooted!(&in(cx_ref) let arg_val = if built_err {
+                err_val
+            } else {
+                UndefinedValue()
+            });
+            let elems = [arg_val.get()];
+            let cb_args = HandleValueArray {
+                length_: 1,
+                elements_: elems.as_ptr(),
+            };
+            let mut rval = UndefinedValue();
+            let _ = JS_CallFunctionValue(
+                cx,
+                undef_this.handle().into(),
+                cb_fn.handle().into(),
+                &cb_args,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
+        }
+    }
+    if had_live_app {
+        // Emit 'close' on the server object (it carries the node_events emit
+        // attached at create time). Same pattern as the 'upgrade' emit.
+        let mut emit_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            server_obj.handle().into(),
+            c"emit".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut emit_val,
+            },
+        );
+        if emit_val.is_object() {
+            rooted!(&in(cx_ref) let emit_fn = emit_val.to_object());
+            rooted!(&in(cx_ref) let emit_val_fn = ObjectValue(emit_fn.get()));
+            let ev_str = JS_NewStringCopyZ(cx, c"close".as_ptr());
+            if !ev_str.is_null() {
+                rooted!(&in(cx_ref) let ev_root = StringValue(&*ev_str));
+                let elems = [ev_root.get()];
+                let call_args = HandleValueArray {
+                    length_: 1,
+                    elements_: elems.as_ptr(),
+                };
+                let mut rval = UndefinedValue();
+                let _ = JS_CallFunctionValue(
+                    cx,
+                    server_obj.handle().into(),
+                    emit_val_fn.handle().into(),
+                    &call_args,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut rval,
+                    },
+                );
+            }
+        }
     }
 
     args.rval().set(UndefinedValue());
@@ -1793,6 +2236,42 @@ unsafe extern "C" fn http_request(
         "GET".to_string()
     };
 
+    // Optional (headersJSON, body) appended by the HTTP_CLIENT_JS shim —
+    // same parsing contract as node_https::https_request.
+    let headers_json = if argc > 2 {
+        let v = *args.get(2).ptr;
+        if v.is_string() {
+            crate::js_to_rust_string(cx, v)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    let body = if argc > 3 {
+        let v = *args.get(3).ptr;
+        if v.is_string() {
+            crate::js_to_rust_string(cx, v)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    let headers_vec: Vec<(String, String)> = if !headers_json.is_empty() {
+        serde_json::from_str::<::std::collections::HashMap<String, String>>(&headers_json)
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let body_bytes: Option<Vec<u8>> = if body.is_empty() {
+        None
+    } else {
+        Some(body.into_bytes())
+    };
+
     // Create the PENDING Promise *while cx_ref holds a rooting context*,
     // then release cx_ref before scheduling (the worker must not outlive the
     // rooted frame, but the Promise itself is heap-rooted by fetch_async).
@@ -1832,8 +2311,8 @@ unsafe extern "C" fn http_request(
             profile,
             bun_method,
             url_str,
-            Vec::new(),
-            None,
+            headers_vec,
+            body_bytes,
         );
     }
 
@@ -1841,13 +2320,8 @@ unsafe extern "C" fn http_request(
     true
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn http_get(cx: *mut JSContext, argc: u32, vp: *mut mozjs::jsval::JSVal) -> bool {
-    // http.get delegates to http_request (which now returns a pending Promise
-    // and never blocks). The delegated call chain reaches no send_sync/
-    // stealth_http_request on the JS thread — C2 invariant satisfied.
-    http_request(cx, argc, vp)
-}
+// (http.get is JS-level in HTTP_CLIENT_JS: `get` = `request` + immediate
+// `.end()` — Node's documented auto-end contract for http.get.)
 
 // ── Unit tests for node_http pure Rust data/logic ──────────────────────
 // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]

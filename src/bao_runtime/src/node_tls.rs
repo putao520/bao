@@ -17,7 +17,7 @@ use bao_boringssl_bridge::{
 use bao_engine::context::RawValueRootGuard;
 use bun_boringssl_sys::boringssl::*;
 use mozjs::jsapi::*;
-use mozjs::jsval::{DoubleValue, Int32Value, JSVal, ObjectValue, UndefinedValue};
+use mozjs::jsval::{DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
@@ -533,6 +533,14 @@ fn tls_driver_wake() {
             let _ = libc::write(h.wake_fd, byte.as_ptr().cast::<core::ffi::c_void>(), 1);
         }
     }
+}
+
+/// Liveness probe for the BCE-007 unified registry (JS thread): true while
+/// any TLS server is listening or any client connect share is live. Entries
+/// leave the registry on ServerClosed / client Close, so an idle-closed TLS
+/// state releases the event loop exactly like a closed HTTP server.
+fn tls_liveness_probe() -> bool {
+    TLS_SERVER_REGISTRY.with(|r| !r.borrow().is_empty())
 }
 
 /// Ensure the driver thread + wake pipe exist. `None` only on resource
@@ -1498,6 +1506,21 @@ unsafe fn tls_event_tasklet(ptr: *mut ServerShared) {
                         })
                         .unwrap_or_else(|| ObjectValue(socket_ptr));
                     if is_client {
+                        // Strip the `then` forwarder BEFORE resolving: the
+                        // value handed to ResolvePromise is the socket, and
+                        // a thenable would be assimilated via socket.then →
+                        // promise.then → resolve-waiting-on-itself (deadlock).
+                        // After this point the socket is a plain Node-shaped
+                        // TLSSocket (no then — Node parity).
+                        rooted!(&in(realm_cx) let sock_h = socket_ptr);
+                        rooted!(&in(realm_cx) let undef = UndefinedValue());
+                        JS_DefineProperty(
+                            cx,
+                            sock_h.handle().into(),
+                            c"then".as_ptr(),
+                            undef.handle().into(),
+                            0,
+                        );
                         rooted!(&in(realm_cx) let sv = socket_val);
                         JS::ResolvePromise(cx, server_root.handle().into(), sv.handle().into());
                         // Node parity: the client TLSSocket emits
@@ -1553,13 +1576,17 @@ unsafe fn tls_event_tasklet(ptr: *mut ServerShared) {
                         TLS_CONNS.with(|m| m.borrow().get(&conn_id).and_then(|e| e.socket_root.as_ref().map(|g| g.get(0))));
                     if matches!(s.kind, ServerKind::ClientConnect) {
                         if let Some(sv) = socket_val.filter(|v| v.is_object()) {
-                            // Post-handshake protocol error: Node emits
-                            // 'error' on the client TLSSocket.
+                            // Node emits 'error' on the client TLSSocket —
+                            // the early-socket shape now ALWAYS has a socket
+                            // registered, handshake failures included.
                             tls_emit_js(cx, sv.to_object(), "error", &[ObjectValue(err_obj)]);
-                        } else {
-                            // Handshake failure: reject the pending Promise.
-                            tls_reject_promise(cx, realm_cx, server_root.get(), &message);
                         }
+                        // Reject the pending Promise in every failure mode
+                        // (connect-refused, handshake failure, post-handshake
+                        // protocol error). Rejecting an already-settled
+                        // Promise is a no-op, so this composes with the
+                        // legacy promise shape.
+                        tls_reject_promise(cx, realm_cx, server_root.get(), &message);
                     } else if let Some(sv) = socket_val.filter(|v| v.is_object()) {
                         tls_emit_js(cx, server_root.get(), "tlsClientError", &[ObjectValue(err_obj), sv]);
                     } else {
@@ -2070,6 +2097,16 @@ unsafe fn tls_collect_write_bytes(cx: *mut JSContext, v: JSVal) -> Option<Vec<u8
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
+    // BCE-007 unified liveness: TLS driver activity (live servers + client
+    // connects) must keep the JS thread's MiniEventLoop ticking — the
+    // ConcurrentTask queue that carries every TLS event (SecureConnection,
+    // Data, error, Close) is only drained by `tick_without_idle`, which
+    // `drain_and_check` runs solely while `has_active_servers()` is true.
+    // Without this probe a TLS-only script (no HTTP server, no timers)
+    // never drains: the driver completes the TCP+TLS handshake on the wire
+    // while the JS thread sleeps past all of it (silent forever-connect).
+    crate::node_http::register_liveness_probe(tls_liveness_probe);
+
     rooted!(&in(cx) let mod_obj = unsafe { w2::JS_NewPlainObject(cx) });
     if mod_obj.get().is_null() {
         return;
@@ -2643,14 +2680,30 @@ unsafe extern "C" fn tls_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return true;
     };
 
+    // Node callback form: `tls.connect(opts, cb)` / `tls.connect(port, host,
+    // cb)` / `tls.connect(port, cb)` — the first function-valued argument
+    // after the address args is invoked once on secureConnect.
+    let mut connect_cb_val = UndefinedValue();
+    {
+        let mut i: u32 = 1;
+        while i < argc {
+            let v = *args.get(i).ptr;
+            if v.is_object() && IsCallable(v.to_object()) {
+                connect_cb_val = v;
+                break;
+            }
+            i += 1;
+        }
+    }
+
     // @trace REQ-ENG-010 [api:tls.connect async] [entity:TlsSessionInfo]
     //
-    // BCE-20260618-007 lineage: `tls.connect` returns a *pending* Promise
-    // and never blocks the JS thread. The earlier revision resolved it from
-    // a single stealth HTTPS HEAD probe (fetch_async::start_tls_probe),
-    // which only proved "a TLS session was possible" — the resolved socket
-    // had no session truth (getProtocol/getCipher/getPeerCertificate had
-    // nothing real to read) and no live I/O.
+    // BCE-20260618-007 lineage: `tls.connect` never blocks the JS thread.
+    // The earlier revision resolved it from a single stealth HTTPS HEAD
+    // probe (fetch_async::start_tls_probe), which only proved "a TLS session
+    // was possible" — the resolved socket had no session truth
+    // (getProtocol/getCipher/getPeerCertificate had nothing real to read)
+    // and no live I/O.
     //
     // This revision establishes a REAL client TLS connection on the shared
     // bao-tls-driver thread (same DriverConn machinery as server-side
@@ -2659,8 +2712,16 @@ unsafe extern "C" fn tls_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // handshake and then keeps the connection alive for real I/O
     // (write/end/destroy/data events). The session truth (protocol,
     // cipher, peer certificate) is captured by the driver at handshake
-    // completion and rides the SecureConnection event to the JS thread,
-    // which resolves the Promise with a TLSSocket whose getters report it.
+    // completion and rides the SecureConnection event to the JS thread.
+    //
+    // Node shape (this fix): the TLSSocket object is built HERE, at call
+    // time, and returned synchronously — `tls.connect(opts, cb)` registers
+    // cb as a 'secureConnect' listener and callers can `.on('data')` /
+    // `.write()` the returned socket immediately (events fire once the
+    // handshake completes). Promise compat: a `then` own property forwards
+    // to the pending Promise for legacy `.then`/`await` callers; it is
+    // stripped before ResolvePromise so promise assimilation never chases
+    // the forwarder back into the same Promise (resolve deadlock).
     let promise = {
         rooted!(&in(cx_ref) let null_h = ::std::ptr::null_mut::<JSObject>());
         mozjs_sys::jsapi::JS::NewPromiseObject(cx, null_h.handle().into())
@@ -2674,6 +2735,9 @@ unsafe extern "C" fn tls_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // Client config (setup only — no handshake I/O until the driver drives
     // process()). BoringSSL verifies by default; `ca` anchors private CAs,
     // rejectUnauthorized:false disables verification (Node semantics).
+    // Early-built client TLSSocket (set inside the setup closure once the
+    // conn identity exists; stays null on early setup failures).
+    let mut early_socket: *mut JSObject = ::std::ptr::null_mut();
     let setup_err: ::std::result::Result<(), String> = (|| {
         let client = TlsClient::new().map_err(|e| format!("tls: client init failed: {}", e))?;
         for pem in &ca_pems {
@@ -2735,11 +2799,41 @@ unsafe extern "C" fn tls_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             r.borrow_mut().insert(server_id, Arc::clone(&shared));
         });
 
+        // Node shape: build the client TLSSocket NOW (call time), not at
+        // SecureConnection time. The early socket carries the full proto
+        // face (on/once/emit/write/end/destroy/getters), is what
+        // tls.connect() returns, and is where every later event lands.
+        let conn_id = NEXT_TLS_ID.fetch_add(1, Ordering::Relaxed);
+        let socket = tls_build_socket_js(cx, conn_id);
+        if socket.is_null() {
+            return Err("tls: failed to build client TLSSocket".to_string());
+        }
+        let socket_val = ObjectValue(socket);
+        let socket_root = match RawValueRootGuard::new(
+            cx,
+            ::std::slice::from_ref(&socket_val),
+            c"TLSSocket.object",
+        ) {
+            Some(g) => g,
+            None => return Err("tls: rooting the client TLSSocket failed".to_string()),
+        };
+        TLS_CONNS.with(|m| {
+            m.borrow_mut().insert(
+                conn_id,
+                JsConn {
+                    shared: Arc::clone(&conn_shared),
+                    socket_root: Some(socket_root),
+                },
+            );
+        });
+        early_socket = socket;
+
         // Connect worker: blocking TCP connect off the JS thread, then the
         // stream moves to the driver (exclusive ownership, AddListener's
         // TlsServer contract). Failure rejects the Promise and releases the
         // registry entry (ClientError + Close events, no conn ever existed).
-        let conn_id = NEXT_TLS_ID.fetch_add(1, Ordering::Relaxed);
+        // (conn_id was allocated above with the early TLSSocket so the two
+        // share one identity.)
         let worker_host = host.clone();
         let worker_shared = Arc::clone(&shared);
         let worker_conn_shared = Arc::clone(&conn_shared);
@@ -2793,9 +2887,14 @@ unsafe extern "C" fn tls_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 }
             });
         if spawned.is_err() {
-            // Thread spawn failure: unwind exactly what was registered.
+            // Thread spawn failure: unwind exactly what was registered —
+            // the registry Arc AND the early TLSSocket's TLS_CONNS entry
+            // (dropping it releases the socket root).
             TLS_SERVER_REGISTRY.with(|r| {
                 r.borrow_mut().remove(&server_id);
+            });
+            TLS_CONNS.with(|m| {
+                m.borrow_mut().remove(&conn_id);
             });
             return Err("tls: failed to spawn connect worker".to_string());
         }
@@ -2806,7 +2905,134 @@ unsafe extern "C" fn tls_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         tls_reject_promise(cx, cx_ref, promise, &msg);
     }
 
+    // Node-shape wiring on the early socket: promise forwarder + the
+    // connect callback. Runs only when the socket was built.
+    if !early_socket.is_null() {
+        rooted!(&in(cx_ref) let sock_root = early_socket);
+        // Hidden Promise reference for the `then` forwarder below.
+        rooted!(&in(cx_ref) let pv = promise_val);
+        JS_DefineProperty(
+            cx,
+            sock_root.handle().into(),
+            c"_tlsPromise".as_ptr(),
+            pv.handle().into(),
+            0,
+        );
+        // `then` forwarder: legacy `.then(res, rej)` / `await` callers get
+        // real Promise semantics (the forwarded call returns the chain
+        // Promise). Stripped at resolution time (see SecureConnection).
+        let then_fn = JS_NewFunction(cx, Some(tls_socket_then), 2, 0, c"then".as_ptr());
+        if !then_fn.is_null() {
+            let then_obj = JS_GetFunctionObject(then_fn);
+            if !then_obj.is_null() {
+                rooted!(&in(cx_ref) let tv = ObjectValue(then_obj));
+                JS_DefineProperty(
+                    cx,
+                    sock_root.handle().into(),
+                    c"then".as_ptr(),
+                    tv.handle().into(),
+                    0,
+                );
+            }
+        }
+        // Node callback: one 'secureConnect' listener, invoked with the
+        // socket when the handshake completes.
+        if connect_cb_val.is_object() {
+            rooted!(&in(cx_ref) let cb_root = connect_cb_val);
+            let mut on_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                sock_root.handle().into(),
+                c"on".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut on_val,
+                },
+            );
+            if on_val.is_object() {
+                let ev_str = JS_NewStringCopyZ(cx, c"secureConnect".as_ptr());
+                if !ev_str.is_null() {
+                    rooted!(&in(cx_ref) let ev_val = StringValue(&*ev_str));
+                    let args_vals = [ev_val.get(), cb_root.get()];
+                    let call_args = HandleValueArray {
+                        length_: 2,
+                        elements_: args_vals.as_ptr(),
+                    };
+                    let mut rval = UndefinedValue();
+                    JS_CallFunctionName(
+                        cx,
+                        sock_root.handle().into(),
+                        c"on".as_ptr(),
+                        &call_args,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut rval,
+                        },
+                    );
+                    JS_ClearPendingException(cx);
+                }
+            }
+        }
+        args.rval().set(ObjectValue(early_socket));
+        return true;
+    }
+
     args.rval().set(promise_val);
+    true
+}
+
+/// `socket.then(onFulfilled, onRejected)` — forwards to the pending Promise
+/// carried in the socket's hidden `_tlsPromise` property. Returns the real
+/// chain Promise so `.then` chaining and `await` behave natively.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn tls_socket_then(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    rooted!(&in(cx_ref) let obj = this.to_object());
+    let mut pv = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"_tlsPromise".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut pv,
+        },
+    );
+    if !pv.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    rooted!(&in(cx_ref) let promise_root = pv.to_object());
+    let on_f = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let on_r = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    rooted!(&in(cx_ref) let on_f_root = on_f);
+    rooted!(&in(cx_ref) let on_r_root = on_r);
+    let args_vals = [on_f_root.get(), on_r_root.get()];
+    let call_args = HandleValueArray {
+        length_: 2,
+        elements_: args_vals.as_ptr(),
+    };
+    let mut rval = UndefinedValue();
+    JS_CallFunctionName(
+        cx,
+        promise_root.handle().into(),
+        c"then".as_ptr(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    args.rval().set(rval);
     true
 }
 
@@ -2981,6 +3207,49 @@ unsafe extern "C" fn tls_create_server(cx: *mut JSContext, argc: u32, vp: *mut J
             }
         }
 
+        // Node API: tls.createServer(options[, listener]) — the listener is
+        // a 'secureConnection' listener. Wire it through the same EE face
+        // `server.on('secureConnection', ...)` uses (previously the arg was
+        // silently dropped — the server then never spoke to the client).
+        if argc > 1 {
+            let v = *args.get(1).ptr;
+            if v.is_object() && IsCallable(v.to_object()) {
+                rooted!(&in(cx_ref) let cb_root = v);
+                let mut on_val = UndefinedValue();
+                JS_GetProperty(
+                    cx,
+                    server.handle().into(),
+                    c"on".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut on_val,
+                    },
+                );
+                if on_val.is_object() {
+                    let ev_str = JS_NewStringCopyZ(cx, c"secureConnection".as_ptr());
+                    if !ev_str.is_null() {
+                        rooted!(&in(cx_ref) let ev_val = StringValue(&*ev_str));
+                        let args_vals = [ev_val.get(), cb_root.get()];
+                        let call_args = HandleValueArray {
+                            length_: 2,
+                            elements_: args_vals.as_ptr(),
+                        };
+                        let mut rval = UndefinedValue();
+                        JS_CallFunctionName(
+                            cx,
+                            server.handle().into(),
+                            c"on".as_ptr(),
+                            &call_args,
+                            MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut rval,
+                            },
+                        );
+                        JS_ClearPendingException(cx);
+                    }
+                }
+            }
+        }
         args.rval().set(ObjectValue(server.get()));
         return true;
     }

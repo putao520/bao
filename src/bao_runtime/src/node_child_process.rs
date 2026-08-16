@@ -677,6 +677,157 @@ fn status_to_signal(status: &Status) -> Option<i32> {
     }
 }
 
+/// Spawn a cluster worker child (node_cluster::cluster_fork backend).
+///
+/// Same async machinery as cp_spawn — posix_spawn via `spawn_process`,
+/// exit tracking through CP_ASYNC_STATES + pipe_poll_thread — with:
+///   * inherited stdio (cluster workers share the primary's stdout/stderr),
+///   * an fd-3 IPC socketpair (Node NODE_CHANNEL_FD convention); the parent
+///     end is registered in CP_IPC_CHANNELS under the returned pid,
+///   * NUL-terminated argv/envp entries built here.
+///
+/// BCE (v-surface P0-4): cluster.fork previously (a) built envp entries
+/// WITHOUT NUL terminators — the C execve contract requires NUL-terminated
+/// strings, so the child exec'd with garbage env and never ran — and (b) used
+/// bun_spawn::sync::spawn, which blocks until the child exits, so fork()
+/// could never deliver online/exit/message events.
+pub(crate) fn spawn_cluster_worker(
+    argv: Vec<Box<[u8]>>,
+    env_entries: Vec<Box<[u8]>>,
+) -> ::std::result::Result<i32, String> {
+    unsafe {
+        // NUL-terminated argv (StringBuilder, same as sync::spawn).
+        let mut string_builder = bun_core::StringBuilder::default();
+        for arg in &argv {
+            string_builder.count_z(arg);
+        }
+        string_builder
+            .allocate()
+            .map_err(|e| format!("cluster.fork: argv allocate failed: {:?}", e))?;
+        for arg in &argv {
+            string_builder.append_count_z(arg);
+        }
+        let base = string_builder
+            .ptr
+            .expect("allocate succeeded")
+            .as_ptr()
+            .cast_const()
+            .cast::<::std::ffi::c_char>();
+        let mut c_args: Vec<*const ::std::ffi::c_char> = Vec::with_capacity(argv.len() + 1);
+        let mut off = 0usize;
+        for arg in &argv {
+            c_args.push(base.add(off));
+            off += arg.len() + 1;
+        }
+        c_args.push(::std::ptr::null());
+
+        // NUL-terminated envp ("KEY=VALUE" entries; CString appends the NUL).
+        let mut env_c: Vec<::std::ffi::CString> = Vec::with_capacity(env_entries.len());
+        for entry in &env_entries {
+            let c = ::std::ffi::CString::new(entry.as_ref() as &[u8])
+                .map_err(|_| "cluster.fork: env entry contains NUL byte".to_string())?;
+            env_c.push(c);
+        }
+        let mut envp: Vec<*const ::std::ffi::c_char> = Vec::with_capacity(env_c.len() + 1);
+        for c in &env_c {
+            envp.push(c.as_ptr());
+        }
+        envp.push(::std::ptr::null());
+
+        let spawn_opts = PosixSpawnOptions {
+            stdin: PosixStdio::Inherit,
+            stdout: PosixStdio::Inherit,
+            stderr: PosixStdio::Inherit,
+            ipc: None,
+            extra_fds: Box::new([PosixStdio::Ipc]),
+            cwd: Box::new([]),
+            detached: false,
+            windows: (),
+            argv0: None,
+            stream: true,
+            sync: false,
+            can_block_entire_thread_to_reduce_cpu_usage_in_fast_path: false,
+            use_execve_on_macos: false,
+            no_sigpipe: true,
+            new_process_group: false,
+            pty_slave_fd: -1,
+            pseudoconsole: (),
+            linux_pdeathsig: None,
+        };
+
+        let spawn_result = spawn_process(&spawn_opts, c_args.as_ptr(), envp.as_ptr());
+
+        match spawn_result {
+            Err(e) => Err(format!("cluster.fork: spawn failed: {:?}", e)),
+            Ok(Err(sys_err)) => Err(format!("cluster.fork: system error: {:?}", sys_err)),
+            Ok(Ok(mut posix_result)) => {
+                let pid = posix_result.pid;
+
+                // Take the parent-side IPC fd before PosixSpawnResult drops
+                // (its Drop closes OwnedFd entries) — same dance as cp_spawn.
+                use bun_spawn::ExtraPipe;
+                let parent_ipc_fd: Option<c_int> =
+                    match posix_result.extra_pipes.first() {
+                        Some(ExtraPipe::OwnedFd(fd)) | Some(ExtraPipe::UnownedFd(fd)) => {
+                            Some((*fd).native())
+                        }
+                        _ => None,
+                    };
+                if matches!(
+                    posix_result.extra_pipes.first(),
+                    Some(ExtraPipe::OwnedFd(_))
+                ) {
+                    posix_result.extra_pipes[0] = ExtraPipe::Unavailable;
+                }
+                drop(posix_result);
+                // Keep argv/envp backing memory alive until after spawn (it
+                // was consumed above); both Vecs drop here.
+
+                if let Some(raw) = parent_ipc_fd {
+                    if raw >= 0 {
+                        let sock = <::std::os::unix::net::UnixStream as ::std::os::unix::io::FromRawFd>::from_raw_fd(raw);
+                        let channel = crate::ipc_channel::IpcChannel::new(sock);
+                        if let Ok(mut registry) = CP_IPC_CHANNELS.lock() {
+                            registry.insert(pid, Arc::new(Mutex::new(channel)));
+                        }
+                    }
+                }
+
+                // Exit-only tracking (no pipes to drain — stdio is inherited).
+                let async_state = Arc::new(Mutex::new(AsyncChildState {
+                    pid,
+                    stdout_fd: -1,
+                    stderr_fd: -1,
+                    stdin_fd: -1,
+                    stdout_eof: true,
+                    stderr_eof: true,
+                    child_exited: false,
+                    stdout_data: Vec::new(),
+                    stderr_data: Vec::new(),
+                    reaped: None,
+                    exit_info: None,
+                }));
+                if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
+                    registry.insert(pid, Arc::clone(&async_state));
+                }
+                let state_clone = Arc::clone(&async_state);
+                if let Err(e) = ::std::thread::Builder::new()
+                    .name(format!("cluster-poll-{}", pid))
+                    .stack_size(128 * 1024)
+                    .spawn(move || pipe_poll_thread(state_clone))
+                {
+                    eprintln!(
+                        "[bao] FATAL: failed to spawn cluster-poll-{} thread: {} — worker exit will not be reaped",
+                        pid, e
+                    );
+                }
+
+                Ok(pid)
+            }
+        }
+    }
+}
+
 /// Build sync::Options for a shell command (exec/execSync).
 fn shell_sync_opts(command: &str) -> spawn_sync::Options {
     let shell = if cfg!(target_family = "unix") {

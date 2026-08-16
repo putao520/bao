@@ -96,6 +96,11 @@ pub fn run() -> ::std::result::Result<(), i32> {
     bun_core::output::stdio::init();
     let _output_flush = bun_core::output::flush_guard();
 
+    // Bun.build native driver (REQ-ENG-006): register the full bun_bundler
+    // BundleV2 pipeline behind bun_runtime's JS face. Idempotent; without it
+    // Bun.build resolves with an explicit success:false + logs (fail-closed).
+    bao_bundler::build_api::install();
+
     let cli = Cli::parse();
     // Top-level `-e` / `--eval` (Bun-compatible): runs the code as a script.
     // This is the form used by upstream test harnesses that spawn

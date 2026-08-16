@@ -521,12 +521,14 @@ name = "bao_bundler"
 version = "0.1.0"
 dependencies = [
  "bao_engine",
+ "bun_alloc",
  "bun_ast",
  "bun_bundler",
  "bun_collections",
  "bun_core",
  "bun_event_loop",
  "bun_io",
+ "bun_js_parser",
  "bun_options_types",
  "bun_resolver",
  "bun_runtime",
@@ -2049,6 +2051,7 @@ name = "bun_runtime"
 version = "0.1.0"
 dependencies = [
  "bao_boringssl_bridge",
+ "bao_bundler",
  "bao_cdp",
  "bao_cdp_client",
  "bao_crypto",

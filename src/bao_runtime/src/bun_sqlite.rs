@@ -269,7 +269,15 @@ unsafe fn get_stmt_ptr(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut 
 unsafe fn sqlite_value_to_jsval(cx: *mut JSContext, val: rusqlite::types::Value) -> JSVal {
     match val {
         rusqlite::types::Value::Null => NullValue(),
-        rusqlite::types::Value::Integer(n) => DoubleValue(n as f64),
+        rusqlite::types::Value::Integer(n) => {
+            // Keep small integers exact as JS numbers (Int32); fall back to
+            // double for i64 values outside the int32 range.
+            if n >= i32::MIN as i64 && n <= i32::MAX as i64 {
+                mozjs::jsval::Int32Value(n as i32)
+            } else {
+                DoubleValue(n as f64)
+            }
+        }
         rusqlite::types::Value::Real(f) => DoubleValue(f),
         rusqlite::types::Value::Text(s) => {
             let c_str = ZBox::from_bytes(s.as_bytes());
@@ -280,7 +288,16 @@ unsafe fn sqlite_value_to_jsval(cx: *mut JSContext, val: rusqlite::types::Value)
                 mozjs::jsval::StringValue(&*js_str)
             }
         }
-        rusqlite::types::Value::Blob(_b) => NullValue(),
+        // BCE (v-surface P0-2): BLOB columns previously mapped to JS null —
+        // silent data loss. Return the bytes as a Buffer (Uint8Array).
+        rusqlite::types::Value::Blob(b) => {
+            let buf = crate::globals::create_buffer_object(cx, &b);
+            if buf.is_null() {
+                NullValue()
+            } else {
+                ObjectValue(buf)
+            }
+        }
     }
 }
 
@@ -313,6 +330,299 @@ unsafe fn row_to_js_object(
         );
     }
     row_obj.get()
+}
+
+// ── Parameter binding (bun:sqlite bridge) ──────────────────────────────────
+//
+// BCE (v-surface P0-2): statement run/get/all and database query/run called
+// `stmt.execute([])` / `stmt.query([])` — the JS arguments were never
+// forwarded, so EVERY parameterized query failed with "Wrong number of
+// parameters: got 0". These helpers implement the bun:sqlite binding
+// conventions on top of rusqlite's raw-bind API:
+//   stmt.run('a', 1)          → variadic positional
+//   stmt.run(['a', 1])        → positional array (single Array arg)
+//   stmt.run({ $name: 'a' })  → named params (implicit prefix inference)
+// Value mapping: null/undefined → NULL, bool → 0/1, number → INTEGER/REAL,
+// string → TEXT, Buffer/TypedArray/number[] → BLOB, BigInt → INTEGER.
+
+/// Convert a single JS value into a rusqlite column value.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn js_val_to_sql_value(cx: *mut JSContext, val: JSVal) -> Result<rusqlite::types::Value, String> {
+    if val.is_null() || val.is_undefined() {
+        Ok(rusqlite::types::Value::Null)
+    } else if val.is_boolean() {
+        Ok(rusqlite::types::Value::Integer(if val.to_boolean() { 1 } else { 0 }))
+    } else if val.is_int32() {
+        Ok(rusqlite::types::Value::Integer(val.to_int32() as i64))
+    } else if val.is_double() {
+        let d = val.to_double();
+        // Integral doubles within the exact-i64 range bind as INTEGER
+        // (SQLite type affinity: `WHERE x = 3` must match a bound 3.0).
+        if d.fract() == 0.0 && d.abs() <= 9_223_372_036_854_775_807.0 {
+            Ok(rusqlite::types::Value::Integer(d as i64))
+        } else {
+            Ok(rusqlite::types::Value::Real(d))
+        }
+    } else if val.is_string() {
+        Ok(rusqlite::types::Value::Text(
+            crate::js_to_rust_string(cx, val),
+        ))
+    } else if val.is_bigint() {
+        // BigInt → INTEGER via decimal string (values beyond i64 rejected).
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let v_root = val);
+        let jsstr = mozjs::rust::ToString(cx_ref, v_root.handle());
+        if jsstr.is_null() {
+            return Err("BigInt parameter conversion failed".to_string());
+        }
+        let str_val = mozjs::jsval::StringValue(&*jsstr);
+        let s = crate::js_to_rust_string(cx, str_val);
+        s.trim()
+            .parse::<i64>()
+            .map(rusqlite::types::Value::Integer)
+            .map_err(|_| format!("BigInt value out of range for INTEGER: {}", s))
+    } else if val.is_object() {
+        Ok(rusqlite::types::Value::Blob(crate_buffer_bytes(cx, val)))
+    } else {
+        Err("unsupported parameter value type".to_string())
+    }
+}
+
+/// Extract Buffer/TypedArray/plain-number-array bytes (same coercion as
+/// node_crypto::extract_buffer_bytes, kept local for module cohesion).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn crate_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
+    if !val.is_object() {
+        return Vec::new();
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = val.to_object());
+    let mut length: usize = 0;
+    let mut is_shared = false;
+    let mut data_ptr: *mut u8 = ::std::ptr::null_mut();
+    let u8_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+        obj_root.get(),
+        &mut length,
+        &mut is_shared,
+        &mut data_ptr,
+    );
+    if !u8_unwrapped.is_null() && !data_ptr.is_null() && length > 0 {
+        return ::std::slice::from_raw_parts(data_ptr, length).to_vec();
+    }
+    let mut view_length: usize = 0;
+    let mut view_shared = false;
+    let mut view_data: *mut u8 = ::std::ptr::null_mut();
+    let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+        obj_root.get(),
+        &mut view_length,
+        &mut view_shared,
+        &mut view_data,
+    );
+    if !view_unwrapped.is_null() && !view_data.is_null() && view_length > 0 {
+        return ::std::slice::from_raw_parts(view_data, view_length).to_vec();
+    }
+    // Plain number[] fallback.
+    let mut len_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"length".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut len_val,
+        },
+    );
+    let len = if len_val.is_int32() {
+        len_val.to_int32() as usize
+    } else {
+        return Vec::new();
+    };
+    let mut bytes = Vec::with_capacity(len);
+    for i in 0u32..len as u32 {
+        let mut byte_val = UndefinedValue();
+        JS_GetElement(
+            cx,
+            obj_root.handle().into(),
+            i,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut byte_val,
+            },
+        );
+        bytes.push(if byte_val.is_int32() {
+            byte_val.to_int32() as u8
+        } else {
+            0
+        });
+    }
+    bytes
+}
+
+/// True when the value is a Buffer/TypedArray/DataView (binary payload, binds
+/// as a single BLOB positional parameter rather than named params).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn is_binary_object(cx: *mut JSContext, val: JSVal) -> bool {
+    if !val.is_object() {
+        return false;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = val.to_object());
+    let mut length: usize = 0;
+    let mut is_shared = false;
+    let mut data_ptr: *mut u8 = ::std::ptr::null_mut();
+    let u8_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+        obj_root.get(),
+        &mut length,
+        &mut is_shared,
+        &mut data_ptr,
+    );
+    if !u8_unwrapped.is_null() {
+        return true;
+    }
+    let mut view_length: usize = 0;
+    let mut view_shared = false;
+    let mut view_data: *mut u8 = ::std::ptr::null_mut();
+    let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+        obj_root.get(),
+        &mut view_length,
+        &mut view_shared,
+        &mut view_data,
+    );
+    !view_unwrapped.is_null()
+}
+
+/// Read a property off a JS object, returning Undefined when absent.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn js_get_prop_val(cx: *mut JSContext, obj: *mut JSObject, name: &str) -> JSVal {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+    let c_name = ZBox::from_bytes(name.as_bytes());
+    let mut v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c_name.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    v
+}
+
+/// Bind JS call arguments to a prepared statement (bun:sqlite conventions).
+/// `start` is the first CallArgs index that carries a parameter (0 for
+/// Statement.run/get/all, 1 for Database one-shot query/run where args[0] is
+/// the SQL string). `end` is exclusive.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn bind_stmt_args(
+    cx: *mut JSContext,
+    stmt: &mut rusqlite::Statement<'_>,
+    args: &CallArgs,
+    start: u32,
+    end: u32,
+) -> Result<(), String> {
+    let argc = end.saturating_sub(start);
+    if argc == 0 {
+        return Ok(());
+    }
+    let first = *args.get(start).ptr;
+    let needed = stmt.parameter_count();
+
+    // Single Array argument → positional binding from its elements.
+    if argc == 1 && first.is_object() && !is_binary_object(cx, first) {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let arr = first.to_object());
+        let mut is_arr = false;
+        if IsArrayObject1(cx, arr.handle().into(), &mut is_arr) && is_arr {
+            let mut len: u32 = 0;
+            if !w2::GetArrayLength(cx_ref, arr.handle().into(), &mut len) {
+                return Err("failed to read parameter array length".to_string());
+            }
+            if (len as usize) < needed {
+                return Err(format!(
+                    "Wrong number of parameters: got {}, needed {}",
+                    len, needed
+                ));
+            }
+            for i in 0..len {
+                let mut elem = UndefinedValue();
+                JS_GetElement(
+                    cx,
+                    arr.handle().into(),
+                    i,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut elem,
+                    },
+                );
+                let v = js_val_to_sql_value(cx, elem)
+                    .map_err(|e| format!("parameter {} invalid: {}", i + 1, e))?;
+                stmt
+                    .raw_bind_parameter((i as usize) + 1, &v)
+                    .map_err(|e| e.to_string())?;
+            }
+            return Ok(());
+        }
+    }
+
+    // Single plain-object argument → named parameters. Bun infers the sigil:
+    // `{ name: v }` binds `$name`/`@name`/`:name`.
+    if argc == 1 && first.is_object() && !is_binary_object(cx, first) {
+        let obj = first.to_object();
+        let count = stmt.parameter_count();
+        for idx in 1..=count {
+            let name = match stmt.parameter_name(idx) {
+                Some(n) => n.to_string(),
+                None => {
+                    return Err(
+                        "cannot mix named and positional parameters in one query"
+                            .to_string(),
+                    )
+                }
+            };
+            // Exact ("$x") first, then sigil-less ("x").
+            let mut v = js_get_prop_val(cx, obj, &name);
+            if v.is_undefined() {
+                let stripped = name
+                    .strip_prefix('$')
+                    .or_else(|| name.strip_prefix('@'))
+                    .or_else(|| name.strip_prefix(':'))
+                    .unwrap_or(&name);
+                v = js_get_prop_val(cx, obj, stripped);
+            }
+            if v.is_undefined() {
+                return Err(format!("Missing named parameter \"{}\"", name));
+            }
+            let sql_val = js_val_to_sql_value(cx, v)
+                .map_err(|e| format!("parameter {} invalid: {}", name, e))?;
+            stmt
+                .raw_bind_parameter(idx, &sql_val)
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+
+    // Variadic positional (also the path for a single binary object arg).
+    if (argc as usize) < needed {
+        return Err(format!(
+            "Wrong number of parameters: got {}, needed {}",
+            argc, needed
+        ));
+    }
+    for i in start..end {
+        let v = js_val_to_sql_value(cx, *args.get(i).ptr)
+            .map_err(|e| format!("parameter {} invalid: {}", i - start + 1, e))?;
+        stmt
+            .raw_bind_parameter((i - start + 1) as usize, &v)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // ── Database constructor ──
@@ -421,40 +731,92 @@ unsafe extern "C" fn database_run(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     };
 
     let db = &*db_ptr;
-    match db.run(&sql) {
-        Ok(result) => {
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let cx_ref = &mut wrapped_cx;
-            rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
-            if obj.get().is_null() {
-                args.rval().set(NullValue());
-                return true;
+    // BCE (v-surface P0-2): db.run(sql, ...params) previously funneled into
+    // execute_batch and dropped the parameters. With parameters present,
+    // prepare + bind + execute the single statement (bun:sqlite contract);
+    // the bare single-argument form keeps execute_batch semantics (multi-
+    // statement scripts).
+    if argc > 1 {
+        let borrow = db.conn.borrow();
+        let conn = match borrow.as_ref() {
+            Some(c) => c,
+            None => {
+                let msg = ZBox::from_bytes("Database is closed".as_bytes());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                return false;
             }
-            rooted!(&in(cx_ref) let changes_val = DoubleValue(result.changes as f64));
-            JS_DefineProperty(
-                cx,
-                obj.handle().into(),
-                c"changes".as_ptr(),
-                changes_val.handle().into(),
-                (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
-            );
-            rooted!(&in(cx_ref) let rowid_val = DoubleValue(result.last_insert_rowid as f64));
-            JS_DefineProperty(
-                cx,
-                obj.handle().into(),
-                c"lastInsertRowid".as_ptr(),
-                rowid_val.handle().into(),
-                (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
-            );
-            args.rval().set(ObjectValue(obj.get()));
-            true
-        }
-        Err(e) => {
-            let msg = ZBox::from_bytes(e.as_bytes());
+        };
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = ZBox::from_vec(e.to_string().into_bytes());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                return false;
+            }
+        };
+        // bind_stmt_args is unsafe due to JS API use.
+        if let Err(e) = unsafe { bind_stmt_args(cx, &mut stmt, &args, 1, argc) } {
+            let msg = ZBox::from_vec(e.into_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-            false
+            return false;
+        }
+        match stmt.raw_execute() {
+            Ok(changed) => {
+                let result = RunResult {
+                    changes: changed as u64,
+                    last_insert_rowid: conn.last_insert_rowid(),
+                };
+                report_run_result(cx, &args, &result);
+                true
+            }
+            Err(e) => {
+                let msg = ZBox::from_vec(e.to_string().into_bytes());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                false
+            }
+        }
+    } else {
+        match db.run(&sql) {
+            Ok(result) => {
+                report_run_result(cx, &args, &result);
+                true
+            }
+            Err(e) => {
+                let msg = ZBox::from_bytes(e.as_bytes());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                false
+            }
         }
     }
+}
+
+/// Build the `{ changes, lastInsertRowid }` result object for run().
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn report_run_result(cx: *mut JSContext, args: &CallArgs, result: &RunResult) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        args.rval().set(NullValue());
+        return;
+    }
+    rooted!(&in(cx_ref) let changes_val = DoubleValue(result.changes as f64));
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"changes".as_ptr(),
+        changes_val.handle().into(),
+        (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+    );
+    rooted!(&in(cx_ref) let rowid_val = DoubleValue(result.last_insert_rowid as f64));
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"lastInsertRowid".as_ptr(),
+        rowid_val.handle().into(),
+        (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+    );
+    args.rval().set(ObjectValue(obj.get()));
 }
 
 // ── Database.close() ──
@@ -535,36 +897,37 @@ unsafe extern "C" fn database_query(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 return true;
             }
 
+            // BCE (v-surface P0-2): forward db.query(sql, ...params) args.
+            if let Err(e) = bind_stmt_args(cx, &mut stmt, &args, 1, argc) {
+                let msg = ZBox::from_vec(e.into_bytes());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                return false;
+            }
+
             let mut row_idx: u32 = 0;
-            match stmt.query([]) {
-                Ok(mut rows_iter) => loop {
-                    match rows_iter.next() {
-                        Ok(Some(row)) => {
-                            let row_obj = row_to_js_object(cx, &row, &col_names, cx_ref);
-                            if row_obj.is_null() {
-                                break;
-                            }
-                            rooted!(&in(cx_ref) let row_val = ObjectValue(row_obj));
-                            w2::JS_SetElement(
-                                cx_ref,
-                                result_arr.handle().into(),
-                                row_idx,
-                                row_val.handle().into(),
-                            );
-                            row_idx += 1;
+            let mut rows_iter = stmt.raw_query();
+            loop {
+                match rows_iter.next() {
+                    Ok(Some(row)) => {
+                        let row_obj = row_to_js_object(cx, &row, &col_names, cx_ref);
+                        if row_obj.is_null() {
+                            break;
                         }
-                        Ok(None) => break,
-                        Err(e) => {
-                            let msg = ZBox::from_vec(e.to_string().into_bytes());
-                            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-                            return false;
-                        }
+                        rooted!(&in(cx_ref) let row_val = ObjectValue(row_obj));
+                        w2::JS_SetElement(
+                            cx_ref,
+                            result_arr.handle().into(),
+                            row_idx,
+                            row_val.handle().into(),
+                        );
+                        row_idx += 1;
                     }
-                },
-                Err(e) => {
-                    let msg = ZBox::from_vec(e.to_string().into_bytes());
-                    JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-                    return false;
+                    Ok(None) => break,
+                    Err(e) => {
+                        let msg = ZBox::from_vec(e.to_string().into_bytes());
+                        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+                        return false;
+                    }
                 }
             }
 
@@ -712,10 +1075,19 @@ unsafe extern "C" fn statement_run(cx: *mut JSContext, _argc: u32, vp: *mut JSVa
         }
     };
 
-    let changes_before = conn.changes();
-    match stmt.execute([]) {
-        Ok(_) => {
-            let changes = conn.changes() - changes_before;
+    // BCE (v-surface P0-2): forward the JS arguments to the bound statement.
+    if let Err(e) = bind_stmt_args(cx, stmt, &args, 0, _argc) {
+        let msg = ZBox::from_vec(e.into_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+
+    // raw_execute returns the rows changed by THIS statement — do NOT delta
+    // conn.changes() (that counter holds the MOST RECENT statement's count,
+    // so before/after subtraction zeroes out for consecutive statements).
+    match stmt.raw_execute() {
+        Ok(changed) => {
+            let changes = changed as u64;
             let last_insert_rowid = conn.last_insert_rowid();
 
             let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -784,14 +1156,14 @@ unsafe extern "C" fn statement_get(cx: *mut JSContext, _argc: u32, vp: *mut JSVa
         .map(|i| stmt.column_name(i).unwrap_or("unknown").to_string())
         .collect();
 
-    let mut rows = match stmt.query([]) {
-        Ok(r) => r,
-        Err(e) => {
-            let msg = ZBox::from_vec(e.to_string().into_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-            return false;
-        }
-    };
+    // BCE (v-surface P0-2): forward the JS arguments to the bound statement.
+    if let Err(e) = bind_stmt_args(cx, stmt, &args, 0, _argc) {
+        let msg = ZBox::from_vec(e.into_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+
+    let mut rows = stmt.raw_query();
 
     match rows.next() {
         Ok(Some(row)) => {
@@ -799,7 +1171,7 @@ unsafe extern "C" fn statement_get(cx: *mut JSContext, _argc: u32, vp: *mut JSVa
             let cx_ref = &mut wrapped_cx;
             let row_obj = row_to_js_object(cx, &row, &col_names, cx_ref);
             if row_obj.is_null() {
-                args.rval().set(NullValue());
+                args.rval().set(UndefinedValue());
             } else {
                 args.rval().set(ObjectValue(row_obj));
             }
@@ -857,14 +1229,14 @@ unsafe extern "C" fn statement_all(cx: *mut JSContext, _argc: u32, vp: *mut JSVa
         return true;
     }
 
-    let mut rows = match stmt.query([]) {
-        Ok(r) => r,
-        Err(e) => {
-            let msg = ZBox::from_vec(e.to_string().into_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-            return false;
-        }
-    };
+    // BCE (v-surface P0-2): forward the JS arguments to the bound statement.
+    if let Err(e) = bind_stmt_args(cx, stmt, &args, 0, _argc) {
+        let msg = ZBox::from_vec(e.into_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+
+    let mut rows = stmt.raw_query();
 
     let mut row_idx: u32 = 0;
     loop {

@@ -4633,7 +4633,11 @@ unsafe extern "C" fn bun_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         match crate::require::resolve_node_modules(&specifier, from.as_deref()) {
             Some(p) => {
                 let s = p.to_string_lossy().into_owned();
-                let js_str = JS_NewStringCopyZ(cx, s.as_ptr() as *const ::std::os::raw::c_char);
+                let js_str = JS_NewStringCopyN(
+                    cx,
+                    s.as_ptr() as *const ::std::os::raw::c_char,
+                    s.len(),
+                );
                 if !js_str.is_null() {
                     args.rval().set(mozjs::jsval::StringValue(&*js_str));
                 } else {
@@ -4650,9 +4654,18 @@ unsafe extern "C" fn bun_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
     };
 
-    let canonical = resolved.canonicalize().unwrap_or(resolved);
+    // Lexical normalize BEFORE canonicalize: canonicalize fails outright on
+    // non-existent paths, and the raw join keeps "./"/".." segments
+    // ('/tmp/./x.js') — upstream Bun.resolve normalizes them away
+    // ('/tmp/x.js'). Reuses node_path's normalize_path (REQ-ENG-007).
+    let lexical = crate::node_path::normalize_path(&resolved);
+    let canonical = lexical.canonicalize().unwrap_or(lexical);
     let s = canonical.to_string_lossy().into_owned();
-    let js_str = JS_NewStringCopyZ(cx, s.as_ptr() as *const ::std::os::raw::c_char);
+    let js_str = JS_NewStringCopyN(
+        cx,
+        s.as_ptr() as *const ::std::os::raw::c_char,
+        s.len(),
+    );
     if !js_str.is_null() {
         args.rval().set(mozjs::jsval::StringValue(&*js_str));
     } else {
@@ -4751,249 +4764,302 @@ unsafe extern "C" fn bun_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     true
 }
 
+// @trace REQ-ENG-006 [api:Bun.build] — Bun.build(config) JS face.
+//
+// Parses the upstream `BuildConfig` object into the Rust-only
+// `NativeBuildConfig` and delegates to `bun_build::start` (BuildTasklet):
+// the native bundle runs on a dedicated thread (the pipeline fans out to the
+// shared CountedTask pool) and the returned Promise settles on the JS thread
+// with the upstream `BuildOutput` shape —
+// `{ success: boolean, outputs: BuildArtifact[], logs: BuildMessage[] }`.
+//
+// Semantics (mirrors upstream JSBundler.zig `build()`):
+//   * Invalid config (non-object / missing or empty `entrypoints` /
+//     non-string entries) THROWS — `throwInvalidArguments` parity.
+//   * Build failures (unresolvable entry, syntax error, …) RESOLVE with
+//     `success:false` + `logs` — never reject (Bun.build never throws for
+//     build-level failures; `throw: false` is the only mode).
+//   * Unknown config keys are accepted and ignored (upstream tolerates
+//     extra keys); unsupported-by-port keys are surfaced in the result logs
+//     by the native driver, never silently dropped.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn bun_build(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+
+    if argc == 0 || !(*args.get(0).ptr).is_object() {
+        JS_ReportErrorUTF8(
+            cx,
+            c"Expected a config object to be passed to Bun.build".as_ptr(),
+        );
+        return false;
+    }
+
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let result_obj = JS_NewPlainObject(cx_ref));
-    if result_obj.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let obj_h = result_obj.handle().into();
+    rooted!(&in(cx_ref) let cfg = (*args.get(0).ptr).to_object());
+    let cfg_h = cfg.handle().into();
 
+    // ── entrypoints (required, non-empty, string[]) ─────────────────────
     let mut entrypoints: Vec<String> = Vec::new();
-    let mut outdir = String::from("dist");
-    let mut naming: Option<String> = None;
-
-    if argc >= 1 {
-        let cfg_val = *args.get(0).ptr;
-        if cfg_val.is_object() {
-            rooted!(&in(cx_ref) let cfg = cfg_val.to_object());
-            let cfg_h = cfg.handle().into();
-
-            let ep_name = ZBox::from_bytes("entrypoints".as_bytes());
-            let mut has_ep: bool = false;
-            JS_HasProperty(cx, cfg_h, ep_name.as_ptr(), &mut has_ep);
-            if has_ep {
-                let mut ep_val = UndefinedValue();
-                let ep_rv = MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut ep_val,
-                };
-                JS_GetProperty(cx, cfg_h, ep_name.as_ptr(), ep_rv);
-                if ep_val.is_object() {
-                    rooted!(&in(cx_ref) let ep_obj = ep_val.to_object());
-                    let mut len_val = UndefinedValue();
-                    let len_rv = MutableHandle::<Value> {
+    let mut has_ep: bool = false;
+    JS_HasProperty(cx, cfg_h, c"entrypoints".as_ptr(), &mut has_ep);
+    if has_ep {
+        rooted!(&in(cx_ref) let mut ep_val = UndefinedValue());
+        JS_GetProperty(cx, cfg_h, c"entrypoints".as_ptr(), ep_val.handle_mut().into());
+        if ep_val.get().is_object() {
+            rooted!(&in(cx_ref) let ep_obj = ep_val.get().to_object());
+            let mut len_val = UndefinedValue();
+            let len_rv = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            };
+            JS_GetProperty(cx, ep_obj.handle().into(), c"length".as_ptr(), len_rv);
+            if len_val.is_number() {
+                let len = len_val.to_number() as u32;
+                for i in 0..len {
+                    let mut item_val = UndefinedValue();
+                    let item_rv = MutableHandle::<Value> {
                         _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut len_val,
+                        ptr: &mut item_val,
                     };
-                    let len_name = ZBox::from_bytes("length".as_bytes());
-                    JS_GetProperty(cx, ep_obj.handle().into(), len_name.as_ptr(), len_rv);
-                    if len_val.is_number() {
-                        let len = len_val.to_number() as u32;
-                        for i in 0..len {
-                            let mut item_val = UndefinedValue();
-                            let item_rv = MutableHandle::<Value> {
-                                _phantom_0: ::std::marker::PhantomData,
-                                ptr: &mut item_val,
-                            };
-                            JS_GetElement(cx, ep_obj.handle().into(), i, item_rv);
-                            if item_val.is_string() {
-                                let s = unsafe_jsstr_to_string(
-                                    cx,
-                                    NonNull::new_unchecked(item_val.to_string()),
-                                );
-                                entrypoints.push(s);
-                            }
-                        }
+                    JS_GetElement(cx, ep_obj.handle().into(), i, item_rv);
+                    if item_val.is_string() {
+                        entrypoints.push(unsafe_jsstr_to_string(
+                            cx,
+                            NonNull::new_unchecked(item_val.to_string()),
+                        ));
                     }
                 }
             }
+        }
+    }
+    if entrypoints.is_empty() {
+        JS_ReportErrorUTF8(
+            cx,
+            c"Bun.build: expected a non-empty array of entrypoints".as_ptr(),
+        );
+        return false;
+    }
 
-            let od_name = ZBox::from_bytes("outdir".as_bytes());
-            let mut has_od: bool = false;
-            JS_HasProperty(cx, cfg_h, od_name.as_ptr(), &mut has_od);
-            if has_od {
-                let mut od_val = UndefinedValue();
-                let od_rv = MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut od_val,
-                };
-                JS_GetProperty(cx, cfg_h, od_name.as_ptr(), od_rv);
-                if od_val.is_string() {
-                    outdir = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(od_val.to_string()));
+    let mut config = crate::bun_build::NativeBuildConfig {
+        entrypoints,
+        ..Default::default()
+    };
+
+    // ── scalar / string options ──────────────────────────────────────────
+    config.outdir = get_opt_string(cx, cfg_h, c"outdir");
+    config.root = get_opt_string(cx, cfg_h, c"root");
+    config.public_path = get_opt_string(cx, cfg_h, c"publicPath");
+    config.banner = get_opt_string(cx, cfg_h, c"banner");
+    config.footer = get_opt_string(cx, cfg_h, c"footer");
+    // naming: string | { entry, chunk, asset } — the string form maps to
+    // the entry template (upstream BuildConfig.Naming).
+    config.naming = get_opt_string(cx, cfg_h, c"naming");
+    {
+        rooted!(&in(cx_ref) let mut naming_val = UndefinedValue());
+        JS_GetProperty(cx, cfg_h, c"naming".as_ptr(), naming_val.handle_mut().into());
+        if naming_val.get().is_object() {
+            rooted!(&in(cx_ref) let naming_obj = naming_val.get().to_object());
+            let naming_h = naming_obj.handle().into();
+            config.naming_entry = get_opt_string(cx, naming_h, c"entry");
+            config.naming_chunk = get_opt_string(cx, naming_h, c"chunk");
+            config.naming_asset = get_opt_string(cx, naming_h, c"asset");
+            config.naming = None;
+        }
+    }
+
+    // target: "browser" (default) | "bun" | "node"
+    config.target = get_opt_string(cx, cfg_h, c"target").unwrap_or_else(|| "browser".into());
+    // format: "esm" (default) | "cjs" | "iife"
+    config.format = get_opt_string(cx, cfg_h, c"format").unwrap_or_else(|| "esm".into());
+    // sourcemap: "none" (default) | "linked" | "inline" | "external"
+    config.sourcemap = get_opt_string(cx, cfg_h, c"sourcemap").unwrap_or_else(|| "none".into());
+
+    // ── minify: boolean | { whitespace, syntax, identifiers } ────────────
+    let mut has_minify: bool = false;
+    JS_HasProperty(cx, cfg_h, c"minify".as_ptr(), &mut has_minify);
+    if has_minify {
+        rooted!(&in(cx_ref) let mut min_val = UndefinedValue());
+        JS_GetProperty(cx, cfg_h, c"minify".as_ptr(), min_val.handle_mut().into());
+        if min_val.get().is_boolean() {
+            if min_val.get().to_boolean() {
+                config.minify = crate::bun_build::NativeMinify::all();
+            }
+        } else if min_val.get().is_object() {
+            rooted!(&in(cx_ref) let min_obj = min_val.get().to_object());
+            let min_h = min_obj.handle().into();
+            config.minify = crate::bun_build::NativeMinify {
+                whitespace: get_opt_bool(cx, min_h, c"whitespace").unwrap_or(false),
+                syntax: get_opt_bool(cx, min_h, c"syntax").unwrap_or(false),
+                identifiers: get_opt_bool(cx, min_h, c"identifiers").unwrap_or(false),
+            };
+        }
+    }
+
+    // ── external: string[] ────────────────────────────────────────────────
+    let mut has_ext: bool = false;
+    JS_HasProperty(cx, cfg_h, c"external".as_ptr(), &mut has_ext);
+    if has_ext {
+        rooted!(&in(cx_ref) let mut ext_val = UndefinedValue());
+        JS_GetProperty(cx, cfg_h, c"external".as_ptr(), ext_val.handle_mut().into());
+        if ext_val.get().is_object() {
+            rooted!(&in(cx_ref) let ext_obj = ext_val.get().to_object());
+            let mut len_val = UndefinedValue();
+            let len_rv = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            };
+            JS_GetProperty(cx, ext_obj.handle().into(), c"length".as_ptr(), len_rv);
+            if len_val.is_number() {
+                let len = len_val.to_number() as u32;
+                for i in 0..len {
+                    let mut item_val = UndefinedValue();
+                    let item_rv = MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut item_val,
+                    };
+                    JS_GetElement(cx, ext_obj.handle().into(), i, item_rv);
+                    if item_val.is_string() {
+                        config.external.push(unsafe_jsstr_to_string(
+                            cx,
+                            NonNull::new_unchecked(item_val.to_string()),
+                        ));
+                    }
                 }
             }
+        }
+    }
 
-            let nm_name = ZBox::from_bytes("naming".as_bytes());
-            let mut has_nm: bool = false;
-            JS_HasProperty(cx, cfg_h, nm_name.as_ptr(), &mut has_nm);
-            if has_nm {
-                let mut nm_val = UndefinedValue();
-                let nm_rv = MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut nm_val,
-                };
-                JS_GetProperty(cx, cfg_h, nm_name.as_ptr(), nm_rv);
-                if nm_val.is_string() {
-                    naming = Some(unsafe_jsstr_to_string(
+    // ── define: Record<string, string> ───────────────────────────────────
+    let mut has_def: bool = false;
+    JS_HasProperty(cx, cfg_h, c"define".as_ptr(), &mut has_def);
+    if has_def {
+        rooted!(&in(cx_ref) let mut def_val = UndefinedValue());
+        JS_GetProperty(cx, cfg_h, c"define".as_ptr(), def_val.handle_mut().into());
+        if def_val.get().is_object() {
+            rooted!(&in(cx_ref) let def_obj = def_val.get().to_object());
+            // Own enumerable string keys (Headers record parsing pattern).
+            let mut ids = mozjs::rust::IdVector::new(cx);
+            if GetPropertyKeys(cx, def_obj.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
+                for jsid in &*ids {
+                    if !jsid.is_string() {
+                        continue;
+                    }
+                    let key_ptr = jsid.to_string();
+                    if key_ptr.is_null() {
+                        continue;
+                    }
+                    let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_ptr));
+                    let c_key = ZBox::from_bytes(key.as_bytes());
+                    rooted!(&in(cx_ref) let mut v_val = UndefinedValue());
+                    JS_GetProperty(
                         cx,
-                        NonNull::new_unchecked(nm_val.to_string()),
-                    ));
+                        def_obj.handle().into(),
+                        c_key.as_ptr(),
+                        v_val.handle_mut().into(),
+                    );
+                    let value = if v_val.get().is_string() {
+                        unsafe_jsstr_to_string(
+                            cx,
+                            NonNull::new_unchecked(v_val.get().to_string()),
+                        )
+                    } else if v_val.get().is_number() {
+                        format!("{}", v_val.get().to_number())
+                    } else if v_val.get().is_boolean() {
+                        if v_val.get().to_boolean() { "true" } else { "false" }.to_string()
+                    } else {
+                        continue;
+                    };
+                    config.define.push((key, value));
                 }
             }
         }
     }
 
-    rooted!(&in(cx_ref) let outputs_arr = NewArrayObject1(cx_ref, 0));
+    // ── splitting: boolean ───────────────────────────────────────────────
+    config.splitting = get_opt_bool(cx, cfg_h, c"splitting").unwrap_or(false);
 
-    let mut success = true;
-    let mut error_msg = String::new();
-
-    for (idx, entry) in entrypoints.iter().enumerate() {
-        // Phase 1: inline file read + size report.
-        // Phase 2: delegate to bao_bundler::build() via bao_cli (can't direct-dep
-        //          due to cyclic dep: bao_bundler → bun_runtime → bao_bundler).
-        let epath = path::Path::new(entry);
-        let content = match bun_fs::read_to_string(&epath.to_string_lossy()) {
-            Ok(c) => c,
-            Err(e) => {
-                success = false;
-                error_msg = format!("Failed to read entry '{}': {}", entry, e);
-                break;
-            }
-        };
-        let size = content.len();
-
-        rooted!(&in(cx_ref) let artifact = JS_NewPlainObject(cx_ref));
-        if artifact.get().is_null() {
-            continue;
-        }
-        let art_h = artifact.handle().into();
-
-        let c_path = ZBox::from_bytes(entry.as_bytes());
-        let path_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
-        if !path_str.is_null() {
-            rooted!(&in(cx_ref) let pv = StringValue(&*path_str));
-            JS_DefineProperty(
-                cx,
-                art_h,
-                c"path".as_ptr(),
-                pv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-
-        let out_name = naming.as_deref().unwrap_or("[name].js");
-        let base = epath
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("index");
-        let out_file = out_name.replace("[name]", base);
-        let out_path = format!("{}/{}", outdir, out_file);
-        let c_out = ZBox::from_bytes(out_path.as_bytes());
-        let out_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
-        if !out_str.is_null() {
-            rooted!(&in(cx_ref) let ov = StringValue(&*out_str));
-            JS_DefineProperty(
-                cx,
-                art_h,
-                c"output".as_ptr(),
-                ov.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-
-        rooted!(&in(cx_ref) let size_root = DoubleValue(size as f64));
-        JS_DefineProperty(
-            cx,
-            art_h,
-            c"size".as_ptr(),
-            size_root.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-
-        let kind_str = if entry.ends_with(".ts") || entry.ends_with(".tsx") {
-            "ts"
-        } else if entry.ends_with(".jsx") {
-            "jsx"
-        } else {
-            "js"
-        };
-        let c_kind = ZBox::from_bytes(kind_str.as_bytes());
-        let kind_js = JS_NewStringCopyZ(cx, c_kind.as_ptr());
-        if !kind_js.is_null() {
-            rooted!(&in(cx_ref) let kv = StringValue(&*kind_js));
-            JS_DefineProperty(
-                cx,
-                art_h,
-                c"kind".as_ptr(),
-                kv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-
-        let av = ObjectValue(artifact.get());
-        rooted!(&in(cx_ref) let arr_val = av);
-        JS_SetElement(
-            cx,
-            outputs_arr.handle().into(),
-            idx as u32,
-            arr_val.handle().into(),
-        );
-    }
-
-    rooted!(&in(cx_ref) let ok_root = BooleanValue(success));
-    JS_DefineProperty(
-        cx,
-        obj_h,
-        c"success".as_ptr(),
-        ok_root.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-
-    let outputs_val = ObjectValue(outputs_arr.get());
-    rooted!(&in(cx_ref) let ov = outputs_val);
-    JS_DefineProperty(
-        cx,
-        obj_h,
-        c"outputs".as_ptr(),
-        ov.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-
-    if !success && !error_msg.is_empty() {
-        rooted!(&in(cx_ref) let logs_arr = JS_NewPlainObject(cx_ref));
-        if !logs_arr.get().is_null() {
-            let c_err = ZBox::from_bytes(error_msg.as_bytes());
-            let err_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
-            if !err_str.is_null() {
-                rooted!(&in(cx_ref) let ev = StringValue(&*err_str));
-                JS_DefineProperty(
-                    cx,
-                    logs_arr.handle().into(),
-                    c"message".as_ptr(),
-                    ev.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-            let lv = ObjectValue(logs_arr.get());
-            rooted!(&in(cx_ref) let logsv = lv);
-            JS_DefineProperty(
-                cx,
-                obj_h,
-                c"logs".as_ptr(),
-                logsv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
+    // ── jsx: { runtime, factory, fragment, importSource, development } ──
+    let mut has_jsx: bool = false;
+    JS_HasProperty(cx, cfg_h, c"jsx".as_ptr(), &mut has_jsx);
+    if has_jsx {
+        rooted!(&in(cx_ref) let mut jsx_val = UndefinedValue());
+        JS_GetProperty(cx, cfg_h, c"jsx".as_ptr(), jsx_val.handle_mut().into());
+        if jsx_val.get().is_object() {
+            rooted!(&in(cx_ref) let jsx_obj = jsx_val.get().to_object());
+            let jsx_h = jsx_obj.handle().into();
+            config.jsx_runtime = get_opt_string(cx, jsx_h, c"runtime");
+            config.jsx_factory = get_opt_string(cx, jsx_h, c"factory");
+            config.jsx_fragment = get_opt_string(cx, jsx_h, c"fragment");
+            config.jsx_import_source = get_opt_string(cx, jsx_h, c"importSource");
+            config.jsx_development = get_opt_bool(cx, jsx_h, c"development");
         }
     }
 
-    args.rval().set(ObjectValue(result_obj.get()));
+    // Pending Promise — settled on the JS thread by the BuildTasklet
+    // (resolve with BuildOutput, including the success:false error face).
+    rooted!(&in(cx_ref) let promise = JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return false;
+    }
+    let promise_val = ObjectValue(promise.get());
+
+    crate::bun_build::start(cx, promise_val, config);
+
+    args.rval().set(promise_val);
     true
+}
+
+/// Read an optional string property off a config object.
+unsafe fn get_opt_string(
+    cx: *mut JSContext,
+    obj: mozjs::jsapi::Handle<*mut JSObject>,
+    name: &::std::ffi::CStr,
+) -> Option<String> {
+    let mut has: bool = false;
+    // SAFETY: live JSContext + object handle; static name.
+    unsafe { JS_HasProperty(cx, obj, name.as_ptr(), &mut has) };
+    if !has {
+        return None;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let mut val = UndefinedValue());
+    // SAFETY: property get on a live object.
+    unsafe { JS_GetProperty(cx, obj, name.as_ptr(), val.handle_mut().into()) };
+    if val.get().is_string() {
+        Some(unsafe_jsstr_to_string(
+            cx,
+            NonNull::new_unchecked(val.get().to_string()),
+        ))
+    } else {
+        None
+    }
+}
+
+/// Read an optional boolean property off a config object.
+unsafe fn get_opt_bool(
+    cx: *mut JSContext,
+    obj: mozjs::jsapi::Handle<*mut JSObject>,
+    name: &::std::ffi::CStr,
+) -> Option<bool> {
+    let mut has: bool = false;
+    // SAFETY: live JSContext + object handle; static name.
+    unsafe { JS_HasProperty(cx, obj, name.as_ptr(), &mut has) };
+    if !has {
+        return None;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let mut val = UndefinedValue());
+    // SAFETY: property get on a live object.
+    unsafe { JS_GetProperty(cx, obj, name.as_ptr(), val.handle_mut().into()) };
+    if val.get().is_boolean() {
+        Some(val.get().to_boolean())
+    } else {
+        None
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

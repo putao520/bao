@@ -28,105 +28,34 @@ const HTTPS_JS: &str = r#"
 
   var globalAgent = new Agent();
 
-  function buildURL(options) {
-    var host = options.hostname || options.host || "localhost";
-    var port = options.port ? ":" + options.port : "";
-    var path = options.path || "/";
-    return "https://" + host + port + path;
-  }
-
-  function extractHeaders(options) {
-    var headers = options.headers || {};
-    if (!headers["Host"]) {
-      var host = options.hostname || options.host || "localhost";
-      if (options.port) host += ":" + options.port;
-      headers["Host"] = host;
+  // Node-shaped request/get on the REAL async transport: `__https_request`
+  // returns a pending Promise (fetch-shaped Response on resolve). The
+  // client faces (ClientRequest/IncomingMessage semantics, callback form,
+  // request()/get() signature normalization) come from the shared factory
+  // in the http module — one implementation, two schemes.
+  var __clientImpl = null;
+  function impl() {
+    if (__clientImpl) return __clientImpl;
+    var http = null;
+    try { http = require("http"); } catch (e) {}
+    if (http && typeof http.__makeClient === "function") {
+      __clientImpl = http.__makeClient(function (u, m, hj, b, t) {
+        return __https_request(u, m, hj, b, t);
+      }, "https:");
     }
-    return headers;
+    return __clientImpl;
   }
 
   function request(options, callback) {
-    if (typeof options === "string") {
-      options = { hostname: options, path: "/" };
-    }
-
-    var url = buildURL(options);
-    var method = (options.method || "GET").toUpperCase();
-    var headers = extractHeaders(options);
-    var body = options.body || "";
-    var timeout = options.timeout || options.timeoutMs || 30000;
-
-    // Handle Buffer body
-    if (body && typeof body !== "string") {
-      try { body = String(body); } catch(e) { body = ""; }
-    }
-
-    var headersJSON = "{}";
-    try { headersJSON = JSON.stringify(headers); } catch(e) {}
-
-    var resultJSON = "";
-    if (typeof __https_request === "function") {
-      resultJSON = __https_request(url, method, headersJSON, body);
-    }
-
-    var result = {};
-    try { result = JSON.parse(resultJSON); } catch(e) {
-      result = { statusCode: 0, headers: {}, body: resultJSON };
-    }
-
-    var req = {};
-    req.method = method;
-    req.path = options.path || "/";
-    req.headers = headers;
-
-    var res = {};
-    res.statusCode = result.statusCode || 0;
-    res.statusMessage = result.statusMessage || "";
-    res.headers = result.headers || {};
-    res.httpVersion = result.httpVersion || "1.1";
-    res.complete = true;
-
-    var chunks = [];
-    res._bodyText = result.body || "";
-
-    res.on = function(event, listener) {
-      if (event === "data" && listener) {
-        if (res._bodyText) listener(res._bodyText);
-      }
-      if (event === "end" && listener) listener();
-      return res;
-    };
-    res.pipe = function(dest) { return dest; };
-    res.destroy = function() {};
-
-    req.on = function(event, listener) {
-      if (event === "response" && listener) listener(res);
-      if (event === "error" && result.error && listener) listener(new Error(result.error));
-      if (event === "close") {}
-      return req;
-    };
-    req.end = function(data) {
-      if (data) body = data;
-      return req;
-    };
-    req.write = function(data) { return req; };
-    req.destroy = function() {};
-    req.setTimeout = function(ms, cb) { if (cb) cb(); return req; };
-    req.setNoDelay = function() { return req; };
-    req.setSocketKeepAlive = function() { return req; };
-
-    if (callback) callback(res);
-
-    return req;
+    var i = impl();
+    if (!i) throw new Error("https: client transport unavailable (http module failed to load)");
+    return i.request.apply(null, arguments);
   }
 
   function get(options, callback) {
-    if (typeof options === "string") {
-      options = { hostname: options, method: "GET", path: "/" };
-    } else {
-      options = Object.assign({}, options, { method: "GET" });
-    }
-    return request(options, callback);
+    var i = impl();
+    if (!i) throw new Error("https: client transport unavailable (http module failed to load)");
+    return i.get.apply(null, arguments);
   }
 
   function Server(opts, reqListener) {
@@ -201,6 +130,53 @@ unsafe extern "C" fn https_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         String::new()
     };
 
+    // Node TLS options (arg 4, JSON from the client shim):
+    // {rejectUnauthorized, ca: [pem...], servername}. Rides the same
+    // FetchTlsInit the undici-subset `init.tls` uses — private CA anchoring
+    // and verification opt-out are Node https semantics, not fetch's.
+    let tls_opts_json = if argc > 4 && (*args.get(4).ptr).is_string() {
+        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(4).ptr).to_string()))
+    } else {
+        String::new()
+    };
+    let tls_init: Option<crate::fetch_async::FetchTlsInit> = if tls_opts_json.is_empty() {
+        None
+    } else {
+        let v: ::serde_json::Value = serde_json::from_str(&tls_opts_json).unwrap_or_default();
+        let reject_unauthorized = v
+            .get("rejectUnauthorized")
+            .and_then(|x| x.as_bool());
+        let servername = v
+            .get("servername")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
+        let ca_pems: Vec<String> = v
+            .get("ca")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if reject_unauthorized.is_none() && servername.is_none() && ca_pems.is_empty() {
+            None
+        } else {
+            let mut ca_der: Vec<Box<[u8]>> = Vec::new();
+            for pem in &ca_pems {
+                for der in bao_boringssl_bridge::pem_parse_certs(pem) {
+                    ca_der.push(der.into_boxed_slice());
+                }
+            }
+            Some(crate::fetch_async::FetchTlsInit {
+                ca_certs_der: ca_der.into_boxed_slice(),
+                reject_unauthorized,
+                servername,
+            })
+        }
+    };
+
     // Build the PENDING Promise. The network round-trip runs off the JS thread.
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let null_global = ::std::ptr::null_mut::<JSObject>());
@@ -244,9 +220,10 @@ unsafe extern "C" fn https_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 
     // SAFETY: cx is live on this thread; promise_val is the pending Promise.
     // The worker runs stealth_http_request off-thread; the JS thread returns
-    // immediately with the pending Promise.
+    // immediately with the pending Promise. TLS options (Node https
+    // rejectUnauthorized/ca/servername) ride start_fetch's FetchTlsInit.
     unsafe {
-        crate::fetch_async::start(
+        crate::fetch_async::start_fetch(
             cx,
             promise_val,
             profile,
@@ -254,6 +231,8 @@ unsafe extern "C" fn https_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             url,
             headers_vec,
             body_bytes,
+            None,
+            tls_init,
         );
     }
 
@@ -365,7 +344,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             mod_obj.handle().into(),
             c"__https_request".as_ptr(),
             Some(https_request),
-            4,
+            5,
             0,
         );
 
@@ -384,7 +363,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 global_root.handle().into(),
                 c"__https_request".as_ptr(),
                 Some(https_request),
-                4,
+                5,
                 0,
             );
         }

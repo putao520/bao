@@ -248,11 +248,12 @@ fn bun_listen_accept_identity_and_bun_connect_roundtrip() {
             hostname: "127.0.0.1",
             port: server.port,
             socket: {
-                data: function(data) {
+                // Bun API parity with the listen side: data(socket, data) —
+                // the client socket identity is the first argument.
+                data: function(sock, data) {
+                    log.push("cli_sock=" + (sock && typeof sock.write === "function"));
                     log.push("cli_data=" + data);
-                    // Close from the resolved socket (connect-side data has
-                    // no socket identity — Bun delivers it as a bare payload).
-                    setTimeout(function() { globalThis.__cliSock.end(); }, 0);
+                    setTimeout(function() { sock.end(); }, 0);
                 },
                 close: function() {
                     log.push("cli_close");
@@ -282,6 +283,7 @@ fn bun_listen_accept_identity_and_bun_connect_roundtrip() {
         "open_sock=true",
         "data_sock=true",
         "resolved=true",
+        "cli_sock=true",
         "cli_data=ping",
         "cli_close",
         "srv_close=true",

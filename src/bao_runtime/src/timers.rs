@@ -447,8 +447,9 @@ pub fn has_pending_work() -> bool {
         || crate::fetch_async::has_pending()
 }
 
-/// Fire a JS callback via `JS_CallFunctionValue`, swallowing any pending
-/// exception. Used by `drain_bao_timers` and `BaoTimeoutObject::fire_js`
+/// Fire a JS callback via `JS_CallFunctionValue`, routing any thrown
+/// exception to the unified uncaught-exception router (handler dispatch or
+/// stderr + exit 1). Used by `drain_bao_timers` and `BaoTimeoutObject::fire_js`
 /// for JS callback dispatch.
 ///
 /// # Safety
@@ -496,14 +497,31 @@ pub unsafe fn fire_js_callback_raw(
             ptr: &mut rval,
         };
 
-        JS_CallFunctionValue(
+        let ok = JS_CallFunctionValue(
             raw_cx,
             global_root.handle().into(),
             fval_root.handle().into(),
             &args_array,
             rval_handle,
         );
-        JS_ClearPendingException(raw_cx);
+        if !ok {
+            // The timer callback threw. Capture the pending exception, clear
+            // it, and route it (process.on('uncaughtException') or stderr +
+            // exit 1) — Node semantics; NOT silently swallowed.
+            let mut exn = UndefinedValue();
+            JS_GetPendingException(
+                raw_cx,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut exn,
+                },
+            );
+            JS_ClearPendingException(raw_cx);
+            rooted!(&in(cx_ref) let reason_root = exn);
+            if !exn.is_undefined() {
+                crate::uncaught::route_uncaught_exception(raw_cx, exn);
+            }
+        }
     }
 }
 
@@ -883,7 +901,9 @@ impl BaoTimeoutObject {
     /// Mark fired AND dispatch the JS callback via `fire_js_callback_raw`.
     /// This is the SpiderMonkey equivalent of Bun's `TimeoutObject::fire`.
     /// No-op if no callback key is attached (defensive — schedule path always
-    /// sets one). Swallows any JS exception per drain_timers convention.
+    /// sets one). Callback throws route through the uncaught-exception
+    /// router (handler dispatch or stderr + exit 1) — never silently
+    /// swallowed.
     ///
     /// # Safety
     /// - `raw_cx` must be a live `JSContext*` on the current thread.

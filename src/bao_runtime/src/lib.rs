@@ -10,6 +10,7 @@
 
 pub mod bao_browser_global;
 pub mod bun_api;
+pub mod bun_build;
 pub mod bun_builtins;
 pub mod bun_ffi;
 pub mod bun_sqlite;
@@ -89,7 +90,17 @@ pub mod runtime;
 pub mod s3_api;
 pub mod stealth_http;
 pub mod timers;
+// @trace REQ-ENG-006 [api:process.on uncaughtException/unhandledRejection] —
+// unified uncaught-exception / unhandled-rejection router (Node semantics).
+pub mod uncaught;
 pub mod web_api;
+// @trace REQ-ENG-005 [api:Web Streams] — full WHATWG Streams implementation
+// (web_streams.js, ported from Bun). Installed on the global by
+// node_stream::install for realms that lack servo's native streams (CLI +
+// browser privileged evaluate realm). Previously dead code: the module was
+// never declared, so CLI fell back to a broken inline polyfill whose
+// TransformStream hung the event loop (BCE-20260816-STREAM-WEB).
+pub mod web_streams;
 // @trace REQ-ENG-001 [entity:BaoRuntime] [api:fetch] — full WHATWG
 // Headers/Request/Response classes (installed on the global by
 // globals::install_web_apis; consumed by fetch_api::fetch_fn).

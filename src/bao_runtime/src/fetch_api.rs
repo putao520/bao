@@ -298,6 +298,19 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         }
     }
 
+    // ── data: URL short-circuit (local scheme — never enters HTTPThread) ──
+    // BCE-20260816-FETCH-DATA: a `data:` URL has no host, but the generic
+    // AsyncHTTP path treats the scheme as one — bun_http parses host
+    // "data" and the JS thread blocks in a DNS retry loop (strace shows
+    // repeated NXDOMAIN A-queries for "data"; timers never fire, buffered
+    // stdout never flushes). WHATWG fetch processes data: URLs locally:
+    // parse the payload here and settle the Promise without scheduling.
+    if url.starts_with("data:") {
+        // SAFETY: cx is live on this thread; args is the current call frame.
+        unsafe { handle_data_url_fetch(cx, &args, &method, &url) };
+        return true;
+    }
+
     if let ::std::option::Option::Some(pos) = url.find("://") {
         let host_part = &url[pos + 3..];
         let host = host_part
@@ -432,6 +445,368 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 
     args.rval().set(promise_val);
     true
+}
+
+// ── data: URL fetch (local scheme — WHATWG scheme fetch for "data") ─────────
+
+/// WHATWG data: URL processor (https://fetch.spec.whatwg.org/#data-URL-processor,
+/// simplified): splits at the first comma, honours a trailing `;base64`
+/// marker (ASCII case-insensitive), percent-decodes the payload, and applies
+/// forgiving-base64 when the marker is present. Returns `(mime_type, body)`
+/// or a rejection message (surfaced as a TypeError on the fetch Promise).
+fn parse_data_url(url: &str) -> ::std::result::Result<(String, Vec<u8>), String> {
+    let rest = &url["data:".len()..];
+    let Some(comma) = rest.find(',') else {
+        return Err("fetch data: URL is missing the comma (,) delimiter".to_string());
+    };
+    let header = &rest[..comma];
+    let data = &rest[comma + 1..];
+
+    // `;base64` marker: last 7 bytes of the header, case-insensitive.
+    let base64 = header.len() >= 7 && header[..].to_ascii_lowercase().ends_with(";base64");
+    let mime_raw = if base64 {
+        &header[..header.len() - ";base64".len()]
+    } else {
+        header
+    };
+    // The header must be a MIME type (`type/subtype`); anything else (or
+    // empty) falls back to the spec default.
+    let mime = if !mime_raw.is_empty() && mime_raw.contains('/') {
+        mime_raw.to_string()
+    } else {
+        "text/plain;charset=US-ASCII".to_string()
+    };
+
+    let decoded = percent_decode(data.as_bytes());
+    if base64 {
+        // Forgiving-base64: strip ASCII whitespace; missing padding is
+        // tolerated by the decoder length estimate. A dangling single byte
+        // can never be valid base64. bun_base64's decoder is lenient (it
+        // stops at the first invalid byte and returns the partial decode),
+        // so validate the alphabet strictly first — a data: URL with
+        // garbage must reject, not resolve with a truncated body.
+        let cleaned: Vec<u8> = decoded
+            .iter()
+            .copied()
+            .filter(|&b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c'))
+            .collect();
+        let invalid_payload = "fetch data: URL has an invalid base64 payload".to_string();
+        // Padding may only appear as the final 1-2 '=' bytes.
+        let data_end = cleaned
+            .iter()
+            .position(|&b| b == b'=')
+            .unwrap_or(cleaned.len());
+        if cleaned.len() % 4 == 1
+            || cleaned.iter().any(|&b| {
+                !b.is_ascii_alphanumeric() && b != b'+' && b != b'/' && b != b'='
+            })
+            || cleaned[data_end..].iter().any(|&b| b != b'=')
+            || cleaned.len() - data_end > 2
+        {
+            return Err(invalid_payload);
+        }
+        bun_base64::decode_alloc(&cleaned)
+            .map(|v| (mime, v))
+            .map_err(|_| invalid_payload)
+    } else {
+        Ok((mime, decoded))
+    }
+}
+
+/// WHATWG percent-decoder: `%XY` with two hex digits decodes to one byte;
+/// an invalid escape passes the `%` through literally.
+fn percent_decode(input: &[u8]) -> Vec<u8> {
+    fn hex_val(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'%' && i + 2 < input.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(input[i + 1]), hex_val(input[i + 2])) {
+                out.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(input[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Reject `promise` with the realm's real `TypeError` (so `instanceof
+/// TypeError` holds, matching the fetch network-error shape); a plain
+/// message object is used only if the realm genuinely lacks the constructor.
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*` on the current thread; `promise_h` a
+/// handle to a pending Promise.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn reject_promise_type_error(
+    cx: *mut JSContext,
+    promise_h: Handle<*mut JSObject>,
+    msg: &str,
+) {
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let global = JS::CurrentGlobalOrNull(cx);
+    if !global.is_null() {
+        rooted!(&in(cx_ref) let global_root = global);
+        let mut te_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            global_root.handle().into(),
+            c"TypeError".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut te_val,
+            },
+        );
+        if te_val.is_object() {
+            rooted!(&in(cx_ref) let te_obj = te_val.to_object());
+            rooted!(&in(cx_ref) let te_fn = ObjectValue(te_obj.get()));
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+            if !msg_js.is_null() {
+                rooted!(&in(cx_ref) let msg_root = StringValue(&*msg_js));
+                let elems = [msg_root.get()];
+                let call_args = HandleValueArray {
+                    length_: 1,
+                    elements_: elems.as_ptr(),
+                };
+                rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
+                let mut err_val = UndefinedValue();
+                let called = JS_CallFunctionValue(
+                    cx,
+                    undef_this.handle().into(),
+                    te_fn.handle().into(),
+                    &call_args,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut err_val,
+                    },
+                );
+                if called && err_val.is_object() {
+                    rooted!(&in(cx_ref) let err_root = err_val);
+                    JS::RejectPromise(cx, promise_h, err_root.handle().into());
+                    return;
+                }
+            }
+        }
+    }
+    // Fallback: plain message object.
+    rooted!(&in(cx_ref) let err_obj = JS_NewPlainObject(cx));
+    let c_msg = ZBox::from_bytes(msg.as_bytes());
+    let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+    if !err_obj.is_null() && !msg_js.is_null() {
+        rooted!(&in(cx_ref) let msg_root = StringValue(&*msg_js));
+        JS_DefineProperty(
+            cx,
+            err_obj.handle().into(),
+            c"message".as_ptr(),
+            msg_root.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    rooted!(&in(cx_ref) let ev = if err_obj.is_null() {
+        UndefinedValue()
+    } else {
+        ObjectValue(err_obj.get())
+    });
+    JS::RejectPromise(cx, promise_h, ev.handle().into());
+}
+
+/// Settle a `fetch("data:...")` call: parse the URL locally and resolve the
+/// returned Promise with a `Response` built by the realm's Response class
+/// (status 200, `content-type` from the URL header, binary-safe body), or
+/// reject with a TypeError (parse failure / non-GET-HEAD method).
+///
+/// # Safety
+///
+/// `cx` must be a live `JSContext*` on the current thread; `args` the active
+/// CallArgs frame whose `rval` receives the new Promise.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn handle_data_url_fetch(cx: *mut JSContext, args: &CallArgs, method: &str, url: &str) {
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let null_global = ::std::ptr::null_mut::<JSObject>());
+    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, null_global.handle().into());
+    if promise.is_null() {
+        args.rval().set(UndefinedValue());
+        return;
+    }
+    args.rval().set(ObjectValue(promise));
+    rooted!(&in(cx_ref) let promise_root = promise);
+    let promise_h = promise_root.handle().into();
+
+    // WHATWG scheme fetch for data: only the safe methods are allowed;
+    // anything else is a network error (TypeError).
+    let method_upper = method.to_uppercase();
+    let outcome: ::std::result::Result<(String, Vec<u8>), String> =
+        if method_upper != "GET" && method_upper != "HEAD" {
+        Err(format!(
+            "fetch data: URL only supports GET/HEAD requests (got {})",
+            method_upper
+        ))
+    } else {
+        parse_data_url(url)
+    };
+
+    let (mime, bytes) = match outcome {
+        Ok(v) => v,
+        Err(msg) => {
+            reject_promise_type_error(cx, promise_h, &msg);
+            return;
+        }
+    };
+
+    // Response construction: `new Response(body, init)` via the realm's
+    // Response class (web_fetch_classes) so text()/json()/arrayBuffer()/
+    // blob() all work with binary-safe body storage. HEAD carries no body.
+    let global = JS::CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        reject_promise_type_error(cx, promise_h, "fetch data: no realm global");
+        return;
+    }
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut resp_ctor_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        c"Response".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut resp_ctor_val,
+        },
+    );
+    if !resp_ctor_val.is_object() {
+        // Fail closed — no silent degraded Response shape (hard rule: no
+        // placeholder success).
+        reject_promise_type_error(
+            cx,
+            promise_h,
+            "fetch data: Response class is not available in this realm",
+        );
+        return;
+    }
+    rooted!(&in(cx_ref) let resp_ctor = resp_ctor_val.to_object());
+    rooted!(&in(cx_ref) let resp_fn = ObjectValue(resp_ctor.get()));
+
+    // Body: Uint8Array over the decoded bytes (HEAD → null body).
+    rooted!(&in(cx_ref) let body_arr = if method_upper == "HEAD" {
+        ::std::ptr::null_mut::<JSObject>()
+    } else {
+        mozjs_sys::jsapi::JS_NewUint8Array(cx, bytes.len())
+    });
+    if method_upper != "HEAD" && body_arr.is_null() {
+        reject_promise_type_error(cx, promise_h, "fetch data: body allocation failed");
+        return;
+    }
+    if method_upper != "HEAD" && !bytes.is_empty() {
+        let mut ta_len: usize = 0;
+        let mut shared = false;
+        let mut data: *mut u8 = ::std::ptr::null_mut();
+        let unwrapped = JS_GetObjectAsUint8Array(body_arr.get(), &mut ta_len, &mut shared, &mut data);
+        if unwrapped.is_null() || data.is_null() || ta_len < bytes.len() {
+            reject_promise_type_error(cx, promise_h, "fetch data: body view failed");
+            return;
+        }
+        ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
+    }
+
+    // init: { status: 200, statusText: "OK", headers: { "content-type": mime } }
+    rooted!(&in(cx_ref) let init_obj = JS_NewPlainObject(cx));
+    if init_obj.is_null() {
+        reject_promise_type_error(cx, promise_h, "fetch data: init allocation failed");
+        return;
+    }
+    rooted!(&in(cx_ref) let status_val = Int32Value(200));
+    JS_DefineProperty(
+        cx,
+        init_obj.handle().into(),
+        c"status".as_ptr(),
+        status_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    let st_js = JS_NewStringCopyZ(cx, c"OK".as_ptr());
+    if !st_js.is_null() {
+        rooted!(&in(cx_ref) let st_val = StringValue(&*st_js));
+        JS_DefineProperty(
+            cx,
+            init_obj.handle().into(),
+            c"statusText".as_ptr(),
+            st_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    rooted!(&in(cx_ref) let headers_obj = JS_NewPlainObject(cx));
+    if !headers_obj.is_null() {
+        let c_mime = ZBox::from_bytes(mime.as_bytes());
+        let mime_js = JS_NewStringCopyZ(cx, c_mime.as_ptr());
+        if !mime_js.is_null() {
+            rooted!(&in(cx_ref) let mime_val = StringValue(&*mime_js));
+            JS_DefineProperty(
+                cx,
+                headers_obj.handle().into(),
+                c"content-type".as_ptr(),
+                mime_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        rooted!(&in(cx_ref) let hv = ObjectValue(headers_obj.get()));
+        JS_DefineProperty(
+            cx,
+            init_obj.handle().into(),
+            c"headers".as_ptr(),
+            hv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    let elems = [
+        if method_upper == "HEAD" {
+            UndefinedValue()
+        } else {
+            ObjectValue(body_arr.get())
+        },
+        ObjectValue(init_obj.get()),
+    ];
+    let call_args = HandleValueArray {
+        length_: 2,
+        elements_: elems.as_ptr(),
+    };
+    rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
+    let mut resp_val = UndefinedValue();
+    let called = JS_CallFunctionValue(
+        cx,
+        undef_this.handle().into(),
+        resp_fn.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut resp_val,
+        },
+    );
+    if !called || !resp_val.is_object() {
+        reject_promise_type_error(
+            cx,
+            promise_h,
+            "fetch data: failed to construct Response",
+        );
+        return;
+    }
+    rooted!(&in(cx_ref) let resp_root = resp_val);
+    JS::ResolvePromise(cx, promise_h, resp_root.handle().into());
 }
 
 // ── AbortSignal listener wiring ─────────────────────────────────────────────

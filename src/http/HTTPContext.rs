@@ -1401,7 +1401,21 @@ impl<const SSL: bool> Handler<SSL> {
         if let Some(client) = tagged.client_mut() {
             client.on_connect_error();
         }
-        // us_connecting_socket_close is always called internally by uSockets
+        // BCE (connect-refused socket spin): the single-address fast path
+        // (`us_socket_group_connect_resolved_dns`, socket.c/context.c) creates
+        // a SEMI_SOCKET with NO `connect_state`, so uSockets' error branch
+        // (`us_internal_socket_after_open` → `us_dispatch_connect_error`)
+        // hands close responsibility to this handler ("It's expected that
+        // close is called by the caller" — the ConnectingSocket happy-eyeballs
+        // path is the only one uSockets closes internally). Leaving the
+        // never-opened socket registered in epoll is a level-triggered
+        // EPOLLERR: every subsequent HTTPThread poll re-fires
+        // on_connect_error forever (connect-refused fetch spun the thread
+        // with repeated dead-client dispatches). terminate_socket =
+        // mark-dead (idempotent here) + close(Failure) → close_raw stops the
+        // poll and closes the fd; SEMI sockets never dispatch on_close
+        // (owner already notified via this on_connect_error).
+        HTTPContext::<SSL>::terminate_socket(socket);
     }
 
     pub fn on_end(ptr: *mut c_void, socket: HTTPSocket<SSL>) {

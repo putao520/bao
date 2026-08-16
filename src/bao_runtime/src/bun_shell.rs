@@ -374,16 +374,32 @@ impl<'a> ShellInterpreter<'a> {
             parts.push(format!("{}='{}'", label, value_str.replace('\'', "'\\''")));
         }
 
-        // Add command name and arguments
+        // Add command name and arguments. Literal words are re-quoted for
+        // /bin/sh: the lexer strips quote SYNTAX into bare Text atoms, so an
+        // unquoted reconstruction re-exposes embedded whitespace/metachars
+        // ('|', ';', quotes…) as shell operators — `printf '%s|' x` became
+        // `printf %s| x` (a pipe!), and `echo "a 'b' c"` lost its inner
+        // quotes to sh's second parse. Atoms carrying expansion semantics
+        // ($VAR, *, ~, $(…)) pass through raw so sh still expands them.
         for arg in cmd.name_and_args.iter() {
-            parts.push(self.atom_to_string(arg));
+            let rendered = self.atom_to_string(arg);
+            if atom_is_pure_literal(arg) {
+                parts.push(shell_quote_word(&rendered));
+            } else {
+                parts.push(rendered);
+            }
         }
 
         // Handle redirect
         if let Some(ref redirect) = cmd.redirect_file {
             match redirect {
                 ast::Redirect::Atom(atom) => {
-                    let target = self.atom_to_string(atom);
+                    let rendered = self.atom_to_string(atom);
+                    let target = if atom_is_pure_literal(atom) {
+                        shell_quote_word(&rendered)
+                    } else {
+                        rendered
+                    };
                     if cmd.redirect.append() {
                         parts.push(format!(">> {}", target));
                     } else if cmd.redirect.stderr() {
@@ -608,6 +624,38 @@ impl<'a> ShellInterpreter<'a> {
     }
 }
 
+// ──────────────────── sh reconstruction quoting ────────────────────
+
+/// Whether an Atom is purely literal (Text/QuotedEmpty only) — safe to
+/// single-quote wholesale when reconstructing the command for /bin/sh.
+/// Atoms carrying expansion semantics ($VAR, *, ~, $(…), braces) must stay
+/// raw so the re-executing shell still expands them.
+fn atom_is_pure_literal(atom: &ast::Atom) -> bool {
+    let simple_is_literal = |s: &ast::SimpleAtom| {
+        matches!(s, ast::SimpleAtom::Text(_) | ast::SimpleAtom::QuotedEmpty)
+    };
+    match atom {
+        ast::Atom::Simple(s) => simple_is_literal(s),
+        ast::Atom::Compound(c) => c.atoms.iter().all(simple_is_literal),
+    }
+}
+
+/// Shell-quote a literal word for /bin/sh re-execution: pass through the
+/// historically-safe set unquoted, otherwise wrap in single quotes with the
+/// `'\''` escape. Mirrors the env-assign quoting above.
+fn shell_quote_word(word: &str) -> String {
+    let safe = word.bytes().all(|b| {
+        matches!(b,
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'
+            | b'_' | b'-' | b'.' | b'/' | b'@' | b'%' | b'+' | b'=' | b':' | b',')
+    });
+    if safe {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
 // ──────────────────── ShellOutput result ────────────────────
 
 /// Result of executing a shell command. Returned to JS as ShellOutput object.
@@ -640,7 +688,11 @@ impl ShellOutput {
 
         // stdout (lossy UTF-8 → JS string)
         let stdout_str = String::from_utf8_lossy(&self.stdout);
-        let stdout_js = JS_NewStringCopyZ(cx, stdout_str.as_ptr() as *const _);
+        let stdout_js = JS_NewStringCopyN(
+            cx,
+            stdout_str.as_ptr() as *const ::std::os::raw::c_char,
+            stdout_str.len(),
+        );
         if !stdout_js.is_null() {
             rooted!(&in(cx_ref) let sv = StringValue(&*stdout_js));
             JS_DefineProperty(
@@ -654,7 +706,11 @@ impl ShellOutput {
 
         // stderr (lossy UTF-8 → JS string)
         let stderr_str = String::from_utf8_lossy(&self.stderr);
-        let stderr_js = JS_NewStringCopyZ(cx, stderr_str.as_ptr() as *const _);
+        let stderr_js = JS_NewStringCopyN(
+            cx,
+            stderr_str.as_ptr() as *const ::std::os::raw::c_char,
+            stderr_str.len(),
+        );
         if !stderr_js.is_null() {
             rooted!(&in(cx_ref) let sv = StringValue(&*stderr_js));
             JS_DefineProperty(
@@ -786,7 +842,11 @@ unsafe extern "C" fn shell_output_json(cx: *mut JSContext, _argc: u32, vp: *mut 
 
     if stdout_val.is_string() {
         let stdout_str = crate::js_to_rust_string(cx, stdout_val);
-        let js_str = JS_NewStringCopyZ(cx, stdout_str.as_ptr() as *const _);
+        let js_str = JS_NewStringCopyN(
+            cx,
+            stdout_str.as_ptr() as *const ::std::os::raw::c_char,
+            stdout_str.len(),
+        );
         if !js_str.is_null() {
             rooted!(&in(cx_ref) let str_root = js_str);
             let mut parsed = UndefinedValue();
@@ -841,7 +901,11 @@ unsafe extern "C" fn shell_output_lines(cx: *mut JSContext, _argc: u32, vp: *mut
         return true;
     }
     for (i, line) in lines.iter().enumerate() {
-        let js_str = JS_NewStringCopyZ(cx, line.as_ptr() as *const _);
+        let js_str = JS_NewStringCopyN(
+            cx,
+            line.as_ptr() as *const ::std::os::raw::c_char,
+            line.len(),
+        );
         if !js_str.is_null() {
             rooted!(&in(cx_ref) let lv = StringValue(&*js_str));
             w2::JS_SetElement(cx_ref, arr.handle().into(), i as u32, lv.handle().into());
@@ -1216,6 +1280,43 @@ unsafe extern "C" fn bun_dollar(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let mut arr_len: u32 = 0;
     if !w2::GetArrayLength(cx_ref, strings_arr.handle().into(), &mut arr_len) || arr_len == 0 {
         args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    // Direct array call — Bun.$(['echo', 'hello']) — has no interleaved
+    // expressions (argc == 1) and multiple elements: each element is a
+    // separate shell word, so join with spaces. Elements are JS strings
+    // (argv semantics): quote each one so metacharacters ('|', ';', '>',
+    // spaces…) stay literal through the lexer's parse — without quoting,
+    // `['printf', '%s|', 'a|b;c']` re-exposed '|' as a shell pipe (127).
+    // A tagged-template strings array with multiple parts always carries
+    // argc > 1 (one arg per hole).
+    if argc == 1 && arr_len > 1 {
+        let mut words: Vec<String> = Vec::with_capacity(arr_len as usize);
+        for i in 0..arr_len {
+            let mut elem = UndefinedValue();
+            JS_GetElement(
+                cx,
+                strings_arr.handle().into(),
+                i,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut elem,
+                },
+            );
+            if elem.is_string() {
+                words.push(shell_quote_word(&crate::js_to_rust_string(cx, elem)));
+            }
+        }
+        command = words.join(" ");
+        let interpreter = ShellInterpreter::new(None, None);
+        let output = interpreter.parse_and_run(&command);
+        let js_output = output.to_js_object(cx);
+        if js_output.is_null() {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        args.rval().set(ObjectValue(js_output));
         return true;
     }
 

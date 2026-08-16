@@ -727,6 +727,20 @@ unsafe fn start_with_kind(
         }
     }
 
+    // BCE (fetch-only hang): the resolve_tasklet ConcurrentTask is drained ONLY
+    // by `MiniEventLoop::tick_without_idle`, which `timers::drain_and_check`
+    // runs solely while `node_http::has_active_servers()` is true. A
+    // fetch-only script (no JS HTTP server, no TLS-driver activity) never
+    // ticks, so the HTTPThread's `on_http_done` enqueue + `us_wakeup_loop`
+    // land in a queue nobody drains and the fetch Promise never settles —
+    // `fetch('http://127.0.0.1:9/')` (connection refused) hung forever while
+    // the HTTPThread had already failed the task. Register the same-class
+    // liveness probe node_tls uses: pending fetch ⇒ keep the loop ticking.
+    // Idempotent (dedup by fn pointer); the probe reads this thread's PENDING
+    // registry, and has_pending() goes false once resolve_tasklet settles the
+    // last fetch, so the process can still exit naturally.
+    crate::node_http::register_liveness_probe(has_pending);
+
     // Register the PendingFetch pointer in the GC root collection.
     PENDING.with(|p| {
         p.borrow_mut().push(pending_ptr);
@@ -1127,7 +1141,7 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
                     });
                 }
                 (Err(msg), _) => {
-                    reject_with_message(cx, promise_h, &msg);
+                    reject_with_network_error(cx, promise_h, &msg);
                 }
             }
         }
@@ -1568,6 +1582,160 @@ unsafe fn build_abort_error_js(cx: *mut JSContext) -> *mut JSObject {
             return ::std::ptr::null_mut();
         }
         err_obj
+    }
+}
+
+/// Reject a Promise with the fetch network-error shape: the realm's real
+/// `TypeError` with message "fetch failed" (so `instanceof TypeError` holds,
+/// matching WHATWG fetch / undici) whose `.cause` carries the transport
+/// failure — a plain object with `.code` (ECONNREFUSED/ETIMEDOUT/… mapped
+/// from the HTTPThread failure kind) and `.message` (the raw failure).
+///
+/// Callers that need the plain-message shape (none today) can use
+/// [`reject_with_message`]; this is the Err-branch default for every
+/// ResolveKind because node-side entries (`http.request`/`tls.connect`)
+/// surface the same `.cause.code` convention Node uses.
+///
+/// # Safety
+///
+/// `cx` must be live on the current thread with the target realm entered;
+/// `promise_h` a live pending Promise handle.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn reject_with_network_error(
+    cx: *mut JSContext,
+    promise_h: Handle<*mut JSObject>,
+    fail_msg: &str,
+) {
+    unsafe {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+
+        // cause object first: { code, message }.
+        rooted!(&in(cx_ref) let cause_obj = JS_NewPlainObject(cx));
+        if !cause_obj.is_null() {
+            let cause_h = cause_obj.handle().into();
+            let (code, text) = network_error_code_and_text(fail_msg);
+            let c_code = ZBox::from_bytes(code.as_bytes());
+            let code_js = JS_NewStringCopyZ(cx, c_code.as_ptr());
+            if !code_js.is_null() {
+                rooted!(&in(cx_ref) let cv = StringValue(&*code_js));
+                JS_DefineProperty(cx, cause_h, c"code".as_ptr(), cv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            let c_msg = ZBox::from_bytes(text.as_bytes());
+            let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+            if !msg_js.is_null() {
+                rooted!(&in(cx_ref) let mv = StringValue(&*msg_js));
+                JS_DefineProperty(cx, cause_h, c"message".as_ptr(), mv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+        }
+
+        // TypeError("fetch failed") with .cause — via the realm's real
+        // constructor so instanceof holds; falls back to a plain object
+        // carrying name/message/cause when the realm lacks TypeError.
+        let global = JS::CurrentGlobalOrNull(cx);
+        let mut err_val = UndefinedValue();
+        let mut built = false;
+        if !global.is_null() && !cause_obj.is_null() {
+            rooted!(&in(cx_ref) let global_root = global);
+            let mut te_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                global_root.handle().into(),
+                c"TypeError".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut te_val,
+                },
+            );
+            if te_val.is_object() {
+                rooted!(&in(cx_ref) let te_obj = te_val.to_object());
+                rooted!(&in(cx_ref) let te_fn = ObjectValue(te_obj.get()));
+                let c_msg = ZBox::from_bytes(b"fetch failed");
+                let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+                if !msg_js.is_null() {
+                    rooted!(&in(cx_ref) let msg_root = StringValue(&*msg_js));
+                    let elems = [msg_root.get()];
+                    let call_args = HandleValueArray {
+                        length_: 1,
+                        elements_: elems.as_ptr(),
+                    };
+                    rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
+                    let called = JS_CallFunctionValue(
+                        cx,
+                        undef_this.handle().into(),
+                        te_fn.handle().into(),
+                        &call_args,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut err_val,
+                        },
+                    );
+                    if called && err_val.is_object() {
+                        rooted!(&in(cx_ref) let err_obj = err_val.to_object());
+                        rooted!(&in(cx_ref) let cause_val = ObjectValue(cause_obj.get()));
+                        JS_DefineProperty(
+                            cx,
+                            err_obj.handle().into(),
+                            c"cause".as_ptr(),
+                            cause_val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                        built = true;
+                    }
+                }
+            }
+        }
+        if built {
+            rooted!(&in(cx_ref) let err_root = err_val);
+            JS::RejectPromise(cx, promise_h, err_root.handle().into());
+            return;
+        }
+        // Degraded shape (no TypeError constructor): plain object with
+        // name/message/cause — still carries the contract's fields.
+        rooted!(&in(cx_ref) let obj = JS_NewPlainObject(cx));
+        if obj.is_null() {
+            reject_with_message(cx, promise_h, fail_msg);
+            return;
+        }
+        let obj_h = obj.handle().into();
+        let c_name = ZBox::from_bytes(b"TypeError");
+        let name_js = JS_NewStringCopyZ(cx, c_name.as_ptr());
+        if !name_js.is_null() {
+            rooted!(&in(cx_ref) let nv = StringValue(&*name_js));
+            JS_DefineProperty(cx, obj_h, c"name".as_ptr(), nv.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+        let c_msg = ZBox::from_bytes(b"fetch failed");
+        let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+        if !msg_js.is_null() {
+            rooted!(&in(cx_ref) let mv = StringValue(&*msg_js));
+            JS_DefineProperty(cx, obj_h, c"message".as_ptr(), mv.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+        if !cause_obj.is_null() {
+            rooted!(&in(cx_ref) let cause_val = ObjectValue(cause_obj.get()));
+            JS_DefineProperty(cx, obj_h, c"cause".as_ptr(), cause_val.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+        rooted!(&in(cx_ref) let ev = ObjectValue(obj.get()));
+        JS::RejectPromise(cx, promise_h, ev.handle().into());
+    }
+}
+
+/// Map an HTTPThread failure string (`{:?}` of `bun_core::Error`, e.g.
+/// "error.ConnectionRefused") to the Node/undici `(code, message)` pair for
+/// the fetch rejection's `.cause`. Unknown failures keep the raw text with a
+/// generic code.
+fn network_error_code_and_text(fail_msg: &str) -> (&'static str, String) {
+    let kind = fail_msg.rsplit("error.").next().unwrap_or(fail_msg);
+    match kind {
+        "ConnectionRefused" => ("ECONNREFUSED", "connect ECONNREFUSED".to_string()),
+        "Timeout" => ("ETIMEDOUT", "connect ETIMEDOUT".to_string()),
+        "ConnectionClosed" => ("ECONNRESET", "socket connection closed before response".to_string()),
+        "ConnectionReset" => ("ECONNRESET", "read ECONNRESET".to_string()),
+        "Aborted" | "AbortedBeforeConnecting" => {
+            ("ABORT_ERR", "The operation was aborted".to_string())
+        }
+        "HTTP2Unsupported" => ("ERR_HTTP2_ERROR", "HTTP/2 is not supported by the server".to_string()),
+        _ => ("UND_ERR_FETCH_FAILED", fail_msg.to_string()),
     }
 }
 

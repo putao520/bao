@@ -94,6 +94,11 @@ bao_uloop = { path = "../bao_uloop" }
 bao_cdp = { path = "../bao_cdp" }
 cdp-server = { path = "../cdp-server" }
 tempfile = "3"
+# Bun.build e2e: registers the native bundle driver (full bun_bundler
+# pipeline). Dev-only dep — a NORMAL dep would cycle
+# (bao_bundler → bun_runtime → bao_bundler); dev-dep cycles are legal and the
+# product installs the same driver from bao_cli::run().
+bao_bundler = { path = "../bao_bundler" }
 # Do NOT dev-dep bao_native_stubs: product residual + product_native_symbols +
 # product_buffered_reader own the closed-set / RealImpl symbols; co-linking
 # stubs dual-defs (STUB-INVENTORY dual-def iron rule). Tests force-link via
@@ -148,3 +153,7 @@ path = "tests/fetch_c13_minimal.rs"
 [[test]]
 name = "fetch_e2e_tests"
 path = "tests/fetch_e2e_tests.rs"
+
+[[test]]
+name = "bun_build_e2e_tests"
+path = "tests/bun_build_e2e_tests.rs"

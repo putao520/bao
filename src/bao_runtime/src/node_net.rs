@@ -214,7 +214,9 @@ unsafe extern "C" fn net_on_open(
 /// `invoke_js_callback` in bun_listen.rs.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn dispatch_accept(s: *mut us_socket_t) {
-    let Some(cx) = NET_CX.with(|c| c.get()) else { return };
+    let Some(cx) = NET_CX.with(|c| c.get()) else {
+        return;
+    };
     if cx.is_null() {
         return;
     }
@@ -228,7 +230,9 @@ unsafe fn dispatch_accept(s: *mut us_socket_t) {
 
     // Enter the context's persistent realm — GcStore resolves the callback as
     // a property on this realm's global.
-    let Some(global) = bao_engine::context::thread_realm_global() else { return };
+    let Some(global) = bao_engine::context::thread_realm_global() else {
+        return;
+    };
     if global.is_null() {
         return;
     }
@@ -238,7 +242,9 @@ unsafe fn dispatch_accept(s: *mut us_socket_t) {
     let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
     let realm_cx: &mut mozjs::context::JSContext = &mut realm;
 
-    let Some(handler) = gc_store_get(cx, &cb_key) else { return };
+    let Some(handler) = gc_store_get(cx, &cb_key) else {
+        return;
+    };
     if handler.is_null() {
         return;
     }
@@ -377,6 +383,16 @@ unsafe extern "C" fn net_on_connect_error(
 ) -> *mut us_socket_t {
     CONNECT_ERROR.with(|e| e.set(true));
     CONNECT_RESULT.with(|r| r.set(Some(0))); // sentinel: error
+    // The IP-literal fast path hands net_connect a SEMI_SOCKET with no
+    // ConnectingSocket, so uSockets expects THIS handler to close (same C
+    // contract as HTTPContext::on_connect_error — "close is called by the
+    // caller"). Without the close the never-opened socket stays registered
+    // in epoll as level-triggered EPOLLERR and every subsequent loop tick
+    // re-dispatches this callback forever. close() on a SEMI socket raw-closes
+    // the fd without firing on_close (owner already notified via this event).
+    unsafe {
+        (*s).close(CloseCode::failure);
+    }
     s
 }
 
@@ -446,11 +462,29 @@ const NET_JS: &str = r#"
       if (ptr > 0) {
         this._ptr = ptr;
         this.connecting = false;
-        this.emit("connect");
-        if (cb) cb();
+        // Node semantics: the 'connect' event and the connect callback fire
+        // on a LATER tick — never synchronously inside net.connect(). The
+        // synchronous form broke `var c = net.connect(p, h, function () {
+        // c.on(...) })` and `c.on('connect')` registered after the call: the
+        // callback ran while `c` was still undefined. Scheduling BEFORE
+        // _startPoll keeps 'connect' ahead of any 'data' (both are
+        // setTimeout(0); same-deadline timers fire in registration order).
+        var self = this;
+        setTimeout(function () {
+          if (self.destroyed || self._ptr === 0) return;
+          self.emit("connect");
+          if (cb) cb();
+        }, 0);
         this._startPoll();
       } else {
-        this.emit("error", new Error("connect ECONNREFUSED " + host + ":" + port));
+        // 'error' equally deferred: the listener is registered after
+        // net.connect() returns in the common `var c = net.connect(...);
+        // c.on('error', ...)` shape.
+        var self = this;
+        setTimeout(function () {
+          if (self.destroyed) return;
+          self.emit("error", new Error("connect ECONNREFUSED " + host + ":" + port));
+        }, 0);
       }
     }
     return this;
@@ -463,6 +497,13 @@ const NET_JS: &str = r#"
     return false;
   };
   Socket.prototype.end = function(data) {
+    // Node semantics: end() is idempotent — a second end() (including the
+    // canonical `sock.on('end', () => sock.end())` half-close echo shape) is
+    // a no-op. Without the guard the re-entrant end() re-emitted 'end'
+    // synchronously, recursing until SpiderMonkey's "too much recursion"
+    // throw aborted the poll tick mid-delivery (flaky peer-FIN test, log
+    // flooded with hundreds of 'end' events per single FIN).
+    if (this.destroyed) return this;
     if (data) this.write(data);
     this.destroyed = true;
     this._stopPoll();
@@ -570,17 +611,22 @@ const NET_JS: &str = r#"
         this._ptr = ptr;
         this._port = port;
         this.listening = true;
-        this.emit("listening");
-        if (cb) cb();
-        // Register the accept dispatcher: the native side (dispatch_accept,
-        // vtable on_open with is_client == 0) calls it with a Socket built by
-        // __net_make_socket each time the loop accepts an inbound connection.
+        // Register the accept dispatcher BEFORE any callback runs: the native
+        // side (dispatch_accept, vtable on_open with is_client == 0) drops the
+        // accept silently when NET_CONNECTION_CBS has no entry for the listen
+        // socket. A 'listening' callback that immediately net.connect()s to
+        // itself spins the loop inline (net_connect waits for the real TCP
+        // open), so the inbound accept can dispatch inside that spin — before
+        // this function returns. Registering after `cb()` (the old order)
+        // lost that first connection forever (echo server never saw it).
         if (typeof __net_on_connection === "function") {
           var self = this;
           __net_on_connection(ptr, function(sock) {
             self.emit("connection", sock);
           });
         }
+        this.emit("listening");
+        if (cb) cb();
       } else {
         this.emit("error", new Error("listen EADDRINUSE"));
       }
@@ -860,15 +906,55 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     match result {
         bun_uws_sys::ConnectResult::Socket(socket) => {
-            // Synchronous connect (DNS already resolved, e.g. localhost).
+            // IP-literal fast path (try_parse_ip in us_socket_group_connect):
+            // the address is resolved, so uSockets hands back the SEMI_SOCKET
+            // immediately — but connect(2) is still IN PROGRESS on the
+            // non-blocking fd. Treating this branch as "already connected"
+            // emitted 'connect' before the TCP handshake completed (and before
+            // `var c = net.connect(...)` finished assigning). The socket is
+            // driven by the same loop ticks as the Connecting branch: wait for
+            // net_on_open (CONNECT_RESULT = socket key) or
+            // net_on_connect_error (CONNECT_RESULT = 0 sentinel), exactly like
+            // the Connecting arm below.
             let key = socket as usize;
-            NET_SOCKETS.with(|m| m.borrow_mut().insert(key, true));
             // Store the group so it lives as long as the socket.
             NET_SERVER_GROUPS.with(|g| {
                 g.borrow_mut()
                     .insert(key, unsafe { Box::from_raw(group_ptr) })
             });
-            args.rval().set(ptr_to_jsval(key));
+
+            let max_ticks: u32 = 5000;
+            for _ in 0..max_ticks {
+                let done = CONNECT_RESULT.with(|r| r.get().is_some());
+                if done {
+                    break;
+                }
+                unsafe {
+                    bao_uloop::bao_loop_tick(loop_, ptr::null());
+                }
+            }
+
+            let error = CONNECT_ERROR.with(|e| e.get());
+            let result_key = CONNECT_RESULT.with(|r| r.get().unwrap_or(0));
+
+            if error || result_key == 0 {
+                // Connect failed — net_on_connect_error already closed the
+                // socket, so the per-connect group is empty. Reclaim it now
+                // (the Failed arm's destroy shape): JS got 0 and will never
+                // call __net_close for this key, so parking the Box in
+                // NET_SERVER_GROUPS would leak one group per refused connect.
+                if let Some(group_box) = NET_SERVER_GROUPS.with(|g| g.borrow_mut().remove(&key)) {
+                    let raw = Box::into_raw(group_box);
+                    unsafe {
+                        SocketGroup::destroy(raw);
+                        drop(Box::from_raw(raw));
+                    }
+                }
+                args.rval().set(Int32Value(0));
+            } else {
+                NET_SOCKETS.with(|m| m.borrow_mut().insert(result_key, true));
+                args.rval().set(ptr_to_jsval(result_key));
+            }
         }
         bun_uws_sys::ConnectResult::Connecting(_connecting) => {
             // Async connect — tick the loop until on_open or on_connect_error fires.

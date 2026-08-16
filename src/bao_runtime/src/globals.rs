@@ -54,6 +54,11 @@ pub unsafe fn install_web_apis(
     bao_stealth::engine_props::install_stealth_props(raw_cx, global.get());
     crate::fetch_api::ensure_default_fetch_stealth_profile();
 
+    // Uncaught-exception / unhandled-rejection router: SM rejection tracker
+    // (runtime-level, idempotent) + bao_engine job-queue hooks. Registered for
+    // every global surface so timer/job/emitter callback throws always route.
+    crate::uncaught::install(cx);
+
     // Web APIs — safe for page global
     crate::fetch_api::install_fetch_global(cx, global);
     crate::timers::install_timer_globals(cx, global);
@@ -1609,37 +1614,19 @@ pub fn install_buffer_global(
   // this. SM: a detached TypedArray has buffer.byteLength === 0.
   // @trace REQ-ENG-005 — Negative start counts from the end (Node.js parity).
   // buffer.test.js "Buffer.subarray" drives sub.slice(-1) on "uf" → "f".
-  // The `start = start || 0` coercion earlier broke this (it treated -1 as
-  // truthy but then the original code's `start || 0` would have left -1 as
-  // is, but the actual bug is that the for-loop range never runs from a
-  // negative start; we now normalise negative offsets before copying).
+  // @trace REQ-ENG-005 [api:Buffer.subarray zero-copy view] — Node.js
+  // subarray SHARES the backing ArrayBuffer (view semantics, writes
+  // propagate both ways). BCE-20260816-BUF-VIEW: the old implementation
+  // copied into a fresh Buffer.alloc, so writes through either side never
+  // propagated. Delegate to the native shared-view slice path
+  // (JS_NewUint8ArrayWithBuffer + Buffer prototype in buffer_slice), which
+  // applies the identical normalization (ToInteger coercion, negative
+  // from-end, clamping) and preserves offset/length edges.
   _bp.subarray = function subarray(start, end) {
     if (this.buffer && this.buffer.byteLength === 0) {
       throw new TypeError('Cannot perform %TypedArray%.prototype.subarray on a detached ArrayBuffer');
     }
-    var len = this.length;
-    // Normalise start: undefined → 0; negative → from end; clamp [0, len].
-    if (start === undefined || start === null) start = 0;
-    else {
-      var sn = (typeof start === 'number') ? start : (+start | 0);
-      if (Number.isNaN(sn)) sn = 0;
-      if (sn < 0) { sn = len + sn; if (sn < 0) sn = 0; }
-      if (sn > len) sn = len;
-      start = sn;
-    }
-    // Normalise end: undefined → len; negative → from end; clamp [0, len].
-    if (end === undefined || end === null) end = len;
-    else {
-      var en = (typeof end === 'number') ? end : (+end | 0);
-      if (Number.isNaN(en)) en = len;
-      if (en < 0) { en = len + en; if (en < 0) en = 0; }
-      if (en > len) en = len;
-      end = en;
-    }
-    if (end < start) end = start;
-    var result = Buffer.alloc(end - start);
-    for (var i = start; i < end; i++) { result[i - start] = this[i]; }
-    return result;
+    return _bp.slice.call(this, start, end);
   };
 
   _bp.reverse = function() {

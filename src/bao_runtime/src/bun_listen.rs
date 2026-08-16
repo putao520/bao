@@ -1044,6 +1044,12 @@ struct ConnectUserData {
     promise: *mut JSObject,
     /// Whether the promise has been settled (resolved or rejected).
     promise_settled: Cell<bool>,
+    /// Whether the `open` callback has been delivered. Loopback connects
+    /// complete synchronously inside bun_connect (which fires `open` there),
+    /// yet uWS still dispatches connect_on_open on the next loop pass for the
+    /// same socket — without this guard the event fired twice and every
+    /// open-time write duplicated its payload.
+    open_fired: Cell<bool>,
 }
 
 /// @trace REQ-BAO-API-017 [api:Bun.connect] Bun.connect(options) -> Promise<Socket>
@@ -1224,6 +1230,7 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         cx,
         promise,
         promise_settled: Cell::new(false),
+        open_fired: Cell::new(false),
     });
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
@@ -1462,30 +1469,69 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             reject_connect_promise(cx, promise, "Bun.connect: connection failed");
         }
     } else {
-        // Synchronous (loopback) connect: connect_on_open never fires for an
-        // already-open socket, so resolve HERE with the full socket object —
-        // the promise used to stay pending forever on this path.
+        // Resolve with the socket identity. Async connects registered the
+        // identity and fired `open(socket)` in connect_on_open during the
+        // wait loop above — re-fetch that SAME object so the resolved promise
+        // and the open callback expose one socket. Already-open sockets
+        // (loopback sync connects) never dispatch connect_on_open, so THIS is
+        // where their identity gets registered and their open callback fires
+        // (the promise used to stay pending forever on this path).
         unsafe {
             if let Some(global) = bao_engine::context::thread_realm_global() {
                 if !global.is_null() {
-                    let sock_obj = build_tcp_socket_obj(
-                        cx,
-                        socket_key as *mut us_socket_t,
-                        None,
-                        None,
-                    );
-                    if !sock_obj.is_null() {
-                        let mut wrapped_cx_r =
-                            mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-                        let cx_ref_r = &mut wrapped_cx_r;
-                        rooted!(&in(cx_ref_r) let p = promise);
-                        rooted!(&in(cx_ref_r) let val = ObjectValue(sock_obj));
-                        mozjs_sys::jsapi::JS::ResolvePromise(
-                            cx,
-                            p.handle().into(),
-                            val.handle().into(),
-                        );
-                        mozjs_sys::jsapi::js::RunJobs(cx);
+                    let socket_ptr = socket_key as *mut us_socket_t;
+                    // Same refused-connect discriminator as connect_on_open's
+                    // guard: an inline-FAILED loopback connect (kernel returns
+                    // ECONNREFUSED at syscall time) surfaces as a "Socket"
+                    // result whose remote port is unset. Fire no open, resolve
+                    // nothing — the still-registered liveness token keeps the
+                    // loop ticking so the level-triggered EPOLLERR dispatches
+                    // connect_on_connect_error, which rejects the promise and
+                    // terminates the socket.
+                    if (*socket_ptr).remote_port() > 0 {
+                        let store_key = listen_sock_store_key(socket_ptr);
+                        let sock_obj = match gc_store_get(cx, &store_key) {
+                            Some(o) if !o.is_null() => o,
+                            _ => {
+                                let built = build_tcp_socket_obj(
+                                    cx,
+                                    socket_ptr,
+                                    None,
+                                    Some(&store_key),
+                                );
+                                if !built.is_null() {
+                                    // Sync-connect arm: connect() completed
+                                    // immediately, so deliver open HERE — but
+                                    // exactly once (uWS still dispatches
+                                    // connect_on_open for this socket on the
+                                    // next loop pass; the flag there skips the
+                                    // re-fire).
+                                    if !ud_ref.open_fired.replace(true) {
+                                        let open_val = ObjectValue(built);
+                                        let _ = invoke_js_callback(
+                                            cx,
+                                            &ud_ref.open_cb_key,
+                                            &[open_val],
+                                        );
+                                    }
+                                }
+                                built
+                            }
+                        };
+                        if !sock_obj.is_null() {
+                            let mut wrapped_cx_r = mozjs::context::JSContext::from_ptr(
+                                NonNull::new_unchecked(cx),
+                            );
+                            let cx_ref_r = &mut wrapped_cx_r;
+                            rooted!(&in(cx_ref_r) let p = promise);
+                            rooted!(&in(cx_ref_r) let val = ObjectValue(sock_obj));
+                            mozjs_sys::jsapi::JS::ResolvePromise(
+                                cx,
+                                p.handle().into(),
+                                val.handle().into(),
+                            );
+                            mozjs_sys::jsapi::js::RunJobs(cx);
+                        }
                     }
                 }
             }
@@ -2573,6 +2619,15 @@ unsafe extern "C" fn tcp_on_connect_error(
     s: *mut us_socket_t,
     _code: ::std::ffi::c_int,
 ) -> *mut us_socket_t {
+    // BCE (connect-error socket spin — same class as HTTPContext's
+    // on_connect_error): uSockets hands close responsibility to this
+    // handler for the single-address connect fast path; leaving the
+    // never-opened socket registered in epoll is a level-triggered EPOLLERR
+    // that re-fires this callback every loop pass (CPU spin). close(Failure)
+    // unregisters the fd and stops the redispatch. on_close may or may not
+    // dispatch afterwards (semi-socket contract) — no state was registered
+    // for a socket that never opened, so there is nothing else to clean.
+    (*s).close(CloseCode::failure);
     s
 }
 
@@ -2621,6 +2676,18 @@ unsafe extern "C" fn connect_on_open(
     _ip: *mut u8,
     _ip_length: ::std::ffi::c_int,
 ) -> *mut us_socket_t {
+    // Refused-connect guard: on EPOLLERR uSockets' after-open path can
+    // dispatch on_open for a socket that never connected (remote_port() < 0;
+    // observed on refused loopback connects — a bogus OPEN fired and the
+    // promise RESOLVED with a dead identity right before the connect_error
+    // spin). A genuinely connected TCP socket always carries a positive
+    // remote port. Bail BEFORE the CONNECT_RESULT bookkeeping so the wait
+    // loop keeps ticking until on_connect_error reports the failure and the
+    // promise rejects.
+    if (*s).remote_port() <= 0 {
+        return s;
+    }
+
     let key = s as usize;
     LISTEN_TCP_SOCKETS.with(|m| m.borrow_mut().insert(key, true));
     CONNECT_RESULT.with(|r| {
@@ -2632,15 +2699,60 @@ unsafe extern "C" fn connect_on_open(
     // Retrieve user data and call JS `open` callback
     // group() returns &mut SocketGroup (never null for live sockets per uSockets contract)
     let ud = &*((*s).group().owner::<ConnectUserData>() as *const ConnectUserData);
-    let _ = invoke_js_callback(ud.cx, &ud.open_cb_key, &[]);
 
-    // Resolve the pending Promise with the socket pointer
-    // The socket JS object is built lazily — we resolve with the socket key
-    // so the caller can construct the Socket object from the resolved value.
-    // For Bun API compatibility, we resolve with a full Socket object
-    // (write/end/destroy + remote/local address info) — the previous bare
-    // {_socketPtr} had no methods, so the resolved socket could neither
-    // write nor close (filed from the #21 sweep follow-up).
+    // Exactly-once open delivery: loopback connects complete synchronously in
+    // bun_connect (which fires `open` there), yet uWS still dispatches this
+    // callback on the next loop pass for the same socket.
+    let open_already_fired = ud.open_fired.replace(true);
+
+    // Client identity bridge (parity with the listen-side accept bridge in
+    // tcp_on_open): build the JS socket identity, register it in the
+    // pointer-scoped GcStore slot the data/close vtable callbacks resolve,
+    // and pass it to the open handler (Bun API: open(socket)) — previously
+    // fired with NO arguments, so `open(sock) { sock.write(..) }` threw a
+    // TypeError that invoke_js_callback silently cleared: the client never
+    // sent and the peer's data events never fired (data-never-delivered).
+    let mut has_identity = false;
+    if !ud.cx.is_null() {
+        if let Some(global) = bao_engine::context::thread_realm_global() {
+            if !global.is_null() {
+                let mut wrapped_cx =
+                    mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(ud.cx));
+                let cx_ref = &mut wrapped_cx;
+                rooted!(&in(cx_ref) let global_root = global);
+                let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+                let store_key = listen_sock_store_key(s);
+                // Reuse the sync arm's registration when present (same
+                // pointer-scoped key) so open() and the resolved promise
+                // always expose ONE socket object per connection.
+                let sock_obj = match gc_store_get(ud.cx, &store_key) {
+                    Some(o) if !o.is_null() => o,
+                    _ => build_tcp_socket_obj(realm_cx.raw_cx(), s, None, Some(&store_key)),
+                };
+                if !sock_obj.is_null() {
+                    has_identity = true;
+                    if !open_already_fired {
+                        rooted!(&in(realm_cx) let sock_val = ObjectValue(sock_obj));
+                        let _ =
+                            invoke_js_callback(ud.cx, &ud.open_cb_key, &[*sock_val.handle()]);
+                    }
+                }
+            }
+        }
+    }
+    if !has_identity && !open_already_fired {
+        // Fallback: no realm / object build failed — fire without identity.
+        let _ = invoke_js_callback(ud.cx, &ud.open_cb_key, &[]);
+    }
+
+    // Resolve the pending Promise with the socket identity.
+    // Bun.connect's own wait loop resolves the common paths (ud.promise is
+    // still null while that loop ticks through this callback); this arm
+    // covers dispatch orderings where the promise is already stored. Re-fetch
+    // the registered identity from GcStore instead of reusing a raw pointer
+    // across the open callback — invoke_js_callback can allocate (GC moves).
     if !ud.promise_settled.get() && !ud.promise.is_null() {
         ud.promise_settled.set(true);
         let cx = ud.cx;
@@ -2648,7 +2760,11 @@ unsafe extern "C" fn connect_on_open(
             let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             let cx_ref = &mut wrapped_cx;
             rooted!(&in(cx_ref) let p = ud.promise);
-            let sock_obj = build_tcp_socket_obj(cx, s, None, None);
+            let store_key = listen_sock_store_key(s);
+            let sock_obj = match gc_store_get(cx, &store_key) {
+                Some(o) if !o.is_null() => o,
+                _ => build_tcp_socket_obj(cx, s, None, None),
+            };
             if !sock_obj.is_null() {
                 rooted!(&in(cx_ref) let val = ObjectValue(sock_obj));
                 mozjs_sys::jsapi::JS::ResolvePromise(cx, p.handle().into(), val.handle().into());
@@ -2701,6 +2817,16 @@ unsafe extern "C" fn connect_on_data(
     }
     rooted!(&in(realm_cx) let data_root = StringValue(&*js_str));
     let data_val = *data_root.handle();
+    // Bun API: data(socket, data) — resolve the client socket's JS identity
+    // from the registry connect_on_open populated (parity with tcp_on_data).
+    let sock_key = listen_sock_store_key(s);
+    if let Some(sock_obj) = gc_store_get(cx, &sock_key) {
+        if !sock_obj.is_null() {
+            rooted!(&in(realm_cx) let sock_val = ObjectValue(sock_obj));
+            let _ = invoke_js_callback(cx, &ud.data_cb_key, &[*sock_val.handle(), data_val]);
+            return s;
+        }
+    }
     let _ = invoke_js_callback(cx, &ud.data_cb_key, &[data_val]);
 
     s
@@ -2724,10 +2850,49 @@ unsafe extern "C" fn connect_on_close(
     let ud_ptr = (*s).group().owner::<ConnectUserData>() as *const ConnectUserData;
     let ud = &*ud_ptr;
 
+    // Resolve the client socket's JS identity, drop it from the registry
+    // (pointer-scoped key MUST go before the socket memory can be reused,
+    // else a later socket at the same address would resolve a stale object),
+    // and deliver close(socket, code) + end(socket) — parity with tcp_on_close.
+    let sock_key = listen_sock_store_key(s);
+    let sock_obj = if ud.cx.is_null() {
+        None
+    } else {
+        gc_store_get(ud.cx, &sock_key)
+    };
+    if !ud.cx.is_null() {
+        gc_store_remove(ud.cx, &sock_key);
+    }
+
     let code_val = Int32Value(code);
-    let _ = invoke_js_callback(ud.cx, &ud.close_cb_key, &[code_val]);
-    // Also fire end callback on close (Bun API: close implies end)
-    let _ = invoke_js_callback(ud.cx, &ud.end_cb_key, &[]);
+    let mut delivered_with_identity = false;
+    if let Some(obj) = sock_obj {
+        if !obj.is_null() {
+            if let Some(global) = bao_engine::context::thread_realm_global() {
+                if !global.is_null() {
+                    let mut wrapped_cx =
+                        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(ud.cx));
+                    let cx_ref = &mut wrapped_cx;
+                    rooted!(&in(cx_ref) let global_root = global);
+                    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+                    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+                    rooted!(&in(realm_cx) let sock_val = ObjectValue(obj));
+                    let _ = invoke_js_callback(
+                        ud.cx,
+                        &ud.close_cb_key,
+                        &[*sock_val.handle(), code_val],
+                    );
+                    let _ = invoke_js_callback(ud.cx, &ud.end_cb_key, &[*sock_val.handle()]);
+                    delivered_with_identity = true;
+                }
+            }
+        }
+    }
+    if !delivered_with_identity {
+        let _ = invoke_js_callback(ud.cx, &ud.close_cb_key, &[code_val]);
+        // Also fire end callback on close (Bun API: close implies end)
+        let _ = invoke_js_callback(ud.cx, &ud.end_cb_key, &[]);
+    }
 
     CONNECT_GROUPS.with(|g| g.borrow_mut().remove(&key));
     // Drop the JS-idle liveness token registered in bun_connect.
@@ -2759,6 +2924,21 @@ unsafe extern "C" fn connect_on_connect_error(
             &format!("Bun.connect: connection error (code {})", code),
         );
     }
+
+    // BCE (connect-error socket spin — same class as HTTPContext's
+    // on_connect_error): uSockets hands close responsibility to this
+    // handler for the single-address connect fast path; leaving the
+    // never-opened socket registered in epoll is a level-triggered EPOLLERR
+    // that re-fires this callback every loop pass (CPU spin). close(Failure)
+    // unregisters the fd and stops the redispatch. No GcStore identity was
+    // ever registered (the socket never opened), but bun_connect MAY have
+    // registered this pointer as a JS-idle liveness token (inline-failed
+    // connects surface as a "Socket" result) — on_close never dispatches for
+    // these sockets, so drop the token here or the loop never idles again.
+    unsafe {
+        crate::node_http::unregister_active_app(s as *mut bun_uws_sys::app::App<false>);
+    }
+    (*s).close(CloseCode::failure);
 
     s
 }
@@ -3201,24 +3381,65 @@ unsafe fn reject_connect_promise(cx: *mut JSContext, promise: *mut JSObject, msg
     }
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let err_obj = JS_NewPlainObject(cx));
-    if !err_obj.get().is_null() {
-        let c_msg = ZBox::from_bytes(msg.as_bytes());
-        let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
-        if !js_str.is_null() {
-            rooted!(&in(cx_ref) let msg_val = StringValue(&*js_str));
-            JS_DefineProperty(
-                cx,
-                err_obj.handle().into(),
-                c"message".as_ptr(),
-                msg_val.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-        rooted!(&in(cx_ref) let err_val = ObjectValue(err_obj.get()));
-        rooted!(&in(cx_ref) let p = promise);
-        mozjs_sys::jsapi::JS::RejectPromise(cx, p.handle().into(), err_val.handle().into());
+    // Settle guard: both connect_on_connect_error and bun_connect's
+    // socket_key==0 arm reach here — rejecting an already-settled promise
+    // fails and leaves a pending exception mid-eval.
+    rooted!(&in(cx_ref) let p_early = promise);
+    if JS::GetPromiseState(p_early.handle().into()) != PromiseState::Pending {
+        return;
     }
+    // Rejection value must be a REAL Error instance (`Error(msg)` called as
+    // a function performs the constructor steps) — a bare {message} object
+    // breaks `catch (e) { e instanceof Error }` / stack-shape consumers.
+    rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return;
+    }
+    let mut ctor_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        global.handle().into(),
+        c"Error".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ctor_val,
+        },
+    );
+    if !ctor_val.is_object() {
+        return;
+    }
+    let c_msg = ZBox::from_bytes(msg.as_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+    if js_str.is_null() {
+        return;
+    }
+    rooted!(&in(cx_ref) let msg_val = StringValue(&*js_str));
+    rooted!(&in(cx_ref) let ctor_root = ctor_val);
+    let call_args = HandleValueArray {
+        length_: 1,
+        elements_: &*msg_val.handle(),
+    };
+    let mut err_val = UndefinedValue();
+    let err_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut err_val,
+    };
+    let called = JS_CallFunctionValue(
+        cx,
+        global.handle().into(),
+        ctor_root.handle().into(),
+        &call_args,
+        err_h,
+    );
+    if !called || !err_val.is_object() {
+        if !called {
+            JS_ClearPendingException(cx);
+        }
+        return;
+    }
+    rooted!(&in(cx_ref) let err_root = err_val);
+    rooted!(&in(cx_ref) let p = promise);
+    mozjs_sys::jsapi::JS::RejectPromise(cx, p.handle().into(), err_root.handle().into());
     mozjs_sys::jsapi::js::RunJobs(cx);
 }
 
