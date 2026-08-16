@@ -73,12 +73,20 @@ fn js_escape(p: &std::path::Path) -> String {
     p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Per-process unique scratch dir: two invocations of this binary (e.g. two
+/// terminals, or a rerun racing a still-running run) must not delete each
+/// other's watched directory — a colliding cleanup surfaces as IN_DELETE_SELF
+/// + IN_IGNORED ("rename:null") and kills the watch mid-test.
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("{}_{}", name, std::process::id()))
+}
+
 /// fs.watch(directory, listener): create + append + rename on real files must
 /// deliver eventType + filename events (inotify → pump → listener).
 #[test]
 fn test_fs_watch_directory_events_fire() {
     let mut ctx = setup_ctx();
-    let dir = std::env::temp_dir().join("bao_fswatch_dir_events");
+    let dir = scratch_dir("bao_fswatch_dir_events");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let d = js_escape(&dir);
@@ -145,7 +153,7 @@ globalThis.__close = function () {{ w.close(); }};
 #[test]
 fn test_fs_watch_single_file_events_fire() {
     let mut ctx = setup_ctx();
-    let dir = std::env::temp_dir().join("bao_fswatch_file_events");
+    let dir = scratch_dir("bao_fswatch_file_events");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("watched.log");
@@ -194,7 +202,7 @@ globalThis.__close = function () {{ w.close(); }};
 #[test]
 fn test_fs_watch_file_stat_polling_fires() {
     let mut ctx = setup_ctx();
-    let dir = std::env::temp_dir().join("bao_fswatch_watchfile");
+    let dir = scratch_dir("bao_fswatch_watchfile");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("polled.txt");
@@ -239,7 +247,7 @@ globalThis.__done = function () {{ return __deltas.indexOf('10->13') !== -1; }};
 #[test]
 fn test_fs_watch_close_stops_events() {
     let mut ctx = setup_ctx();
-    let dir = std::env::temp_dir().join("bao_fswatch_close");
+    let dir = scratch_dir("bao_fswatch_close");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let d = js_escape(&dir);
