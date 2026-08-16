@@ -2384,8 +2384,44 @@ unsafe fn subtle_resolve(cx: *mut JSContext, promise: *mut JSObject, val: JSVal)
 /// algo.name string from the first argument (algorithm identifier object).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn subtle_algo_name(cx: *mut JSContext, val: JSVal) -> ::std::result::Result<(String, *mut JSObject), String> {
+    // WebCrypto AlgorithmIdentifier is `(Algorithm or DOMString)`: a bare
+    // string like 'HMAC' is the exact equivalent of {name: 'HMAC'} with no
+    // extra params (browsers and Node webcrypto both coerce). Synthesize the
+    // object so every downstream subtle_*_prop(alg_obj, …) lookup behaves
+    // exactly as if the caller passed the object form.
+    if val.is_string() {
+        let name = crate::js_to_rust_string(cx, val);
+        if name.is_empty() {
+            return Err("algorithm name is required".to_string());
+        }
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        let obj = JS_NewPlainObject(cx_ref);
+        if obj.is_null() {
+            return Err("algorithm object allocation failed".to_string());
+        }
+        rooted!(&in(cx_ref) let obj_root = obj);
+        let js_name = JS_NewStringCopyN(
+            cx,
+            name.as_ptr() as *const ::std::os::raw::c_char,
+            name.len(),
+        );
+        if js_name.is_null() {
+            return Err("algorithm name string allocation failed".to_string());
+        }
+        rooted!(&in(cx_ref) let name_val = mozjs::jsval::StringValue(&*js_name));
+        JS_DefineProperty(
+            cx,
+            obj_root.handle().into(),
+            c"name".as_ptr(),
+            name_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+        return Ok((name, obj_root.get()));
+    }
     if !val.is_object() {
-        return Err("algorithm identifier must be an object".to_string());
+        return Err("algorithm identifier must be a string or an object".to_string());
     }
     let obj = val.to_object();
     let name = subtle_str_prop(cx, obj, "name")
@@ -2862,14 +2898,19 @@ unsafe extern "C" fn subtle_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             }
             v.to_object()
         };
-        let key_alg_name = subtle_str_prop(cx, key_alg, "name").unwrap_or_default();
         let ktype = subtle_str_prop(cx, key_obj, "type").unwrap_or_default();
 
         match name.as_str() {
             "HMAC" => {
                 let raw = key_material(cx, key_obj, "_raw")
                     .ok_or("sign: not a symmetric CryptoKey".to_string())?;
-                let hash = subtle_str_prop(cx, key_alg, "hash").unwrap_or_else(|| "SHA-256".to_string());
+                // The hash is a property of the KEY's algorithm (what the key
+                // was imported with); an explicit hash on the algorithm
+                // argument (object form only — the string form carries no
+                // params) wins, mirroring the object-form behavior.
+                let hash = subtle_str_prop(cx, alg_obj, "hash")
+                    .or_else(|| subtle_str_prop(cx, key_alg, "hash"))
+                    .unwrap_or_else(|| "SHA-256".to_string());
                 let algo = subtle_hmac_algorithm(&hash)?;
                 let mut out = [0u8; bun_sha_hmac::hmac::EVP_MAX_MD_SIZE];
                 let mac = bun_sha_hmac::hmac::generate(&raw, &data, algo, &mut out)
@@ -2882,7 +2923,7 @@ unsafe extern "C" fn subtle_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 }
                 let der = key_material(cx, key_obj, "_der")
                     .ok_or("sign: not a private CryptoKey".to_string())?;
-                let hash = subtle_str_prop(cx, if name == "HMAC" { alg_obj } else { key_alg }, "hash")
+                let hash = subtle_str_prop(cx, key_alg, "hash")
                     .unwrap_or_else(|| "SHA-256".to_string());
                 let signer = bao_crypto::sign::Signer::from_pkcs8_der(
                     &bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 { hash: subtle_rsa_hash(&hash)? },
@@ -2965,7 +3006,6 @@ unsafe extern "C" fn subtle_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             }
             v.to_object()
         };
-        let key_alg_name = subtle_str_prop(cx, key_alg, "name").unwrap_or_default();
         let ktype = subtle_str_prop(cx, key_obj, "type").unwrap_or_default();
 
         match name.as_str() {

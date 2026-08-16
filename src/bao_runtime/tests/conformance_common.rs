@@ -51,8 +51,18 @@ pub fn make_ctx() -> JsContext {
 /// Run a labelled-check bundle in the given context and assert every check
 /// passed. The JS source must push `"<label>:PASS"`, `"<label>:FAIL"`, or
 /// `"<label>:ERROR:<msg>"` to a `results` array, then return `results.join("|")`.
+///
+/// Strict (BCE-20260817 fake-green guard): a top-level JS throw makes
+/// eval_string return "" which the loop below accepts as "no failures" —
+/// the suite goes green while its first statement crashed. Fail when no
+/// check output was produced at all.
 pub fn run_checks(ctx: &mut JsContext, source: &str) {
     let results = eval_string(ctx, source);
+    assert!(
+        results.contains(":PASS") || results.contains(":FAIL") || results.contains(":ERROR:"),
+        "suite produced no check output — top-level JS error? raw: {:?}",
+        results
+    );
     let mut failures = Vec::new();
     for item in results.split('|') {
         if item.is_empty() {

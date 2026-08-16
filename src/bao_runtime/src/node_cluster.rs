@@ -33,22 +33,53 @@ fn is_worker_env(worker_id: Option<&str>) -> bool {
     }
 }
 
-/// Process-wide frozen worker classification.
+/// Process-birth snapshot of the worker classification input (#64 root fix).
 ///
-/// `process.env.X = v` in JS bridges to `std::env::set_var` (bun_api env
-/// setter), so a per-install env read would let a user env write in one realm
-/// flip `isPrimary` for every realm created afterwards (browser PagePool /
-/// multi-context processes create realms lazily). Freezing at first install
-/// makes the classification a property of process birth (exec env), which is
-/// the Node semantic (NODE_WORKER_ID is decided by how the process was
-/// started, never by later env writes).
-static IS_WORKER_FROZEN: ::std::sync::OnceLock<bool> = ::std::sync::OnceLock::new();
+/// The freeze used to happen lazily at the FIRST `node_cluster::install` —
+/// which made the classification hostage to whatever wrote `std::env`
+/// between process birth and that first install:
+///
+///   * `process.env.X = v` in JS bridges to `std::env::set_var` (bun_api env
+///     setter), and multi-realm hosts (browser PagePool, embedder harnesses,
+///     cargo-test binaries) create realms lazily — user JS can run in an
+///     early realm (or a plain Rust `set_var` in a host) BEFORE the first
+///     realm that installs cluster, freezing a polluted value process-wide;
+///   * under parallel test execution the "which realm installs first" order
+///     is scheduler-dependent — the classic non-deterministic isPrimary
+///     flip-to-false.
+///
+/// The snapshot is now taken at PROCESS BIRTH by an `.init_array`
+/// constructor (Linux ELF: the dynamic linker runs it before `main`, before
+/// any realm, JS engine, or env bridge exists). This is the Node semantic
+/// made literal: worker-ness is a property of how the process was exec'd,
+/// never of later env writes.
+static EXEC_TIME_WORKER_ID: ::std::sync::OnceLock<Option<String>> = ::std::sync::OnceLock::new();
+
+/// Snapshot `BAO_CLUSTER_WORKER_ID` from the exec-time environment (pre-main).
+#[cfg(target_os = "linux")]
+extern "C" fn snapshot_exec_worker_id() {
+    let _ = EXEC_TIME_WORKER_ID.set(::std::env::var("BAO_CLUSTER_WORKER_ID").ok());
+}
+
+/// `.init_array` entry — the dynamic linker invokes the pointed-to function
+/// before `main` (the same mechanism glibc/libstd use for their own startup
+/// hooks; `environ` is already populated at this point).
+#[cfg(target_os = "linux")]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static CAPTURE_EXEC_WORKER_ID: extern "C" fn() = snapshot_exec_worker_id;
 
 /// Check if this process is a cluster worker (started with --cluster-worker env).
 fn is_cluster_worker() -> bool {
-    *IS_WORKER_FROZEN.get_or_init(|| {
-        is_worker_env(::std::env::var("BAO_CLUSTER_WORKER_ID").ok().as_deref())
-    })
+    // Process-birth snapshot (Linux ctor). The direct std::env read is only
+    // a non-Linux fallback where no pre-main hook exists — identical value
+    // in a fresh process; the lazy-realm race class only exists in
+    // long-lived multi-realm hosts, which are Linux (PagePool/browser).
+    let raw = EXEC_TIME_WORKER_ID
+        .get()
+        .cloned()
+        .unwrap_or_else(|| ::std::env::var("BAO_CLUSTER_WORKER_ID").ok());
+    is_worker_env(raw.as_deref())
 }
 
 // ─── Module install ────────────────────────────────────────────────────────

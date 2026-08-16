@@ -2023,7 +2023,7 @@ unsafe fn get_child_ptr_from_this(
         }
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
-        rooted!(&in(cx_ref) let obj = this.to_object());
+        rooted!(&in(cx_ref) let obj = this.get().to_object());
 
         let mut hi_val = UndefinedValue();
         JS_GetProperty(
@@ -5524,18 +5524,10 @@ unsafe extern "C" fn bun_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             JSPROP_ENUMERATE as u32,
         );
     }
-    // exists() — Promise<boolean> over a live stat (upstream BunFile shape).
-    // Audit: the old data prop was omitted entirely for missing files
-    // (undefined instead of false); the method form resolves false without
-    // throwing for missing paths, true for existing ones.
-    JS_DefineFunction(
-        cx_ref,
-        file_obj.handle(),
-        c"exists".as_ptr(),
-        Some(bun_file_exists),
-        0,
-        JSPROP_ENUMERATE as u32,
-    );
+    // exists()/text()/json()/arrayBuffer()/slice() — the shared BunFile face
+    // (define_bunfile_methods; audit history: exists() resolves false for
+    // missing paths instead of throwing).
+    define_bunfile_methods(cx_ref, file_obj.handle());
     args.rval().set(mozjs::jsval::ObjectValue(file_obj.get()));
     true
 }
@@ -5553,7 +5545,7 @@ unsafe extern "C" fn bun_file_exists(cx: *mut JSContext, argc: u32, vp: *mut JSV
     }
     let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped;
-    rooted!(&in(cx_ref) let obj = this.to_object());
+    rooted!(&in(cx_ref) let obj = this.get().to_object());
     let mut path_v = UndefinedValue();
     let mut path = String::new();
     if JS_GetProperty(
@@ -5587,6 +5579,678 @@ unsafe extern "C" fn bun_file_exists(cx: *mut JSContext, argc: u32, vp: *mut JSV
         JS_ClearPendingException(cx);
         mozjs::jsval::BooleanValue(exists)
     });
+    true
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.file BunFile.text/json/arrayBuffer/slice] —
+// the BunFile read method family, shared by the path form (bun_file) and the
+// fd form (make_bun_file_for_fd).
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Attach the full BunFile method face (exists + the read family) to a
+/// BunFile instance. Both construction forms expose the identical surface.
+unsafe fn define_bunfile_methods(
+    cx: &mut mozjs::context::JSContext,
+    obj: mozjs::rust::Handle<*mut JSObject>,
+) {
+    // exists() — Promise<boolean> over a live stat (upstream BunFile shape).
+    JS_DefineFunction(
+        cx,
+        obj,
+        c"exists".as_ptr(),
+        Some(bun_file_exists),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    JS_DefineFunction(
+        cx,
+        obj,
+        c"text".as_ptr(),
+        Some(bun_file_text),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    JS_DefineFunction(
+        cx,
+        obj,
+        c"json".as_ptr(),
+        Some(bun_file_json),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    JS_DefineFunction(
+        cx,
+        obj,
+        c"arrayBuffer".as_ptr(),
+        Some(bun_file_array_buffer),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    // slice(begin, end, contentType) — sync Blob return (upstream BunFile
+    // extends Blob; slice never promises).
+    JS_DefineFunction(
+        cx,
+        obj,
+        c"slice".as_ptr(),
+        Some(bun_file_slice),
+        3,
+        JSPROP_ENUMERATE as u32,
+    );
+}
+
+/// What a BunFile instance points at: the fd form carries a live descriptor
+/// (its `path` is a derived /proc/self/fd link — the descriptor itself is the
+/// true source), the path form carries the target path.
+enum BunfileSrc {
+    Path(String),
+    Fd(i32),
+}
+
+/// Read the BunFile's backing source off `this` (fd prop wins over path).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn bunfile_src(cx: *mut JSContext, this: Handle<Value>) -> Option<BunfileSrc> {
+    if !this.is_object() {
+        return None;
+    }
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let obj = this.get().to_object());
+    let mut fd_v = UndefinedValue();
+    if JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"fd".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut fd_v,
+        },
+    ) && fd_v.is_int32()
+    {
+        return Some(BunfileSrc::Fd(fd_v.to_int32()));
+    }
+    let mut path_v = UndefinedValue();
+    if JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"path".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut path_v,
+        },
+    ) && path_v.is_string()
+    {
+        let s = crate::js_to_rust_string(cx, path_v);
+        if !s.is_empty() {
+            return Some(BunfileSrc::Path(s));
+        }
+    }
+    None
+}
+
+/// Human-facing name of a source for errno messages (the fd form reports its
+/// /proc path — the descriptor's real identity).
+fn bunfile_display_path(src: &BunfileSrc) -> String {
+    match src {
+        BunfileSrc::Path(p) => p.clone(),
+        BunfileSrc::Fd(fd) => format!("/proc/self/fd/{}", fd),
+    }
+}
+
+/// Map an io error to the Node-style errno code (same taxonomy as
+/// node_fs::throw_fs_error).
+fn bunfile_io_code(err: &::std::io::Error) -> &'static str {
+    match err.kind() {
+        ::std::io::ErrorKind::NotFound => "ENOENT",
+        ::std::io::ErrorKind::PermissionDenied => "EACCES",
+        ::std::io::ErrorKind::IsADirectory => "EISDIR",
+        ::std::io::ErrorKind::NotADirectory => "ENOTDIR",
+        _ => "ERR",
+    }
+}
+
+/// Read the whole file reachable from a raw fd WITHOUT consuming the
+/// descriptor's cursor: pread from offset 0 (regular-file semantics —
+/// Bun.file(fd) reads the whole backing file). Non-seekable fds (pipes /
+/// std streams) fail pread with ESPIPE and fall back to a sequential
+/// read-to-EOF loop.
+fn read_fd_all(fd: i32) -> ::std::result::Result<Vec<u8>, ::std::io::Error> {
+    // Size hint via fstat keeps the common case a single pread.
+    let mut st: libc::stat = unsafe { ::std::mem::zeroed() };
+    let cap = if unsafe { libc::fstat(fd, &mut st) } == 0 && st.st_size > 0 {
+        st.st_size as usize
+    } else {
+        64 * 1024
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(cap);
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut off: i64 = 0;
+    loop {
+        let n = unsafe { libc::pread(fd, buf.as_mut_ptr() as *mut _, buf.len(), off) };
+        if n < 0 {
+            let err = ::std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ESPIPE) && off == 0 {
+                return read_fd_sequential(fd);
+            }
+            return Err(err);
+        }
+        if n == 0 {
+            return Ok(out);
+        }
+        out.extend_from_slice(&buf[..n as usize]);
+        off += n as i64;
+    }
+}
+
+/// Sequential read-to-EOF for non-seekable fds (the ESPIPE fallback).
+fn read_fd_sequential(fd: i32) -> ::std::result::Result<Vec<u8>, ::std::io::Error> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if n < 0 {
+            return Err(::std::io::Error::last_os_error());
+        }
+        if n == 0 {
+            return Ok(out);
+        }
+        out.extend_from_slice(&buf[..n as usize]);
+    }
+}
+
+/// pread exactly `len` bytes at `start` from an open fd (short read on EOF).
+fn pread_range(fd: i32, start: usize, len: usize) -> ::std::result::Result<Vec<u8>, ::std::io::Error> {
+    let mut out = vec![0u8; len];
+    let mut filled = 0usize;
+    while filled < len {
+        let n = unsafe {
+            libc::pread(
+                fd,
+                out.as_mut_ptr().add(filled) as *mut _,
+                len - filled,
+                start as i64 + filled as i64,
+            )
+        };
+        if n < 0 {
+            return Err(::std::io::Error::last_os_error());
+        }
+        if n == 0 {
+            break;
+        }
+        filled += n as usize;
+    }
+    out.truncate(filled);
+    Ok(out)
+}
+
+/// Read a byte range straight from a path (private O_RDONLY fd + pread —
+/// the rest of the file is never touched).
+fn read_path_range(path: &str, start: usize, len: usize) -> ::std::result::Result<Vec<u8>, ::std::io::Error> {
+    let c_path = ZBox::from_bytes(path.as_bytes());
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(::std::io::Error::last_os_error());
+    }
+    let res = pread_range(fd, start, len);
+    unsafe { libc::close(fd) };
+    res
+}
+
+/// How a read method converts the file bytes into the promised JS value.
+#[derive(Clone, Copy, PartialEq)]
+enum BunfileReadMode {
+    Text,
+    Json,
+    ArrayBuffer,
+}
+
+/// Why the promise rejects instead: a coded errno message, or an explicit
+/// reject value (e.g. the SyntaxError harvested from a failed JSON.parse).
+enum FileSettleErr {
+    Coded(&'static str, String),
+    Value(JSVal),
+}
+
+/// Build an Error object as a VALUE (code + message stamped) without leaving
+/// a pending exception — the harvest-a-pending-exception pattern from
+/// node_fs::throw_fs_error, minus the throw.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn make_coded_error_value(cx: *mut JSContext, code: &str, msg: &str) -> Value {
+    let c_msg = ZBox::from_bytes(msg.as_bytes());
+    JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+    let mut exn = UndefinedValue();
+    let exn_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut exn,
+    };
+    if !JS_GetPendingException(cx, exn_h) || !exn.is_object() {
+        JS_ClearPendingException(cx);
+        return UndefinedValue();
+    }
+    JS_ClearPendingException(cx);
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let exn_obj = exn.to_object());
+    let c_code = ZBox::from_bytes(code.as_bytes());
+    let code_js = JS_NewStringCopyZ(cx, c_code.as_ptr());
+    if !code_js.is_null() {
+        rooted!(&in(cx_ref) let code_val = StringValue(unsafe { &*code_js }));
+        JS_DefineProperty(
+            cx,
+            exn_obj.handle().into(),
+            c"code".as_ptr(),
+            code_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    // Read back through the root: the JS_NewStringCopyZ above may have GC'd.
+    ObjectValue(exn_obj.get())
+}
+
+/// Valid-UTF-8 text → JSString through the UTF-8 decoder. JS_NewStringCopyN
+/// reads the buffer as Latin-1 (one byte = one char code), which mangles
+/// multibyte UTF-8 (E5 8C 85 → "å\x8c\x85" instead of 包); the JSString must
+/// be built via JS_NewStringCopyUTF8N — same discipline as the
+/// Buffer.toString mojibake fix in globals.rs (@trace REQ-ENG-005).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn js_string_from_utf8(cx: *mut JSContext, text: &str) -> *mut JSString {
+    let chars = mozjs::conversions::Utf8Chars::from(text);
+    mozjs_sys::jsapi::JS_NewStringCopyUTF8N(
+        cx,
+        &*chars as *const _ as *const mozjs_sys::jsapi::JS::UTF8Chars,
+    )
+}
+
+/// Convert already-read bytes to the promised value per `mode`. Returns a
+/// FRESH value — the caller roots it immediately (no JSAPI call happens in
+/// between, same discipline as the rest of bun_api).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn file_bytes_to_value(
+    cx: *mut JSContext,
+    mode: BunfileReadMode,
+    bytes: &[u8],
+) -> ::std::result::Result<JSVal, FileSettleErr> {
+    let bad_alloc = |what: &str| FileSettleErr::Coded("ERR", format!("{} allocation failed", what));
+    match mode {
+        // WHATWG text decoding is UTF-8 with replacement — lossy conversion
+        // is the spec behaviour, not a fallback.
+        BunfileReadMode::Text => {
+            let text = String::from_utf8_lossy(bytes);
+            let js_str = js_string_from_utf8(cx, &text);
+            if js_str.is_null() {
+                return Err(bad_alloc("string"));
+            }
+            Ok(StringValue(unsafe { &*js_str }))
+        }
+        BunfileReadMode::Json => {
+            let text = String::from_utf8_lossy(bytes);
+            let js_str = js_string_from_utf8(cx, &text);
+            if js_str.is_null() {
+                return Err(bad_alloc("string"));
+            }
+            let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped;
+            // BCE-012 discipline: root the JSString across JS_ParseJSON1
+            // (it can GC); the out slot is a plain local consumed before any
+            // further JSAPI call.
+            rooted!(&in(cx_ref) let str_root = js_str);
+            let mut parsed = UndefinedValue();
+            let parsed_h = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut parsed,
+            };
+            if JS_ParseJSON1(cx, str_root.handle().into(), parsed_h) {
+                return Ok(parsed);
+            }
+            // The pending SyntaxError IS the reject reason.
+            if JS_IsExceptionPending(cx) {
+                let mut exn = UndefinedValue();
+                let exn_h = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut exn,
+                };
+                if JS_GetPendingException(cx, exn_h) {
+                    JS_ClearPendingException(cx);
+                    return Err(FileSettleErr::Value(exn));
+                }
+            }
+            JS_ClearPendingException(cx);
+            Err(FileSettleErr::Coded("ERR", "JSON parse failed".into()))
+        }
+        BunfileReadMode::ArrayBuffer => {
+            let u8_obj = mozjs_sys::jsapi::JS_NewUint8Array(cx, bytes.len());
+            if u8_obj.is_null() {
+                return Err(bad_alloc("typed array"));
+            }
+            let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped;
+            rooted!(&in(cx_ref) let view = u8_obj);
+            if !bytes.is_empty() {
+                let mut is_shared = false;
+                let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(
+                    view.get(),
+                    &mut is_shared,
+                    ::std::ptr::null(),
+                );
+                if data_ptr.is_null() {
+                    return Err(FileSettleErr::Coded(
+                        "ERR",
+                        "typed array data access failed".into(),
+                    ));
+                }
+                ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+            }
+            Ok(ObjectValue(view.get()))
+        }
+    }
+}
+
+/// Shared body of text()/json()/arrayBuffer(): read `this`'s source, convert
+/// per `mode`, settle a fresh promise. Read failures reject with the errno
+/// code (missing file → ENOENT, consistent with exists() → false).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn file_read_promise(cx: *mut JSContext, args: &CallArgs, mode: BunfileReadMode) -> bool {
+    let this = args.thisv();
+    let src = match bunfile_src(cx, this) {
+        Some(s) => s,
+        None => {
+            // Not a BunFile-shaped receiver — surface a real error instead of
+            // a promise that never settles.
+            let msg = ZBox::from_bytes(
+                "BunFile method: receiver has no readable path or fd".as_bytes(),
+            );
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        }
+    };
+
+    // Plain-Rust read (no GC window); fd form reads the descriptor itself,
+    // path form reads the path.
+    let read_res: ::std::result::Result<Vec<u8>, ::std::io::Error> = match &src {
+        BunfileSrc::Fd(fd) => read_fd_all(*fd),
+        BunfileSrc::Path(p) => bun_fs::read(p),
+    };
+
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let promise = JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() {
+        JS_ClearPendingException(cx);
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    match read_res {
+        Err(e) => {
+            let code = bunfile_io_code(&e);
+            let msg = format!("open '{}': {}", bunfile_display_path(&src), e);
+            rooted!(&in(cx_ref) let err_val = make_coded_error_value(cx, code, &msg));
+            let _ = JS::RejectPromise(cx, promise.handle().into(), err_val.handle().into());
+        }
+        Ok(bytes) => match file_bytes_to_value(cx, mode, &bytes) {
+            Ok(v) => {
+                rooted!(&in(cx_ref) let rv = v);
+                let _ = JS::ResolvePromise(cx, promise.handle().into(), rv.handle().into());
+            }
+            Err(FileSettleErr::Coded(code, msg)) => {
+                rooted!(&in(cx_ref) let err_val = make_coded_error_value(cx, code, &msg));
+                let _ = JS::RejectPromise(cx, promise.handle().into(), err_val.handle().into());
+            }
+            Err(FileSettleErr::Value(v)) => {
+                rooted!(&in(cx_ref) let rv = v);
+                let _ = JS::RejectPromise(cx, promise.handle().into(), rv.handle().into());
+            }
+        },
+    }
+    args.rval().set(ObjectValue(promise.get()));
+    true
+}
+
+/// `BunFile.text()` → Promise<string> (UTF-8, WHATWG replacement semantics).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_text(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    file_read_promise(cx, &args, BunfileReadMode::Text)
+}
+
+/// `BunFile.json()` → Promise<parsed> (rejects with the SyntaxError on bad
+/// JSON).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_json(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    file_read_promise(cx, &args, BunfileReadMode::Json)
+}
+
+/// `BunFile.arrayBuffer()` → Promise<Uint8Array> over the file bytes.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_array_buffer(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    file_read_promise(cx, &args, BunfileReadMode::ArrayBuffer)
+}
+
+/// JS ToInt32 semantics (modulo 2^32 into the signed range) for slice index
+/// arguments — `start | 0` in the WHATWG algorithm.
+fn to_int32_f64(v: f64) -> f64 {
+    let m = v.trunc().rem_euclid(4294967296.0);
+    if m >= 2147483648.0 {
+        m - 4294967296.0
+    } else {
+        m
+    }
+}
+
+/// Blob.slice relative-index clamping (mirrors the JS Blob.prototype.slice
+/// algorithm in globals.rs): negative counts from the end, clamped to
+/// [0, size].
+fn clamp_slice_index(v: Option<f64>, size: usize, default: f64) -> usize {
+    let size_f = size as f64;
+    let rel = match v {
+        None => default,
+        Some(x) if x.is_nan() => 0.0,
+        Some(x) => to_int32_f64(x),
+    };
+    let clamped = if rel < 0.0 {
+        (size_f + rel).max(0.0)
+    } else {
+        rel.min(size_f)
+    };
+    clamped as usize
+}
+
+/// `BunFile.slice(begin, end, contentType)` → Blob (sync). The range is read
+/// eagerly via a targeted pread — only the sliced bytes cross the FS — and
+/// the Blob is the real global class (this runtime's Blob snapshots parts,
+/// so the bytes are material, not a lazy fake).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    let src = match bunfile_src(cx, this) {
+        Some(s) => s,
+        None => {
+            let msg =
+                ZBox::from_bytes("BunFile.slice: receiver has no readable path or fd".as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        }
+    };
+
+    // Live size (fd → fstat, path → stat) — not the snapshot `size` prop. A
+    // missing file fails HERE with the coded ENOENT (fail-closed: an eager
+    // Blob face must not fake empty bytes for a file that does not exist).
+    let size_res: ::std::result::Result<usize, ::std::io::Error> = match &src {
+        BunfileSrc::Fd(fd) => {
+            let mut st: libc::stat = unsafe { ::std::mem::zeroed() };
+            if unsafe { libc::fstat(*fd, &mut st) } == 0 {
+                Ok(st.st_size.max(0) as usize)
+            } else {
+                Err(::std::io::Error::last_os_error())
+            }
+        }
+        BunfileSrc::Path(p) => bun_fs::metadata(p).map(|m| m.size as usize),
+    };
+    let size = match size_res {
+        Ok(s) => s,
+        Err(e) => {
+            let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped;
+            let code = bunfile_io_code(&e);
+            let msg = format!("open '{}': {}", bunfile_display_path(&src), e);
+            rooted!(&in(cx_ref) let err_val = make_coded_error_value(cx, code, &msg));
+            JS_SetPendingException(
+                cx,
+                err_val.handle().into(),
+                ExceptionStackBehavior::DoNotCapture,
+            );
+            return false;
+        }
+    };
+
+    let begin_v = if argc > 0 {
+        let v = *args.get(0).ptr;
+        if v.is_int32() || v.is_double() {
+            Some(v.to_number())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let end_v = if argc > 1 {
+        let v = *args.get(1).ptr;
+        if v.is_int32() || v.is_double() {
+            Some(v.to_number())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    // Blob spec defaults: begin omitted → 0, end omitted → size (an omitted
+    // end must NOT clamp to 0 — slice(-3) then yields an empty range).
+    let start = clamp_slice_index(begin_v, size, 0.0);
+    let stop = clamp_slice_index(end_v, size, size as f64);
+    let span = stop.saturating_sub(start);
+
+    // Range read off the same source (fd pread keeps the cursor untouched).
+    let range_res: ::std::result::Result<Vec<u8>, ::std::io::Error> = match &src {
+        BunfileSrc::Fd(fd) => pread_range(*fd, start, span),
+        BunfileSrc::Path(p) => read_path_range(p, start, span),
+    };
+    let bytes = match range_res {
+        Ok(b) => b,
+        Err(e) => {
+            let msg =
+                ZBox::from_vec(format!("open '{}': {}", bunfile_display_path(&src), e).into_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+            return false;
+        }
+    };
+
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+
+    // Bytes → Uint8Array view.
+    let u8_obj = mozjs_sys::jsapi::JS_NewUint8Array(cx, bytes.len());
+    if u8_obj.is_null() {
+        let msg = ZBox::from_bytes("BunFile.slice: typed array allocation failed".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    rooted!(&in(cx_ref) let view = u8_obj);
+    if !bytes.is_empty() {
+        let mut is_shared = false;
+        let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(
+            view.get(),
+            &mut is_shared,
+            ::std::ptr::null(),
+        );
+        if !data_ptr.is_null() {
+            ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+        }
+    }
+
+    // parts = [view]
+    rooted!(&in(cx_ref) let parts = NewArrayObject1(cx_ref, 1));
+    if parts.get().is_null() {
+        let msg = ZBox::from_bytes("BunFile.slice: parts allocation failed".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    rooted!(&in(cx_ref) let view_val = ObjectValue(view.get()));
+    if !JS_SetElement(cx, parts.handle().into(), 0, view_val.handle().into()) {
+        let msg = ZBox::from_bytes("BunFile.slice: parts element set failed".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+
+    // opts = { type: contentType || "" } — WHATWG: slice's contentType
+    // defaults to empty (it does NOT inherit the source's type).
+    rooted!(&in(cx_ref) let opts = JS_NewPlainObject(cx_ref));
+    if opts.get().is_null() {
+        let msg = ZBox::from_bytes("BunFile.slice: opts allocation failed".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    let ct = if argc > 2 && (*args.get(2).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(2).ptr)
+    } else {
+        String::new()
+    };
+    let c_ct = ZBox::from_bytes(ct.as_bytes());
+    let ct_js = JS_NewStringCopyZ(cx, c_ct.as_ptr());
+    if !ct_js.is_null() {
+        rooted!(&in(cx_ref) let ct_val = StringValue(unsafe { &*ct_js }));
+        JS_DefineProperty(
+            cx,
+            opts.handle().into(),
+            c"type".as_ptr(),
+            ct_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    // Blob via the global constructor — the JS ctor's plain-call arm returns
+    // `new Blob(parts, opts)`, so a function call from C is the constructor.
+    rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        let msg = ZBox::from_bytes("BunFile.slice: no global for Blob".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    rooted!(&in(cx_ref) let parts_arg = ObjectValue(parts.get()));
+    rooted!(&in(cx_ref) let opts_arg = ObjectValue(opts.get()));
+    // Raw Value copies out of the rooted slots (file-wide call-args pattern).
+    let elems = [parts_arg.handle().get(), opts_arg.handle().get()];
+    let call_args = HandleValueArray {
+        length_: 2,
+        elements_: elems.as_ptr(),
+    };
+    let mut blob = UndefinedValue();
+    let blob_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut blob,
+    };
+    let ok = JS_CallFunctionName(
+        cx,
+        global.handle().into(),
+        c"Blob".as_ptr(),
+        &call_args,
+        blob_h,
+    );
+    if !ok || !blob.is_object() {
+        if !ok {
+            JS_ClearPendingException(cx);
+        }
+        let msg = ZBox::from_bytes("BunFile.slice: Blob construction failed".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
+        return false;
+    }
+    args.rval().set(blob);
     true
 }
 
@@ -7872,17 +8536,11 @@ unsafe fn make_bun_file_for_fd(cx: &mut mozjs::context::JSContext, fd: i32) -> *
         JSPROP_ENUMERATE as u32,
     );
 
-    // exists() — same Promise<boolean> face as the path form. Std streams
-    // always exist; arbitrary fds stat their /proc/self/fd/N link (Linux).
-    // @trace REQ-ENG-006 [api:Bun.file(fd) exists face]
-    JS_DefineFunction(
-        cx,
-        file_obj.handle(),
-        c"exists".as_ptr(),
-        Some(bun_file_exists),
-        0,
-        JSPROP_ENUMERATE as u32,
-    );
+    // Same method face as the path form: exists()/text()/json()/
+    // arrayBuffer()/slice() — the read methods go straight to the fd (the
+    // /proc path is only a display identity).
+    // @trace REQ-ENG-006 [api:Bun.file(fd) method face]
+    define_bunfile_methods(cx, file_obj.handle());
 
     file_obj.get()
 }

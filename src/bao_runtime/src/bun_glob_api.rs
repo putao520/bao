@@ -10,12 +10,21 @@
 //   * `glob.scan({...})`            — same collection wrapped as an async
 //                                     iterable (upstream: async generator)
 //
-// Upstream option defaults (glob.zig ScanOpts.fromJS): dot=false,
+// Upstream option defaults (runtime/api/glob.zig ScanOpts.fromJS): dot=false,
 // onlyFiles=true, followSymlinks=false, errorOnBrokenSymlinks=false,
 // absolute=false. Yielded paths are joined with `cwd` (cwd-rooted).
+//
+// BCE-20260817-GLOB-STRCWD — scan/scanSync(arg) only read options when arg
+// was an object, so the upstream string form (`g.scanSync('/abs/dir')` —
+// ScanOpts.fromJS treats a string arg as the `cwd` shorthand, parseCWD
+// resolving relative values against the process cwd) was silently ignored
+// and the scan ran against the process cwd instead → empty result. Non-
+// object/non-string args and a non-string `cwd` now fail closed with the
+// upstream messages instead of being dropped.
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
+use mozjs::rust::ToBoolean;
 use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject};
 
 use bun_core::ZBox;
@@ -58,59 +67,118 @@ unsafe fn glob_pattern_of(
     Some(crate::js_to_rust_string(cx, v))
 }
 
-/// Read `{ cwd?, dot?, onlyFiles?, absolute?, followSymlinks? }` off arg 0.
+fn process_cwd() -> String {
+    ::std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".to_string())
+}
+
+/// Upstream `parseCWD` (runtime/api/glob.zig): "" → process cwd (i.e. cwd
+/// left unset), absolute → as-is, relative → resolved against process cwd.
+fn resolve_scan_cwd(cwd_val: &str) -> String {
+    if cwd_val.is_empty() {
+        return process_cwd();
+    }
+    if cwd_val.starts_with('/') {
+        return cwd_val.to_string();
+    }
+    let base = process_cwd();
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.is_empty() {
+        format!("/{}", cwd_val)
+    } else {
+        format!("{}/{}", trimmed, cwd_val)
+    }
+}
+
+/// Read scan options off arg 0 — upstream `ScanOpts.fromJS` semantics:
+///   * absent / undefined / null → defaults (process cwd)
+///   * string → the string IS the `cwd` (shorthand form; parseCWD-resolved)
+///   * object → truthy reads of cwd/dot/onlyFiles/absolute/followSymlinks
+///     (a truthy non-boolean reads as false, mirroring upstream getTruthy +
+///     `if (v.isBoolean()) v.asBoolean() else false`)
+///   * anything else → Err (caller reports; upstream throws)
+/// A truthy non-string `cwd` → Err (upstream: "invalid `cwd`, not a string").
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn glob_scan_opts(
     cx: *mut JSContext,
     argc: u32,
     args: &CallArgs,
-) -> (String, ScanOpts) {
-    let mut cwd = ::std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| ".".to_string());
+    fn_name: &str,
+) -> ::std::result::Result<(String, ScanOpts), String> {
+    let mut cwd = process_cwd();
     let mut opts = ScanOpts::upstream_defaults();
-    if argc > 0 && (*args.get(0).ptr).is_object() {
-        let mut wrapped =
-            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped;
-        rooted!(&in(cx_ref) let oobj = (*args.get(0).ptr).to_object());
-        let o_h = oobj.handle().into();
-        let mut v = UndefinedValue();
+    if argc == 0 {
+        return Ok((cwd, opts));
+    }
+    let arg0 = *args.get(0).ptr;
+    if arg0.is_undefined() || arg0.is_null() {
+        return Ok((cwd, opts));
+    }
+    if !arg0.is_object() {
+        if arg0.is_string() {
+            let s = crate::js_to_rust_string(cx, arg0);
+            cwd = resolve_scan_cwd(&s);
+            return Ok((cwd, opts));
+        }
+        return Err(format!("{}: expected first argument to be an object", fn_name));
+    }
+
+    let mut wrapped =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let oobj = arg0.to_object());
+    let o_h = oobj.handle().into();
+
+    // `cwd` — only a truthy string is accepted (getTruthy + isString check).
+    let mut v = UndefinedValue();
+    if JS_GetProperty(
+        cx,
+        o_h,
+        c"cwd".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    ) {
+        rooted!(&in(cx_ref) let v_root = v);
+        if ToBoolean(v_root.handle()) {
+            if !v.is_string() {
+                return Err(format!("{}: invalid `cwd`, not a string", fn_name));
+            }
+            let s = crate::js_to_rust_string(cx, v);
+            cwd = resolve_scan_cwd(&s);
+        }
+    } else {
+        JS_ClearPendingException(cx);
+    }
+
+    let bools: &[(&::std::ffi::CStr, fn(&mut ScanOpts, bool))] = &[
+        (c"dot", |o, b| o.dot = b),
+        (c"onlyFiles", |o, b| o.only_files = b),
+        (c"absolute", |o, b| o.absolute = b),
+        (c"followSymlinks", |o, b| o.follow_symlinks = b),
+    ];
+    for (name, setter) in bools {
+        let mut bv = UndefinedValue();
         if JS_GetProperty(
             cx,
             o_h,
-            c"cwd".as_ptr(),
+            name.as_ptr(),
             MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut v,
+                ptr: &mut bv,
             },
-        ) && v.is_string()
-        {
-            cwd = crate::js_to_rust_string(cx, v);
-        }
-        let bools: &[(&::std::ffi::CStr, fn(&mut ScanOpts, bool))] = &[
-            (c"dot", |o, b| o.dot = b),
-            (c"onlyFiles", |o, b| o.only_files = b),
-            (c"absolute", |o, b| o.absolute = b),
-            (c"followSymlinks", |o, b| o.follow_symlinks = b),
-        ];
-        for (name, setter) in bools {
-            let mut bv = UndefinedValue();
-            if JS_GetProperty(
-                cx,
-                o_h,
-                name.as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut bv,
-                },
-            ) && bv.is_boolean()
-            {
-                setter(&mut opts, bv.to_boolean());
+        ) {
+            rooted!(&in(cx_ref) let bv_root = bv);
+            if ToBoolean(bv_root.handle()) {
+                setter(&mut opts, bv.is_boolean() && bv.to_boolean());
             }
+        } else {
+            JS_ClearPendingException(cx);
         }
     }
-    (cwd, opts)
+    Ok((cwd, opts))
 }
 
 /// Collect matches via the workspace GlobWalker (the same engine fs.glob
@@ -242,26 +310,28 @@ unsafe extern "C" fn glob_match(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 }
 
 /// The canonical scan body both scan entry points call after resolving `this`:
-/// collect matches and build the JS array.
+/// collect matches and build the JS array. `Ok(null)` = unusable `this`
+/// (caller yields undefined); `Err` = invalid scan argument (caller reports).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn glob_scan_body(
     cx: *mut JSContext,
     this: *mut JSObject,
     argc: u32,
     args: &CallArgs,
-) -> *mut JSObject {
+    fn_name: &str,
+) -> ::std::result::Result<*mut JSObject, String> {
     let mut wrapped = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped;
     rooted!(&in(cx_ref) let this_root = this);
     let Some(pattern) = glob_pattern_of(cx, this_root.handle()) else {
-        return ::std::ptr::null_mut();
+        return Ok(::std::ptr::null_mut());
     };
-    let (cwd, opts) = glob_scan_opts(cx, argc, args);
+    let (cwd, opts) = glob_scan_opts(cx, argc, args, fn_name)?;
     let matches = glob_collect_impl(&pattern, &cwd, opts);
 
     rooted!(&in(cx_ref) let arr = mozjs::rust::wrappers2::NewArrayObject1(cx_ref, matches.len()));
     if arr.get().is_null() {
-        return ::std::ptr::null_mut();
+        return Ok(::std::ptr::null_mut());
     }
     for (i, m) in matches.iter().enumerate() {
         let c_m = ZBox::from_bytes(m.as_bytes());
@@ -277,7 +347,7 @@ unsafe fn glob_scan_body(
             );
         }
     }
-    arr.get()
+    Ok(arr.get())
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -288,12 +358,15 @@ unsafe extern "C" fn glob_scan_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         JS_ReportErrorUTF8(cx, c"Bun.Glob.scanSync requires a Glob instance".as_ptr());
         return false;
     }
-    let arr = glob_scan_body(cx, this.to_object(), argc, &args);
-    if arr.is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
+    match glob_scan_body(cx, this.to_object(), argc, &args, "scanSync") {
+        Ok(arr) if !arr.is_null() => args.rval().set(ObjectValue(arr)),
+        Ok(_) => args.rval().set(UndefinedValue()),
+        Err(msg) => {
+            let m = ZBox::from_vec(msg.into_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), m.as_ptr());
+            return false;
+        }
     }
-    args.rval().set(ObjectValue(arr));
     true
 }
 
@@ -307,11 +380,18 @@ unsafe extern "C" fn glob_scan(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         JS_ReportErrorUTF8(cx, c"Bun.Glob.scan requires a Glob instance".as_ptr());
         return false;
     }
-    let arr = glob_scan_body(cx, this.to_object(), argc, &args);
-    if arr.is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
+    let arr = match glob_scan_body(cx, this.to_object(), argc, &args, "scan") {
+        Ok(arr) if !arr.is_null() => arr,
+        Ok(_) => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        Err(msg) => {
+            let m = ZBox::from_vec(msg.into_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), m.as_ptr());
+            return false;
+        }
+    };
     let mut wrapped = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped;
     let wrap_src = r#"(function(arr) {

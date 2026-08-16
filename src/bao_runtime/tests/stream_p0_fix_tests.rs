@@ -86,7 +86,8 @@ fn test_stream_p0_fixes() {
     // 1a. Readable: pushes buffered BEFORE on('data') must drain through
     //     data events and end (BCE-20260816-STREAM-PUMP fix 1). Flow starts
     //     on a microtask (Node nextTick parity), so the result is read
-    //     after driving the loop.
+    //     after driving the loop. String pushes land as Buffers (Node
+    //     readableAddChunk byte-mode encoding — BCE-20260817-STREAM-STRCHUNK).
     let r1a_setup = eval_string(
         &mut ctx,
         r#"
@@ -96,7 +97,7 @@ fn test_stream_p0_fixes() {
             r.push('abc'); r.push('def'); r.push(null);
             var data = [];
             globalThis.__r1a = 'pending';
-            r.on('data', function(c) { data.push(String(c)); });
+            r.on('data', function(c) { data.push((Buffer.isBuffer(c) ? 'B:' + c.toString() : 'S:' + String(c))); });
             r.on('end', function() { globalThis.__r1a = data.join(',') + '|true'; });
             return 'scheduled';
         })()
@@ -106,8 +107,8 @@ fn test_stream_p0_fixes() {
     drive_event_loop(&mut ctx, 100);
     let readable_events = eval_string(&mut ctx, "globalThis.__r1a");
     assert_eq!(
-        readable_events, "abc,def|true",
-        "Readable push-before-listen must drain data + end (got: {})",
+        readable_events, "B:abc,B:def|true",
+        "Readable push-before-listen must drain data + end with Buffer chunks (got: {})",
         readable_events
     );
 
@@ -122,7 +123,7 @@ fn test_stream_p0_fixes() {
             var out = '';
             var transformFnCalled = false;
             t._transform('probe', null, function() { transformFnCalled = true; });
-            t.on('data', function(d) { out += d; });
+            t.on('data', function(d) { out += (Buffer.isBuffer(d) ? d.toString() : d); });
             t.write('ab'); t.end();
             return out + '|' + transformFnCalled;
         })()
@@ -142,7 +143,7 @@ fn test_stream_p0_fixes() {
             var stream = require('stream');
             var pt = new stream.PassThrough();
             var out = '';
-            pt.on('data', function(d) { out += d; });
+            pt.on('data', function(d) { out += (Buffer.isBuffer(d) ? d.toString() : d); });
             pt.write('hello '); pt.write('world'); pt.end();
             return out;
         })()
@@ -195,9 +196,9 @@ fn test_stream_p0_fixes() {
             var stream = require('stream');
             var src = new stream.Readable({ read() {} });
             src.push('a'); src.push('b'); src.push(null);
-            var xf = new stream.Transform({ transform(c, e, cb) { cb(null, c + c); } });
+            var xf = new stream.Transform({ transform(c, e, cb) { cb(null, Buffer.concat([c, c])); } });
             var got = [];
-            var sink = new stream.Writable({ write(c, e, cb) { got.push(String(c)); cb(); } });
+            var sink = new stream.Writable({ write(c, e, cb) { got.push(Buffer.isBuffer(c) ? c.toString() : String(c)); cb(); } });
             globalThis.__r1e = 'pending';
             stream.pipeline(src, xf, sink, function(err) {
                 globalThis.__r1e = got.join(',') + '|' + (err ? err.message : 'null');

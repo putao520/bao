@@ -131,6 +131,16 @@ fn test_node_fs_all() {
         ),
     );
 
+    // False-green guard (BCE-20260817): a top-level JS throw makes
+    // eval_string return "" which the branch loop below accepts as "all
+    // passed" — the suite goes green while its first statement crashed.
+    // Fail when no check output was produced at all.
+    assert!(
+        results.contains(":PASS") || results.contains(":FAIL") || results.contains(":ERROR:"),
+        "suite produced no check output — top-level JS error? raw: {:?}",
+        results
+    );
+
     // Parse results
     let mut all_passed = true;
     for item in results.split('|') {

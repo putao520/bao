@@ -1076,9 +1076,61 @@ unsafe extern "C" fn crypto_create_hmac(cx: *mut JSContext, argc: u32, vp: *mut 
         Some(s) => s.to_lowercase(),
         None => return throw_type_error(cx, "createHmac() algorithm must be a string"),
     };
-    let key = match arg_to_string(cx, *args.get(1).ptr) {
-        Some(s) => s.into_bytes(),
-        None => return throw_type_error(cx, "createHmac() key must be a string"),
+    // Key material as BYTES (BCE: routing a Buffer key through string
+    // coercion mangled bytes ≥ 0x80 into UTF-8 replacement chars — a silent
+    // WRONG mac). Node shapes: string (UTF-8 bytes) | Buffer/TypedArray |
+    // secret KeyObject.
+    let key_val = *args.get(1).ptr;
+    let key: Vec<u8> = if key_val.is_string() {
+        crate::js_to_rust_string(cx, key_val).into_bytes()
+    } else if key_val.is_object() {
+        let key_obj = key_val.to_object();
+        let mut wrapped_key_cx =
+            mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let key_cx_ref = &mut wrapped_key_cx;
+        rooted!(&in(key_cx_ref) let key_r = key_obj);
+        let mut idx_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            key_r.handle().into(),
+            c"_keyIdx".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut idx_val,
+            },
+        );
+        if idx_val.is_int32() {
+            let ktype = get_string_prop(cx, key_obj, c"type".as_ptr()).unwrap_or_default();
+            if ktype != "secret" {
+                return throw_type_error(cx, "createHmac() key KeyObject must be a secret key");
+            }
+            let idx = idx_val.to_int32() as usize;
+            match KEY_OBJECTS.with(|v| {
+                v.borrow()
+                    .get(idx)
+                    .map(|k| k.as_ref().map(|b| b.clone()))
+                    .flatten()
+            }) {
+                Some(b) => b,
+                None => {
+                    return throw_type_error(cx, "createHmac() KeyObject key data unavailable");
+                }
+            }
+        } else {
+            let b = extract_buffer_bytes(cx, key_val);
+            if b.is_empty() {
+                return throw_type_error(
+                    cx,
+                    "createHmac() key must be a string, Buffer/TypedArray, or secret KeyObject",
+                );
+            }
+            b
+        }
+    } else {
+        return throw_type_error(
+            cx,
+            "createHmac() key must be a string, Buffer/TypedArray, or secret KeyObject",
+        );
     };
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -1182,6 +1234,20 @@ unsafe extern "C" fn hmac_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         "sha512" => {
             let mut out = [0u8; EVP_MAX_MD_SIZE];
             bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha512, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
+        }
+        // Node supports the full SHA-2 family in createHmac; sha384/sha224
+        // were missing (createHmac('sha384') threw "Unsupported").
+        "sha384" => {
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha384, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
+        }
+        "sha224" => {
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha224, &mut out)
                 .map(|s| s.to_vec())
                 .unwrap_or_default()
         }
@@ -2887,6 +2953,10 @@ unsafe extern "C" fn verify_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 
 // --- createSecretKey ---
 
+/// createSecretKey(buffer[, encoding]) — a REAL KeyObject of type "secret"
+/// storing the raw bytes. (The old implementation returned a plain object
+/// whose `export` was a hex STRING property — not callable, and it leaked
+/// the secret as an enumerable property.)
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_create_secret_key(
     cx: *mut JSContext,
@@ -2894,48 +2964,56 @@ unsafe extern "C" fn crypto_create_secret_key(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
-    if obj.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
+    if argc < 1 {
+        return throw_type_error(cx, "createSecretKey() requires key material");
     }
-
-    rooted!(&in(cx_ref) let kv = mozjs::jsval::StringValue(&*JS_NewStringCopyZ(cx, c"secret".as_ptr())));
-    JS_DefineProperty(
-        cx,
-        obj.handle().into(),
-        c"type".as_ptr(),
-        kv.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-    if argc > 0 {
-        let bytes = if (*args.get(0).ptr).is_object() {
-            extract_buffer_bytes(cx, *args.get(0).ptr)
-        } else if (*args.get(0).ptr).is_string() {
-            crate::js_to_rust_string(cx, *args.get(0).ptr).into_bytes()
+    let bytes = if (*args.get(0).ptr).is_object() {
+        extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else if (*args.get(0).ptr).is_string() {
+        // createSecretKey('ascii-str', 'hex'|'base64'|'base64url') decodes
+        // per the encoding; without one, the string IS the raw key (UTF-8).
+        let s = crate::js_to_rust_string(cx, *args.get(0).ptr);
+        if argc > 1 && (*args.get(1).ptr).is_string() {
+            let enc = crate::js_to_rust_string(cx, *args.get(1).ptr).to_lowercase();
+            match enc.as_str() {
+                "hex" => match hex::decode(&s) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return throw_type_error(cx, &format!("createSecretKey: hex decode: {}", e));
+                    }
+                },
+                "base64" | "base64url" => {
+                    let src = s.as_bytes();
+                    let upper = bun_base64::decode_lenient_len(src.len());
+                    let mut out = vec![0u8; upper];
+                    let n = bun_base64::decode_lenient(&mut out, src, enc == "base64url");
+                    out.truncate(n);
+                    out
+                }
+                "utf8" | "utf-8" | "ascii" | "latin1" | "binary" => s.into_bytes(),
+                other => {
+                    return throw_type_error(
+                        cx,
+                        &format!("createSecretKey: unsupported encoding {:?}", other),
+                    );
+                }
+            }
         } else {
-            Vec::new()
-        };
-        let exported = hex::encode(&bytes);
-        let exp_str = JS_NewStringCopyN(
-            cx,
-            exported.as_ptr() as *const ::std::os::raw::c_char,
-            exported.len(),
-        );
-        if !exp_str.is_null() {
-            rooted!(&in(cx_ref) let ev = mozjs::jsval::StringValue(&*exp_str));
-            JS_DefineProperty(
-                cx,
-                obj.handle().into(),
-                c"export".as_ptr(),
-                ev.handle().into(),
-                0,
-            );
+            s.into_bytes()
         }
+    } else {
+        return throw_type_error(cx, "createSecretKey() requires a Buffer or string");
+    };
+    if bytes.is_empty() {
+        return throw_type_error(cx, "createSecretKey() requires non-empty key material");
     }
-    args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
+    let idx = alloc_key_object(bytes);
+    let obj = make_key_object_js(cx, idx, "secret", None);
+    if obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return false;
+    }
+    args.rval().set(mozjs::jsval::ObjectValue(obj));
     true
 }
 
@@ -3781,6 +3859,17 @@ unsafe extern "C" fn dh_get_private_key(cx: *mut JSContext, _argc: u32, vp: *mut
 // KeyObject class — lightweight JS wrapper for key material
 // Stores key bytes + type in thread-local Vec; JS object holds index
 // ============================================================
+//
+// Storage normalization (BCE: export() used to return the stored bytes
+// verbatim AND consumed them — a second export returned undefined, and the
+// options argument was ignored entirely):
+//   type "secret"  → raw key bytes
+//   type "public"  → canonical SPKI DER   (SubjectPublicKeyInfo)
+//   type "private" → canonical PKCS#8 DER (PrivateKeyInfo)
+// Canonical DER keeps the existing sign/verify KeyObject consumers
+// (Signer::from_pkcs8_der / Verifier::from_public_der) working against the
+// SAME slots, and gives export() a single parse point for every output
+// encoding (spki/pkcs8/pkcs1/sec1 × pem/der).
 
 thread_local! {
     static KEY_OBJECTS: RefCell<Vec<Option<Vec<u8>>>> = const { RefCell::new(Vec::new()) };
@@ -3795,8 +3884,486 @@ fn alloc_key_object(key_bytes: Vec<u8>) -> usize {
     })
 }
 
+// ── BoringSSL key serialization surface ────────────────────────────────────
+// bun_boringssl_sys exposes a hand-rolled subset of libcrypto; the KeyObject
+// import/export matrix additionally needs the (de)serializers below, declared
+// locally against the SAME linked library (all present in
+// vendor/boringssl/include/openssl/{pem,rsa,ec_key}.h — verified against the
+// vendored headers, including the DECLARE_PEM macro expansions).
+
+unsafe extern "C" {
+    /// pem.h — DECLARE_PEM_rw_const(RSAPublicKey, RSA): "BEGIN RSA PUBLIC KEY".
+    fn PEM_write_bio_RSAPublicKey(
+        bp: *mut bun_boringssl_sys::BIO,
+        rsa: *const bun_boringssl_sys::RSA,
+    ) -> core::ffi::c_int;
+    /// pem.h — DECLARE_PEM_rw_cb(RSAPrivateKey, RSA): "BEGIN RSA PRIVATE KEY"
+    /// (enc=NULL → unencrypted).
+    fn PEM_write_bio_RSAPrivateKey(
+        bp: *mut bun_boringssl_sys::BIO,
+        rsa: *const bun_boringssl_sys::RSA,
+        enc: *const bun_boringssl_sys::EVP_CIPHER,
+        kstr: *const core::ffi::c_char,
+        klen: core::ffi::c_int,
+        cb: Option<bun_boringssl_sys::pem_password_cb>,
+        u: *mut core::ffi::c_void,
+    ) -> core::ffi::c_int;
+    /// pem.h — DECLARE_PEM_rw_cb(ECPrivateKey, EC_KEY): "BEGIN EC PRIVATE KEY".
+    fn PEM_write_bio_ECPrivateKey(
+        bp: *mut bun_boringssl_sys::BIO,
+        eckey: *const bun_boringssl_sys::EC_KEY,
+        enc: *const bun_boringssl_sys::EVP_CIPHER,
+        kstr: *const core::ffi::c_char,
+        klen: core::ffi::c_int,
+        cb: Option<bun_boringssl_sys::pem_password_cb>,
+        u: *mut core::ffi::c_void,
+    ) -> core::ffi::c_int;
+    /// pem.h — PKCS#8 DER writer ("PRIVATE KEY" content, DER encoding).
+    fn i2d_PKCS8PrivateKey_bio(
+        bp: *mut bun_boringssl_sys::BIO,
+        x: *const bun_boringssl_sys::EVP_PKEY,
+        enc: *const bun_boringssl_sys::EVP_CIPHER,
+        pass: *const core::ffi::c_char,
+        pass_len: core::ffi::c_int,
+        cb: Option<bun_boringssl_sys::pem_password_cb>,
+        u: *mut core::ffi::c_void,
+    ) -> core::ffi::c_int;
+    /// rsa.h — PKCS#1 RSAPublicKey DER.
+    fn i2d_RSAPublicKey(
+        rsa: *const bun_boringssl_sys::RSA,
+        outp: *mut *mut u8,
+    ) -> core::ffi::c_int;
+    /// rsa.h — PKCS#1 RSAPrivateKey DER.
+    fn i2d_RSAPrivateKey(
+        rsa: *const bun_boringssl_sys::RSA,
+        outp: *mut *mut u8,
+    ) -> core::ffi::c_int;
+    /// ec_key.h — RFC 5915 ECPrivateKey DER.
+    fn i2d_ECPrivateKey(
+        key: *const bun_boringssl_sys::EC_KEY,
+        outp: *mut *mut u8,
+    ) -> core::ffi::c_int;
+    /// rsa.h — PKCS#1 RSAPublicKey DER parser (public DER `type: 'pkcs1'`).
+    fn d2i_RSAPublicKey(
+        out: *mut *mut bun_boringssl_sys::RSA,
+        inp: *mut *const u8,
+        len: core::ffi::c_long,
+    ) -> *mut bun_boringssl_sys::RSA;
+}
+
+/// Which half of a keypair a create*/export call is about.
+#[derive(Clone, Copy, PartialEq)]
+enum KeyHalf {
+    Public,
+    Private,
+}
+
+/// Slurp a memory BIO's accumulated output.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn make_key_object_js(cx: *mut JSContext, idx: usize, key_type: &str) -> *mut JSObject {
+unsafe fn key_bio_contents(bio: *mut bun_boringssl_sys::BIO) -> Vec<u8> {
+    let pending = bun_boringssl_sys::BIO_ctrl_pending(bio);
+    if pending == 0 {
+        return Vec::new();
+    }
+    let mut out = vec![0u8; pending];
+    let n = bun_boringssl_sys::BIO_read(
+        bio,
+        out.as_mut_ptr() as *mut core::ffi::c_void,
+        pending as core::ffi::c_int,
+    );
+    if n <= 0 {
+        return Vec::new();
+    }
+    out.truncate(n as usize);
+    out
+}
+
+/// Fresh memory BIO, or an error string.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn key_mem_bio() -> ::std::result::Result<*mut bun_boringssl_sys::BIO, String> {
+    let bio = bun_boringssl_sys::BIO_new(bun_boringssl_sys::BIO_s_mem());
+    if bio.is_null() {
+        Err("BIO_new failed".to_string())
+    } else {
+        Ok(bio)
+    }
+}
+
+/// Node-visible key kind name for `asymmetricKeyType` (from the EVP_PKEY NID;
+/// same vendored-BoringSSL Ed25519-NID quirk as kind_of above).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn pkey_kind_name(pkey: *const bun_boringssl_sys::EVP_PKEY) -> &'static str {
+    const ED25519_NID_VENDORED_BORINGSSL: core::ffi::c_int = 949;
+    let id = bun_boringssl_sys::EVP_PKEY_id(pkey);
+    if id == bun_boringssl_sys::EVP_PKEY_RSA {
+        "rsa"
+    } else if id == bun_boringssl_sys::EVP_PKEY_EC {
+        "ec"
+    } else if id == bun_boringssl_sys::EVP_PKEY_ED25519 || id == ED25519_NID_VENDORED_BORINGSSL {
+        "ed25519"
+    } else if id == bun_boringssl_sys::EVP_PKEY_X25519 {
+        "x25519"
+    } else {
+        "unknown"
+    }
+}
+
+/// Parse key material into an EVP_PKEY. PEM is sniffed by the leading
+/// "-----BEGIN " (or forced by format hint); everything else is DER.
+///
+/// `half == Public` also accepts a PRIVATE key form — Node semantics:
+/// `createPublicKey(privateKey)` derives the public half (the SPKI
+/// serialization simply drops the private components).
+///
+/// Caller owns (and must free) the returned EVP_PKEY.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn parse_key_to_pkey(
+    bytes: &[u8],
+    format_hint: Option<&str>,
+    half: KeyHalf,
+) -> ::std::result::Result<*mut bun_boringssl_sys::EVP_PKEY, String> {
+    use bun_boringssl_sys as bssl;
+    if bytes.is_empty() {
+        return Err("key data is empty".to_string());
+    }
+    let read_pem = |public: bool| -> *mut bssl::EVP_PKEY {
+        let bio = bssl::BIO_new_mem_buf(
+            bytes.as_ptr() as *const core::ffi::c_void,
+            bytes.len() as isize,
+        );
+        if bio.is_null() {
+            return core::ptr::null_mut();
+        }
+        let pkey = if public {
+            bssl::PEM_read_bio_PUBKEY(
+                bio,
+                core::ptr::null_mut(),
+                None::<bssl::pem_password_cb>,
+                core::ptr::null_mut(),
+            )
+        } else {
+            // Sniffs every PEM private-key spelling: PRIVATE KEY (PKCS#8),
+            // RSA PRIVATE KEY (PKCS#1), EC PRIVATE KEY (SEC1).
+            bssl::PEM_read_bio_PrivateKey(
+                bio,
+                core::ptr::null_mut(),
+                None::<bssl::pem_password_cb>,
+                core::ptr::null_mut(),
+            )
+        };
+        bssl::BIO_free(bio);
+        pkey
+    };
+    let read_der = |public: bool| -> *mut bssl::EVP_PKEY {
+        let mut inp = bytes.as_ptr();
+        if public {
+            let pkey = bssl::d2i_PUBKEY(
+                core::ptr::null_mut(),
+                &mut inp,
+                bytes.len() as core::ffi::c_long,
+            );
+            if !pkey.is_null() {
+                return pkey;
+            }
+            // DER pkcs1 public ("RSA PUBLIC KEY" DER) — not SPKI: lift the
+            // bare RSA key into an EVP_PKEY.
+            inp = bytes.as_ptr();
+            let rsa = d2i_RSAPublicKey(
+                core::ptr::null_mut(),
+                &mut inp,
+                bytes.len() as core::ffi::c_long,
+            );
+            if !rsa.is_null() {
+                let pkey = bssl::EVP_PKEY_new();
+                if !pkey.is_null() && bssl::EVP_PKEY_set1_RSA(pkey, rsa) == 1 {
+                    bssl::RSA_free(rsa);
+                    return pkey;
+                }
+                bssl::EVP_PKEY_free(pkey);
+                bssl::RSA_free(rsa);
+            }
+            core::ptr::null_mut()
+        } else {
+            // d2i_AutoPrivateKey: PKCS#8 + traditional PKCS#1/SEC1 (see
+            // vendor crypto/evp/evp_asn1.cc — element count picks the form).
+            bssl::d2i_AutoPrivateKey(
+                core::ptr::null_mut(),
+                &mut inp,
+                bytes.len() as core::ffi::c_long,
+            )
+        }
+    };
+
+    let is_pem = looks_like_pem_key(bytes) || format_hint == Some("pem");
+    let pkey = if is_pem {
+        match half {
+            KeyHalf::Public => read_pem(true),
+            KeyHalf::Private => read_pem(false),
+        }
+    } else {
+        match half {
+            KeyHalf::Public => read_der(true),
+            KeyHalf::Private => read_der(false),
+        }
+    };
+    // A private-key form handed to the public side — Node's
+    // createPublicKey(privateKey): parse as private, derive the public half
+    // (the SPKI serialization drops the private components).
+    let pkey = if pkey.is_null() && half == KeyHalf::Public {
+        if is_pem { read_pem(false) } else { read_der(false) }
+    } else {
+        pkey
+    };
+    if pkey.is_null() {
+        Err("Failed to parse key material (expected PEM or DER key)".to_string())
+    } else {
+        Ok(pkey)
+    }
+}
+
+/// Canonical storage DER for a parsed key.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn pkey_canonical_der(
+    pkey: *mut bun_boringssl_sys::EVP_PKEY,
+    half: KeyHalf,
+) -> ::std::result::Result<Vec<u8>, String> {
+    use bun_boringssl_sys as bssl;
+    if half == KeyHalf::Public {
+        let len = bssl::i2d_PUBKEY(pkey, core::ptr::null_mut());
+        if len <= 0 {
+            return Err("i2d_PUBKEY failed".to_string());
+        }
+        let mut buf = vec![0u8; len as usize];
+        let mut outp = buf.as_mut_ptr();
+        let n = bssl::i2d_PUBKEY(pkey, &mut outp);
+        if n <= 0 {
+            return Err("i2d_PUBKEY failed".to_string());
+        }
+        buf.truncate(n as usize);
+        Ok(buf)
+    } else {
+        let bio = key_mem_bio()?;
+        let ok = i2d_PKCS8PrivateKey_bio(
+            bio,
+            pkey,
+            core::ptr::null(),
+            core::ptr::null(),
+            0,
+            None,
+            core::ptr::null_mut(),
+        );
+        let der = if ok == 1 { key_bio_contents(bio) } else { Vec::new() };
+        bssl::BIO_free(bio);
+        if ok == 1 && !der.is_empty() {
+            Ok(der)
+        } else {
+            Err("i2d_PKCS8PrivateKey_bio failed".to_string())
+        }
+    }
+}
+
+/// KeyObject.export() output — PEM (JS string) or DER (Buffer).
+enum KeyExportOut {
+    Pem(String),
+    Der(Vec<u8>),
+}
+
+/// The export({type, format}) matrix over a parsed key.
+///
+///   public  + spki (default) → "PUBLIC KEY"        PEM / SPKI DER
+///   public  + pkcs1 (RSA)    → "RSA PUBLIC KEY"    PEM / PKCS#1 DER
+///   private + pkcs8 (default)→ "PRIVATE KEY"       PEM / PKCS#8 DER
+///   private + pkcs1 (RSA)    → "RSA PRIVATE KEY"   PEM / PKCS#1 DER
+///   private + sec1 (EC)      → "EC PRIVATE KEY"    PEM / SEC1 DER
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn export_pkey_as(
+    pkey: *mut bun_boringssl_sys::EVP_PKEY,
+    half: KeyHalf,
+    type_opt: Option<&str>,
+    format_opt: Option<&str>,
+) -> ::std::result::Result<KeyExportOut, String> {
+    use bun_boringssl_sys as bssl;
+    let format = format_opt.unwrap_or("pem");
+    if format != "pem" && format != "der" {
+        return Err(format!("invalid export format {:?} (expected \"pem\" or \"der\")", format));
+    }
+    let kind = pkey_kind_name(pkey);
+    let typ = type_opt.unwrap_or(if half == KeyHalf::Public { "spki" } else { "pkcs8" });
+
+    // PEM writer into a mem BIO → String.
+    let pem = |write: &dyn Fn(*mut bssl::BIO) -> core::ffi::c_int,
+               what: &str|
+     -> ::std::result::Result<String, String> {
+        let bio = key_mem_bio()?;
+        let ok = write(bio);
+        let bytes = key_bio_contents(bio);
+        bssl::BIO_free(bio);
+        if ok != 1 {
+            return Err(format!("{} export failed", what));
+        }
+        String::from_utf8(bytes).map_err(|_| format!("{} export produced non-UTF-8 PEM", what))
+    };
+    // DER writer via the two-call i2d pattern → Vec<u8>.
+    let der = |i2d: &dyn Fn(*mut *mut u8) -> core::ffi::c_int,
+               what: &str|
+     -> ::std::result::Result<Vec<u8>, String> {
+        let len = i2d(core::ptr::null_mut());
+        if len <= 0 {
+            return Err(format!("{} export failed", what));
+        }
+        let mut buf = vec![0u8; len as usize];
+        let mut outp = buf.as_mut_ptr();
+        let n = i2d(&mut outp);
+        if n <= 0 {
+            return Err(format!("{} export failed", what));
+        }
+        buf.truncate(n as usize);
+        Ok(buf)
+    };
+
+    match (half, typ) {
+        (KeyHalf::Public, "spki") => {
+            if format == "pem" {
+                pem(&|bio| bssl::PEM_write_bio_PUBKEY(bio, pkey), "spki").map(KeyExportOut::Pem)
+            } else {
+                der(
+                    &|outp| bssl::i2d_PUBKEY(pkey, outp),
+                    "spki",
+                )
+                .map(KeyExportOut::Der)
+            }
+        }
+        (KeyHalf::Public, "pkcs1") => {
+            if kind != "rsa" {
+                return Err(format!(
+                    "invalid export type \"pkcs1\" for {} key (RSA only)",
+                    kind
+                ));
+            }
+            let rsa = bssl::EVP_PKEY_get0_RSA(pkey);
+            if rsa.is_null() {
+                return Err("RSA key components unavailable".to_string());
+            }
+            if format == "pem" {
+                pem(&|bio| PEM_write_bio_RSAPublicKey(bio, rsa), "pkcs1")
+                    .map(KeyExportOut::Pem)
+            } else {
+                der(&|outp| i2d_RSAPublicKey(rsa, outp), "pkcs1").map(KeyExportOut::Der)
+            }
+        }
+        (KeyHalf::Private, "pkcs8") => {
+            if format == "pem" {
+                pem(
+                    &|bio| {
+                        bssl::PEM_write_bio_PKCS8PrivateKey(
+                            bio,
+                            pkey,
+                            core::ptr::null(),
+                            core::ptr::null_mut(),
+                            0,
+                            None,
+                            core::ptr::null_mut(),
+                        )
+                    },
+                    "pkcs8",
+                )
+                .map(KeyExportOut::Pem)
+            } else {
+                let bio = key_mem_bio()?;
+                let ok = i2d_PKCS8PrivateKey_bio(
+                    bio,
+                    pkey,
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0,
+                    None,
+                    core::ptr::null_mut(),
+                );
+                let bytes = key_bio_contents(bio);
+                bssl::BIO_free(bio);
+                if ok == 1 && !bytes.is_empty() {
+                    Ok(KeyExportOut::Der(bytes))
+                } else {
+                    Err("pkcs8 export failed".to_string())
+                }
+            }
+        }
+        (KeyHalf::Private, "pkcs1") => {
+            if kind != "rsa" {
+                return Err(format!(
+                    "invalid export type \"pkcs1\" for {} key (RSA only)",
+                    kind
+                ));
+            }
+            let rsa = bssl::EVP_PKEY_get0_RSA(pkey);
+            if rsa.is_null() {
+                return Err("RSA key components unavailable".to_string());
+            }
+            if format == "pem" {
+                pem(
+                    &|bio| {
+                        PEM_write_bio_RSAPrivateKey(
+                            bio,
+                            rsa,
+                            core::ptr::null(),
+                            core::ptr::null(),
+                            0,
+                            None,
+                            core::ptr::null_mut(),
+                        )
+                    },
+                    "pkcs1",
+                )
+                .map(KeyExportOut::Pem)
+            } else {
+                der(&|outp| i2d_RSAPrivateKey(rsa, outp), "pkcs1").map(KeyExportOut::Der)
+            }
+        }
+        (KeyHalf::Private, "sec1") => {
+            if kind != "ec" {
+                return Err(format!(
+                    "invalid export type \"sec1\" for {} key (EC only)",
+                    kind
+                ));
+            }
+            let ec = bssl::EVP_PKEY_get0_EC_KEY(pkey);
+            if ec.is_null() {
+                return Err("EC key components unavailable".to_string());
+            }
+            if format == "pem" {
+                pem(
+                    &|bio| {
+                        PEM_write_bio_ECPrivateKey(
+                            bio,
+                            ec,
+                            core::ptr::null(),
+                            core::ptr::null(),
+                            0,
+                            None,
+                            core::ptr::null_mut(),
+                        )
+                    },
+                    "sec1",
+                )
+                .map(KeyExportOut::Pem)
+            } else {
+                der(&|outp| i2d_ECPrivateKey(ec, outp), "sec1").map(KeyExportOut::Der)
+            }
+        }
+        (_, other) => Err(format!(
+            "invalid export type {:?} (expected \"spki\", \"pkcs8\", \"pkcs1\" or \"sec1\")",
+            other
+        )),
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn make_key_object_js(
+    cx: *mut JSContext,
+    idx: usize,
+    key_type: &str,
+    asym_kind: Option<&str>,
+) -> *mut JSObject {
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -3827,12 +4394,28 @@ unsafe fn make_key_object_js(cx: *mut JSContext, idx: usize, key_type: &str) -> 
             JSPROP_ENUMERATE as u32,
         );
     }
+    // asymmetricKeyType: "rsa" | "ec" | "ed25519" | "x25519" (Node shape;
+    // absent for secret keys).
+    if let Some(kind) = asym_kind {
+        let c_kind = ZBox::from_bytes(kind.as_bytes());
+        let js_kind = JS_NewStringCopyZ(cx, c_kind.as_ptr());
+        if !js_kind.is_null() {
+            rooted!(&in(cx_ref) let kind_val = mozjs::jsval::StringValue(&*js_kind));
+            JS_DefineProperty(
+                cx,
+                obj.handle().into(),
+                c"asymmetricKeyType".as_ptr(),
+                kind_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
     w2::JS_DefineFunction(
         cx_ref,
         obj.handle(),
         c"export".as_ptr(),
         Some(key_object_export),
-        0,
+        1,
         JSPROP_ENUMERATE as u32,
     );
     // symmetric property: true for "secret" keys, false otherwise
@@ -3864,7 +4447,7 @@ unsafe extern "C" fn crypto_key_object(cx: *mut JSContext, argc: u32, vp: *mut J
     };
 
     let idx = alloc_key_object(key_bytes);
-    let obj = make_key_object_js(cx, idx, &key_type);
+    let obj = make_key_object_js(cx, idx, &key_type, None);
     if obj.is_null() {
         args.rval().set(UndefinedValue());
         return false;
@@ -3873,8 +4456,18 @@ unsafe extern "C" fn crypto_key_object(cx: *mut JSContext, argc: u32, vp: *mut J
     true
 }
 
+/// keyObject.export([options]) — real serialization, non-destructive.
+///
+///   secret  → Buffer of the raw key bytes (options.format may only be
+///             "buffer"/undefined, Node shape)
+///   public  → {type: "spki"(default)|"pkcs1", format: "pem"(default)|"der"}
+///   private → {type: "pkcs8"(default)|"pkcs1"|"sec1", format: "pem"|"der"}
+///
+/// PEM → string, DER → Buffer. Storage is CLONED, never consumed — the old
+/// implementation took the bytes out of the slot (second export = undefined).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn key_object_export(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    use bun_boringssl_sys as bssl;
     let args = CallArgs::from_vp(vp, argc);
     if !args.thisv().is_object() {
         return false;
@@ -3883,6 +4476,7 @@ unsafe extern "C" fn key_object_export(cx: *mut JSContext, argc: u32, vp: *mut J
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this = args.thisv().to_object());
+
     let mut idx_val = UndefinedValue();
     JS_GetProperty(
         cx,
@@ -3894,20 +4488,264 @@ unsafe extern "C" fn key_object_export(cx: *mut JSContext, argc: u32, vp: *mut J
         },
     );
     if !idx_val.is_int32() {
-        return false;
+        return throw_type_error(cx, "export: not a KeyObject (missing _keyIdx)");
     }
     let idx = idx_val.to_int32() as usize;
-
-    let key_bytes = KEY_OBJECTS.with(|v| v.borrow_mut().get_mut(idx).and_then(|k| k.take()));
-
-    if let Some(bytes) = key_bytes {
-        let buf_obj = crate::globals::create_buffer_object(cx, &bytes);
-        if !buf_obj.is_null() {
-            args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
-            return true;
+    let key_type = get_string_prop(cx, this.get(), c"type".as_ptr()).unwrap_or_default();
+    let stored = KEY_OBJECTS.with(|v| {
+        v.borrow()
+            .get(idx)
+            .map(|k| k.as_ref().map(|b| b.clone()))
+            .flatten()
+    });
+    let bytes = match stored {
+        Some(b) => b,
+        None => {
+            return throw_type_error(cx, "export: key material is no longer available");
         }
+    };
+
+    // options {type, format} (optional for secret keys).
+    let (type_opt, format_opt) = if argc > 0 && (*args.get(0).ptr).is_object() {
+        let opts = (*args.get(0).ptr).to_object();
+        (
+            get_string_prop(cx, opts, c"type".as_ptr()),
+            get_string_prop(cx, opts, c"format".as_ptr()),
+        )
+    } else {
+        (None, None)
+    };
+
+    match key_type.as_str() {
+        "secret" => {
+            if let Some(f) = format_opt.as_deref() {
+                if f != "buffer" {
+                    return throw_type_error(cx, &format!(
+                        "export: invalid format {:?} for a secret key (expected \"buffer\")",
+                        f
+                    ));
+                }
+            }
+            let buf_obj = crate::globals::create_buffer_object(cx, &bytes);
+            if buf_obj.is_null() {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
+            args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+            true
+        }
+        "public" | "private" => {
+            let half = if key_type == "public" {
+                KeyHalf::Public
+            } else {
+                KeyHalf::Private
+            };
+            // Canonical (or constructor-provided PEM/DER) storage → parse →
+            // serialize into the requested encoding.
+            let parse_result = parse_key_to_pkey(&bytes, None, half);
+            let pkey = match parse_result {
+                Ok(p) => p,
+                Err(e) => {
+                    return throw_type_error(cx, &format!("export: {}", e));
+                }
+            };
+            let out = export_pkey_as(pkey, half, type_opt.as_deref(), format_opt.as_deref());
+            bssl::EVP_PKEY_free(pkey);
+            match out {
+                Ok(KeyExportOut::Pem(pem)) => {
+                    let c_pem = ZBox::from_bytes(pem.as_bytes());
+                    let js_str = JS_NewStringCopyN(
+                        cx,
+                        c_pem.as_ptr() as *const ::std::os::raw::c_char,
+                        pem.len(),
+                    );
+                    if js_str.is_null() {
+                        args.rval().set(UndefinedValue());
+                        return true;
+                    }
+                    rooted!(&in(cx_ref) let sv = mozjs::jsval::StringValue(&*js_str));
+                    args.rval().set(sv.get());
+                    true
+                }
+                Ok(KeyExportOut::Der(der)) => {
+                    let buf_obj = crate::globals::create_buffer_object(cx, &der);
+                    if buf_obj.is_null() {
+                        args.rval().set(UndefinedValue());
+                        return true;
+                    }
+                    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+                    true
+                }
+                Err(e) => throw_type_error(cx, &format!("export: {}", e)),
+            }
+        }
+        other => throw_type_error(cx, &format!("export: unknown key type {:?}", other)),
     }
-    args.rval().set(UndefinedValue());
+}
+
+/// Resolve the key material input of createPublicKey/createPrivateKey.
+///
+/// Accepted shapes (Node):
+///   - string             → PEM (or DER) bytes
+///   - Buffer/TypedArray  → PEM (or DER) bytes
+///   - KeyObject          → clone of its stored (canonical DER) material
+///   - options object     → {key: string|Buffer, format?: "pem"|"der",
+///                           type?: "pkcs8"|"spki"|"pkcs1"|"sec1"}
+/// Encrypted keys (passphrase option present) fail closed.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn resolve_key_input(
+    cx: *mut JSContext,
+    val: JSVal,
+) -> ::std::result::Result<(Vec<u8>, Option<String>, Option<String>), String> {
+    if val.is_string() {
+        let s = crate::jsstr_to_rust_string(cx, val.to_string());
+        if s.is_empty() {
+            return Err("key is empty".to_string());
+        }
+        return Ok((s.into_bytes(), None, None));
+    }
+    if !val.is_object() {
+        return Err("key must be a string, Buffer, KeyObject or options object".to_string());
+    }
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = val.to_object());
+
+    // KeyObject → clone stored material.
+    let mut idx_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"_keyIdx".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut idx_val,
+        },
+    );
+    if idx_val.is_int32() {
+        let idx = idx_val.to_int32() as usize;
+        let stored = KEY_OBJECTS.with(|v| {
+            v.borrow()
+                .get(idx)
+                .map(|k| k.as_ref().map(|b| b.clone()))
+                .flatten()
+        });
+        return stored.ok_or_else(|| "KeyObject key material is no longer available".to_string())
+            .map(|b| (b, None, None));
+    }
+
+    // Options object {key, format, type, passphrase}.
+    let mut key_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"key".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut key_val,
+        },
+    );
+    if !key_val.is_undefined() {
+        // Encrypted imports are not supported — fail closed, never silently
+        // drop the passphrase.
+        let mut pass_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"passphrase".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut pass_val,
+            },
+        );
+        if !pass_val.is_undefined() && !pass_val.is_null() {
+            return Err("encrypted keys are not supported (passphrase given)".to_string());
+        }
+        let bytes = if key_val.is_string() {
+            crate::jsstr_to_rust_string(cx, key_val.to_string()).into_bytes()
+        } else {
+            extract_buffer_bytes(cx, key_val)
+        };
+        if bytes.is_empty() {
+            return Err("options.key is empty".to_string());
+        }
+        let format = get_string_prop(cx, obj.get(), c"format".as_ptr());
+        let typ = get_string_prop(cx, obj.get(), c"type".as_ptr());
+        return Ok((bytes, format, typ));
+    }
+
+    // Plain Buffer/TypedArray.
+    let bytes = extract_buffer_bytes(cx, val);
+    if bytes.is_empty() {
+        return Err("key must be a string, Buffer, KeyObject or options object".to_string());
+    }
+    Ok((bytes, None, None))
+}
+
+/// Shared createPublicKey/createPrivateKey body: parse input → canonical DER
+/// slot → KeyObject with type + asymmetricKeyType.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn create_asym_key_object(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    argc: u32,
+    half: KeyHalf,
+) -> bool {
+    if argc < 1 {
+        return throw_type_error(
+            cx,
+            if half == KeyHalf::Public {
+                "createPublicKey() requires a key"
+            } else {
+                "createPrivateKey() requires a key"
+            },
+        );
+    }
+    let (bytes, format, _type) = match resolve_key_input(cx, *args.get(0).ptr) {
+        Ok(t) => t,
+        Err(e) => {
+            let what = if half == KeyHalf::Public {
+                "createPublicKey"
+            } else {
+                "createPrivateKey"
+            };
+            return throw_type_error(cx, &format!("{}: {}", what, e));
+        }
+    };
+    let pkey = match parse_key_to_pkey(&bytes, format.as_deref(), half) {
+        Ok(p) => p,
+        Err(e) => {
+            let what = if half == KeyHalf::Public {
+                "createPublicKey"
+            } else {
+                "createPrivateKey"
+            };
+            return throw_type_error(cx, &format!("{}: {}", what, e));
+        }
+    };
+    let canonical = pkey_canonical_der(pkey, half);
+    let kind = pkey_kind_name(pkey);
+    bun_boringssl_sys::EVP_PKEY_free(pkey);
+    let canonical = match canonical {
+        Ok(c) => c,
+        Err(e) => {
+            let what = if half == KeyHalf::Public {
+                "createPublicKey"
+            } else {
+                "createPrivateKey"
+            };
+            return throw_type_error(cx, &format!("{}: {}", what, e));
+        }
+    };
+    let idx = alloc_key_object(canonical);
+    let key_type = if half == KeyHalf::Public { "public" } else { "private" };
+    let obj = make_key_object_js(cx, idx, key_type, Some(kind));
+    if obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return false;
+    }
+    args.rval().set(mozjs::jsval::ObjectValue(obj));
     true
 }
 
@@ -3918,19 +4756,7 @@ unsafe extern "C" fn crypto_create_public_key(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let key_bytes = if argc > 0 {
-        extract_buffer_bytes(cx, *args.get(0).ptr)
-    } else {
-        Vec::new()
-    };
-    let idx = alloc_key_object(key_bytes);
-    let obj = make_key_object_js(cx, idx, "public");
-    if obj.is_null() {
-        args.rval().set(UndefinedValue());
-        return false;
-    }
-    args.rval().set(mozjs::jsval::ObjectValue(obj));
-    true
+    create_asym_key_object(cx, &args, argc, KeyHalf::Public)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -3940,19 +4766,7 @@ unsafe extern "C" fn crypto_create_private_key(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let key_bytes = if argc > 0 {
-        extract_buffer_bytes(cx, *args.get(0).ptr)
-    } else {
-        Vec::new()
-    };
-    let idx = alloc_key_object(key_bytes);
-    let obj = make_key_object_js(cx, idx, "private");
-    if obj.is_null() {
-        args.rval().set(UndefinedValue());
-        return false;
-    }
-    args.rval().set(mozjs::jsval::ObjectValue(obj));
-    true
+    create_asym_key_object(cx, &args, argc, KeyHalf::Private)
 }
 
 // ============================================================
@@ -4807,82 +5621,6 @@ unsafe extern "C" fn crypto_generate_key_pair(
 // randomBytes — async-capable (replaces the sync-only version)
 // ============================================================
 
-#[allow(dead_code, unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn crypto_random_bytes_async(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        return throw_type_error(cx, "randomBytes() requires a size");
-    }
-    let size_val = *args.get(0).ptr;
-    let size = if size_val.is_int32() {
-        size_val.to_int32() as usize
-    } else if size_val.is_double() {
-        size_val.to_double() as usize
-    } else {
-        return throw_type_error(cx, "randomBytes() size must be a number");
-    };
-
-    let has_callback = argc > 1 && (*args.get(1).ptr).is_object();
-    if has_callback {
-        let callback = (*args.get(1).ptr).to_object();
-        spawn_crypto_async(cx, "randomBytes", callback, move || {
-            let mut buf = vec![0u8; size];
-            bao_crypto::random::rand_bytes(&mut buf)
-                .map(|_| buf)
-                .map_err(|e| format!("randomBytes: {}", e))
-        });
-        args.rval().set(UndefinedValue());
-        true
-    } else {
-        // Sync path (same as original crypto_random_bytes)
-        let mut bytes = vec![0u8; size];
-        bao_crypto::random::rand_bytes(&mut bytes).unwrap();
-        let buf_obj = crate::globals::create_buffer_object(cx, &bytes);
-        if buf_obj.is_null() {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
-        args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
-        true
-    }
-}
-
-// ============================================================
-// Single-shot sign/verify (sync)
-// ============================================================
-
-fn parse_sign_algorithm(algo: &str) -> bao_crypto::sign::SignAlgorithm {
-    match algo.to_uppercase().as_str() {
-        "SHA256" | "RS256" => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 {
-            hash: bao_crypto::sign::RsaHash::Sha256,
-        },
-        "SHA384" | "RS384" => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 {
-            hash: bao_crypto::sign::RsaHash::Sha384,
-        },
-        "SHA512" | "RS512" => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 {
-            hash: bao_crypto::sign::RsaHash::Sha512,
-        },
-        "PS256" => bao_crypto::sign::SignAlgorithm::RsaPss {
-            hash: bao_crypto::sign::RsaHash::Sha256,
-        },
-        "PS384" => bao_crypto::sign::SignAlgorithm::RsaPss {
-            hash: bao_crypto::sign::RsaHash::Sha384,
-        },
-        "PS512" => bao_crypto::sign::SignAlgorithm::RsaPss {
-            hash: bao_crypto::sign::RsaHash::Sha512,
-        },
-        "ECDSA" | "ES256" => bao_crypto::sign::SignAlgorithm::EcdsaP256,
-        "ES384" => bao_crypto::sign::SignAlgorithm::EcdsaP384,
-        "ED25519" => bao_crypto::sign::SignAlgorithm::Ed25519,
-        _ => bao_crypto::sign::SignAlgorithm::RsaPkcs1v15 {
-            hash: bao_crypto::sign::RsaHash::Sha256,
-        },
-    }
-}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_sign_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
@@ -4904,14 +5642,15 @@ unsafe extern "C" fn crypto_sign_sync(cx: *mut JSContext, argc: u32, vp: *mut JS
         UndefinedValue()
     };
 
-    let sign_algo = parse_sign_algorithm(&algo);
-
-    // Try to create Signer from key argument
-    let signer = if key_val.is_string() {
-        let pem = crate::jsstr_to_rust_string(cx, key_val.to_string());
-        bao_crypto::sign::Signer::from_pkcs8_pem(&sign_algo, &pem)
+    // Key material first (string PEM | KeyObject slot | DER buffer): the
+    // signature family is resolved from the KEY KIND when the algorithm
+    // string is a bare digest — Node semantics (crypto.sign('SHA256', data,
+    // ecPrivateKey) is ECDSA, not RSA-PKCS1v15; same class as the
+    // createSign fix routed through resolve_sign_algorithm_for_key).
+    let key_bytes: ::std::result::Result<Vec<u8>, bao_crypto::CryptoError> = if key_val.is_string()
+    {
+        Ok(crate::jsstr_to_rust_string(cx, key_val.to_string()).into_bytes())
     } else if key_val.is_object() {
-        // Check for _keyIdx (KeyObject) or try as buffer (DER key)
         let mut wrapped_cx2 =
             mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let cx_ref2 = &mut wrapped_cx2;
@@ -4928,28 +5667,40 @@ unsafe extern "C" fn crypto_sign_sync(cx: *mut JSContext, argc: u32, vp: *mut JS
         );
         if idx_val.is_int32() {
             let idx = idx_val.to_int32() as usize;
-            let key_bytes = KEY_OBJECTS.with(|v| {
+            let stored = KEY_OBJECTS.with(|v| {
                 v.borrow()
                     .get(idx)
                     .map(|k| k.as_ref().map(|b| b.clone()))
                     .flatten()
             });
-            if let Some(der) = key_bytes {
-                bao_crypto::sign::Signer::from_pkcs8_der(&sign_algo, &der)
-            } else {
-                Err(bao_crypto::CryptoError::InvalidKey(
+            stored.ok_or_else(|| {
+                bao_crypto::CryptoError::InvalidKey(
                     "KeyObject key data not available".into(),
-                ))
-            }
+                )
+            })
         } else {
-            let der = extract_buffer_bytes(cx, key_val);
-            bao_crypto::sign::Signer::from_pkcs8_der(&sign_algo, &der)
+            Ok(extract_buffer_bytes(cx, key_val))
         }
     } else {
         Err(bao_crypto::CryptoError::InvalidKey(
             "sign: key argument required".into(),
         ))
     };
+
+    let signer = key_bytes.and_then(|key| {
+        let sign_algo = resolve_sign_algorithm_for_key(&algo, &key).ok_or_else(|| {
+            bao_crypto::CryptoError::InvalidKey(format!(
+                "sign: unrecognized algorithm {:?} for the given key",
+                algo
+            ))
+        })?;
+        if looks_like_pem_key(&key) {
+            let pem = String::from_utf8_lossy(&key).into_owned();
+            bao_crypto::sign::Signer::from_pkcs8_pem(&sign_algo, &pem)
+        } else {
+            bao_crypto::sign::Signer::from_pkcs8_der(&sign_algo, &key)
+        }
+    });
 
     match signer {
         Ok(s) => match s.sign(&data, bao_crypto::sign::SignatureFormat::Der) {
@@ -5002,13 +5753,11 @@ unsafe extern "C" fn crypto_verify_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         Vec::new()
     };
 
-    let sign_algo = parse_sign_algorithm(&algo);
-
-    let verifier = if key_val.is_string() {
-        let pem = crate::jsstr_to_rust_string(cx, key_val.to_string());
-        // Try as public key PEM first, then private
-        bao_crypto::verify::Verifier::from_public_pem(&sign_algo, &pem)
-            .or_else(|_| bao_crypto::verify::Verifier::from_pkcs8_pem(&sign_algo, &pem))
+    // Key material first (same discipline as crypto_sign_sync): bare digest
+    // names resolve the family from the KEY KIND, not an RSA default.
+    let key_bytes: ::std::result::Result<Vec<u8>, bao_crypto::CryptoError> = if key_val.is_string()
+    {
+        Ok(crate::jsstr_to_rust_string(cx, key_val.to_string()).into_bytes())
     } else if key_val.is_object() {
         let mut wrapped_cx2 =
             mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
@@ -5026,30 +5775,44 @@ unsafe extern "C" fn crypto_verify_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         );
         if idx_val.is_int32() {
             let idx = idx_val.to_int32() as usize;
-            let key_bytes = KEY_OBJECTS.with(|v| {
+            let stored = KEY_OBJECTS.with(|v| {
                 v.borrow()
                     .get(idx)
                     .map(|k| k.as_ref().map(|b| b.clone()))
                     .flatten()
             });
-            if let Some(der) = key_bytes {
-                bao_crypto::verify::Verifier::from_public_der(&sign_algo, &der)
-                    .or_else(|_| bao_crypto::verify::Verifier::from_pkcs8_der(&sign_algo, &der))
-            } else {
-                Err(bao_crypto::CryptoError::InvalidKey(
+            stored.ok_or_else(|| {
+                bao_crypto::CryptoError::InvalidKey(
                     "KeyObject key data not available".into(),
-                ))
-            }
+                )
+            })
         } else {
-            let der = extract_buffer_bytes(cx, key_val);
-            bao_crypto::verify::Verifier::from_public_der(&sign_algo, &der)
-                .or_else(|_| bao_crypto::verify::Verifier::from_pkcs8_der(&sign_algo, &der))
+            Ok(extract_buffer_bytes(cx, key_val))
         }
     } else {
         Err(bao_crypto::CryptoError::InvalidKey(
             "verify: key argument required".into(),
         ))
     };
+
+    let verifier = key_bytes.and_then(|key| {
+        let sign_algo = resolve_sign_algorithm_for_key(&algo, &key).ok_or_else(|| {
+            bao_crypto::CryptoError::InvalidKey(format!(
+                "verify: unrecognized algorithm {:?} for the given key",
+                algo
+            ))
+        })?;
+        // Public form first, then private (Node allows verifying with a
+        // private KeyObject).
+        if looks_like_pem_key(&key) {
+            let pem = String::from_utf8_lossy(&key).into_owned();
+            bao_crypto::verify::Verifier::from_public_pem(&sign_algo, &pem)
+                .or_else(|_| bao_crypto::verify::Verifier::from_pkcs8_pem(&sign_algo, &pem))
+        } else {
+            bao_crypto::verify::Verifier::from_public_der(&sign_algo, &key)
+                .or_else(|_| bao_crypto::verify::Verifier::from_pkcs8_der(&sign_algo, &key))
+        }
+    });
 
     match verifier {
         Ok(v) => match v.verify(&data, &signature, bao_crypto::sign::SignatureFormat::Der) {
@@ -5173,7 +5936,7 @@ unsafe extern "C" fn crypto_generate_key_sync(
     let mut buf = vec![0u8; length];
     bao_crypto::random::rand_bytes(&mut buf).unwrap();
     let idx = alloc_key_object(buf);
-    let obj = make_key_object_js(cx, idx, "secret");
+    let obj = make_key_object_js(cx, idx, "secret", None);
     if obj.is_null() {
         args.rval().set(UndefinedValue());
         return false;

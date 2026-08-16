@@ -27,6 +27,11 @@ use crate::require::cache_builtin;
 //      captured, and on data/end it was merely nulled), so a `for await`
 //      racing the producer hung forever. Fix: a waiter queue woken on
 //      data/end/error.
+// BCE-20260817-STREAM-STRCHUNK — push('string') delivered a raw string on
+//   'data'/read(). Node readableAddChunk encodes string chunks to Buffers in
+//   byte mode (default utf8, or the push(chunk, enc) argument) before they
+//   enter the internal buffer; only setEncoding() (string emission) and
+//   objectMode keep strings. push/unshift both convert now.
 const STREAM_JS: &str = r#"
 (function() {
   function EE() { this._events = {}; this._maxListeners = 10; }
@@ -150,12 +155,21 @@ const STREAM_JS: &str = r#"
     if (e === "readable") this._read(s.hwm);
     return this;
   };
-  Readable.prototype.push = function(chunk) {
+  Readable.prototype.push = function(chunk, enc) {
     var s = this._readableState;
     if (chunk === null) {
       s.ended = true;
       if (s.flowing && !s.paused) this._flow();
       return false;
+    }
+    // Node readableAddChunk: in byte mode (no objectMode, no setEncoding) a
+    // string chunk is encoded to a Buffer — default utf8 or the explicit
+    // `enc` argument — before it enters the buffer, so 'data' and read()
+    // hand out Buffers. A setEncoding(e) stream emits decoded strings, so a
+    // chunk matching the active encoding stays a string.
+    if (!s.objectMode && typeof chunk === "string") {
+      var e = enc || "utf8";
+      if (e !== s.encoding) chunk = Buffer.from(chunk, e);
     }
     s.buffer.push(chunk);
     s.length += chunkSize(chunk);
@@ -164,6 +178,11 @@ const STREAM_JS: &str = r#"
   };
   Readable.prototype.unshift = function(chunk) {
     var s = this._readableState;
+    // Same byte-mode conversion as push() — Node funnels both through
+    // readableAddChunk; unshift has no encoding argument.
+    if (!s.objectMode && typeof chunk === "string" && s.encoding === null) {
+      chunk = Buffer.from(chunk, "utf8");
+    }
     s.buffer.unshift(chunk);
     s.length += chunkSize(chunk);
     return this;

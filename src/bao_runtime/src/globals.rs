@@ -5781,6 +5781,119 @@ if (typeof _g.AbortController === 'undefined') {
   };
 }
 
+// @trace REQ-ENG-005 [api:EventTarget/Event/CustomEvent] — WHATWG DOM event
+// basics for globals that lack them (CLI runtime realm). Guarded installs: a
+// servo page global already carries the real DOM constructors and keeps them.
+if (typeof _g.EventTarget === 'undefined') {
+  _g.EventTarget = function EventTarget() {
+    this._bao_listeners = null;
+  };
+  _g.EventTarget.prototype._bao_get_listeners = function(type) {
+    if (!this._bao_listeners) this._bao_listeners = Object.create(null);
+    if (!this._bao_listeners[type]) this._bao_listeners[type] = [];
+    return this._bao_listeners[type];
+  };
+  _g.EventTarget.prototype.addEventListener = function(type, callback, options) {
+    if (typeof callback !== 'function') return;
+    var capture = !!(options === true || (options && options.capture));
+    var list = this._bao_get_listeners(String(type));
+    // WHATWG: (callback, capture) pairs are deduplicated.
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].callback === callback && list[i].capture === capture) return;
+    }
+    list.push({ callback: callback, capture: capture, once: !!(options && options.once) });
+  };
+  _g.EventTarget.prototype.removeEventListener = function(type, callback, options) {
+    if (typeof callback !== 'function') return;
+    if (!this._bao_listeners) return;
+    var list = this._bao_listeners[type];
+    if (!list) return;
+    var capture = !!(options === true || (options && options.capture));
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].callback === callback && list[i].capture === capture) {
+        list.splice(i, 1);
+        return;
+      }
+    }
+  };
+  _g.EventTarget.prototype.dispatchEvent = function(event) {
+    if (!event || typeof event.type !== 'string') {
+      throw new TypeError("Argument 1 of EventTarget.dispatchEvent does not implement interface Event.");
+    }
+    if (event._bao_dispatching) return true;
+    event.target = event.target || this;
+    event.currentTarget = this;
+    event.eventPhase = 2;
+    event._bao_dispatching = true;
+    var list = this._bao_listeners && this._bao_listeners[event.type];
+    if (list && list.length) {
+      // Snapshot: removing a listener during dispatch must not skip the
+      // listeners still pending after it (WHATWG invoke order).
+      var snapshot = list.slice();
+      for (var i = 0; i < snapshot.length; i++) {
+        if (event._bao_stopped_immediate) break;
+        var entry = snapshot[i];
+        if (entry.once) {
+          for (var j = 0; j < list.length; j++) {
+            if (list[j] === entry) { list.splice(j, 1); break; }
+          }
+        }
+        try {
+          entry.callback.call(event.currentTarget, event);
+        } catch (e) {
+          // DOM semantics: a listener throw does not break dispatch; the
+          // error surfaces at the next macrotask boundary as uncaught.
+          if (typeof Promise !== 'undefined' && Promise.resolve) {
+            Promise.resolve().then(function() { throw e; });
+          }
+        }
+      }
+    }
+    event._bao_dispatching = false;
+    event.eventPhase = 3;
+    event.currentTarget = null;
+    return !event.defaultPrevented;
+  };
+}
+
+if (typeof _g.Event === 'undefined') {
+  _g.Event = function Event(type, options) {
+    this.type = String(type);
+    this.bubbles = !!(options && options.bubbles);
+    this.cancelable = !!(options && options.cancelable);
+    this.composed = !!(options && options.composed);
+    this.detail = null;
+    this.timeStamp = Date.now();
+    this.target = null;
+    this.currentTarget = null;
+    this.eventPhase = 0;
+    this.defaultPrevented = false;
+    this.isTrusted = false;
+    this._bao_propagation_stopped = false;
+    this._bao_stopped_immediate = false;
+    this._bao_dispatching = false;
+  };
+  _g.Event.prototype.preventDefault = function() {
+    if (this.cancelable) this.defaultPrevented = true;
+  };
+  _g.Event.prototype.stopPropagation = function() {
+    this._bao_propagation_stopped = true;
+  };
+  _g.Event.prototype.stopImmediatePropagation = function() {
+    this._bao_propagation_stopped = true;
+    this._bao_stopped_immediate = true;
+  };
+}
+
+if (typeof _g.CustomEvent === 'undefined') {
+  _g.CustomEvent = function CustomEvent(type, options) {
+    _g.Event.call(this, type, options);
+    this.detail = (options && 'detail' in options) ? options.detail : null;
+  };
+  _g.CustomEvent.prototype = Object.create(_g.Event.prototype);
+  _g.CustomEvent.prototype.constructor = _g.CustomEvent;
+}
+
 // @trace REQ-ENG-005 [entity:Blob] — Web Blob (size/type/arrayBuffer/text/slice/stream).
 // Backed by Uint8Array chunks so non-ASCII UTF-8 round-trips correctly.
 // A process-global registry (_bao_blob_registry) keeps Blob references alive
@@ -5959,6 +6072,17 @@ if (typeof _g.FormData === 'undefined') {
   _g.FormData.prototype.append = function(name, value, filename) {
     // WHATWG: filename only applies to Blob values; string values ignore it.
     var isBlob = value && typeof value === 'object' && typeof value.size === 'number';
+    if (isBlob && !(value instanceof _g.File)) {
+      // WHATWG createFile: append(name, blob, filename) stores a File whose
+      // bytes are the blob's, with name defaulting to "blob" — so get(name)
+      // returns an object with .name, like every browser and undici. Zero
+      // copy via prototype delegation: size/_chunks/arrayBuffer all read
+      // through the prototype chain to the source blob instance.
+      var fileLike = Object.create(value);
+      fileLike.name = filename !== undefined ? String(filename) : 'blob';
+      fileLike.lastModified = Date.now();
+      value = fileLike;
+    }
     this._data.push({
       name: String(name),
       value: value,
@@ -5989,6 +6113,14 @@ if (typeof _g.FormData === 'undefined') {
   };
   _g.FormData.prototype.set = function(name, value, filename) {
     var isBlob = value && typeof value === 'object' && typeof value.size === 'number';
+    if (isBlob && !(value instanceof _g.File)) {
+      // Same WHATWG createFile conversion as append — set() stores a named
+      // File view over the blob's bytes.
+      var fileLike = Object.create(value);
+      fileLike.name = filename !== undefined ? String(filename) : 'blob';
+      fileLike.lastModified = Date.now();
+      value = fileLike;
+    }
     var entry = {
       name: String(name),
       value: value,
