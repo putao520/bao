@@ -27,8 +27,8 @@ bun_collections = { path = "../collections", version = "0.1.0" }
 [dev-dependencies]
 # Wave 73-G: tests need bao_native_stubs to pull in C-library stubs (uSockets uws_get_loop, etc.)
 bao_native_stubs = { path = "../bao_native_stubs", version = "0.1.0" }
-# PUBLISH-STRIP: cyclic dev-dep (bun_runtime normal-deps bao_engine); restore after W2 wave.
 # bao_runtime provides __bun_run_file_poll (extern "Rust") referenced by bun_io::FilePoll::on_update.
+bun_runtime.workspace = true
 # TASK-12 E2E fusion tests parse a typeof-snapshot via JSON.
 serde_json = "1"
 

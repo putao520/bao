@@ -22,8 +22,8 @@ libc = "0.2"
 log = "0.4"
 
 [dev-dependencies]
-# PUBLISH-STRIP: cyclic dev-deps (bao_engine normal-deps bun_sm; bun_runtime is
-# downstream). Restore after the W2 wave — both will be on crates.io.
+bao_engine = { path = "../bao_engine", version = "0.1.0" }
+bun_runtime = { path = "../bao_runtime", version = "0.1.0" }
 tempfile = "3"
 
 [lints.rust]
