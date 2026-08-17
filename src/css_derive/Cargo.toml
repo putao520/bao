@@ -2,6 +2,10 @@
 name = "bun_css_derive"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "lib.rs"

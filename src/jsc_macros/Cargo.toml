@@ -2,6 +2,10 @@
 name = "bun_jsc_macros"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"

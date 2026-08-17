@@ -2,6 +2,8 @@
 name = "bao_lints"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
+readme = "README.md"
 license.workspace = true
 description = "Format-immune AST-based detector for BCE-012 GC-unsafe Handle construction patterns"
 

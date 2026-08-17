@@ -2,6 +2,10 @@
 name = "bun_core"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "lib.rs"
@@ -30,7 +34,7 @@ bun_wyhash.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-bun_windows_sys = { workspace = true, target = "windows" }
+bun_windows_sys.workspace = true
 
 # NOTE: no dev-dependencies. Any dev-dep cycling back to the bun_core rlib
 # either gets silently dropped from the `--lib` test link line by cargo

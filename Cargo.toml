@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["vendor/servo", "vendor/mozjs", "examples"]
+exclude = ["vendor/servo", "vendor/mozjs", "vendor/ipc-channel", "examples"]
 members = [
     # Public unified library entry (consumers depend on package `bao` only).
     "src/bao",
@@ -85,7 +85,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT OR MPL-2.0"
 repository = "https://github.com/putao520/bao"
@@ -99,13 +99,16 @@ authors = ["The Bao Project Authors"]
 rust-version = "1.89"
 
 [workspace.dependencies]
-mozjs = { path = "vendor/mozjs/mozjs" }
-mozjs_sys = { path = "vendor/mozjs/mozjs-sys" }
-bao = { path = "src/bao" }
-bao_crypto = { path = "src/bao_crypto" }
-bao_boringssl_bridge = { path = "src/bao_boringssl_bridge" }
-bao_native_stubs = { path = "src/bao_native_stubs" }
-bao_uloop = { path = "src/bao_uloop" }
+# BAO PATCH (W0b publish fork): dep keys stay `mozjs`/`mozjs_sys` (members use
+# `mozjs.workspace = true` and code does `use mozjs::`); packages are published
+# as bao-mozjs / bao-mozjs-sys with lib names mozjs / mozjs_sys unchanged.
+mozjs = { path = "vendor/mozjs/mozjs", package = "bao-mozjs", version = "=0.21.4" }
+mozjs_sys = { path = "vendor/mozjs/mozjs-sys", package = "bao-mozjs-sys", version = "=140.13.0-4" }
+bao-core = { path = "src/bao", version = "0.0.1" }
+bao_crypto = { path = "src/bao_crypto", version = "0.1.0" }
+bao_boringssl_bridge = { path = "src/bao_boringssl_bridge", version = "0.1.0" }
+bao_native_stubs = { path = "src/bao_native_stubs", version = "0.1.0" }
+bao_uloop = { path = "src/bao_uloop", version = "0.1.0" }
 
 # ─── External deps (from Bun upstream) ──────────────────────────────────────
 rust-argon2 = "3.0"
@@ -143,86 +146,86 @@ twox-hash = "2.1"
 lol_html = "3.0"
 
 # ─── Internal path deps ─────────────────────────────────────────────────────
-bun_opaque = { path = "src/opaque" }
-bun_analytics = { path = "src/analytics" }
-bun_api = { path = "src/api" }
-bun_base64 = { path = "src/base64" }
-bun_bundler = { path = "src/bundler" }
-bun_collections = { path = "src/collections" }
-bun_css = { path = "src/css" }
-bun_errno = { path = "src/errno" }
-bun_glob = { path = "src/glob" }
-bun_http = { path = "src/http" }
-bun_install = { path = "src/install" }
-bun_parsers = { path = "src/parsers" }
-bun_io = { path = "src/io" }
-bun_libarchive = { path = "src/libarchive" }
-bun_md = { path = "src/md" }
-bun_paths = { path = "src/paths" }
-bun_resolver = { path = "src/resolver" }
-bun_safety = { path = "src/safety" }
-bun_semver = { path = "src/semver" }
-bun_sourcemap = { path = "src/sourcemap" }
-bun_sys = { path = "src/sys" }
-bun_threading = { path = "src/threading" }
-bun_watcher = { path = "src/watcher" }
-bun_clap = { path = "src/clap" }
-bun_clap_macros = { path = "src/clap_macros" }
-bun_crash_handler = { path = "src/crash_handler" }
-bun_dns = { path = "src/dns" }
-bun_dotenv = { path = "src/dotenv" }
-bun_event_loop = { path = "src/event_loop" }
-bun_exe_format = { path = "src/exe_format" }
-bun_highway = { path = "src/highway" }
-bun_http_types = { path = "src/http_types" }
-bun_install_types = { path = "src/install_types" }
-bun_js_parser = { path = "src/js_parser" }
-bun_js_printer = { path = "src/js_printer" }
-bun_ast = { path = "src/ast" }
-bun_picohttp = { path = "src/picohttp" }
-bun_s3_signing = { path = "src/s3_signing" }
-bun_zlib = { path = "src/zlib" }
-bun_platform = { path = "src/platform" }
-bun_sha_hmac = { path = "src/sha_hmac" }
-bun_dispatch = { path = "src/dispatch" }
-bun_brotli = { path = "src/brotli" }
-bun_perf = { path = "src/perf" }
-bun_resolve_builtins = { path = "src/resolve_builtins" }
-bun_url = { path = "src/url" }
-bun_windows_sys = { path = "src/windows_sys" }
-bun_ptr = { path = "src/ptr" }
-bun_alloc = { path = "src/bun_alloc" }
-bun_standalone_graph = { path = "src/standalone_graph" }
-bun_uws = { path = "src/uws" }
-bun_wyhash = { path = "src/wyhash" }
-bun_hash = { path = "src/hash" }
-bun_core = { path = "src/bun_core" }
-bun_core_macros = { path = "src/bun_core_macros" }
-bun_output_tags = { path = "src/bun_output_tags" }
-bun_router = { path = "src/router" }
-bun_shell_parser = { path = "src/shell_parser" }
-bun_spawn = { path = "src/spawn" }
-bun_zstd = { path = "src/zstd" }
-bun_options_types = { path = "src/options_types" }
-bun_bunfig = { path = "src/bunfig" }
-bun_output = { path = "src/output" }
-bun_runtime = { path = "src/bao_runtime" }
-bao_workflow_host = { path = "src/bao_workflow_host" }
-bun_which = { path = "src/which" }
-bun_transpiler = { path = "src/transpiler" }
+bun_opaque = { path = "src/opaque", version = "0.1.0" }
+bun_analytics = { path = "src/analytics", version = "0.1.0" }
+bun_api = { path = "src/api", version = "0.1.0" }
+bun_base64 = { path = "src/base64", version = "0.1.0" }
+bun_bundler = { path = "src/bundler", version = "0.1.0" }
+bun_collections = { path = "src/collections", version = "0.1.0" }
+bun_css = { path = "src/css", version = "0.1.0" }
+bun_errno = { path = "src/errno", version = "0.1.0" }
+bun_glob = { path = "src/glob", version = "0.1.0" }
+bun_http = { path = "src/http", version = "0.1.0" }
+bun_install = { path = "src/install", version = "0.1.0" }
+bun_parsers = { path = "src/parsers", version = "0.1.0" }
+bun_io = { path = "src/io", version = "0.1.0" }
+bun_libarchive = { path = "src/libarchive", version = "0.1.0" }
+bun_md = { path = "src/md", version = "0.1.0" }
+bun_paths = { path = "src/paths", version = "0.1.0" }
+bun_resolver = { path = "src/resolver", version = "0.1.0" }
+bun_safety = { path = "src/safety", version = "0.1.0" }
+bun_semver = { path = "src/semver", version = "0.1.0" }
+bun_sourcemap = { path = "src/sourcemap", version = "0.1.0" }
+bun_sys = { path = "src/sys", version = "0.1.0" }
+bun_threading = { path = "src/threading", version = "0.1.0" }
+bun_watcher = { path = "src/watcher", version = "0.1.0" }
+bun_clap = { path = "src/clap", version = "0.1.0" }
+bun_clap_macros = { path = "src/clap_macros", version = "0.1.0" }
+bun_crash_handler = { path = "src/crash_handler", version = "0.1.0" }
+bun_dns = { path = "src/dns", version = "0.1.0" }
+bun_dotenv = { path = "src/dotenv", version = "0.1.0" }
+bun_event_loop = { path = "src/event_loop", version = "0.1.0" }
+bun_exe_format = { path = "src/exe_format", version = "0.1.0" }
+bun_highway = { path = "src/highway", version = "0.1.0" }
+bun_http_types = { path = "src/http_types", version = "0.1.0" }
+bun_install_types = { path = "src/install_types", version = "0.1.0" }
+bun_js_parser = { path = "src/js_parser", version = "0.1.0" }
+bun_js_printer = { path = "src/js_printer", version = "0.1.0" }
+bun_ast = { path = "src/ast", version = "0.1.0" }
+bun_picohttp = { path = "src/picohttp", version = "0.1.0" }
+bun_s3_signing = { path = "src/s3_signing", version = "0.1.0" }
+bun_zlib = { path = "src/zlib", version = "0.1.0" }
+bun_platform = { path = "src/platform", version = "0.1.0" }
+bun_sha_hmac = { path = "src/sha_hmac", version = "0.1.0" }
+bun_dispatch = { path = "src/dispatch", version = "0.1.0" }
+bun_brotli = { path = "src/brotli", version = "0.1.0" }
+bun_perf = { path = "src/perf", version = "0.1.0" }
+bun_resolve_builtins = { path = "src/resolve_builtins", version = "0.1.0" }
+bun_url = { path = "src/url", version = "0.1.0" }
+bun_windows_sys = { path = "src/windows_sys", version = "0.1.0" }
+bun_ptr = { path = "src/ptr", version = "0.1.0" }
+bun_alloc = { path = "src/bun_alloc", version = "0.1.0" }
+bun_standalone_graph = { path = "src/standalone_graph", version = "0.1.0" }
+bun_uws = { path = "src/uws", version = "0.1.0" }
+bun_wyhash = { path = "src/wyhash", version = "0.1.0" }
+bun_hash = { path = "src/hash", version = "0.1.0" }
+bun_core = { path = "src/bun_core", version = "0.1.0" }
+bun_core_macros = { path = "src/bun_core_macros", version = "0.1.0" }
+bun_output_tags = { path = "src/bun_output_tags", version = "0.1.0" }
+bun_router = { path = "src/router", version = "0.1.0" }
+bun_shell_parser = { path = "src/shell_parser", version = "0.1.0" }
+bun_spawn = { path = "src/spawn", version = "0.1.0" }
+bun_zstd = { path = "src/zstd", version = "0.1.0" }
+bun_options_types = { path = "src/options_types", version = "0.1.0" }
+bun_bunfig = { path = "src/bunfig", version = "0.1.0" }
+bun_output = { path = "src/output", version = "0.1.0" }
+bun_runtime = { path = "src/bao_runtime", version = "0.1.0" }
+bao_workflow_host = { path = "src/bao_workflow_host", version = "0.1.0" }
+bun_which = { path = "src/which", version = "0.1.0" }
+bun_transpiler = { path = "src/transpiler", version = "0.1.0" }
 
-bun_jsc_macros = { path = "src/jsc_macros" }
-bun_lolhtml_sys = { path = "src/lolhtml_sys" }
-bun_boringssl = { path = "src/boringssl" }
-bun_boringssl_sys = { path = "src/boringssl_sys" }
-bun_lsquic_sys = { path = "src/lsquic_sys" }
-bun_cares_sys = { path = "src/cares_sys" }
-bun_libuv_sys = { path = "src/libuv_sys" }
-bun_mimalloc_sys = { path = "src/mimalloc_sys" }
-bun_simdutf_sys = { path = "src/simdutf_sys" }
-bun_spawn_sys = { path = "src/spawn_sys" }
-bun_tcc_sys = { path = "src/tcc_sys" }
-bun_uws_sys = { path = "src/uws_sys" }
+bun_jsc_macros = { path = "src/jsc_macros", version = "0.1.0" }
+bun_lolhtml_sys = { path = "src/lolhtml_sys", version = "0.1.0" }
+bun_boringssl = { path = "src/boringssl", version = "0.1.0" }
+bun_boringssl_sys = { path = "src/boringssl_sys", version = "0.1.0" }
+bun_lsquic_sys = { path = "src/lsquic_sys", version = "0.1.0" }
+bun_cares_sys = { path = "src/cares_sys", version = "0.1.0" }
+bun_libuv_sys = { path = "src/libuv_sys", version = "0.1.0" }
+bun_mimalloc_sys = { path = "src/mimalloc_sys", version = "0.1.0" }
+bun_simdutf_sys = { path = "src/simdutf_sys", version = "0.1.0" }
+bun_spawn_sys = { path = "src/spawn_sys", version = "0.1.0" }
+bun_tcc_sys = { path = "src/tcc_sys", version = "0.1.0" }
+bun_uws_sys = { path = "src/uws_sys", version = "0.1.0" }
 
 [profile.release]
 lto = "fat"
@@ -389,7 +392,12 @@ map_identity = "allow"
 
 
 
-[patch.crates-io]
-# BAO PATCH (BCE-20260627-009): Vendor ipc-channel to enable per-instance RouterProxy
-# (thread-local router infrastructure, see servo/components/shared/base/ipc_router.rs).
-ipc-channel = { path = "vendor/ipc-channel" }
+# BAO PATCH (W0b): [patch.crates-io] ipc-channel entry REMOVED.
+# The vendored ipc-channel is now published as `bao-ipc-channel` and wired
+# directly in vendor/servo/Cargo.toml workspace.dependencies via
+# `ipc-channel = { version = "0.22.0", path = "../ipc-channel", package = "bao-ipc-channel" }`.
+# Reason: [patch] replacements must keep the ORIGINAL package name (verified
+# empirically — a `package =` rename key inside [patch] is silently ignored),
+# so a renamed fork cannot be served through [patch]. The path+package wiring
+# in the servo workspace preserves the original BCE-20260627-009 vendoring
+# semantics (per-instance RouterProxy, ipc_router.rs).

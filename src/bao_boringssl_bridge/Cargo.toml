@@ -1,16 +1,18 @@
 [package]
 name = "bao_boringssl_bridge"
-version = "0.1.0"
+version.workspace = true
 description = "BoringSSL-backed TLS for Bao runtime (replaces bao_tls/rustls)"
 edition.workspace = true
+repository.workspace = true
+readme = "README.md"
 license.workspace = true
 
 [dependencies]
-bun_boringssl = { path = "../boringssl" }
-bun_boringssl_sys = { path = "../boringssl_sys" }
-bun_uws_sys = { path = "../uws_sys" }
-bun_core = { path = "../bun_core" }
-bao_crypto = { path = "../bao_crypto" }
+bun_boringssl = { path = "../boringssl", version = "0.1.0" }
+bun_boringssl_sys = { path = "../boringssl_sys", version = "0.1.0" }
+bun_uws_sys = { path = "../uws_sys", version = "0.1.0" }
+bun_core = { path = "../bun_core", version = "0.1.0" }
+bao_crypto = { path = "../bao_crypto", version = "0.1.0" }
 libc = "0.2"
 log = "0.4"
 thiserror = "2"

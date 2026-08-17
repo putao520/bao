@@ -2,6 +2,10 @@
 name = "bun_spawn_sys"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "lib.rs"
@@ -16,7 +20,11 @@ scopeguard.workspace = true
 bun_analytics.workspace = true
 bun_core.workspace = true
 bun_sys.workspace = true
-bun_windows_sys = { workspace = true, target = "windows" }  # tier-0 no_std leaf; conditional target keeps IoCounters alias valid via cfg(windows) re-exports
+# tier-0 no_std leaf. NOTE: unconditional (NOT cfg(windows)-gated): lib.rs's
+# `pub type IoCounters = bun_windows_sys::IO_COUNTERS;` alias references the
+# crate on every target. The old `target = "windows"` dep key was a no-op
+# (cargo ignores unknown dep keys), so gating it would break non-Windows.
+bun_windows_sys.workspace = true
 enumset.workspace = true
 strum.workspace = true
 

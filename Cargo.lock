@@ -448,16 +448,109 @@ dependencies = [
 ]
 
 [[package]]
-name = "bao"
+name = "bao-browser"
 version = "0.1.0"
 dependencies = [
- "bao_browser",
+ "bao-mozjs",
+ "bao-servo-url",
+ "bao_boringssl_bridge",
+ "bao_cdp",
+ "bao_cdp_client",
+ "bao_engine",
+ "bao_stealth",
+ "base64 0.22.1",
+ "bun_boringssl_sys",
+ "bun_core",
+ "bun_http",
+ "bun_runtime",
+ "bun_sys",
+ "bun_threading",
+ "bun_url",
+ "bun_uws",
+ "cdp-server",
+ "cookie 0.18.1",
+ "dashmap",
+ "dpi",
+ "euclid",
+ "image",
+ "log",
+ "serde",
+ "serde_json",
+ "servo",
+ "servo-net",
+ "url",
+]
+
+[[package]]
+name = "bao-core"
+version = "0.0.1"
+dependencies = [
+ "bao-browser",
  "bao_cdp",
  "bao_cdp_client",
  "bao_engine",
  "bao_stealth",
  "bao_uloop",
  "bun_runtime",
+]
+
+[[package]]
+name = "bao-ipc-channel"
+version = "0.22.0"
+dependencies = [
+ "crossbeam-channel",
+ "libc",
+ "mio",
+ "postcard",
+ "rand 0.9.4",
+ "rustc-hash",
+ "serde_core",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
+ "windows 0.61.3",
+]
+
+[[package]]
+name = "bao-mozjs"
+version = "0.21.4"
+dependencies = [
+ "bao-mozjs-sys",
+ "bindgen",
+ "cc",
+ "encoding_rs",
+ "libc",
+ "log",
+ "num-traits",
+]
+
+[[package]]
+name = "bao-mozjs-sys"
+version = "140.13.0-4"
+dependencies = [
+ "bindgen",
+ "cc",
+ "encoding_c",
+ "encoding_c_mem",
+ "flate2",
+ "icu_capi",
+ "libc",
+ "libz-sys",
+ "tar",
+ "walkdir",
+]
+
+[[package]]
+name = "bao-servo-url"
+version = "0.5.0"
+dependencies = [
+ "encoding_rs",
+ "malloc_size_of_derive",
+ "serde",
+ "servo-malloc-size-of",
+ "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -480,40 +573,6 @@ dependencies = [
  "log",
  "rcgen",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "bao_browser"
-version = "0.1.0"
-dependencies = [
- "bao_boringssl_bridge",
- "bao_cdp",
- "bao_cdp_client",
- "bao_engine",
- "bao_stealth",
- "base64 0.22.1",
- "bun_boringssl_sys",
- "bun_core",
- "bun_http",
- "bun_runtime",
- "bun_sys",
- "bun_threading",
- "bun_url",
- "bun_uws",
- "cdp-server",
- "cookie 0.18.1",
- "dashmap",
- "dpi",
- "euclid",
- "image",
- "log",
- "mozjs",
- "serde",
- "serde_json",
- "servo",
- "servo-net",
- "servo-url",
- "url",
 ]
 
 [[package]]
@@ -570,7 +629,7 @@ dependencies = [
 name = "bao_cli"
 version = "0.1.0"
 dependencies = [
- "bao_browser",
+ "bao-browser",
  "bao_bundler",
  "bao_stealth",
  "bun_ast",
@@ -582,7 +641,7 @@ dependencies = [
 
 [[package]]
 name = "bao_crypto"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bun_boringssl_sys",
  "hex",
@@ -593,6 +652,8 @@ dependencies = [
 name = "bao_engine"
 version = "0.1.0"
 dependencies = [
+ "bao-mozjs",
+ "bao-mozjs-sys",
  "bao_engine_macros",
  "bao_native_stubs",
  "bun_collections",
@@ -606,8 +667,6 @@ dependencies = [
  "bun_uws",
  "libc",
  "log",
- "mozjs",
- "mozjs_sys",
  "serde_json",
 ]
 
@@ -622,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "bao_lints"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "syn",
@@ -649,13 +708,13 @@ dependencies = [
 name = "bao_stealth"
 version = "0.1.0"
 dependencies = [
+ "bao-mozjs",
+ "bao-mozjs-sys",
  "bao_engine",
  "bun_core",
  "bun_runtime",
  "bun_sha_hmac",
  "dashmap",
- "mozjs",
- "mozjs_sys",
  "serde",
  "serde_json",
 ]
@@ -678,9 +737,9 @@ dependencies = [
 name = "bao_workflow_host"
 version = "0.1.0"
 dependencies = [
+ "bao-mozjs",
+ "bao-mozjs-sys",
  "bun_core",
- "mozjs",
- "mozjs_sys",
 ]
 
 [[package]]
@@ -918,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "bun_alloc"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -939,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "bun_analytics"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -957,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "bun_api"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -977,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ast"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1003,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "bun_base64"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bstr",
@@ -1018,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "bun_boringssl"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1038,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "bun_boringssl_sys"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1056,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "bun_brotli"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "brotli",
  "bun_core",
@@ -1065,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bundler"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1117,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bunfig"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1151,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "bun_cares_sys"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1171,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "bun_clap"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1189,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "bun_clap_macros"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bun_output_tags",
  "proc-macro2",
@@ -1199,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "bun_collections"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
@@ -1217,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bstr",
  "bun_alloc",
@@ -1241,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core_macros"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bun_output_tags",
  "proc-macro2",
@@ -1251,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "bun_crash_handler"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1281,7 +1340,7 @@ dependencies = [
 
 [[package]]
 name = "bun_css"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1308,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "bun_css_derive"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1317,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dispatch"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1326,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dns"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1347,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dotenv"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1372,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "bun_errno"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1391,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "bun_event_loop"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1416,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "bun_exe_format"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1437,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "bun_glob"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1457,14 +1516,14 @@ dependencies = [
 
 [[package]]
 name = "bun_hash"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "twox-hash",
 ]
 
 [[package]]
 name = "bun_highway"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bstr",
  "memchr",
@@ -1472,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bao_boringssl_bridge",
  "bao_native_stubs",
@@ -1517,7 +1576,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http_types"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1537,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "bun_install"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1593,7 +1652,7 @@ dependencies = [
 
 [[package]]
 name = "bun_install_types"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1614,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "bun_io"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1640,7 +1699,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_parser"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1675,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_printer"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1705,7 +1764,7 @@ dependencies = [
 
 [[package]]
 name = "bun_jsc_macros"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1714,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "bun_libarchive"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1736,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "bun_libuv_sys"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1754,7 +1813,7 @@ dependencies = [
 
 [[package]]
 name = "bun_lolhtml_sys"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bun_core",
  "lol_html",
@@ -1771,7 +1830,7 @@ dependencies = [
 
 [[package]]
 name = "bun_md"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bun_alloc",
  "bun_collections",
@@ -1785,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "bun_mimalloc_sys"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1802,11 +1861,11 @@ dependencies = [
 
 [[package]]
 name = "bun_opaque"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 
 [[package]]
 name = "bun_options_types"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1834,18 +1893,18 @@ dependencies = [
 
 [[package]]
 name = "bun_output"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bun_core",
 ]
 
 [[package]]
 name = "bun_output_tags"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 
 [[package]]
 name = "bun_parsers"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1870,7 +1929,7 @@ dependencies = [
 
 [[package]]
 name = "bun_paths"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1889,7 +1948,7 @@ dependencies = [
 
 [[package]]
 name = "bun_perf"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1907,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "bun_picohttp"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1923,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "bun_platform"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1942,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ptr"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1961,7 +2020,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolve_builtins"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -1979,7 +2038,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolver"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2022,7 +2081,7 @@ dependencies = [
 
 [[package]]
 name = "bun_router"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2050,6 +2109,8 @@ dependencies = [
 name = "bun_runtime"
 version = "0.1.0"
 dependencies = [
+ "bao-mozjs",
+ "bao-mozjs-sys",
  "bao_boringssl_bridge",
  "bao_bundler",
  "bao_cdp",
@@ -2106,8 +2167,6 @@ dependencies = [
  "libc",
  "libffi",
  "log",
- "mozjs",
- "mozjs_sys",
  "regex",
  "rusqlite",
  "rust-argon2",
@@ -2119,7 +2178,7 @@ dependencies = [
 
 [[package]]
 name = "bun_s3_signing"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2144,7 +2203,7 @@ dependencies = [
 
 [[package]]
 name = "bun_safety"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2162,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "bun_semver"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2181,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sha_hmac"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2200,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "bun_shell_parser"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2222,7 +2281,7 @@ dependencies = [
 
 [[package]]
 name = "bun_simdutf_sys"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2239,6 +2298,8 @@ dependencies = [
 name = "bun_sm"
 version = "0.1.0"
 dependencies = [
+ "bao-mozjs",
+ "bao-mozjs-sys",
  "bao_engine",
  "bao_engine_macros",
  "bun_collections",
@@ -2251,14 +2312,12 @@ dependencies = [
  "bun_transpiler",
  "libc",
  "log",
- "mozjs",
- "mozjs_sys",
  "tempfile",
 ]
 
 [[package]]
 name = "bun_sourcemap"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2290,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "bun_spawn"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -2312,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "bun_spawn_sys"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -2328,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sql"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2350,7 +2409,7 @@ dependencies = [
 
 [[package]]
 name = "bun_standalone_graph"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2388,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sys"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2415,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "bun_threading"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2437,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "bun_transpiler"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bun_bundler",
  "swc_common",
@@ -2451,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "bun_url"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2471,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2494,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws_sys"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2520,7 +2579,7 @@ dependencies = [
 
 [[package]]
 name = "bun_watcher"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2542,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "bun_which"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2560,11 +2619,11 @@ dependencies = [
 
 [[package]]
 name = "bun_windows_sys"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 
 [[package]]
 name = "bun_wyhash"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2579,7 +2638,7 @@ dependencies = [
 
 [[package]]
 name = "bun_zlib"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2600,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "bun_zstd"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "bun_core",
  "strum 0.26.3",
@@ -5420,23 +5479,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ipc-channel"
-version = "0.22.0"
-dependencies = [
- "crossbeam-channel",
- "libc",
- "mio",
- "postcard",
- "rand 0.9.4",
- "rustc-hash",
- "serde_core",
- "tempfile",
- "thiserror 2.0.18",
- "uuid",
- "windows 0.61.3",
-]
-
-[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6019,35 +6061,6 @@ checksum = "60b428c032f0af701a3ca440c92e7b552c25b2a5af2b08a85077ee8e9d2ae699"
 dependencies = [
  "bindgen",
  "cc",
- "walkdir",
-]
-
-[[package]]
-name = "mozjs"
-version = "0.21.4"
-dependencies = [
- "bindgen",
- "cc",
- "encoding_rs",
- "libc",
- "log",
- "mozjs_sys",
- "num-traits",
-]
-
-[[package]]
-name = "mozjs_sys"
-version = "140.13.0-4"
-dependencies = [
- "bindgen",
- "cc",
- "encoding_c",
- "encoding_c_mem",
- "flate2",
- "icu_capi",
- "libc",
- "libz-sys",
- "tar",
  "walkdir",
 ]
 
@@ -7731,6 +7744,8 @@ name = "servo"
 version = "0.5.0"
 dependencies = [
  "accesskit",
+ "bao-ipc-channel",
+ "bao-servo-url",
  "bitflags 2.11.1",
  "cookie 0.18.1",
  "crossbeam-channel",
@@ -7740,7 +7755,6 @@ dependencies = [
  "gaol",
  "http 1.4.1",
  "image",
- "ipc-channel",
  "keyboard-types",
  "log",
  "mozangle",
@@ -7777,7 +7791,6 @@ dependencies = [
  "servo-storage",
  "servo-storage-traits",
  "servo-tracing",
- "servo-url",
  "servo-wakelock",
  "servo-webgl",
  "stylo",
@@ -7826,8 +7839,8 @@ name = "servo-base"
 version = "0.5.0"
 dependencies = [
  "accesskit",
+ "bao-ipc-channel",
  "crossbeam-channel",
- "ipc-channel",
  "libc",
  "log",
  "mach2",
@@ -7920,12 +7933,13 @@ version = "0.5.0"
 dependencies = [
  "accesskit",
  "backtrace",
+ "bao-ipc-channel",
+ "bao-servo-url",
  "base64 0.23.1",
  "content-security-policy",
  "crossbeam-channel",
  "euclid",
  "gaol",
- "ipc-channel",
  "keyboard-types",
  "log",
  "parking_lot",
@@ -7951,7 +7965,6 @@ dependencies = [
  "servo-script-traits",
  "servo-storage-traits",
  "servo-tracing",
- "servo-url",
  "servo-webxr-api",
  "stylo",
  "stylo_traits",
@@ -7961,12 +7974,13 @@ dependencies = [
 name = "servo-constellation-traits"
 version = "0.5.0"
 dependencies = [
+ "bao-ipc-channel",
+ "bao-servo-url",
  "base64 0.23.1",
  "content-security-policy",
  "encoding_rs",
  "euclid",
  "http 1.4.1",
- "ipc-channel",
  "log",
  "malloc_size_of_derive",
  "rustc-hash",
@@ -7984,7 +7998,6 @@ dependencies = [
  "servo-pixels",
  "servo-profile-traits",
  "servo-storage-traits",
- "servo-url",
  "strum 0.28.0",
  "uuid",
  "webrender_api",
@@ -8012,6 +8025,7 @@ name = "servo-devtools"
 version = "0.5.0"
 dependencies = [
  "atomic_refcell",
+ "bao-servo-url",
  "base64 0.23.1",
  "chrono",
  "crossbeam-channel",
@@ -8032,7 +8046,6 @@ dependencies = [
  "servo-net",
  "servo-net-traits",
  "servo-profile-traits",
- "servo-url",
  "uuid",
 ]
 
@@ -8040,6 +8053,7 @@ dependencies = [
 name = "servo-devtools-traits"
 version = "0.5.0"
 dependencies = [
+ "bao-servo-url",
  "http 1.4.1",
  "malloc_size_of_derive",
  "serde",
@@ -8048,7 +8062,6 @@ dependencies = [
  "servo-malloc-size-of",
  "servo-net-traits",
  "servo-profile-traits",
- "servo-url",
  "uuid",
 ]
 
@@ -8067,6 +8080,7 @@ name = "servo-embedder-traits"
 version = "0.5.0"
 dependencies = [
  "accesskit",
+ "bao-servo-url",
  "bitflags 2.11.1",
  "content-security-policy",
  "cookie 0.18.1",
@@ -8085,7 +8099,6 @@ dependencies = [
  "servo-hyper-serde",
  "servo-malloc-size-of",
  "servo-pixels",
- "servo-url",
  "strum 0.28.0",
  "stylo",
  "stylo_traits",
@@ -8101,6 +8114,7 @@ version = "0.5.0"
 dependencies = [
  "app_units",
  "atomic_refcell",
+ "bao-servo-url",
  "bitflags 2.11.1",
  "byteorder",
  "content-security-policy",
@@ -8137,7 +8151,6 @@ dependencies = [
  "servo-paint-api",
  "servo-profile-traits",
  "servo-tracing",
- "servo-url",
  "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
  "skrifa",
  "smallvec",
@@ -8158,6 +8171,7 @@ name = "servo-fonts-traits"
 version = "0.5.0"
 dependencies = [
  "atomic_refcell",
+ "bao-servo-url",
  "dwrote",
  "log",
  "malloc_size_of_derive",
@@ -8170,7 +8184,6 @@ dependencies = [
  "servo-base",
  "servo-malloc-size-of",
  "servo-profile-traits",
- "servo-url",
  "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
  "stylo",
  "uuid",
@@ -8219,6 +8232,7 @@ dependencies = [
  "app_units",
  "arrayvec",
  "atomic_refcell",
+ "bao-servo-url",
  "bitflags 2.11.1",
  "data-url",
  "euclid",
@@ -8253,7 +8267,6 @@ dependencies = [
  "servo-script",
  "servo-script-traits",
  "servo-tracing",
- "servo-url",
  "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
  "smallvec",
  "strum 0.28.0",
@@ -8276,6 +8289,7 @@ version = "0.5.0"
 dependencies = [
  "app_units",
  "atomic_refcell",
+ "bao-servo-url",
  "bitflags 2.11.1",
  "euclid",
  "html5ever",
@@ -8295,7 +8309,6 @@ dependencies = [
  "servo-pixels",
  "servo-profile-traits",
  "servo-script-traits",
- "servo-url",
  "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
  "stylo",
  "stylo_traits",
@@ -8309,6 +8322,7 @@ version = "0.5.0"
 dependencies = [
  "app_units",
  "atomic_refcell",
+ "bao-ipc-channel",
  "content-security-policy",
  "crossbeam-channel",
  "data-url",
@@ -8317,7 +8331,6 @@ dependencies = [
  "http 1.4.1",
  "icu_locid",
  "indexmap",
- "ipc-channel",
  "keyboard-types",
  "markup5ever",
  "mime",
@@ -8450,8 +8463,8 @@ dependencies = [
 name = "servo-media-thread"
 version = "0.5.0"
 dependencies = [
+ "bao-ipc-channel",
  "euclid",
- "ipc-channel",
  "log",
  "malloc_size_of_derive",
  "rustc-hash",
@@ -8485,6 +8498,7 @@ dependencies = [
 name = "servo-metrics"
 version = "0.5.0"
 dependencies = [
+ "bao-servo-url",
  "malloc_size_of_derive",
  "servo-base",
  "servo-config",
@@ -8492,7 +8506,6 @@ dependencies = [
  "servo-paint-api",
  "servo-profile-traits",
  "servo-script-traits",
- "servo-url",
 ]
 
 [[package]]
@@ -8502,6 +8515,8 @@ dependencies = [
  "async-compression",
  "async-recursion",
  "async-tungstenite",
+ "bao-ipc-channel",
+ "bao-servo-url",
  "bao_boringssl_bridge",
  "bao_stealth",
  "base64 0.23.1",
@@ -8527,7 +8542,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "imsz",
- "ipc-channel",
  "itertools 0.15.0",
  "log",
  "malloc_size_of_derive",
@@ -8560,7 +8574,6 @@ dependencies = [
  "servo-pixels",
  "servo-profile-traits",
  "servo-tracing",
- "servo-url",
  "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
  "sha2 0.11.0",
  "smallvec",
@@ -8581,6 +8594,8 @@ dependencies = [
 name = "servo-net-traits"
 version = "0.5.0"
 dependencies = [
+ "bao-ipc-channel",
+ "bao-servo-url",
  "content-security-policy",
  "cookie 0.18.1",
  "crossbeam-channel",
@@ -8588,7 +8603,6 @@ dependencies = [
  "headers",
  "http 1.4.1",
  "hyper-util",
- "ipc-channel",
  "log",
  "malloc_size_of_derive",
  "mime",
@@ -8609,7 +8623,6 @@ dependencies = [
  "servo-paint-api",
  "servo-pixels",
  "servo-profile-traits",
- "servo-url",
  "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
  "sys-locale",
  "tokio",
@@ -8657,6 +8670,8 @@ dependencies = [
 name = "servo-paint-api"
 version = "0.5.0"
 dependencies = [
+ "bao-ipc-channel",
+ "bao-servo-url",
  "bitflags 2.11.1",
  "crossbeam-channel",
  "dpi",
@@ -8664,7 +8679,6 @@ dependencies = [
  "gleam",
  "glow",
  "image",
- "ipc-channel",
  "log",
  "malloc_size_of_derive",
  "parking_lot",
@@ -8678,7 +8692,6 @@ dependencies = [
  "servo-malloc-size-of",
  "servo-profile-traits",
  "servo-tracing",
- "servo-url",
  "smallvec",
  "strum 0.28.0",
  "stylo",
@@ -8722,8 +8735,8 @@ dependencies = [
 name = "servo-profile-traits"
 version = "0.5.0"
 dependencies = [
+ "bao-ipc-channel",
  "crossbeam-channel",
- "ipc-channel",
  "log",
  "malloc_size_of_derive",
  "serde",
@@ -8746,6 +8759,9 @@ dependencies = [
  "atomic_refcell",
  "aws-lc-rs",
  "backtrace",
+ "bao-ipc-channel",
+ "bao-mozjs",
+ "bao-servo-url",
  "base64 0.23.1",
  "base64ct",
  "bitflags 2.11.1",
@@ -8778,7 +8794,6 @@ dependencies = [
  "httparse",
  "icu_locid",
  "indexmap",
- "ipc-channel",
  "itertools 0.15.0",
  "k12",
  "keccak",
@@ -8792,7 +8807,6 @@ dependencies = [
  "ml-dsa",
  "ml-kem",
  "mozangle",
- "mozjs",
  "nom-rfc8288",
  "num-traits",
  "num_cpus",
@@ -8841,7 +8855,6 @@ dependencies = [
  "servo-storage-traits",
  "servo-timers",
  "servo-tracing",
- "servo-url",
  "servo-webvtt",
  "servo-xpath",
  "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
@@ -8879,6 +8892,8 @@ name = "servo-script-bindings"
 version = "0.5.0"
 dependencies = [
  "atomic_refcell",
+ "bao-mozjs",
+ "bao-servo-url",
  "bitflags 2.11.1",
  "crossbeam-channel",
  "encoding_rs",
@@ -8888,7 +8903,6 @@ dependencies = [
  "libc",
  "log",
  "malloc_size_of_derive",
- "mozjs",
  "num-traits",
  "parking_lot",
  "phf 0.13.1",
@@ -8903,7 +8917,6 @@ dependencies = [
  "servo-jstraceable-derive",
  "servo-malloc-size-of",
  "servo-profile-traits",
- "servo-url",
  "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
  "smallvec",
  "strum 0.28.0",
@@ -8919,9 +8932,10 @@ name = "servo-script-traits"
 version = "0.5.0"
 dependencies = [
  "accesskit",
+ "bao-ipc-channel",
+ "bao-servo-url",
  "crossbeam-channel",
  "euclid",
- "ipc-channel",
  "keyboard-types",
  "malloc_size_of_derive",
  "rustc-hash",
@@ -8940,7 +8954,6 @@ dependencies = [
  "servo-pixels",
  "servo-profile-traits",
  "servo-storage-traits",
- "servo-url",
  "servo-webxr-api",
  "strum 0.28.0",
  "stylo_atoms",
@@ -8952,6 +8965,7 @@ dependencies = [
 name = "servo-storage"
 version = "0.5.0"
 dependencies = [
+ "bao-servo-url",
  "libc",
  "log",
  "malloc_size_of_derive",
@@ -8967,7 +8981,6 @@ dependencies = [
  "servo-net-traits",
  "servo-profile-traits",
  "servo-storage-traits",
- "servo-url",
  "tempfile",
  "uuid",
 ]
@@ -8976,12 +8989,12 @@ dependencies = [
 name = "servo-storage-traits"
 version = "0.5.0"
 dependencies = [
+ "bao-servo-url",
  "malloc_size_of_derive",
  "serde",
  "servo-base",
  "servo-malloc-size-of",
  "servo-profile-traits",
- "servo-url",
  "uuid",
 ]
 
@@ -9001,19 +9014,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "servo-url"
-version = "0.5.0"
-dependencies = [
- "encoding_rs",
- "malloc_size_of_derive",
- "serde",
- "servo-malloc-size-of",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "url",
- "uuid",
 ]
 
 [[package]]
@@ -9060,8 +9060,8 @@ dependencies = [
 name = "servo-webxr-api"
 version = "0.5.0"
 dependencies = [
+ "bao-ipc-channel",
  "euclid",
- "ipc-channel",
  "log",
  "malloc_size_of_derive",
  "serde",

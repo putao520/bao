@@ -8,26 +8,26 @@ license.workspace = true
 [dependencies]
 # Core dependency: reuse ALL bundler logic, only provide SM implementations
 # for the CYCLEBREAK symbols and dispatch interfaces.
-bun_bundler = { path = "../bundler" }
+bun_bundler = { path = "../bundler", version = "0.1.0" }
 # Arena for the per-build Transpiler lifetime (Bun.build native driver).
-bun_alloc = { path = "../bun_alloc" }
+bun_alloc = { path = "../bun_alloc", version = "0.1.0" }
 # Macro-seam CYCLEBREAK types (MacroContext / MacroRemapEntry) for macro_context.rs.
-bun_js_parser = { path = "../js_parser" }
+bun_js_parser = { path = "../js_parser", version = "0.1.0" }
 # SWC-backed transpiler (the real bun_bundler transpiler pipeline). The
 # `bun_bundler::transpiler::*` re-export is the JSC-backed CYCLEBREAK
 # Transpiler; `bun_transpiler::transpile_ts` is the JSC-free SWC strip path
 # usable from the Bao layer without a live JSContext.
-bun_transpiler = { path = "../transpiler" }
-bao_engine = { path = "../bao_engine" }
+bun_transpiler = { path = "../transpiler", version = "0.1.0" }
+bao_engine = { path = "../bao_engine", version = "0.1.0" }
 bun_runtime.workspace = true
-bun_core = { path = "../bun_core" }
-bun_event_loop = { path = "../event_loop" }
-bun_io = { path = "../io" }
-bun_resolver = { path = "../resolver" }
-bun_watcher = { path = "../watcher" }
-bun_options_types = { path = "../options_types" }
-bun_ast = { path = "../ast" }
-bun_collections = { path = "../collections" }
+bun_core = { path = "../bun_core", version = "0.1.0" }
+bun_event_loop = { path = "../event_loop", version = "0.1.0" }
+bun_io = { path = "../io", version = "0.1.0" }
+bun_resolver = { path = "../resolver", version = "0.1.0" }
+bun_watcher = { path = "../watcher", version = "0.1.0" }
+bun_options_types = { path = "../options_types", version = "0.1.0" }
+bun_ast = { path = "../ast", version = "0.1.0" }
+bun_collections = { path = "../collections", version = "0.1.0" }
 
 [lints]
 workspace = true

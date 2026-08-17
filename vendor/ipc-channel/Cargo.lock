@@ -30,6 +30,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "bao-ipc-channel"
+version = "0.22.0"
+dependencies = [
+ "criterion",
+ "crossbeam-channel",
+ "crossbeam-utils",
+ "futures-channel",
+ "futures-core",
+ "futures-test",
+ "libc",
+ "mio",
+ "postcard",
+ "rand",
+ "rustc-hash",
+ "serde",
+ "serde_core",
+ "static_assertions",
+ "tempfile",
+ "thiserror",
+ "uuid",
+ "windows",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -337,30 +361,6 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
-
-[[package]]
-name = "ipc-channel"
-version = "0.22.0"
-dependencies = [
- "criterion",
- "crossbeam-channel",
- "crossbeam-utils",
- "futures-channel",
- "futures-core",
- "futures-test",
- "libc",
- "mio",
- "postcard",
- "rand",
- "rustc-hash",
- "serde",
- "serde_core",
- "static_assertions",
- "tempfile",
- "thiserror",
- "uuid",
- "windows",
-]
 
 [[package]]
 name = "is-terminal"

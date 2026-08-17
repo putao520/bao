@@ -2,11 +2,15 @@
 name = "bao_crypto"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [lints]
 workspace = true
 
 [dependencies]
-bun_boringssl_sys = { path = "../boringssl_sys" }
+bun_boringssl_sys = { path = "../boringssl_sys", version = "0.1.0" }
 hex = "0.4"
 thiserror.workspace = true

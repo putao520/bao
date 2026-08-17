@@ -6,13 +6,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-bao_engine = { path = "../bao_engine" }
-bao_workflow_host = { path = "../bao_workflow_host" }
-bao_stealth = { path = "../bao_stealth" }
-bao_boringssl_bridge = { path = "../bao_boringssl_bridge" }
-bun_boringssl_sys = { path = "../boringssl_sys" }
-bao_crypto = { path = "../bao_crypto" }
-bao_cdp_client = { path = "../bao_cdp_client" }
+bao_engine = { path = "../bao_engine", version = "0.1.0" }
+bao_workflow_host = { path = "../bao_workflow_host", version = "0.1.0" }
+bao_stealth = { path = "../bao_stealth", version = "0.1.0" }
+bao_boringssl_bridge = { path = "../bao_boringssl_bridge", version = "0.1.0" }
+bun_boringssl_sys = { path = "../boringssl_sys", version = "0.1.0" }
+bao_crypto = { path = "../bao_crypto", version = "0.1.0" }
+bao_cdp_client = { path = "../bao_cdp_client", version = "0.1.0" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
 log = "0.4"
@@ -26,63 +26,63 @@ dashmap.workspace = true
 # @trace STUB-INVENTORY: default product must NOT hard-dep bao_native_stubs.
 # Closed-set residual dispatch → product_dispatch_residual.rs; C libs →
 # force_link_native_c_libs. RealImpl still only in stubs = residual owner task.
-bun_install = { path = "../install" }
+bun_install = { path = "../install", version = "0.1.0" }
 
 # Bun 纯 Rust crate（L0-L3 层，零 JSC 依赖）
-bun_http = { path = "../http" }
-bun_http_types = { path = "../http_types" }
-bun_threading = { path = "../threading" }
-bun_core = { path = "../bun_core" }
-bun_url = { path = "../url" }
-bun_uws = { path = "../uws" }
-bun_uws_sys = { path = "../uws_sys" }
+bun_http = { path = "../http", version = "0.1.0" }
+bun_http_types = { path = "../http_types", version = "0.1.0" }
+bun_threading = { path = "../threading", version = "0.1.0" }
+bun_core = { path = "../bun_core", version = "0.1.0" }
+bun_url = { path = "../url", version = "0.1.0" }
+bun_uws = { path = "../uws", version = "0.1.0" }
+bun_uws_sys = { path = "../uws_sys", version = "0.1.0" }
 # @trace REQ-ENG-006 [api:Bun.semver.order] — Bun's own semver implementation
 # (parse + orderWithoutBuild), the same engine install/resolver use.
-bun_semver = { path = "../semver" }
+bun_semver = { path = "../semver", version = "0.1.0" }
 # Real owner of liblsquic.a / liblshpack.a — product force_link (not via stubs).
 # @trace STUB-INVENTORY: replaces bao_native_stubs::force_c_lib_stubs lsquic leg
-bun_lsquic_sys = { path = "../lsquic_sys" }
-bun_spawn = { path = "../spawn" }
-bun_spawn_sys = { path = "../spawn_sys" }
+bun_lsquic_sys = { path = "../lsquic_sys", version = "0.1.0" }
+bun_spawn = { path = "../spawn", version = "0.1.0" }
+bun_spawn_sys = { path = "../spawn_sys", version = "0.1.0" }
 # @trace REQ-BAO-API-018 [dep:bun_shell_parser] — Shell lexer/parser/AST (replaces hand-written shell parsing)
-bun_shell_parser = { path = "../shell_parser" }
+bun_shell_parser = { path = "../shell_parser", version = "0.1.0" }
 # @trace REQ-BAO-API-018 [dep:bun_alloc] — Arena allocator for bun_shell_parser Lexer/Parser
-bun_alloc = { path = "../bun_alloc" }
-bun_sys = { path = "../sys" }
-bun_opaque = { path = "../opaque" }
-bun_picohttp = { path = "../picohttp" }
-bun_resolver = { path = "../resolver" }
-bun_ast = { path = "../ast" }
-bun_event_loop = { path = "../event_loop" }
-bun_dns = { path = "../dns" }
-bun_cares_sys = { path = "../cares_sys" }
-bun_io = { path = "../io" }
-bun_base64 = { path = "../base64" }
-bun_s3_signing = { path = "../s3_signing" }
+bun_alloc = { path = "../bun_alloc", version = "0.1.0" }
+bun_sys = { path = "../sys", version = "0.1.0" }
+bun_opaque = { path = "../opaque", version = "0.1.0" }
+bun_picohttp = { path = "../picohttp", version = "0.1.0" }
+bun_resolver = { path = "../resolver", version = "0.1.0" }
+bun_ast = { path = "../ast", version = "0.1.0" }
+bun_event_loop = { path = "../event_loop", version = "0.1.0" }
+bun_dns = { path = "../dns", version = "0.1.0" }
+bun_cares_sys = { path = "../cares_sys", version = "0.1.0" }
+bun_io = { path = "../io", version = "0.1.0" }
+bun_base64 = { path = "../base64", version = "0.1.0" }
+bun_s3_signing = { path = "../s3_signing", version = "0.1.0" }
 # @trace REQ-ENG-007 [code:bun_simdutf_sys] — SIMD-accelerated UTF-8/ASCII
 # validation for Buffer.isUtf8 / Buffer.isAscii. Replaces the hand-written
 # byte-by-byte RFC 3629 DFA in node_buffer.rs with bun_simdutf_sys::validate_*
 # (FFI to bun-simdutf.cpp, ~3-10× faster on AVX2/NEON).
-bun_simdutf_sys = { path = "../simdutf_sys" }
+bun_simdutf_sys = { path = "../simdutf_sys", version = "0.1.0" }
 # @trace REQ-ENG-007 [code:bun_paths] — POSIX path normalization primitives
 # for node:path (resolve/normalize/join/relative). Replaces the std::path-
 # based helpers in node_path.rs with bun_paths::resolve_path (Zig-parity
 # normalize_string / join / join_abs_string).
-bun_paths = { path = "../paths" }
+bun_paths = { path = "../paths", version = "0.1.0" }
 # @trace REQ-ENG-007 [code:bun_glob] — fs.glob/globSync engine (GlobWalker,
 # the Bun-faithful `**`/brace/dot walker). Replaces the hand-written
 # glob_walk/glob_match in node_fs.rs which ignored options.cwd entirely.
-bun_glob = { path = "../glob" }
+bun_glob = { path = "../glob", version = "0.1.0" }
 bytes.workspace = true
 compact_str.workspace = true
 smallvec.workspace = true
-bao_uloop = { path = "../bao_uloop" }
-bun_sha_hmac = { path = "../sha_hmac" }
+bao_uloop = { path = "../bao_uloop", version = "0.1.0" }
+bun_sha_hmac = { path = "../sha_hmac", version = "0.1.0" }
 # @trace REQ-BAO-API-010 [dep:bun_hash] — non-cryptographic hash (adler32, xxhash, cityhash, etc.)
-bun_hash = { path = "../hash" }
+bun_hash = { path = "../hash", version = "0.1.0" }
 # @trace REQ-ENG-006 [dep:bun_wyhash] — Bun.hash default algorithm (std.hash.Wyhash
 # final4, seed 0). Same crate the parser/router HashMaps use.
-bun_wyhash = { path = "../wyhash" }
+bun_wyhash = { path = "../wyhash", version = "0.1.0" }
 # @trace REQ-ENG-006 [dep:bun_parsers] — Bun.TOML.parse / Bun.YAML.parse /
 # Bun.JSONC.parse bridge (upstream TOML/YAML/JSON5 Expr-tree parsers; already
 # in the dep tree via bun_install).
@@ -103,25 +103,25 @@ bcrypt = { workspace = true }
 getrandom = { workspace = true }
 hex = "0.4"
 flate2.workspace = true
-bun_brotli = { path = "../brotli" }
+bun_brotli = { path = "../brotli", version = "0.1.0" }
 # @trace REQ-ENG-007 [dep:bun_zlib] — node:zlib sync decompress routes through
 # the same streaming state machine as the HTTP pipeline (multi-member gzip,
 # per-member CRC/ISIZE, node-classified failure reasons).
-bun_zlib = { path = "../zlib" }
+bun_zlib = { path = "../zlib", version = "0.1.0" }
 # @trace STUB-INVENTORY: real __bun_regex_* for PnpmMatcher (was always-fail noop)
 regex = "1"
 
 [dev-dependencies]
-bao_engine = { path = "../bao_engine" }
-bao_uloop = { path = "../bao_uloop" }
-bao_cdp = { path = "../bao_cdp" }
-cdp-server = { path = "../cdp-server" }
+bao_engine = { path = "../bao_engine", version = "0.1.0" }
+bao_uloop = { path = "../bao_uloop", version = "0.1.0" }
+bao_cdp = { path = "../bao_cdp", version = "0.1.0" }
+cdp-server = { path = "../cdp-server", version = "0.1.0" }
 tempfile = "3"
 # Bun.build e2e: registers the native bundle driver (full bun_bundler
 # pipeline). Dev-only dep — a NORMAL dep would cycle
 # (bao_bundler → bun_runtime → bao_bundler); dev-dep cycles are legal and the
 # product installs the same driver from bao_cli::run().
-bao_bundler = { path = "../bao_bundler" }
+bao_bundler = { path = "../bao_bundler", version = "0.1.0" }
 # Do NOT dev-dep bao_native_stubs: product residual + product_native_symbols +
 # product_buffered_reader own the closed-set / RealImpl symbols; co-linking
 # stubs dual-defs (STUB-INVENTORY dual-def iron rule). Tests force-link via

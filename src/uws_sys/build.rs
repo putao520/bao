@@ -13,9 +13,16 @@ use std::path::PathBuf;
 
 fn main() {
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let workspace_dir = crate_dir.parent().unwrap().parent().unwrap().to_path_buf();
-    let packages_dir = workspace_dir.join("packages");
-    let usockets_dir = packages_dir.join("bun-usockets");
+    // W0b publish incorporation: all C/C++ sources are vendored in-package
+    // under csrc/ (byte-identical copies of packages/bun-usockets/src,
+    // packages/bun-uws/src, vendor/lsquic public + internal headers,
+    // vendor/lsqpack lsxpack_header.h, vendor/lshpack headers, and the
+    // vendor/boringssl include tree). A crates.io package can only ship
+    // in-package files, so the published crate carries its own source set and
+    // local builds compile the exact same bytes from csrc/. Keep csrc/ in
+    // sync when absorbing upstream changes.
+    let csrc_dir = crate_dir.join("csrc");
+    let usockets_dir = csrc_dir.join("bun-usockets");
     let usockets_src = usockets_dir.join("src");
 
     let with_tls = env::var("BAO_UWS_WITH_TLS").as_deref() != Ok("0");
@@ -53,9 +60,9 @@ fn main() {
     }
 
     // Include paths
-    let lsquic_dir = workspace_dir.join("vendor").join("lsquic");
-    let lsqpack_dir = workspace_dir.join("vendor").join("lsqpack");
-    let lshpack_dir = workspace_dir.join("vendor").join("lshpack");
+    let lsquic_dir = csrc_dir.join("deps").join("lsquic");
+    let lsqpack_dir = csrc_dir.join("deps").join("lsqpack");
+    let lshpack_dir = csrc_dir.join("deps").join("lshpack");
 
     c_build
         .include(&usockets_dir)          // for #include "libusockets.h"
@@ -100,7 +107,7 @@ fn main() {
     // SSL: stubs or real OpenSSL
     if with_tls {
         c_build.file(usockets_src.join("crypto/openssl.c"));
-        let boringssl_dir = workspace_dir.join("vendor/boringssl");
+        let boringssl_dir = csrc_dir.join("boringssl");
         c_build.include(boringssl_dir.join("include"));
     } else {
         c_build.file(usockets_src.join("crypto/ssl_stubs.c"));
@@ -115,7 +122,7 @@ fn main() {
     // These are C++ files that openssl.c calls into; compiled separately
     // because the main uSockets build uses the C compiler.
     if with_tls {
-        let boringssl_dir = workspace_dir.join("vendor/boringssl");
+        let boringssl_dir = csrc_dir.join("boringssl");
         let mut tls_cpp = cc::Build::new();
         tls_cpp.compiler("clang++");
         tls_cpp.cpp(true);
@@ -141,7 +148,7 @@ fn main() {
 
     // ── C++ compilation: uWS C-ABI wrapper (libuwsockets.cpp) ────────────
     // Provides uws_app_*, uws_res_*, uws_req_* symbols that Rust FFI calls.
-    let uws_dir = packages_dir.join("bun-uws");
+    let uws_dir = csrc_dir.join("bun-uws");
     let uws_src = uws_dir.join("src");
 
     let mut cpp_build = cc::Build::new();
@@ -169,13 +176,13 @@ fn main() {
             .flag("-DLIBUS_USE_OPENSSL=1")
             .flag("-DLIBUS_USE_BORINGSSL=1")
             .flag("-DWITH_BORINGSSL=1");
-        let boringssl_dir = workspace_dir.join("vendor/boringssl");
+        let boringssl_dir = csrc_dir.join("boringssl");
         cpp_build.include(boringssl_dir.join("include"));
     }
 
     // Include paths for uWS C++ headers + uSockets internals
     cpp_build
-        .include(&packages_dir)          // for #include <bun-uws/src/App.h>
+        .include(&csrc_dir)              // for #include <bun-uws/src/App.h>
         .include(&uws_dir)               // for #include "App.h" via bun-uws/src/
         .include(&uws_src)               // for #include "App.h" etc.
         .include(&usockets_dir)           // for #include "libusockets.h"

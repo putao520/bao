@@ -1,6 +1,9 @@
 [package]
-name = "bao"
-version = "0.1.0"
+# crates.io name (`bao` is taken by the BLAKE3 project). The lib target name
+# stays `bao` below, so in-tree `bao::` code and downstream `use bao::` are
+# unchanged; only the published package/version identity moves to bao-core.
+name = "bao-core"
+version = "0.0.1"
 edition.workspace = true
 license.workspace = true
 description = "Bao unified library — SpiderMonkey + servo + Node/Bun API + CDP + Stealth (always-on full stack)"
@@ -23,13 +26,13 @@ path = "src/lib.rs"
 default = []
 
 [dependencies]
-bao_browser = { path = "../bao_browser" }
-bao_engine = { path = "../bao_engine" }
-bun_runtime = { path = "../bao_runtime" }
-bao_cdp = { path = "../bao_cdp" }
-bao_cdp_client = { path = "../bao_cdp_client" }
-bao_stealth = { path = "../bao_stealth" }
-bao_uloop = { path = "../bao_uloop" }
+bao-browser = { path = "../bao_browser", version = "0.1.0" }
+bao_engine = { path = "../bao_engine", version = "0.1.0" }
+bun_runtime = { path = "../bao_runtime", version = "0.1.0" }
+bao_cdp = { path = "../bao_cdp", version = "0.1.0" }
+bao_cdp_client = { path = "../bao_cdp_client", version = "0.1.0" }
+bao_stealth = { path = "../bao_stealth", version = "0.1.0" }
+bao_uloop = { path = "../bao_uloop", version = "0.1.0" }
 
 [lints]
 workspace = true

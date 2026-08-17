@@ -10,4 +10,4 @@ name = "bao"
 path = "src/main.rs"
 
 [dependencies]
-bao_cli = { path = "../bao_cli" }
+bao_cli = { path = "../bao_cli", version = "0.1.0" }

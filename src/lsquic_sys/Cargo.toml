@@ -1,8 +1,10 @@
 [package]
 name = "bun_lsquic_sys"
-version = "0.1.0"
+version.workspace = true
 description = "Compiled lsquic C library (LiteSpeed QUIC/HTTP3) with lsqpack + lshpack"
 edition = "2021"
+repository.workspace = true
+readme = "README.md"
 license = "MIT"
 
 [build-dependencies]
@@ -10,4 +12,4 @@ cc = "1"
 
 [dependencies]
 # lsquic depends on BoringSSL for TLS. lshpack is now compiled inline.
-bun_boringssl_sys = { path = "../boringssl_sys" }
+bun_boringssl_sys = { path = "../boringssl_sys", version = "0.1.0" }

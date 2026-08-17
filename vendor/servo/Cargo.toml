@@ -155,10 +155,16 @@ image = { version = "0.25", default-features = false, features = ["bmp", "gif", 
 imsz = "0.4"
 indexmap = { version = "2.14.0", features = ["std"] }
 inventory = "0.3.24"
-ipc-channel = "0.22"
+# BAO PATCH (W0b): vendored ipc-channel fork, published as bao-ipc-channel.
+# Was `ipc-channel = "0.22"` resolved through bao root [patch.crates-io];
+# [patch] cannot serve a renamed package (verified empirically), so the fork is
+# wired here directly: dep key stays `ipc-channel`, lib name stays
+# `ipc_channel`. Preserves BCE-20260627-009 per-instance RouterProxy vendoring.
+ipc-channel = { version = "0.22.0", path = "../ipc-channel", package = "bao-ipc-channel" }
 itertools = "0.15"
 jni = "0.22"
-js = { package = "mozjs", path = "../mozjs/mozjs", default-features = false, features = ["intl", "libz-sys"] }
+# BAO PATCH (W0b): mozjs fork published as bao-mozjs (lib name `mozjs`).
+js = { package = "bao-mozjs", path = "../mozjs/mozjs", default-features = false, features = ["intl", "libz-sys"] }
 keyboard-types = { version = "0.8.3", features = ["serde", "webdriver"] }
 kurbo = { version = "0.13.1", features = ["euclid"] }
 libc = "0.2"
@@ -237,7 +243,10 @@ serde_bytes = "0.11"
 serde_core = "1.0.226"
 serde_json = "1.0"
 serde_test = "1.0"
-servo_arc = { git = "https://github.com/servo/stylo", rev = "cc499a88513045823fc66c2b67492271023d98b2" }
+# BAO PATCH (W0b fork scaffold): version dual-declared (real crate version from
+# the pinned stylo checkout) so `cargo package` can rewrite the git spec to the
+# registry requirement; the git+rev source still wins for local builds.
+servo_arc = { version = "0.4.3", git = "https://github.com/servo/stylo", rev = "cc499a88513045823fc66c2b67492271023d98b2" }
 sha1 = "0.11"
 sha2 = "0.11"
 sha3 = "0.12"
@@ -365,7 +374,10 @@ servo-media-streams = { version = "=0.5.0", path = "components/media/streams" }
 servo-media-traits = { version = "=0.5.0", path = "components/media/traits" }
 servo-media-webrtc = { version = "=0.5.0", path = "components/media/webrtc" }
 servo-tracing = { version = "=0.5.0", path = "components/servo_tracing" }
-servo-url = { version = "=0.5.0", path = "components/url" }
+# BAO PATCH (W0b fork scaffold): servo-url renamed package bao-servo-url (lib
+# name `servo_url`); dep key unchanged so servo crates' `servo-url.workspace`
+# keeps resolving. Sample for the W3 56-crate batch.
+servo-url = { version = "=0.5.0", path = "components/url", package = "bao-servo-url" }
 servo-wakelock = { version = "=0.5.0", path = "components/wakelock" }
 storage = { package = "servo-storage", version = "=0.5.0", path = "components/storage" }
 storage_traits = { package = "servo-storage-traits", version = "=0.5.0", path = "components/shared/storage" }

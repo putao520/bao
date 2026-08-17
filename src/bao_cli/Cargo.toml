@@ -8,9 +8,9 @@ license.workspace = true
 [dependencies]
 bun_runtime.workspace = true
 bun_core.workspace = true
-bao_browser = { path = "../bao_browser" }
-bao_stealth = { path = "../bao_stealth" }
-bao_bundler = { path = "../bao_bundler" }
-bun_ast = { path = "../ast" }
-bun_options_types = { path = "../options_types" }
+bao-browser = { path = "../bao_browser", version = "0.1.0" }
+bao_stealth = { path = "../bao_stealth", version = "0.1.0" }
+bao_bundler = { path = "../bao_bundler", version = "0.1.0" }
+bun_ast = { path = "../ast", version = "0.1.0" }
+bun_options_types = { path = "../options_types", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }

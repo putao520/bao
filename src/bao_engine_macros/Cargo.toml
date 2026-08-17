@@ -1,8 +1,10 @@
 [package]
 name = "bao_engine_macros"
-version = "0.1.0"
+version.workspace = true
 description = "Proc-macros for bao_engine host function registration"
 edition.workspace = true
+repository.workspace = true
+readme = "README.md"
 license.workspace = true
 
 [lib]

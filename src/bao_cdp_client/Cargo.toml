@@ -19,14 +19,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 # Bao ecosystem dependencies (Bun 适配 Servo; 不引入 tokio)
-bao_engine = { path = "../bao_engine" }
-bao_cdp = { path = "../bao_cdp" }
-bun_base64 = { path = "../base64" }
-bun_event_loop = { path = "../event_loop" }
-bun_url = { path = "../url" }
+bao_engine = { path = "../bao_engine", version = "0.1.0" }
+bao_cdp = { path = "../bao_cdp", version = "0.1.0" }
+bun_base64 = { path = "../base64", version = "0.1.0" }
+bun_event_loop = { path = "../event_loop", version = "0.1.0" }
+bun_url = { path = "../url", version = "0.1.0" }
 # REQ-CDP-UWS-001: WebSocket transport now uses bun_uws::ws_client (RFC 6455
 # codec + masking + handshake), removing the hand-written mask/encode layer.
-bun_uws = { path = "../uws" }
+bun_uws = { path = "../uws", version = "0.1.0" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

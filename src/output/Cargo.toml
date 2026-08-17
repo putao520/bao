@@ -2,6 +2,10 @@
 name = "bun_output"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"
@@ -10,4 +14,4 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
-bun_core = { path = "../bun_core" }
+bun_core = { path = "../bun_core", version = "0.1.0" }

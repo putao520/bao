@@ -4,15 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bao_engine = { path = "../bao_engine" }
+bao_engine = { path = "../bao_engine", version = "0.1.0" }
 # REQ-CDP-UWS-001: RFC 6455 codec/handshake/client/server now owned by bun_uws.
 # Removed: bao_cdp::{ws, ws_codec, ws_handshake} self-written modules (-930 LOC).
 # Removed deps: bun_base64 / bun_sha_hmac / bao_boringssl_bridge / bun_boringssl_sys
 #              (only the deleted ws_handshake.rs needed them — SHA1+base64 now
 #               live in bun_uws::ws_handshake against BoringSSL directly).
-bun_uws = { path = "../uws" }
+bun_uws = { path = "../uws", version = "0.1.0" }
 compact_str.workspace = true
-cdp-server = { path = "../../src/cdp-server" }
+cdp-server = { path = "../../src/cdp-server", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cdp-protocol = "0.3"

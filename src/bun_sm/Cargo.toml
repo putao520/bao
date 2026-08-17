@@ -8,22 +8,22 @@ license.workspace = true
 [dependencies]
 # NOTE: bun_sm is the bottom layer — it does NOT depend on bao_engine.
 # bao_engine depends on bun_sm and re-exports its types.
-bao_engine_macros = { path = "../bao_engine_macros" }
+bao_engine_macros = { path = "../bao_engine_macros", version = "0.1.0" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
-bun_core = { path = "../bun_core" }
-bun_event_loop = { path = "../event_loop" }
-bun_io = { path = "../io" }
-bun_collections = { path = "../collections" }
-bun_threading = { path = "../threading" }
-bun_sys = { path = "../sys" }
-bun_transpiler = { path = "../transpiler" }
+bun_core = { path = "../bun_core", version = "0.1.0" }
+bun_event_loop = { path = "../event_loop", version = "0.1.0" }
+bun_io = { path = "../io", version = "0.1.0" }
+bun_collections = { path = "../collections", version = "0.1.0" }
+bun_threading = { path = "../threading", version = "0.1.0" }
+bun_sys = { path = "../sys", version = "0.1.0" }
+bun_transpiler = { path = "../transpiler", version = "0.1.0" }
 libc = "0.2"
 log = "0.4"
 
 [dev-dependencies]
-bao_engine = { path = "../bao_engine" }
-bun_runtime = { path = "../bao_runtime" }
+bao_engine = { path = "../bao_engine", version = "0.1.0" }
+bun_runtime = { path = "../bao_runtime", version = "0.1.0" }
 tempfile = "3"
 
 [lints.rust]

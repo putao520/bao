@@ -1,5 +1,8 @@
 [package]
-name = "mozjs_sys"
+# BAO PATCH (W0b publish fork): package renamed mozjs_sys -> bao-mozjs-sys for
+# crates.io release; lib name stays `mozjs_sys` so downstream `use mozjs_sys::`
+# keeps resolving. Dependents reach it via `package = "bao-mozjs-sys"` rename.
+name = "bao-mozjs-sys"
 description = "System crate for the Mozilla SpiderMonkey JavaScript engine."
 repository.workspace = true
 version = "140.13.0-4"

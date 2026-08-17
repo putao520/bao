@@ -1,33 +1,35 @@
 [package]
 name = "bao_uloop"
-version = "0.1.0"
+version.workspace = true
 description = "Raw epoll + eventfd implementation of the uSockets loop ABI for Bao"
 edition = "2024"
+repository.workspace = true
+readme = "README.md"
 license = "MIT"
 
 # Tier-0 safe: must not depend on any Bun crate that itself reaches JS or the
 # network stack. `bun_uws_sys` provides the #[repr(C)] PosixLoop / InternalLoopData
 # mirror we allocate; `libc` provides raw epoll/eventfd syscalls.
 [dependencies]
-bun_uws_sys = { path = "../uws_sys" }
-bun_sys = { path = "../sys" }
+bun_uws_sys = { path = "../uws_sys", version = "0.1.0" }
+bun_sys = { path = "../sys", version = "0.1.0" }
 # Shared per-host DNS cache consumed by the Bun__addrinfo_* seam below.
 # bun_dns is lower-tier than bao_uloop's loop core (no uws/loop deps), so
 # this does not cycle.
-bun_dns = { path = "../dns" }
+bun_dns = { path = "../dns", version = "0.1.0" }
 libc = "0.2"
 
 [dev-dependencies]
-bao_native_stubs = { path = "../bao_native_stubs" }
+bao_native_stubs = { path = "../bao_native_stubs", version = "0.1.0" }
 # Test-only: referencing force_link propagates liblsquic.a's native link
 # dependency — the C socket closure (loop.c → quic.c) references lsquic
 # symbols, and nothing else in bao_uloop's unit-test graph pulls it in.
-bun_lsquic_sys = { path = "../lsquic_sys" }
+bun_lsquic_sys = { path = "../lsquic_sys", version = "0.1.0" }
 # Test-only: pulls in bun_threading's rlib so its #[no_mangle] Bun__lock /
 # Bun__unlock / Bun__lock__size exports (referenced by loop.c's DNS-result
 # handling) resolve at link time.
-bun_threading = { path = "../threading" }
+bun_threading = { path = "../threading", version = "0.1.0" }
 # Test-only: pulls in bun_analytics' rlib so its #[no_mangle]
 # Bun__isEpollPwait2SupportedOnLinuxKernel (referenced by epoll_kqueue.c)
 # resolves at link time.
-bun_analytics = { path = "../analytics" }
+bun_analytics = { path = "../analytics", version = "0.1.0" }

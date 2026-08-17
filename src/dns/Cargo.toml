@@ -2,6 +2,10 @@
 name = "bun_dns"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "lib.rs"
@@ -26,4 +30,4 @@ bun_cares_sys.workspace = true
 bun_wyhash.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-bun_windows_sys = { workspace = true, target = "windows" }
+bun_windows_sys.workspace = true

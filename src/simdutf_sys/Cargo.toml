@@ -2,6 +2,10 @@
 name = "bun_simdutf_sys"
 version.workspace = true
 edition = "2021"
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "lib.rs"

@@ -11,14 +11,20 @@ use std::path::PathBuf;
 
 fn main() {
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let workspace_dir = crate_dir.parent().unwrap().parent().unwrap().to_path_buf();
-    let vendor_dir = workspace_dir.join("vendor");
+    // W0a/W0b publish incorporation: all C sources are vendored in-package
+    // under csrc/ (byte-identical copies of vendor/lsquic include + liblsquic
+    // trees, the lsqpack/lshpack compile set incl. deps/xxhash and generated
+    // huff-tables.h, and the vendor/boringssl include tree). A crates.io
+    // package can only ship in-package files, so local builds and published
+    // builds compile the exact same bytes from csrc/. Keep csrc/ in sync when
+    // absorbing upstream lsquic/lsqpack/lshpack/boringssl.
+    let csrc_dir = crate_dir.join("csrc");
 
-    let lsquic_dir = vendor_dir.join("lsquic");
-    let lsquic_src = lsquic_dir.join("src").join("liblsquic");
-    let lsqpack_dir = vendor_dir.join("lsqpack");
-    let lshpack_dir = vendor_dir.join("lshpack");
-    let boringssl_dir = vendor_dir.join("boringssl");
+    let lsquic_dir = csrc_dir.join("lsquic");
+    let lsquic_src = lsquic_dir.join("liblsquic");
+    let lsqpack_dir = csrc_dir.join("lsqpack");
+    let lshpack_dir = csrc_dir.join("lshpack");
+    let boringssl_dir = csrc_dir.join("boringssl");
 
     // ── lshpack compilation (merged from bun_lshpack_sys) ────────────────
     let mut lshpack_build = cc::Build::new();

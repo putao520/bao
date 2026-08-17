@@ -2,6 +2,10 @@
 name = "bun_css"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "lib.rs"
@@ -30,4 +34,4 @@ bun_ast.workspace = true
 bun_paths.workspace = true
 bun_ptr.workspace = true
 bun_wyhash.workspace = true
-bun_css_derive = { path = "../css_derive" }
+bun_css_derive = { path = "../css_derive", version = "0.1.0" }

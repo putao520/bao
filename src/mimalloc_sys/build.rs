@@ -3,8 +3,12 @@ use std::path::PathBuf;
 
 fn main() {
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let workspace_dir = crate_dir.parent().unwrap().parent().unwrap();
-    let mi_dir = workspace_dir.join("vendor/mimalloc");
+    // W0b publish incorporation: mimalloc source vendored in-package under
+    // csrc/mimalloc (src/ unity-build set + include/ tree; byte-identical
+    // copy of vendor/mimalloc subsets). A crates.io package can only ship
+    // in-package files, so local builds and published builds compile the
+    // exact same bytes. Keep csrc/ in sync when absorbing upstream mimalloc.
+    let mi_dir = crate_dir.join("csrc").join("mimalloc");
 
     if !mi_dir.join("src/static.c").exists() {
         panic!(

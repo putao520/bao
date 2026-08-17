@@ -1,7 +1,9 @@
 [package]
 name = "cdp-server"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
+repository.workspace = true
+readme = "README.md"
 description = "Generic CDP (Chrome DevTools Protocol) server framework"
 license = "MIT OR MPL-2.0"
 

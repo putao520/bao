@@ -12,7 +12,12 @@
 [package]
 edition = "2021"
 rust-version = "1.86.0"
-name = "ipc-channel"
+# BAO PATCH (W0b publish fork): package renamed ipc-channel -> bao-ipc-channel
+# for crates.io release; lib name stays `ipc_channel` (see [lib] below) so servo
+# code `use ipc_channel::` keeps resolving. Dependents reach it via
+# `package = "bao-ipc-channel"` rename (see vendor/servo Cargo.toml
+# workspace.dependencies and bao root workspace wiring).
+name = "bao-ipc-channel"
 version = "0.22.0"
 authors = ["The Servo Project Developers"]
 build = false
@@ -25,6 +30,10 @@ description = "A multiprocess drop-in replacement for Rust channels"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/servo/ipc-channel"
+# BAO PATCH (W0b): Cargo.toml.orig / Cargo.lock are local-only artifacts of the
+# registry download this fork was vendored from; Cargo.toml.orig is a reserved
+# file name cargo refuses to package.
+exclude = ["Cargo.toml.orig", "Cargo.lock"]
 
 [features]
 async = [

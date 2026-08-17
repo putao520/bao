@@ -9,4 +9,4 @@ name = "bao-example-01-browser"
 path = "main.rs"
 
 [dependencies]
-bao = { path = "../../src/bao" }
+bao-core = { path = "../../src/bao" }

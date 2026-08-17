@@ -6,8 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-bun_sm = { path = "../bun_sm" }
-bao_engine_macros = { path = "../bao_engine_macros" }
+bun_sm = { path = "../bun_sm", version = "0.1.0" }
+bao_engine_macros = { path = "../bao_engine_macros", version = "0.1.0" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
 libc = "0.2"
@@ -15,18 +15,18 @@ log = "0.4"
 
 # Wave 73: SpiderMonkey Jsc arm dispatch adapters
 # Low-tier crates whose `link_interface!` Jsc/Js variant bao_engine implements.
-bun_event_loop = { path = "../event_loop" }
-bun_io = { path = "../io" }
-bun_spawn = { path = "../spawn" }
-bun_crash_handler = { path = "../crash_handler" }
-bun_core = { path = "../bun_core" }
-bun_uws = { path = "../uws" }
-bun_collections = { path = "../collections" }
+bun_event_loop = { path = "../event_loop", version = "0.1.0" }
+bun_io = { path = "../io", version = "0.1.0" }
+bun_spawn = { path = "../spawn", version = "0.1.0" }
+bun_crash_handler = { path = "../crash_handler", version = "0.1.0" }
+bun_core = { path = "../bun_core", version = "0.1.0" }
+bun_uws = { path = "../uws", version = "0.1.0" }
+bun_collections = { path = "../collections", version = "0.1.0" }
 # bun_ast / bun_bundler deferred to Wave 73-F (bun_bundler has unresolved lolhtml_sys)
 
 [dev-dependencies]
 # Wave 73-G: tests need bao_native_stubs to pull in C-library stubs (uSockets uws_get_loop, etc.)
-bao_native_stubs = { path = "../bao_native_stubs" }
+bao_native_stubs = { path = "../bao_native_stubs", version = "0.1.0" }
 # bao_runtime provides __bun_run_file_poll (extern "Rust") referenced by bun_io::FilePoll::on_update.
 bun_runtime.workspace = true
 # TASK-12 E2E fusion tests parse a typeof-snapshot via JSON.

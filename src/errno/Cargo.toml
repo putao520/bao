@@ -2,6 +2,10 @@
 name = "bun_errno"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "lib.rs"
@@ -21,6 +25,7 @@ libc.workspace = true
 bitflags.workspace = true
 bun_core.workspace = true
 bun_libuv_sys.workspace = true
-bun_windows_sys = { workspace = true, target = "windows" }
-
 thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+bun_windows_sys.workspace = true

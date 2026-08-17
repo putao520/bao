@@ -3,8 +3,13 @@ use std::path::PathBuf;
 
 fn main() {
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let workspace_dir = crate_dir.parent().unwrap().parent().unwrap();
-    let bssl_dir = workspace_dir.join("vendor/boringssl");
+    // W0b publish incorporation: BoringSSL source vendored in-package under
+    // csrc/boringssl (include tree + all crypto/ssl headers + every source
+    // file referenced below; byte-identical copy of vendor/boringssl
+    // subsets). A crates.io package can only ship in-package files, so local
+    // builds and published builds compile the exact same bytes. Keep csrc/ in
+    // sync when absorbing upstream boringssl.
+    let bssl_dir = crate_dir.join("csrc").join("boringssl");
 
     if !bssl_dir.join("crypto/fipsmodule/bcm.cc").exists() {
         panic!(
