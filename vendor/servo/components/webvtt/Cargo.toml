@@ -21,4 +21,5 @@ markup5ever = { workspace = true }
 regex = { workspace = true }
 
 [dev-dependencies]
-bao-servo-webvtt = { path = ".", version = "=0.5.0", features = ["test-util"] }
+# PUBLISH-STRIP(#47): self dev-dep — restore after the W3 wave.
+#bao-servo-webvtt = { path = ".", version = "=0.5.0", features = ["test-util"] }
