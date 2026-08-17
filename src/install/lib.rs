@@ -237,7 +237,10 @@ pub(crate) mod install {
 // synthetic `windows_shim/` directory, which doesn't exist on disk. Hoist the
 // file-backed module to crate level with an absolute-ish path and re-export
 // through the inline mod so `windows_shim::bin_linking_shim` keeps resolving.
-#[path = "windows-shim/BinLinkingShim.rs"]
+// PUBLISH-COPY: byte-identical copy of windows-shim/BinLinkingShim.rs — the
+// nested windows-shim crate dir is hard-excluded from cargo packages, so the
+// unconditional module ships via this in-package copy. Keep in sync.
+#[path = "bin_linking_shim_included.rs"]
 pub mod _bin_linking_shim;
 // `bun_shim_impl` is a *freestanding Windows PE* (no CRT, raw NT syscalls) —
 // in Zig it is a separate `exe` artifact whose output is `@embedFile`d above.
