@@ -469,8 +469,8 @@ pub mod Runtime {
     pub struct Fallback;
 
     impl Fallback {
-        pub const HTML_TEMPLATE: &'static [u8] = include_bytes!("../fallback.html");
-        pub const HTML_BACKEND_TEMPLATE: &'static [u8] = include_bytes!("../fallback-backend.html");
+        pub const HTML_TEMPLATE: &'static [u8] = include_bytes!("fallback.html");
+        pub const HTML_BACKEND_TEMPLATE: &'static [u8] = include_bytes!("fallback-backend.html");
 
         #[inline]
         pub fn error_js() -> &'static [u8] {

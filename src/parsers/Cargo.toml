@@ -34,5 +34,4 @@ bun_highway.workspace = true
 bun_ast.workspace = true
 
 [dev-dependencies]
-# JSON round-trip test prints via `bun_js_printer`; sibling crate, dev-only.
-bun_js_printer.workspace = true
+# PUBLISH-STRIP: cyclic dev-dep (bun_js_printer -> bun_sourcemap -> bun_parsers); restore after 0.1.0 wave

@@ -511,28 +511,28 @@ pub mod parse_worker {
         let runtime_code: &'static str = match target {
             options::Target::Bun => {
                 concatcp!(
-                    include_str!("../runtime.js"),
+                    include_str!("runtime.js"),
                     RUNTIME_REQUIRE_BUN,
                     RUNTIME_USING_BUN
                 )
             }
             options::Target::BunMacro => {
                 concatcp!(
-                    include_str!("../runtime.js"),
+                    include_str!("runtime.js"),
                     RUNTIME_REQUIRE_BUN,
                     RUNTIME_USING_OTHER
                 )
             }
             options::Target::Node => {
                 concatcp!(
-                    include_str!("../runtime.js"),
+                    include_str!("runtime.js"),
                     RUNTIME_REQUIRE_NODE,
                     RUNTIME_USING_OTHER
                 )
             }
             _ => {
                 concatcp!(
-                    include_str!("../runtime.js"),
+                    include_str!("runtime.js"),
                     RUNTIME_REQUIRE_OTHER,
                     RUNTIME_USING_OTHER
                 )
