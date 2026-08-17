@@ -14,4 +14,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-bun_runtime.workspace = true
+# PUBLISH-STRIP: cyclic dev-dep (bun_runtime normal-deps bao_stealth); restore after W2 wave.
