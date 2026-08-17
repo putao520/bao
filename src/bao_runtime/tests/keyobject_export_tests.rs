@@ -430,9 +430,146 @@ fn test_secret_keyobject_real_shape() {
     );
 }
 
+/// generateKeyPairSync returns KeyObjects (Node contract) — the loud gap it
+/// closes: generated keys used to come back as raw PEM STRINGS, so
+/// `kp.privateKey.export` was "not a function" and the whole export matrix
+/// was unreachable for generated keys. RSA/EC/ed25519 must all return real
+/// KeyObjects whose exports re-import cleanly and (RSA/EC) sign+verify
+/// through the KeyObject slot path; openssl re-parses the generated RSA/EC
+/// exports and verifies the RSA signature externally.
 #[test]
-fn test_invalid_key_shapes_fail_closed() {
-    // Garbage key material must throw, never produce a KeyObject.
+fn test_generate_key_pair_sync_returns_keyobjects_with_real_export() {
+    let mut ctx = make_ctx();
+    let out = eval_string(
+        &mut ctx,
+        r#"
+(function() {
+  var results = [];
+  function check(name, cond) { results.push(name + ':' + (cond ? 'PASS' : 'FAIL')); }
+  function hex(b) { var s = ''; for (var i = 0; i < b.length; i++) s += ('0' + b[i].toString(16)).slice(-2); return s; }
+  var crypto = require('crypto');
+  var g = globalThis.__gkp = {};
+
+  var families = [['rsa', { modulusLength: 2048 }], ['ec', { namedCurve: 'P-256' }], ['ed25519', null]];
+  for (var f = 0; f < families.length; f++) {
+    var kind = families[f][0], opts = families[f][1];
+    var kp = opts ? crypto.generateKeyPairSync(kind, opts) : crypto.generateKeyPairSync(kind);
+    var tag = kind + ':';
+    var priv = kp.privateKey, pub = kp.publicKey;
+    check(tag + 'priv-keyobject', !!priv && typeof priv.export === 'function' && priv.type === 'private' && priv.symmetric === false);
+    check(tag + 'pub-keyobject', !!pub && typeof pub.export === 'function' && pub.type === 'public' && pub.symmetric === false);
+    check(tag + 'kind', priv.asymmetricKeyType === kind && pub.asymmetricKeyType === kind);
+    var privPem = priv.export();
+    check(tag + 'priv-pem', typeof privPem === 'string' && privPem.indexOf('-----BEGIN PRIVATE KEY-----') === 0 && privPem.indexOf('-----END PRIVATE KEY-----') > 0);
+    var pubPem = pub.export();
+    check(tag + 'pub-pem', typeof pubPem === 'string' && pubPem.indexOf('-----BEGIN PUBLIC KEY-----') === 0 && pubPem.indexOf('-----END PUBLIC KEY-----') > 0);
+    // DER lower bounds sized for the SMALLEST family (ed25519: pkcs8 ≈ 52
+    // bytes, spki = 44) — RSA/EC are far larger.
+    check(tag + 'priv-der', priv.export({ type: 'pkcs8', format: 'der' }).length > 40);
+    check(tag + 'pub-der', pub.export({ type: 'spki', format: 'der' }).length > 40);
+    // The exported PEMs re-import through the sibling constructors and
+    // re-export byte-stably.
+    var rePriv = crypto.createPrivateKey(privPem);
+    check(tag + 'priv-reimport-stable', rePriv.export() === privPem);
+    var rePub = crypto.createPublicKey(pubPem);
+    check(tag + 'pub-reimport-stable', rePub.export() === pubPem);
+    if (kind !== 'ed25519') {
+      var data = Buffer.from('gkp-payload-' + kind);
+      var sig = crypto.sign('sha256', data, priv);
+      check(tag + 'sig-nonempty', !!sig && sig.length > 0);
+      check(tag + 'verify', crypto.verify('sha256', data, pub, sig) === true);
+      if (kind === 'rsa') {
+        g.rsaPrivPem = privPem;
+        g.rsaPubPem = pubPem;
+        g.rsaSigHex = hex(sig);
+      }
+      if (kind === 'ec') {
+        g.ecPrivPem = privPem;
+        g.ecPubPem = pubPem;
+      }
+    }
+  }
+  return results.join('|');
+})()
+"#,
+    );
+    let failures: Vec<&str> = out.split('|').filter(|s| !s.contains(":PASS")).collect();
+    assert!(
+        failures.is_empty(),
+        "generateKeyPairSync KeyObject failing checks:\n  {}\nraw: {}",
+        failures.join("\n  "),
+        out
+    );
+
+    // openssl interop for the GENERATED keys: parse every exported PEM and
+    // externally verify the RSA signature produced through the KeyObject.
+    let dir = tmpdir("gkp");
+    let rsa_priv_pem = eval_string(&mut ctx, "globalThis.__gkp.rsaPrivPem");
+    let rsa_pub_pem = eval_string(&mut ctx, "globalThis.__gkp.rsaPubPem");
+    let rsa_sig_hex = eval_string(&mut ctx, "globalThis.__gkp.rsaSigHex");
+    let ec_priv_pem = eval_string(&mut ctx, "globalThis.__gkp.ecPrivPem");
+    let ec_pub_pem = eval_string(&mut ctx, "globalThis.__gkp.ecPubPem");
+    for (name, val) in [
+        ("rsaPrivPem", &rsa_priv_pem),
+        ("rsaPubPem", &rsa_pub_pem),
+        ("rsaSigHex", &rsa_sig_hex),
+        ("ecPrivPem", &ec_priv_pem),
+        ("ecPubPem", &ec_pub_pem),
+    ] {
+        assert!(
+            !val.starts_with("ERROR") && !val.is_empty() && val != "undefined",
+            "artifact {} missing: {}",
+            name,
+            val
+        );
+    }
+
+    let p = dir.join("rsa_priv.pem");
+    std::fs::write(&p, rsa_priv_pem.as_bytes()).unwrap();
+    assert!(
+        openssl_ok(&["pkey", "-in", p.to_str().unwrap(), "-noout"]),
+        "openssl cannot parse generated+exported RSA pkcs8 PEM"
+    );
+    let p = dir.join("rsa_pub.pem");
+    std::fs::write(&p, rsa_pub_pem.as_bytes()).unwrap();
+    assert!(
+        openssl_ok(&["pkey", "-pubin", "-in", p.to_str().unwrap(), "-noout"]),
+        "openssl cannot parse generated+exported RSA spki PEM"
+    );
+    let p = dir.join("ec_priv.pem");
+    std::fs::write(&p, ec_priv_pem.as_bytes()).unwrap();
+    assert!(
+        openssl_ok(&["pkey", "-in", p.to_str().unwrap(), "-noout"]),
+        "openssl cannot parse generated+exported EC pkcs8 PEM"
+    );
+    let p = dir.join("ec_pub.pem");
+    std::fs::write(&p, ec_pub_pem.as_bytes()).unwrap();
+    assert!(
+        openssl_ok(&["pkey", "-pubin", "-in", p.to_str().unwrap(), "-noout"]),
+        "openssl cannot parse generated+exported EC spki PEM"
+    );
+
+    let p = dir.join("sig.bin");
+    std::fs::write(&p, hex_to_bytes(&rsa_sig_hex)).unwrap();
+    let data = dir.join("data.txt");
+    std::fs::write(&data, b"gkp-payload-rsa").unwrap();
+    assert!(
+        openssl_ok(&[
+            "dgst",
+            "-sha256",
+            "-verify",
+            dir.join("rsa_pub.pem").to_str().unwrap(),
+            "-signature",
+            p.to_str().unwrap(),
+            data.to_str().unwrap()
+        ]),
+        "openssl cannot verify the RSA signature signed through the generated KeyObject"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_invalid_key_shapes_fail_closed() {    // Garbage key material must throw, never produce a KeyObject.
     let mut ctx = make_ctx();
     let res = eval_string(
         &mut ctx,

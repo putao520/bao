@@ -3028,7 +3028,9 @@ unsafe extern "C" fn crypto_generate_key_pair_sync(
     // @trace REQ-ENG-007 [api:node:crypto generateKeyPairSync] [entity:bao_crypto]
     // Node signature: generateKeyPairSync(type, options) where type is
     // 'rsa' | 'ec' | 'ed25519' | 'x25519'. Returns {publicKey, privateKey} as
-    // PEM strings. RSA default bits=2048; ec default curve=P256.
+    // KeyObjects (Node contract: .type/.asymmetricKeyType/.export() on both;
+    // sign/verify accept them through the KeyObject slot path). RSA default
+    // bits=2048; ec default curve=P256.
     let args = CallArgs::from_vp(vp, argc);
     if argc < 1 {
         return throw_type_error(cx, "generateKeyPairSync() requires a key type");
@@ -3061,17 +3063,79 @@ unsafe extern "C" fn crypto_generate_key_pair_sync(
         Ok(r) => r,
         Err(e) => return throw_type_error(cx, &format!("generateKeyPairSync() failed: {}", e)),
     };
-    let pub_pem = result.public_key_pem.unwrap_or_default();
-    let priv_pem = result.private_key_pem.unwrap_or_default();
+    // KeyObject construction from a generated PEM — the SAME canonical
+    // pipeline createPublicKey/createPrivateKey run (parse → canonical DER
+    // slot → KeyObject), so the returned keys carry the full surface:
+    // .export({type, format}) (PEM and DER), .type, .asymmetricKeyType, and
+    // KeyObject-slot acceptance in sign/verify. The previous raw-PEM-string
+    // return was a silent shape downgrade: `.export` was not a function on
+    // the generated keys.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn pem_to_key_object(
+        cx: *mut JSContext,
+        pem: &str,
+        half: KeyHalf,
+    ) -> ::std::result::Result<*mut JSObject, String> {
+        let pkey = parse_key_to_pkey(pem.as_bytes(), Some("pem"), half)?;
+        let canonical = pkey_canonical_der(pkey, half);
+        let kind = pkey_kind_name(pkey);
+        bun_boringssl_sys::EVP_PKEY_free(pkey);
+        let canonical = canonical?;
+        let idx = alloc_key_object(canonical);
+        let key_type = if half == KeyHalf::Public {
+            "public"
+        } else {
+            "private"
+        };
+        let obj = make_key_object_js(cx, idx, key_type, Some(kind));
+        if obj.is_null() {
+            return Err("KeyObject allocation failed".to_string());
+        }
+        Ok(obj)
+    }
+    let pub_pem = result
+        .public_key_pem
+        .ok_or_else(|| "generateKeyPairSync() produced no public PEM".to_string());
+    let pub_obj = match pub_pem.and_then(|p| pem_to_key_object(cx, &p, KeyHalf::Public)) {
+        Ok(o) => o,
+        Err(e) => return throw_type_error(cx, &format!("generateKeyPairSync(): {}", e)),
+    };
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
+    // Root the public KeyObject before building the private one — the second
+    // allocation can GC and move the first.
+    rooted!(&in(cx_ref) let pub_root = pub_obj);
+    let priv_pem = result
+        .private_key_pem
+        .ok_or_else(|| "generateKeyPairSync() produced no private PEM".to_string());
+    let priv_obj = match priv_pem.and_then(|p| pem_to_key_object(cx, &p, KeyHalf::Private)) {
+        Ok(o) => o,
+        Err(e) => return throw_type_error(cx, &format!("generateKeyPairSync(): {}", e)),
+    };
+    rooted!(&in(cx_ref) let priv_root = priv_obj);
     rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
     if obj.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-    set_string_prop(cx, obj.get(), c"publicKey".as_ptr(), &pub_pem);
-    set_string_prop(cx, obj.get(), c"privateKey".as_ptr(), &priv_pem);
+    let pub_v = mozjs::jsval::ObjectValue(pub_root.get());
+    rooted!(&in(cx_ref) let pub_v_root = pub_v);
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"publicKey".as_ptr(),
+        pub_v_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    let priv_v = mozjs::jsval::ObjectValue(priv_root.get());
+    rooted!(&in(cx_ref) let priv_v_root = priv_v);
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"privateKey".as_ptr(),
+        priv_v_root.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }

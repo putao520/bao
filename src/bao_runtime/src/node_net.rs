@@ -442,6 +442,16 @@ const NET_JS: &str = r#"
     EE.prototype.emit = function(e) { var a = Array.prototype.slice.call(arguments, 1); var ls = this._events[e]; if (ls) for (var i = 0; i < ls.length; i++) ls[i].apply(this, a); return !!ls; };
     EE.prototype.removeListener = function(e, fn) { var ls = this._events[e]; if (ls) { var i = ls.indexOf(fn); if (i >= 0) ls.splice(i, 1); } return this; };
   }
+  // node:stream's pipe implementation, SHARED with node:stream (single
+  // owner — no parallel copy here). net.Socket extends stream.Duplex in
+  // Node, so socket.pipe(dest) is the canonical TCP→stream bridge; the
+  // socket satisfies the readable-source contract Readable.pipe needs
+  // (on/emit from EE, pause/resume below, _readableState.endEmitted set
+  // when 'end' is delivered). install_order guarantees the stream module
+  // is cached before node:net (globals::install_all), and the require
+  // global exists before any module install — a failure here is a broken
+  // runtime and fails loud instead of degrading to a local pipe copy.
+  var StreamPipe = require("stream").Readable.prototype.pipe;
 
   function Socket(opts) {
     EE.call(this);
@@ -450,6 +460,11 @@ const NET_JS: &str = r#"
     this._ptr = 0;
     this._polling = false;
     this._sawEnd = false;
+    this._paused = false;
+    // Minimal readable-state Readable.prototype.pipe reads (endEmitted for
+    // the late-attach case: pipe() after 'end' already delivered ends dest
+    // immediately).
+    this._readableState = { endEmitted: false };
   }
   Socket.prototype = Object.create(EE.prototype);
   Socket.prototype.constructor = Socket;
@@ -529,6 +544,7 @@ const NET_JS: &str = r#"
       __net_close(this._ptr);
     }
     this._ptr = 0;
+    this._readableState.endEmitted = true;
     this.emit("end");
     this.emit("close");
     return this;
@@ -551,6 +567,30 @@ const NET_JS: &str = r#"
     this.emit("close");
     return this;
   };
+  // ── Duplex face: readable-side flow control + pipe ──
+  // pause() halts the poll chain (the first _pollTick guard early-returns
+  // on !_polling, so an in-flight scheduled tick is also dropped); native RX
+  // bytes buffer in NET_INCOMING_DATA and flow again on resume() — REAL
+  // backpressure for `dest.write(c) === false → src.pause()` from
+  // Readable.prototype.pipe, with dest's 'drain' resuming via resume().
+  Socket.prototype.pause = function() {
+    this._paused = true;
+    this._polling = false;
+    return this;
+  };
+  Socket.prototype.resume = function() {
+    if (!this._paused) return this;
+    this._paused = false;
+    if (!this._polling && !this.destroyed && this._ptr > 0) this._startPoll();
+    return this;
+  };
+  Socket.prototype.isPaused = function() { return !!this._paused; };
+  // node:stream's pipe (StreamPipe above): socket → writable dest, with
+  // data/end/error forwarding, 'pipe' notification, backpressure via
+  // pause/resume, and dest.end() on source end. The reverse direction —
+  // readable.pipe(socket) — works duck-typed on the writable face
+  // (write/end/on/emit), no wiring needed here.
+  Socket.prototype.pipe = StreamPipe;
   // Poll __net_read for buffered incoming data and emit 'data' events
   Socket.prototype._startPoll = function() {
     if (this._polling || this._ptr === 0) return;
@@ -580,6 +620,7 @@ const NET_JS: &str = r#"
         this.destroyed = true;
         if (!this._sawEnd) {
           this._sawEnd = true;
+          this._readableState.endEmitted = true;
           this.emit("end");
         }
         this.emit("close");
@@ -587,6 +628,7 @@ const NET_JS: &str = r#"
       }
       if (st === 2 && !this._sawEnd) {
         this._sawEnd = true;
+        this._readableState.endEmitted = true;
         this.emit("end");
       }
     }

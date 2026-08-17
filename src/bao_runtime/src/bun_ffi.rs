@@ -556,6 +556,72 @@ unsafe fn fn_hidden_ptr(cx: *mut JSContext, fn_obj: *mut JSObject, name: &str) -
     }
 }
 
+/// Settle a view-unwrap probe into a passable pointer: a live data pointer is
+/// the address; a zero-length view (null data) passes 0 (a null pointer — the
+/// callee sees an empty buffer); length > 0 with a null data pointer means a
+/// DETACHED view, which has no backing store to hand out.
+fn view_slot(unwrapped: *mut JSObject, data: *mut u8, len: usize) -> Option<usize> {
+    if unwrapped.is_null() {
+        return None;
+    }
+    if data.is_null() {
+        if len == 0 {
+            Some(0)
+        } else {
+            None
+        }
+    } else {
+        Some(data as usize)
+    }
+}
+
+/// Zero-copy raw-data pointer of a Buffer/Uint8Array/TypedArray/DataView/
+/// ArrayBuffer — the view's backing store address, NOT a copy. SpiderMonkey
+/// ArrayBuffer backing stores are malloc'd and never move, so the address
+/// stays valid for the duration of the foreign call while the JS view (the
+/// call argument, rooted on the JS stack) is alive. Returns None for
+/// non-view objects and detached views. Mirrors node_buffer's
+/// collect_byte_view unwrapping order (Uint8Array → ArrayBufferView →
+/// ArrayBuffer) but yields the address instead of a byte copy.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn jsval_to_view_ptr(cx: *mut JSContext, v: JSVal) -> Option<usize> {
+    use ::std::ptr;
+    if !v.is_object() {
+        return None;
+    }
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = v.to_object());
+    let mut length: usize = 0;
+    let mut is_shared = false;
+    let mut data_ptr: *mut u8 = ptr::null_mut();
+    let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+        obj_root.get(),
+        &mut length,
+        &mut is_shared,
+        &mut data_ptr,
+    );
+    if !unwrapped.is_null() {
+        return view_slot(unwrapped, data_ptr, length);
+    }
+    let mut view_length: usize = 0;
+    let mut view_shared = false;
+    let mut view_data: *mut u8 = ptr::null_mut();
+    let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+        obj_root.get(),
+        &mut view_length,
+        &mut view_shared,
+        &mut view_data,
+    );
+    if !view_unwrapped.is_null() {
+        return view_slot(view_unwrapped, view_data, view_length);
+    }
+    let mut ab_length: usize = 0;
+    let mut ab_data: *mut u8 = ptr::null_mut();
+    let ab_unwrapped =
+        mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj_root.get(), &mut ab_length, &mut ab_data);
+    view_slot(ab_unwrapped, ab_data, ab_length)
+}
+
 /// Read a JSVal as an integral address (Number or BigInt).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn jsval_to_usize(cx: *mut JSContext, v: JSVal) -> Result<usize, String> {
@@ -717,6 +783,19 @@ unsafe fn spec_arg(
             Ok(FfiArgSlot::F64(b))
         }
         TypeSpec::Ptr => {
+            // View marshalling (Bun/Koffi ptr-arg contract): a Buffer/
+            // TypedArray/DataView/ArrayBuffer argument passes its backing
+            // store address directly — qsort(base, ...)-shaped C APIs take
+            // JS-owned buffers with no manual address extraction. Numbers and
+            // BigInts remain the raw-address form; null is the C null pointer.
+            if v.is_object() {
+                let p = jsval_to_view_ptr(cx, v)
+                    .ok_or_else(|| bad("a Buffer/TypedArray view, or a Number/BigInt address"))?;
+                return Ok(FfiArgSlot::Ptr(p));
+            }
+            if v.is_null() {
+                return Ok(FfiArgSlot::Ptr(0));
+            }
             let p = jsval_to_usize(cx, v)?;
             Ok(FfiArgSlot::Ptr(p))
         }
