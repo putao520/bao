@@ -121,7 +121,7 @@ tempfile = "3"
 # pipeline). Dev-only dep — a NORMAL dep would cycle
 # (bao_bundler → bun_runtime → bao_bundler); dev-dep cycles are legal and the
 # product installs the same driver from bao_cli::run().
-bao_bundler = { path = "../bao_bundler", version = "0.1.0" }
+# PUBLISH-STRIP: cyclic dev-dep (bao_bundler normal-deps bun_runtime); restore after W2 wave.
 # Do NOT dev-dep bao_native_stubs: product residual + product_native_symbols +
 # product_buffered_reader own the closed-set / RealImpl symbols; co-linking
 # stubs dual-defs (STUB-INVENTORY dual-def iron rule). Tests force-link via
