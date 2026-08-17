@@ -1,10 +1,10 @@
 [package]
-name = "servo-embedder-traits"
+name = "bao-servo-embedder-traits"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 repository.workspace = true
 description.workspace = true
@@ -38,7 +38,7 @@ servo-base = { workspace = true }
 servo-geometry = { workspace = true }
 servo-url = { workspace = true }
 strum = { workspace = true }
-stylo = { workspace = true }
+style = { workspace = true }
 stylo_traits = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }

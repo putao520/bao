@@ -1,10 +1,10 @@
 [package]
-name = "servo-layout"
+name = "bao-servo-layout"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 repository.workspace = true
 description.workspace = true
@@ -61,7 +61,7 @@ servo-url = { workspace = true }
 servo_arc = { workspace = true }
 smallvec = { workspace = true }
 strum = { workspace = true }
-stylo = { workspace = true }
+style = { workspace = true }
 stylo_atoms = { workspace = true }
 stylo_traits = { workspace = true }
 taffy = { workspace = true }

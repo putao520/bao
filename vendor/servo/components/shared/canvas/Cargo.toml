@@ -1,10 +1,10 @@
 [package]
-name = "servo-canvas-traits"
+name = "bao-servo-canvas-traits"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 repository.workspace = true
 description.workspace = true
@@ -30,6 +30,6 @@ profile_traits = { workspace = true }
 serde = { workspace = true }
 servo-base = { workspace = true }
 strum = { workspace = true }
-stylo = { workspace = true }
+style = { workspace = true }
 webrender_api = { workspace = true }
 webxr-api = { workspace = true }

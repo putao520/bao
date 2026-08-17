@@ -1,10 +1,10 @@
 [package]
-name = "servo-fonts-traits"
+name = "bao-servo-fonts-traits"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 repository.workspace = true
 description.workspace = true
@@ -28,7 +28,7 @@ serde = { workspace = true }
 servo_arc = { workspace = true }
 servo-base = { workspace = true }
 servo-url = { workspace = true }
-stylo = { workspace = true }
+style = { workspace = true }
 uuid = { workspace = true }
 webrender_api = { workspace = true }
 

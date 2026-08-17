@@ -860,16 +860,1693 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao-servo"
+version = "0.5.0"
+dependencies = [
+ "accesskit",
+ "accesskit_consumer",
+ "arboard",
+ "bao-ipc-channel",
+ "bao-servo",
+ "bao-servo-background-hang-monitor",
+ "bao-servo-base",
+ "bao-servo-bluetooth",
+ "bao-servo-bluetooth-traits",
+ "bao-servo-canvas",
+ "bao-servo-canvas-traits",
+ "bao-servo-config",
+ "bao-servo-constellation",
+ "bao-servo-constellation-traits",
+ "bao-servo-default-resources",
+ "bao-servo-devtools",
+ "bao-servo-devtools-traits",
+ "bao-servo-embedder-traits",
+ "bao-servo-fonts",
+ "bao-servo-geometry",
+ "bao-servo-layout",
+ "bao-servo-layout-api",
+ "bao-servo-media",
+ "bao-servo-media-dummy",
+ "bao-servo-media-gstreamer",
+ "bao-servo-media-ohos",
+ "bao-servo-media-thread",
+ "bao-servo-net",
+ "bao-servo-net-traits",
+ "bao-servo-paint",
+ "bao-servo-paint-api",
+ "bao-servo-profile",
+ "bao-servo-profile-traits",
+ "bao-servo-script",
+ "bao-servo-script-traits",
+ "bao-servo-storage",
+ "bao-servo-storage-traits",
+ "bao-servo-tracing",
+ "bao-servo-url",
+ "bao-servo-wakelock",
+ "bao-servo-webgl",
+ "bao-servo-webgpu",
+ "bao-servo-webxr",
+ "bao-servo-webxr-api",
+ "bao-stylo",
+ "bitflags 2.11.1",
+ "content-security-policy",
+ "cookie 0.18.1",
+ "crossbeam-channel",
+ "dpi",
+ "env_logger",
+ "euclid",
+ "gaol",
+ "gstreamer",
+ "http 1.4.1",
+ "http-body-util",
+ "hyper",
+ "image",
+ "itertools 0.15.0",
+ "keyboard-types",
+ "log",
+ "mozangle",
+ "ohos-pasteboard",
+ "parking_lot",
+ "rustc-hash 2.1.2",
+ "rustls",
+ "serde",
+ "stylo_traits",
+ "surfman",
+ "tokio",
+ "tracing",
+ "url",
+ "webrender",
+ "webrender_api",
+ "winit",
+]
+
+[[package]]
+name = "bao-servo-allocator"
+version = "0.5.0"
+dependencies = [
+ "backtrace",
+ "libc",
+ "log",
+ "rustc-hash 2.1.2",
+ "tikv-jemalloc-sys",
+ "tikv-jemallocator",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "bao-servo-background-hang-monitor"
+version = "0.5.0"
+dependencies = [
+ "backtrace",
+ "bao-servo-background-hang-monitor-api",
+ "bao-servo-base",
+ "crossbeam-channel",
+ "libc",
+ "log",
+ "mach2",
+ "nix",
+ "rustc-demangle",
+ "rustc-hash 2.1.2",
+ "serde_json",
+]
+
+[[package]]
+name = "bao-servo-background-hang-monitor-api"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "serde",
+]
+
+[[package]]
+name = "bao-servo-base"
+version = "0.5.0"
+dependencies = [
+ "accesskit",
+ "bao-ipc-channel",
+ "bao-servo-config",
+ "bao-servo-malloc-size-of",
+ "crossbeam-channel",
+ "libc",
+ "log",
+ "mach2",
+ "malloc_size_of_derive",
+ "parking_lot",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "time",
+ "unicode-segmentation",
+ "webrender_api",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "bao-servo-bluetooth"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-bluetooth-traits",
+ "bao-servo-config",
+ "bao-servo-embedder-traits",
+ "bitflags 2.11.1",
+ "blurmock",
+ "btleplug",
+ "futures",
+ "log",
+ "rand 0.10.2",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "bao-servo-bluetooth-traits"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-embedder-traits",
+ "regex",
+ "serde",
+]
+
+[[package]]
+name = "bao-servo-canvas"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-canvas-traits",
+ "bao-servo-config",
+ "bao-servo-fonts",
+ "bao-servo-malloc-size-of",
+ "bao-servo-paint-api",
+ "bao-servo-pixels",
+ "bao-servo-profile-traits",
+ "bao-servo-tracing",
+ "bao-stylo",
+ "bytemuck",
+ "crossbeam-channel",
+ "euclid",
+ "futures-intrusive",
+ "kurbo",
+ "log",
+ "peniko",
+ "pollster",
+ "rustc-hash 2.1.2",
+ "tracing",
+ "vello",
+ "vello_cpu 0.2.0",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-canvas-traits"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-fonts-traits",
+ "bao-servo-malloc-size-of",
+ "bao-servo-pixels",
+ "bao-servo-profile-traits",
+ "bao-servo-webxr-api",
+ "bao-stylo",
+ "crossbeam-channel",
+ "euclid",
+ "glow",
+ "kurbo",
+ "log",
+ "malloc_size_of_derive",
+ "serde",
+ "strum 0.28.0",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-config"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-config-macro",
+ "num_enum",
+ "serde",
+ "serde_json",
+ "strum 0.28.0",
+ "stylo_static_prefs",
+]
+
+[[package]]
+name = "bao-servo-config-macro"
+version = "0.5.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+ "synstructure",
+]
+
+[[package]]
+name = "bao-servo-constellation"
+version = "0.5.0"
+dependencies = [
+ "accesskit",
+ "backtrace",
+ "bao-ipc-channel",
+ "bao-servo-background-hang-monitor",
+ "bao-servo-background-hang-monitor-api",
+ "bao-servo-base",
+ "bao-servo-bluetooth-traits",
+ "bao-servo-canvas",
+ "bao-servo-canvas-traits",
+ "bao-servo-config",
+ "bao-servo-constellation-traits",
+ "bao-servo-devtools-traits",
+ "bao-servo-embedder-traits",
+ "bao-servo-fonts",
+ "bao-servo-layout-api",
+ "bao-servo-media-thread",
+ "bao-servo-net",
+ "bao-servo-net-traits",
+ "bao-servo-paint-api",
+ "bao-servo-profile-traits",
+ "bao-servo-script-traits",
+ "bao-servo-storage-traits",
+ "bao-servo-tracing",
+ "bao-servo-url",
+ "bao-servo-webgpu",
+ "bao-servo-webgpu-traits",
+ "bao-servo-webxr-api",
+ "bao-stylo",
+ "base64 0.23.1",
+ "content-security-policy",
+ "crossbeam-channel",
+ "euclid",
+ "gaol",
+ "keyboard-types",
+ "log",
+ "parking_lot",
+ "rand 0.10.2",
+ "rustc-hash 2.1.2",
+ "serde",
+ "stylo_traits",
+ "tracing",
+]
+
+[[package]]
+name = "bao-servo-constellation-traits"
+version = "0.5.0"
+dependencies = [
+ "bao-ipc-channel",
+ "bao-servo-base",
+ "bao-servo-canvas-traits",
+ "bao-servo-config",
+ "bao-servo-devtools-traits",
+ "bao-servo-embedder-traits",
+ "bao-servo-fonts-traits",
+ "bao-servo-hyper-serde",
+ "bao-servo-malloc-size-of",
+ "bao-servo-net-traits",
+ "bao-servo-paint-api",
+ "bao-servo-pixels",
+ "bao-servo-profile-traits",
+ "bao-servo-storage-traits",
+ "bao-servo-url",
+ "bao-servo-webgpu-traits",
+ "base64 0.23.1",
+ "content-security-policy",
+ "encoding_rs",
+ "euclid",
+ "http 1.4.1",
+ "log",
+ "malloc_size_of_derive",
+ "rustc-hash 2.1.2",
+ "serde",
+ "strum 0.28.0",
+ "uuid",
+ "webrender_api",
+ "wgpu-core 30.0.0",
+ "zeroize",
+]
+
+[[package]]
+name = "bao-servo-default-resources"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-embedder-traits",
+]
+
+[[package]]
+name = "bao-servo-deny-public-fields"
+version = "0.5.0"
+dependencies = [
+ "proc-macro2",
+ "syn",
+ "synstructure",
+]
+
+[[package]]
+name = "bao-servo-devtools"
+version = "0.5.0"
+dependencies = [
+ "atomic_refcell",
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-devtools-traits",
+ "bao-servo-embedder-traits",
+ "bao-servo-malloc-size-of",
+ "bao-servo-net",
+ "bao-servo-net-traits",
+ "bao-servo-profile-traits",
+ "bao-servo-url",
+ "base64 0.23.1",
+ "chrono",
+ "crossbeam-channel",
+ "headers",
+ "http 1.4.1",
+ "log",
+ "malloc_size_of_derive",
+ "parking_lot",
+ "rand 0.10.2",
+ "rustc-hash 2.1.2",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "bao-servo-devtools-traits"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-embedder-traits",
+ "bao-servo-malloc-size-of",
+ "bao-servo-net-traits",
+ "bao-servo-profile-traits",
+ "bao-servo-url",
+ "http 1.4.1",
+ "malloc_size_of_derive",
+ "serde",
+ "uuid",
+]
+
+[[package]]
+name = "bao-servo-dom-struct"
+version = "0.5.0"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "bao-servo-embedder-traits"
+version = "0.5.0"
+dependencies = [
+ "accesskit",
+ "bao-servo-base",
+ "bao-servo-geometry",
+ "bao-servo-hyper-serde",
+ "bao-servo-malloc-size-of",
+ "bao-servo-pixels",
+ "bao-servo-url",
+ "bao-stylo",
+ "bitflags 2.11.1",
+ "content-security-policy",
+ "cookie 0.18.1",
+ "crossbeam-channel",
+ "euclid",
+ "http 1.4.1",
+ "image",
+ "inventory",
+ "keyboard-types",
+ "log",
+ "malloc_size_of_derive",
+ "rustc-hash 2.1.2",
+ "serde",
+ "strum 0.28.0",
+ "stylo_traits",
+ "url",
+ "uuid",
+ "webdriver",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-fonts"
+version = "0.5.0"
+dependencies = [
+ "app_units",
+ "atomic_refcell",
+ "bao-servo-allocator",
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-fonts-traits",
+ "bao-servo-malloc-size-of",
+ "bao-servo-net-traits",
+ "bao-servo-paint-api",
+ "bao-servo-profile-traits",
+ "bao-servo-tracing",
+ "bao-servo-url",
+ "bao-stylo",
+ "bitflags 2.11.1",
+ "byteorder",
+ "content-security-policy",
+ "dwrote",
+ "euclid",
+ "font-types 0.12.3",
+ "fontsan",
+ "freetype-sys",
+ "harfbuzz-sys",
+ "icu_locid",
+ "icu_properties",
+ "itertools 0.15.0",
+ "libc",
+ "log",
+ "malloc_size_of_derive",
+ "memmap2",
+ "num-traits",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-text",
+ "ohos-deviceinfo-sys",
+ "parking_lot",
+ "postcard",
+ "read-fonts 0.41.0",
+ "rustc-hash 2.1.2",
+ "serde",
+ "servo_arc",
+ "skrifa 0.44.0",
+ "smallvec",
+ "stylo_atoms",
+ "tracing",
+ "unicode-properties",
+ "unicode-script",
+ "url",
+ "uuid",
+ "webrender_api",
+ "winapi",
+ "xml",
+ "yeslogic-fontconfig-sys",
+]
+
+[[package]]
+name = "bao-servo-fonts-traits"
+version = "0.5.0"
+dependencies = [
+ "atomic_refcell",
+ "bao-servo-base",
+ "bao-servo-malloc-size-of",
+ "bao-servo-profile-traits",
+ "bao-servo-url",
+ "bao-stylo",
+ "dwrote",
+ "log",
+ "malloc_size_of_derive",
+ "memmap2",
+ "num-derive",
+ "num-traits",
+ "parking_lot",
+ "read-fonts 0.41.0",
+ "serde",
+ "servo_arc",
+ "uuid",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-geometry"
+version = "0.5.0"
+dependencies = [
+ "app_units",
+ "bao-servo-malloc-size-of",
+ "euclid",
+ "malloc_size_of_derive",
+ "webrender",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-hyper-serde"
+version = "0.5.0"
+dependencies = [
+ "bao-ipc-channel",
+ "cookie 0.18.1",
+ "headers",
+ "http 1.4.1",
+ "hyper",
+ "mime",
+ "serde",
+ "serde_bytes",
+ "serde_core",
+ "serde_json",
+ "serde_test",
+]
+
+[[package]]
+name = "bao-servo-jstraceable-derive"
+version = "0.5.0"
+dependencies = [
+ "proc-macro2",
+ "syn",
+ "synstructure",
+]
+
+[[package]]
+name = "bao-servo-layout"
+version = "0.5.0"
+dependencies = [
+ "accesskit",
+ "app_units",
+ "arrayvec",
+ "atomic_refcell",
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-embedder-traits",
+ "bao-servo-fonts",
+ "bao-servo-fonts-traits",
+ "bao-servo-geometry",
+ "bao-servo-layout-api",
+ "bao-servo-malloc-size-of",
+ "bao-servo-net-traits",
+ "bao-servo-paint-api",
+ "bao-servo-pixels",
+ "bao-servo-profile-traits",
+ "bao-servo-script",
+ "bao-servo-script-traits",
+ "bao-servo-tracing",
+ "bao-servo-url",
+ "bao-stylo",
+ "bitflags 2.11.1",
+ "data-url",
+ "euclid",
+ "icu_locid",
+ "icu_properties",
+ "icu_segmenter",
+ "itertools 0.15.0",
+ "kurbo",
+ "log",
+ "malloc_size_of_derive",
+ "num-derive",
+ "num-traits",
+ "once_cell",
+ "parking_lot",
+ "phf 0.13.1",
+ "quickcheck",
+ "rayon",
+ "rustc-hash 2.1.2",
+ "selectors 0.40.0",
+ "serde",
+ "servo_arc",
+ "smallvec",
+ "strum 0.28.0",
+ "stylo_atoms",
+ "stylo_traits",
+ "taffy",
+ "tracing",
+ "unicode-bidi",
+ "unicode-script",
+ "unicode_categories",
+ "url",
+ "uuid",
+ "web_atoms",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-layout-api"
+version = "0.5.0"
+dependencies = [
+ "app_units",
+ "atomic_refcell",
+ "bao-servo-background-hang-monitor-api",
+ "bao-servo-base",
+ "bao-servo-embedder-traits",
+ "bao-servo-fonts",
+ "bao-servo-malloc-size-of",
+ "bao-servo-net-traits",
+ "bao-servo-paint-api",
+ "bao-servo-pixels",
+ "bao-servo-profile-traits",
+ "bao-servo-script-traits",
+ "bao-servo-url",
+ "bao-stylo",
+ "bitflags 2.11.1",
+ "euclid",
+ "html5ever",
+ "libc",
+ "malloc_size_of_derive",
+ "parking_lot",
+ "rustc-hash 2.1.2",
+ "selectors 0.40.0",
+ "serde",
+ "servo_arc",
+ "stylo_traits",
+ "uuid",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-malloc-size-of"
+version = "0.5.0"
+dependencies = [
+ "app_units",
+ "atomic_refcell",
+ "bao-ipc-channel",
+ "bao-servo-allocator",
+ "bao-stylo",
+ "content-security-policy",
+ "crossbeam-channel",
+ "data-url",
+ "encoding_rs",
+ "euclid",
+ "http 1.4.1",
+ "icu_locid",
+ "indexmap",
+ "keyboard-types",
+ "markup5ever",
+ "mime",
+ "once_cell",
+ "parking_lot",
+ "resvg",
+ "servo_arc",
+ "smallvec",
+ "string_cache",
+ "stylo_dom",
+ "stylo_malloc_size_of",
+ "taffy",
+ "tendril",
+ "time",
+ "tokio",
+ "unicode-bidi",
+ "unicode-script",
+ "url",
+ "urlpattern",
+ "uuid",
+ "vello_cpu 0.2.0",
+ "webrender",
+ "webrender_api",
+ "wr_malloc_size_of",
+]
+
+[[package]]
+name = "bao-servo-media"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-media-audio",
+ "bao-servo-media-player",
+ "bao-servo-media-streams",
+ "bao-servo-media-traits",
+ "bao-servo-media-webrtc",
+]
+
+[[package]]
+name = "bao-servo-media-audio"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-malloc-size-of",
+ "bao-servo-media-derive",
+ "bao-servo-media-player",
+ "bao-servo-media-streams",
+ "bao-servo-media-traits",
+ "byte-slice-cast",
+ "euclid",
+ "log",
+ "malloc_size_of_derive",
+ "num-complex",
+ "num-traits",
+ "petgraph",
+ "rustc-hash 2.1.2",
+ "serde",
+ "smallvec",
+ "speexdsp-resampler",
+]
+
+[[package]]
+name = "bao-servo-media-auto"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-media-dummy",
+ "bao-servo-media-gstreamer",
+]
+
+[[package]]
+name = "bao-servo-media-derive"
+version = "0.5.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "bao-servo-media-dummy"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-media",
+ "bao-servo-media-audio",
+ "bao-servo-media-player",
+ "bao-servo-media-streams",
+ "bao-servo-media-traits",
+ "bao-servo-media-webrtc",
+]
+
+[[package]]
+name = "bao-servo-media-gstreamer"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-media",
+ "bao-servo-media-audio",
+ "bao-servo-media-gstreamer-render",
+ "bao-servo-media-gstreamer-render-android",
+ "bao-servo-media-gstreamer-render-unix",
+ "bao-servo-media-player",
+ "bao-servo-media-streams",
+ "bao-servo-media-traits",
+ "bao-servo-media-webrtc",
+ "byte-slice-cast",
+ "glib",
+ "glib-sys",
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-play",
+ "gstreamer-sdp",
+ "gstreamer-sys",
+ "gstreamer-video",
+ "gstreamer-webrtc",
+ "log",
+ "mime",
+ "url",
+]
+
+[[package]]
+name = "bao-servo-media-gstreamer-render"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-media-player",
+ "gstreamer",
+]
+
+[[package]]
+name = "bao-servo-media-gstreamer-render-android"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-media-gstreamer-render",
+ "bao-servo-media-player",
+ "glib",
+ "gstreamer",
+ "gstreamer-gl",
+ "gstreamer-gl-egl",
+ "gstreamer-video",
+]
+
+[[package]]
+name = "bao-servo-media-gstreamer-render-unix"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-media-gstreamer-render",
+ "bao-servo-media-player",
+ "glib",
+ "gstreamer",
+ "gstreamer-gl",
+ "gstreamer-gl-egl",
+ "gstreamer-gl-wayland",
+ "gstreamer-gl-x11",
+ "gstreamer-video",
+]
+
+[[package]]
+name = "bao-servo-media-ohos"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-media",
+ "bao-servo-media-audio",
+ "bao-servo-media-player",
+ "bao-servo-media-streams",
+ "bao-servo-media-traits",
+ "bao-servo-media-webrtc",
+ "crossbeam-channel",
+ "libc",
+ "log",
+ "mime",
+ "ohos-media-sys",
+ "ohos-sys-opaque-types",
+ "ohos-window-sys",
+ "serde_json",
+ "yuv",
+]
+
+[[package]]
+name = "bao-servo-media-player"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-malloc-size-of",
+ "bao-servo-media-streams",
+ "bao-servo-media-traits",
+ "malloc_size_of_derive",
+ "serde",
+]
+
+[[package]]
+name = "bao-servo-media-streams"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-malloc-size-of",
+ "malloc_size_of_derive",
+ "uuid",
+]
+
+[[package]]
+name = "bao-servo-media-thread"
+version = "0.5.0"
+dependencies = [
+ "bao-ipc-channel",
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-malloc-size-of",
+ "bao-servo-media",
+ "bao-servo-paint-api",
+ "euclid",
+ "log",
+ "malloc_size_of_derive",
+ "rustc-hash 2.1.2",
+ "serde",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-media-traits"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-malloc-size-of",
+ "malloc_size_of_derive",
+]
+
+[[package]]
+name = "bao-servo-media-webrtc"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-media-streams",
+ "log",
+ "uuid",
+]
+
+[[package]]
+name = "bao-servo-metrics"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-malloc-size-of",
+ "bao-servo-paint-api",
+ "bao-servo-profile-traits",
+ "bao-servo-script-traits",
+ "bao-servo-url",
+ "malloc_size_of_derive",
+]
+
+[[package]]
+name = "bao-servo-net"
+version = "0.5.0"
+dependencies = [
+ "async-compression",
+ "async-recursion",
+ "async-tungstenite",
+ "bao-ipc-channel",
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-default-resources",
+ "bao-servo-devtools-traits",
+ "bao-servo-embedder-traits",
+ "bao-servo-fonts",
+ "bao-servo-hyper-serde",
+ "bao-servo-malloc-size-of",
+ "bao-servo-net",
+ "bao-servo-net-traits",
+ "bao-servo-paint-api",
+ "bao-servo-pixels",
+ "bao-servo-profile-traits",
+ "bao-servo-tracing",
+ "bao-servo-url",
+ "bao_boringssl_bridge",
+ "bao_native_stubs",
+ "bao_stealth",
+ "base64 0.23.1",
+ "bun_boringssl_sys",
+ "bun_core",
+ "bun_dns",
+ "bun_http",
+ "bun_io",
+ "bun_threading",
+ "bun_url",
+ "bytes",
+ "chrono",
+ "content-security-policy",
+ "cookie 0.18.1",
+ "crossbeam-channel",
+ "data-url",
+ "flate2",
+ "fst",
+ "futures",
+ "futures-core",
+ "futures-util",
+ "headers",
+ "http 1.4.1",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "imsz",
+ "itertools 0.15.0",
+ "log",
+ "malloc_size_of_derive",
+ "mime",
+ "mime_guess",
+ "nom 8.0.0",
+ "parking_lot",
+ "postcard",
+ "quick_cache",
+ "rand 0.10.2",
+ "regex",
+ "resvg",
+ "rusqlite",
+ "rustc-hash 2.1.2",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "sea-query",
+ "sea-query-rusqlite",
+ "serde",
+ "servo_arc",
+ "sha2 0.11.0",
+ "smallvec",
+ "tempfile",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tungstenite",
+ "url",
+ "uuid",
+ "webpki-roots",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-net-traits"
+version = "0.5.0"
+dependencies = [
+ "bao-ipc-channel",
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-default-resources",
+ "bao-servo-embedder-traits",
+ "bao-servo-hyper-serde",
+ "bao-servo-malloc-size-of",
+ "bao-servo-paint-api",
+ "bao-servo-pixels",
+ "bao-servo-profile-traits",
+ "bao-servo-url",
+ "content-security-policy",
+ "cookie 0.18.1",
+ "crossbeam-channel",
+ "data-url",
+ "headers",
+ "http 1.4.1",
+ "hyper-util",
+ "log",
+ "malloc_size_of_derive",
+ "mime",
+ "num-traits",
+ "parking_lot",
+ "percent-encoding",
+ "rand 0.10.2",
+ "resvg",
+ "rustc-hash 2.1.2",
+ "rustls-pki-types",
+ "serde",
+ "serde_bytes",
+ "servo_arc",
+ "sys-locale",
+ "tokio",
+ "url",
+ "uuid",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-paint"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-allocator",
+ "bao-servo-base",
+ "bao-servo-canvas-traits",
+ "bao-servo-config",
+ "bao-servo-constellation-traits",
+ "bao-servo-embedder-traits",
+ "bao-servo-geometry",
+ "bao-servo-malloc-size-of",
+ "bao-servo-media-thread",
+ "bao-servo-paint-api",
+ "bao-servo-profile-traits",
+ "bao-servo-timers",
+ "bao-servo-tracing",
+ "bao-servo-webgl",
+ "bao-servo-webgpu",
+ "bao-servo-webxr",
+ "bao-servo-webxr-api",
+ "bitflags 2.11.1",
+ "crossbeam-channel",
+ "dpi",
+ "euclid",
+ "gleam",
+ "image",
+ "log",
+ "rayon",
+ "rustc-hash 2.1.2",
+ "smallvec",
+ "stylo_traits",
+ "surfman",
+ "tracing",
+ "webrender",
+ "webrender_api",
+ "wr_malloc_size_of",
+]
+
+[[package]]
+name = "bao-servo-paint-api"
+version = "0.5.0"
+dependencies = [
+ "bao-ipc-channel",
+ "bao-servo-base",
+ "bao-servo-embedder-traits",
+ "bao-servo-geometry",
+ "bao-servo-malloc-size-of",
+ "bao-servo-profile-traits",
+ "bao-servo-tracing",
+ "bao-servo-url",
+ "bao-stylo",
+ "bitflags 2.11.1",
+ "crossbeam-channel",
+ "dpi",
+ "euclid",
+ "gleam",
+ "glow",
+ "image",
+ "log",
+ "malloc_size_of_derive",
+ "parking_lot",
+ "raw-window-handle",
+ "rustc-hash 2.1.2",
+ "serde",
+ "serde_bytes",
+ "smallvec",
+ "strum 0.28.0",
+ "stylo_traits",
+ "surfman",
+ "tracing",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-pixels"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-malloc-size-of",
+ "criterion",
+ "euclid",
+ "image",
+ "log",
+ "malloc_size_of_derive",
+ "serde",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-profile"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-allocator",
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-profile-traits",
+ "libc",
+ "log",
+ "mach2",
+ "regex",
+ "serde",
+ "serde_json",
+ "time",
+]
+
+[[package]]
+name = "bao-servo-profile-traits"
+version = "0.5.0"
+dependencies = [
+ "bao-ipc-channel",
+ "bao-servo-allocator",
+ "bao-servo-base",
+ "bao-servo-malloc-size-of",
+ "crossbeam-channel",
+ "log",
+ "malloc_size_of_derive",
+ "serde",
+ "time",
+ "tracing",
+]
+
+[[package]]
+name = "bao-servo-script"
+version = "0.5.0"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "aes-kw",
+ "app_units",
+ "argon2",
+ "arrayvec",
+ "atomic_refcell",
+ "aws-lc-rs",
+ "backtrace",
+ "bao-ipc-channel",
+ "bao-mozjs",
+ "bao-servo-background-hang-monitor-api",
+ "bao-servo-base",
+ "bao-servo-bluetooth-traits",
+ "bao-servo-canvas-traits",
+ "bao-servo-config",
+ "bao-servo-constellation-traits",
+ "bao-servo-deny-public-fields",
+ "bao-servo-devtools-traits",
+ "bao-servo-dom-struct",
+ "bao-servo-embedder-traits",
+ "bao-servo-fonts",
+ "bao-servo-fonts-traits",
+ "bao-servo-geometry",
+ "bao-servo-hyper-serde",
+ "bao-servo-jstraceable-derive",
+ "bao-servo-layout-api",
+ "bao-servo-malloc-size-of",
+ "bao-servo-media",
+ "bao-servo-media-thread",
+ "bao-servo-metrics",
+ "bao-servo-net-traits",
+ "bao-servo-paint-api",
+ "bao-servo-pixels",
+ "bao-servo-profile-traits",
+ "bao-servo-script-bindings",
+ "bao-servo-script-traits",
+ "bao-servo-script-webgpu",
+ "bao-servo-storage-traits",
+ "bao-servo-timers",
+ "bao-servo-tracing",
+ "bao-servo-url",
+ "bao-servo-webgpu-traits",
+ "bao-servo-webvtt",
+ "bao-servo-webxr-api",
+ "bao-servo-xpath",
+ "bao-stylo",
+ "base64 0.23.1",
+ "base64ct",
+ "bitflags 2.11.1",
+ "brotli",
+ "buf-read-ext",
+ "cbc",
+ "chacha20poly1305",
+ "chardetng",
+ "chrono",
+ "content-security-policy",
+ "cookie 0.18.1",
+ "crossbeam-channel",
+ "crypto-bigint",
+ "cshake",
+ "cssparser 0.37.0",
+ "ctr",
+ "ctutils",
+ "data-url",
+ "ecdsa",
+ "ed25519-dalek",
+ "ed448-goldilocks",
+ "elliptic-curve",
+ "encoding_rs",
+ "euclid",
+ "flate2",
+ "glow",
+ "headers",
+ "hkdf",
+ "html5ever",
+ "http 1.4.1",
+ "httparse",
+ "icu_locid",
+ "indexmap",
+ "itertools 0.15.0",
+ "k12",
+ "keccak",
+ "keyboard-types",
+ "libc",
+ "log",
+ "malloc_size_of_derive",
+ "markup5ever",
+ "mime",
+ "mime_guess",
+ "ml-dsa",
+ "ml-kem",
+ "mozangle",
+ "nom-rfc8288",
+ "num-traits",
+ "num_cpus",
+ "ocb3",
+ "p256",
+ "p384",
+ "p521",
+ "parking_lot",
+ "percent-encoding",
+ "phf 0.13.1",
+ "pkcs8",
+ "postcard",
+ "rand 0.10.2",
+ "regex",
+ "resvg",
+ "rsa",
+ "rustc-hash 2.1.2",
+ "selectors 0.40.0",
+ "serde",
+ "serde_json",
+ "servo_arc",
+ "sha1 0.11.0",
+ "sha2 0.11.0",
+ "sha3 0.12.0",
+ "smallvec",
+ "sponge-cursor",
+ "strum 0.28.0",
+ "stylo_atoms",
+ "stylo_dom",
+ "stylo_malloc_size_of",
+ "stylo_traits",
+ "swapper",
+ "tempfile",
+ "tendril",
+ "time",
+ "tracing",
+ "unicode-bidi",
+ "unicode-script",
+ "url",
+ "urlpattern",
+ "uuid",
+ "web_atoms",
+ "webdriver",
+ "webrender_api",
+ "wgpu-core 30.0.0",
+ "wgpu-types 30.0.0",
+ "x25519-dalek",
+ "x448",
+ "xml5ever",
+ "zeroize",
+]
+
+[[package]]
+name = "bao-servo-script-bindings"
+version = "0.5.0"
+dependencies = [
+ "atomic_refcell",
+ "bao-mozjs",
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-deny-public-fields",
+ "bao-servo-dom-struct",
+ "bao-servo-jstraceable-derive",
+ "bao-servo-malloc-size-of",
+ "bao-servo-profile-traits",
+ "bao-servo-url",
+ "bao-servo-webxr-api",
+ "bao-stylo",
+ "bitflags 2.11.1",
+ "criterion",
+ "crossbeam-channel",
+ "encoding_rs",
+ "html5ever",
+ "indexmap",
+ "keyboard-types",
+ "libc",
+ "log",
+ "malloc_size_of_derive",
+ "num-traits",
+ "parking_lot",
+ "phf 0.13.1",
+ "phf_codegen",
+ "phf_shared 0.13.1",
+ "regex",
+ "serde_json",
+ "servo_arc",
+ "smallvec",
+ "strum 0.28.0",
+ "stylo_atoms",
+ "tendril",
+ "tracing",
+ "xml5ever",
+ "zeroize",
+]
+
+[[package]]
+name = "bao-servo-script-traits"
+version = "0.5.0"
+dependencies = [
+ "accesskit",
+ "bao-ipc-channel",
+ "bao-servo-base",
+ "bao-servo-bluetooth-traits",
+ "bao-servo-canvas-traits",
+ "bao-servo-config",
+ "bao-servo-constellation-traits",
+ "bao-servo-devtools-traits",
+ "bao-servo-embedder-traits",
+ "bao-servo-fonts-traits",
+ "bao-servo-malloc-size-of",
+ "bao-servo-media-thread",
+ "bao-servo-net-traits",
+ "bao-servo-paint-api",
+ "bao-servo-pixels",
+ "bao-servo-profile-traits",
+ "bao-servo-storage-traits",
+ "bao-servo-url",
+ "bao-servo-webgpu-traits",
+ "bao-servo-webxr-api",
+ "crossbeam-channel",
+ "euclid",
+ "keyboard-types",
+ "malloc_size_of_derive",
+ "rustc-hash 2.1.2",
+ "serde",
+ "strum 0.28.0",
+ "stylo_atoms",
+ "stylo_traits",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-script-webgpu"
+version = "0.5.0"
+dependencies = [
+ "bao-mozjs",
+ "bao-servo-base",
+ "bao-servo-deny-public-fields",
+ "bao-servo-dom-struct",
+ "bao-servo-jstraceable-derive",
+ "bao-servo-malloc-size-of",
+ "bao-servo-script-bindings",
+ "bao-servo-webgpu-traits",
+ "indexmap",
+ "log",
+ "malloc_size_of_derive",
+ "num-traits",
+ "wgpu-core 30.0.0",
+ "wgpu-types 30.0.0",
+]
+
+[[package]]
+name = "bao-servo-storage"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-default-resources",
+ "bao-servo-malloc-size-of",
+ "bao-servo-net-traits",
+ "bao-servo-profile",
+ "bao-servo-profile-traits",
+ "bao-servo-storage-traits",
+ "bao-servo-url",
+ "libc",
+ "log",
+ "malloc_size_of_derive",
+ "postcard",
+ "rusqlite",
+ "rustc-hash 2.1.2",
+ "sea-query",
+ "sea-query-rusqlite",
+ "serde",
+ "tempfile",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "bao-servo-storage-traits"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-malloc-size-of",
+ "bao-servo-profile-traits",
+ "bao-servo-url",
+ "malloc_size_of_derive",
+ "serde",
+ "uuid",
+]
+
+[[package]]
+name = "bao-servo-timers"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-malloc-size-of",
+ "crossbeam-channel",
+ "malloc_size_of_derive",
+]
+
+[[package]]
+name = "bao-servo-tracing"
+version = "0.5.0"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "bao-servo-url"
 version = "0.5.0"
 dependencies = [
+ "bao-servo-malloc-size-of",
  "encoding_rs",
  "malloc_size_of_derive",
  "serde",
- "servo-malloc-size-of",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
+ "servo_arc",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "bao-servo-wakelock"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-embedder-traits",
+ "serde",
+]
+
+[[package]]
+name = "bao-servo-webdriver-server"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-embedder-traits",
+ "bao-servo-geometry",
+ "bao-servo-url",
+ "base64 0.23.1",
+ "bytes",
+ "cookie 0.18.1",
+ "crossbeam-channel",
+ "euclid",
+ "http 0.2.12",
+ "http 1.4.1",
+ "image",
+ "keyboard-types",
+ "log",
+ "rustc-hash 2.1.2",
+ "serde",
+ "serde_json",
+ "stylo_traits",
+ "time",
+ "tokio",
+ "url",
+ "uuid",
+ "warp",
+ "webdriver",
+]
+
+[[package]]
+name = "bao-servo-webgl"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-canvas-traits",
+ "bao-servo-paint-api",
+ "bao-servo-pixels",
+ "bao-servo-webxr",
+ "bao-servo-webxr-api",
+ "bitflags 2.11.1",
+ "byteorder",
+ "crossbeam-channel",
+ "euclid",
+ "glow",
+ "half",
+ "itertools 0.15.0",
+ "log",
+ "num-traits",
+ "parking_lot",
+ "rustc-hash 2.1.2",
+ "surfman",
+ "webrender_api",
+]
+
+[[package]]
+name = "bao-servo-webgpu"
+version = "0.5.0"
+dependencies = [
+ "arrayvec",
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-paint-api",
+ "bao-servo-pixels",
+ "bao-servo-webgpu-traits",
+ "euclid",
+ "log",
+ "rustc-hash 2.1.2",
+ "webrender_api",
+ "wgpu-core 30.0.0",
+ "wgpu-types 30.0.0",
+]
+
+[[package]]
+name = "bao-servo-webgpu-traits"
+version = "0.5.0"
+dependencies = [
+ "arrayvec",
+ "bao-servo-base",
+ "bao-servo-malloc-size-of",
+ "bao-servo-pixels",
+ "malloc_size_of_derive",
+ "serde",
+ "webrender_api",
+ "wgpu-core 30.0.0",
+ "wgpu-types 30.0.0",
+]
+
+[[package]]
+name = "bao-servo-webvtt"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-webvtt",
+ "html5ever",
+ "markup5ever",
+ "regex",
+]
+
+[[package]]
+name = "bao-servo-webxr"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-profile-traits",
+ "bao-servo-webxr-api",
+ "crossbeam-channel",
+ "euclid",
+ "glow",
+ "log",
+ "openxr",
+ "raw-window-handle",
+ "surfman",
+ "winapi",
+ "wio",
+]
+
+[[package]]
+name = "bao-servo-webxr-api"
+version = "0.5.0"
+dependencies = [
+ "bao-ipc-channel",
+ "bao-servo-base",
+ "bao-servo-embedder-traits",
+ "bao-servo-malloc-size-of",
+ "bao-servo-profile-traits",
+ "euclid",
+ "log",
+ "malloc_size_of_derive",
+ "serde",
+]
+
+[[package]]
+name = "bao-servo-xpath"
+version = "0.5.0"
+dependencies = [
+ "bao-servo-malloc-size-of",
+ "log",
+ "malloc_size_of_derive",
+ "markup5ever",
+]
+
+[[package]]
+name = "bao-stylo"
+version = "0.20.0"
+dependencies = [
+ "app_units",
+ "arrayvec",
+ "atomic_refcell",
+ "bitflags 2.11.1",
+ "byteorder",
+ "cssparser 0.37.0",
+ "derive_more",
+ "encoding_rs",
+ "euclid",
+ "icu_segmenter",
+ "indexmap",
+ "itertools 0.14.0",
+ "itoa",
+ "log",
+ "malloc_size_of_derive",
+ "mime",
+ "new_debug_unreachable",
+ "num-derive",
+ "num-integer",
+ "num-traits",
+ "num_cpus",
+ "parking_lot",
+ "precomputed-hash",
+ "rayon",
+ "rayon-core",
+ "rustc-hash 2.1.2",
+ "selectors 0.40.0",
+ "serde",
+ "servo_arc",
+ "smallbitvec",
+ "smallvec",
+ "static_assertions",
+ "string_cache",
+ "strum 0.28.0",
+ "strum_macros 0.28.0",
+ "stylo_atoms",
+ "stylo_derive",
+ "stylo_dom",
+ "stylo_malloc_size_of",
+ "stylo_static_prefs",
+ "stylo_traits",
+ "thin-vec",
+ "to_shmem",
+ "to_shmem_derive",
+ "uluru",
+ "url",
+ "void",
+ "walkdir",
+ "web_atoms",
 ]
 
 [[package]]
@@ -9268,14 +10945,15 @@ dependencies = [
  "phf_codegen",
  "precomputed-hash",
  "rustc-hash 2.1.2",
- "servo_arc 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "servo_arc",
  "smallvec",
 ]
 
 [[package]]
 name = "selectors"
 version = "0.40.0"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eeee001a77567bb05e71652718d3ff76d8697c151ac523e68e9513194eb2b75a"
 dependencies = [
  "bitflags 2.11.1",
  "cssparser 0.37.0",
@@ -9286,7 +10964,7 @@ dependencies = [
  "phf_codegen",
  "precomputed-hash",
  "rustc-hash 2.1.2",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
+ "servo_arc",
  "smallvec",
  "to_shmem",
  "to_shmem_derive",
@@ -9428,1638 +11106,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "servo"
-version = "0.5.0"
-dependencies = [
- "accesskit",
- "accesskit_consumer",
- "arboard",
- "bao-ipc-channel",
- "bao-servo-url",
- "bitflags 2.11.1",
- "content-security-policy",
- "cookie 0.18.1",
- "crossbeam-channel",
- "dpi",
- "env_logger",
- "euclid",
- "gaol",
- "gstreamer",
- "http 1.4.1",
- "http-body-util",
- "hyper",
- "image",
- "itertools 0.15.0",
- "keyboard-types",
- "log",
- "mozangle",
- "ohos-pasteboard",
- "parking_lot",
- "rustc-hash 2.1.2",
- "rustls",
- "serde",
- "servo",
- "servo-background-hang-monitor",
- "servo-base",
- "servo-bluetooth",
- "servo-bluetooth-traits",
- "servo-canvas",
- "servo-canvas-traits",
- "servo-config",
- "servo-constellation",
- "servo-constellation-traits",
- "servo-default-resources",
- "servo-devtools",
- "servo-devtools-traits",
- "servo-embedder-traits",
- "servo-fonts",
- "servo-geometry",
- "servo-layout",
- "servo-layout-api",
- "servo-media",
- "servo-media-dummy",
- "servo-media-gstreamer",
- "servo-media-ohos",
- "servo-media-thread",
- "servo-net",
- "servo-net-traits",
- "servo-paint",
- "servo-paint-api",
- "servo-profile",
- "servo-profile-traits",
- "servo-script",
- "servo-script-traits",
- "servo-storage",
- "servo-storage-traits",
- "servo-tracing",
- "servo-wakelock",
- "servo-webgl",
- "servo-webgpu",
- "servo-webxr",
- "servo-webxr-api",
- "stylo",
- "stylo_traits",
- "surfman",
- "tokio",
- "tracing",
- "url",
- "webrender",
- "webrender_api",
- "winit",
-]
-
-[[package]]
-name = "servo-allocator"
-version = "0.5.0"
-dependencies = [
- "backtrace",
- "libc",
- "log",
- "rustc-hash 2.1.2",
- "tikv-jemalloc-sys",
- "tikv-jemallocator",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "servo-background-hang-monitor"
-version = "0.5.0"
-dependencies = [
- "backtrace",
- "crossbeam-channel",
- "libc",
- "log",
- "mach2",
- "nix",
- "rustc-demangle",
- "rustc-hash 2.1.2",
- "serde_json",
- "servo-background-hang-monitor-api",
- "servo-base",
-]
-
-[[package]]
-name = "servo-background-hang-monitor-api"
-version = "0.5.0"
-dependencies = [
- "serde",
- "servo-base",
-]
-
-[[package]]
-name = "servo-base"
-version = "0.5.0"
-dependencies = [
- "accesskit",
- "bao-ipc-channel",
- "crossbeam-channel",
- "libc",
- "log",
- "mach2",
- "malloc_size_of_derive",
- "parking_lot",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "servo-config",
- "servo-malloc-size-of",
- "time",
- "unicode-segmentation",
- "webrender_api",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "servo-bluetooth"
-version = "0.5.0"
-dependencies = [
- "bitflags 2.11.1",
- "blurmock",
- "btleplug",
- "futures",
- "log",
- "rand 0.10.2",
- "servo-base",
- "servo-bluetooth-traits",
- "servo-config",
- "servo-embedder-traits",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "servo-bluetooth-traits"
-version = "0.5.0"
-dependencies = [
- "regex",
- "serde",
- "servo-base",
- "servo-embedder-traits",
-]
-
-[[package]]
-name = "servo-canvas"
-version = "0.5.0"
-dependencies = [
- "bytemuck",
- "crossbeam-channel",
- "euclid",
- "futures-intrusive",
- "kurbo",
- "log",
- "peniko",
- "pollster",
- "rustc-hash 2.1.2",
- "servo-base",
- "servo-canvas-traits",
- "servo-config",
- "servo-fonts",
- "servo-malloc-size-of",
- "servo-paint-api",
- "servo-pixels",
- "servo-profile-traits",
- "servo-tracing",
- "stylo",
- "tracing",
- "vello",
- "vello_cpu 0.2.0",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-canvas-traits"
-version = "0.5.0"
-dependencies = [
- "crossbeam-channel",
- "euclid",
- "glow",
- "kurbo",
- "log",
- "malloc_size_of_derive",
- "serde",
- "servo-base",
- "servo-fonts-traits",
- "servo-malloc-size-of",
- "servo-pixels",
- "servo-profile-traits",
- "servo-webxr-api",
- "strum 0.28.0",
- "stylo",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-config"
-version = "0.5.0"
-dependencies = [
- "num_enum",
- "serde",
- "serde_json",
- "servo-config-macro",
- "strum 0.28.0",
- "stylo_static_prefs",
-]
-
-[[package]]
-name = "servo-config-macro"
-version = "0.5.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
- "synstructure",
-]
-
-[[package]]
-name = "servo-constellation"
-version = "0.5.0"
-dependencies = [
- "accesskit",
- "backtrace",
- "bao-ipc-channel",
- "bao-servo-url",
- "base64 0.23.1",
- "content-security-policy",
- "crossbeam-channel",
- "euclid",
- "gaol",
- "keyboard-types",
- "log",
- "parking_lot",
- "rand 0.10.2",
- "rustc-hash 2.1.2",
- "serde",
- "servo-background-hang-monitor",
- "servo-background-hang-monitor-api",
- "servo-base",
- "servo-bluetooth-traits",
- "servo-canvas",
- "servo-canvas-traits",
- "servo-config",
- "servo-constellation-traits",
- "servo-devtools-traits",
- "servo-embedder-traits",
- "servo-fonts",
- "servo-layout-api",
- "servo-media-thread",
- "servo-net",
- "servo-net-traits",
- "servo-paint-api",
- "servo-profile-traits",
- "servo-script-traits",
- "servo-storage-traits",
- "servo-tracing",
- "servo-webgpu",
- "servo-webgpu-traits",
- "servo-webxr-api",
- "stylo",
- "stylo_traits",
- "tracing",
-]
-
-[[package]]
-name = "servo-constellation-traits"
-version = "0.5.0"
-dependencies = [
- "bao-ipc-channel",
- "bao-servo-url",
- "base64 0.23.1",
- "content-security-policy",
- "encoding_rs",
- "euclid",
- "http 1.4.1",
- "log",
- "malloc_size_of_derive",
- "rustc-hash 2.1.2",
- "serde",
- "servo-base",
- "servo-canvas-traits",
- "servo-config",
- "servo-devtools-traits",
- "servo-embedder-traits",
- "servo-fonts-traits",
- "servo-hyper-serde",
- "servo-malloc-size-of",
- "servo-net-traits",
- "servo-paint-api",
- "servo-pixels",
- "servo-profile-traits",
- "servo-storage-traits",
- "servo-webgpu-traits",
- "strum 0.28.0",
- "uuid",
- "webrender_api",
- "wgpu-core 30.0.0",
- "zeroize",
-]
-
-[[package]]
-name = "servo-default-resources"
-version = "0.5.0"
-dependencies = [
- "servo-embedder-traits",
-]
-
-[[package]]
-name = "servo-deny-public-fields"
-version = "0.5.0"
-dependencies = [
- "proc-macro2",
- "syn",
- "synstructure",
-]
-
-[[package]]
-name = "servo-devtools"
-version = "0.5.0"
-dependencies = [
- "atomic_refcell",
- "bao-servo-url",
- "base64 0.23.1",
- "chrono",
- "crossbeam-channel",
- "headers",
- "http 1.4.1",
- "log",
- "malloc_size_of_derive",
- "parking_lot",
- "rand 0.10.2",
- "rustc-hash 2.1.2",
- "serde",
- "serde_json",
- "servo-base",
- "servo-config",
- "servo-devtools-traits",
- "servo-embedder-traits",
- "servo-malloc-size-of",
- "servo-net",
- "servo-net-traits",
- "servo-profile-traits",
- "uuid",
-]
-
-[[package]]
-name = "servo-devtools-traits"
-version = "0.5.0"
-dependencies = [
- "bao-servo-url",
- "http 1.4.1",
- "malloc_size_of_derive",
- "serde",
- "servo-base",
- "servo-embedder-traits",
- "servo-malloc-size-of",
- "servo-net-traits",
- "servo-profile-traits",
- "uuid",
-]
-
-[[package]]
-name = "servo-dom-struct"
-version = "0.5.0"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "servo-embedder-traits"
-version = "0.5.0"
-dependencies = [
- "accesskit",
- "bao-servo-url",
- "bitflags 2.11.1",
- "content-security-policy",
- "cookie 0.18.1",
- "crossbeam-channel",
- "euclid",
- "http 1.4.1",
- "image",
- "inventory",
- "keyboard-types",
- "log",
- "malloc_size_of_derive",
- "rustc-hash 2.1.2",
- "serde",
- "servo-base",
- "servo-geometry",
- "servo-hyper-serde",
- "servo-malloc-size-of",
- "servo-pixels",
- "strum 0.28.0",
- "stylo",
- "stylo_traits",
- "url",
- "uuid",
- "webdriver",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-fonts"
-version = "0.5.0"
-dependencies = [
- "app_units",
- "atomic_refcell",
- "bao-servo-url",
- "bitflags 2.11.1",
- "byteorder",
- "content-security-policy",
- "dwrote",
- "euclid",
- "font-types 0.12.3",
- "fontsan",
- "freetype-sys",
- "harfbuzz-sys",
- "icu_locid",
- "icu_properties",
- "itertools 0.15.0",
- "libc",
- "log",
- "malloc_size_of_derive",
- "memmap2",
- "num-traits",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-text",
- "ohos-deviceinfo-sys",
- "parking_lot",
- "postcard",
- "read-fonts 0.41.0",
- "rustc-hash 2.1.2",
- "serde",
- "servo-allocator",
- "servo-base",
- "servo-config",
- "servo-fonts-traits",
- "servo-malloc-size-of",
- "servo-net-traits",
- "servo-paint-api",
- "servo-profile-traits",
- "servo-tracing",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "skrifa 0.44.0",
- "smallvec",
- "stylo",
- "stylo_atoms",
- "tracing",
- "unicode-properties",
- "unicode-script",
- "url",
- "uuid",
- "webrender_api",
- "winapi",
- "xml",
- "yeslogic-fontconfig-sys",
-]
-
-[[package]]
-name = "servo-fonts-traits"
-version = "0.5.0"
-dependencies = [
- "atomic_refcell",
- "bao-servo-url",
- "dwrote",
- "log",
- "malloc_size_of_derive",
- "memmap2",
- "num-derive",
- "num-traits",
- "parking_lot",
- "read-fonts 0.41.0",
- "serde",
- "servo-base",
- "servo-malloc-size-of",
- "servo-profile-traits",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "stylo",
- "uuid",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-geometry"
-version = "0.5.0"
-dependencies = [
- "app_units",
- "euclid",
- "malloc_size_of_derive",
- "servo-malloc-size-of",
- "webrender",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-hyper-serde"
-version = "0.5.0"
-dependencies = [
- "bao-ipc-channel",
- "cookie 0.18.1",
- "headers",
- "http 1.4.1",
- "hyper",
- "mime",
- "serde",
- "serde_bytes",
- "serde_core",
- "serde_json",
- "serde_test",
-]
-
-[[package]]
-name = "servo-jstraceable-derive"
-version = "0.5.0"
-dependencies = [
- "proc-macro2",
- "syn",
- "synstructure",
-]
-
-[[package]]
-name = "servo-layout"
-version = "0.5.0"
-dependencies = [
- "accesskit",
- "app_units",
- "arrayvec",
- "atomic_refcell",
- "bao-servo-url",
- "bitflags 2.11.1",
- "data-url",
- "euclid",
- "icu_locid",
- "icu_properties",
- "icu_segmenter",
- "itertools 0.15.0",
- "kurbo",
- "log",
- "malloc_size_of_derive",
- "num-derive",
- "num-traits",
- "once_cell",
- "parking_lot",
- "phf 0.13.1",
- "quickcheck",
- "rayon",
- "rustc-hash 2.1.2",
- "selectors 0.40.0",
- "serde",
- "servo-base",
- "servo-config",
- "servo-embedder-traits",
- "servo-fonts",
- "servo-fonts-traits",
- "servo-geometry",
- "servo-layout-api",
- "servo-malloc-size-of",
- "servo-net-traits",
- "servo-paint-api",
- "servo-pixels",
- "servo-profile-traits",
- "servo-script",
- "servo-script-traits",
- "servo-tracing",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "smallvec",
- "strum 0.28.0",
- "stylo",
- "stylo_atoms",
- "stylo_traits",
- "taffy",
- "tracing",
- "unicode-bidi",
- "unicode-script",
- "unicode_categories",
- "url",
- "uuid",
- "web_atoms",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-layout-api"
-version = "0.5.0"
-dependencies = [
- "app_units",
- "atomic_refcell",
- "bao-servo-url",
- "bitflags 2.11.1",
- "euclid",
- "html5ever",
- "libc",
- "malloc_size_of_derive",
- "parking_lot",
- "rustc-hash 2.1.2",
- "selectors 0.40.0",
- "serde",
- "servo-background-hang-monitor-api",
- "servo-base",
- "servo-embedder-traits",
- "servo-fonts",
- "servo-malloc-size-of",
- "servo-net-traits",
- "servo-paint-api",
- "servo-pixels",
- "servo-profile-traits",
- "servo-script-traits",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "stylo",
- "stylo_traits",
- "uuid",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-malloc-size-of"
-version = "0.5.0"
-dependencies = [
- "app_units",
- "atomic_refcell",
- "bao-ipc-channel",
- "content-security-policy",
- "crossbeam-channel",
- "data-url",
- "encoding_rs",
- "euclid",
- "http 1.4.1",
- "icu_locid",
- "indexmap",
- "keyboard-types",
- "markup5ever",
- "mime",
- "once_cell",
- "parking_lot",
- "resvg",
- "servo-allocator",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "smallvec",
- "string_cache",
- "stylo",
- "stylo_dom",
- "stylo_malloc_size_of",
- "taffy",
- "tendril",
- "time",
- "tokio",
- "unicode-bidi",
- "unicode-script",
- "url",
- "urlpattern",
- "uuid",
- "vello_cpu 0.2.0",
- "webrender",
- "webrender_api",
- "wr_malloc_size_of",
-]
-
-[[package]]
-name = "servo-media"
-version = "0.5.0"
-dependencies = [
- "servo-base",
- "servo-media-audio",
- "servo-media-player",
- "servo-media-streams",
- "servo-media-traits",
- "servo-media-webrtc",
-]
-
-[[package]]
-name = "servo-media-audio"
-version = "0.5.0"
-dependencies = [
- "byte-slice-cast",
- "euclid",
- "log",
- "malloc_size_of_derive",
- "num-complex",
- "num-traits",
- "petgraph",
- "rustc-hash 2.1.2",
- "serde",
- "servo-base",
- "servo-malloc-size-of",
- "servo-media-derive",
- "servo-media-player",
- "servo-media-streams",
- "servo-media-traits",
- "smallvec",
- "speexdsp-resampler",
-]
-
-[[package]]
-name = "servo-media-auto"
-version = "0.5.0"
-dependencies = [
- "servo-media-dummy",
- "servo-media-gstreamer",
-]
-
-[[package]]
-name = "servo-media-derive"
-version = "0.5.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "servo-media-dummy"
-version = "0.5.0"
-dependencies = [
- "servo-base",
- "servo-media",
- "servo-media-audio",
- "servo-media-player",
- "servo-media-streams",
- "servo-media-traits",
- "servo-media-webrtc",
-]
-
-[[package]]
 name = "servo-media-examples"
 version = "0.5.0"
 dependencies = [
+ "bao-servo",
+ "bao-servo-media",
+ "bao-servo-media-auto",
+ "bao-servo-media-dummy",
  "euclid",
  "rand 0.10.2",
  "serde",
- "servo",
- "servo-media",
- "servo-media-auto",
- "servo-media-dummy",
-]
-
-[[package]]
-name = "servo-media-gstreamer"
-version = "0.5.0"
-dependencies = [
- "byte-slice-cast",
- "glib",
- "glib-sys",
- "gstreamer",
- "gstreamer-app",
- "gstreamer-audio",
- "gstreamer-base",
- "gstreamer-play",
- "gstreamer-sdp",
- "gstreamer-sys",
- "gstreamer-video",
- "gstreamer-webrtc",
- "log",
- "mime",
- "servo-base",
- "servo-media",
- "servo-media-audio",
- "servo-media-gstreamer-render",
- "servo-media-gstreamer-render-android",
- "servo-media-gstreamer-render-unix",
- "servo-media-player",
- "servo-media-streams",
- "servo-media-traits",
- "servo-media-webrtc",
- "url",
-]
-
-[[package]]
-name = "servo-media-gstreamer-render"
-version = "0.5.0"
-dependencies = [
- "gstreamer",
- "servo-media-player",
-]
-
-[[package]]
-name = "servo-media-gstreamer-render-android"
-version = "0.5.0"
-dependencies = [
- "glib",
- "gstreamer",
- "gstreamer-gl",
- "gstreamer-gl-egl",
- "gstreamer-video",
- "servo-media-gstreamer-render",
- "servo-media-player",
-]
-
-[[package]]
-name = "servo-media-gstreamer-render-unix"
-version = "0.5.0"
-dependencies = [
- "glib",
- "gstreamer",
- "gstreamer-gl",
- "gstreamer-gl-egl",
- "gstreamer-gl-wayland",
- "gstreamer-gl-x11",
- "gstreamer-video",
- "servo-media-gstreamer-render",
- "servo-media-player",
-]
-
-[[package]]
-name = "servo-media-ohos"
-version = "0.5.0"
-dependencies = [
- "crossbeam-channel",
- "libc",
- "log",
- "mime",
- "ohos-media-sys",
- "ohos-sys-opaque-types",
- "ohos-window-sys",
- "serde_json",
- "servo-base",
- "servo-media",
- "servo-media-audio",
- "servo-media-player",
- "servo-media-streams",
- "servo-media-traits",
- "servo-media-webrtc",
- "yuv",
-]
-
-[[package]]
-name = "servo-media-player"
-version = "0.5.0"
-dependencies = [
- "malloc_size_of_derive",
- "serde",
- "servo-base",
- "servo-malloc-size-of",
- "servo-media-streams",
- "servo-media-traits",
-]
-
-[[package]]
-name = "servo-media-streams"
-version = "0.5.0"
-dependencies = [
- "malloc_size_of_derive",
- "servo-malloc-size-of",
- "uuid",
-]
-
-[[package]]
-name = "servo-media-thread"
-version = "0.5.0"
-dependencies = [
- "bao-ipc-channel",
- "euclid",
- "log",
- "malloc_size_of_derive",
- "rustc-hash 2.1.2",
- "serde",
- "servo-base",
- "servo-config",
- "servo-malloc-size-of",
- "servo-media",
- "servo-paint-api",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-media-traits"
-version = "0.5.0"
-dependencies = [
- "malloc_size_of_derive",
- "servo-malloc-size-of",
-]
-
-[[package]]
-name = "servo-media-webrtc"
-version = "0.5.0"
-dependencies = [
- "log",
- "servo-media-streams",
- "uuid",
-]
-
-[[package]]
-name = "servo-metrics"
-version = "0.5.0"
-dependencies = [
- "bao-servo-url",
- "malloc_size_of_derive",
- "servo-base",
- "servo-config",
- "servo-malloc-size-of",
- "servo-paint-api",
- "servo-profile-traits",
- "servo-script-traits",
-]
-
-[[package]]
-name = "servo-net"
-version = "0.5.0"
-dependencies = [
- "async-compression",
- "async-recursion",
- "async-tungstenite",
- "bao-ipc-channel",
- "bao-servo-url",
- "bao_boringssl_bridge",
- "bao_native_stubs",
- "bao_stealth",
- "base64 0.23.1",
- "bun_boringssl_sys",
- "bun_core",
- "bun_dns",
- "bun_http",
- "bun_io",
- "bun_threading",
- "bun_url",
- "bytes",
- "chrono",
- "content-security-policy",
- "cookie 0.18.1",
- "crossbeam-channel",
- "data-url",
- "flate2",
- "fst",
- "futures",
- "futures-core",
- "futures-util",
- "headers",
- "http 1.4.1",
- "http-body-util",
- "hyper",
- "hyper-util",
- "imsz",
- "itertools 0.15.0",
- "log",
- "malloc_size_of_derive",
- "mime",
- "mime_guess",
- "nom 8.0.0",
- "parking_lot",
- "postcard",
- "quick_cache",
- "rand 0.10.2",
- "regex",
- "resvg",
- "rusqlite",
- "rustc-hash 2.1.2",
- "rustls",
- "rustls-pki-types",
- "rustls-platform-verifier",
- "sea-query",
- "sea-query-rusqlite",
- "serde",
- "servo-base",
- "servo-config",
- "servo-default-resources",
- "servo-devtools-traits",
- "servo-embedder-traits",
- "servo-fonts",
- "servo-hyper-serde",
- "servo-malloc-size-of",
- "servo-net",
- "servo-net-traits",
- "servo-paint-api",
- "servo-pixels",
- "servo-profile-traits",
- "servo-tracing",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "sha2 0.11.0",
- "smallvec",
- "tempfile",
- "time",
- "tokio",
- "tokio-rustls",
- "tokio-util",
- "tower",
- "tracing",
- "tungstenite",
- "url",
- "uuid",
- "webpki-roots",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-net-traits"
-version = "0.5.0"
-dependencies = [
- "bao-ipc-channel",
- "bao-servo-url",
- "content-security-policy",
- "cookie 0.18.1",
- "crossbeam-channel",
- "data-url",
- "headers",
- "http 1.4.1",
- "hyper-util",
- "log",
- "malloc_size_of_derive",
- "mime",
- "num-traits",
- "parking_lot",
- "percent-encoding",
- "rand 0.10.2",
- "resvg",
- "rustc-hash 2.1.2",
- "rustls-pki-types",
- "serde",
- "serde_bytes",
- "servo-base",
- "servo-config",
- "servo-default-resources",
- "servo-embedder-traits",
- "servo-hyper-serde",
- "servo-malloc-size-of",
- "servo-paint-api",
- "servo-pixels",
- "servo-profile-traits",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "sys-locale",
- "tokio",
- "url",
- "uuid",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-paint"
-version = "0.5.0"
-dependencies = [
- "bitflags 2.11.1",
- "crossbeam-channel",
- "dpi",
- "euclid",
- "gleam",
- "image",
- "log",
- "rayon",
- "rustc-hash 2.1.2",
- "servo-allocator",
- "servo-base",
- "servo-canvas-traits",
- "servo-config",
- "servo-constellation-traits",
- "servo-embedder-traits",
- "servo-geometry",
- "servo-malloc-size-of",
- "servo-media-thread",
- "servo-paint-api",
- "servo-profile-traits",
- "servo-timers",
- "servo-tracing",
- "servo-webgl",
- "servo-webgpu",
- "servo-webxr",
- "servo-webxr-api",
- "smallvec",
- "stylo_traits",
- "surfman",
- "tracing",
- "webrender",
- "webrender_api",
- "wr_malloc_size_of",
-]
-
-[[package]]
-name = "servo-paint-api"
-version = "0.5.0"
-dependencies = [
- "bao-ipc-channel",
- "bao-servo-url",
- "bitflags 2.11.1",
- "crossbeam-channel",
- "dpi",
- "euclid",
- "gleam",
- "glow",
- "image",
- "log",
- "malloc_size_of_derive",
- "parking_lot",
- "raw-window-handle",
- "rustc-hash 2.1.2",
- "serde",
- "serde_bytes",
- "servo-base",
- "servo-embedder-traits",
- "servo-geometry",
- "servo-malloc-size-of",
- "servo-profile-traits",
- "servo-tracing",
- "smallvec",
- "strum 0.28.0",
- "stylo",
- "stylo_traits",
- "surfman",
- "tracing",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-pixels"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "euclid",
- "image",
- "log",
- "malloc_size_of_derive",
- "serde",
- "servo-base",
- "servo-malloc-size-of",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-profile"
-version = "0.5.0"
-dependencies = [
- "libc",
- "log",
- "mach2",
- "regex",
- "serde",
- "serde_json",
- "servo-allocator",
- "servo-base",
- "servo-config",
- "servo-profile-traits",
- "time",
-]
-
-[[package]]
-name = "servo-profile-traits"
-version = "0.5.0"
-dependencies = [
- "bao-ipc-channel",
- "crossbeam-channel",
- "log",
- "malloc_size_of_derive",
- "serde",
- "servo-allocator",
- "servo-base",
- "servo-malloc-size-of",
- "time",
- "tracing",
-]
-
-[[package]]
-name = "servo-script"
-version = "0.5.0"
-dependencies = [
- "aes",
- "aes-gcm",
- "aes-kw",
- "app_units",
- "argon2",
- "arrayvec",
- "atomic_refcell",
- "aws-lc-rs",
- "backtrace",
- "bao-ipc-channel",
- "bao-mozjs",
- "bao-servo-url",
- "base64 0.23.1",
- "base64ct",
- "bitflags 2.11.1",
- "brotli",
- "buf-read-ext",
- "cbc",
- "chacha20poly1305",
- "chardetng",
- "chrono",
- "content-security-policy",
- "cookie 0.18.1",
- "crossbeam-channel",
- "crypto-bigint",
- "cshake",
- "cssparser 0.37.0",
- "ctr",
- "ctutils",
- "data-url",
- "ecdsa",
- "ed25519-dalek",
- "ed448-goldilocks",
- "elliptic-curve",
- "encoding_rs",
- "euclid",
- "flate2",
- "glow",
- "headers",
- "hkdf",
- "html5ever",
- "http 1.4.1",
- "httparse",
- "icu_locid",
- "indexmap",
- "itertools 0.15.0",
- "k12",
- "keccak",
- "keyboard-types",
- "libc",
- "log",
- "malloc_size_of_derive",
- "markup5ever",
- "mime",
- "mime_guess",
- "ml-dsa",
- "ml-kem",
- "mozangle",
- "nom-rfc8288",
- "num-traits",
- "num_cpus",
- "ocb3",
- "p256",
- "p384",
- "p521",
- "parking_lot",
- "percent-encoding",
- "phf 0.13.1",
- "pkcs8",
- "postcard",
- "rand 0.10.2",
- "regex",
- "resvg",
- "rsa",
- "rustc-hash 2.1.2",
- "selectors 0.40.0",
- "serde",
- "serde_json",
- "servo-background-hang-monitor-api",
- "servo-base",
- "servo-bluetooth-traits",
- "servo-canvas-traits",
- "servo-config",
- "servo-constellation-traits",
- "servo-deny-public-fields",
- "servo-devtools-traits",
- "servo-dom-struct",
- "servo-embedder-traits",
- "servo-fonts",
- "servo-fonts-traits",
- "servo-geometry",
- "servo-hyper-serde",
- "servo-jstraceable-derive",
- "servo-layout-api",
- "servo-malloc-size-of",
- "servo-media",
- "servo-media-thread",
- "servo-metrics",
- "servo-net-traits",
- "servo-paint-api",
- "servo-pixels",
- "servo-profile-traits",
- "servo-script-bindings",
- "servo-script-traits",
- "servo-script-webgpu",
- "servo-storage-traits",
- "servo-timers",
- "servo-tracing",
- "servo-webgpu-traits",
- "servo-webvtt",
- "servo-webxr-api",
- "servo-xpath",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "sha1 0.11.0",
- "sha2 0.11.0",
- "sha3 0.12.0",
- "smallvec",
- "sponge-cursor",
- "strum 0.28.0",
- "stylo",
- "stylo_atoms",
- "stylo_dom",
- "stylo_malloc_size_of",
- "stylo_traits",
- "swapper",
- "tempfile",
- "tendril",
- "time",
- "tracing",
- "unicode-bidi",
- "unicode-script",
- "url",
- "urlpattern",
- "uuid",
- "web_atoms",
- "webdriver",
- "webrender_api",
- "wgpu-core 30.0.0",
- "wgpu-types 30.0.0",
- "x25519-dalek",
- "x448",
- "xml5ever",
- "zeroize",
-]
-
-[[package]]
-name = "servo-script-bindings"
-version = "0.5.0"
-dependencies = [
- "atomic_refcell",
- "bao-mozjs",
- "bao-servo-url",
- "bitflags 2.11.1",
- "criterion",
- "crossbeam-channel",
- "encoding_rs",
- "html5ever",
- "indexmap",
- "keyboard-types",
- "libc",
- "log",
- "malloc_size_of_derive",
- "num-traits",
- "parking_lot",
- "phf 0.13.1",
- "phf_codegen",
- "phf_shared 0.13.1",
- "regex",
- "serde_json",
- "servo-base",
- "servo-config",
- "servo-deny-public-fields",
- "servo-dom-struct",
- "servo-jstraceable-derive",
- "servo-malloc-size-of",
- "servo-profile-traits",
- "servo-webxr-api",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "smallvec",
- "strum 0.28.0",
- "stylo",
- "stylo_atoms",
- "tendril",
- "tracing",
- "xml5ever",
- "zeroize",
-]
-
-[[package]]
-name = "servo-script-traits"
-version = "0.5.0"
-dependencies = [
- "accesskit",
- "bao-ipc-channel",
- "bao-servo-url",
- "crossbeam-channel",
- "euclid",
- "keyboard-types",
- "malloc_size_of_derive",
- "rustc-hash 2.1.2",
- "serde",
- "servo-base",
- "servo-bluetooth-traits",
- "servo-canvas-traits",
- "servo-config",
- "servo-constellation-traits",
- "servo-devtools-traits",
- "servo-embedder-traits",
- "servo-fonts-traits",
- "servo-malloc-size-of",
- "servo-media-thread",
- "servo-net-traits",
- "servo-paint-api",
- "servo-pixels",
- "servo-profile-traits",
- "servo-storage-traits",
- "servo-webgpu-traits",
- "servo-webxr-api",
- "strum 0.28.0",
- "stylo_atoms",
- "stylo_traits",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-script-webgpu"
-version = "0.5.0"
-dependencies = [
- "bao-mozjs",
- "indexmap",
- "log",
- "malloc_size_of_derive",
- "num-traits",
- "servo-base",
- "servo-deny-public-fields",
- "servo-dom-struct",
- "servo-jstraceable-derive",
- "servo-malloc-size-of",
- "servo-script-bindings",
- "servo-webgpu-traits",
- "wgpu-core 30.0.0",
- "wgpu-types 30.0.0",
-]
-
-[[package]]
-name = "servo-storage"
-version = "0.5.0"
-dependencies = [
- "bao-servo-url",
- "libc",
- "log",
- "malloc_size_of_derive",
- "postcard",
- "rusqlite",
- "rustc-hash 2.1.2",
- "sea-query",
- "sea-query-rusqlite",
- "serde",
- "servo-base",
- "servo-config",
- "servo-default-resources",
- "servo-malloc-size-of",
- "servo-net-traits",
- "servo-profile",
- "servo-profile-traits",
- "servo-storage-traits",
- "tempfile",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "servo-storage-traits"
-version = "0.5.0"
-dependencies = [
- "bao-servo-url",
- "malloc_size_of_derive",
- "serde",
- "servo-base",
- "servo-malloc-size-of",
- "servo-profile-traits",
- "uuid",
-]
-
-[[package]]
-name = "servo-timers"
-version = "0.5.0"
-dependencies = [
- "crossbeam-channel",
- "malloc_size_of_derive",
- "servo-malloc-size-of",
-]
-
-[[package]]
-name = "servo-tracing"
-version = "0.5.0"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "servo-wakelock"
-version = "0.5.0"
-dependencies = [
- "serde",
- "servo-embedder-traits",
-]
-
-[[package]]
-name = "servo-webdriver-server"
-version = "0.5.0"
-dependencies = [
- "bao-servo-url",
- "base64 0.23.1",
- "bytes",
- "cookie 0.18.1",
- "crossbeam-channel",
- "euclid",
- "http 0.2.12",
- "http 1.4.1",
- "image",
- "keyboard-types",
- "log",
- "rustc-hash 2.1.2",
- "serde",
- "serde_json",
- "servo-base",
- "servo-config",
- "servo-embedder-traits",
- "servo-geometry",
- "stylo_traits",
- "time",
- "tokio",
- "url",
- "uuid",
- "warp",
- "webdriver",
-]
-
-[[package]]
-name = "servo-webgl"
-version = "0.5.0"
-dependencies = [
- "bitflags 2.11.1",
- "byteorder",
- "crossbeam-channel",
- "euclid",
- "glow",
- "half",
- "itertools 0.15.0",
- "log",
- "num-traits",
- "parking_lot",
- "rustc-hash 2.1.2",
- "servo-base",
- "servo-canvas-traits",
- "servo-paint-api",
- "servo-pixels",
- "servo-webxr",
- "servo-webxr-api",
- "surfman",
- "webrender_api",
-]
-
-[[package]]
-name = "servo-webgpu"
-version = "0.5.0"
-dependencies = [
- "arrayvec",
- "euclid",
- "log",
- "rustc-hash 2.1.2",
- "servo-base",
- "servo-config",
- "servo-paint-api",
- "servo-pixels",
- "servo-webgpu-traits",
- "webrender_api",
- "wgpu-core 30.0.0",
- "wgpu-types 30.0.0",
-]
-
-[[package]]
-name = "servo-webgpu-traits"
-version = "0.5.0"
-dependencies = [
- "arrayvec",
- "malloc_size_of_derive",
- "serde",
- "servo-base",
- "servo-malloc-size-of",
- "servo-pixels",
- "webrender_api",
- "wgpu-core 30.0.0",
- "wgpu-types 30.0.0",
-]
-
-[[package]]
-name = "servo-webvtt"
-version = "0.5.0"
-dependencies = [
- "html5ever",
- "markup5ever",
- "regex",
- "servo-webvtt",
-]
-
-[[package]]
-name = "servo-webxr"
-version = "0.5.0"
-dependencies = [
- "crossbeam-channel",
- "euclid",
- "glow",
- "log",
- "openxr",
- "raw-window-handle",
- "servo-base",
- "servo-profile-traits",
- "servo-webxr-api",
- "surfman",
- "winapi",
- "wio",
-]
-
-[[package]]
-name = "servo-webxr-api"
-version = "0.5.0"
-dependencies = [
- "bao-ipc-channel",
- "euclid",
- "log",
- "malloc_size_of_derive",
- "serde",
- "servo-base",
- "servo-embedder-traits",
- "servo-malloc-size-of",
- "servo-profile-traits",
-]
-
-[[package]]
-name = "servo-xpath"
-version = "0.5.0"
-dependencies = [
- "log",
- "malloc_size_of_derive",
- "markup5ever",
- "servo-malloc-size-of",
 ]
 
 [[package]]
@@ -11067,14 +11123,6 @@ name = "servo_arc"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "170fb83ab34de17dc69aa7c67482b22218ddb85da56546f9bd6b929e32a05930"
-dependencies = [
- "stable_deref_trait",
-]
-
-[[package]]
-name = "servo_arc"
-version = "0.4.3"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
 dependencies = [
  "serde",
  "stable_deref_trait",
@@ -11088,6 +11136,10 @@ dependencies = [
  "android_logger",
  "backtrace",
  "bao-ipc-channel",
+ "bao-servo",
+ "bao-servo-allocator",
+ "bao-servo-base",
+ "bao-servo-webdriver-server",
  "bpaf",
  "bun_boringssl",
  "cc",
@@ -11125,10 +11177,6 @@ dependencies = [
  "ohos-window-manager-sys",
  "raw-window-handle",
  "serde_json",
- "servo",
- "servo-allocator",
- "servo-base",
- "servo-webdriver-server",
  "signal-hook-registry",
  "surfman",
  "tokio",
@@ -11610,65 +11658,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "stylo"
-version = "0.20.0"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
-dependencies = [
- "app_units",
- "arrayvec",
- "atomic_refcell",
- "bitflags 2.11.1",
- "byteorder",
- "cssparser 0.37.0",
- "derive_more",
- "encoding_rs",
- "euclid",
- "icu_segmenter",
- "indexmap",
- "itertools 0.14.0",
- "itoa",
- "log",
- "malloc_size_of_derive",
- "mime",
- "new_debug_unreachable",
- "num-derive",
- "num-integer",
- "num-traits",
- "num_cpus",
- "parking_lot",
- "precomputed-hash",
- "rayon",
- "rayon-core",
- "rustc-hash 2.1.2",
- "selectors 0.40.0",
- "serde",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
- "smallbitvec",
- "smallvec",
- "static_assertions",
- "string_cache",
- "strum 0.28.0",
- "strum_macros 0.28.0",
- "stylo_atoms",
- "stylo_derive",
- "stylo_dom",
- "stylo_malloc_size_of",
- "stylo_static_prefs",
- "stylo_traits",
- "thin-vec",
- "to_shmem",
- "to_shmem_derive",
- "uluru",
- "url",
- "void",
- "walkdir",
- "web_atoms",
-]
-
-[[package]]
 name = "stylo_atoms"
 version = "0.20.0"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d448de89b7d18169a160ca258d2ee63efe79bd6cb20360654101835e9b80e386"
 dependencies = [
  "string_cache",
  "string_cache_codegen",
@@ -11677,7 +11670,8 @@ dependencies = [
 [[package]]
 name = "stylo_derive"
 version = "0.20.0"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfdbf36a2d2db4fc75db0bfc1abd16e90971c360f00773cbd2501a5175dbec7"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -11689,7 +11683,8 @@ dependencies = [
 [[package]]
 name = "stylo_dom"
 version = "0.20.0"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346fde14a66fdc568ef79a8c81f8b6a35722a0906295bce2997df6c90c7b848f"
 dependencies = [
  "bitflags 2.11.1",
  "stylo_malloc_size_of",
@@ -11698,13 +11693,14 @@ dependencies = [
 [[package]]
 name = "stylo_malloc_size_of"
 version = "0.20.0"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a1ee5ec323e0207ebaafff2210fec808214575d67cfe25e288d34a12010e2b3"
 dependencies = [
  "app_units",
  "cssparser 0.37.0",
  "euclid",
  "selectors 0.40.0",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
+ "servo_arc",
  "smallbitvec",
  "smallvec",
  "string_cache",
@@ -11715,7 +11711,8 @@ dependencies = [
 [[package]]
 name = "stylo_static_prefs"
 version = "0.20.0"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e017eb7fd506fa0fb0da653a6bc3793d9fc11edf92d4721c16b350432f8116f"
 dependencies = [
  "toml",
 ]
@@ -11723,7 +11720,8 @@ dependencies = [
 [[package]]
 name = "stylo_traits"
 version = "0.20.0"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00a8d2ca5b29c7f5dd94ec66fbb256b274b76ecaab164417c92ce9a4586c8259"
 dependencies = [
  "app_units",
  "bitflags 2.11.1",
@@ -11732,7 +11730,7 @@ dependencies = [
  "malloc_size_of_derive",
  "selectors 0.40.0",
  "serde",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
+ "servo_arc",
  "stylo_atoms",
  "stylo_malloc_size_of",
  "thin-vec",
@@ -12436,10 +12434,11 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "to_shmem"
 version = "0.5.0"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8c81cee0d28327337a94f3f32a1a77c03bbfd926510f3b42956f9d914e7810c"
 dependencies = [
  "cssparser 0.37.0",
- "servo_arc 0.4.3 (git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2)",
+ "servo_arc",
  "smallbitvec",
  "smallvec",
  "string_cache",
@@ -12449,7 +12448,8 @@ dependencies = [
 [[package]]
 name = "to_shmem_derive"
 version = "0.1.0"
-source = "git+https://github.com/servo/stylo?rev=cc499a88513045823fc66c2b67492271023d98b2#cc499a88513045823fc66c2b67492271023d98b2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ba1f5563024b63bb6acb4558452d9ba737518c1d11fcc1861febe98d1e31cf4"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",

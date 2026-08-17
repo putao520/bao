@@ -1,10 +1,10 @@
 [package]
-name = "servo-dom-struct"
+name = "bao-servo-dom-struct"
 edition.workspace = true
 version.workspace = true
 authors.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 repository.workspace = true
 description.workspace = true
@@ -16,5 +16,6 @@ quote = { workspace = true }
 syn = { workspace = true, features = ["extra-traits", "full", "parsing", "printing", "proc-macro"] }
 
 [lib]
+name = "servo_dom_struct"
 path = "lib.rs"
 proc-macro = true

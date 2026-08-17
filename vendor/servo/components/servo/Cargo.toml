@@ -1,10 +1,10 @@
 [package]
-name = "servo"
+name = "bao-servo"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 repository.workspace = true
 description.workspace = true
@@ -146,7 +146,7 @@ servo-url = { workspace = true }
 servo-wakelock = { workspace = true }
 storage = { workspace = true }
 storage_traits = { workspace = true }
-stylo = { workspace = true }
+style = { workspace = true }
 stylo_traits = { workspace = true }
 surfman = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
@@ -192,7 +192,7 @@ net = { workspace = true, features = ["test-util"] }
 rustls = { workspace = true, default-features = false }
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
-servo = { path = ".", features = ["testbinding", "tracing"] }
+bao-servo = { path = ".", version = "=0.5.0", features = ["testbinding", "tracing"] }
 tracing = { workspace = true }
 winit = { workspace = true }
 

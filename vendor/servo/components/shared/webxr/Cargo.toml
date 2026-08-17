@@ -1,10 +1,10 @@
 [package]
-name = "servo-webxr-api"
+name = "bao-servo-webxr-api"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 keywords = ["ar", "headset", "openxr", "vr", "webxr"]
 repository.workspace = true
@@ -14,6 +14,7 @@ The API is inspired by the WebXR Device API (https://www.w3.org/TR/webxr/)
 but adapted to Rust design patterns.'''
 
 [lib]
+name = "servo_webxr_api"
 path = "lib.rs"
 
 [dependencies]

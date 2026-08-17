@@ -1,11 +1,11 @@
 [package]
-name = "servo-script-webgpu"
+name = "bao-servo-script-webgpu"
 build = "build.rs"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 repository.workspace = true
 description.workspace = true

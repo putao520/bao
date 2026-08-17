@@ -1,11 +1,11 @@
 [package]
-name = "servo-script"
+name = "bao-servo-script"
 build = "build.rs"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 repository.workspace = true
 description.workspace = true
@@ -137,7 +137,7 @@ script_traits = { workspace = true }
 selectors = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
-servo-background-hang-monitor-api = { workspace = true }
+background_hang_monitor_api = { workspace = true  }
 servo-base = { workspace = true }
 servo-bluetooth-traits = { workspace = true, optional = true }
 servo-canvas-traits = { workspace = true }
@@ -156,7 +156,7 @@ smallvec = { workspace = true }
 sponge-cursor = { workspace = true }
 storage_traits = { workspace = true }
 strum = { workspace = true }
-stylo = { workspace = true }
+style = { workspace = true }
 stylo_atoms = { workspace = true }
 stylo_dom = { workspace = true }
 stylo_malloc_size_of = { workspace = true }

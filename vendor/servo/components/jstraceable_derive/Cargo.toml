@@ -1,15 +1,16 @@
 [package]
-name = "servo-jstraceable-derive"
+name = "bao-servo-jstraceable-derive"
 edition.workspace = true
 version.workspace = true
 authors.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 repository.workspace = true
 description.workspace = true
 
 [lib]
+name = "servo_jstraceable_derive"
 path = "lib.rs"
 proc-macro = true
 
