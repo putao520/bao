@@ -170,7 +170,9 @@ fn test_zlib_crc32_unsigned_u32() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Item 5 — bun:sqlite backup:成功路径返回目标路径(可观察成功)
+// Item 5 — bun:sqlite backup:Promise<string> resolve 目标路径(可观察成功)
+// (7e82812a 契约:backup(dest) → Promise<string>;运行时失败 reject 而非同步
+// throw。断言对齐 bun_sqlite_backup_tests 的 .then 形态。)
 // ══════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -179,23 +181,63 @@ fn test_sqlite_backup_returns_destination() {
     let out = eval_string(
         &mut ctx,
         r#"
+        globalThis.__r = {};
         var { Database } = require('bun:sqlite');
         var db = new Database(':memory:');
         db.exec('CREATE TABLE t(x); INSERT INTO t VALUES (42);');
         var path = require('os').tmpdir() + '/waveb-backup-test.db';
         try { require('fs').rmSync(path); } catch (e) {}
-        var ret = db.backup(path);
-        var first = require('fs').existsSync(path) + '|' + (ret === path);
-        // 重复 backup 到同一目标:VACUUM INTO 要求新文件 → 显式错误(fail-closed)。
+        var p = db.backup(path);
+        // NOTE: not `p instanceof Promise` — node_async_hooks replaces the
+        // global Promise with a JS subclass; the honest observable contract
+        // is thenable + the real [object Promise] class tag.
+        __r.thenable = (typeof p.then === 'function') + ':' + Object.prototype.toString.call(p);
+        p.then(
+          function(resolved) { __r.ok = (typeof resolved === 'string') + ':' + (resolved === path); },
+          function(e) { __r.ok = 'REJ:' + (e && e.message); }
+        );
+        __r.exists = '' + require('fs').existsSync(path);
+        // 重复 backup 到同一目标:VACUUM INTO 要求新文件 → rejected promise
+        // (非同步 throw),reject 理由是含 'already exists' 的 Error(fail-closed)。
         var dup;
-        try { db.backup(path); dup = 'NO-THROW'; }
-        catch (e) { dup = 'THREW:' + (e.message.indexOf('already exists') >= 0); }
-        first + '|' + dup;
+        try {
+          db.backup(path).then(
+            function() { __r.dup = 'RESOLVED'; },
+            function(e) { __r.dup = 'REJ:' + (e instanceof Error) + ':' + (e.message.indexOf('already exists') >= 0); }
+          );
+          dup = 'NO-SYNC-THROW';
+        } catch (e) { dup = 'SYNC-THREW'; }
+        __r.dupSync = dup;
+        'queued'
     "#,
     );
+    assert_eq!(out, "queued", "backup wiring must eval cleanly");
+    // Flush the promise .then jobs (drain_and_check runs the SM job queue).
+    drive_event_loop(&mut ctx, 10);
     assert_eq!(
-        out, "true|true|THREW:true",
-        "backup must return the destination path, write the snapshot, and fail closed on duplicates"
+        eval_string(&mut ctx, "globalThis.__r.thenable"),
+        "true:[object Promise]",
+        "backup() must return a real Promise (thenable + [object Promise] tag)"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "globalThis.__r.ok"),
+        "true:true",
+        "backup() must resolve with the destination path string"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "globalThis.__r.exists"),
+        "true",
+        "backup must write the snapshot file"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "globalThis.__r.dupSync"),
+        "NO-SYNC-THROW",
+        "duplicate backup must reject, not throw synchronously"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "globalThis.__r.dup"),
+        "REJ:true:true",
+        "duplicate backup must reject with an Error mentioning 'already exists' (fail-closed)"
     );
 }
 

@@ -82,6 +82,120 @@ fn test_fs_conformance_suite() {
         let _ = ::std::fs::remove_dir_all(&dir);
     }
 
+    // ===== multibyte utf8 / latin1 roundtrips (mojibake regression) =====
+    // readFileSync utf8 previously went through JS_NewStringCopyZ, which
+    // re-reads the multibyte UTF-8 bytes as Latin-1 (包子 → "å\x8c\x85").
+    // The JSString must come from the UTF-8 decoder (JS_NewStringCopyUTF8N).
+    {
+        let dir = tmp_dir("multibyte_utf8");
+        let f = dir.join("cjk.txt");
+        let p = js_path(&f);
+        let src = format!(
+            r##"
+            {scaffold}
+            var fs = require('fs');
+            var p = "{p}";
+            // 2-byte (é) + 3-byte (包子) + 4-byte (🍞) UTF-8 sequences.
+            var text = "café 包子🍞 你好";
+            fs.writeFileSync(p, text, "utf8");
+            check("readFileSync_utf8_multibyte_roundtrip", function() {{
+                return fs.readFileSync(p, "utf8") === text;
+            }});
+            check("readFileSync_utf8_charCodes", function() {{
+                var s = fs.readFileSync(p, "utf8");
+                return s.charCodeAt(0) === 99 && s.indexOf("包子") === 5 && s.indexOf("🍞") === 7;
+            }});
+            check("readFileSync_encoding_obj_multibyte", function() {{
+                return fs.readFileSync(p, {{encoding: "utf8"}}) === text;
+            }});
+            check("readFileSync_fallback_encoding_multibyte", function() {{
+                return fs.readFileSync(p, "utf-8") === text;
+            }});
+            // latin1: each byte maps to U+0000..U+00FF (byte 0xE5 → 'å' 229).
+            check("readFileSync_latin1_high_bytes", function() {{
+                fs.writeFileSync(p, Buffer.from([0x41, 0xE5, 0x80, 0xFF]));
+                var s = fs.readFileSync(p, "latin1");
+                return s.length === 4 && s.charCodeAt(0) === 0x41 && s.charCodeAt(1) === 0xE5 &&
+                       s.charCodeAt(2) === 0x80 && s.charCodeAt(3) === 0xFF;
+            }});
+            results.join("|")
+            "##,
+            scaffold = CHECK_SCAFFOLD,
+            p = p
+        );
+        run_checks(&mut ctx, &src);
+        let _ = ::std::fs::remove_dir_all(&dir);
+    }
+
+    // ===== createWriteStream binary-safe flush =====
+    // Buffer chunks previously went through String(chunk) (utf8-lossy
+    // re-encode) — invalid-UTF-8 bytes were corrupted (0xFF → U+FFFD).
+    // Chunks must be flushed raw via the byte-view path.
+    {
+        let dir = tmp_dir("writestream_binary");
+        let f = dir.join("bin.dat");
+        let p = js_path(&f);
+        let src = format!(
+            r##"
+            {scaffold}
+            var fs = require('fs');
+            var p = "{p}";
+            // Invalid-as-UTF-8 bytes: any String() coercion mangles them.
+            var payload = [0x00, 0x7F, 0x80, 0xC3, 0xFF, 0xFE, 0x01];
+            var ws = fs.createWriteStream(p);
+            ws.write(Buffer.from(payload.slice(0, 4)));
+            ws.end(Buffer.from(payload.slice(4)));
+            check("createWriteStream_binary_roundtrip", function() {{
+                var back = fs.readFileSync(p);
+                if (back.length !== payload.length) return false;
+                for (var i = 0; i < payload.length; i++) {{
+                    if (back[i] !== payload[i]) return false;
+                }}
+                return true;
+            }});
+            check("createWriteStream_bytesWritten", function() {{
+                return ws.bytesWritten === payload.length;
+            }});
+            check("createWriteStream_finish_emitted", function() {{
+                var finished = false;
+                var ws2 = fs.createWriteStream(p + ".2");
+                ws2.on('finish', function() {{ finished = true; }});
+                ws2.end(Buffer.from([0x61]));
+                return finished === true;
+            }});
+            // Mixed string + Buffer chunks: string contributes its UTF-8
+            // bytes, Buffer its raw bytes.
+            check("createWriteStream_mixed_chunks", function() {{
+                var ws3 = fs.createWriteStream(p + ".3");
+                ws3.write("AB");
+                ws3.end(Buffer.from([0xC3, 0xA9, 0xFF]));
+                var back = fs.readFileSync(p + ".3");
+                return back.length === 5 && back[0] === 0x41 && back[1] === 0x42 &&
+                       back[2] === 0xC3 && back[3] === 0xA9 && back[4] === 0xFF;
+            }});
+            // String-only chunks keep the legacy byte path (UTF-8 of join).
+            check("createWriteStream_string_only", function() {{
+                var ws4 = fs.createWriteStream(p + ".4");
+                ws4.write("hello ");
+                ws4.end("包子");
+                return fs.readFileSync(p + ".4", "utf8") === "hello 包子";
+            }});
+            // Uint8Array (non-Buffer) chunks are byte views too.
+            check("createWriteStream_uint8array_chunk", function() {{
+                var ws5 = fs.createWriteStream(p + ".5");
+                ws5.end(new Uint8Array([0x00, 0x99, 0xFE]));
+                var back = fs.readFileSync(p + ".5");
+                return back.length === 3 && back[1] === 0x99 && back[2] === 0xFE;
+            }});
+            results.join("|")
+            "##,
+            scaffold = CHECK_SCAFFOLD,
+            p = p
+        );
+        run_checks(&mut ctx, &src);
+        let _ = ::std::fs::remove_dir_all(&dir);
+    }
+
     // ===== statSync =====
     {
         let dir = tmp_dir("stat_sync");
@@ -359,6 +473,56 @@ fn test_fs_conformance_readfile_returns_buffer() {
         ),
     );
     assert_eq!(r, "PASS");
+    let _ = ::std::fs::remove_dir_all(&dir);
+    bun_runtime::shutdown_thread_sm();
+}
+
+#[test]
+fn test_fs_conformance_readfile_async_multibyte() {
+    // fs.promises.readFile twin of the utf8 mojibake fix: string_or_buffer
+    // previously built the resolved string via JS_NewStringCopyZ (Latin-1
+    // re-read of multibyte UTF-8). The promise must resolve with the decoded
+    // text; drive the SM job queue so the .then observation lands.
+    use ::std::time::Duration;
+    let mut ctx = make_ctx();
+    use common::eval_string;
+    let dir = tmp_dir("readfile_async_mb");
+    let f = dir.join("cjk.txt");
+    ::std::fs::write(&f, "包子🍞 café".as_bytes()).unwrap();
+    let p = js_path(&f);
+    eval_string(
+        &mut ctx,
+        &format!(
+            r#"
+            globalThis.__r = {{}};
+            var fs = require('fs');
+            var p = fs.promises.readFile("{p}", "utf8");
+            p.then(
+              function(data) {{
+                globalThis.__r.ok = (typeof data === "string") + ":" + (data === "包子🍞 café");
+              }},
+              function(e) {{ globalThis.__r.ok = "REJ:" + (e && e.message); }}
+            );
+            "#
+        ),
+    );
+    // RunJobs flushes the already-settled promise's .then (same discipline
+    // as bun_sqlite_backup_tests' drive_event_loop).
+    let mut got = String::new();
+    for _ in 0..20 {
+        let mut cxm = ctx.cx();
+        bun_runtime::timers::drain_and_check(&mut cxm);
+        let v = eval_string(&mut ctx, r#"globalThis.__r.ok || """#);
+        if !v.is_empty() {
+            got = v;
+            break;
+        }
+        ::std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        got, "true:true",
+        "fs.promises.readFile utf8 must resolve multibyte text un-mangled"
+    );
     let _ = ::std::fs::remove_dir_all(&dir);
     bun_runtime::shutdown_thread_sm();
 }

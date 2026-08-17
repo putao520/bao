@@ -567,6 +567,7 @@ unsafe fn spawn_fs_async<F>(
 const FS_STREAM_JS: &str = r#"
 (function() {
   var fs = globalThis.__fs_stream_ref;
+  var flush = globalThis.__bao_fs_stream_flush;
 
   function EE() { this._events = {}; }
   EE.prototype.on = function(e, fn) {
@@ -619,16 +620,26 @@ const FS_STREAM_JS: &str = r#"
     setTimeout(function() { s.emit('open', 0); }, 0);
     s.write = function(chunk) {
       if (this._ended) return false;
-      this._buffer.push(typeof chunk === 'string' ? chunk : String(chunk));
-      this.bytesWritten += (typeof chunk === 'string') ? chunk.length : 0;
+      // Keep chunks RAW: strings stay strings, Buffer/TypedArray chunks stay
+      // binary views (flush extracts their bytes natively). Non-string
+      // non-object primitives keep the legacy String() coercion.
+      if (typeof chunk !== 'string' && typeof chunk !== 'object') chunk = String(chunk);
+      this._buffer.push(chunk);
+      this.bytesWritten += (chunk && chunk.length) || 0;
       return true;
     };
     s.end = function(chunk) {
-      if (chunk) this._buffer.push(typeof chunk === 'string' ? chunk : String(chunk));
+      if (chunk) {
+        if (typeof chunk !== 'string' && typeof chunk !== 'object') chunk = String(chunk);
+        this._buffer.push(chunk);
+        this.bytesWritten += (chunk && chunk.length) || 0;
+      }
       this._ended = true;
       this.writable = false;
       try {
-        fs.writeFileSync(this.path, this._buffer.join(''));
+        // Binary-safe flush: string chunks → UTF-8 bytes (byte-identical to
+        // the old join('') + writeFileSync(string)); view chunks → raw bytes.
+        flush(this.path, this._buffer);
         this.emit('finish');
       } catch(e) {
         this.emit('error', e);
@@ -1577,6 +1588,17 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 fs_val.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
+            // Hidden native the polyfill captures in its closure for the
+            // binary-safe end() flush; deleted right after evaluation (the
+            // captured reference stays alive) so no API surface is added.
+            w2::JS_DefineFunction(
+                cx,
+                global_rooted.handle(),
+                c"__bao_fs_stream_flush".as_ptr(),
+                Some(fs_write_stream_flush),
+                2,
+                0,
+            );
 
             let c_filename = ZBox::from_bytes("node:fs:streams".as_bytes());
             let opts = NewCompileOptions(cx.raw_cx(), c_filename.as_ptr(), 1);
@@ -1624,6 +1646,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 cx.raw_cx(),
                 global_rooted.handle().into(),
                 c"__fs_stream_ref".as_ptr(),
+            );
+            JS_DeleteProperty1(
+                cx.raw_cx(),
+                global_rooted.handle().into(),
+                c"__bao_fs_stream_flush".as_ptr(),
             );
         }
     }
@@ -1920,6 +1947,20 @@ unsafe fn get_encoding_opt(
     ::std::option::Option::None
 }
 
+/// Valid-UTF-8 text → JSString through the UTF-8 decoder. JS_NewStringCopyZ
+/// reads the buffer as Latin-1 (one byte = one char code), which mangles
+/// multibyte UTF-8 (E4 BD A0 → "ä½ " instead of 你); the JSString must be
+/// built via JS_NewStringCopyUTF8N — same discipline as the Buffer.toString
+/// mojibake fix in globals.rs (@trace REQ-ENG-005).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn js_string_from_utf8(cx: *mut JSContext, text: &str) -> *mut JSString {
+    let chars = mozjs::conversions::Utf8Chars::from(text);
+    mozjs_sys::jsapi::JS_NewStringCopyUTF8N(
+        cx,
+        &*chars as *const _ as *const mozjs_sys::jsapi::JS::UTF8Chars,
+    )
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn return_string_content(
     cx: *mut JSContext,
@@ -1942,9 +1983,11 @@ unsafe fn return_string_content(
             }
         }
         Some("utf-8" | "utf8" | "text") => {
+            // @trace REQ-ENG-005 — JS_NewStringCopyUTF8N (not CopyZ): multibyte
+            // UTF-8 (中文/emoji) must decode through the UTF-8 decoder, not be
+            // re-read as Latin-1 (mojibake). Same fix as buffer_to_string.
             let s = ::std::string::String::from_utf8_lossy(data);
-            let c_str = ZBox::from_bytes(s.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+            let js_str = js_string_from_utf8(cx, &s);
             if js_str.is_null() {
                 args.rval().set(UndefinedValue());
             } else {
@@ -1975,9 +2018,13 @@ unsafe fn return_string_content(
             }
         }
         Some("latin1" | "binary") => {
+            // Node latin1: each byte maps to code point U+0000..U+00FF. The
+            // `b as char` String holds those chars (UTF-8: 2 bytes for ≥0x80);
+            // js_string_from_utf8 decodes them back to the single correct
+            // char per byte. CopyZ would re-read those 2 bytes as Latin-1
+            // (0xE5 → "Ã¥" mojibake).
             let s: ::std::string::String = data.iter().map(|&b| b as char).collect();
-            let c_str = ZBox::from_bytes(s.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+            let js_str = js_string_from_utf8(cx, &s);
             if js_str.is_null() {
                 args.rval().set(UndefinedValue());
             } else {
@@ -1986,8 +2033,7 @@ unsafe fn return_string_content(
         }
         Some(_) => {
             let s = ::std::string::String::from_utf8_lossy(data);
-            let c_str = ZBox::from_bytes(s.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+            let js_str = js_string_from_utf8(cx, &s);
             if js_str.is_null() {
                 args.rval().set(UndefinedValue());
             } else {
@@ -2120,6 +2166,106 @@ unsafe extern "C" fn fs_write_file_sync(cx: *mut JSContext, argc: u32, vp: *mut 
             true
         }
         ::std::result::Result::Err(e) => throw_fs_error(cx, "writeFileSync", &path, &e),
+    }
+}
+
+// ── createWriteStream binary-safe flush ─────────────────────────────────────
+// The FS_STREAM_JS polyfill buffers string and Buffer chunks RAW; at end()
+// it hands the chunk array here instead of String()-coercing every chunk.
+// Byte semantics: string chunks → their UTF-8 bytes (byte-identical to the
+// old join('') + writeFileSync(string) path — UTF-8 concatenation is
+// stable); Buffer/TypedArray/DataView/ArrayBuffer chunks → raw bytes via
+// collect_byte_view. The old polyfill ran Buffer chunks through
+// String(chunk), which is binary-unsafe (bytes ≥ 0x80 re-encoded through
+// lossy UTF-8 → corrupted file). Unrecognized chunk types throw instead of
+// silently corrupting the stream (Node throws ERR_INVALID_ARG_TYPE).
+// @trace REQ-ENG-005 [entity:Buffer] [api:createWriteStream]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_write_stream_flush(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) {
+        ::std::result::Result::Ok(p) => p,
+        ::std::result::Result::Err(b) => return b,
+    };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
+        let c_msg = ZBox::from_bytes(e.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        return false;
+    }
+
+    let mut total: Vec<u8> = Vec::new();
+    let chunks_val = if argc > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
+    if chunks_val.is_object() {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let arr_root = chunks_val.to_object());
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            arr_root.handle().into(),
+            c"length".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            },
+        );
+        let len = if len_val.is_int32() && len_val.to_int32() > 0 {
+            len_val.to_int32() as u32
+        } else {
+            0
+        };
+        for i in 0..len {
+            let mut elem = UndefinedValue();
+            JS_GetElement(
+                cx,
+                arr_root.handle().into(),
+                i,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut elem,
+                },
+            );
+            rooted!(&in(cx_ref) let el_root = elem);
+            let v = el_root.get();
+            if v.is_string() {
+                let s = v.to_string();
+                if !s.is_null() {
+                    total.extend_from_slice(crate::jsstr_to_rust_string(cx, s).as_bytes());
+                }
+            } else if v.is_object() {
+                match crate::node_buffer::collect_byte_view(cx, v) {
+                    ::std::option::Option::Some(bytes) => total.extend_from_slice(&bytes),
+                    // fail-closed: an unrecognized object would previously be
+                    // written as "[object Object]" garbage — throw instead.
+                    ::std::option::Option::None => {
+                        JS_ReportErrorUTF8(
+                            cx,
+                            c"The \"chunk\" argument must be a string or a binary view".as_ptr(),
+                        );
+                        return false;
+                    }
+                }
+            } else {
+                JS_ReportErrorUTF8(
+                    cx,
+                    c"The \"chunk\" argument must be a string or a binary view".as_ptr(),
+                );
+                return false;
+            }
+        }
+    }
+
+    match bun_fs::write(&path, &total) {
+        ::std::result::Result::Ok(()) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
+        ::std::result::Result::Err(e) => throw_fs_error(cx, "createWriteStream", &path, &e),
     }
 }
 
@@ -8435,9 +8581,10 @@ unsafe fn string_or_buffer(
 ) -> JSVal {
     match encoding {
         Some("utf-8" | "utf8" | "text") | None => {
+            // @trace REQ-ENG-005 — same mojibake class as return_string_content:
+            // multibyte UTF-8 must go through JS_NewStringCopyUTF8N, not CopyZ.
             let s = ::std::string::String::from_utf8_lossy(data);
-            let c_str = ZBox::from_bytes(s.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+            let js_str = js_string_from_utf8(cx, &s);
             if js_str.is_null() {
                 UndefinedValue()
             } else {
