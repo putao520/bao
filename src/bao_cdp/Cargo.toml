@@ -2,6 +2,9 @@
 name = "bao_cdp"
 version = "0.1.0"
 edition = "2021"
+description.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 bao_engine = { path = "../bao_engine", version = "0.1.0" }
