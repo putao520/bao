@@ -1,0 +1,30 @@
+# BAO PATCH (#42 satellite source crate): mozjs source slice split out of
+# bao-mozjs-sys to keep every published crate under the 10MiB limit (user
+# ruling 2026-08-17; see #40 floor analysis: single package floor 14.93MiB).
+# This crate ships only sources; bao-mozjs-sys's build script discovers it via
+# links metadata (DEP_BAO_MOZJS_SRC_JS_ROOT) and synthesizes the
+# virtual topsrcdir in OUT_DIR. moz.build layout unchanged.
+[package]
+name = "bao-mozjs-src-js"
+version = "140.13.0-4"
+edition = "2021"
+license = "MPL-2.0"
+description = "SpiderMonkey source slice (js) for bao-mozjs-sys"
+links = "bao-mozjs-src-js"
+# #40 verified exclusion set (gate-proven + compile-oracle-proven via
+# bao-mozjs-sys dry-run before the split; see #40/#42 reports).
+exclude = [
+  "__pycache__",
+  "/mozjs/js/src/zydis/",
+  "/mozjs/js/src/jsapi-tests/",
+  "/mozjs/js/src/devtools/",
+  "/mozjs/js/src/doc/",
+  "/mozjs/js/src/gdb/",
+  "/mozjs/js/src/vtune/",
+  "/mozjs/js/examples/",
+]
+publish = true
+
+[lib]
+path = "src/lib.rs"
+

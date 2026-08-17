@@ -135,11 +135,164 @@ fn main() {
             }
         }
 
+        // BAO PATCH (#42): source slices now live in satellite crates
+        // (bao-mozjs-src-{js,intl,python}); watch their trees too so edits
+        // there trigger rebuilds just like the in-tree skeleton does.
+        for var in [
+            "DEP_BAO_MOZJS_SRC_JS_ROOT",
+            "DEP_BAO_MOZJS_SRC_INTL_ROOT",
+            "DEP_BAO_MOZJS_SRC_PYTHON_ROOT",
+        ] {
+            if let Some(root) = env::var_os(var) {
+                for entry in WalkDir::new(PathBuf::from(root).join("mozjs")) {
+                    let entry = entry.unwrap();
+                    let path = entry.path();
+                    if !ignore(path) {
+                        println!("cargo:rerun-if-changed={}", path.display());
+                    }
+                }
+            }
+        }
+
         for file in EXTRA_FILES {
             println!("cargo:rerun-if-changed={}", file);
         }
     }
 }
+
+/// BAO PATCH (#42 split): synthesize the virtual mozjs topsrcdir under
+/// `build_dir/vsrc/mozjs` from this crate's skeleton plus the three satellite
+/// source crates (discovered via `links` metadata). Directory-level symlinks
+/// preserve the upstream layout exactly — moz.build/configure/make run
+/// unchanged. Falls back to recursive copy where symlinks are unavailable
+/// (e.g. some Windows setups / read-only registry caches).
+fn synthesize_source_tree(build_dir: &Path) -> PathBuf {
+    let core_mozjs = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("mozjs");
+    let sat_js = PathBuf::from(
+        env::var_os("DEP_BAO_MOZJS_SRC_JS_ROOT")
+            .expect("DEP_BAO_MOZJS_SRC_JS_ROOT missing: bao-mozjs-src-js dependency absent"),
+    );
+    let sat_intl = PathBuf::from(
+        env::var_os("DEP_BAO_MOZJS_SRC_INTL_ROOT")
+            .expect("DEP_BAO_MOZJS_SRC_INTL_ROOT missing: bao-mozjs-src-intl dependency absent"),
+    );
+    let sat_python = PathBuf::from(
+        env::var_os("DEP_BAO_MOZJS_SRC_PYTHON_ROOT")
+            .expect("DEP_BAO_MOZJS_SRC_PYTHON_ROOT missing: bao-mozjs-src-python dependency absent"),
+    );
+
+    let vsrc = build_dir.join("vsrc");
+    let vmozjs = vsrc.join("mozjs");
+    // The synthesized topsrcdir must be a COMPLETE, PHYSICALLY REAL tree: the
+    // moz.configure loader resolves every sub-configure through realpath()
+    // (verified empirically — a traceback shows core's build/moz.configure
+    // executing even when a real copy exists under vsrc), and init.configure
+    // derives topsrcdir from realpath(__file__/../..). A symlinked tree lets
+    // those anchors escape into the (incomplete) package dirs. We therefore
+    // mirror sources as a hardlink farm: real directories, files hardlinked
+    // (zero data copy, instant, same inode). Falls back to copy across
+    // filesystems or where hardlinks are unavailable. SM builds never write
+    // into the source tree (out-of-tree objdir + PYTHONDONTWRITEBYTECODE=1),
+    // so link aliasing is safe.
+    let _ = fs::remove_dir_all(&vsrc);
+    fs::create_dir_all(&vmozjs).expect("could not create vsrc/mozjs");
+
+    // Satellite-owned top-level slices (moved out of core by the #42 split).
+    mirror_dir(&sat_js.join("mozjs/js"), &vmozjs.join("js"));
+    mirror_dir(&sat_intl.join("mozjs/intl"), &vmozjs.join("intl"));
+    mirror_dir(&sat_python.join("mozjs/python"), &vmozjs.join("python"));
+
+    // Core children, except the two merge domains.
+    for entry in fs::read_dir(&core_mozjs).expect("core mozjs skeleton missing") {
+        let entry = entry.unwrap().path();
+        let name = entry.file_name().unwrap().to_str().unwrap().to_string();
+        match name.as_str() {
+            "js" | "intl" | "python" => {} // mirrored above (defensive no-op)
+            "third_party" => {
+                // Merge: core vendors + satellite python payload.
+                let vthird = vmozjs.join("third_party");
+                fs::create_dir_all(&vthird).unwrap();
+                for sub in fs::read_dir(&entry).unwrap() {
+                    let sub = sub.unwrap().path();
+                    let sub_name = sub.file_name().unwrap().to_str().unwrap();
+                    if sub_name != "python" {
+                        mirror_entry(&sub, &vthird.join(sub_name));
+                    }
+                }
+                mirror_dir(
+                    &sat_python.join("mozjs/third_party/python"),
+                    &vthird.join("python"),
+                );
+            }
+            "config" => {
+                // Merge: core config + satellite intl's icu data subtree.
+                let vconfig = vmozjs.join("config");
+                fs::create_dir_all(&vconfig).unwrap();
+                for sub in fs::read_dir(&entry).unwrap() {
+                    let sub = sub.unwrap().path();
+                    let sub_name = sub.file_name().unwrap().to_str().unwrap();
+                    if sub_name == "external" {
+                        let vexternal = vconfig.join("external");
+                        fs::create_dir_all(&vexternal).unwrap();
+                        for ext in fs::read_dir(&sub).unwrap() {
+                            let ext = ext.unwrap().path();
+                            let ext_name = ext.file_name().unwrap().to_str().unwrap();
+                            if ext_name == "icu" {
+                                let vicu = vexternal.join("icu");
+                                fs::create_dir_all(&vicu).unwrap();
+                                for icu in fs::read_dir(&ext).unwrap() {
+                                    let icu = icu.unwrap().path();
+                                    let icu_name = icu.file_name().unwrap().to_str().unwrap();
+                                    if icu_name != "data" {
+                                        mirror_entry(&icu, &vicu.join(icu_name));
+                                    }
+                                }
+                                mirror_dir(
+                                    &sat_intl.join("mozjs/config/external/icu/data"),
+                                    &vicu.join("data"),
+                                );
+                            } else {
+                                mirror_entry(&ext, &vexternal.join(ext_name));
+                            }
+                        }
+                    } else {
+                        mirror_entry(&sub, &vconfig.join(sub_name));
+                    }
+                }
+            }
+            _ => mirror_entry(&entry, &vmozjs.join(&name)),
+        }
+    }
+    vmozjs
+}
+
+/// Mirror a single entry (file or dir).
+fn mirror_entry(from: &Path, to: &Path) {
+    if from.is_dir() {
+        mirror_dir(from, to);
+    } else if fs::hard_link(from, to).is_err() {
+        fs::copy(from, to).expect("mirror_entry copy failed");
+    }
+}
+
+/// Mirror `from` into `to` as a hardlink farm: real directories, files
+/// hardlinked when possible (same filesystem), copied otherwise.
+fn mirror_dir(from: &Path, to: &Path) {
+    fs::create_dir_all(to).expect("mirror_dir create_dir_all failed");
+    for entry in fs::read_dir(from).expect("mirror_dir read_dir failed") {
+        let entry = entry.unwrap().path();
+        let dest = to.join(entry.file_name().unwrap());
+        if entry.is_dir() {
+            // Skip non-source artifacts that would bloat the mirror.
+            mirror_dir(&entry, &dest);
+        } else {
+            if fs::hard_link(&entry, &dest).is_err() {
+                fs::copy(&entry, &dest).expect("mirror_dir copy failed");
+            }
+        }
+    }
+}
+
 
 /// Bao patch: Fix mozjs incremental build bug.
 ///
@@ -297,11 +450,14 @@ fn build_spidermonkey(build_dir: &Path) {
     cmd.env("CXXFLAGS", cxxflags);
 
     let cargo_manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    // BAO PATCH (#42 split): SRC_DIR is the synthesized virtual topsrcdir
+    // (skeleton + three satellite slices) instead of the in-tree mozjs dir.
+    let vsrc_dir = synthesize_source_tree(build_dir);
     let result = cmd
         .args(&["-R", "-f"])
         .arg(cargo_manifest_dir.join("makefile.cargo"))
         .current_dir(&build_dir)
-        .env("SRC_DIR", &cargo_manifest_dir.join("mozjs"))
+        .env("SRC_DIR", &vsrc_dir)
         .env("NO_RUST_PANIC_HOOK", "1")
         .output()
         .expect(&format!("Failed to run `{:?}`", make));

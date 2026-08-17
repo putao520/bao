@@ -525,9 +525,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao-mozjs-src-intl"
+version = "140.13.0-4"
+
+[[package]]
+name = "bao-mozjs-src-js"
+version = "140.13.0-4"
+
+[[package]]
+name = "bao-mozjs-src-python"
+version = "140.13.0-4"
+
+[[package]]
 name = "bao-mozjs-sys"
 version = "140.13.0-4"
 dependencies = [
+ "bao-mozjs-src-intl",
+ "bao-mozjs-src-js",
+ "bao-mozjs-src-python",
  "bindgen",
  "cc",
  "encoding_c",

@@ -9,7 +9,15 @@ version = "140.13.0-4"
 authors = ["Mozilla", "The Servo Project Developers"]
 links = "mozjs"
 license.workspace = true
-exclude = ["__pycache__", "/etc/", "/mozjs/.cargo/"]
+exclude = [
+  "__pycache__",
+  "/etc/",
+  "/mozjs/.cargo/",
+  # ── #42 拆分后 core 骨架域(#40 js 载荷排除已随迁移移交 src-js 卫星)──
+  # NOTE: third_party/python 已整树迁往 src-python 卫星(#42);
+  # /mozjs/config/tests 不可排——config/moz.build 无条件声明其 python.toml
+  # (moz.build FILES 机制,非构建目标门;#40 dry-run oracle 实证)。
+]
 edition.workspace = true
 
 [lib]
@@ -19,6 +27,11 @@ name = "mozjs_sys"
 doctest = false
 
 [features]
+# BAO PATCH (#40 ⑤a): default feature set declared so `cargo publish`
+# verification (which builds with default features only) passes the build.rs
+# libz gate. Matches bao-mozjs's declared defaults exactly; servo consumes via
+# default-features = false and is unaffected.
+default = ["jit", "libz-sys", "intl"]
 debugmozjs = []
 profilemozjs = []
 jit = []
@@ -33,6 +46,15 @@ oom_with_hook = []
 libc.workspace = true
 encoding_c = "0.9.8"
 encoding_c_mem = "0.2.6"
+# BAO PATCH (#42 split): source-slice satellites. Their build scripts export
+# `cargo:root`, which cargo surfaces to THIS crate's build script as
+# DEP_BAO_MOZJS_SRC_{JS,INTL,PYTHON}_ROOT; the build script synthesizes the
+# virtual mozjs topsrcdir from the three roots + this crate's skeleton
+# (mozjs/{build,config*,mozglue,mfbt,nsprpub,...}). Version-pinned lockstep
+# with this crate (140.13.0-4 lineage) so `cargo package` rewrites cleanly.
+bao-mozjs-src-js = { path = "../src-js", version = "=140.13.0-4" }
+bao-mozjs-src-intl = { path = "../src-intl", version = "=140.13.0-4" }
+bao-mozjs-src-python = { path = "../src-python", version = "=140.13.0-4" }
 # unicode-bidi-ffi = { path = "./mozjs/intl/bidi/rust/unicode-bidi-ffi" }
 # keep in sync with intl/icu_capi/Cargo.toml
 icu_capi = { version = "=1.5.0", default-features = false, features = [
