@@ -2135,7 +2135,6 @@ dependencies = [
 name = "bao_uloop"
 version = "0.1.0"
 dependencies = [
- "bao_native_stubs",
  "bun_analytics",
  "bun_dns",
  "bun_lsquic_sys",
@@ -3326,7 +3325,6 @@ dependencies = [
  "bun_collections",
  "bun_core",
  "bun_highway",
- "bun_js_printer",
  "bytemuck",
  "const_format",
  "enum-map",
