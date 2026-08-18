@@ -1,6 +1,8 @@
 [package]
 name = "bun_collections"
-version.workspace = true
+# 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
+# so this patch release ships alone. SoA derive(SoaRow) retires reflection + api2 dual-mode; new dep bun_collections_macros.
+version = "0.1.1"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

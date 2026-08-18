@@ -1,6 +1,8 @@
 [package]
 name = "bun_ptr"
-version.workspace = true
+# 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
+# so this patch release ships alone. W4 stable dual-mode (allocator_api attr removal).
+version = "0.1.1"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

@@ -1,6 +1,8 @@
 [package]
 name = "bun_runtime"
-version = "0.1.0"
+# 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
+# so this patch release ships alone. runtime fix batch: atob/btoa binary fidelity, async_hooks promise identity, spawn watch, SC bridge + WHATWG URL parity, premature loop exit fetch teardown.
+version = "0.1.1"
 description = "Bao runtime integration — JS engine + Bun API + event loop"
 edition.workspace = true
 license.workspace = true

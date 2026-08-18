@@ -1,6 +1,8 @@
 [package]
 name = "bun_standalone_graph"
-version.workspace = true
+# 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
+# so this patch release ships alone. SoA items_named migration sweep.
+version = "0.1.1"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

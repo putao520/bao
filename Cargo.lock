@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "bun_collections"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
@@ -2766,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -3068,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http_types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3088,7 +3088,7 @@ dependencies = [
 
 [[package]]
 name = "bun_install"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3357,7 +3357,7 @@ version = "0.1.0"
 
 [[package]]
 name = "bun_options_types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3421,7 +3421,7 @@ dependencies = [
 
 [[package]]
 name = "bun_paths"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3474,7 +3474,7 @@ dependencies = [
 
 [[package]]
 name = "bun_platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3493,7 +3493,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ptr"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -3531,7 +3531,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolver"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3574,7 +3574,7 @@ dependencies = [
 
 [[package]]
 name = "bun_router"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3600,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3789,7 +3789,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3903,7 +3903,7 @@ dependencies = [
 
 [[package]]
 name = "bun_standalone_graph"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3968,7 +3968,7 @@ dependencies = [
 
 [[package]]
 name = "bun_threading"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4073,7 +4073,7 @@ dependencies = [
 
 [[package]]
 name = "bun_watcher"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4117,7 +4117,7 @@ version = "0.1.0"
 
 [[package]]
 name = "bun_wyhash"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
