@@ -78,6 +78,12 @@ impl PageInner {
         self.webview.load(parsed);
         self.touch();
         *self.state.borrow_mut() = PageState::Navigating;
+        // BCE (stale Complete race): a second navigation to the same page
+        // leaves the previous load's `Complete` in webview_state until
+        // servo's async Started arrives — get_state's projection below would
+        // report Interactive for a load that just began. Reset to Started
+        // (identical to the event servo is about to deliver; idempotent).
+        self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
         Ok(())
     }
 
@@ -236,6 +242,8 @@ impl PageInner {
         self.webview.reload();
         self.touch();
         *self.state.borrow_mut() = PageState::Navigating;
+        // BCE (stale Complete race) — see navigate().
+        self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
         Ok(())
     }
 
@@ -244,6 +252,8 @@ impl PageInner {
         self.webview.go_back(1);
         self.touch();
         *self.state.borrow_mut() = PageState::Navigating;
+        // BCE (stale Complete race) — see navigate().
+        self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
         Ok(())
     }
 
@@ -252,6 +262,8 @@ impl PageInner {
         self.webview.go_forward(1);
         self.touch();
         *self.state.borrow_mut() = PageState::Navigating;
+        // BCE (stale Complete race) — see navigate().
+        self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
         Ok(())
     }
 
@@ -772,7 +784,24 @@ impl PageInner {
     }
 
     pub fn get_state(&self) -> PageState {
-        *self.state.borrow()
+        // BCE (PageState never left Navigating, 2026-08-19): the stored
+        // state machine had no writer for the SPEC 02-SYSTEM PageLifecycle
+        // `Navigating → Interactive on load_complete` transition, so
+        // get_state() reported Navigating forever while the page was fully
+        // loaded (title/DOM/evaluate all ready — the v-w0 smoke finding).
+        // servo's LoadStatus (written by notify_load_status_changed in the
+        // delegate) is the single source of truth for load completion —
+        // project it here instead of adding a second writer:
+        //   LoadStatus::Complete == document.readyState "complete" → Interactive.
+        // (navigate/reload/go_back/go_forward reset to Started so a second
+        // navigation can't read the previous load's stale Complete.)
+        let stored = *self.state.borrow();
+        if stored == PageState::Navigating
+            && self.webview_state.borrow().load_status == servo::LoadStatus::Complete
+        {
+            return PageState::Interactive;
+        }
+        stored
     }
 
     /// Spin servo's event loop until the callback returns false or timeout.
