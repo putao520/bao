@@ -8,7 +8,6 @@ use crate::options;
 use crate::options_impl::TargetExt as _;
 use crate::{
     Chunk, CompileResult, CompileResultForSourceMap, Index, RefImportData, ResolvedExports,
-    ThreadPool,
 };
 use bun_alloc::Arena;
 use bun_ast::{
@@ -42,7 +41,7 @@ fn print_result_take_code(r: &mut PrintResult) -> Box<[u8]> {
 /// This runs after we've already populated the compile results
 pub fn post_process_js_chunk(
     ctx: GenerateChunkCtx,
-    worker: &mut ThreadPool::Worker,
+    worker: &mut crate::thread_pool::Worker,
     chunk: &mut Chunk,
     chunk_index: usize,
 ) -> Result<(), bun_core::Error> {

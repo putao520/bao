@@ -1,6 +1,4 @@
-#![feature(inherent_associated_types)]
 #![feature(adt_const_params, allocator_api, thread_local)]
-#![allow(incomplete_features)] // inherent_associated_types — used only for ThreadPool::Worker path compat with Zig
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 #![warn(unused_must_use)]
 
@@ -217,6 +215,9 @@ pub use linker_graph::LinkerGraph;
 /// `EntryPoint::Kind` is an inherent associated type on the struct (not a
 /// sibling module — that would collide with this re-export).
 pub use linker_graph::entry_point::EntryPoint;
+// Easy-tier stable-ization: `EntryPoint::Kind` was an inherent associated
+// type (nightly `inherent_associated_types`); the enum is now used directly.
+pub use linker_graph::entry_point::Kind as EntryPointKind;
 /// See `options_impl`.
 pub use options_impl::BundleOptions;
 pub use output_file::OutputFile;

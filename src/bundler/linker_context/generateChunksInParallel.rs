@@ -427,7 +427,7 @@ pub fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
                 for chunk in dup.sources.iter() {
                     if chunk.entry_point.is_entry_point() {
                         if kinds[chunk.entry_point.source_index() as usize]
-                            == EntryPoint::Kind::UserSpecified
+                            == crate::EntryPointKind::UserSpecified
                         {
                             entry_naming = Some(&chunk.template.data);
                         } else {
@@ -1191,7 +1191,6 @@ pub fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
 pub use crate::ThreadPool;
 
 // TODO(port): narrow error set
-use crate::EntryPoint;
 use crate::options::SourceMapOption;
 use crate::output_file::BakeExtra;
 

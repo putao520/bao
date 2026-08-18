@@ -21,7 +21,7 @@ use crate::bundled_ast::{self, NamedExports, NamedImports};
 use crate::options::{self, Format, Loader};
 use crate::perf;
 use crate::{
-    EntryPoint, ExportData, ImportData, ImportTracker, Index, IndexInt, LinkerContext, Part,
+    ExportData, ImportData, ImportTracker, Index, IndexInt, LinkerContext, Part,
     RefImportData, ResolvedExports, WrapKind, js_meta,
 };
 use bun_ast::symbol::{self, Kind as SymbolKind};
@@ -105,7 +105,7 @@ pub fn scan_imports_and_exports(
     use crate::bundled_ast::CssCol;
     let import_records_list: *mut [ImportRecordList<'_>] = ast.import_records;
     let exports_kind: *mut [ExportsKind] = ast.exports_kind;
-    let entry_point_kinds: *mut [EntryPoint::Kind] = files.entry_point_kind;
+    let entry_point_kinds: *mut [crate::EntryPointKind] = files.entry_point_kind;
     let named_imports: *mut [NamedImports] = ast.named_imports;
     let named_exports: *mut [NamedExports] = ast.named_exports;
     let flags: *mut [js_meta::Flags] = meta.flags;
@@ -1189,7 +1189,7 @@ struct DependencyWrapper<'a> {
     exports_kind: &'a mut [ExportsKind],
     import_records: &'a [ImportRecordList<'a>],
     export_star_map: HashMap<IndexInt, ()>,
-    entry_point_kinds: &'a [EntryPoint::Kind],
+    entry_point_kinds: &'a [crate::EntryPointKind],
     export_star_records: &'a [bun_alloc::AstVec<u32>],
     output_format: options::Format,
 }

@@ -490,7 +490,7 @@ pub mod vec {
     /// port open-coded `std.mem.copyForwards` + `items.len -= n` at every
     /// site.
     #[inline]
-    pub fn drain_front<T: Copy, A: core::alloc::Allocator>(v: &mut Vec<T, A>, n: usize) {
+    pub fn drain_front<T: Copy>(v: &mut Vec<T>, n: usize) {
         if n == 0 {
             return;
         }

@@ -208,10 +208,6 @@ mod io_thread_pool {
 
 impl ThreadPool {
     /// Inherent associated type so call sites that wrote
-    /// `ThreadPool::Worker::get(ctx)` (matching Zig's `ThreadPool.Worker`)
-    /// resolve without a separate module path.
-    pub type Worker = Worker;
-
     pub fn init(
         v2: &BundleV2<'_>,
         // `Option<NonNull<_>>` (not `Option<&mut _>`): callers pass the

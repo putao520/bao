@@ -8,7 +8,6 @@ use bun_ast::{B, E, G, S};
 use bun_collections::VecExt;
 use bun_core::FeatureFlags;
 
-use crate::EntryPoint;
 use crate::WrapKind;
 use crate::chunk::Chunk;
 use crate::linker_context_mod::{LinkerContext, LinkerOptionsMode, StmtList, StmtListWhich};
@@ -54,7 +53,7 @@ pub fn convert_stmts_for_chunk(
     let _ = bump;
     let should_extract_esm_stmts_for_wrap = wrap != WrapKind::None;
     let should_strip_exports = c.options.mode != LinkerOptionsMode::Passthrough
-        || c.graph.files.items_entry_point_kind()[source_index as usize] != EntryPoint::Kind::None;
+        || c.graph.files.items_entry_point_kind()[source_index as usize] != crate::EntryPointKind::None;
 
     let output_format = c.options.output_format;
 

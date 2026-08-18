@@ -398,7 +398,18 @@ impl<T, A: Allocator + Default + 'static> VecExt<T> for Vec<T, A> {
     where
         T: Copy,
     {
-        bun_core::vec::drain_front(self, n);
+        // Allocator-free mirror of bun_core::vec::drain_front — works for
+        // `Vec<T, A>` of any `A` (std VecExt impls span Global and AstAlloc).
+        if n == 0 {
+            return;
+        }
+        let len = self.len();
+        if n >= len {
+            self.clear();
+            return;
+        }
+        self.copy_within(n.., 0);
+        self.truncate(len - n);
     }
     #[inline]
     fn ordered_remove(&mut self, index: usize) -> T {

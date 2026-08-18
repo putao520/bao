@@ -39,10 +39,6 @@ pub mod entry_point {
         }
     }
 
-    impl EntryPoint {
-        pub type Kind = Kind;
-    }
-
     #[repr(u8)]
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
     pub enum Kind {
@@ -175,10 +171,6 @@ pub mod js_meta {
         }
     }
 
-    impl JSMeta {
-        pub type Flags = Flags;
-        pub type Wrap = crate::WrapKind;
-    }
 }
 
 pub use entry_point::EntryPoint;
@@ -1049,7 +1041,7 @@ pub struct File {
     /// Note that dynamically-imported files are allowed to also be specified by
     /// the user as top-level entry points, so some dynamically-imported files
     /// may be ".user_specified" instead of ".dynamic_import".
-    pub entry_point_kind: EntryPoint::Kind,
+    pub entry_point_kind: entry_point::Kind,
 
     /// If "entry_point_kind" is not ".none", this is the index of the
     /// corresponding entry point chunk.
@@ -1081,7 +1073,7 @@ impl Default for File {
             entry_bits: AutoBitSet::init_empty(0).expect("static AutoBitSet"),
             input_file: Index::source(0u32),
             distance_from_entry_point: u32::MAX,
-            entry_point_kind: EntryPoint::Kind::None,
+            entry_point_kind: entry_point::Kind::None,
             entry_point_chunk_index: u32::MAX,
             line_offset_table: bun_sourcemap::line_offset_table::List::new_in(bun_alloc::AstAlloc),
             quoted_source_contents: None,
@@ -1096,7 +1088,7 @@ bun_collections::multi_array_columns! {
         entry_bits: AutoBitSet,
         input_file: Index,
         distance_from_entry_point: u32,
-        entry_point_kind: EntryPoint::Kind,
+        entry_point_kind: entry_point::Kind,
         entry_point_chunk_index: u32,
         line_offset_table: bun_sourcemap::line_offset_table::List<bun_alloc::AstAlloc>,
         quoted_source_contents: Option<bun_alloc::AstVec<u8>>,

@@ -580,7 +580,7 @@ pub fn compute_chunks(
         if chunk.entry_point.is_entry_point()
             && (matches!(chunk.content, chunk::Content::Html)
                 || (kinds[chunk.entry_point.source_index() as usize]
-                    == crate::EntryPoint::Kind::UserSpecified
+                    == crate::EntryPointKind::UserSpecified
                     && !chunk.flags.contains(chunk::Flags::HAS_HTML_CHUNK)))
         {
             // Use fileWithTarget template if there are HTML imports and user hasn't manually set naming

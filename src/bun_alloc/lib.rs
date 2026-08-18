@@ -4,7 +4,6 @@
 // depend on; importing either to satisfy the disallowed-types lint would create
 // a dependency cycle.
 #![allow(clippy::disallowed_types)]
-#![feature(arbitrary_self_types_pointers)]
 #![feature(allocator_api)]
 // `#[thread_local]` (vs the `thread_local!` macro) compiles to a bare
 // `__thread` slot — single `mov reg, fs:[OFFSET]` access, no `LocalKey`
@@ -1361,9 +1360,13 @@ impl WTFStringImplStruct {
         unsafe { Bun__WTFStringImpl__destroy(self) };
     }
     #[inline]
-    pub fn ref_count_allocator(self: *mut Self) -> StdAllocator {
+    // Easy-tier stable-ization: `self: *mut Self` receiver required nightly
+    // `arbitrary_self_types_pointers`; no external callers exist — the
+    // method is invoked as `(&mut *impl_ptr).ref_count_allocator()` where
+    // needed, and a plain `&mut` receiver is stable.
+    pub fn ref_count_allocator(&mut self) -> StdAllocator {
         StdAllocator {
-            ptr: self.cast(),
+            ptr: (self as *mut Self).cast(),
             vtable: StringImplAllocator::VTABLE_PTR,
         }
     }
