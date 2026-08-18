@@ -1,16 +1,16 @@
 # Bao (包子)
 
-**A high-performance anti-fingerprint browser runtime in a single Rust stack** — SpiderMonkey (JS engine) + Servo (full browser engine) + always-on Node.js/Bun API compatibility + built-in Stealth, in one Rust runtime. No Chromium, no Node child process, no Playwright-to-Chrome bridge: the browser engine *is* the runtime.
+**A high-performance anti-fingerprint browser runtime in a single Rust stack** — SpiderMonkey (JS engine) + Servo (full browser engine) + always-on Node.js/Bun API compatibility + built-in Stealth, in one Rust runtime. No Chromium, no Node child process, no automation bridge: the browser engine *is* the runtime.
 
-> Status: **0.x alpha** — Linux x86_64 · APIs may change. See [CHANGELOG](./CHANGELOG.md).
+**[中文文档](./README.zh-CN.md)** · Status: **0.x alpha** — Linux x86_64 · APIs may change · [CHANGELOG](./CHANGELOG.md)
 
 ---
 
-## Using the library (`bao-core`)
+## Using the library
 
 **Package name vs import name (read this first):** the crate is published as
-**`bao-core`**, but the library name is pinned to **`bao`** — your
-`Cargo.toml` says `bao-core`, your code says `use bao::…`:
+**`bao-core`**, the library name is pinned to **`bao`** — your `Cargo.toml`
+says `bao-core`, your code says `use bao::…`:
 
 ```toml
 [dependencies]
@@ -23,8 +23,8 @@ use bao::{BaoConfig, BaoRuntime};   // ← `bao`, not `bao_core`
 
 ### Integration path 1 — embed the browser (primary)
 
-`BaoRuntime` (top-level) → `create_page` → `navigate` → JS → screenshot.
-From [`examples/01-browser/main.rs`](./examples/01-browser/main.rs):
+Top-level `BaoRuntime` → `create_page` → `navigate` → JS → screenshot
+(snippet adapted from `examples/01-browser` in the repository):
 
 ```rust,no_run
 use std::time::Duration;
@@ -40,7 +40,7 @@ fn main() -> Result<(), BrowserError> {
     // or you risk SIGSEGV.
     page.wait_for_pipeline_ready(Duration::from_secs(30))?;
 
-    // Page Realm: Web API only (no require/fs).
+    // Page Realm: Web API only (no require/fs here).
     let title = page.evaluate_js_web("document.title")?;
 
     let png = page.take_screenshot(ScreenshotFormat::Png)?;
@@ -52,31 +52,38 @@ fn main() -> Result<(), BrowserError> {
 
 ### Integration path 2 — CDP automation (Playwright-style)
 
-The `Browser` client connects in-process (zero-copy, no port) or over a
-WebSocket served by the built-in CDP server (`bao browser --cdp-port 9222`).
-From [`examples/02-playwright/main.rs`](./examples/02-playwright/main.rs) and
-the `lib.rs` doctest:
+Start the CDP server from library config — `BaoConfig::cdp_port` — then
+connect the Playwright-style client in-process (zero-copy, no port) or over
+WebSocket:
 
 ```rust,no_run
-use bao::{Browser, ConnectError};
+use bao::{Browser, BaoConfig, BrowserError, ConnectError};
 
-fn main() -> Result<(), ConnectError> {
-    // In-process transport — or "ws://127.0.0.1:9222" for an external Bao.
+fn start_runtime_with_cdp() -> Result<(), BrowserError> {
+    // cdp_port starts the built-in CDP server on ws://127.0.0.1:<port>.
+    let _runtime = BaoRuntime::new(BaoConfig {
+        cdp_port: Some(9222),
+        ..BaoConfig::default()
+    })?;
+    Ok(())
+}
+
+fn connect() -> Result<(), ConnectError> {
+    // In-process transport — or "ws://127.0.0.1:9222" (Playwright/Puppeteer
+    // can point at the same URL).
     let mut browser = Browser::connect("memory://bao")?;
-    let version = browser.version()?;          // CDP Browser.version
-    let targets = browser.pages()?;            // equivalent of GET /json/list
-    let _ = (version, targets);
+    let _version = browser.version()?;   // CDP Browser.version
+    let _targets = browser.pages()?;     // equivalent of GET /json/list
     Ok(())
 }
 ```
 
-### Integration path 3 — Node/Bun APIs in the page (dual realm)
+### Integration path 3 — Node/Bun APIs inside the page (dual realm)
 
-`evaluate_js` runs in the **Node Realm**, where the same global scope has the
-DOM *and* `require` / `fs` / `fetch` / `Bun` / `process` (an alias `Bao`
-points at the same `Bun` object). From
-[`examples/03-node-dom/main.rs`](./examples/03-node-dom/main.rs) and
-[`examples/04-crawler/main.rs`](./examples/04-crawler/main.rs):
+`page.evaluate_js` runs in the **Node Realm**: the same global scope has the
+DOM *and* `require` / `fs` / `fetch` / `Bun` / `process` (`Bao` is an alias
+of the same `Bun` object). Snippet adapted from `examples/03-node-dom` /
+`examples/04-crawler`:
 
 ```rust,no_run
 # use std::time::Duration;
@@ -99,7 +106,7 @@ let _ = json;
 # }
 ```
 
-For Node/Bun host setup without a page, the `bun_runtime` crate's surface is
+For Node/Bun host setup without a page, the `bun_runtime` surface is
 re-exported at `bao::runtime::` (see the trap note below).
 
 ### ⚠ Same-name trap: two `BaoRuntime` types
@@ -133,25 +140,30 @@ thumb, straight from `src/bao/src/lib.rs`:
 | Browser engine | Servo DOM/CSS/layout/render, multi-page `PagePool` / `PageHandle`, screenshots |
 | JS engine | SpiderMonkey, thread-local JSContext, dual realms (Web / Node+Bun) |
 | Node/Bun API | `require`, `fs`, `http`, `crypto`, `bun:sqlite`, `fetch`, `Bun.*` (= `Bao.*`), always on |
-| CDP | Built-in server (`ws://…` for Playwright/Puppeteer) + Playwright-style Rust client (`Browser::connect("memory://bao" \| ws URL)`) |
+| CDP | Server started via `BaoConfig::cdp_port` (`ws://…`, Playwright/Puppeteer compatible) + Playwright-style Rust client (`Browser::connect("memory://bao" \| ws URL)`) |
 | Stealth | TLS JA3/JA4, HTTP/2, Canvas/WebGL/Audio/Navigator/behavior fingerprints; runtime `StealthProfile` |
 
-## crates.io package family
+## Package family on crates.io
 
-`bao-core` is the only package you normally depend on. The rest of the family
-is published for internal layering and direct use if you need a slice:
+`bao-core` is the package you depend on; everything below it is published
+for direct use when you need a slice:
 
-- `bao-core` — unified facade (this README's usage)
-- `bao-browser`, `bao-engine`, `bao-stealth`, `bao-cdp`, `bao-cdp-client`,
-  `bun-runtime` and the `bun_*` layer (base64/zlib/http/dns/…)
-- Forks: `bao-mozjs` / `bao-mozjs-sys` (+ `bao-mozjs-src-*` source
-  satellites), `bao-servo-*` (Servo components), `bao-stylo`,
-  `bao-ipc-channel`
-
-The `bao` CLI binary is **not** published to crates.io; build it from this
-repository (`cargo build -p bao_bin`).
+| Package | Role |
+|---|---|
+| `bao-core` | Unified facade — the integration surface in this README |
+| `bao-engine` / `bun-sm` | SpiderMonkey engine layer |
+| `bao-browser` | Servo embedding: `BaoRuntime`, `PagePool`, `PageHandle` |
+| `bao-stealth` | Anti-fingerprint engine + `StealthProfile` |
+| `bao-cdp` / `bao-cdp-client` | CDP server surface / Playwright-style client |
+| `bun-runtime` | Node.js/Bun API compatibility host |
+| `bun-*` | Base layer (base64, zlib, http, dns, resolver, transpiler, …) |
+| `bao-mozjs`, `bao-mozjs-sys` (+ `bao-mozjs-src-*`), `bao-servo-*`, `bao-stylo`, `bao-ipc-channel` | Maintained forks vendored as first-class packages |
 
 ## License
 
 MPL-2.0 (SpiderMonkey + Servo) · MIT (Bun-derived crates). See
 `LICENSE-MPL-2.0` / `LICENSE-MIT` and `THIRD_PARTY_LICENSES.md`.
+
+---
+
+*Developing the repository itself: clone [putao520/bao](https://github.com/putao520/bao); the `examples/` directory contains the four runnable samples these snippets are adapted from.*

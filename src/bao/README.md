@@ -2,8 +2,11 @@
 
 **A high-performance anti-fingerprint browser runtime in a single Rust stack** — SpiderMonkey + Servo + always-on Node.js/Bun APIs + built-in Stealth and CDP.
 
+**[中文文档](https://github.com/putao520/bao/blob/master/src/bao/README.zh-CN.md)**
+
 > **Package name vs import name:** this package is `bao-core`; the library
-> name is pinned to `bao`. `Cargo.toml` says `bao-core`, code says `use bao::…`.
+> name is pinned to `bao`. `Cargo.toml` says `bao-core`, code says
+> `use bao::…`.
 
 ```toml
 [dependencies]
@@ -33,10 +36,22 @@ fn main() -> Result<(), BrowserError> {
 
 ### 2. CDP automation (Playwright-style)
 
-```rust,no_run
-use bao::{Browser, ConnectError};
+Start the CDP server from library config (`BaoConfig::cdp_port`), then
+connect in-process or over WebSocket:
 
-fn main() -> Result<(), ConnectError> {
+```rust,no_run
+use bao::{Browser, BaoConfig, BrowserError, ConnectError};
+
+fn start_runtime_with_cdp() -> Result<(), BrowserError> {
+    // cdp_port starts the built-in CDP server on ws://127.0.0.1:<port>.
+    let _runtime = BaoRuntime::new(BaoConfig {
+        cdp_port: Some(9222),
+        ..BaoConfig::default()
+    })?;
+    Ok(())
+}
+
+fn connect() -> Result<(), ConnectError> {
     let mut browser = Browser::connect("memory://bao")?;    // in-process; or "ws://host:port"
     let _version = browser.version()?;                      // CDP Browser.version
     let _targets = browser.pages()?;                        // like GET /json/list
@@ -50,8 +65,9 @@ fn main() -> Result<(), ConnectError> {
 `fetch` / `Bun` in one scope.
 
 ```js
-const h1  = document.querySelector('h1')?.textContent;   // DOM (servo)
+const h1  = document.querySelector('h1')?.textContent;      // DOM (servo)
 const txt = require('fs').readFileSync('demo.txt', 'utf8'); // Node API (Bao)
+const res = await fetch('https://example.com/robots.txt');  // Node fetch
 ```
 
 Node/Bun host setup without a page: `bao::runtime::` (the `bun_runtime`
@@ -77,9 +93,8 @@ surface).
 
 `bao-core` is the facade; the family includes `bao-browser`, `bao-engine`,
 `bao-stealth`, `bao-cdp`, `bao-cdp-client`, `bun-runtime` and the `bun_*`
-layer, plus forks `bao-mozjs(-sys)`, `bao-servo-*`, `bao-stylo`,
-`bao-ipc-channel`. The `bao` CLI binary is not published — build it from the
-[repository](https://github.com/putao520/bao).
+base layer, plus maintained forks `bao-mozjs(-sys)` (+ `bao-mozjs-src-*`
+source satellites), `bao-servo-*`, `bao-stylo`, `bao-ipc-channel`.
 
 ## License
 
