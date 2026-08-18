@@ -333,13 +333,44 @@ fn test_glob_string_cwd_and_absolute_patterns() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// C — bun:sqlite backup returns the destination path (audit probe pin)
+// C — bun:sqlite backup: landed Promise<string> contract (23b76dbd probe pin)
 // ══════════════════════════════════════════════════════════════════════════
+// Ground truth audit (2026-08-18, /tmp/gapb/gt_backup_bun.mjs):
+//   - real Bun 1.3.12: `db.backup is not a function` — bun:sqlite has NO
+//     backup at all (feature request oven-sh/bun#22954; upstream
+//     src/js/bun/sqlite.ts only has serialize/deserialize).
+//   - node:sqlite backup (Bun reference): module-level async fn returning
+//     Promise<number>, OVERWRITES an existing target.
+//   - SPEC: no backup contract.
+// The former "synchronous string + synchronous duplicate throw" expectation
+// has no ground truth in any real runtime — it was a self-invented shape.
+// The contract pinned here is the one bao actually landed (23b76dbd,
+// VACUUM INTO snapshot): db.backup(path) → Promise<string> resolving with
+// the destination path; runtime failures (duplicate target) REJECT
+// fail-closed; argument validation stays a synchronous throw.
 
 #[test]
 fn test_sqlite_backup_returns_path_string() {
     let mut ctx = setup_ctx();
-    let out = eval_string(
+
+    // Sync shape: returns a Promise (not a synchronous string).
+    let sync_shape = eval_string(
+        &mut ctx,
+        r#"
+        var { Database } = require('bun:sqlite');
+        var db = new Database(':memory:');
+        var p = db.backup(require('os').tmpdir() + '/polish3-shape-unused.db');
+        (typeof p) + '|' + (p instanceof Promise);
+    "#,
+    );
+    assert_eq!(
+        sync_shape, "object|true",
+        "backup must return a Promise (landed Promise<string> contract)"
+    );
+
+    // Async contract: resolves with the destination path, snapshot is real,
+    // duplicate target rejects fail-closed with the already-exists reason.
+    eval_string(
         &mut ctx,
         r#"
         var { Database } = require('bun:sqlite');
@@ -347,18 +378,29 @@ fn test_sqlite_backup_returns_path_string() {
         db.exec('CREATE TABLE t(x); INSERT INTO t VALUES (42);');
         var path = require('os').tmpdir() + '/polish3-backup.db';
         try { require('fs').rmSync(path); } catch (e) {}
-        var ret = db.backup(path);
-        var reopened = 'unset';
-        var db2 = new Database(path);
-        reopened = db2.prepare('SELECT x FROM t').get().x;
-        var dup;
-        try { db.backup(path); dup = 'NO-THROW'; }
-        catch (e) { dup = 'THREW:' + (e.message.indexOf('already exists') >= 0); }
-        (typeof ret) + '|' + (ret === path) + '|' + reopened + '|' + dup;
+        globalThis.__bk = 'unset';
+        db.backup(path).then(
+            function (ret) {
+                var db2 = new Database(path);
+                var read = db2.prepare('SELECT x FROM t').get().x;
+                db.backup(path).then(
+                    function (r2) { globalThis.__bk = 'DUP-RESOLVED:' + r2; },
+                    function (e2) {
+                        globalThis.__bk = 'resolved:' + (ret === path)
+                            + '|read:' + read
+                            + '|dup:' + (e2.message.indexOf('already exists') >= 0);
+                    }
+                );
+            },
+            function (e) { globalThis.__bk = 'REJECTED:' + e.message; }
+        );
+        'started'
     "#,
     );
+    drive_event_loop(&mut ctx, 200);
     assert_eq!(
-        out, "string|true|42|THREW:true",
-        "backup must return the destination path string, write a real snapshot, and fail closed on duplicates"
+        eval_string(&mut ctx, "globalThis.__bk"),
+        "resolved:true|read:42|dup:true",
+        "backup must resolve with the destination path, write a real snapshot, and reject fail-closed on duplicates"
     );
 }
