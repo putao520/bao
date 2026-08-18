@@ -139,3 +139,6 @@ unsafe impl Allocator for DefaultAlloc {
 
 bridge_allocator_api2!(DefaultAlloc);
 bridge_allocator_api2!(crate::ast_alloc::AstAlloc);
+// W1-enabler (css consumer): the bump-arena pointer allocator — same bridge
+// pattern; css's arena Vecs ride the facade Vec on both channels.
+bridge_allocator_api2!(crate::stack_fallback::ArenaPtr);
