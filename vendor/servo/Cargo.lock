@@ -844,9 +844,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao-mozjs-src-intl"
+version = "140.13.0-4"
+
+[[package]]
+name = "bao-mozjs-src-js"
+version = "140.13.0-4"
+
+[[package]]
+name = "bao-mozjs-src-python"
+version = "140.13.0-4"
+
+[[package]]
 name = "bao-mozjs-sys"
 version = "140.13.0-4"
 dependencies = [
+ "bao-mozjs-src-intl",
+ "bao-mozjs-src-js",
+ "bao-mozjs-src-python",
  "bindgen",
  "cc",
  "encoding_c",
@@ -867,7 +882,6 @@ dependencies = [
  "accesskit_consumer",
  "arboard",
  "bao-ipc-channel",
- "bao-servo",
  "bao-servo-background-hang-monitor",
  "bao-servo-base",
  "bao-servo-bluetooth",
@@ -1788,7 +1802,6 @@ dependencies = [
  "bao-servo-fonts",
  "bao-servo-hyper-serde",
  "bao-servo-malloc-size-of",
- "bao-servo-net",
  "bao-servo-net-traits",
  "bao-servo-paint-api",
  "bao-servo-pixels",
@@ -2445,7 +2458,6 @@ dependencies = [
 name = "bao-servo-webvtt"
 version = "0.5.0"
 dependencies = [
- "bao-servo-webvtt",
  "html5ever",
  "markup5ever",
  "regex",
