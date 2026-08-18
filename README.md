@@ -130,6 +130,11 @@ thumb, straight from `src/bao/src/lib.rs`:
   (`StealthProfile`, `Permission` guards).
 - **First build compiles SpiderMonkey from source** (clang, python3, make
   required; expect 20–40 min once — cached afterwards).
+- **Linux media playback needs system GStreamer runtime libraries** — the
+  servo media stack (`bao-servo-media-auto` on Linux) loads them at
+  runtime: `apt install libgstreamer1.0-0 gstreamer1.0-plugins-base
+  gstreamer1.0-plugins-bad` (or your distro's equivalent; `-dev` packages
+  are a compile-time concern only).
 - **Environment variables**: `BUN_*` is honoured, and `BAO_<SUFFIX>` is
   aliased onto `BUN_<SUFFIX>` at startup (e.g. `BUN_BUNFIG` ≡ `BAO_BUNFIG`).
 

@@ -120,6 +120,10 @@ let _ = json;
   行为在*运行时*选择(`StealthProfile`、`Permission` 守卫)。
 - **首次构建从源码编译 SpiderMonkey**(需 clang、python3、make;首次
   20–40 分钟,之后走缓存)。
+- **Linux 媒体播放需系统 GStreamer 运行库**——servo 媒体栈(Linux 下经
+  `bao-servo-media-auto`)在运行时加载:`apt install libgstreamer1.0-0
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-bad`(或发行版等价包;
+  `-dev` 包仅编译期需要)。
 - **环境变量**:`BUN_*` 生效,`BAO_<SUFFIX>` 启动时别名到
   `BUN_<SUFFIX>`(如 `BUN_BUNFIG` ≡ `BAO_BUNFIG`)。
 

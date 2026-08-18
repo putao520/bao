@@ -82,6 +82,10 @@ const res = await fetch('https://example.com/robots.txt');  // Node fetch
   是运行时选择(`StealthProfile`、`Permission`)。
 - **首次构建从源码编译 SpiderMonkey**——需 clang、python3、make;首次
   20–40 分钟(之后缓存)。
+- **Linux 媒体播放需系统 GStreamer 运行库**——servo 媒体栈(Linux 下经
+  `bao-servo-media-auto`)运行时加载:`apt install libgstreamer1.0-0
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-bad`(或发行版等价包;
+  `-dev` 包仅编译期需要)。
 - `BAO_<SUFFIX>` 环境变量别名到 `BUN_<SUFFIX>`。
 
 ## 包族
