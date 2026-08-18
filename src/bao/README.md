@@ -92,6 +92,10 @@ surface).
   runtime: `apt install libgstreamer1.0-0 gstreamer1.0-plugins-base
   gstreamer1.0-plugins-bad` (or your distro's equivalent; `-dev` packages
   are a compile-time concern only).
+- **Rust nightly toolchain required** — the repo pins
+  `nightly-2026-07-20` (see `rust-toolchain.toml`); rustup consumers run
+  `rustup override set nightly-2026-07-20` or equivalent. Stable fails
+  with E0554 (`#![feature]` on a non-nightly compiler).
 - `BAO_<SUFFIX>` environment variables are aliased onto `BUN_<SUFFIX>`.
 
 ## Package family

@@ -86,6 +86,10 @@ const res = await fetch('https://example.com/robots.txt');  // Node fetch
   `bao-servo-media-auto`)运行时加载:`apt install libgstreamer1.0-0
   gstreamer1.0-plugins-base gstreamer1.0-plugins-bad`(或发行版等价包;
   `-dev` 包仅编译期需要)。
+- **需要 Rust nightly 工具链**——本仓钉 `nightly-2026-07-20`(见
+  `rust-toolchain.toml`);rustup 使用者执行 `rustup override set
+  nightly-2026-07-20` 或等价操作。stable 编译器会报 E0554(非 nightly
+  使用 `#![feature]`)。
 - `BAO_<SUFFIX>` 环境变量别名到 `BUN_<SUFFIX>`。
 
 ## 包族

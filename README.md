@@ -135,6 +135,10 @@ thumb, straight from `src/bao/src/lib.rs`:
   runtime: `apt install libgstreamer1.0-0 gstreamer1.0-plugins-base
   gstreamer1.0-plugins-bad` (or your distro's equivalent; `-dev` packages
   are a compile-time concern only).
+- **Rust nightly toolchain required** — the repo pins
+  `nightly-2026-07-20` (see `rust-toolchain.toml`); rustup consumers run
+  `rustup override set nightly-2026-07-20` or equivalent. Stable fails
+  with E0554 (`#![feature]` on a non-nightly compiler).
 - **Environment variables**: `BUN_*` is honoured, and `BAO_<SUFFIX>` is
   aliased onto `BUN_<SUFFIX>` at startup (e.g. `BUN_BUNFIG` ≡ `BAO_BUNFIG`).
 
