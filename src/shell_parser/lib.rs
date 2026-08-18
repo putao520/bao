@@ -1,7 +1,10 @@
-#![feature(adt_const_params, generic_const_exprs, allocator_api)]
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 #![warn(unused_must_use)]
-#![allow(incomplete_features)]
+// Dual-mode (stable ⇄ nightly; channel probe in build.rs): `allocator_api` is
+// only needed on nightly for `SmolListAlloc` implementing the REAL
+// `core::alloc::Allocator`; on stable the impl routes through
+// `bun_alloc::core_alloc` (the `allocator_api2` mirror) instead.
+#![cfg_attr(bao_nightly, feature(allocator_api))]
 #[path = "braces.rs"]
 pub mod braces;
 

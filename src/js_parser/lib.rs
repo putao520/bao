@@ -7,15 +7,14 @@
 //! `StoreSlice<T>` / `StoreStr` here. TODO(refactor): thread a crate-wide
 //! `'bump` and rewrite these to `&'bump [T]` / `&'bump mut [T]`.
 
-// `lexer::NewLexer<J: JsonOptionsT>` projects trait associated consts into
-// eight `const bool` slots (Zig: `NewLexer(comptime json_options)`). Field
-// access on a `const J: JSONOptions` param is rejected by nightly-2025-12-10
-// ("overly complex generic constant"); assoc-const projection on a *type*
-// param works under `generic_const_exprs`. `adt_const_params` keeps
-// `JSONOptions: ConstParamTy` for value-level reification.
-#![feature(adt_const_params, generic_const_exprs)]
-#![allow(incomplete_features)]
-
+// `lexer::NewLexer<J: JsonOptionsT>` models Zig's `NewLexer(comptime
+// json_options)`: the option set is a ZST *type* parameter and the comptime
+// branches read its associated consts (`if J::IS_JSON { … }`), which
+// monomorphize exactly like const-generic `bool` slots. Stable-compatible
+// since #63 W3 — no `generic_const_exprs` (assoc-const projection into const
+// args) and no `adt_const_params` (`JSONOptions` as a const-param type) any
+// more; `JSONOptions` survives as the runtime reification
+// (`JsonOptionsT::OPTIONS`).
 pub use bun_collections::VecExt as _VecExtReexport;
 
 // ─── module layout (see docs/REFACTOR_BUN_AST.md) ───────────────────────────

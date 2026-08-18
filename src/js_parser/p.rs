@@ -8440,8 +8440,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                 // Windows separator via a cross-crate `const_format` const.
                 is_in_node_modules: self.source.path.is_node_module(),
                 imports_seen: Default::default(),
-                export_star_props: Vec::new(),
-                export_props: Vec::new(),
+                export_star_props: bun_alloc::AstAlloc::vec(),
+                export_props: bun_alloc::AstAlloc::vec(),
                 stmts: Vec::new(),
             };
             hmr_transform_ctx.stmts.reserve({
@@ -8560,7 +8560,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                             unsafe {
                                 core::ptr::write(
                                     &raw mut part.import_record_indices,
-                                    Vec::from_arena_slice(arena.alloc_slice_copy(
+                                    js_ast::AstVec::from_arena_slice(arena.alloc_slice_copy(
                                         self.import_records_for_current_part.as_slice(),
                                     )),
                                 );

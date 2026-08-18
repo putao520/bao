@@ -589,7 +589,7 @@ impl<'a> Parser<'a> {
         // Optionally call a runtime API function to transform the expression
         if !runtime_api_call.is_empty() {
             let args_slice: &mut [Expr] = p.arena.alloc_slice_fill_with(1, |_| expr);
-            let args = Vec::from_arena_slice(args_slice);
+            let args = js_ast::ExprNodeList::from_arena_slice(args_slice);
             final_expr = p.call_runtime(expr.loc, runtime_api_call, args);
         }
 

@@ -44,8 +44,8 @@ pub(crate) struct ConvertESMExportsForHmr<'a> {
     /// can be a bit more concise for re-exports
     pub is_in_node_modules: bool,
     pub imports_seen: StringArrayHashMap<ImportRef>,
-    pub export_star_props: Vec<G::Property>,
-    pub export_props: Vec<G::Property>,
+    pub export_star_props: js_ast::AstVec<G::Property>,
+    pub export_props: js_ast::AstVec<G::Property>,
     pub stmts: Vec<Stmt>,
 }
 // PORT NOTE: Zig used `std.ArrayListUnmanaged` with `p.arena` for the four
@@ -714,9 +714,11 @@ impl<'a> ConvertESMExportsForHmr<'a> {
         if !self.export_props.is_empty() {
             let obj = Expr::init(
                 E::Object {
-                    properties: G::PropertyList::move_from_list(core::mem::take(
-                        &mut self.export_props,
-                    )),
+                    // `export_props` is already `AstVec<G::Property>` ==
+                    // `G::PropertyList`; a direct move (the former
+                    // `move_from_list` std-Vec → AstVec conversion is obsolete
+                    // now that the field carries the AST vec type directly).
+                    properties: bun_alloc::AstAlloc::take(&mut self.export_props),
                     ..Default::default()
                 },
                 bun_ast::Loc::EMPTY,

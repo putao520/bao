@@ -82,7 +82,7 @@ impl JSXPragma {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, core::marker::ConstParamTy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct JSONOptions {
     /// Enable JSON-specific warnings/errors
     pub is_json: bool,
@@ -123,18 +123,15 @@ impl Default for JSONOptions {
     }
 }
 
-/// Zig's `NewLexer(comptime json_options)` and `NewLexer_(comptime ...bools)` return a struct
-/// type. In Rust we model this as a generic over the eight comptime bools.
+/// Zig's `NewLexer(comptime json_options)` returns a struct type. In Rust the
+/// comptime option set is a *type* parameter implementing [`JsonOptionsT`];
+/// the per-option comptime branches read the associated consts
+/// (`if J::IS_JSON { … }`), which monomorphize exactly like the former
+/// `const bool` generic slots did (stable — no `generic_const_exprs` needed).
 ///
 /// `Lexer` (below) is the default instantiation (`NewLexer(.{})`).
-///
-/// nightly-2025-12-10 rejects field projection (`J.is_json`) on a
-/// `const J: JSONOptions` parameter inside a generic-const expression
-/// ("overly complex generic constant"), even with `generic_const_exprs`.
-/// The Zig comptime-struct param is therefore modeled as a *type* parameter
-/// implementing [`JsonOptionsT`], whose associated consts *are* accepted in
-/// const-argument position under `generic_const_exprs`. Callers define a ZST
-/// per option set and `impl JsonOptionsT for It { const IS_JSON: bool = true; … }`.
+/// Callers define a ZST per option set and
+/// `impl JsonOptionsT for It { const IS_JSON: bool = true; … }`.
 pub trait JsonOptionsT {
     const IS_JSON: bool = false;
     const ALLOW_COMMENTS: bool = false;
@@ -162,22 +159,11 @@ pub trait JsonOptionsT {
 pub struct DefaultJsonOptions;
 impl JsonOptionsT for DefaultJsonOptions {}
 
-// The `J: JsonOptionsT` bound on a type alias triggers the `type_alias_bounds`
-// lint (bounds on aliases aren't enforced at use sites), but the bound is
-// load-bearing here: the const expressions below need it in scope to resolve
-// `<J as JsonOptionsT>::*`. Silence the lint locally.
-#[allow(type_alias_bounds)]
-pub type NewLexer<'a, J: JsonOptionsT = DefaultJsonOptions> = LexerType<
-    'a,
-    { <J as JsonOptionsT>::IS_JSON },
-    { <J as JsonOptionsT>::ALLOW_COMMENTS },
-    { <J as JsonOptionsT>::ALLOW_TRAILING_COMMAS },
-    { <J as JsonOptionsT>::IGNORE_LEADING_ESCAPE_SEQUENCES },
-    { <J as JsonOptionsT>::IGNORE_TRAILING_ESCAPE_SEQUENCES },
-    { <J as JsonOptionsT>::JSON_WARN_DUPLICATE_KEYS },
-    { <J as JsonOptionsT>::WAS_ORIGINALLY_MACRO },
-    { <J as JsonOptionsT>::GUESS_INDENTATION },
->;
+// The alias no longer projects associated consts into const-generic slots
+// (that needed `generic_const_exprs`); `LexerType<'a, J>` carries `J` directly
+// and the bound is enforced by the struct definition, so the alias itself
+// carries no bound (avoids `type_alias_bounds`).
+pub type NewLexer<'a, J = DefaultJsonOptions> = LexerType<'a, J>;
 
 // TODO(port): `thiserror` not in this crate's deps; hand-roll Display/Error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
@@ -302,17 +288,14 @@ pub struct LexerSnapshot<'a> {
 /// `'a` is the lifetime of the source contents (arena/source-owned slices like
 /// `identifier` and `string_literal_raw_content` borrow from the source or from
 /// the parser arena). The `Log` is *not* tied to `'a`; see the `log` field doc.
-pub struct LexerType<
-    'a,
-    const IS_JSON: bool,
-    const ALLOW_COMMENTS: bool,
-    const ALLOW_TRAILING_COMMAS: bool,
-    const IGNORE_LEADING_ESCAPE_SEQUENCES: bool,
-    const IGNORE_TRAILING_ESCAPE_SEQUENCES: bool,
-    const JSON_WARN_DUPLICATE_KEYS: bool,
-    const WAS_ORIGINALLY_MACRO: bool,
-    const GUESS_INDENTATION: bool,
-> {
+///
+/// Stable-mode shape (#63 W3): the eight former `const bool` generic slots are
+/// projected from `J: JsonOptionsT` associated consts at the use sites
+/// (`if J::IS_JSON { … }`). Both spellings monomorphize identically — the
+/// branch scrutinee is a per-instantiation constant either way — so this form
+/// needs no `generic_const_exprs`/`adt_const_params` while keeping Zig's
+/// `NewLexer(comptime json_options)` comptime-branching semantics.
+pub struct LexerType<'a, J: JsonOptionsT = DefaultJsonOptions> {
     // err: ?LexerType.Error,
     /// Raw pointer to the caller-owned `Log`. Zig held a `*Log` here while the
     /// parser held a second aliasing `*Log`; Rust cannot store two `&mut Log`
@@ -384,6 +367,10 @@ pub struct LexerType<
     // TODO(port): Zig field type is `if (guess_indentation) struct{..} else void`.
     // PERF(port): always-present here — profile if hot.
     pub indent_info: IndentInfo,
+
+    /// Zero-sized tag selecting the `JsonOptionsT` option set this lexer was
+    /// monomorphized for (the Zig `comptime json_options` parameter).
+    pub _options: core::marker::PhantomData<J>,
 }
 
 // Convenience: associated constants mirroring Zig's `const json = json_options;` etc.
@@ -391,55 +378,11 @@ pub struct LexerType<
 // entire `impl { ... }` block instead of just the header.
 macro_rules! lexer_impl_header {
     ($($body:tt)*) => {
-        impl<
-            'a,
-            const IS_JSON: bool,
-            const ALLOW_COMMENTS: bool,
-            const ALLOW_TRAILING_COMMAS: bool,
-            const IGNORE_LEADING_ESCAPE_SEQUENCES: bool,
-            const IGNORE_TRAILING_ESCAPE_SEQUENCES: bool,
-            const JSON_WARN_DUPLICATE_KEYS: bool,
-            const WAS_ORIGINALLY_MACRO: bool,
-            const GUESS_INDENTATION: bool,
-        >
-            LexerType<
-                'a,
-                IS_JSON,
-                ALLOW_COMMENTS,
-                ALLOW_TRAILING_COMMAS,
-                IGNORE_LEADING_ESCAPE_SEQUENCES,
-                IGNORE_TRAILING_ESCAPE_SEQUENCES,
-                JSON_WARN_DUPLICATE_KEYS,
-                WAS_ORIGINALLY_MACRO,
-                GUESS_INDENTATION,
-            >
-        { $($body)* }
+        impl<'a, J: JsonOptionsT> LexerType<'a, J> { $($body)* }
     };
 }
 
-impl<
-    'a,
-    const IS_JSON: bool,
-    const ALLOW_COMMENTS: bool,
-    const ALLOW_TRAILING_COMMAS: bool,
-    const IGNORE_LEADING_ESCAPE_SEQUENCES: bool,
-    const IGNORE_TRAILING_ESCAPE_SEQUENCES: bool,
-    const JSON_WARN_DUPLICATE_KEYS: bool,
-    const WAS_ORIGINALLY_MACRO: bool,
-    const GUESS_INDENTATION: bool,
-> LexerLog<'a>
-    for LexerType<
-        'a,
-        IS_JSON,
-        ALLOW_COMMENTS,
-        ALLOW_TRAILING_COMMAS,
-        IGNORE_LEADING_ESCAPE_SEQUENCES,
-        IGNORE_TRAILING_ESCAPE_SEQUENCES,
-        JSON_WARN_DUPLICATE_KEYS,
-        WAS_ORIGINALLY_MACRO,
-        GUESS_INDENTATION,
-    >
-{
+impl<'a, J: JsonOptionsT> LexerLog<'a> for LexerType<'a, J> {
     type Err = Error;
     #[inline]
     fn log_mut(&mut self) -> &mut Log {
@@ -629,7 +572,7 @@ lexer_impl_header! {
     ) -> Result<(), Error> {
         // PORT NOTE: monomorphized — Zig is generic over `comptime BufType: type` but every
         // caller passes `std.array_list.Managed(u16)`; `FakeArrayList16` was dead in the source.
-        if IS_JSON {
+        if J::IS_JSON {
             self.is_ascii_only = false;
         }
 
@@ -701,7 +644,7 @@ lexer_impl_header! {
                         0x30..=0x37 => {
                             let octal_start =
                                 (iter.i as usize + width2 as usize).saturating_sub(2);
-                            if IS_JSON {
+                            if J::IS_JSON {
                                 self.end = (start + iter.i as usize)
                                     .saturating_sub(width2 as usize);
                                 self.syntax_error()?;
@@ -831,7 +774,7 @@ lexer_impl_header! {
 
                             // variable-length
                             if c3 == 0x7B {
-                                if IS_JSON {
+                                if J::IS_JSON {
                                     self.end = (start + iter.i as usize)
                                         .saturating_sub(width2 as usize);
                                     self.syntax_error()?;
@@ -927,7 +870,7 @@ lexer_impl_header! {
                             iter.c = value as CodePoint; // @truncate
                         }
                         0x0D => {
-                            if IS_JSON {
+                            if J::IS_JSON {
                                 self.end = (start + iter.i as usize)
                                     .saturating_sub(width2 as usize);
                                 self.syntax_error()?;
@@ -942,7 +885,7 @@ lexer_impl_header! {
                             continue;
                         }
                         0x0A | 0x2028 | 0x2029 => {
-                            if IS_JSON {
+                            if J::IS_JSON {
                                 self.end = (start + iter.i as usize)
                                     .saturating_sub(width2 as usize);
                                 self.syntax_error()?;
@@ -952,7 +895,7 @@ lexer_impl_header! {
                             continue;
                         }
                         _ => {
-                            if IS_JSON {
+                            if J::IS_JSON {
                                 match c2 {
                                     0x22 | 0x5C | 0x2F => {}
                                     _ => {
@@ -997,7 +940,7 @@ lexer_impl_header! {
                     self.step_with(contents);
 
                     // Handle Windows CRLF
-                    if self.code_point == 0x0D && !IS_JSON {
+                    if self.code_point == 0x0D && !J::IS_JSON {
                         self.step_with(contents);
                         if self.code_point == 0x0A {
                             self.step_with(contents);
@@ -1005,7 +948,7 @@ lexer_impl_header! {
                         continue 'string_literal;
                     }
 
-                    if IS_JSON && IGNORE_TRAILING_ESCAPE_SEQUENCES {
+                    if J::IS_JSON && J::IGNORE_TRAILING_ESCAPE_SEQUENCES {
                         if self.code_point == QUOTE
                             && self.current >= contents.len()
                         {
@@ -1082,7 +1025,7 @@ lexer_impl_header! {
                     // Non-ASCII strings need the slow path
                     if self.code_point >= 0x80 {
                         needs_decode = true;
-                    } else if IS_JSON && self.code_point < 0x20 {
+                    } else if J::IS_JSON && self.code_point < 0x20 {
                         self.syntax_error()?;
                     } else if (QUOTE == 0x22 || QUOTE == 0x27)
                         && Environment::IS_NATIVE
@@ -1150,13 +1093,13 @@ lexer_impl_header! {
             StringLiteralRawFormat::Ascii
         };
         self.string_literal_start = self.start;
-        if IS_JSON {
+        if J::IS_JSON {
             self.is_ascii_only =
                 self.is_ascii_only && !string_literal_details.needs_decode();
         }
 
         if !FeatureFlags::ALLOW_JSON_SINGLE_QUOTES {
-            if QUOTE == 0x27 && IS_JSON {
+            if QUOTE == 0x27 && J::IS_JSON {
                 self.add_range_error(
                     self.range(),
                     format_args!("JSON strings must use double quotes"),
@@ -1557,7 +1500,7 @@ lexer_impl_header! {
                 }
 
                 0x23 => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Private identifiers are not allowed in JSON",
                         );
@@ -1616,7 +1559,7 @@ lexer_impl_header! {
                 {
                     self.has_newline_before = true;
 
-                    if GUESS_INDENTATION {
+                    if J::GUESS_INDENTATION {
                         if self.indent_info.first_newline
                             && self.code_point == 0x0A
                         {
@@ -1694,7 +1637,7 @@ lexer_impl_header! {
                     self.token = T::TColon;
                 }
                 0x3B => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Semicolons are not allowed in JSON",
                         );
@@ -1703,7 +1646,7 @@ lexer_impl_header! {
                     self.token = T::TSemicolon;
                 }
                 0x40 => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Decorators are not allowed in JSON",
                         );
@@ -1712,7 +1655,7 @@ lexer_impl_header! {
                     self.token = T::TAt;
                 }
                 0x7E => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self
                             .add_unsupported_syntax_error(b"~ is not allowed in JSON");
                     }
@@ -1755,7 +1698,7 @@ lexer_impl_header! {
                     }
                 }
                 0x25 => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Operators are not allowed in JSON",
                         );
@@ -1775,7 +1718,7 @@ lexer_impl_header! {
                 }
 
                 0x26 => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Operators are not allowed in JSON",
                         );
@@ -1807,7 +1750,7 @@ lexer_impl_header! {
                 }
 
                 0x7C => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Operators are not allowed in JSON",
                         );
@@ -1839,7 +1782,7 @@ lexer_impl_header! {
                 }
 
                 0x5E => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Operators are not allowed in JSON",
                         );
@@ -1859,7 +1802,7 @@ lexer_impl_header! {
                 }
 
                 0x2B => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Operators are not allowed in JSON",
                         );
@@ -1887,7 +1830,7 @@ lexer_impl_header! {
                     self.step_with(contents);
                     match self.code_point {
                         0x3D => {
-                            if IS_JSON {
+                            if J::IS_JSON {
                                 return self.add_unsupported_syntax_error(
                                     b"Operators are not allowed in JSON",
                                 );
@@ -1896,7 +1839,7 @@ lexer_impl_header! {
                             self.token = T::TMinusEquals;
                         }
                         0x2D => {
-                            if IS_JSON {
+                            if J::IS_JSON {
                                 return self.add_unsupported_syntax_error(
                                     b"Operators are not allowed in JSON",
                                 );
@@ -1954,8 +1897,8 @@ lexer_impl_header! {
                         }
                         0x2F => {
                             self.scan_single_line_comment();
-                            if IS_JSON {
-                                if !ALLOW_COMMENTS {
+                            if J::IS_JSON {
+                                if !J::ALLOW_COMMENTS {
                                     self.add_range_error(
                                         self.range(),
                                         format_args!("JSON does not support comments"),
@@ -1974,8 +1917,8 @@ lexer_impl_header! {
                             // same way). The JSON-comments error path stays here
                             // because it must `return` from `next()`.
                             self.scan_multi_line_comment_body()?;
-                            if IS_JSON {
-                                if !ALLOW_COMMENTS {
+                            if J::IS_JSON {
+                                if !J::ALLOW_COMMENTS {
                                     self.add_range_error(
                                         self.range(),
                                         format_args!("JSON does not support comments"),
@@ -1993,7 +1936,7 @@ lexer_impl_header! {
                 }
 
                 0x3D => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Operators are not allowed in JSON",
                         );
@@ -2025,7 +1968,7 @@ lexer_impl_header! {
                 }
 
                 0x3C => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Operators are not allowed in JSON",
                         );
@@ -2068,7 +2011,7 @@ lexer_impl_header! {
                 }
 
                 0x3E => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Operators are not allowed in JSON",
                         );
@@ -2113,7 +2056,7 @@ lexer_impl_header! {
                 }
 
                 0x21 => {
-                    if IS_JSON {
+                    if J::IS_JSON {
                         return self.add_unsupported_syntax_error(
                             b"Operators are not allowed in JSON",
                         );
@@ -2186,7 +2129,7 @@ lexer_impl_header! {
                 }
 
                 0x5C => {
-                    if IS_JSON && IGNORE_LEADING_ESCAPE_SEQUENCES {
+                    if J::IS_JSON && J::IGNORE_LEADING_ESCAPE_SEQUENCES {
                         if self.start == 0
                             || self.current == contents.len() - 1
                         {
@@ -2371,7 +2314,7 @@ lexer_impl_header! {
         }
 
         // tsconfig.json doesn't care about annotations
-        if IS_JSON {
+        if J::IS_JSON {
             return;
         }
 
@@ -2516,7 +2459,7 @@ lexer_impl_header! {
                     } // EOF? Stop.
 
                     0x23 | 0x40 => {
-                        if !IS_JSON {
+                        if !J::IS_JSON {
                             let pragma_trigger_pos = self.end; // Position OF #/@
                             // Use remaining() which starts *after* the consumed #/@
                             // PORT NOTE: reshaped for borrowck — `remaining()` borrows
@@ -2726,13 +2669,14 @@ lexer_impl_header! {
             string_literal_start: 0,
             string_literal_raw_format: StringLiteralRawFormat::Ascii,
             temp_buffer_u16: Vec::new(),
-            is_ascii_only: IS_JSON,
+            is_ascii_only: J::IS_JSON,
             track_comments: false,
             all_comments: Vec::new(),
             indent_info: IndentInfo {
                 guess: Indentation::default(),
                 first_newline: true,
             },
+            _options: core::marker::PhantomData,
         }
     }
 
@@ -2809,7 +2753,7 @@ lexer_impl_header! {
 
     #[inline]
     fn assert_not_json(&self) {
-        if IS_JSON {
+        if J::IS_JSON {
             // TODO(port): Zig uses @compileError; Rust const generics can't compile-error
             // here without nightly. Could gate JSX methods to non-JSON instantiations.
             unreachable!("JSON should not reach this point");
@@ -3133,7 +3077,7 @@ lexer_impl_header! {
                     // Non-ASCII strings need the slow path
                     if self.code_point >= 0x80 {
                         needs_decode = true;
-                    } else if IS_JSON && self.code_point < 0x20 {
+                    } else if J::IS_JSON && self.code_point < 0x20 {
                         self.syntax_error()?;
                     }
                     self.step();

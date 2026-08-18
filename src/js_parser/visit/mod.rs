@@ -904,7 +904,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                     list.extend_from_slice(csb_stmts);
                     self.visit_stmts(&mut list, StmtsKind::FnBody)
                         .expect("unreachable");
-                    csb.stmts = Vec::from_bump_vec(list);
+                    csb.stmts = js_ast::AstVec::from_bump_vec(list);
                     self.pop_scope();
 
                     self.fn_or_arrow_data_visit = old_fn_or_arrow_data;

@@ -21,11 +21,16 @@ use bun_core::immutable::{CodepointIterator, Cursor};
 use bun_core::strings;
 
 /// Zig: `pub const StringEncoding = enum { ascii, wtf8, utf16 };`
-#[derive(Clone, Copy, PartialEq, Eq, core::marker::ConstParamTy)]
-pub enum StringEncoding {
-    Ascii,
-    Wtf8,
-    Utf16,
+///
+/// Stable-mode shape (#63 W3): `adt_const_params` is nightly-only, and this
+/// "enum" is only ever a const-generic argument — no runtime value of it
+/// exists anywhere. It is reified as `u8` const codes in a module-shaped
+/// namespace so every `{ StringEncoding::Ascii }` / `{ Encoding::Ascii }`
+/// spelling keeps compiling unchanged on both channels.
+pub mod StringEncoding {
+    pub const Ascii: u8 = 0;
+    pub const Wtf8: u8 = 1;
+    pub const Utf16: u8 = 2;
 }
 
 // ─── SrcAscii ──────────────────────────────────────────────────────────────
@@ -187,7 +192,7 @@ enum ShellSrc {
     Unicode(SrcUnicode),
 }
 
-pub struct ShellCharIter<const E: StringEncoding> {
+pub struct ShellCharIter<const E: u8> {
     src: ShellSrc,
     pub state: ShellCharIterState,
     pub prev: Option<InputChar>,
@@ -208,7 +213,7 @@ pub trait CharIter: Sized {
     fn cursor_pos(&self) -> usize;
 }
 
-impl<const E: StringEncoding> ShellCharIter<E> {
+impl<const E: u8> ShellCharIter<E> {
     #[inline]
     pub fn is_whitespace(c: InputChar) -> bool {
         matches!(
@@ -218,7 +223,7 @@ impl<const E: StringEncoding> ShellCharIter<E> {
     }
 }
 
-impl<const E: StringEncoding> CharIter for ShellCharIter<E> {
+impl<const E: u8> CharIter for ShellCharIter<E> {
     // PERF(port): Zig used `u7` for ascii; unified to u32 (see InputChar note).
     type CodepointType = u32;
     type InputChar = InputChar;
@@ -1161,7 +1166,7 @@ fn build_expansion_table(
 
 pub type Lexer = NewLexer<{ Encoding::Ascii }>;
 
-type Chars<const E: Encoding> = ShellCharIter<E>;
+type Chars<const E: u8> = ShellCharIter<E>;
 
 pub struct LexerOutput {
     pub tokens: Vec<Token>,
@@ -1170,13 +1175,13 @@ pub struct LexerOutput {
 
 pub(crate) type BraceLexerError = AllocError;
 
-pub struct NewLexer<const ENCODING: Encoding> {
+pub struct NewLexer<const ENCODING: u8> {
     chars: Chars<ENCODING>,
     tokens: Vec<Token>,
     contains_nested: bool,
 }
 
-impl<const ENCODING: Encoding> NewLexer<ENCODING> {
+impl<const ENCODING: u8> NewLexer<ENCODING> {
     pub fn tokenize(src: &[u8]) -> Result<LexerOutput, BraceLexerError> {
         let mut this = Self {
             chars: Chars::<ENCODING>::init(src),

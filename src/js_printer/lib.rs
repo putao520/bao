@@ -11,7 +11,6 @@
 //! self-borrow in `init`, and the `print_ast` minify-renamer driver / `print_json`.
 
 #![warn(unused_must_use)]
-#![feature(adt_const_params)]
 
 use bun_collections::VecExt;
 
@@ -25,15 +24,20 @@ use bun_core::strings::CodepointIterator;
 use bun_options_types::bundle_enums as bundle_opts;
 use bun_sys::Fd;
 
-/// Local stand-in for `bun_core::Encoding` that derives `ConstParamTy` so it can
-/// be used as a const-generic parameter (`const ENCODING: Encoding`). The variant set is
-/// identical; convert at the boundary if a `strings::Encoding` is ever needed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, core::marker::ConstParamTy)]
-pub enum Encoding {
-    Ascii,
-    Utf8,
-    Latin1,
-    Utf16,
+/// Local stand-in for `bun_core::Encoding` used as a const-generic parameter
+/// (`const ENCODING: u8`). Stable-mode shape (#63 W3): `adt_const_params` is
+/// nightly-only, and this "enum" is only ever a const-generic argument — no
+/// runtime value of it exists anywhere (runtime code passes
+/// `bun_core::strings::Encoding`). It is reified as `u8` const codes in a
+/// module-shaped namespace so every `{ Encoding::Utf8 }` spelling (external
+/// call sites included) keeps compiling unchanged on both channels.
+pub mod Encoding {
+    #![allow(non_snake_case, non_upper_case_globals)]
+
+    pub const Ascii: u8 = 0;
+    pub const Utf8: u8 = 1;
+    pub const Latin1: u8 = 2;
+    pub const Utf16: u8 = 3;
 }
 
 /// Byte-sink trait used by the string-escape helpers and `StdWriterAdapter`.
@@ -975,7 +979,7 @@ pub fn write_pre_quoted_string<
     const QUOTE_CHAR: u8,
     const ASCII_ONLY: bool,
     const JSON: bool,
-    const ENCODING: Encoding,
+    const ENCODING: u8,
 >(
     text_in: &[u8],
     writer: &mut W,
@@ -992,7 +996,7 @@ where
 /// `ENCODING` stays `const` — it changes the code-unit indexing structure of the
 /// loop, so a per-encoding copy is genuinely different code.
 #[inline(never)]
-pub fn write_pre_quoted_string_inner<W, const ENCODING: Encoding>(
+pub fn write_pre_quoted_string_inner<W, const ENCODING: u8>(
     text_in: &[u8],
     writer: &mut W,
     quote_char: u8,
@@ -1036,6 +1040,9 @@ where
             Encoding::Latin1 | Encoding::Ascii => 1,
             Encoding::Utf8 => strings::wtf8_byte_sequence_length_with_invalid(text[i]),
             Encoding::Utf16 => 1,
+            // u8 const codes (not enum variants) — the four arms above cover
+            // every defined code; unreachable in every monomorphized copy.
+            _ => unreachable!("invalid Encoding const"),
         };
         let clamped_width = (width as usize).min(n.saturating_sub(i));
         let c: i32 = match ENCODING {
@@ -1060,6 +1067,8 @@ where
                 // eg: "\u{10334}" will convert to "𐌴" without this.
                 code_unit_at!(i)
             }
+            // u8 const codes — the four arms above cover every defined code.
+            _ => unreachable!("invalid Encoding const"),
         };
 
         if can_print_without_escape(c, ascii_only) {
@@ -1083,6 +1092,8 @@ where
                     writer.write_all(&codepoint_bytes[..codepoint_len])?;
                     i += clamped_width;
                 }
+                // u8 const codes — the arms above cover every defined code.
+                _ => unreachable!("invalid Encoding const"),
             }
             continue;
         }
@@ -1209,7 +1220,7 @@ pub fn quote_for_json(
     Ok(())
 }
 
-pub fn write_json_string<W: Write + ?Sized, const ENCODING: Encoding>(
+pub fn write_json_string<W: Write + ?Sized, const ENCODING: u8>(
     input: &[u8],
     writer: &mut W,
 ) -> Result<(), bun_core::Error> {
@@ -7931,7 +7942,7 @@ pub enum Format {
     CjsAscii,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, core::marker::ConstParamTy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GenerateSourceMap {
     Disable,
     Lazy,
@@ -8501,7 +8512,10 @@ pub fn print_with_writer_and_platform<
     let mut buffer: MutableString = printer.writer.take_buffer();
 
     PrintResult::Result(PrintResultSuccess {
-        code: buffer.take_slice().into(),
+        // `to_owned_slice` (not `take_slice().into()`) — the channel vec
+        // (`ChanVec`) has no `Into<std::boxed::Box<[u8]>>` on the stable api2
+        // mirror; `to_owned_slice` performs the conversion on both channels.
+        code: buffer.to_owned_slice(),
         source_map,
     })
 }

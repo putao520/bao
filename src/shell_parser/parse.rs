@@ -2415,11 +2415,17 @@ const MAX_SUBSHELL_DEPTH: u32 = 128;
 pub const LEX_JS_OBJREF_PREFIX: &[u8] = b"\x08__bun_";
 pub const LEX_JS_STRING_PREFIX: &[u8] = b"\x08__bunstr_";
 
-#[derive(Clone, Copy, PartialEq, Eq, core::marker::ConstParamTy)]
-pub enum StringEncoding {
-    Ascii,
-    Wtf8,
-    Utf16,
+/// Zig: `pub const StringEncoding = enum { ascii, wtf8, utf16 };`
+///
+/// Stable-mode shape (#63 W3): `adt_const_params` is nightly-only, and this
+/// "enum" is only ever a const-generic argument — no runtime value of it
+/// exists anywhere. It is reified as `u8` const codes in a module-shaped
+/// namespace so every `{ StringEncoding::Ascii }` spelling (external call
+/// sites included) keeps compiling unchanged on both channels.
+pub mod StringEncoding {
+    pub const Ascii: u8 = 0;
+    pub const Wtf8: u8 = 1;
+    pub const Utf16: u8 = 2;
 }
 
 #[derive(thiserror::Error, Debug, strum::IntoStaticStr)]
@@ -2453,14 +2459,14 @@ pub(crate) enum RedirectDirection {
 }
 
 #[derive(Clone, Copy)]
-pub struct BacktrackSnapshot<'bump, const ENCODING: StringEncoding> {
+pub struct BacktrackSnapshot<'bump, const ENCODING: u8> {
     chars: ShellCharIter<'bump, ENCODING>,
     j: u32,
     word_start: u32,
     delimit_quote: bool,
 }
 
-pub struct Lexer<'bump, const ENCODING: StringEncoding> {
+pub struct Lexer<'bump, const ENCODING: u8> {
     pub chars: ShellCharIter<'bump, ENCODING>,
 
     /// Tell us the beginning of a "word", indexes into the string pool (`buf`)
@@ -2492,7 +2498,7 @@ pub struct Lexer<'bump, const ENCODING: StringEncoding> {
     pub jsobjs_len: u32,
 }
 
-impl<'bump, const ENCODING: StringEncoding> Lexer<'bump, ENCODING> {
+impl<'bump, const ENCODING: u8> Lexer<'bump, ENCODING> {
     pub const JS_OBJREF_PREFIX: &'static str = "$__bun_";
 
     pub fn new(
@@ -3453,10 +3459,11 @@ impl<'bump, const ENCODING: StringEncoding> Lexer<'bump, ENCODING> {
             // PORT NOTE: Zig calls simdutf for the exact length then
             // `convertUTF16ToUTF8Append` directly into the bump-backed
             // ArrayList. The Rust transcoding helpers in bun_core take
-            // `&mut Vec<u8>` (global allocator), so go through a scratch Vec
+            // `&mut ChanVec<u8>` (std `Vec<u8>` on nightly; the `allocator_api2`
+            // mirror on stable — dual-mode #63), so go through a scratch Vec
             // and copy. PERF(port): re-unify once a bumpalo-aware transcoder
             // lands in bun_core.
-            let mut scratch: Vec<u8> = Vec::with_capacity(utf16.len() * 3);
+            let mut scratch = bun_core::vec::ChanVec::with_capacity(utf16.len() * 3);
             bun_core::convert_utf16_to_utf8_append(&mut scratch, utf16);
             self.strpool.extend_from_slice(&scratch);
         } else if bunstr.is_utf8() {
@@ -3956,14 +3963,14 @@ impl<'a> Src<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct ShellCharIter<'a, const ENCODING: StringEncoding> {
+pub struct ShellCharIter<'a, const ENCODING: u8> {
     pub src: Src<'a>,
     pub state: CharState,
     pub prev: Option<InputChar>,
     pub current: Option<InputChar>,
 }
 
-impl<'a, const ENCODING: StringEncoding> ShellCharIter<'a, ENCODING> {
+impl<'a, const ENCODING: u8> ShellCharIter<'a, ENCODING> {
     pub fn is_whitespace(char: InputChar) -> bool {
         matches!(char.char, c if c == u32::from(b'\t') || c == u32::from(b'\r') || c == u32::from(b'\n') || c == u32::from(b' '))
     }
@@ -4405,18 +4412,24 @@ impl SmolListAlloc {
 
 // SAFETY: forwards every method to `&Bump`'s `Allocator` impl; clones hold the
 // same arena pointer, so blocks stay valid across clones until the arena drops.
-unsafe impl core::alloc::Allocator for SmolListAlloc {
+// Dual-mode (#63 W3): the trait is `bun_alloc::core_alloc::Allocator` — the
+// real `core::alloc::Allocator` on nightly, the `allocator_api2` mirror on
+// stable. `&Bump` implements the same facade trait, so the forwarding calls
+// resolve identically on both channels.
+unsafe impl bun_alloc::core_alloc::Allocator for SmolListAlloc {
     #[inline]
     fn allocate(
         &self,
         layout: core::alloc::Layout,
-    ) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
-        core::alloc::Allocator::allocate(&self.arena(), layout)
+    ) -> Result<core::ptr::NonNull<[u8]>, bun_alloc::core_alloc::AllocError> {
+        bun_alloc::core_alloc::Allocator::allocate(&self.arena(), layout)
     }
     #[inline]
     unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
         // SAFETY: caller upholds `deallocate`'s contract; `ptr`/`layout` came from this arena.
-        unsafe { core::alloc::Allocator::deallocate(&self.arena(), ptr, layout) }
+        unsafe {
+            bun_alloc::core_alloc::Allocator::deallocate(&self.arena(), ptr, layout)
+        }
     }
     #[inline]
     unsafe fn grow(
@@ -4424,9 +4437,9 @@ unsafe impl core::alloc::Allocator for SmolListAlloc {
         ptr: core::ptr::NonNull<u8>,
         old: core::alloc::Layout,
         new: core::alloc::Layout,
-    ) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
+    ) -> Result<core::ptr::NonNull<[u8]>, bun_alloc::core_alloc::AllocError> {
         // SAFETY: caller upholds `grow`'s contract; `ptr`/`old` came from this arena.
-        unsafe { core::alloc::Allocator::grow(&self.arena(), ptr, old, new) }
+        unsafe { bun_alloc::core_alloc::Allocator::grow(&self.arena(), ptr, old, new) }
     }
     #[inline]
     unsafe fn shrink(
@@ -4434,13 +4447,13 @@ unsafe impl core::alloc::Allocator for SmolListAlloc {
         ptr: core::ptr::NonNull<u8>,
         old: core::alloc::Layout,
         new: core::alloc::Layout,
-    ) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
+    ) -> Result<core::ptr::NonNull<[u8]>, bun_alloc::core_alloc::AllocError> {
         // SAFETY: caller upholds `shrink`'s contract; `ptr`/`old` came from this arena.
-        unsafe { core::alloc::Allocator::shrink(&self.arena(), ptr, old, new) }
+        unsafe { bun_alloc::core_alloc::Allocator::shrink(&self.arena(), ptr, old, new) }
     }
 }
 
-pub(crate) type SmolListHeap<T> = Vec<T, SmolListAlloc>;
+pub(crate) type SmolListHeap<T> = bun_alloc::core_alloc::AllocVec<T, SmolListAlloc>;
 
 /// A list that can store its items inlined, and promote itself to an
 /// arena-backed heap list.
@@ -4479,7 +4492,7 @@ impl<T, const INLINED_MAX: usize> SmolListInlined<T, INLINED_MAX> {
     }
 
     pub(crate) fn promote(&mut self, n: usize, new: T, bump: &Bump) -> SmolListHeap<T> {
-        let mut list = Vec::with_capacity_in(n + 1, SmolListAlloc::new(bump));
+        let mut list = bun_alloc::core_alloc::AllocVec::with_capacity_in(n + 1, SmolListAlloc::new(bump));
         for i in 0..INLINED_MAX {
             // SAFETY: all INLINED_MAX slots are initialized when promote is called (len == INLINED_MAX)
             let v = unsafe { self.items[i].assume_init_read() };
@@ -4597,7 +4610,7 @@ impl<T, const INLINED_MAX: usize> SmolList<T, INLINED_MAX> {
             }
             return this;
         }
-        let mut heap = Vec::with_capacity_in(vals.len(), SmolListAlloc::new(bump));
+        let mut heap = bun_alloc::core_alloc::AllocVec::with_capacity_in(vals.len(), SmolListAlloc::new(bump));
         heap.extend_from_slice(vals);
         SmolList::Heap(heap)
     }
