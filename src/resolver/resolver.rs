@@ -2159,7 +2159,7 @@ impl<'a> Resolver<'a> {
                 if let Some(import_dir_info) = import_dir_info_outer.get_enclosing_browser_scope() {
                     let pkg = import_dir_info.package_json().unwrap();
                     if let Some(remap) = self
-                        .check_browser_map::<{ BrowserMapPathKind::AbsolutePath }>(
+                        .check_browser_map::<{ BrowserMapPathKind::ABSOLUTE_PATH }>(
                             &import_dir_info,
                             abs_path,
                         )
@@ -2296,7 +2296,7 @@ impl<'a> Resolver<'a> {
             if let Some(browser_scope) = source_dir_info.get_enclosing_browser_scope() {
                 if let Some(package_json) = browser_scope.package_json() {
                     if let Some(remapped) = self
-                        .check_browser_map::<{ BrowserMapPathKind::PackagePath }>(
+                        .check_browser_map::<{ BrowserMapPathKind::PACKAGE_PATH }>(
                             &browser_scope,
                             import_path,
                         )
@@ -2401,7 +2401,7 @@ impl<'a> Resolver<'a> {
                     };
                     if let Some(browser_scope) = base_dir_info.get_enclosing_browser_scope() {
                         if let Some(remap) = self
-                            .check_browser_map::<{ BrowserMapPathKind::AbsolutePath }>(
+                            .check_browser_map::<{ BrowserMapPathKind::ABSOLUTE_PATH }>(
                                 &browser_scope,
                                 result.path_pair.primary.text(),
                             )
@@ -4057,7 +4057,7 @@ impl<'a> Resolver<'a> {
             IncludeScripts::IgnoreScripts
         };
         let pkg = if ALLOW_DEPENDENCIES {
-            PackageJSON::parse::<{ IncludeDependencies::Local }>(
+            PackageJSON::parse::<{ IncludeDependencies::LOCAL }>(
                 self,
                 file,
                 dirname_fd,
@@ -4065,7 +4065,7 @@ impl<'a> Resolver<'a> {
                 include_scripts,
             )
         } else {
-            PackageJSON::parse::<{ IncludeDependencies::None }>(
+            PackageJSON::parse::<{ IncludeDependencies::NONE }>(
                 self,
                 file,
                 dirname_fd,
@@ -4969,11 +4969,13 @@ impl<'a> Resolver<'a> {
         )
     }
 
-    pub fn check_browser_map<const KIND: BrowserMapPathKind>(
+    pub fn check_browser_map<const KIND: u8>(
         &mut self,
         dir_info: &DirInfo::DirInfo,
         input_path_: &[u8],
     ) -> Option<&'static [u8]> {
+        // Decode the const-generic u8 (see `BrowserMapPathKind` impl above).
+        let kind = BrowserMapPathKind::from_u8(KIND);
         let package_json = dir_info.package_json()?;
         let browser_map = &package_json.browser_map;
 
@@ -4983,7 +4985,7 @@ impl<'a> Resolver<'a> {
 
         let mut input_path = input_path_;
 
-        if KIND == BrowserMapPathKind::AbsolutePath {
+        if kind == BrowserMapPathKind::AbsolutePath {
             let abs_path = dir_info.abs_path;
             // Turn absolute paths into paths relative to the "browser" map location
             if !input_path.starts_with(abs_path) {
@@ -5025,7 +5027,7 @@ impl<'a> Resolver<'a> {
         // First try the import path as a package path
         if is_package_path(checker.input_path) {
             let abs_to_rel = bufs!(abs_to_rel);
-            match KIND {
+            match kind {
                 BrowserMapPathKind::AbsolutePath => {
                     abs_to_rel[0..2].copy_from_slice(b"./");
                     abs_to_rel[2..2 + checker.input_path.len()].copy_from_slice(checker.input_path);
@@ -5100,7 +5102,7 @@ impl<'a> Resolver<'a> {
             if let Some(browser_scope) = dir_info.get_enclosing_browser_scope() {
                 if let Some(browser_json) = browser_scope.package_json() {
                     if let Some(remap) = self
-                        .check_browser_map::<{ BrowserMapPathKind::AbsolutePath }>(
+                        .check_browser_map::<{ BrowserMapPathKind::ABSOLUTE_PATH }>(
                             &browser_scope,
                             field_rel_path,
                         )
@@ -5335,7 +5337,7 @@ impl<'a> Resolver<'a> {
 
                 if let Some(browser_json) = browser_scope.package_json() {
                     if let Some(remap) = self
-                        .check_browser_map::<{ BrowserMapPathKind::AbsolutePath }>(
+                        .check_browser_map::<{ BrowserMapPathKind::ABSOLUTE_PATH }>(
                             &browser_scope,
                             FIELD_REL_PATH,
                         )
@@ -6567,10 +6569,27 @@ enum DependencyToResolve {
     Resolution(Resolution),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, core::marker::ConstParamTy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BrowserMapPathKind {
     PackagePath,
     AbsolutePath,
+}
+
+// Stable-safe const-generic encoding (adt_const_params is nightly-only):
+// `check_browser_map<const KIND: u8>` takes the u8 mirrors below and decodes
+// via `from_u8` at fn entry — original match arms stay unchanged and
+// per-variant monomorphization is preserved (const fn, optimizer-folding).
+impl BrowserMapPathKind {
+    pub const PACKAGE_PATH: u8 = 0;
+    pub const ABSOLUTE_PATH: u8 = 1;
+    #[inline(always)]
+    pub const fn from_u8(v: u8) -> Self {
+        if v == 1 {
+            Self::AbsolutePath
+        } else {
+            Self::PackagePath
+        }
+    }
 }
 
 pub struct BrowserMapPath<'b> {

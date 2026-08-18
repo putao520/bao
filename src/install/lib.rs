@@ -1,5 +1,4 @@
-#![allow(nonstandard_style, ambiguous_glob_reexports, incomplete_features)]
-#![feature(adt_const_params)]
+#![allow(nonstandard_style, ambiguous_glob_reexports)]
 
 // ──────────────────────────────────────────────────────────────────────────
 // Crate aliases — Phase-A drafts use the porting-doc crate names; map them

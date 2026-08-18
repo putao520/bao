@@ -1,5 +1,3 @@
-use core::marker::ConstParamTy;
-
 use bun_alloc::AllocError;
 use bun_collections::{ArrayHashMap, DynamicBitSet, MultiArrayList};
 use bun_core::Output;
@@ -164,7 +162,7 @@ bun_core::named_error_set!(SubtreeError);
 // Iterator
 // ──────────────────────────────────────────────────────────────────────────
 
-#[derive(ConstParamTy, PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum IteratorPathStyle {
     /// `relative_path` will have the form `node_modules/jquery/node_modules/zod`.
     /// Path separators are platform.
@@ -174,11 +172,28 @@ pub enum IteratorPathStyle {
     PkgPath,
 }
 
+// Stable-safe const-generic encoding (adt_const_params is nightly-only):
+// `<const PATH_STYLE: u8>` takes the u8 mirrors below and decodes via
+// `from_u8` at fn entry — original match arms/comparisons stay unchanged and
+// per-variant monomorphization is preserved (const fn, optimizer-folding).
+impl IteratorPathStyle {
+    pub const NODE_MODULES: u8 = 0;
+    pub const PKG_PATH: u8 = 1;
+    #[inline(always)]
+    pub const fn from_u8(v: u8) -> Self {
+        if v == 1 {
+            Self::PkgPath
+        } else {
+            Self::NodeModules
+        }
+    }
+}
+
 // PORT NOTE: reshaped — Zig stores `lockfile: *const Lockfile`; here we store
 // the four buffer slices the iterator actually reads so callers from both
 // `crate::lockfile` (stub) and `crate::lockfile_real` can drive the same
 // iterator without a unified `Lockfile` type (reconciler-6).
-pub struct Iterator<'a, const PATH_STYLE: IteratorPathStyle> {
+pub struct Iterator<'a, const PATH_STYLE: u8> {
     pub tree_id: Id,
     pub path_buf: PathBuffer,
 
@@ -207,7 +222,7 @@ pub struct IteratorNext<'a> {
     pub depth: usize,
 }
 
-impl<'a, const PATH_STYLE: IteratorPathStyle> Iterator<'a, PATH_STYLE> {
+impl<'a, const PATH_STYLE: u8> Iterator<'a, PATH_STYLE> {
     pub fn init(lockfile: &'a Lockfile) -> Self {
         Self::from_slices(
             lockfile.buffers.trees.as_slice(),
@@ -237,7 +252,7 @@ impl<'a, const PATH_STYLE: IteratorPathStyle> Iterator<'a, PATH_STYLE> {
             // Zig: `depth_stack: DepthBuf = undefined` (Tree.zig:94)
             depth_stack: depth_buf_uninit(),
         };
-        if PATH_STYLE == IteratorPathStyle::NodeModules {
+        if PATH_STYLE == IteratorPathStyle::NODE_MODULES {
             iter.path_buf[0..b"node_modules".len()].copy_from_slice(b"node_modules");
         }
         iter
@@ -263,7 +278,7 @@ impl<'a, const PATH_STYLE: IteratorPathStyle> Iterator<'a, PATH_STYLE> {
         let mut completed_trees = completed_trees;
 
         while trees[self.tree_id as usize].dependencies.len == 0 {
-            if PATH_STYLE == IteratorPathStyle::NodeModules {
+            if PATH_STYLE == IteratorPathStyle::NODE_MODULES {
                 if let Some(ct) = completed_trees.as_deref_mut() {
                     ct.set(self.tree_id as usize);
                 }
@@ -309,7 +324,7 @@ pub fn folder_name_is_safe(name: &[u8]) -> bool {
 // PORT NOTE: reshaped — Zig takes `*const Lockfile`; here we take the three
 // buffer slices directly so callers from both `crate::lockfile` (stub) and
 // `crate::lockfile_real` can use this without a shared `Lockfile` type.
-pub(crate) fn relative_path_and_depth<'b, const PATH_STYLE: IteratorPathStyle>(
+pub(crate) fn relative_path_and_depth<'b, const PATH_STYLE: u8>(
     trees: &[Tree],
     dependencies: &[Dependency],
     string_buf: &[u8],
@@ -317,12 +332,14 @@ pub(crate) fn relative_path_and_depth<'b, const PATH_STYLE: IteratorPathStyle>(
     path_buf: &'b mut PathBuffer,
     depth_buf: &mut DepthBuf,
 ) -> (&'b ZStr, usize) {
+    // Decode the const-generic u8 (see `IteratorPathStyle` impl above).
+    let path_style = IteratorPathStyle::from_u8(PATH_STYLE);
     let mut depth: usize = 0;
 
     let tree = trees[tree_id as usize];
 
     let mut parent_id = tree.id;
-    let mut path_written: usize = match PATH_STYLE {
+    let mut path_written: usize = match path_style {
         IteratorPathStyle::NodeModules => b"node_modules".len(),
         IteratorPathStyle::PkgPath => 0,
     };
@@ -352,7 +369,7 @@ pub(crate) fn relative_path_and_depth<'b, const PATH_STYLE: IteratorPathStyle>(
 
         depth = depth_buf_len;
         while depth_buf_len > 0 {
-            if PATH_STYLE == IteratorPathStyle::PkgPath {
+            if path_style == IteratorPathStyle::PkgPath {
                 if depth_buf_len != depth {
                     if path_written + 1 >= MAX_PATH_BYTES {
                         path_too_long();
@@ -384,7 +401,7 @@ pub(crate) fn relative_path_and_depth<'b, const PATH_STYLE: IteratorPathStyle>(
             path_buf[path_written..name_end].copy_from_slice(name);
             path_written = name_end;
 
-            if PATH_STYLE == IteratorPathStyle::NodeModules {
+            if path_style == IteratorPathStyle::NodeModules {
                 // Zig: std.fs.path.sep_str ++ "node_modules" (always 13 bytes)
                 if path_written + b"/node_modules".len() >= MAX_PATH_BYTES {
                     path_too_long();
@@ -408,7 +425,7 @@ pub(crate) fn relative_path_and_depth<'b, const PATH_STYLE: IteratorPathStyle>(
 // Builder
 // ──────────────────────────────────────────────────────────────────────────
 
-#[derive(ConstParamTy, PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum BuilderMethod {
     /// Hoist, but include every dependency so it's resolvable if configuration
     /// changes. For saving to disk.
@@ -421,11 +438,28 @@ pub enum BuilderMethod {
     Filter,
 }
 
+// Stable-safe const-generic encoding (adt_const_params is nightly-only):
+// `<const METHOD: u8>` takes the u8 mirrors below and decodes via `from_u8`
+// where a method branches on it — original comparisons stay unchanged and
+// per-variant monomorphization is preserved (const fn, optimizer-folding).
+impl BuilderMethod {
+    pub const RESOLVABLE: u8 = 0;
+    pub const FILTER: u8 = 1;
+    #[inline(always)]
+    pub const fn from_u8(v: u8) -> Self {
+        if v == 1 {
+            Self::Filter
+        } else {
+            Self::Resolvable
+        }
+    }
+}
+
 // TODO(port): Zig conditionally typed `manager`/`workspace_filters`/`install_root_dependencies`/
 // `packages_to_install` as `void` when method != .filter. Rust const generics cannot vary field
 // types; using Option<_>/empty defaults instead. TODO(refactor): split into two structs or use a
 // trait-associated type if the size matters.
-pub struct Builder<'a, const METHOD: BuilderMethod> {
+pub struct Builder<'a, const METHOD: u8> {
     // PORT NOTE: Zig `std.mem.Allocator` param field dropped. Sole construction site is
     // `Lockfile.hoist()` (src/install/lockfile.zig) which passes `lockfile.allocator` — the
     // lockfile's persistent allocator (bun.default_allocator via PackageManager/CLI ctx), not an
@@ -472,7 +506,7 @@ pub(crate) struct CleanResult {
     pub dep_ids: Vec<DependencyID>,
 }
 
-impl<'a, const METHOD: BuilderMethod> Builder<'a, METHOD> {
+impl<'a, const METHOD: u8> Builder<'a, METHOD> {
     /// Shared read-only view of the lockfile.
     ///
     /// `self.lockfile` is set from `&mut Lockfile` in `Lockfile::hoist`, which
@@ -695,12 +729,14 @@ pub(crate) fn is_filtered_dependency_or_workspace(
 // ──────────────────────────────────────────────────────────────────────────
 
 impl Tree {
-    pub fn process_subtree<const METHOD: BuilderMethod>(
+    pub fn process_subtree<const METHOD: u8>(
         &self,
         dependency_id: DependencyID,
         hoist_root_id: Id,
         builder: &mut Builder<'_, METHOD>,
     ) -> Result<(), SubtreeError> {
+        // Decode the const-generic u8 (see `BuilderMethod` impl above).
+        let method = BuilderMethod::from_u8(METHOD);
         let parent_pkg_id = match dependency_id {
             ROOT_DEP_ID => 0,
             id => builder.resolutions[id as usize],
@@ -768,7 +804,7 @@ impl Tree {
             let pkg_id = builder.resolutions[dep_id as usize];
 
             // filter out disabled dependencies
-            if METHOD == BuilderMethod::Filter {
+            if method == BuilderMethod::Filter {
                 if is_filtered_dependency_or_workspace(
                     dep_id,
                     parent_pkg_id,
@@ -995,7 +1031,7 @@ impl Tree {
     // `builder.dependencies` (a `&'a [Dependency]` field, copied out so the borrow detaches
     // from `builder`). The only long-lived `&mut` is `builder`.
     #[allow(clippy::too_many_arguments)]
-    fn hoist_dependency<const AS_DEFINED: bool, const METHOD: BuilderMethod>(
+    fn hoist_dependency<const AS_DEFINED: bool, const METHOD: u8>(
         self_id: Id,
         hoist_root_id: Id,
         package_id: PackageID,

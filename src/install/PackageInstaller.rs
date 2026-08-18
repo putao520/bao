@@ -693,7 +693,7 @@ impl<'a> PackageInstaller<'a> {
                         + 1,
                 );
                 let (rel_path, _) = lockfile::tree::relative_path_and_depth::<
-                    { lockfile::tree::IteratorPathStyle::NodeModules },
+                    { lockfile::tree::IteratorPathStyle::NODE_MODULES },
                 >(
                     self.lockfile().buffers.trees.as_slice(),
                     self.lockfile().buffers.dependencies.as_slice(),

@@ -1409,7 +1409,7 @@ impl<'a> Cloner<'a> {
 
 impl Lockfile {
     pub fn resolve(&mut self, log: &mut bun_ast::Log) -> Result<(), tree::SubtreeError> {
-        self.hoist::<{ tree::BuilderMethod::Resolvable }>(log, None, true, &[], None)
+        self.hoist::<{ tree::BuilderMethod::RESOLVABLE }>(log, None, true, &[], None)
     }
 
     pub fn filter(
@@ -1420,7 +1420,7 @@ impl Lockfile {
         workspace_filters: &[WorkspaceFilter],
         packages_to_install: Option<&[PackageID]>,
     ) -> Result<(), tree::SubtreeError> {
-        self.hoist::<{ tree::BuilderMethod::Filter }>(
+        self.hoist::<{ tree::BuilderMethod::FILTER }>(
             log,
             Some(manager),
             install_root_dependencies,
@@ -1431,9 +1431,10 @@ impl Lockfile {
 
     /// Sets `buffers.trees` and `buffers.hoisted_dependencies`
     // TODO(port): Zig uses `comptime method` to make several params conditionally `void`.
-    // Rust const-generic enums need #[derive(ConstParamTy)] on Tree::BuilderMethod and the
-    // value-level branching can't change param types. Consider two monomorphized fns.
-    pub fn hoist<const METHOD: tree::BuilderMethod>(
+    // `METHOD` is the u8 mirror of `tree::BuilderMethod` (enum-typed const params
+    // are nightly-only; see Tree.rs) and the value-level branching can't change
+    // param types. Consider two monomorphized fns.
+    pub fn hoist<const METHOD: u8>(
         &mut self,
         log: &mut bun_ast::Log,
         // PORT NOTE: Zig used `comptime method` to make these params `void` for
@@ -2894,7 +2895,7 @@ impl Lockfile {
         let mut tree_paths: Vec<Box<[u8]>> = Vec::new();
 
         for l_tree in l.buffers.trees.iter() {
-            let (rel_path, _) = tree::relative_path_and_depth::<{ tree::IteratorPathStyle::PkgPath }>(
+            let (rel_path, _) = tree::relative_path_and_depth::<{ tree::IteratorPathStyle::PKG_PATH }>(
                 l.buffers.trees.as_slice(),
                 l.buffers.dependencies.as_slice(),
                 l.buffers.string_bytes.as_slice(),
@@ -2922,7 +2923,7 @@ impl Lockfile {
         let l_count = sort_buf.len();
 
         for r_tree in r.buffers.trees.iter() {
-            let (rel_path, _) = tree::relative_path_and_depth::<{ tree::IteratorPathStyle::PkgPath }>(
+            let (rel_path, _) = tree::relative_path_and_depth::<{ tree::IteratorPathStyle::PKG_PATH }>(
                 r.buffers.trees.as_slice(),
                 r.buffers.dependencies.as_slice(),
                 r.buffers.string_bytes.as_slice(),

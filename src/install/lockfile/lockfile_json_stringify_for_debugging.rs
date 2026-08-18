@@ -259,7 +259,7 @@ where
             w.write(tree_id)?;
 
             let (relative_path, depth) =
-                tree::relative_path_and_depth::<{ IteratorPathStyle::NodeModules }>(
+                tree::relative_path_and_depth::<{ IteratorPathStyle::NODE_MODULES }>(
                     this.buffers.trees.as_slice(),
                     this.buffers.dependencies.as_slice(),
                     this.buffers.string_bytes.as_slice(),

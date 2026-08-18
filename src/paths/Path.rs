@@ -91,6 +91,11 @@ pub mod options {
     }
     impl CheckLength {
         pub(crate) const ASSUME: u8 = 0;
+        /// No current caller instantiates the checking flavor (every public
+        /// alias below defaults to `ASSUME`); named for symmetry and pinned by
+        /// `stable_const_generic_tests`.
+        #[cfg_attr(not(test), allow(dead_code))]
+        pub(crate) const CHECK_FOR_GREATER_THAN_MAX_PATH: u8 = 1;
         #[inline(always)]
         pub(crate) const fn from_u8(v: u8) -> Self {
             if v == 0 {
@@ -1554,3 +1559,92 @@ fn is_input_absolute<C: PathUnit>(input: &[C]) -> bool {
 }
 
 // ported from: src/paths/Path.zig
+
+#[cfg(test)]
+mod stable_const_generic_tests {
+    //! Minimal regression pinning `Path`'s u8 const-generic semantics after the
+    //! crate's stable-ization (nightly `adt_const_params` gate removed; the
+    //! u8-mirror + `from_u8` encoding below is the only const-generic form).
+    //! There is no dual-mode cfg in this crate — these assertions compile
+    //! identically on stable and nightly, which IS the two-mode consistency
+    //! contract for this hot path domain.
+
+    use super::*;
+
+    #[test]
+    fn option_u8_mirrors_decode() {
+        // The u8 mirror + from_u8 tables every const-generic call site relies on.
+        assert!(matches!(Kind::from_u8(Kind::ABS), Kind::Abs));
+        assert!(matches!(Kind::from_u8(Kind::REL), Kind::Rel));
+        assert!(matches!(Kind::from_u8(Kind::ANY), Kind::Any));
+        assert!(matches!(
+            PathSeparators::from_u8(PathSeparators::ANY),
+            PathSeparators::Any
+        ));
+        assert!(matches!(
+            PathSeparators::from_u8(PathSeparators::AUTO),
+            PathSeparators::Auto
+        ));
+        assert!(matches!(
+            PathSeparators::from_u8(PathSeparators::POSIX),
+            PathSeparators::Posix
+        ));
+        assert!(matches!(
+            PathSeparators::from_u8(PathSeparators::WINDOWS),
+            PathSeparators::Windows
+        ));
+        assert!(matches!(
+            CheckLength::from_u8(CheckLength::ASSUME),
+            CheckLength::AssumeAlwaysLessThanMaxPath
+        ));
+        assert!(matches!(
+            CheckLength::from_u8(CheckLength::CHECK_FOR_GREATER_THAN_MAX_PATH),
+            CheckLength::CheckForGreaterThanMaxPath
+        ));
+    }
+
+    #[test]
+    fn path_from_trims_per_kind() {
+        assert_eq!(AbsPath::<u8>::from(b"/a/b/".as_slice()).unwrap().slice(), b"/a/b");
+        assert_eq!(RelPath::<u8>::from(b"a/b/".as_slice()).unwrap().slice(), b"a/b");
+        // `.any` adapts: absolute input stays absolute, relative stays relative.
+        let abs = Path::<u8, { Kind::ANY }>::from(b"/a/b/".as_slice()).unwrap();
+        assert_eq!(abs.slice(), b"/a/b");
+        assert!(abs.is_absolute());
+        let rel = Path::<u8, { Kind::ANY }>::from(b"a/b/".as_slice()).unwrap();
+        assert_eq!(rel.slice(), b"a/b");
+        assert!(!rel.is_absolute());
+    }
+
+    #[test]
+    fn basename_dirname_and_into_sep() {
+        let p = AbsPath::<u8>::from(b"/a/b/c.txt".as_slice()).unwrap();
+        assert_eq!(p.basename(), b"c.txt");
+        assert_eq!(p.dirname().unwrap(), b"/a/b");
+        // SEP_OPT reinterpretation must not alter the stored bytes.
+        let reinterpreted = p.into_sep::<{ PathSeparators::POSIX }>();
+        assert_eq!(reinterpreted.slice(), b"/a/b/c.txt");
+    }
+
+    #[test]
+    fn check_length_mode_enforces_max_path() {
+        type CheckedAbs = Path<
+            u8,
+            { Kind::ABS },
+            { PathSeparators::ANY },
+            { CheckLength::CHECK_FOR_GREATER_THAN_MAX_PATH },
+        >;
+        // Short input passes on both check modes.
+        assert!(AbsPath::<u8>::from(b"/ok".as_slice()).is_ok());
+        assert!(CheckedAbs::from(b"/ok".as_slice()).is_ok());
+        // Input >= MAX_PATH_BYTES only errors on the checking instantiation
+        // (`from` guards with `CheckLength::from_u8(CHECK)`).
+        let mut long = vec![b'a'; MAX_PATH_BYTES];
+        long[0] = b'/';
+        assert!(AbsPath::<u8>::from(long.as_slice()).is_ok());
+        assert!(matches!(
+            CheckedAbs::from(long.as_slice()),
+            Err(PathError::MaxPathExceeded)
+        ));
+    }
+}

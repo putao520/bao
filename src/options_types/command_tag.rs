@@ -8,7 +8,7 @@
 
 use enum_map::Enum;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Enum, core::marker::ConstParamTy)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Enum)]
 pub enum Tag {
     AddCommand,
     AutoCommand,

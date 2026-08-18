@@ -270,7 +270,7 @@ pub(crate) fn install_hoisted_packages(
 
         // BACKREF — slices live for the duration of this block; `filter()` (the
         // only buffer mutator) has already run.
-        let mut iterator = tree::Iterator::<{ tree::IteratorPathStyle::NodeModules }>::from_slices(
+        let mut iterator = tree::Iterator::<{ tree::IteratorPathStyle::NODE_MODULES }>::from_slices(
             buf_trees.as_slice(),
             buf_hoisted.as_slice(),
             buf_deps.as_slice(),

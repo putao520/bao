@@ -1,10 +1,7 @@
 #![warn(unused_must_use)]
-// `Platform` is used as a const-generic param (Zig: `comptime _platform: Platform`)
-// in resolve_path.rs and downstream (`bun_runtime::node::path::normalize_string_t`).
-// Pinned nightly — enable the structural-match subset directly instead of the
-// `PlatformT` sealed-trait workaround.
-#![feature(adt_const_params)]
-#![allow(incomplete_features)]
+// Stable-clean: `Platform` dispatch goes through the `PlatformT` sealed-trait
+// (one zero-sized type per variant, `P::P` is a true const — see resolve_path.rs);
+// no enum-typed const-generic params remain, so no nightly feature gate is needed.
 // `bun.w_path_buffer_pool` — u16 sibling. Backed by the same generic
 // thread-local pool as the u8 one (path_buffer_pool.rs already handles both
 // via `PoolStorage`).

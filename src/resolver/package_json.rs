@@ -285,11 +285,30 @@ pub enum IncludeScripts {
     IncludeScripts,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, core::marker::ConstParamTy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum IncludeDependencies {
     Main,
     Local,
     None,
+}
+
+// Stable-safe const-generic encoding (adt_const_params is nightly-only):
+// `parse<const INCLUDE_DEPENDENCIES: u8>` takes the u8 mirrors below and
+// decodes via `from_u8` at fn entry, so the original enum comparisons stay
+// unchanged and per-variant monomorphization is preserved (the optimizer
+// sees through the `const fn`). Idiom matches `bun_paths::Path::options`.
+impl IncludeDependencies {
+    pub const MAIN: u8 = 0;
+    pub const LOCAL: u8 = 1;
+    pub const NONE: u8 = 2;
+    #[inline(always)]
+    pub const fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Local,
+            2 => Self::None,
+            _ => Self::Main,
+        }
+    }
 }
 
 const NODE_MODULES_PATH: &str = const_format::concatcp!(SEP_STR, "node_modules", SEP_STR);
@@ -1036,7 +1055,7 @@ impl PackageJSON {
         macro_map
     }
 
-    pub fn parse<const INCLUDE_DEPENDENCIES: IncludeDependencies>(
+    pub fn parse<const INCLUDE_DEPENDENCIES: u8>(
         r: &mut resolver::Resolver<'_>,
         input_path: &[u8],
         dirname_fd: Fd,
@@ -1045,6 +1064,8 @@ impl PackageJSON {
     ) -> Option<PackageJSON> {
         // PERF(port): include_scripts_ was a comptime enum param — profile if hot
         let include_scripts = include_scripts_ == IncludeScripts::IncludeScripts;
+        // Decode the const-generic u8 (see `IncludeDependencies` impl above).
+        let include_dependencies = IncludeDependencies::from_u8(INCLUDE_DEPENDENCIES);
 
         // SAFETY: PORT (Stacked Borrows) — `r.fs()`/`r.log()` return RAW `*mut`
         // (see `Resolver::fs()` note in lib.rs). `fs` and `log` are DISTINCT
@@ -1471,8 +1492,8 @@ impl PackageJSON {
         // lockfile::Package::DependencyGroup, PackageManager}. The whole
         // dependencies/os/cpu block is install-tier.
 
-        if INCLUDE_DEPENDENCIES == IncludeDependencies::Main
-            || INCLUDE_DEPENDENCIES == IncludeDependencies::Local
+        if include_dependencies == IncludeDependencies::Main
+            || include_dependencies == IncludeDependencies::Local
         {
             'update_dependencies: {
                 if let Some(pkg) = package_id {
@@ -1542,7 +1563,7 @@ impl PackageJSON {
 
                 type DependencyGroup = install_stubs::DependencyGroup;
                 // TODO(port): comptime feature flags + comptime brk block — expanded inline below
-                let dev_deps = INCLUDE_DEPENDENCIES == IncludeDependencies::Main;
+                let dev_deps = include_dependencies == IncludeDependencies::Main;
                 let dependency_groups: &[DependencyGroup] = if dev_deps {
                     &[
                         DependencyGroup::DEPENDENCIES,

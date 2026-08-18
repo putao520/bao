@@ -884,7 +884,7 @@ pub(crate) fn value_init<SemverInt: VersionInt>(field: TaggedValue<SemverInt>) -
 // u8 newtype with associated consts. Const patterns (structural `PartialEq`) keep
 // `match tag { Tag::Npm => ... }` working, and the `_` arms in callers stay live.
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, core::marker::ConstParamTy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Tag(pub u8);
 
 impl Default for Tag {

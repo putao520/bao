@@ -101,14 +101,18 @@ pub fn hash(normalized_path: &[u8]) -> u64 {
 
 // ── NewResolver(comptime tag: Resolution.Tag) type ────────────────────────
 // PORT NOTE: `Resolution.Tag` (Zig nested decl) is `crate::resolution::Tag`;
-// const-generic requires `#[derive(ConstParamTy)]` (already on `Tag`).
-pub struct NewResolver<'a, const TAG: ResolutionTag> {
+// enum/struct-typed const params are nightly-only (`adt_const_params`), so the
+// const generic carries the newtype's `u8` payload (`Tag::Folder.0` etc. at the
+// type aliases below) and comparisons project `.0` — `Tag` is non-exhaustive
+// (values outside the named set are valid lockfile bytes), so there is no
+// total `from_u8` decode to an enum.
+pub struct NewResolver<'a, const TAG: u8> {
     pub folder_path: &'a [u8],
 }
 
-impl<'a, const TAG: ResolutionTag> ResolverContext for NewResolver<'a, TAG> {
+impl<'a, const TAG: u8> ResolverContext for NewResolver<'a, TAG> {
     fn check_bundled_dependencies() -> bool {
-        matches!(TAG, ResolutionTag::Folder | ResolutionTag::Symlink)
+        TAG == ResolutionTag::Folder.0 || TAG == ResolutionTag::Symlink.0
     }
 
     fn count(&mut self, builder: &mut StringBuilder<'_>, _json: &Expr) {
@@ -123,17 +127,17 @@ impl<'a, const TAG: ResolutionTag> ResolverContext for NewResolver<'a, TAG> {
         // Zig: @unionInit(Resolution.Value, @tagName(tag), builder.append(String, this.folder_path))
         let appended = builder.append::<SemverString>(self.folder_path);
         Ok(ResolutionType::<u64>::init(match TAG {
-            ResolutionTag::Folder => TaggedValue::Folder(appended),
-            ResolutionTag::Symlink => TaggedValue::Symlink(appended),
-            ResolutionTag::Workspace => TaggedValue::Workspace(appended),
+            _ if TAG == ResolutionTag::Folder.0 => TaggedValue::Folder(appended),
+            _ if TAG == ResolutionTag::Symlink.0 => TaggedValue::Symlink(appended),
+            _ if TAG == ResolutionTag::Workspace.0 => TaggedValue::Workspace(appended),
             _ => unreachable!(),
         }))
     }
 }
 
-type Resolver<'a> = NewResolver<'a, { ResolutionTag::Folder }>;
-type SymlinkResolver<'a> = NewResolver<'a, { ResolutionTag::Symlink }>;
-type WorkspaceResolver<'a> = NewResolver<'a, { ResolutionTag::Workspace }>;
+type Resolver<'a> = NewResolver<'a, { ResolutionTag::Folder.0 }>;
+type SymlinkResolver<'a> = NewResolver<'a, { ResolutionTag::Symlink.0 }>;
+type WorkspaceResolver<'a> = NewResolver<'a, { ResolutionTag::Workspace.0 }>;
 
 pub(crate) struct CacheFolderResolver {
     pub version: semver::Version,
@@ -167,8 +171,8 @@ impl ResolverContext for CacheFolderResolver {
 pub(crate) trait FolderResolverImpl: ResolverContext {
     const IS_WORKSPACE: bool;
 }
-impl<'a, const TAG: ResolutionTag> FolderResolverImpl for NewResolver<'a, TAG> {
-    const IS_WORKSPACE: bool = matches!(TAG, ResolutionTag::Workspace);
+impl<'a, const TAG: u8> FolderResolverImpl for NewResolver<'a, TAG> {
+    const IS_WORKSPACE: bool = TAG == ResolutionTag::Workspace.0;
 }
 impl FolderResolverImpl for CacheFolderResolver {
     const IS_WORKSPACE: bool = false;

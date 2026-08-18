@@ -1163,7 +1163,7 @@ pub fn normalize_string_generic_tz<
     result
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug, core::marker::ConstParamTy)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Platform {
     Loose,
     Windows,
@@ -1171,12 +1171,11 @@ pub enum Platform {
     Nt,
 }
 
-// PORT NOTE: Zig used `comptime _platform: Platform` const-generics. Nightly
-// `adt_const_params` is now enabled crate-wide (see lib.rs), so `Platform`
-// derives `ConstParamTy` and `<const PLATFORM: Platform>` is the preferred
-// form for new code. The `PlatformT` sealed-trait shim below is kept for
-// existing call sites that haven't been migrated yet — both monomorphize
-// identically (`P::P` is a true `const Platform`).
+// PORT NOTE: Zig used `comptime _platform: Platform` const-generics. Rust's
+// enum-typed const params need nightly `adt_const_params`, so the canonical
+// Rust form is the `PlatformT` sealed-trait below — one zero-sized type per
+// variant, `P::P` a true `const Platform` — which monomorphizes identically
+// (every `<P: PlatformT>` fn is specialized per variant type).
 mod sealed {
     pub trait Sealed {}
 }

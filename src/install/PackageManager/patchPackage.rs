@@ -139,7 +139,7 @@ pub fn do_patch_commit(
         }
     };
 
-    let mut iterator = tree::Iterator::<{ tree::IteratorPathStyle::NodeModules }>::init(&lockfile);
+    let mut iterator = tree::Iterator::<{ tree::IteratorPathStyle::NODE_MODULES }>::init(&lockfile);
     let mut resolution_buf = [0u8; 1024];
     let (changes_dir, pkg): (Vec<u8>, Package) = match arg_kind {
             PatchArgKind::Path => 'result: {
@@ -908,7 +908,7 @@ pub fn prepare_patch(manager: &mut PackageManager) -> Result<(), bun_core::Error
                 let pkg_maybe_version_to_patch = argument;
                 let (name, version) =
                     Dependency::split_name_and_maybe_version(pkg_maybe_version_to_patch);
-                let mut iterator = tree::Iterator::<{ tree::IteratorPathStyle::NodeModules }>::init(
+                let mut iterator = tree::Iterator::<{ tree::IteratorPathStyle::NODE_MODULES }>::init(
                     &manager.lockfile,
                 );
                 let (pkg_id, folder_relative_path) = pkg_info_for_name_and_version(
@@ -1206,7 +1206,7 @@ fn overwrite_package_in_node_modules_folder(
     Ok(())
 }
 
-type NodeModulesIterator<'a> = tree::Iterator<'a, { tree::IteratorPathStyle::NodeModules }>;
+type NodeModulesIterator<'a> = tree::Iterator<'a, { tree::IteratorPathStyle::NODE_MODULES }>;
 
 // PORT NOTE: reshaped for borrowck — `tree::Iterator::next` returns an
 // `IteratorNext<'_>` borrowing the iterator's internal `path_buf`, so we

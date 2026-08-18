@@ -221,7 +221,7 @@ impl Stringifier {
         // PORT NOTE: `from_slices` (vs `init(lockfile)`) is used so the iterator
         // borrows only `buffers.{trees,hoisted_dependencies,dependencies,string_bytes}`;
         // `overrides`/`catalogs` are mutated below while the iterator is still live.
-        let mut pkgs_iter = tree::Iterator::<'_, { tree::IteratorPathStyle::PkgPath }>::from_slices(
+        let mut pkgs_iter = tree::Iterator::<'_, { tree::IteratorPathStyle::PKG_PATH }>::from_slices(
             lockfile.buffers.trees.as_slice(),
             lockfile.buffers.hoisted_dependencies.as_slice(),
             deps_buf,
@@ -698,7 +698,7 @@ impl Stringifier {
                                 })?;
 
                                 // TODO(dylan-conway) move this to "workspaces" object
-                                pkg_bin.to_json::<_, { ToJsonStyle::SingleLine }>(
+                                pkg_bin.to_json::<_, { ToJsonStyle::SINGLE_LINE }>(
                                     None,
                                     buf,
                                     extern_strings,
@@ -1102,7 +1102,7 @@ impl Stringifier {
             } else {
                 b" \"bin\": "
             })?;
-            bin.to_json::<_, { ToJsonStyle::SingleLine }>(
+            bin.to_json::<_, { ToJsonStyle::SINGLE_LINE }>(
                 None,
                 buf,
                 extern_strings,
@@ -1196,7 +1196,7 @@ impl Stringifier {
                 } else {
                     writer.write_all(b"\"bin\": ")?;
                 }
-                bin.to_json::<_, { ToJsonStyle::MultiLine }>(
+                bin.to_json::<_, { ToJsonStyle::MULTI_LINE }>(
                     Some(indent),
                     buf,
                     extern_strings,

@@ -314,7 +314,7 @@ impl Bin {
         Ok(Bin::default())
     }
 
-    pub fn to_json<W: fmt::Write, const STYLE: ToJsonStyle>(
+    pub fn to_json<W: fmt::Write, const STYLE: u8>(
         &self,
         indent: Option<&mut u32>,
         buf: &[u8],
@@ -323,9 +323,11 @@ impl Bin {
         write_indent: fn(&mut W, &mut u32) -> fmt::Result,
     ) -> fmt::Result {
         debug_assert!(self.tag != Tag::None);
+        // Decode the const-generic u8 (see `ToJsonStyle` impl above).
+        let style = ToJsonStyle::from_u8(STYLE);
         // SAFETY: tag determines the active union field
         unsafe {
-            if STYLE == ToJsonStyle::SingleLine {
+            if style == ToJsonStyle::SingleLine {
                 match self.tag {
                     Tag::None => {}
                     Tag::File => {
@@ -466,10 +468,27 @@ impl Bin {
     }
 }
 
-#[derive(core::marker::ConstParamTy, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum ToJsonStyle {
     SingleLine,
     MultiLine,
+}
+
+// Stable-safe const-generic encoding (adt_const_params is nightly-only):
+// `to_json<const STYLE: u8>` takes the u8 mirrors below and decodes via
+// `from_u8` at fn entry — original branches stay unchanged and per-variant
+// monomorphization is preserved (const fn, optimizer-folding).
+impl ToJsonStyle {
+    pub const SINGLE_LINE: u8 = 0;
+    pub const MULTI_LINE: u8 = 1;
+    #[inline(always)]
+    pub const fn from_u8(v: u8) -> Self {
+        if v == 1 {
+            Self::MultiLine
+        } else {
+            Self::SingleLine
+        }
+    }
 }
 
 // `comptime StringBuilder: type` param maps onto the canonical
