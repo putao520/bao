@@ -441,14 +441,22 @@ impl ModuleLoader {
         // handle (server) or pending timer keeps the loop — and therefore the
         // process — alive; only the hook's own `false` (no pending work, or
         // process.exit) ends it.
+        //
+        // BCE (process 'exit' double dispatch): this loop used to call the
+        // hook TWICE per iteration (condition + a bare call after sleep whose
+        // return value was discarded). When the bare call returned false —
+        // after dispatching 'exit' listeners — the loop fell back to the
+        // condition, called the hook again, and dispatched a SECOND time.
+        // Script parity (`JsContext::eval`): exactly one hook call per
+        // iteration; jobs drain at the head so pump-resolved continuations
+        // run before the next loop-alive verdict.
         if let Some(hook) = post_eval_hook {
             loop {
+                drain_job_queue(realm_cx);
                 if !hook(realm_cx) {
                     break;
                 }
                 ::std::thread::sleep(::std::time::Duration::from_millis(1));
-                hook(realm_cx);
-                drain_job_queue(realm_cx);
             }
         }
 
@@ -567,14 +575,17 @@ impl ModuleLoader {
         // by `bao test` on a file with a top-level setInterval). The run
         // paths (`eval_module` / `eval_module_in_realm`) are unbounded —
         // Node process semantics; see their BCE notes.
+        // BCE (process 'exit' double dispatch): single hook call per
+        // iteration — the former bare post-sleep call dispatched 'exit'
+        // and then let the condition dispatch a second time. Jobs drain at
+        // the head, mirroring the unbounded run paths above.
         if let Some(hook) = post_eval_hook {
             for _ in 0..1000 {
+                drain_job_queue(realm_cx);
                 if !hook(realm_cx) {
                     break;
                 }
                 ::std::thread::sleep(::std::time::Duration::from_millis(1));
-                hook(realm_cx);
-                drain_job_queue(realm_cx);
             }
         }
 
@@ -688,14 +699,22 @@ impl ModuleLoader {
         // handle (server) or pending timer keeps the loop — and therefore the
         // process — alive; only the hook's own `false` (no pending work, or
         // process.exit) ends it.
+        //
+        // BCE (process 'exit' double dispatch): this loop used to call the
+        // hook TWICE per iteration (condition + a bare call after sleep whose
+        // return value was discarded). When the bare call returned false —
+        // after dispatching 'exit' listeners — the loop fell back to the
+        // condition, called the hook again, and dispatched a SECOND time.
+        // Script parity (`JsContext::eval`): exactly one hook call per
+        // iteration; jobs drain at the head so pump-resolved continuations
+        // run before the next loop-alive verdict.
         if let Some(hook) = post_eval_hook {
             loop {
+                drain_job_queue(realm_cx);
                 if !hook(realm_cx) {
                     break;
                 }
                 ::std::thread::sleep(::std::time::Duration::from_millis(1));
-                hook(realm_cx);
-                drain_job_queue(realm_cx);
             }
         }
 
@@ -801,14 +820,17 @@ impl ModuleLoader {
         // by `bao test` on a file with a top-level setInterval). The run
         // paths (`eval_module` / `eval_module_in_realm`) are unbounded —
         // Node process semantics; see their BCE notes.
+        // BCE (process 'exit' double dispatch): single hook call per
+        // iteration — the former bare post-sleep call dispatched 'exit'
+        // and then let the condition dispatch a second time. Jobs drain at
+        // the head, mirroring the unbounded run paths above.
         if let Some(hook) = post_eval_hook {
             for _ in 0..1000 {
+                drain_job_queue(realm_cx);
                 if !hook(realm_cx) {
                     break;
                 }
                 ::std::thread::sleep(::std::time::Duration::from_millis(1));
-                hook(realm_cx);
-                drain_job_queue(realm_cx);
             }
         }
 

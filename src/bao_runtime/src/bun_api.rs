@@ -1608,6 +1608,14 @@ thread_local! {
     static SPAWN_WATCHES: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Live exit watchers keep the event loop alive (Node active-handle
+/// semantics: a child process is a ref'd handle — `await proc.exited` must
+/// park the loop until the child is reaped, exactly like a pending timer).
+/// Called from `timers::drain_and_check`'s loop-alive verdict.
+pub fn spawn_watch_loop_alive() -> bool {
+    SPAWN_WATCHES.with(|w| !w.borrow().is_empty())
+}
+
 /// Drive every live Bun.spawn exit watcher on the JS thread. Called from
 /// `timers::drain_and_check` / `drain_one_pass` — the same integration point
 /// as `cluster_pump_all`. For each watched pid whose exit info is published
