@@ -13,7 +13,7 @@ readme = "README.md"
 name = "bao_browser"
 
 [dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.0", default-features = false, features = ["baked-in-resources"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.0", default-features = false, features = ["baked-in-resources", "media-gstreamer"] }
 servo-url = { path = "../../vendor/servo/components/url", package = "bao-servo-url" }
 dpi = "0.1"
 url = "2"
