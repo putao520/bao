@@ -38,7 +38,8 @@ use core::ffi::{c_char, c_int};
 mod phase_c_exports;
 
 // Force-link `bun_platform` so its `#[no_mangle]` C exports
-// (`sys_epoll_pwait2`, `ioctl_ficlone`, …) reach the linker.
+// (`ioctl_ficlone`, …) reach the linker. (`sys_epoll_pwait2` moved to its
+// single owner uws_sys::c_hooks — 2026-08-19 dual-def sweep.)
 use bun_platform as _;
 
 use bun_core::Global;

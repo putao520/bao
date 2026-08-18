@@ -55,7 +55,9 @@ type VirtualMachine = c_void;
 // Bun__napi_module_register_count
 // Bun__isEpollPwait2SupportedOnLinuxKernel
 
-// REAL: now provided by bun_uws (src/uws/lib.rs).
+// REAL: single owner in bao_uloop (src/bao_uloop/src/lib.rs, 47205c81
+// STUB-INVENTORY iron rule; the former bun_uws copy was removed in the
+// 2026-08-19 dual-def sweep).
 // BUN__warn__extra_ca_load_failed
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -63,17 +65,14 @@ type VirtualMachine = c_void;
 // ════════════════════════════════════════════════════════════════════════════
 
 // PHASE-C: C++ callback — Zig: `pub export fn Bun__panic(msg, len) noreturn`
-// REAL: src/main.rs (binary-level export; defined here directly)
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn Bun__panic(msg: *const u8, len: usize) -> ! {
-    let bytes = if msg.is_null() {
-        &b""[..]
-    } else {
-        // SAFETY: `msg` is non-null (checked above) and the C++ caller guarantees it is valid for reading `len` bytes for the duration of this call.
-        unsafe { core::slice::from_raw_parts(msg, len) }
-    };
-    bun_core::output::panic(format_args!("{}", String::from_utf8_lossy(bytes)));
-}
+// BCE (dual no_mangle, 2026-08-19): this used to be defined here (pub(crate)
+// #[no_mangle] still exports the symbol) while bun_uws_sys's c_hooks —
+// co-located with the libusockets.a C code that CALLS it — also defines it.
+// Both land in the bao binary closure; strict linkers (wild) die on the
+// duplicate. Owner: uws_sys::c_hooks (complete by construction — any
+// closure needing the symbol links the C archive, which comes with
+// bun_uws_sys). Zero Rust-side callers here. Do NOT reintroduce.
+// Bun__panic
 
 // REAL: upstream Zig home src/jsc/array_buffer.rs (Bao layer: bun_sm/src/array_buffer.rs).
 // MarkedArrayBuffer_deallocator

@@ -41,11 +41,16 @@ pub use bun_bundler::*;
 // Without this anchor, the linker GCs the #[no_mangle] symbols when
 // bao_bundler is linked as a dependency but no item is explicitly referenced.
 // @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
+// BCE (no_mangle name collision): the anchor symbol used to be the generic
+// `__force_link_entry`, colliding with bao_native_stubs' public
+// force-link entry of the same name — a strict linker (wild) dies on the
+// duplicate when both crates land in one closure. Crate-private anchor
+// names must be namespaced.
 #[used]
-static BAO_BUNDLER_ANCHOR: unsafe extern "C" fn() = __force_link_entry;
+static BAO_BUNDLER_ANCHOR: unsafe extern "C" fn() = __force_link_entry_bao_bundler;
 
 unsafe extern "C" {
-    fn __force_link_entry();
+    fn __force_link_entry_bao_bundler();
 }
 
 /// Keep the macro-seam compilation unit (macro_context.rs) on the link

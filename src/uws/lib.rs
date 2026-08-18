@@ -1,6 +1,6 @@
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 #![warn(unused_must_use)]
-use core::ffi::{c_char, c_void};
+use core::ffi::c_void;
 
 use bun_core::ZStr;
 
@@ -122,23 +122,13 @@ pub fn on_thread_exit() {
     bun_clear_loop_at_thread_exit()
 }
 
-/// # Safety
-/// `filename` and `error_msg` must be valid NUL-terminated C strings.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn BUN__warn__extra_ca_load_failed(
-    filename: *const c_char,
-    error_msg: *const c_char,
-) {
-    // SAFETY: caller contract guarantees valid NUL-terminated strings.
-    let filename = unsafe { bun_core::ffi::cstr(filename) };
-    // SAFETY: caller contract guarantees valid NUL-terminated strings.
-    let error_msg = unsafe { bun_core::ffi::cstr(error_msg) };
-    bun_core::Output::warn(format_args!(
-        "ignoring extra certs from {}, load failed: {}",
-        bstr::BStr::new(filename.to_bytes()),
-        bstr::BStr::new(error_msg.to_bytes()),
-    ));
-}
+// BCE (dual no_mangle, 2026-08-19): BUN__warn__extra_ca_load_failed used to
+// be defined here (pub(crate) #[no_mangle] — no_mangle exports the symbol
+// regardless of Rust visibility) while 47205c81 had already legislated
+// bao_uloop as the single owner (STUB-INVENTORY dual-def iron rule).
+// Consumer links with a strict linker (wild) died on the duplicate. The
+// sole definition lives in bao_uloop/src/lib.rs; root_certs.cpp resolves it
+// at link time. Do NOT reintroduce a definition here.
 
 pub use bun_uws_sys::LIBUS_SOCKET_DESCRIPTOR;
 

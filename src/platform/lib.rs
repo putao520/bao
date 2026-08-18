@@ -4,8 +4,9 @@
 
 // Zig's `Environment.isLinux` is `os.tag == .linux`, which is true on Android
 // (Zig models Android as `os = linux, abi = android`); Rust splits them, so
-// list both so the `#[no_mangle]` C exports (`sys_epoll_pwait2`, …) reach the
-// linker on the `*-linux-android` targets.
+// list both so the `#[no_mangle]` C exports (`ioctl_ficlone`, …) reach the
+// linker on the `*-linux-android` targets. (`sys_epoll_pwait2` moved to its
+// single owner uws_sys::c_hooks — 2026-08-19 dual-def sweep.)
 #[cfg(target_os = "macos")]
 pub mod darwin;
 #[cfg(any(target_os = "linux", target_os = "android"))]

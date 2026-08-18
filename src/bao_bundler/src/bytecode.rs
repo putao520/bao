@@ -9,8 +9,10 @@
 
 /// Force-link anchor — called by `BAO_BUNDLER_ANCHOR` in lib.rs.
 // @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
+// BCE (no_mangle name collision): namespaced — the former generic
+// `__force_link_entry` collided with bao_native_stubs' public entry.
 #[unsafe(no_mangle)]
-extern "C" fn __force_link_entry() {}
+extern "C" fn __force_link_entry_bao_bundler() {}
 
 // ══════════════════════════════════════════════════════════════════════════
 // CYCLEBREAK §Symbol: `__bun_jsc_generate_cached_bytecode`
@@ -109,8 +111,8 @@ mod tests {
 
     #[test]
     fn bytecode_force_link_anchor_exists() {
-        // Verify the __force_link_entry symbol exists (used by BAO_BUNDLER_ANCHOR)
-        let ptr = __force_link_entry as *const ();
+        // Verify the namespaced force-link symbol exists (used by BAO_BUNDLER_ANCHOR)
+        let ptr = __force_link_entry_bao_bundler as *const ();
         assert!(!ptr.is_null());
     }
 }

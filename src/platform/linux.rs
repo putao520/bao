@@ -131,32 +131,12 @@ pub(crate) fn ioctl_ficlone(dest_fd: Fd, srcfd: Fd) -> usize {
     encode_raw_errno(rc) as usize
 }
 
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn sys_epoll_pwait2(
-    epfd: i32,
-    events: *mut libc::epoll_event,
-    maxevents: i32,
-    timeout: *const libc::timespec,
-    sigmask: *const libc::sigset_t,
-) -> isize {
-    // SAFETY: direct Linux syscall; arguments mirror the kernel ABI for epoll_pwait2(2).
-    let rc = unsafe {
-        libc::syscall(
-            libc::SYS_epoll_pwait2,
-            epfd as isize as usize,
-            events as usize,
-            maxevents as isize as usize,
-            timeout as usize,
-            sigmask as usize,
-            // This is the correct value. glibc claims to pass `sizeof sigset_t` for this argument,
-            // which would be 128, but they actually pass 8 which is what the kernel expects.
-            // https://github.com/ziglang/zig/issues/12715
-            8usize,
-        )
-    };
-    // The C caller (epoll_kqueue.c) checks `ret == -EINTR` / `ret != -ENOSYS` against the
-    // raw kernel return; mirror `@bitCast(std.os.linux.syscall6(...))` semantics.
-    encode_raw_errno(rc)
-}
+// BCE (dual no_mangle, 2026-08-19): `sys_epoll_pwait2` used to be defined
+// here AND in bun_uws_sys's c_hooks — both land in the bao binary closure
+// (bun_rust → bun_platform + bun_runtime → bun_uws_sys), and a strict
+// linker (wild) dies on the duplicate. Owner is uws_sys::c_hooks: the only
+// consumers are in libusockets.a (epoll_kqueue.c), and any closure linking
+// that archive necessarily links bun_uws_sys, so the co-located definition
+// is complete. This copy had zero Rust-side callers — do NOT reintroduce.
 
 // ported from: src/platform/linux.zig
