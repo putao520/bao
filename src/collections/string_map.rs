@@ -35,7 +35,16 @@ impl StringMap {
     }
 
     #[inline]
+    #[cfg(bao_nightly)]
     pub fn keys(&self) -> &[Box<[u8]>] {
+        self.map.keys()
+    }
+
+    /// Dual-mode: stable returns the api2 mirror's slice (see
+    /// array_hash_map::keys).
+    #[inline]
+    #[cfg(not(bao_nightly))]
+    pub fn keys(&self) -> &[bun_alloc::core_alloc::AllocBox<[u8], bun_alloc::core_alloc::Global>] {
         self.map.keys()
     }
 

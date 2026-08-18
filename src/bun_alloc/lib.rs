@@ -66,6 +66,13 @@ pub mod core_alloc {
     pub type AllocVec<T, A> = alloc::vec::Vec<T, A>;
     #[cfg(not(bao_nightly))]
     pub type AllocVec<T, A> = allocator_api2::vec::Vec<T, A>;
+
+    /// The allocator-parameterized `Box` (same dual-mode story as
+    /// [`AllocVec`]).
+    #[cfg(bao_nightly)]
+    pub type AllocBox<T, A> = alloc::boxed::Box<T, A>;
+    #[cfg(not(bao_nightly))]
+    pub type AllocBox<T, A> = allocator_api2::boxed::Box<T, A>;
 }
 
 // ──────────────────────────────────────────────────────────────────────────

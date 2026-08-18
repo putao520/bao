@@ -64,12 +64,25 @@ pub struct ArrayListAlignedIn<T> {
 }
 
 /// Zig: `Unmanaged = std.ArrayListAlignedUnmanaged(T, alignment)`
-pub(crate) type Unmanaged<T> = Vec<T>;
+// Dual-mode: on nightly `Vec<T>` IS `Vec<T, Global>` (allocator_api) and the
+// VecExt blanket impl covers it; on stable the api2 mirror's Vec is the
+// VecExt carrier, so the alias points there instead.
+#[cfg(bao_nightly)]
+pub(crate) type Unmanaged<T> = std::vec::Vec<T>;
+#[cfg(not(bao_nightly))]
+pub(crate) type Unmanaged<T> = bun_alloc::core_alloc::AllocVec<T, bun_alloc::core_alloc::Global>;
 
 /// Zig: `Slice = Unmanaged.Slice` (= `[]align(alignment) T`, an owned slice when detached).
 // TODO(port): Zig `Slice` is used both as a borrow (`items()`) and as an owned return
 // (`toOwnedSlice`). Rust splits these: borrows are `&[T]`/`&mut [T]`, owned is `Box<[T]>`.
-pub type Slice<T> = Box<[T]>;
+// Dual-mode: `Box<[T]>` is std's on both channels for the single-param
+// form, but the Vec↔Box conversions only exist within one family — so on
+// stable the slice rides the api2 mirror (both `Unmanaged::from(Box)` and
+// `into_boxed_slice` stay in-family).
+#[cfg(bao_nightly)]
+pub type Slice<T> = std::boxed::Box<[T]>;
+#[cfg(not(bao_nightly))]
+pub type Slice<T> = bun_alloc::core_alloc::AllocBox<[T], bun_alloc::core_alloc::Global>;
 
 // TODO(port): `SentinelSlice` — sentinel-terminated slices have no std Rust equivalent; only
 // needed if a caller uses `fromOwnedSliceSentinel`. Map to `bun_core::ZStr`/`WStr` at call site.
@@ -95,7 +108,7 @@ impl<T> ArrayListAlignedIn<T> {
 
     pub fn init_in(/* allocator dropped */) -> Self {
         Self {
-            unmanaged: Vec::new(),
+            unmanaged: Unmanaged::new(),
         }
     }
 
@@ -108,7 +121,7 @@ impl<T> ArrayListAlignedIn<T> {
         // PERF(port): Vec::with_capacity aborts on OOM rather than returning Err. Could swap to
         // `Vec::try_with_capacity` (nightly) or a fallible wrapper if OOM recovery matters.
         Ok(Self {
-            unmanaged: Vec::with_capacity(num),
+            unmanaged: Unmanaged::with_capacity(num),
         })
     }
 
@@ -117,7 +130,7 @@ impl<T> ArrayListAlignedIn<T> {
 
     pub fn from_owned_slice(slice: Slice<T>) -> Self {
         Self {
-            unmanaged: Vec::from(slice),
+            unmanaged: Unmanaged::from(slice),
         }
     }
 
@@ -125,14 +138,14 @@ impl<T> ArrayListAlignedIn<T> {
     // type. If needed, accept `Box<[T]>` with the sentinel already stripped, or `ZStr`/`WStr`.
     pub fn from_owned_slice_sentinel(/* sentinel: T, */ slice: Slice<T>) -> Self {
         Self {
-            unmanaged: Vec::from(slice),
+            unmanaged: Unmanaged::from(slice),
         }
     }
 
     // TODO(port): `writer()` — Zig returns an `std.io.Writer` that appends bytes. For `T = u8`
     // this is `impl std::io::Write for Vec<u8>` (already in std). For other `T` there is no
     // meaningful writer. TODO(port): expose only on `ArrayListAlignedIn<u8>`.
-    pub fn writer(&mut self) -> &mut Vec<T> {
+    pub fn writer(&mut self) -> &mut Unmanaged<T> {
         &mut self.unmanaged
     }
 
@@ -376,7 +389,7 @@ impl<T> ArrayListAlignedIn<T> {
     /// This method `Drop`s all items.
     pub fn clear_and_free(&mut self) {
         // Zig: `bun.memory.deinit(self.items()); self.clearAndFreeShallow();`
-        self.unmanaged = Vec::new();
+        self.unmanaged = Unmanaged::new();
     }
 
     pub fn ensure_total_capacity(&mut self, new_capacity: usize) -> Result<(), AllocError> {
