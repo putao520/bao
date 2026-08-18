@@ -371,31 +371,51 @@ function _wrapTimerClear(original) {
 })();
 
 // ── emit wiring: Promise ──
-// Replaces globalThis.Promise with a subclass that emits init (type PROMISE)
-// on construction and promiseResolve when it settles. The subclass delegates
-// everything to the original; instanceof/then/await semantics are unchanged.
+// Replaces globalThis.Promise with an IDENTITY-PRESERVING constructor: a
+// plain function whose .prototype IS the original Promise.prototype and
+// whose statics resolve through a prototype-chain link onto the original
+// constructor. A `class Promise extends P` subclass broke the reverse
+// direction — engine-created promises (async functions, await, intrinsics)
+// kept the ORIGINAL prototype, so `p instanceof Promise` and
+// `Object.getPrototypeOf(p) === Promise.prototype` were both false against
+// the patched global (async-function realm split symptom). With the shared
+// prototype, identity holds in BOTH directions: patched constructions
+// return real original instances, and engine-created promises match the
+// patched global too.
 // NO reaction is attached inside the constructor — attaching one would mark
 // every rejection "handled" and suppress the unhandledRejection router.
-// promiseResolve is observed by overriding `then` bookkeeping on the
-// prototype (reaction attached only when the user attaches one).
+// promiseResolve is observed by wrapping `then` on the SHARED prototype
+// (reaction attached only when the user attaches one; untracked promises
+// pass through untouched).
 var _OrigPromise = _g.Promise;
 if (typeof _OrigPromise === 'function') {
   // WeakMap: entries die with the promise (no GC pinning).
   var _prIds = (typeof WeakMap === 'function') ? new WeakMap() : null;
   var _PatchedPromise = (function(P) {
-    var Sub = class Promise extends P {
-      constructor(executor) {
-        var asyncId = _nextAsyncId++;
-        _emitInit(asyncId, 'PROMISE', 0, P);
-        super(executor);
-        if (_prIds) _prIds.set(this, asyncId);
-      }
-    };
-    return Sub;
+    function Promise(executor) {
+      var asyncId = _nextAsyncId++;
+      _emitInit(asyncId, 'PROMISE', 0, P);
+      var inst = new P(executor);
+      if (_prIds) _prIds.set(inst, asyncId);
+      return inst;
+    }
+    // Identity contract: same prototype object ⇒ `p instanceof Promise`
+    // and prototype-chain comparisons hold for BOTH patched constructions
+    // and engine-created (async/await intrinsic) promises.
+    Promise.prototype = P.prototype;
+    Promise.prototype.constructor = Promise;
+    // Statics (resolve/reject/all/allSettled/any/race, Symbol.species)
+    // resolve through the constructor prototype chain; species lookups
+    // land on %Promise.prototype% via our shared prototype, so every
+    // derived construction is a real original instance.
+    Object.setPrototypeOf(Promise, P);
+    return Promise;
   })(_OrigPromise);
   // promiseResolve: piggyback on the user's own fulfilled reactions.
+  // Wrapped on the shared prototype so engine-created promises (which the
+  // old subclass-arm never saw) also report promiseResolve once tracked.
   var _origThen = _OrigPromise.prototype.then;
-  _PatchedPromise.prototype.then = function(onFulfilled, onRejected) {
+  _OrigPromise.prototype.then = function(onFulfilled, onRejected) {
     var asyncId = _prIds ? _prIds.get(this) : undefined;
     var wrappedFulfill = (typeof onFulfilled === 'function' && asyncId !== undefined)
       ? function(v) { _emitPromiseResolve(asyncId); return onFulfilled(v); }
