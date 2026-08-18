@@ -18,7 +18,7 @@ bao-core = "0.0.1"
 
 ```rust,no_run
 use std::time::Duration;
-use bao::{BaoConfig, BrowserError, PageConfig, ScreenshotFormat};
+use bao::{BaoConfig, BaoRuntime, BrowserError, PageConfig, ScreenshotFormat};
 
 fn main() -> Result<(), BrowserError> {
     let runtime = BaoRuntime::new(BaoConfig::default())?;   // 顶层协调器
@@ -38,7 +38,7 @@ fn main() -> Result<(), BrowserError> {
 库配置(`BaoConfig::cdp_port`)启动 CDP server,再同进程或走 WebSocket 连接:
 
 ```rust,no_run
-use bao::{Browser, BaoConfig, BrowserError, ConnectError};
+use bao::{BaoConfig, BaoRuntime, Browser, BrowserError, ConnectError};
 
 fn start_runtime_with_cdp() -> Result<(), BrowserError> {
     // cdp_port 在 ws://127.0.0.1:<port> 启动内置 CDP server。

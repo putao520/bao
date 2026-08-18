@@ -19,7 +19,7 @@ bao-core = "0.0.1"
 
 ```rust,no_run
 use std::time::Duration;
-use bao::{BaoConfig, BrowserError, PageConfig, ScreenshotFormat};
+use bao::{BaoConfig, BaoRuntime, BrowserError, PageConfig, ScreenshotFormat};
 
 fn main() -> Result<(), BrowserError> {
     let runtime = BaoRuntime::new(BaoConfig::default())?;   // top-level coordinator
@@ -40,7 +40,7 @@ Start the CDP server from library config (`BaoConfig::cdp_port`), then
 connect in-process or over WebSocket:
 
 ```rust,no_run
-use bao::{Browser, BaoConfig, BrowserError, ConnectError};
+use bao::{BaoConfig, BaoRuntime, Browser, BrowserError, ConnectError};
 
 fn start_runtime_with_cdp() -> Result<(), BrowserError> {
     // cdp_port starts the built-in CDP server on ws://127.0.0.1:<port>.

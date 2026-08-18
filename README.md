@@ -28,7 +28,7 @@ Top-level `BaoRuntime` → `create_page` → `navigate` → JS → screenshot
 
 ```rust,no_run
 use std::time::Duration;
-use bao::{BaoConfig, BrowserError, PageConfig, PageState, ScreenshotFormat};
+use bao::{BaoConfig, BaoRuntime, BrowserError, PageConfig, PageState, ScreenshotFormat};
 
 fn main() -> Result<(), BrowserError> {
     // One runtime = servo + SpiderMonkey + built-in CDP/Node/Stealth.
@@ -57,7 +57,7 @@ connect the Playwright-style client in-process (zero-copy, no port) or over
 WebSocket:
 
 ```rust,no_run
-use bao::{Browser, BaoConfig, BrowserError, ConnectError};
+use bao::{BaoConfig, BaoRuntime, Browser, BrowserError, ConnectError};
 
 fn start_runtime_with_cdp() -> Result<(), BrowserError> {
     // cdp_port starts the built-in CDP server on ws://127.0.0.1:<port>.
@@ -87,7 +87,7 @@ of the same `Bun` object). Snippet adapted from `examples/03-node-dom` /
 
 ```rust,no_run
 # use std::time::Duration;
-# use bao::{BaoConfig, BrowserError, PageConfig};
+# use bao::{BaoConfig, BaoRuntime, BrowserError, PageConfig};
 # fn main() -> Result<(), BrowserError> {
 #     let runtime = BaoRuntime::new(BaoConfig::default())?;
 #     let page = runtime.create_page(&PageConfig::default())?;

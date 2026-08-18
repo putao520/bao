@@ -26,7 +26,7 @@ use bao::{BaoConfig, BaoRuntime};   // ← 是 `bao`,不是 `bao_core`
 
 ```rust,no_run
 use std::time::Duration;
-use bao::{BaoConfig, BrowserError, PageConfig, PageState, ScreenshotFormat};
+use bao::{BaoConfig, BaoRuntime, BrowserError, PageConfig, PageState, ScreenshotFormat};
 
 fn main() -> Result<(), BrowserError> {
     // 一个 runtime = servo + SpiderMonkey + 内置 CDP/Node/Stealth。
@@ -52,7 +52,7 @@ fn main() -> Result<(), BrowserError> {
 用库配置 `BaoConfig::cdp_port` 启动内置 CDP server,客户端可同进程零拷贝连接,或走 WebSocket(Playwright/Puppeteer 可直连同一 URL):
 
 ```rust,no_run
-use bao::{Browser, BaoConfig, BrowserError, ConnectError};
+use bao::{BaoConfig, BaoRuntime, Browser, BrowserError, ConnectError};
 
 fn start_runtime_with_cdp() -> Result<(), BrowserError> {
     // cdp_port 在 ws://127.0.0.1:<port> 启动内置 CDP server。
@@ -80,7 +80,7 @@ fn connect() -> Result<(), ConnectError> {
 
 ```rust,no_run
 # use std::time::Duration;
-# use bao::{BaoConfig, BrowserError, PageConfig};
+# use bao::{BaoConfig, BaoRuntime, BrowserError, PageConfig};
 # fn main() -> Result<(), BrowserError> {
 #     let runtime = BaoRuntime::new(BaoConfig::default())?;
 #     let page = runtime.create_page(&PageConfig::default())?;
