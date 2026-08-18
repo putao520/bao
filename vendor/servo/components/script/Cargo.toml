@@ -183,7 +183,7 @@ x25519-dalek = { workspace = true }
 x448 = { workspace = true }
 xml5ever = { workspace = true }
 xpath = { workspace = true }
-zeroize = { workspace = true }
+zeroize = { workspace = true, features = ["zeroize_derive"] }
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 mozangle = { workspace = true }
