@@ -418,7 +418,7 @@ impl ThreadPool {
     // perf attributes ~97 % of the build's futex traffic to.
     #[inline]
     pub fn get_worker(&self, id: ThreadId) -> &'static mut Worker {
-        let (generation, worker) = TLS_WORKER.get();
+        let (generation, worker) = tls_worker();
         if generation == self.generation {
             // SAFETY: cached by `get_worker_slow` on this thread; the Worker is
             // heap-pinned (boxed in the slow path) and live while
@@ -439,7 +439,7 @@ impl ThreadPool {
                 MapEntry::Occupied(o) => {
                     let w = *o.into_mut();
                     drop(map);
-                    TLS_WORKER.set((self.generation, w));
+                    tls_worker_set(self.generation, w);
                     // SAFETY: map only stores live heap-allocated Workers (inserted below).
                     return unsafe { &mut *w };
                 }
@@ -480,7 +480,7 @@ impl ThreadPool {
                 stmt_list: None,
             });
             (*worker).init(&*self.v2);
-            TLS_WORKER.set((self.generation, worker));
+            tls_worker_set(self.generation, worker);
             &mut *worker
         }
     }
@@ -489,9 +489,51 @@ impl ThreadPool {
 /// Per-thread cache for [`ThreadPool::get_worker`]. Keyed on
 /// [`ThreadPool::generation`] (not the pool pointer — `Bun.build()` reuse makes
 /// pointer identity ABA). `0` never matches a live pool.
+///
+/// Dual-mode TLS (bun_core::thread_id idiom): a bare `#[thread_local]`
+/// `__thread` slot on nightly — single TLS load, no `LocalKey` init-state
+/// branch, no destructor registration. Stable (no `#[thread_local]`
+/// attribute) uses a const-initialized `thread_local!` — also no lazy-init
+/// branch and no destructor (`Cell` of a `Copy` tuple never drops) — leaving
+/// only the `LocalKey::with` call frame, which the accessors below hide and
+/// which inlines away in release.
+#[cfg(bao_nightly)]
 #[thread_local]
 static TLS_WORKER: core::cell::Cell<(u64, *mut Worker)> =
     core::cell::Cell::new((0, core::ptr::null_mut()));
+
+#[cfg(not(bao_nightly))]
+std::thread_local! {
+    static TLS_WORKER: core::cell::Cell<(u64, *mut Worker)> =
+        const { core::cell::Cell::new((0, core::ptr::null_mut())) };
+}
+
+/// Read the cached `(generation, worker)` pair (dual-mode: direct TLS load on
+/// nightly, `with` on stable).
+#[inline]
+fn tls_worker() -> (u64, *mut Worker) {
+    #[cfg(bao_nightly)]
+    {
+        TLS_WORKER.get()
+    }
+    #[cfg(not(bao_nightly))]
+    {
+        TLS_WORKER.with(|slot| slot.get())
+    }
+}
+
+/// Store the cached `(generation, worker)` pair.
+#[inline]
+fn tls_worker_set(generation: u64, worker: *mut Worker) {
+    #[cfg(bao_nightly)]
+    {
+        TLS_WORKER.set((generation, worker));
+    }
+    #[cfg(not(bao_nightly))]
+    {
+        TLS_WORKER.with(|slot| slot.set((generation, worker)));
+    }
+}
 
 static POOL_GENERATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 
@@ -811,3 +853,62 @@ impl Worker {
 }
 
 // ported from: src/bundler/ThreadPool.zig
+
+#[cfg(test)]
+mod tls_worker_tests {
+    //! Regression pinning `TLS_WORKER`'s dual-mode semantics (bare
+    //! `#[thread_local]` slot on nightly, const-init `thread_local!` on
+    //! stable — accessors hide the difference). Exercises whichever path the
+    //! current channel compiles; both implement the same TLS contract:
+    //! initial `(0, null)` sentinel ("never matches a live pool"),
+    //! get/set roundtrip, and per-thread isolation.
+    use super::*;
+
+    #[test]
+    fn initial_value_is_the_never_match_sentinel() {
+        // `(0, _)`: `get_worker` compares `generation == self.generation`
+        // against live-pool generations (>= 1, POOL_GENERATION starts at 1),
+        // so a fresh thread always takes the slow path.
+        let (generation, worker) = tls_worker();
+        assert_eq!(generation, 0);
+        assert!(worker.is_null());
+    }
+
+    #[test]
+    fn set_then_get_roundtrips() {
+        // Raw non-null dangling sentinel: Cell only stores the bits; nothing
+        // dereferences a TLS-cached pointer except `get_worker`'s fast path,
+        // which is keyed on the generation and not exercised here.
+        let marker = core::ptr::NonNull::<Worker>::dangling().as_ptr();
+        tls_worker_set(7, marker);
+        assert_eq!(tls_worker(), (7, marker));
+        // Restore the sentinel so later tests on this thread start clean.
+        tls_worker_set(0, core::ptr::null_mut());
+    }
+
+    #[test]
+    fn values_are_per_thread() {
+        let marker = core::ptr::NonNull::<Worker>::dangling().as_ptr();
+        tls_worker_set(42, marker);
+        // A fresh thread sees the sentinel, not this thread's write. Raw
+        // pointers never cross the join boundary — only the Send boolean
+        // result does (`*mut Worker` is not `Send`).
+        let spawned_saw_sentinel = std::thread::spawn(|| {
+            let (generation, worker) = tls_worker();
+            generation == 0 && worker.is_null()
+        })
+        .join()
+        .unwrap();
+        assert!(spawned_saw_sentinel);
+        // ...and that thread's own write does not leak back to this thread
+        // (its marker is created inside so no raw pointer is captured).
+        std::thread::spawn(|| {
+            let own = core::ptr::NonNull::<Worker>::dangling().as_ptr();
+            tls_worker_set(99, own);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(tls_worker(), (42, marker));
+        tls_worker_set(0, core::ptr::null_mut());
+    }
+}

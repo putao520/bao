@@ -1,4 +1,11 @@
-#![feature(adt_const_params, allocator_api, thread_local)]
+// Dual-mode build (stable ⇄ nightly): the bare `#[thread_local]` TLS slot in
+// ThreadPool.rs is `#[cfg(bao_nightly)]`-gated with a const-init
+// `thread_local!` stable fallback (bun_core::thread_id idiom). The two
+// remaining features below are NOT dual-moded yet — they are the api2 medium
+// tier (`allocator_api` Vec identity swap + bundler adt stations) owned by
+// other waves; bundler goes stable-green only after those land.
+#![feature(adt_const_params, allocator_api)]
+#![cfg_attr(bao_nightly, feature(thread_local))]
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 #![warn(unused_must_use)]
 
