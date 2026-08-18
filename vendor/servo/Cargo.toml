@@ -279,7 +279,7 @@ stylo_static_prefs = { version = "=0.20.0" }
 stylo_traits = { version = "=0.20.0" }
 surfman = { version = "0.13.0", features = ["chains"] }
 swapper = "0.1"
-syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
+syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing", "printing", "proc-macro"] }
 synstructure = "0.13"
 sys-locale = "0.3"
 taffy = { version = "0.13.0", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"] }
