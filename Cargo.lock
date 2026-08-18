@@ -2515,7 +2515,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ast"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "bun_collections"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
@@ -2766,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -2831,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "bun_css"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -3810,7 +3810,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sourcemap"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -4153,7 +4153,7 @@ dependencies = [
 
 [[package]]
 name = "bun_zstd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bun_core",
  "strum 0.26.3",

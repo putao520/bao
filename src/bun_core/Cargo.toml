@@ -2,7 +2,10 @@
 name = "bun_core"
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. stable dual-mode (allocator_api/thread_local under bao_nightly cfg + tls_thread_id).
-version = "0.1.1"
+# 0.1.2 (2026-08-19): +pub vec/strings API surface (SpareBytesVec,
+# Utf16List, ChanVec, codepoint/convert helpers) that W1 ast/css/
+# sourcemap/zstd 0.1.1 and collections 0.1.2 build against.
+version = "0.1.2"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
