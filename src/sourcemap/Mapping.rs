@@ -21,24 +21,24 @@ trait MappingColumns {
 }
 impl MappingColumns for MultiArrayList<MappingWithoutName> {
     fn items_generated(&self) -> &[LineColumnOffset] {
-        self.items::<"generated", LineColumnOffset>()
+        self.items_named::<LineColumnOffset>("generated")
     }
     fn items_original(&self) -> &[LineColumnOffset] {
-        self.items::<"original", LineColumnOffset>()
+        self.items_named::<LineColumnOffset>("original")
     }
     fn items_source_index(&self) -> &[i32] {
-        self.items::<"source_index", i32>()
+        self.items_named::<i32>("source_index")
     }
 }
 impl MappingColumns for MultiArrayList<Mapping> {
     fn items_generated(&self) -> &[LineColumnOffset] {
-        self.items::<"generated", LineColumnOffset>()
+        self.items_named::<LineColumnOffset>("generated")
     }
     fn items_original(&self) -> &[LineColumnOffset] {
-        self.items::<"original", LineColumnOffset>()
+        self.items_named::<LineColumnOffset>("original")
     }
     fn items_source_index(&self) -> &[i32] {
-        self.items::<"source_index", i32>()
+        self.items_named::<i32>("source_index")
     }
 }
 trait MappingNameColumn {
@@ -46,11 +46,11 @@ trait MappingNameColumn {
 }
 impl MappingNameColumn for MultiArrayList<Mapping> {
     fn items_name_index(&self) -> &[i32] {
-        self.items::<"name_index", i32>()
+        self.items_named::<i32>("name_index")
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(bun_collections::SoaRowDerive, Clone, Copy)]
 pub struct Mapping {
     pub generated: LineColumnOffset,
     pub original: LineColumnOffset,
@@ -70,7 +70,7 @@ impl Default for Mapping {
 }
 
 /// Optimization: if we don't care about the "names" column, then don't store the names.
-#[derive(Clone, Copy, Default)]
+#[derive(bun_collections::SoaRowDerive, Clone, Copy, Default)]
 pub struct MappingWithoutName {
     pub generated: LineColumnOffset,
     pub original: LineColumnOffset,
@@ -211,7 +211,7 @@ impl List {
         // raw column base + len; the column is never reallocated during sort.
         both_lists!(&mut self.r#impl, |list| {
             let generated: *const LineColumnOffset =
-                list.items_raw::<"generated", LineColumnOffset>();
+                list.items_raw_named::<LineColumnOffset>("generated");
             let len = list.len();
             list.sort(&SortContext { generated, len });
         })

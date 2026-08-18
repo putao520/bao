@@ -1,30 +1,26 @@
 //! bun_collections — crate root.
 //! Thin re-export hub mirroring `src/collections/collections.zig`.
 
-// Dual-mode (stable ⇄ nightly; channel probe in build.rs). The four
-// attrs below serve multi_array_list's reflection path
-// (`core::mem::type_info` + `const NAME: &str` column generics, the latter
-// needing adt_const_params + unsized_const_params + const_cmp +
-// const_trait_impl — removing any one of them fails the const field lookup).
-// All seven original attrs therefore ride the nightly cfg together; stable
-// builds stop at this file (see the dual-mode stop report).
-#![cfg_attr(
-    bao_nightly,
-    feature(
-        type_info,
-        core_intrinsics,
-        allocator_api,
-        adt_const_params,
-        unsized_const_params,
-        const_cmp,
-        const_trait_impl
-    )
-)]
-#![cfg_attr(bao_nightly, allow(internal_features, incomplete_features))]
+// Dual-mode (stable ⇄ nightly; channel probe in build.rs). Six of the
+// seven nightly attrs this crate once carried (type_info / core_intrinsics /
+// adt_const_params / unsized_const_params / const_cmp / const_trait_impl)
+// are retired outright: multi_array_list's SoA layout now runs on the
+// `derive(SoaRow)` field table (see bun_collections_macros). Only
+// allocator_api remains (nightly), because the container surfaces name
+// `core::alloc::Allocator` through bun_alloc's `core_alloc` facade and an
+// unstable feature must be declared by every crate that names the trait —
+// stable builds take the api2 mirror instead.
+#![cfg_attr(bao_nightly, feature(allocator_api))]
 #![warn(unused_must_use)]
+// Let the derive's `::bun_collections::…` paths resolve inside this crate
+// itself (unit tests derive SoaRow on local structs).
+extern crate self as bun_collections;
 
 pub mod hive_array;
 pub mod multi_array_list;
+pub use multi_array_list::{SoaFieldInfo, SoaRow};
+/// `#[derive(SoaRow)]` — re-exported so downstream rows use one path.
+pub use bun_collections_macros::SoaRow as SoaRowDerive;
 pub mod vec_ext;
 // `bounded_array` moved down to `bun_core` (cycle-break for the
 // `bun_string → bun_core` merge — `bun_core::string::immutable` needs it).

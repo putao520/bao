@@ -49,6 +49,7 @@ pub type TopLevelSymbolToParts = bun_ast::ast_result::TopLevelSymbolToParts;
 //
 // 26 fields ≤ `multi_array_list::MAX_FIELDS` (32).
 
+#[derive(bun_collections::SoaRowDerive)]
 pub struct BundledAst<'arena> {
     pub approximate_newline_count: u32,
     pub nested_scope_slot_counts: SlotCounts,

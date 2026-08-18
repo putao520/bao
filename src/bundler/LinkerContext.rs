@@ -1514,7 +1514,7 @@ impl SourceMapData {
             this.graph
                 .files
                 .slice()
-                .items_raw::<"line_offset_table", SourceMap::line_offset_table::List<bun_alloc::AstAlloc>>()
+                .items_raw_named::<SourceMap::line_offset_table::List<bun_alloc::AstAlloc>>("line_offset_table")
                 .add(source_index as usize)
         };
 
@@ -1569,7 +1569,7 @@ impl SourceMapData {
                 .graph
                 .files
                 .slice()
-                .items_raw::<"quoted_source_contents", Option<bun_alloc::AstVec<u8>>>()
+                .items_raw_named::<Option<bun_alloc::AstVec<u8>>>("quoted_source_contents")
                 .add(source_index as usize)
         };
         *quoted_source_contents = None;

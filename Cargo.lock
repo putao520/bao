@@ -2517,6 +2517,7 @@ dependencies = [
 name = "bun_ast"
 version = "0.1.0"
 dependencies = [
+ "allocator-api2",
  "bitflags 2.11.1",
  "bstr",
  "bumpalo",
@@ -2741,6 +2742,7 @@ version = "0.1.0"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
+ "bun_collections_macros",
  "bun_core",
  "bun_ptr",
  "bun_simdutf_sys",
@@ -2751,6 +2753,15 @@ dependencies = [
  "smallvec",
  "strum 0.26.3",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bun_collections_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -2822,6 +2833,7 @@ dependencies = [
 name = "bun_css"
 version = "0.1.0"
 dependencies = [
+ "allocator-api2",
  "bitflags 2.11.1",
  "bstr",
  "bumpalo",
@@ -3800,6 +3812,7 @@ dependencies = [
 name = "bun_sourcemap"
 version = "0.1.0"
 dependencies = [
+ "allocator-api2",
  "bitflags 2.11.1",
  "bstr",
  "bumpalo",

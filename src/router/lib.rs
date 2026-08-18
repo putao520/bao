@@ -349,6 +349,7 @@ impl<'a> Router<'a> {
 
 pub const BANNED_DIRS: [&[u8]; 1] = [b"node_modules"];
 
+#[derive(bun_collections::SoaRowDerive)]
 struct RouteIndex {
     route: Box<Route>,
     name: &'static [u8],

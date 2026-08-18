@@ -1958,7 +1958,7 @@ pub struct EntryDataMap {
 // per-field column accessors. Using Vec<MapEntry> as a placeholder shape.
 pub type EntryDataMapList = Vec<MapEntry>;
 
-#[derive(Clone)]
+#[derive(bun_collections::SoaRowDerive, Clone)]
 pub struct MapEntry {
     pub key: Box<[u8]>, // TODO(port): lifetime — borrows source contents in Zig
     pub key_range: bun_ast::Range,
@@ -2083,7 +2083,7 @@ impl Status {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(bun_collections::SoaRowDerive, Clone, Copy)]
 pub struct Package<'a> {
     /// Borrows from the `specifier` argument to `Package::parse`.
     pub name: &'a [u8],

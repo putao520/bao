@@ -40,6 +40,7 @@ pub struct YarnLock<'a> {
     pub entries: Vec<Entry<'a>>,
 }
 
+#[derive(bun_collections::SoaRowDerive)]
 pub struct Entry<'a> {
     pub specs: Vec<&'a [u8]>,
     pub version: &'a [u8],

@@ -1073,6 +1073,7 @@ impl fmt::Display for Op {
 
 // ─── WatchItem ────────────────────────────────────────────────────────────
 
+#[derive(bun_collections::SoaRowDerive)]
 pub struct WatchItem {
     pub file_path: Cow<'static, [u8]>,
     // filepath hash for quick comparison
@@ -1110,51 +1111,51 @@ pub trait WatchItemColumns {
 
 impl WatchItemColumns for WatchList {
     fn items_file_path(&self) -> &[Cow<'static, [u8]>] {
-        self.items::<"file_path", Cow<'static, [u8]>>()
+        self.items_named::<Cow<'static, [u8]>>("file_path")
     }
     fn items_hash(&self) -> &[u32] {
-        self.items::<"hash", u32>()
+        self.items_named::<u32>("hash")
     }
     fn items_fd(&self) -> &[Fd] {
-        self.items::<"fd", Fd>()
+        self.items_named::<Fd>("fd")
     }
     fn items_fd_mut(&mut self) -> &mut [Fd] {
-        self.items_mut::<"fd", Fd>()
+        self.items_named_mut::<Fd>("fd")
     }
     fn items_parent_hash(&self) -> &[u32] {
-        self.items::<"parent_hash", u32>()
+        self.items_named::<u32>("parent_hash")
     }
     fn items_kind(&self) -> &[WatchItemKind] {
-        self.items::<"kind", WatchItemKind>()
+        self.items_named::<WatchItemKind>("kind")
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn items_eventlist_index(&self) -> &[platform::EventListIndex] {
-        self.items::<"eventlist_index", platform::EventListIndex>()
+        self.items_named::<platform::EventListIndex>("eventlist_index")
     }
 }
 
 impl WatchItemColumns for bun_collections::multi_array_list::Slice<WatchItem> {
     fn items_file_path(&self) -> &[Cow<'static, [u8]>] {
-        self.items::<"file_path", Cow<'static, [u8]>>()
+        self.items_named::<Cow<'static, [u8]>>("file_path")
     }
     fn items_hash(&self) -> &[u32] {
-        self.items::<"hash", u32>()
+        self.items_named::<u32>("hash")
     }
     fn items_fd(&self) -> &[Fd] {
-        self.items::<"fd", Fd>()
+        self.items_named::<Fd>("fd")
     }
     fn items_fd_mut(&mut self) -> &mut [Fd] {
-        self.items_mut::<"fd", Fd>()
+        self.items_named_mut::<Fd>("fd")
     }
     fn items_parent_hash(&self) -> &[u32] {
-        self.items::<"parent_hash", u32>()
+        self.items_named::<u32>("parent_hash")
     }
     fn items_kind(&self) -> &[WatchItemKind] {
-        self.items::<"kind", WatchItemKind>()
+        self.items_named::<WatchItemKind>("kind")
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn items_eventlist_index(&self) -> &[platform::EventListIndex] {
-        self.items::<"eventlist_index", platform::EventListIndex>()
+        self.items_named::<platform::EventListIndex>("eventlist_index")
     }
 }
 

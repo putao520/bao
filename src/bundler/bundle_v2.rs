@@ -644,7 +644,7 @@ pub mod bv2_impl {
             /// (not byte-layout), so that packing is not load-bearing here — store a
             /// `RawSlice` instead and let `bun_ptr` encapsulate the unsafe re-borrow.
             /// `RawSlice<u8>: Send + Sync`, so no manual auto-trait impls are needed.
-            #[derive(Copy, Clone)]
+            #[derive(bun_collections::SoaRowDerive, Copy, Clone)]
             pub struct InputFile {
                 abs_path: bun_ptr::RawSlice<u8>,
                 pub side: Side,
@@ -7493,6 +7493,7 @@ pub mod bv2_impl {
         }
     }
 
+    #[derive(bun_collections::SoaRowDerive)]
     pub struct CompileResultForSourceMap {
         pub source_map_chunk: bun_sourcemap::Chunk,
         pub generated_offset: bun_sourcemap::LineColumnOffset,

@@ -3489,7 +3489,7 @@ pub mod serializer {
                     // need to check if any values were created from an older version of bun
                     // (currently just `has_install_script`). If any are found, the values need
                     // to be updated before saving the lockfile.
-                    let metas: &mut [Meta] = sliced.items_mut::<"meta", Meta>();
+                    let metas: &mut [Meta] = sliced.items_named_mut::<Meta>("meta");
                     for meta in metas {
                         if meta.needs_update() {
                             *needs_update = true;

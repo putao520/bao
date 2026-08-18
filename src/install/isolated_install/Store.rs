@@ -272,6 +272,7 @@ pub mod entry {
     pub type List = MultiArrayList<Entry>;
     pub(crate) type Dependencies = OrderedArraySet<DependenciesItem>;
 
+    #[derive(bun_collections::SoaRowDerive)]
     pub struct Entry {
         // Used to get dependency name for destination path and peers
         // for store path

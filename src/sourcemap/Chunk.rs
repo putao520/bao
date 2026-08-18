@@ -754,10 +754,10 @@ impl NewBuilder<VLQSourceMap> {
             let first_non_ascii = self.line_offset_table_first_non_ascii[idx];
             if original_column >= first_non_ascii as i32 {
                 let cols: &[i32] = match &self.lazy_line_offset_tables {
-                    Some(t) => &t.0.items::<"columns_for_non_ascii", Box<[i32]>>()[idx],
+                    Some(t) => &t.0.items_named::<Box<[i32]>>("columns_for_non_ascii")[idx],
                     None => &self
                         .line_offset_tables
-                        .items::<"columns_for_non_ascii", Box<[i32], bun_alloc::AstAlloc>>()[idx],
+                        .items_named::<Box<[i32]>>("columns_for_non_ascii")[idx],
                 };
                 if !cols.is_empty() {
                     original_column = cols[(original_column as u32 - first_non_ascii) as usize];

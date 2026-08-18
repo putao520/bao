@@ -2268,7 +2268,7 @@ impl TransformResult {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(bun_collections::SoaRowDerive, Debug, Clone)]
 pub struct EnvEntry {
     pub key: Box<[u8]>,
     pub value: Box<[u8]>,
@@ -2382,8 +2382,8 @@ impl Env {
             dotenv: self.behavior,
             prefix: self.prefix.clone(),
             defaults: api::StringMap {
-                keys: slice.items::<"key", Box<[u8]>>().to_vec(),
-                values: slice.items::<"value", Box<[u8]>>().to_vec(),
+                keys: slice.items_named::<Box<[u8]>>("key").to_vec(),
+                values: slice.items_named::<Box<[u8]>>("value").to_vec(),
             },
         }
     }
@@ -2395,7 +2395,7 @@ impl Env {
         value: &[u8],
     ) -> Result<(), bun_alloc::AllocError> {
         let slice = self.defaults.slice();
-        for _key in slice.items::<"key", Box<[u8]>>().iter() {
+        for _key in slice.items_named::<Box<[u8]>>("key").iter() {
             if key == &**_key {
                 return Ok(());
             }

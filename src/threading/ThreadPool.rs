@@ -1482,7 +1482,7 @@ impl Event {
 
 /// Linked list intrusive memory node and lock-free data structures to operate with it
 #[repr(C)]
-#[derive(Default)]
+#[derive(bun_collections::SoaRowDerive, Default)]
 pub struct Node {
     pub next: *mut Node,
 }

@@ -22,7 +22,7 @@ pub(crate) struct WorkspaceMap {
 
 type Map = StringArrayHashMap<Entry>;
 
-#[derive(Default)]
+#[derive(bun_collections::SoaRowDerive, Default)]
 pub struct Entry {
     pub name: Box<[u8]>,
     pub version: Option<Box<[u8]>>,

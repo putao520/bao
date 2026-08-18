@@ -11,7 +11,7 @@
 //! and also improves cache usage if only some fields are needed for a
 //! computation. The primary API for accessing fields is the `slice()`
 //! function, which computes the start pointers for the array of each field.
-//! From the slice you can call `.items::<"field_name", FieldType>()` to obtain
+//! From the slice you can call `.items_named::<FieldType>("field_name")` to obtain
 //! a slice of field values.
 //!
 //! Implementation note: this port uses nightly `core::mem::type_info`
@@ -48,12 +48,11 @@
 //! `<[MaybeUninit<u8>]>` slice ops over [`Col`]/[`ColMut`] views.
 
 use core::alloc::Layout;
-use core::any::TypeId;
 use core::marker::PhantomData;
-use core::mem::type_info::{Type as TypeInfo, TypeKind};
 use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ptr::{self, NonNull};
-use std::alloc::{Allocator, Global};
+
+use bun_alloc::core_alloc::{Allocator, Global};
 
 use bun_alloc::AllocError;
 
@@ -71,7 +70,7 @@ use bun_alloc::AllocError;
 /// //   on both MultiArrayList<Foo> and Slice<Foo>.
 /// ```
 ///
-/// Each generated method calls `items::<"field", $ty>()`, so the field name
+/// Each generated method calls `items_named::<$ty>("field")`, so the field name
 /// and type are checked against `$T`'s reflected layout at compile time —
 /// a typo or type mismatch is a const-eval error, not UB.
 #[macro_export]
@@ -197,7 +196,7 @@ macro_rules! __mal_split_mut_impl {
             unsafe {
                 $struct {
                     $( $field: ::core::slice::from_raw_parts_mut(
-                        self.items_raw::<{ ::core::stringify!($field) }, $ty>(),
+                        self.items_raw_named::<$ty>(::core::stringify!($field)),
                         __len,
                     ), )*
                     __mal: ::core::marker::PhantomData,
@@ -216,7 +215,7 @@ macro_rules! __mal_split_raw_impl {
             let __len = self.len();
             $struct {
                 $( $field: ::core::ptr::slice_from_raw_parts_mut(
-                    self.items_raw::<{ ::core::stringify!($field) }, $ty>(),
+                    self.items_raw_named::<$ty>(::core::stringify!($field)),
                     __len,
                 ), )*
                 __mal: ::core::marker::PhantomData,
@@ -232,11 +231,11 @@ macro_rules! __mal_column_impl {
         $crate::__mal_paste! {
             #[inline]
             fn [<items_ $field>](&self) -> &[$ty] {
-                self.items::<{ ::core::stringify!($field) }, $ty>()
+                self.items_named::<$ty>(::core::stringify!($field))
             }
             #[inline]
             fn [<items_ $field _mut>](&mut self) -> &mut [$ty] {
-                self.items_mut::<{ ::core::stringify!($field) }, $ty>()
+                self.items_named_mut::<$ty>(::core::stringify!($field))
             }
         }
     };
@@ -248,32 +247,30 @@ macro_rules! __mal_column_impl {
 /// every caller.
 pub(crate) const MAX_FIELDS: usize = 32;
 
-// ──────────────────────── const-eval reflection helpers ───────────────────
+// ───────────────────────── SoA field-table registry ───────────────────────
+//
+// One registration path on both channels: `derive(SoaRow)` stamps the table
+// from the struct definition (`size_of`/`offset_of!`), replacing the retired
+// nightly `core::mem::type_info` reflection wholesale.
 
-use crate::const_str_eq;
-
-/// `TypeId` of `F` without the `'static` bound `TypeId::of` imposes — needed
-/// because reflected `Field::ty` ids are not `'static`-restricted, and column
-/// callers routinely use lifetime-carrying field types (`&'a [u8]`, `Ref<'a>`).
-///
-/// Nightly treats `type_id` as a comptime intrinsic — call only inside `const { }`.
-#[inline(always)]
-const fn type_id_of<F: ?Sized>() -> TypeId {
-    const { core::intrinsics::type_id::<F>() }
+/// One registered column: declaration-order field name, exact field size,
+/// and the field's offset inside the row struct.
+pub struct SoaFieldInfo {
+    pub name: &'static str,
+    pub size: usize,
+    pub offset: usize,
 }
 
-/// Reflected fields of `T` (struct only). Panics at const-eval for non-structs.
-const fn fields_of<T>() -> &'static [core::mem::type_info::Field] {
-    match TypeInfo::of::<T>().kind {
-        TypeKind::Struct(s) => s.fields,
-        _ => panic!("MultiArrayList<T>: T must be a struct with named fields"),
-    }
+/// Field-table registration for `MultiArrayList` row types — derive it with
+/// `#[derive(SoaRow)]` (see `bun_collections_macros`).
+pub trait SoaRow {
+    const SOA_FIELDS: &'static [SoaFieldInfo];
 }
 
 /// Number of fields in `T`.
 #[inline(always)]
-pub(crate) const fn field_count<T>() -> usize {
-    fields_of::<T>().len()
+pub(crate) const fn field_count<T: SoaRow>() -> usize {
+    T::SOA_FIELDS.len()
 }
 
 /// Column-layout sort key for a field of `size` bytes within a struct of
@@ -323,39 +320,11 @@ const ZERO_META: FieldMeta = FieldMeta {
     align: 1,
 };
 
-/// Extract the byte size of a *primitive* type from its `TypeKind`.
-///
-/// For compound types (Struct, Enum, Union, Tuple, Array, etc.) this
-/// returns `None` because the current `type_info` MVP does not expose a
-/// `.size()` method on those variants. The caller must fall back to
-/// offset-delta computation for those.
-///
-/// Handles fat pointers (`&[T]`, `&str`, `&dyn Trait`) as 16 bytes
-/// (data ptr + metadata on 64-bit).
-const fn primitive_size(kind: &TypeKind) -> Option<usize> {
-    match kind {
-        TypeKind::Bool(_) => Some(1),
-        TypeKind::Char(_) => Some(4),
-        TypeKind::Int(i) => Some(i.bits as usize / 8),
-        TypeKind::Float(f) => Some(f.bits as usize / 8),
-        TypeKind::FnPtr(_) => Some(8),
-        // Thin pointers: &T where T: Sized
-        TypeKind::Pointer(p) => match p.pointee.info().kind {
-            TypeKind::Slice(_) | TypeKind::Str(_) | TypeKind::DynTrait(_) => Some(16),
-            _ => Some(8),
-        },
-        TypeKind::Reference(r) => match r.pointee.info().kind {
-            TypeKind::Slice(_) | TypeKind::Str(_) | TypeKind::DynTrait(_) => Some(16),
-            _ => Some(8),
-        },
-        _ => None,
-    }
-}
 
 /// Per-`T` reflected layout, fully const-evaluated.
-struct Reflected<T>(PhantomData<T>);
+struct Reflected<T: SoaRow>(PhantomData<T>);
 
-impl<T> Reflected<T> {
+impl<T: SoaRow> Reflected<T> {
     const COUNT: usize = field_count::<T>();
     const ALIGN: usize = core::mem::align_of::<T>();
 
@@ -364,9 +333,13 @@ impl<T> Reflected<T> {
     /// `*const F` yields a valid (non-null, aligned) zero-length-slice base.
     const DANGLING: NonNull<u8> = NonNull::<T>::dangling().cast::<u8>();
 
-    /// `[FieldMeta; COUNT]` in declaration order.
+/// `[FieldMeta; COUNT]` in declaration order. Every value comes straight
+    /// from the derive-stamped registry — `size` is the field type's exact
+    /// `size_of` (no padding-span approximations: the retired reflection
+    /// path's offset-delta fallback over-allocated trailing padding into the
+    /// column stride), `offset` is `offset_of!`.
     const META: [FieldMeta; MAX_FIELDS] = {
-        let fields = fields_of::<T>();
+        let fields = T::SOA_FIELDS;
         let n = fields.len();
         assert!(
             n <= MAX_FIELDS,
@@ -374,46 +347,13 @@ impl<T> Reflected<T> {
         );
         let mut out = [ZERO_META; MAX_FIELDS];
         let struct_align = core::mem::align_of::<T>();
-        let total_size = core::mem::size_of::<T>();
         let mut i = 0;
         while i < n {
-            let f = &fields[i];
-            // Compute size: try TypeId::size() first (handles enums and other
-            // non-primitive types precisely), then primitive_size, then fall
-            // back to offset-delta (includes trailing padding, which is safe
-            // for SoA column stride). For the last field, use total_size - offset.
-            let size = match f.ty.size() {
-                Some(s) if s > 0 => s,
-                _ => match primitive_size(&f.ty.info().kind) {
-                    Some(s) => s,
-                    None => {
-                        // Fields may be reordered by the compiler, so the next
-                        // field in declaration order does NOT necessarily have a
-                        // larger offset.  Find the smallest offset strictly greater
-                        // than `f.offset` across *all* fields; the delta is the
-                        // usable span (includes inter-field padding, which is safe
-                        // for SoA column stride).
-                        let mut next_offset = total_size;
-                        let mut j = 0;
-                        while j < n {
-                            let o = fields[j].offset;
-                            if o > f.offset && o < next_offset {
-                                next_offset = o;
-                            }
-                            j += 1;
-                        }
-                        if f.offset < next_offset {
-                            next_offset - f.offset
-                        } else {
-                            0 // ZST field at the end
-                        }
-                    }
-                },
-            };
+            let size = fields[i].size;
             let align = align_sort_key(size, struct_align);
             out[i] = FieldMeta {
                 size,
-                offset: f.offset,
+                offset: fields[i].offset,
                 align,
             };
             i += 1;
@@ -484,34 +424,29 @@ impl<T> Reflected<T> {
 
     /// Field index for `NAME`; const-panics if no such field.
     #[cfg(test)]
-    const fn index_of<const NAME: &'static str>() -> usize {
-        let fields = fields_of::<T>();
+/// Field index for `name`; panics if no such field (runtime lookup — the
+    /// registry is a table, and both channels share this path).
+    #[cfg(test)]
+    fn index_of(name: &str) -> usize {
+        let fields = T::SOA_FIELDS;
         let mut i = 0;
         while i < fields.len() {
-            if const_str_eq(fields[i].name, NAME) {
+            if fields[i].name == name {
                 return i;
             }
             i += 1;
         }
-        panic!("MultiArrayList: no such field");
+        panic!("MultiArrayList: no such field {:?}", name);
     }
 
-    /// Const-panics unless field `NAME` exists and has type `F`.
-    ///
-    /// The type check is `TypeId` equality with a fallback to size equality:
-    /// the experimental reflection intrinsic occasionally produces a distinct
-    /// `TypeId` for the same nominal type when reached through an inherent
-    /// associated type alias (e.g. `EntryPoint::Kind` vs `entry_point::Kind`),
-    /// so a size match is accepted when ids differ. Size mismatch is always
-    /// rejected.
-    const fn check<const NAME: &'static str, F>() -> usize {
-        let fields = fields_of::<T>();
+    /// Field index for `name`, asserting the column type's size matches `F`.
+    /// Panics on unknown field or size mismatch. The size check is the
+    /// retired reflection path's last line of defense, kept verbatim.
+    fn check_named<F>(name: &str) -> usize {
+        let fields = T::SOA_FIELDS;
         let mut i = 0;
         while i < fields.len() {
-            if const_str_eq(fields[i].name, NAME) {
-                if fields[i].ty == type_id_of::<F>() {
-                    return i;
-                }
+            if fields[i].name == name {
                 assert!(
                     Self::META[i].size == core::mem::size_of::<F>(),
                     "MultiArrayList: column type does not match field type",
@@ -520,7 +455,7 @@ impl<T> Reflected<T> {
             }
             i += 1;
         }
-        panic!("MultiArrayList: no such field");
+        panic!("MultiArrayList: no such field {:?}", name);
     }
 }
 
@@ -534,7 +469,7 @@ impl<T> Reflected<T> {
 /// Under that invariant the result is `T`-aligned for `cap == 0` and aligned
 /// to field `fi`'s true alignment for `cap > 0` (see [`align_sort_key`]).
 #[inline(always)]
-fn column_base<T>(bytes: NonNull<u8>, cap: usize, fi: usize) -> NonNull<u8> {
+fn column_base<T: SoaRow>(bytes: NonNull<u8>, cap: usize, fi: usize) -> NonNull<u8> {
     debug_assert!(fi < Reflected::<T>::COUNT);
     let off = Reflected::<T>::COLUMN_OFFSET_PER_CAP[fi] * cap;
     // SAFETY: `INVARIANT:column_base` — `cap == 0` ⇒ `off == 0` and `add(0)`
@@ -605,7 +540,7 @@ pub trait SortContext {
 }
 
 /// Struct-of-arrays list. See module docs.
-pub struct MultiArrayList<T, A: Allocator = Global> {
+pub struct MultiArrayList<T: SoaRow, A: Allocator = Global> {
     bytes: NonNull<u8>,
     len: usize,
     capacity: usize,
@@ -614,7 +549,7 @@ pub struct MultiArrayList<T, A: Allocator = Global> {
 }
 
 // SAFETY: `bytes` is uniquely owned; the only shared state is the allocator.
-unsafe impl<T: Send, A: Allocator + Send> Send for MultiArrayList<T, A> {}
+unsafe impl<T: SoaRow + Send, A: Allocator + Send> Send for MultiArrayList<T, A> {}
 // NOTE: deliberately not `Sync`. `slice(&self)` hands out an owned, `Copy`
 // `Slice<T>` whose safe `items_mut`/`set` mutate the shared backing buffer, so
 // two threads holding `&MultiArrayList` could race through `slice()`. Revisit
@@ -630,7 +565,7 @@ unsafe impl<T: Send, A: Allocator + Send> Send for MultiArrayList<T, A> {}
 /// large number of `.slice()` snapshot sites that intentionally exploit it for
 /// borrowck (see `LinkerGraph::load`, `bundle_v2`). Tracked separately; treat
 /// `Slice<T>` as a raw-pointer set and avoid overlapping mutable views.
-pub struct Slice<T> {
+pub struct Slice<T: SoaRow> {
     /// Indexed by declaration-order field index.
     ptrs: [NonNull<u8>; MAX_FIELDS],
     len: usize,
@@ -638,16 +573,16 @@ pub struct Slice<T> {
     _marker: PhantomData<T>,
 }
 
-impl<T> Clone for Slice<T> {
+impl<T: SoaRow> Clone for Slice<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<T> Copy for Slice<T> {}
+impl<T: SoaRow> Copy for Slice<T> {}
 
 // ───────────────────────────── Slice ─────────────────────────────
 
-impl<T> Slice<T> {
+impl<T: SoaRow> Slice<T> {
     pub const EMPTY: Self = Self {
         ptrs: [Reflected::<T>::DANGLING; MAX_FIELDS],
         len: 0,
@@ -695,20 +630,20 @@ impl<T> Slice<T> {
         self.ptrs[fi].cast::<F>()
     }
 
-    /// Returns the column slice for field `NAME` typed as `&[F]`.
+    /// Returns the column slice for field `name` typed as `&[F]`.
     ///
-    /// Compile-time checked: a const-eval assertion verifies that `T` has a
-    /// field named `NAME` and that its type is exactly `F`.
+    /// Checked at lookup: the registry lookup asserts that `T` has a field
+    /// named `name` and that its size matches `F` (panics otherwise).
     #[inline]
-    pub fn items<const NAME: &'static str, F>(&self) -> &[F] {
-        let fi = const { Reflected::<T>::check::<NAME, F>() };
+    pub fn items_named<F>(&self, name: &str) -> &[F] {
+        let fi = Reflected::<T>::check_named::<F>(name);
         Col::new(self.col_ptr::<F>(fi), self.len).as_slice()
     }
 
-    /// Returns the mutable column slice for field `NAME` typed as `&mut [F]`.
+    /// Returns the mutable column slice for field `name` typed as `&mut [F]`.
     #[inline]
-    pub fn items_mut<const NAME: &'static str, F>(&mut self) -> &mut [F] {
-        let fi = const { Reflected::<T>::check::<NAME, F>() };
+    pub fn items_named_mut<F>(&mut self, name: &str) -> &mut [F] {
+        let fi = Reflected::<T>::check_named::<F>(name);
         ColMut::new(self.col_ptr::<F>(fi), self.len).as_mut_slice()
     }
 
@@ -722,8 +657,8 @@ impl<T> Slice<T> {
     /// `self.len()` reads/writes; the caller must not create overlapping
     /// `&mut` references to the same column when *dereferencing* it.
     #[inline]
-    pub fn items_raw<const NAME: &'static str, F>(&self) -> *mut F {
-        let fi = const { Reflected::<T>::check::<NAME, F>() };
+    pub fn items_raw_named<F>(&self, name: &str) -> *mut F {
+        let fi = Reflected::<T>::check_named::<F>(name);
         self.col_ptr::<F>(fi).as_ptr()
     }
 
@@ -926,13 +861,13 @@ impl<T> Slice<T> {
 
 // ───────────────────────────── MultiArrayList ─────────────────────────────
 
-impl<T, A: Allocator + Default> Default for MultiArrayList<T, A> {
+impl<T: SoaRow, A: Allocator + Default> Default for MultiArrayList<T, A> {
     fn default() -> Self {
         Self::new_in(A::default())
     }
 }
 
-impl<T> MultiArrayList<T, Global> {
+impl<T: SoaRow> MultiArrayList<T, Global> {
     pub const EMPTY: Self = Self {
         bytes: Reflected::<T>::DANGLING,
         len: 0,
@@ -942,7 +877,7 @@ impl<T> MultiArrayList<T, Global> {
     };
 }
 
-impl<T, A: Allocator> MultiArrayList<T, A> {
+impl<T: SoaRow, A: Allocator> MultiArrayList<T, A> {
     /// Construct an empty list backed by `alloc`.
     #[inline]
     pub const fn new_in(alloc: A) -> Self {
@@ -999,28 +934,25 @@ impl<T, A: Allocator> MultiArrayList<T, A> {
         column_base::<T>(self.bytes, self.capacity, fi).cast::<F>()
     }
 
-    /// Get the shared slice of values for field `NAME`.
-    ///
-    /// Compile-time checked: const-eval verifies `NAME` is a field of `T` and
-    /// `F` is exactly its type.
+    /// Get the shared slice of values for field `name` (size-checked lookup).
     #[inline]
-    pub fn items<const NAME: &'static str, F>(&self) -> &[F] {
-        let fi = const { Reflected::<T>::check::<NAME, F>() };
+    pub fn items_named<F>(&self, name: &str) -> &[F] {
+        let fi = Reflected::<T>::check_named::<F>(name);
         Col::new(self.col_ptr::<F>(fi), self.len).as_slice()
     }
 
-    /// Get the mutable slice of values for field `NAME`.
+    /// Get the mutable slice of values for field `name`.
     #[inline]
-    pub fn items_mut<const NAME: &'static str, F>(&mut self) -> &mut [F] {
-        let fi = const { Reflected::<T>::check::<NAME, F>() };
+    pub fn items_named_mut<F>(&mut self, name: &str) -> &mut [F] {
+        let fi = Reflected::<T>::check_named::<F>(name);
         ColMut::new(self.col_ptr::<F>(fi), self.len).as_mut_slice()
     }
 
     /// Raw column pointer; see [`Slice::items_raw`]. Obtaining the pointer is
     /// always sound; the read/write contract is on the caller's *dereference*.
     #[inline]
-    pub fn items_raw<const NAME: &'static str, F>(&self) -> *mut F {
-        let fi = const { Reflected::<T>::check::<NAME, F>() };
+    pub fn items_raw_named<F>(&self, name: &str) -> *mut F {
+        let fi = Reflected::<T>::check_named::<F>(name);
         self.col_ptr::<F>(fi).as_ptr()
     }
 
@@ -1336,7 +1268,7 @@ impl<T, A: Allocator> MultiArrayList<T, A> {
     }
 }
 
-impl<T, A: Allocator> Drop for MultiArrayList<T, A> {
+impl<T: SoaRow, A: Allocator> Drop for MultiArrayList<T, A> {
     fn drop(&mut self) {
         // Zig `deinit(self, gpa)`: `gpa.free(self.allocatedBytes())` — slab
         // only, no per-element destructors. This is **intentionally preserved**:
@@ -1359,7 +1291,7 @@ impl<T, A: Allocator> Drop for MultiArrayList<T, A> {
 /// `std.atomic.cache_line` — **128** on x86_64 and aarch64, all native targets.
 const CACHE_LINE: usize = 128;
 
-const fn init_capacity<T>() -> usize {
+const fn init_capacity<T: SoaRow>() -> usize {
     let mut max = 1usize;
     let mut i = 0;
     while i < Reflected::<T>::COUNT {
@@ -1374,8 +1306,8 @@ const fn init_capacity<T>() -> usize {
 
 /// Called when memory growth is necessary. Returns a capacity larger than
 /// minimum that grows super-linearly.
-fn grow_capacity<T>(current: usize, minimum: usize) -> usize {
-    let init = const { init_capacity::<T>() };
+fn grow_capacity<T: SoaRow>(current: usize, minimum: usize) -> usize {
+    let init = init_capacity::<T>();
     let mut new = current;
     loop {
         new = new.saturating_add(new / 2 + init);
@@ -1388,7 +1320,7 @@ fn grow_capacity<T>(current: usize, minimum: usize) -> usize {
 /// Layout for `capacity` elements: `(Σ field sizes) * capacity` bytes at
 /// `align_of::<T>()`. `None` for zero-size (no allocation needed).
 #[inline]
-fn layout_for<T>(capacity: usize) -> Option<Layout> {
+fn layout_for<T: SoaRow>(capacity: usize) -> Option<Layout> {
     let n = Reflected::<T>::ELEM_BYTES * capacity;
     if n == 0 {
         return None;
@@ -1396,7 +1328,7 @@ fn layout_for<T>(capacity: usize) -> Option<Layout> {
     Some(Layout::from_size_align(n, Reflected::<T>::ALIGN).expect("MultiArrayList layout overflow"))
 }
 
-fn aligned_alloc<T, A: Allocator>(
+fn aligned_alloc<T: SoaRow, A: Allocator>(
     alloc: &A,
     layout: Option<Layout>,
 ) -> Result<NonNull<u8>, AllocError> {
@@ -1492,7 +1424,7 @@ fn sift_down(
 mod tests {
     use super::*;
 
-    #[derive(Clone, Copy, PartialEq, Debug)]
+    #[derive(Clone, Copy, PartialEq, Debug, crate::SoaRowDerive)]
     struct Foo {
         a: u32,
         b: u8,
@@ -1505,7 +1437,7 @@ mod tests {
         // Sorted by alignment descending: c(u64=8), a(u32=4), b(u8=1).
         assert_eq!(&Reflected::<Foo>::SIZES.0[..3], &[8, 4, 1]);
         assert_eq!(&Reflected::<Foo>::SIZES.1[..3], &[2, 0, 1]);
-        assert_eq!(const { Reflected::<Foo>::index_of::<"b">() }, 1);
+        assert_eq!(Reflected::<Foo>::index_of("b"), 1);
     }
 
     #[test]
@@ -1520,8 +1452,8 @@ mod tests {
             .unwrap();
         }
         let s = list.slice();
-        assert_eq!(s.items::<"c", u64>()[7], 700);
-        assert_eq!(s.items::<"a", u32>()[3], 3);
+        assert_eq!(s.items_named::<u64>("c")[7], 700);
+        assert_eq!(s.items_named::<u32>("a")[3], 3);
         assert_eq!(*list.get(5), Foo { a: 5, b: 5, c: 500 });
     }
 
@@ -1536,17 +1468,18 @@ mod tests {
             })
             .unwrap();
         }
-        assert_eq!(list.items::<"c", u64>(), &[0u64, 10, 20, 30]);
-        list.items_mut::<"a", u32>()[2] = 99;
+        assert_eq!(list.items_named::<u64>("c"), &[0u64, 10, 20, 30]);
+        list.items_named_mut::<u32>("a")[2] = 99;
         assert_eq!(list.get(2).a, 99);
         assert_eq!(list.pop().unwrap().c, 30);
         assert_eq!(list.len(), 3);
     }
 
-    // Fields are read via the `items::<"name", _>()` const-generic field-name
+    // Fields are read via the `items_named::<_>("name")` field-name
     // API (which goes through the __mal! macro's offset table), not by direct
     // access — `dead_code` can't see that.
     #[allow(dead_code)]
+    #[derive(crate::SoaRowDerive)]
     struct Borrowed<'a> {
         name: &'a [u8],
         n: u32,
@@ -1556,8 +1489,8 @@ mod tests {
     fn generic_lifetime() {
         let mut list = MultiArrayList::<Borrowed<'static>>::default();
         list.push(Borrowed { name: b"hi", n: 7 }).unwrap();
-        assert_eq!(list.items::<"name", &[u8]>()[0], b"hi");
-        assert_eq!(list.items::<"n", u32>()[0], 7);
+        assert_eq!(list.items_named::<&[u8]>("name")[0], b"hi");
+        assert_eq!(list.items_named::<u32>("n")[0], 7);
     }
 
     #[test]
@@ -1565,9 +1498,9 @@ mod tests {
         // Exercise the `cap == 0` path: must yield a valid empty `&[u64]`
         // (i.e. a `u64`-aligned dangling base, not `NonNull::<u8>::dangling()`).
         let list = MultiArrayList::<Foo>::default();
-        assert_eq!(list.items::<"c", u64>(), &[] as &[u64]);
+        assert_eq!(list.items_named::<u64>("c"), &[] as &[u64]);
         let s = Slice::<Foo>::EMPTY;
-        assert_eq!(s.items::<"c", u64>(), &[] as &[u64]);
+        assert_eq!(s.items_named::<u64>("c"), &[] as &[u64]);
     }
 
     #[test]
@@ -1590,11 +1523,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(list.items::<"a", u32>(), &[0, 1, 99, 2, 3, 4, 5]);
+        assert_eq!(list.items_named::<u32>("a"), &[0, 1, 99, 2, 3, 4, 5]);
         list.ordered_remove(2);
-        assert_eq!(list.items::<"a", u32>(), &[0, 1, 2, 3, 4, 5]);
+        assert_eq!(list.items_named::<u32>("a"), &[0, 1, 2, 3, 4, 5]);
         list.swap_remove(1);
-        assert_eq!(list.items::<"a", u32>(), &[0, 5, 2, 3, 4]);
+        assert_eq!(list.items_named::<u32>("a"), &[0, 5, 2, 3, 4]);
     }
 
     #[test]
@@ -1608,7 +1541,7 @@ mod tests {
             })
             .unwrap();
         }
-        let raw = list.items_raw::<"a", u32>();
+        let raw = list.items_raw_named::<u32>("a");
         let len = list.len();
         struct Ctx {
             a: *const u32,
@@ -1621,8 +1554,8 @@ mod tests {
             }
         }
         list.sort(&Ctx { a: raw, len });
-        assert_eq!(list.items::<"a", u32>(), &[0, 1, 2, 3, 4]);
-        assert_eq!(list.items::<"c", u64>(), &[0, 10, 20, 30, 40]);
+        assert_eq!(list.items_named::<u32>("a"), &[0, 1, 2, 3, 4]);
+        assert_eq!(list.items_named::<u64>("c"), &[0, 10, 20, 30, 40]);
     }
 }
 

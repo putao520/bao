@@ -109,7 +109,7 @@ pub fn if_none_match(
 /// `bun_http::headers::api::StringPointer` keep resolving.
 pub use bun_core::StringPointer;
 
-#[derive(Copy, Clone, Default)]
+#[derive(bun_collections::SoaRowDerive, Copy, Clone, Default)]
 pub struct HeaderEntry {
     pub name: StringPointer,
     pub value: StringPointer,
@@ -129,21 +129,21 @@ pub trait HeaderEntryColumns {
 impl HeaderEntryColumns for bun_collections::multi_array_list::Slice<HeaderEntry> {
     #[inline]
     fn items_name(&self) -> &[StringPointer] {
-        self.items::<"name", StringPointer>()
+        self.items_named::<StringPointer>("name")
     }
     #[inline]
     fn items_value(&self) -> &[StringPointer] {
-        self.items::<"value", StringPointer>()
+        self.items_named::<StringPointer>("value")
     }
 }
 impl HeaderEntryColumns for HeaderEntryList {
     #[inline]
     fn items_name(&self) -> &[StringPointer] {
-        self.items::<"name", StringPointer>()
+        self.items_named::<StringPointer>("name")
     }
     #[inline]
     fn items_value(&self) -> &[StringPointer] {
-        self.items::<"value", StringPointer>()
+        self.items_named::<StringPointer>("value")
     }
 }
 

@@ -371,6 +371,7 @@ mod elf {
     }
 }
 
+#[derive(bun_collections::SoaRowDerive)]
 pub struct File {
     pub name: &'static [u8],
     pub loader: Loader,

@@ -100,6 +100,7 @@ pub struct HtmlImports {
     pub html_source_indices: Vec<IndexInt>,
 }
 
+#[derive(bun_collections::SoaRowDerive)]
 pub struct InputFile {
     pub source: bun_ast::Source,
     pub secondary_path: AstVec<u8>,

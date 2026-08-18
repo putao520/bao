@@ -1,0 +1,20 @@
+[package]
+name = "bun_collections_macros"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+# derive(SoaRow) parses the struct and emits `size_of`/`offset_of!` per
+# field — syn for parsing, quote for generation.
+syn = { version = "2", features = ["full"] }
+quote = { version = "1" }
+proc-macro2 = { version = "1" }
+
+[lints]
+workspace = true

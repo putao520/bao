@@ -525,6 +525,7 @@ impl MatchStatus {
     }
 }
 
+#[derive(bun_collections::SoaRowDerive)]
 pub struct PendingResolution {
     pub esm: crate::package_json::PackageExternal,
     pub dependency: Dependency::Version,

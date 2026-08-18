@@ -22,7 +22,7 @@ pub mod entry_point {
     use bun_collections::MultiArrayList;
     use bun_core::PathString;
 
-    #[derive(Default)]
+    #[derive(bun_collections::SoaRowDerive, Default)]
     pub struct EntryPoint {
         pub output_path: PathString,
         pub source_index: crate::IndexInt,
@@ -126,6 +126,7 @@ pub mod js_meta {
     }
     pub use crate::WrapKind as Wrap;
 
+    #[derive(bun_collections::SoaRowDerive)]
     pub struct JSMeta {
         pub probably_typescript_type: ProbablyTypescriptType,
         pub imports_to_bind: RefImportData,
@@ -1028,6 +1029,7 @@ impl<'a> LinkerGraph<'a> {
     }
 }
 
+#[derive(bun_collections::SoaRowDerive)]
 pub struct File {
     pub entry_bits: AutoBitSet,
 

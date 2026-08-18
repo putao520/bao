@@ -75,7 +75,7 @@ members = [
     "src/resolver",
     "src/paths",
     "src/sys",
-    "src/collections",
+    "src/collections", "src/collections_macros",
     "src/install",
     "src/output",
     "src/transpiler",
@@ -152,6 +152,7 @@ bun_api = { path = "src/api", version = "0.1.0" }
 bun_base64 = { path = "src/base64", version = "0.1.0" }
 bun_bundler = { path = "src/bundler", version = "0.1.0" }
 bun_collections = { path = "src/collections", version = "0.1.0" }
+bun_collections_macros = { path = "src/collections_macros", version = "0.1.0" }
 bun_css = { path = "src/css", version = "0.1.0" }
 bun_errno = { path = "src/errno", version = "0.1.0" }
 bun_glob = { path = "src/glob", version = "0.1.0" }

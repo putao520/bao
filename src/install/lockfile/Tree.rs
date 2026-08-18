@@ -489,6 +489,7 @@ pub struct Builder<'a, const METHOD: u8> {
     pub packages_to_install: Option<&'a [PackageID]>,
 }
 
+#[derive(bun_collections::SoaRowDerive)]
 pub struct BuilderEntry {
     pub tree: Tree,
     pub dependencies: DependencyIDList,

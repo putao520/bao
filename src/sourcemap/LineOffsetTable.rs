@@ -1,5 +1,5 @@
-use core::alloc::Allocator;
-use std::alloc::Global;
+use bun_alloc::core_alloc::Allocator;
+use bun_alloc::core_alloc::Global;
 
 use bun_alloc::AllocError;
 use bun_ast::Loc;
@@ -24,6 +24,7 @@ use smallvec::SmallVec;
 /// `LinkerGraph.files` in `deinit_without_freeing_arena`. Non-bundler callers
 /// (`CodeCoverage`, the runtime printer's lazy table) keep the `Global`
 /// default and free normally.
+#[derive(bun_collections::SoaRowDerive)]
 pub struct LineOffsetTable<A: Allocator = Global> {
     pub columns_for_non_ascii: Box<[i32], A>,
     /// Byte offset of the first non-ASCII byte on this line, or `i32::MAX as u32`
@@ -51,12 +52,12 @@ pub trait LineOffsetTableColumns {
 impl<A: Allocator + 'static> LineOffsetTableColumns for List<A> {
     #[inline]
     fn items_byte_offset_to_start_of_line(&self) -> &[u32] {
-        self.items::<"byte_offset_to_start_of_line", u32>()
+        self.items_named::<u32>("byte_offset_to_start_of_line")
     }
 
     #[inline]
     fn items_byte_offset_to_first_non_ascii(&self) -> &[u32] {
-        self.items::<"byte_offset_to_first_non_ascii", u32>()
+        self.items_named::<u32>("byte_offset_to_first_non_ascii")
     }
 }
 
