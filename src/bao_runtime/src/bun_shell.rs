@@ -880,8 +880,14 @@ unsafe fn shell_error_object(cx: *mut JSContext, exit_code: i32, stdout: &str, s
         ("stderr", stderr.to_string()),
     ];
     for (key, value) in defs {
-        let c_v = bun_core::ZBox::from_bytes(value.as_bytes());
-        let js_str = JS_NewStringCopyZ(cx, c_v.as_ptr());
+        // BCE (atob-class NUL truncation sweep): command stdout/stderr can
+        // carry embedded NULs; CopyZ cut them at the first 0x00.
+        let units: Vec<u16> = value.encode_utf16().collect();
+        let js_str = if units.is_empty() {
+            JS_NewStringCopyN(cx, c"".as_ptr(), 0)
+        } else {
+            JS_NewUCStringCopyN(cx, units.as_ptr(), units.len())
+        };
         if !js_str.is_null() {
             rooted!(&in(cx_ref) let sv = StringValue(&*js_str));
             let c_key = ZBoxLikeName::from(key);

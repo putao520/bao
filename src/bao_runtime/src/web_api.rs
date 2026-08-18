@@ -1485,11 +1485,46 @@ unsafe extern "C" fn atob_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         cx,
         ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()),
     );
-    match bun_base64::decode_alloc(s.as_bytes()) {
+    // HTML spec forgivable-base64 decode preamble (mirrors servo
+    // base64_atob): strip HTML space, drop trailing padding on a %4==0
+    // input, reject len%4==1, reject non-alphabet characters.
+    let is_html_space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0C');
+    let cleaned: String = s.chars().filter(|&c| !is_html_space(c)).collect();
+    let mut input: &str = &cleaned;
+    if input.len() % 4 == 0 {
+        if input.ends_with("==") {
+            input = &input[..input.len() - 2];
+        } else if input.ends_with('=') {
+            input = &input[..input.len() - 1];
+        }
+    }
+    if input.len() % 4 == 1 || input.chars().any(|c| !c.is_ascii_alphanumeric() && c != '+' && c != '/')
+    {
+        JS_ReportErrorUTF8(
+            cx,
+            c"Failed to decode base64: InvalidCharacterError".as_ptr(),
+        );
+        return false;
+    }
+    match bun_base64::decode_alloc(input.as_bytes()) {
         Ok(bytes) => {
-            let decoded = String::from_utf8_lossy(&bytes);
-            let c_str = ZBox::from_vec(decoded.into_owned().into_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+            // BCE (atob binary truncation, 2026-08-18): two stacked defects
+            // made any NUL-bearing payload truncate to its first zero byte
+            // (a 117k-char WAV base64 decoded to 8-9 bytes — "RIFF" plus a
+            // couple of size-field bytes, cut at the 0x00s):
+            //   1. `String::from_utf8_lossy(&bytes)` treated raw binary as
+            //      UTF-8, corrupting every non-ASCII byte into U+FFFD.
+            //   2. `JS_NewStringCopyZ` copies up to the first NUL.
+            // HTML spec / servo's own base64_atob semantics: each decoded
+            // octet maps to ONE code unit (latin-1) — same contract as
+            // bun_api::js_string_from_child_bytes. Copy via explicit-length
+            // JS_NewUCStringCopyN so 0x00 survives as a plain code unit.
+            let units: Vec<u16> = bytes.iter().map(|&b| b as u16).collect();
+            let js_str = if units.is_empty() {
+                JS_NewStringCopyN(cx, c"".as_ptr(), 0)
+            } else {
+                JS_NewUCStringCopyN(cx, units.as_ptr(), units.len())
+            };
             if js_str.is_null() {
                 args.rval().set(UndefinedValue());
             } else {
@@ -1497,7 +1532,10 @@ unsafe extern "C" fn atob_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             }
         }
         Err(_) => {
-            JS_ReportErrorUTF8(cx, c"Failed to decode base64".as_ptr());
+            JS_ReportErrorUTF8(
+                cx,
+                c"Failed to decode base64: InvalidCharacterError".as_ptr(),
+            );
             return false;
         }
     }
@@ -1511,11 +1549,26 @@ unsafe extern "C" fn btoa_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         args.rval().set(UndefinedValue());
         return true;
     }
+    // BCE (btoa latin1 corruption, found by the atob round-trip regression):
+    // the input's UTF-8 bytes used to be encoded directly, so a code unit
+    // like 0xE0 encoded as the TWO bytes C0 A0 instead of the single octet
+    // E0 — every >0x7F character corrupted the encoding. HTML spec / servo
+    // base64_btoa: throw InvalidCharacterError on any code point > U+00FF;
+    // otherwise each code point encodes as ONE octet. `chars()` iterates
+    // code points (== code units for the ≤0xFF domain we keep here).
     let s = unsafe_jsstr_to_string(
         cx,
         ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()),
     );
-    let encoded_bytes = bun_base64::encode_alloc(s.as_bytes());
+    if s.chars().any(|c| c > '\u{FF}') {
+        JS_ReportErrorUTF8(
+            cx,
+            c"Failed to encode base64: InvalidCharacterError".as_ptr(),
+        );
+        return false;
+    }
+    let octets: Vec<u8> = s.chars().map(|c| c as u8).collect();
+    let encoded_bytes = bun_base64::encode_alloc(&octets);
     let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("");
     let c_str = ZBox::from_bytes(encoded.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());

@@ -373,8 +373,16 @@ unsafe fn sqlite_value_to_jsval(cx: *mut JSContext, val: rusqlite::types::Value)
         }
         rusqlite::types::Value::Real(f) => DoubleValue(f),
         rusqlite::types::Value::Text(s) => {
-            let c_str = ZBox::from_bytes(s.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+            // BCE (atob-class NUL truncation sweep): SQLite TEXT values may
+            // carry embedded NULs (column_bytes contract); CopyZ cut the
+            // string at the first 0x00. UTF-8 code points map 1:1 to code
+            // units via explicit-length copy.
+            let units: Vec<u16> = s.encode_utf16().collect();
+            let js_str = if units.is_empty() {
+                JS_NewStringCopyN(cx, c"".as_ptr(), 0)
+            } else {
+                JS_NewUCStringCopyN(cx, units.as_ptr(), units.len())
+            };
             if js_str.is_null() {
                 NullValue()
             } else {
