@@ -375,18 +375,41 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     // drain-pump pattern as the cluster pump — no JS-timer chain.
     crate::bun_api::spawn_watch_pump_all(raw_cx);
 
+    // BCE (await proc.exited hang): every pump above runs AFTER the
+    // JobQueue::drain at the head of this tick, so promise continuations
+    // resolved inside a pump (e.g. `exited` resolved by spawn_watch_pump_all)
+    // had nobody to run them in this pass — and with no timer/http pending
+    // the loop-alive verdict below was false, so the eval loop broke and the
+    // parked top-level await never resumed (silent exit 0). Drain the job
+    // queue once more after the pumps: pump-resolved continuations run in
+    // the SAME pass, and whatever they await next sees a consistent tick.
+    bao_engine::job_queue::JobQueue::drain(cx);
+
     // BCE-20260619-010: drain_pending_fetches removed. FetchTasklet event-driven
     // paradigm resolves promises via ConcurrentTask (resolve_tasklet), not via
     // JS-thread polling. No drain call needed here.
 
+    // Liveness must be evaluated with FRESH state: callbacks drained above
+    // (bao timers, SM jobs, the pumps) can START work — a fetch begun inside
+    // a timer callback, a server begun inside a promise, …. The entry
+    // snapshots (`has_pending_async_fetch`) and the mid-fn `has_http` read
+    // (taken before `drain_bao_timers`) predate those registrations and made
+    // the tail all-false while a fetch was in flight → the eval loop broke,
+    // exit handlers fired, and the in-flight request was torn down (the
+    // "timer-context fetch never completes" wedge; keep-alive intervals
+    // masked it). Re-read every source here.
     bao_has_pending_timers()
-        || has_http
-        || has_pending_async_fetch
+        || crate::node_http::has_active_servers()
+        || crate::fetch_async::has_pending()
         || crate::web_api::ws_has_pending()
         // Persistent fs watchers / live cluster workers keep the loop alive
         // (Node handle semantics; non-persistent entries never pin).
         || crate::node_fs::fs_watch_loop_alive()
         || crate::node_cluster::cluster_loop_alive()
+        // Live Bun.spawn watchers pin the loop (Node active-handle
+        // semantics) — a pending `await proc.exited` must outlive a child
+        // that has not been reaped yet, even with zero timers registered.
+        || crate::bun_api::spawn_watch_loop_alive()
 }
 
 /// Drive a single "wait for promise / timer" iteration in test-runner mode.
@@ -455,6 +478,11 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
     crate::node_fs::fs_watch_pump_all(raw_cx);
     crate::node_cluster::cluster_pump_all(raw_cx);
     crate::bun_api::spawn_watch_pump_all(raw_cx);
+    // BCE (await proc.exited hang): the RunJobs above ran BEFORE the pumps —
+    // pump-resolved promise continuations (e.g. spawn's `exited`) would wait
+    // a full extra pass. Drain once more so async tests resume in-pass,
+    // mirroring drain_and_check's post-pump job drain.
+    mozjs_sys::jsapi::js::RunJobs(raw_cx);
     fired
 }
 
