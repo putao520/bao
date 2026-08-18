@@ -60,11 +60,11 @@ pub fn decompress_alloc(src: &[u8]) -> core::result::Result<Vec<u8>, ZstdError> 
     }
 
     if size as u64 == ZSTD_CONTENTSIZE_UNKNOWN || size > MAX_PREALLOCATE_SIZE {
-        let mut list: Vec<u8> = Vec::new();
+        let mut list: bun_core::vec::ChanVec<u8> = bun_core::vec::ChanVec::new();
         let mut reader = ZstdReaderArrayList::init(src, &mut list)?;
         reader.read_all(true)?;
         drop(reader);
-        return Ok(list);
+        return Ok(list.into_iter().collect::<::std::vec::Vec<u8>>());
     }
 
     let mut output = vec![0u8; size];
@@ -85,7 +85,7 @@ pub use bun_core::compress::State;
 
 pub struct ZstdReaderArrayList<'a> {
     pub input: &'a [u8],
-    pub list_ptr: &'a mut Vec<u8>,
+    pub list_ptr: &'a mut bun_core::vec::ChanVec<u8>,
     zstd: Option<Box<zstd_api::ZSTD_DStream>>,
     pub state: State,
     pub total_out: usize,
@@ -96,14 +96,14 @@ pub struct ZstdReaderArrayList<'a> {
 impl<'a> ZstdReaderArrayList<'a> {
     pub fn init(
         input: &'a [u8],
-        list: &'a mut Vec<u8>,
+        list: &'a mut bun_core::vec::ChanVec<u8>,
     ) -> core::result::Result<Box<ZstdReaderArrayList<'a>>, ZstdError> {
         Self::init_with_list_allocator(input, list)
     }
 
     pub fn init_with_list_allocator(
         input: &'a [u8],
-        list: &'a mut Vec<u8>,
+        list: &'a mut bun_core::vec::ChanVec<u8>,
     ) -> core::result::Result<Box<ZstdReaderArrayList<'a>>, ZstdError> {
         let mut dstream = zstd_api::ZSTD_createDStream().ok_or(ZstdError::ZstdFailedToCreateInstance)?;
         let _ = zstd_api::ZSTD_initDStream(&mut *dstream);

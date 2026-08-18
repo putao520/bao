@@ -261,7 +261,7 @@ impl KnownGlobal {
                                     );
                                     return Some(js_ast::Expr::init(
                                         E::Array {
-                                            items: Vec::move_from_list(list),
+                                            items: js_ast::ExprNodeList::move_from_list(list),
                                             ..Default::default()
                                         },
                                         loc,

@@ -1,11 +1,12 @@
-#![feature(allocator_api)]
+#![cfg_attr(bao_nightly, feature(allocator_api))]
 // `#[thread_local]` for the per-node-allocation hot-path TLS
 // (`DATA_STORE_OVERRIDE`, `Expr/Stmt::data::Store::{INSTANCE,
 // MEMORY_ALLOCATOR, DISABLE_RESET}`, `store_ast_alloc_heap::ARENA`): bare
 // `__thread` slot like Zig's `threadlocal var`, vs the `thread_local!`
 // macro's `LocalKey` wrapper. All are `Cell<*mut _>` / `Cell<bool>` (no
 // destructor, const init).
-#![feature(thread_local)]
+#![cfg_attr(bao_nightly, feature(thread_local))]
+
 //! Port of `src/logger/logger.zig`.
 //!
 //! TODO(port): OWNERSHIP — almost every `[]const u8` field in this module has
@@ -17,6 +18,67 @@
 //! a real ownership story (likely `bun_core::String` or a `'source` lifetime
 //! threaded through `Location`/`Data`/`Msg`) is still needed.
 
+// Dual-mode AST-arena lists: the facade Vec is std's on nightly
+// (byte-identical to the historical `Vec<T, AstAlloc>`) and the
+// allocator_api2 mirror on stable — `AstAlloc` implements the facade
+// `Allocator` on both channels (own def / bun_alloc bridge).
+pub type AstVec<T> = ::bun_alloc::core_alloc::AllocVec<T, ::bun_alloc::AstAlloc>;
+
+/// Dual-mode TLS station (#66 template): nightly keeps the bare
+/// `#[thread_local]` slot (single TLS load, no LocalKey init/dtor — the
+/// per-node-allocation hot path), stable uses const-init `thread_local!`.
+/// Access is uniform through the generated `_$name()` accessors (Copy
+/// Cell payloads; `.get()`/`.set()` shapes below).
+macro_rules! ast_tls_cell_set_take {
+    ($name:ident => $set:ident, $take:ident: Cell<$ty:ty> = $init:expr) => {
+        #[cfg(bao_nightly)]
+        #[thread_local]
+        static $name: ::core::cell::Cell<$ty> = ::core::cell::Cell::new($init);
+        #[cfg(not(bao_nightly))]
+        ::std::thread_local! {
+            static $name: ::core::cell::Cell<$ty> = const { ::core::cell::Cell::new($init) };
+        }
+        #[inline]
+        fn $set(v: $ty) {
+            #[cfg(bao_nightly)]
+            { $name.set(v) }
+            #[cfg(not(bao_nightly))]
+            { $name.with(|c| c.set(v)) }
+        }
+        #[inline]
+        fn $take() -> $ty {
+            #[cfg(bao_nightly)]
+            { $name.take() }
+            #[cfg(not(bao_nightly))]
+            { $name.with(::core::cell::Cell::take) }
+        }
+    };
+}
+macro_rules! ast_tls_cell {
+    ($name:ident => $get:ident, $set:ident: Cell<$ty:ty> = $init:expr) => {
+        #[cfg(bao_nightly)]
+        #[thread_local]
+        static $name: ::core::cell::Cell<$ty> = ::core::cell::Cell::new($init);
+        #[cfg(not(bao_nightly))]
+        ::std::thread_local! {
+            static $name: ::core::cell::Cell<$ty> = const { ::core::cell::Cell::new($init) };
+        }
+        #[inline]
+        fn $get() -> $ty {
+            #[cfg(bao_nightly)]
+            { $name.get() }
+            #[cfg(not(bao_nightly))]
+            { $name.with(|c| c.get()) }
+        }
+        #[inline]
+        fn $set(v: $ty) {
+            #[cfg(bao_nightly)]
+            { $name.set(v) }
+            #[cfg(not(bao_nightly))]
+            { $name.with(|c| c.set(v)) }
+        }
+    };
+}
 use core::fmt;
 use std::borrow::Cow;
 
@@ -3451,39 +3513,36 @@ impl<T> Drop for DebugOnlyDisablerScope<T> {
 /// block-store is active and **no** `ASTMemoryAllocator` scope is in effect.
 /// See `NewStore::reset` for the leak this closes.
 pub mod store_ast_alloc_heap {
-    use core::cell::Cell;
     use core::ptr;
 
     use bun_alloc::ast_alloc::{self, AstAllocState};
 
-    /// Address of this thread's installed side state (the "entered" flag and
-    /// the identity check for `reset()`/`exit()`). Never dereferenced.
-    #[thread_local]
-    static STATE_ID: Cell<*const AstAllocState> = Cell::new(ptr::null());
-    /// The `AST_ALLOC` occupant displaced by `enter()`, restored by `exit()`.
-    #[thread_local]
-    static PREVIOUS: Cell<Option<Box<AstAllocState>>> = Cell::new(None);
+    // Address of this thread's installed side state (the "entered" flag and
+    // the identity check for `reset()`/`exit()`). Never dereferenced.
+    ast_tls_cell!(STATE_ID => state_id, state_id_set: Cell<*const AstAllocState> = ptr::null());
+    // The `AST_ALLOC` occupant displaced by `enter()`, restored by `exit()`.
+    ast_tls_cell_set_take!(PREVIOUS => previous_set, previous_take: Cell<Option<Box<AstAllocState>>> = None);
 
     /// `true` iff the state this module installed is the one currently active
     /// (i.e. no other scope is stacked on top of it).
     fn owns_active_state() -> bool {
-        core::ptr::eq(ast_alloc::active_state_id(), STATE_ID.get())
+        core::ptr::eq(ast_alloc::active_state_id(), state_id())
     }
 
     pub(crate) fn enter() {
         if bun_core::getenv_z(bun_core::zstr!("BUN_DISABLE_STORE_AST_HEAP")).is_some() {
             return;
         }
-        if !STATE_ID.get().is_null() {
+        if !state_id().is_null() {
             return;
         }
         let state = ast_alloc::acquire_state();
-        STATE_ID.set(&raw const *state);
-        PREVIOUS.set(ast_alloc::swap_state(Some(state)));
+        state_id_set(&raw const *state);
+        previous_set(ast_alloc::swap_state(Some(state)));
     }
 
     pub fn reset() {
-        if STATE_ID.get().is_null() {
+        if state_id().is_null() {
             enter();
             return;
         }
@@ -3500,7 +3559,7 @@ pub mod store_ast_alloc_heap {
     }
 
     pub(crate) fn exit() {
-        if STATE_ID.get().is_null() {
+        if state_id().is_null() {
             return;
         }
         // Skip if another scope's state is stacked on top.
@@ -3511,8 +3570,8 @@ pub mod store_ast_alloc_heap {
             );
             return;
         }
-        STATE_ID.set(ptr::null());
-        if let Some(state) = ast_alloc::swap_state(PREVIOUS.take()) {
+        state_id_set(ptr::null());
+        if let Some(state) = ast_alloc::swap_state(previous_take()) {
             ast_alloc::release_state(state);
         }
     }
@@ -3525,17 +3584,15 @@ pub mod store_ast_alloc_heap {
 // allocates boxed payloads into this arena instead of the long-lived block
 // store, so a scoped caller (YAML/TOML/JSONC parse) can bulk-free the whole
 // tree by dropping the arena. Set/restored by `ASTMemoryAllocator::Scope`.
-#[thread_local]
-static DATA_STORE_OVERRIDE: core::cell::Cell<*const bun_alloc::Arena> =
-    core::cell::Cell::new(core::ptr::null());
+ast_tls_cell!(DATA_STORE_OVERRIDE => data_store_override_raw, data_store_override_set: Cell<*const ::bun_alloc::Arena> = core::ptr::null());
 
 #[inline]
 pub(crate) fn data_store_override() -> *const bun_alloc::Arena {
-    DATA_STORE_OVERRIDE.get()
+    data_store_override_raw()
 }
 #[inline]
 pub(crate) fn set_data_store_override(p: *const bun_alloc::Arena) {
-    DATA_STORE_OVERRIDE.set(p);
+    data_store_override_set(p);
 }
 
 /// Copy `bytes` into the active AST arena so the slice shares the same
@@ -3547,7 +3604,7 @@ pub(crate) fn set_data_store_override(p: *const bun_alloc::Arena) {
 /// The lifetime is erased per the `StoreStr` convention — arena ownership, not
 /// a leak.
 pub fn data_store_dupe_str(bytes: &[u8]) -> &'static [u8] {
-    let ov = DATA_STORE_OVERRIDE.get();
+    let ov = data_store_override_raw();
     if !ov.is_null() {
         // SAFETY: override is installed by an RAII `ASTMemoryAllocator::Scope`
         // that outlives this call, so `*ov` is a live `Arena`. The returned
@@ -3567,7 +3624,7 @@ pub fn data_store_dupe_str(bytes: &[u8]) -> &'static [u8] {
     // needed. Storage lives until `store_ast_alloc_heap::reset()`; callers must
     // not hold the slice across that boundary (same contract as every
     // `StoreRef`/`StoreStr`).
-    let mut v: Vec<u8, bun_alloc::AstAlloc> = bun_alloc::AstAlloc::vec();
+    let mut v: AstVec<u8> = bun_alloc::AstAlloc::vec();
     v.extend_from_slice(bytes);
     v.leak()
 }

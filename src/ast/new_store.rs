@@ -376,24 +376,85 @@ macro_rules! thread_local_ast_store {
             // the `thread_local!` macro's `LocalKey` wrapper showed up in
             // next-lint profiles. All three are `Cell<ptr|bool>` (no destructor,
             // const init); matches Zig `threadlocal var`.
+            #[cfg(bao_nightly)]
             #[thread_local]
             pub(crate) static INSTANCE: Cell<*mut Backing> = Cell::new(::core::ptr::null_mut());
+            #[cfg(not(bao_nightly))]
+            ::std::thread_local! {
+                pub(crate) static INSTANCE: Cell<*mut Backing> =
+                    const { Cell::new(::core::ptr::null_mut()) };
+            }
             /// Back-reference to the `ASTMemoryAllocator` installed by the
             /// enclosing `ASTMemoryAllocatorScope` stack frame. Stored as
             /// `Option<BackRef>` (vs. raw `*mut`) so `append()` can read it via
             /// safe `Deref`; the back-reference invariant (pointee outlives every
             /// copy) is upheld by `ASTMemoryAllocatorScope::{enter,exit}`, which
             /// always restores the previous value before its frame returns.
+            #[cfg(bao_nightly)]
             #[thread_local]
             pub(crate) static MEMORY_ALLOCATOR: Cell<
                 Option<::bun_ptr::BackRef<$crate::ASTMemoryAllocator>>,
             > = Cell::new(None);
+            #[cfg(not(bao_nightly))]
+            ::std::thread_local! {
+                pub(crate) static MEMORY_ALLOCATOR: Cell<
+                    Option<::bun_ptr::BackRef<$crate::ASTMemoryAllocator>>,
+                > = const { Cell::new(None) };
+            }
+            #[cfg(bao_nightly)]
             #[thread_local]
             pub(crate) static DISABLE_RESET: Cell<bool> = Cell::new(false);
+            #[cfg(not(bao_nightly))]
+            ::std::thread_local! {
+                pub(crate) static DISABLE_RESET: Cell<bool> = const { Cell::new(false) };
+            }
+            // Channel-uniform accessors (#66 idiom: hide the .with frame).
+            #[inline]
+            fn instance_get() -> *mut Backing {
+                #[cfg(bao_nightly)]
+                { INSTANCE.get() }
+                #[cfg(not(bao_nightly))]
+                { INSTANCE.with(Cell::get) }
+            }
+            #[inline]
+            fn instance_set(v: *mut Backing) {
+                #[cfg(bao_nightly)]
+                { INSTANCE.set(v) }
+                #[cfg(not(bao_nightly))]
+                { INSTANCE.with(|c| c.set(v)) }
+            }
+            #[inline]
+            fn mem_alloc_get() -> Option<::bun_ptr::BackRef<$crate::ASTMemoryAllocator>> {
+                #[cfg(bao_nightly)]
+                { MEMORY_ALLOCATOR.get() }
+                #[cfg(not(bao_nightly))]
+                { MEMORY_ALLOCATOR.with(Cell::get) }
+            }
+            #[inline]
+            fn mem_alloc_set(v: Option<::bun_ptr::BackRef<$crate::ASTMemoryAllocator>>) {
+                #[cfg(bao_nightly)]
+                { MEMORY_ALLOCATOR.set(v) }
+                #[cfg(not(bao_nightly))]
+                { MEMORY_ALLOCATOR.with(|c| c.set(v)) }
+            }
+            #[inline]
+            fn disable_reset_get() -> bool {
+                #[cfg(bao_nightly)]
+                { DISABLE_RESET.get() }
+                #[cfg(not(bao_nightly))]
+                { DISABLE_RESET.with(Cell::get) }
+            }
+            #[inline]
+            fn disable_reset_set(v: bool) {
+                #[cfg(bao_nightly)]
+                { DISABLE_RESET.set(v) }
+                #[cfg(not(bao_nightly))]
+                { DISABLE_RESET.with(|c| c.set(v)) }
+            }
 
             #[inline]
             fn instance() -> *mut Backing {
-                INSTANCE.get()
+                instance_get()
             }
             /// Reborrow the thread-local backing store. Centralises the raw
             /// deref so `begin`/`reset`/`append` stay safe; `None` iff
@@ -404,24 +465,23 @@ macro_rules! thread_local_ast_store {
                 // is either null or was returned by `Backing::init()` (leaked
                 // `PreAlloc`) and remains valid until `deinit()` clears it.
                 // Single-threaded access — no other `&mut` to the slab is live.
-                unsafe { INSTANCE.get().as_mut() }
+                unsafe { instance_get().as_mut() }
             }
             #[inline]
             pub fn memory_allocator() -> *mut $crate::ASTMemoryAllocator {
-                MEMORY_ALLOCATOR
-                    .get()
+                mem_alloc_get()
                     .map_or(::core::ptr::null_mut(), ::bun_ptr::BackRef::as_ptr)
             }
             #[inline]
             pub(crate) fn set_memory_allocator(p: *mut $crate::ASTMemoryAllocator) {
-                MEMORY_ALLOCATOR.set(::core::ptr::NonNull::new(p).map(::bun_ptr::BackRef::from));
+                mem_alloc_set(::core::ptr::NonNull::new(p).map(::bun_ptr::BackRef::from));
             }
 
             pub fn create() {
                 if !instance().is_null() || !memory_allocator().is_null() {
                     return;
                 }
-                INSTANCE.set(Backing::init());
+                instance_set(Backing::init());
             }
 
             /// create || reset
@@ -432,7 +492,7 @@ macro_rules! thread_local_ast_store {
                 match instance_mut() {
                     None => create(),
                     Some(store) => {
-                        if !DISABLE_RESET.get() {
+                        if !disable_reset_get() {
                             Backing::reset(store);
                         }
                     }
@@ -440,7 +500,7 @@ macro_rules! thread_local_ast_store {
             }
 
             pub fn reset() {
-                if DISABLE_RESET.get() || !memory_allocator().is_null() {
+                if disable_reset_get() || !memory_allocator().is_null() {
                     return;
                 }
                 // Caller contract — instance is set when reset() is called.
@@ -454,11 +514,11 @@ macro_rules! thread_local_ast_store {
             /// across multiple parse calls.
             #[inline]
             pub(crate) fn set_disable_reset(b: bool) {
-                DISABLE_RESET.set(b);
+                disable_reset_set(b);
             }
             #[inline]
             pub fn disable_reset() -> bool {
-                DISABLE_RESET.get()
+                disable_reset_get()
             }
 
             pub fn deinit() {
@@ -468,7 +528,7 @@ macro_rules! thread_local_ast_store {
                 // SAFETY: checked non-null above; `destroy` frees the `Store`
                 // box and its lazily-allocated block chain.
                 unsafe { Backing::destroy(instance()) };
-                INSTANCE.set(::core::ptr::null_mut());
+                instance_set(::core::ptr::null_mut());
             }
 
             #[inline]
@@ -482,7 +542,7 @@ macro_rules! thread_local_ast_store {
 
             #[inline]
             pub fn append<T>(value: T) -> $crate::StoreRef<T> {
-                if let Some(ma) = MEMORY_ALLOCATOR.get() {
+                if let Some(ma) = mem_alloc_get() {
                     // `BackRef<ASTMemoryAllocator>: Deref` — owning scope outlives this call.
                     return ma.append(value);
                 }

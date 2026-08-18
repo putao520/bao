@@ -45,6 +45,10 @@ use bun_wyhash::Wyhash;
 
 use crate::generics::{CssEql, CssHash, DeepClone};
 use bun_alloc::Arena;
+// Dual-mode plain vec (stable api2 mirror).
+use bun_alloc::core_alloc::AllocVec as PlainVec;
+use bun_alloc::core_alloc::Global as _GlobalAlias;
+type PlainVec2<T> = PlainVec<T, _GlobalAlias>;
 
 // ─── External-gate shims ───────────────────────────────────────────────────
 // `TokenList::{parse,to_css}` bottom out on a handful of leaf fns that still
@@ -318,7 +322,7 @@ pub use css_parser::CssResult as Result;
 /// PERF: nullable optimization
 #[derive(Default, CssEql, CssHash, DeepClone)]
 pub struct TokenList {
-    pub v: Vec<TokenOrValue>,
+    pub v: PlainVec2<TokenOrValue>,
 }
 
 impl TokenList {
@@ -467,7 +471,7 @@ impl TokenList {
     }
 
     pub fn parse(input: &mut Parser, options: &ParserOptions, depth: usize) -> Result<TokenList> {
-        let mut tokens: Vec<TokenOrValue> = Vec::new(); // PERF: deinit on error
+        let mut tokens: PlainVec2<TokenOrValue> = PlainVec2::new(); // PERF: deinit on error
         TokenListFns::parse_into(input, &mut tokens, options, depth)?;
 
         // Slice off leading and trailing whitespace if there are at least two tokens.
@@ -484,7 +488,7 @@ impl TokenList {
             }
             // PORT NOTE: Zig does `insertSlice(0, slice)` (shallow memcpy) then `tokens.deinit()`
             // (frees only the backing array). `drain` moves the elements out without deep-cloning.
-            let newlist: Vec<TokenOrValue> = tokens.drain(start..end).collect();
+            let newlist: PlainVec2<TokenOrValue> = tokens.drain(start..end).collect();
             return Ok(TokenList { v: newlist });
         }
 
@@ -497,7 +501,7 @@ impl TokenList {
 
     pub fn parse_raw(
         input: &mut Parser,
-        tokens: &mut Vec<TokenOrValue>,
+        tokens: &mut PlainVec2<TokenOrValue>,
         options: &ParserOptions,
         depth: usize,
     ) -> Result<()> {
@@ -551,7 +555,7 @@ impl TokenList {
 
     pub fn parse_into(
         input: &mut Parser,
-        tokens: &mut Vec<TokenOrValue>,
+        tokens: &mut PlainVec2<TokenOrValue>,
         options: &ParserOptions,
         depth: usize,
     ) -> Result<()> {
@@ -1005,10 +1009,10 @@ impl UnresolvedColor {
     ) -> UnresolvedColor {
         UnresolvedColor::LightDark {
             light: TokenList {
-                v: vec![TokenOrValue::UnresolvedColor(light)],
+                v: PlainVec2::from_iter([TokenOrValue::UnresolvedColor(light)]),
             },
             dark: TokenList {
-                v: vec![TokenOrValue::UnresolvedColor(dark)],
+                v: PlainVec2::from_iter([TokenOrValue::UnresolvedColor(dark)]),
             },
         }
     }
@@ -1080,7 +1084,7 @@ pub struct EnvironmentVariable {
     pub name: EnvironmentVariableName,
     /// Optional indices into the dimensions of the environment variable.
     /// TODO(zack): this could totally be a smallvec, why isn't it?
-    pub indices: Vec<CSSInteger>,
+    pub indices: PlainVec2<CSSInteger>,
     /// A fallback value in case the variable is not defined.
     pub fallback: Option<TokenList>,
 }
@@ -1103,7 +1107,7 @@ impl EnvironmentVariable {
         depth: usize,
     ) -> Result<EnvironmentVariable> {
         let name = EnvironmentVariableName::parse(input)?;
-        let mut indices: Vec<i32> = Vec::new();
+        let mut indices: PlainVec2<i32> = PlainVec2::new();
         while let Ok(idx) = input.try_parse(CSSIntegerFns::parse) {
             indices.push(idx);
         }

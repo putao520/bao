@@ -40,6 +40,7 @@ use super::text;
 use super::transform;
 use super::transition;
 use super::ui;
+use crate::properties::font::FontFamilyList as PlainVec;
 
 /// Discriminant-only tag for [`Property`] / [`PropertyId`] (Zig: `enum(u16)`).
 #[repr(u16)]
@@ -3362,7 +3363,7 @@ pub enum Property {
     FontWeight(font::FontWeight),
     FontSize(font::FontSize),
     FontStretch(font::FontStretch),
-    FontFamily(Vec<font::FontFamily>),
+    FontFamily(PlainVec),
     FontStyle(font::FontStyle),
     FontVariantCaps(font::FontVariantCaps),
     LineHeight(font::LineHeight),
@@ -5699,7 +5700,7 @@ impl Property {
             }
             PropertyId::FontFamily => {
                 if let Ok(c) =
-                    css::generic::parse_with_options::<Vec<font::FontFamily>>(input, options)
+                    css::generic::parse_with_options::<PlainVec>(input, options)
                 {
                     if input.expect_exhausted().is_ok() {
                         return Ok(Property::FontFamily(c));

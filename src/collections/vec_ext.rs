@@ -201,17 +201,107 @@ pub trait VecExt<T>: Sized {
 // nightly (byte-identical) and the allocator_api2 mirror on stable —
 // this is the orphan-rule key that unlocks AstVec/arena-Vec consumers
 // (W1: ast/css/sourcemap) on the stable channel.
-macro_rules! impl_vec_ext_for_channel {
-    ($vec:ty, $alloc_trait:path, $global_ty:path) => {
-        impl<T, A: $alloc_trait + Default + 'static> VecExt<T> for $vec {
+//
+// Construction shim: the body below builds vecs through `VecExtCtor` so the
+// SAME items compile for allocator-parameterized targets (nightly std
+// `Vec<T, A>`, stable api2 `Vec<T, A>`) AND for the plain Global std
+// `Vec<T>` that stable Rust offers (its `with_capacity_in` /
+// `from_raw_parts_in` / `new_in` are nightly-only, so the Global std vec
+// gets its own `VecExt` imprint on stable — without it every downstream
+// std `Vec<u8>` buffer loses `.slice()`/`.memory_cost()`/… on stable).
+pub(crate) trait VecExtCtor<T>: Sized {
+    /// `true` when this vec's allocator is the process-global one — then
+    /// raw-parts adoption of a plain `Vec<T>` buffer is a pointer move.
+    fn vecext_is_global() -> bool;
+    fn vecext_with_capacity(n: usize) -> Self;
+    fn vecext_new_empty() -> Self;
+    /// # Safety
+    /// Same contract as `Vec::from_raw_parts`: `ptr` must point to a buffer
+    /// this vec's allocator owns (or a Global buffer when
+    /// [`VecExtCtor::vecext_is_global`]), with `len` initialized elements and
+    /// `cap` capacity; ownership transfers to the returned vec.
+    unsafe fn vecext_from_raw_parts(ptr: *mut T, len: usize, cap: usize) -> Self;
+}
 
+#[cfg(bao_nightly)]
+impl<T, A: core::alloc::Allocator + Default + 'static> VecExtCtor<T> for alloc::vec::Vec<T, A> {
     #[inline]
-    fn init_capacity(n: usize) -> Self {
+    fn vecext_is_global() -> bool {
+        core::any::TypeId::of::<A>() == core::any::TypeId::of::<std::alloc::Global>()
+    }
+    #[inline]
+    fn vecext_with_capacity(n: usize) -> Self {
         Self::with_capacity_in(n, A::default())
     }
     #[inline]
+    fn vecext_new_empty() -> Self {
+        Self::new_in(A::default())
+    }
+    #[inline]
+    unsafe fn vecext_from_raw_parts(ptr: *mut T, len: usize, cap: usize) -> Self {
+        // SAFETY: caller contract on the trait method.
+        unsafe { Self::from_raw_parts_in(ptr, len, cap, A::default()) }
+    }
+}
+
+#[cfg(not(bao_nightly))]
+impl<T, A: allocator_api2::alloc::Allocator + Default + 'static> VecExtCtor<T>
+    for allocator_api2::vec::Vec<T, A>
+{
+    #[inline]
+    fn vecext_is_global() -> bool {
+        core::any::TypeId::of::<A>() == core::any::TypeId::of::<allocator_api2::alloc::Global>()
+    }
+    #[inline]
+    fn vecext_with_capacity(n: usize) -> Self {
+        Self::with_capacity_in(n, A::default())
+    }
+    #[inline]
+    fn vecext_new_empty() -> Self {
+        Self::new_in(A::default())
+    }
+    #[inline]
+    unsafe fn vecext_from_raw_parts(ptr: *mut T, len: usize, cap: usize) -> Self {
+        // SAFETY: caller contract on the trait method.
+        unsafe { Self::from_raw_parts_in(ptr, len, cap, A::default()) }
+    }
+}
+
+/// The Global std `Vec<T>` imprint — stable channel only. On nightly the
+/// blanket parametric impl above already covers it (`Vec<T>` is
+/// `Vec<T, Global>`); on stable std's allocator-parameteric Vec is not
+/// nameable, so it gets this dedicated Global ctor set.
+#[cfg(not(bao_nightly))]
+impl<T> VecExtCtor<T> for ::std::vec::Vec<T> {
+    #[inline]
+    fn vecext_is_global() -> bool {
+        true
+    }
+    #[inline]
+    fn vecext_with_capacity(n: usize) -> Self {
+        Self::with_capacity(n)
+    }
+    #[inline]
+    fn vecext_new_empty() -> Self {
+        Self::new()
+    }
+    #[inline]
+    unsafe fn vecext_from_raw_parts(ptr: *mut T, len: usize, cap: usize) -> Self {
+        // SAFETY: caller contract on the trait method.
+        unsafe { Self::from_raw_parts(ptr, len, cap) }
+    }
+}
+
+macro_rules! impl_vec_ext_for_channel {
+    (@body) => {
+
+    #[inline]
+    fn init_capacity(n: usize) -> Self {
+        Self::vecext_with_capacity(n)
+    }
+    #[inline]
     fn init_one(value: T) -> Self {
-        let mut v = Self::with_capacity_in(1, A::default());
+        let mut v = Self::vecext_with_capacity(1);
         v.push(value);
         v
     }
@@ -220,7 +310,7 @@ macro_rules! impl_vec_ext_for_channel {
     where
         T: Clone,
     {
-        let mut v = Self::with_capacity_in(items.len(), A::default());
+        let mut v = Self::vecext_with_capacity(items.len());
         v.extend_from_slice(items);
         v
     }
@@ -229,15 +319,15 @@ macro_rules! impl_vec_ext_for_channel {
         // Mirror of the `move_to_list` fast-path: when `A == Global` this is a
         // pointer adopt (Zig `moveFromList`, baby_list.zig:46), not a realloc.
         // Hot Global callers: `FileReader`, `ByteStream`, `shell::Cmd`.
-        if core::any::TypeId::of::<A>() == core::any::TypeId::of::<$global_ty>() {
+        if Self::vecext_is_global() {
             let mut list = core::mem::ManuallyDrop::new(list);
             // SAFETY: `A == Global`, so `Vec<T>` and `Vec<T, A>` have identical
             // layout, allocator, and drop semantics.
             return unsafe {
-                Self::from_raw_parts_in(list.as_mut_ptr(), list.len(), list.capacity(), A::default())
+                Self::vecext_from_raw_parts(list.as_mut_ptr(), list.len(), list.capacity())
             };
         }
-        let mut v = Self::with_capacity_in(list.len(), A::default());
+        let mut v = Self::vecext_with_capacity(list.len());
         v.extend(list);
         v
     }
@@ -251,7 +341,7 @@ macro_rules! impl_vec_ext_for_channel {
     }
     #[inline]
     unsafe fn from_bump_slice(items: &mut [T]) -> Self {
-        let mut v = Self::with_capacity_in(items.len(), A::default());
+        let mut v = Self::vecext_with_capacity(items.len());
         // SAFETY: caller contract — `items` is a leaked bump-arena slice
         // (`into_bump_slice_mut`); bitwise-move elements into a fresh `A`
         // allocation, leaving the arena bytes abandoned (they were already
@@ -269,14 +359,14 @@ macro_rules! impl_vec_ext_for_channel {
     {
         // For `T: Copy` the `from_bump_slice` bitwise-move is just a memcpy and
         // the source carries no destructor.
-        let mut v = Self::with_capacity_in(items.len(), A::default());
+        let mut v = Self::vecext_with_capacity(items.len());
         v.extend_from_slice(items);
         v
     }
     #[inline]
     fn from_bump_vec(mut src: bun_alloc::ArenaVec<'_, T>) -> Self {
         let len = src.len();
-        let mut out = Self::with_capacity_in(len, A::default());
+        let mut out = Self::vecext_with_capacity(len);
         // SAFETY:
         // - `src` is the unique owner of `len` initialized `T` at
         //   `src.as_ptr()`.
@@ -304,19 +394,14 @@ macro_rules! impl_vec_ext_for_channel {
     }
     #[inline]
     fn init_capacity_in(_arena: &bun_alloc::Arena, cap: usize) -> Self {
-        Self::with_capacity_in(cap, A::default())
+        Self::vecext_with_capacity(cap)
     }
     #[inline]
     unsafe fn from_borrowed_slice_dangerous(items: &[T]) -> ManuallyDrop<Self> {
         // SAFETY: caller must never drop or grow the returned `Vec` — its
         // buffer is borrowed.  Same contract as the original.
         ManuallyDrop::new(unsafe {
-            Self::from_raw_parts_in(
-                items.as_ptr().cast_mut(),
-                items.len(),
-                items.len(),
-                A::default(),
-            )
+            Self::vecext_from_raw_parts(items.as_ptr().cast_mut(), items.len(), items.len())
         })
     }
 
@@ -401,7 +486,7 @@ macro_rules! impl_vec_ext_for_channel {
     }
     #[inline]
     fn clear_and_free(&mut self) {
-        *self = Self::new_in(A::default());
+        *self = Self::vecext_new_empty();
     }
     #[inline]
     fn drain_front(&mut self, n: usize)
@@ -488,13 +573,13 @@ macro_rules! impl_vec_ext_for_channel {
 
     #[inline]
     fn move_to_list(&mut self) -> Vec<T> {
-        let taken = core::mem::replace(self, Self::new_in(A::default()));
+        let taken = core::mem::replace(self, Self::vecext_new_empty());
         // Fast path: `Vec<T, Global>` → `Vec<T>` is a pointer move, not a
         // realloc+memcpy. Restores zero-copy behavior on the HTTP streaming
         // paths (`RequestContext::response_buf`, `ByteStream`); the copying
         // path is still required for `AstAlloc` etc. where the buffer must
         // migrate heaps.
-        if core::any::TypeId::of::<A>() == core::any::TypeId::of::<$global_ty>() {
+        if Self::vecext_is_global() {
             let mut taken = core::mem::ManuallyDrop::new(taken);
             // SAFETY: `A == Global`, so `Vec<T, A>` and `Vec<T>` have the
             // same layout, allocator, and drop semantics.
@@ -518,12 +603,7 @@ macro_rules! impl_vec_ext_for_channel {
     fn shallow_copy(&self) -> ManuallyDrop<Self> {
         // SAFETY: caller must not drop/grow the alias; original stays the owner.
         ManuallyDrop::new(unsafe {
-            Self::from_raw_parts_in(
-                self.as_ptr().cast_mut(),
-                self.len(),
-                self.capacity(),
-                A::default(),
-            )
+            Self::vecext_from_raw_parts(self.as_ptr().cast_mut(), self.len(), self.capacity())
         })
     }
     #[inline]
@@ -570,7 +650,7 @@ macro_rules! impl_vec_ext_for_channel {
     where
         F: FnMut(&T) -> T,
     {
-        let mut v = Self::with_capacity_in(self.len(), A::default());
+        let mut v = Self::vecext_with_capacity(self.len());
         for item in self.iter() {
             v.push(clone_one(item));
         }
@@ -581,25 +661,36 @@ macro_rules! impl_vec_ext_for_channel {
         F: FnMut(&T) -> Result<T, E>,
         E: From<AllocError>,
     {
-        let mut v = Self::with_capacity_in(self.len(), A::default());
+        let mut v = Self::vecext_with_capacity(self.len());
         for item in self.iter() {
             v.push(clone_one(item)?);
         }
         Ok(v)
     }
-}
+    };
+    ($vec:ty, $alloc_trait:path) => {
+        impl<T, A: $alloc_trait + Default + 'static> VecExt<T> for $vec {
+            impl_vec_ext_for_channel!(@body);
+        }
+    };
+    ($vec:ty) => {
+        impl<T> VecExt<T> for $vec {
+            impl_vec_ext_for_channel!(@body);
+        }
     };
 }
 
 #[cfg(bao_nightly)]
-impl_vec_ext_for_channel!(alloc::vec::Vec<T, A>, core::alloc::Allocator, std::alloc::Global);
+impl_vec_ext_for_channel!(alloc::vec::Vec<T, A>, core::alloc::Allocator);
 
 #[cfg(not(bao_nightly))]
-impl_vec_ext_for_channel!(
-    allocator_api2::vec::Vec<T, A>,
-    allocator_api2::alloc::Allocator,
-    allocator_api2::alloc::Global
-);
+impl_vec_ext_for_channel!(allocator_api2::vec::Vec<T, A>, allocator_api2::alloc::Allocator);
+
+// The Global std `Vec<T>` on stable — covers every not-yet-migrated
+// downstream buffer (plain `Vec<u8>`/`Vec<T>` fields) so `VecExt` methods
+// keep resolving on both channels.
+#[cfg(not(bao_nightly))]
+impl_vec_ext_for_channel!(::std::vec::Vec<T>);
 
 /// `Vec<u8>`-only helpers (Zig `Vec(u8)` extension methods).
 pub trait ByteVecExt {
@@ -634,68 +725,99 @@ pub trait ByteVecExt {
     unsafe fn uv_commit(&mut self, nread: usize);
 }
 
-impl ByteVecExt for Vec<u8> {
-    fn append_fmt(&mut self, args: fmt::Arguments<'_>) -> Result<(), AllocError> {
-        use std::io::Write;
-        write!(self, "{}", args).map_err(|_| AllocError)
-    }
-    fn write(&mut self, str: &[u8]) -> Result<u32, AllocError> {
-        let initial = self.len();
-        self.extend_from_slice(str);
-        Ok((self.len() - initial) as u32)
-    }
-    fn write_latin1(&mut self, str: &[u8]) -> Result<u32, AllocError> {
-        let initial = self.len();
-        let old = core::mem::take(self);
-        let old_len = old.len();
-        *self = strings::allocate_latin1_into_utf8_with_list(old, old_len, str);
-        Ok((self.len() - initial) as u32)
-    }
-    fn write_utf16(&mut self, str: &[u16]) -> Result<u32, AllocError> {
-        let initial = self.len();
-        let estimate = if (self.capacity() - self.len()) <= (str.len() * 3 + 2) {
-            bun_simdutf_sys::simdutf::length::utf8::from::utf16::le(str)
-        } else {
-            str.len()
-        };
-        self.reserve(estimate);
-        strings::convert_utf16_to_utf8_append(self, str);
-        Ok((self.len() - initial) as u32)
-    }
-    fn write_type_as_bytes_assume_capacity<Int: Copy>(&mut self, int: Int) {
-        let size = core::mem::size_of::<Int>();
-        debug_assert!(self.capacity() >= self.len() + size);
-        let prev = self.len();
-        // SAFETY: capacity asserted; writing `size` bytes into the uninit tail.
-        unsafe {
-            self.as_mut_ptr()
-                .add(prev)
-                .cast::<Int>()
-                .write_unaligned(int);
-            self.set_len(prev + size);
+// Dual-channel byte-vec imprint: `ByteVecExt` is implemented for std
+// `Vec<u8>` AND the `allocator_api2` mirror on BOTH channels, so downstream
+// callers keep passing whichever byte-list type they hold (plain `Vec<u8>`
+// buffers like `PipeWriter.list` or arena/API2 lists like
+// `MutableString.list`) without per-site conversion. The bodies call only
+// channel-agnostic helpers (`strings::*` are generic over
+// `bun_core::vec::SpareBytesVec`; the spare-capacity fns likewise).
+macro_rules! impl_byte_vec_ext {
+    ($ty:ty) => {
+        impl ByteVecExt for $ty {
+            fn append_fmt(&mut self, args: fmt::Arguments<'_>) -> Result<(), AllocError> {
+                // Neither api2 Vec nor every target here carries an
+                // io::Write/fmt::Write impl from std; push the fmt pieces
+                // through a byte-appending adapter — same output as
+                // `write!(self, "{}", args)` on an io::Write target.
+                struct FmtSink<'a>(&'a mut $ty);
+                impl fmt::Write for FmtSink<'_> {
+                    fn write_str(&mut self, s: &str) -> fmt::Result {
+                        self.0.extend_from_slice(s.as_bytes());
+                        Ok(())
+                    }
+                }
+                use fmt::Write as _;
+                FmtSink(self).write_fmt(args).map_err(|_| AllocError)
+            }
+            fn write(&mut self, str: &[u8]) -> Result<u32, AllocError> {
+                let initial = self.len();
+                self.extend_from_slice(str);
+                Ok((self.len() - initial) as u32)
+            }
+            fn write_latin1(&mut self, str: &[u8]) -> Result<u32, AllocError> {
+                let initial = self.len();
+                let old = core::mem::take(self);
+                let old_len = old.len();
+                *self = strings::allocate_latin1_into_utf8_with_list(old, old_len, str);
+                Ok((self.len() - initial) as u32)
+            }
+            fn write_utf16(&mut self, str: &[u16]) -> Result<u32, AllocError> {
+                let initial = self.len();
+                let estimate = if (self.capacity() - self.len()) <= (str.len() * 3 + 2) {
+                    bun_simdutf_sys::simdutf::length::utf8::from::utf16::le(str)
+                } else {
+                    str.len()
+                };
+                self.reserve(estimate);
+                strings::convert_utf16_to_utf8_append(self, str);
+                Ok((self.len() - initial) as u32)
+            }
+            fn write_type_as_bytes_assume_capacity<Int: Copy>(&mut self, int: Int) {
+                let size = core::mem::size_of::<Int>();
+                debug_assert!(self.capacity() >= self.len() + size);
+                let prev = self.len();
+                // SAFETY: capacity asserted; writing `size` bytes into the uninit tail.
+                unsafe {
+                    self.as_mut_ptr()
+                        .add(prev)
+                        .cast::<Int>()
+                        .write_unaligned(int);
+                    self.set_len(prev + size);
+                }
+            }
+            #[inline]
+            fn uv_alloc_spare(&mut self, suggested: usize) -> &mut [core::mem::MaybeUninit<u8>] {
+                // `Vec::reserve` already amortises by doubling, so a plain
+                // `reserve(suggested)` suffices — no manual `cap - len < suggested`
+                // dance is needed (it short-circuits internally).
+                self.reserve(suggested);
+                self.spare_capacity_mut()
+            }
+            #[inline]
+            unsafe fn uv_alloc_spare_u8(&mut self, suggested: usize) -> &mut [u8] {
+                // SAFETY: caller contract on `uv_alloc_spare_u8` — the returned uninit
+                // bytes are only read after the FFI-written prefix is committed.
+                unsafe { bun_core::vec::reserve_spare_bytes(self, suggested) }
+            }
+            #[inline]
+            unsafe fn uv_commit(&mut self, nread: usize) {
+                // SAFETY: caller contract on `uv_commit` — `[len, len+nread)` was
+                // initialised by the preceding write into the spare slice.
+                unsafe { bun_core::vec::commit_spare(self, nread) }
+            }
         }
-    }
-    #[inline]
-    fn uv_alloc_spare(&mut self, suggested: usize) -> &mut [core::mem::MaybeUninit<u8>] {
-        // `Vec::reserve` already amortises by doubling, so a plain
-        // `reserve(suggested)` suffices — no manual `cap - len < suggested`
-        // dance is needed (it short-circuits internally).
-        self.reserve(suggested);
-        self.spare_capacity_mut()
-    }
-    #[inline]
-    unsafe fn uv_alloc_spare_u8(&mut self, suggested: usize) -> &mut [u8] {
-        // SAFETY: caller contract on `uv_alloc_spare_u8` — the returned uninit
-        // bytes are only read after the FFI-written prefix is committed.
-        unsafe { bun_core::vec::reserve_spare_bytes(self, suggested) }
-    }
-    #[inline]
-    unsafe fn uv_commit(&mut self, nread: usize) {
-        // SAFETY: caller contract on `uv_commit` — `[len, len+nread)` was
-        // initialised by the preceding write into the spare slice.
-        unsafe { bun_core::vec::commit_spare(self, nread) }
-    }
+    };
 }
+
+impl_byte_vec_ext!(Vec<u8>);
+// api2 mirror imprint — stable channel only: there `core_alloc::Global` IS
+// api2's Global (satisfies the vec's allocator bound). On nightly
+// `core_alloc::Global` is std's Global, which api2's Vec does not accept
+// (the hashbrown bridge covers DefaultAlloc/AstAlloc/ArenaPtr, not std
+// Global) — and on nightly every byte list rides std Vec anyway.
+#[cfg(not(bao_nightly))]
+impl_byte_vec_ext!(::allocator_api2::vec::Vec<u8, ::bun_alloc::core_alloc::Global>);
 
 impl crate::pool::ObjectPoolType for Vec<u8> {
     const INIT: Option<fn() -> Result<Self, bun_core::Error>> = Some(|| Ok(Vec::new()));

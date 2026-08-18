@@ -26,7 +26,7 @@ use smallvec::SmallVec;
 /// default and free normally.
 #[derive(bun_collections::SoaRowDerive)]
 pub struct LineOffsetTable<A: Allocator = Global> {
-    pub columns_for_non_ascii: Box<[i32], A>,
+    pub columns_for_non_ascii: ::bun_alloc::core_alloc::AllocBox<[i32], A>,
     /// Byte offset of the first non-ASCII byte on this line, or `i32::MAX as u32`
     /// when the line is entirely ASCII (so no `columns_for_non_ascii` table exists).
     /// The sentinel can't be `0` because a line can legitimately start with a
@@ -168,7 +168,7 @@ impl LineOffsetTable {
         approximate_line_count: i32,
     ) -> Result<List<A>, AllocError> {
         let alloc = A::default();
-        let empty_box = || Vec::new_in(alloc).into_boxed_slice();
+        let empty_box = || ::bun_alloc::core_alloc::AllocVec::<i32, A>::new_in(alloc).into_boxed_slice();
         let mut list = List::<A>::new_in(alloc);
         // Preallocate the top-level table using the approximate line count from the lexer
         list.ensure_unused_capacity(approximate_line_count.max(1) as usize)?;
@@ -271,10 +271,10 @@ impl LineOffsetTable {
                     // inline storage across lines; copy out into an `A`-backed box only when a
                     // line had non-ASCII bytes. ASCII-only lines (almost all of them) store an
                     // empty dangling box and leave the scratch untouched.
-                    let owned: Box<[i32], A> = if columns_for_non_ascii.is_empty() {
+                    let owned: ::bun_alloc::core_alloc::AllocBox<[i32], A> = if columns_for_non_ascii.is_empty() {
                         empty_box()
                     } else {
-                        let mut v = Vec::with_capacity_in(columns_for_non_ascii.len(), alloc);
+                        let mut v = ::bun_alloc::core_alloc::AllocVec::<i32, A>::with_capacity_in(columns_for_non_ascii.len(), alloc);
                         v.extend_from_slice(&columns_for_non_ascii);
                         columns_for_non_ascii.clear();
                         v.into_boxed_slice()
@@ -311,10 +311,10 @@ impl LineOffsetTable {
             columns_for_non_ascii.extend(core::iter::repeat_n(column, need));
         }
         {
-            let owned: Box<[i32], A> = if columns_for_non_ascii.is_empty() {
+            let owned: ::bun_alloc::core_alloc::AllocBox<[i32], A> = if columns_for_non_ascii.is_empty() {
                 empty_box()
             } else {
-                let mut v = Vec::with_capacity_in(columns_for_non_ascii.len(), alloc);
+                let mut v = ::bun_alloc::core_alloc::AllocVec::<i32, A>::with_capacity_in(columns_for_non_ascii.len(), alloc);
                 v.extend_from_slice(&columns_for_non_ascii);
                 v.into_boxed_slice()
             };

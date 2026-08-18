@@ -833,10 +833,10 @@ impl<'a> SplitIterator<'a> {
 
 pub fn cat(first: &[u8], second: &[u8]) -> Result<Box<[u8]>, AllocError> {
     // PORT NOTE: allocator param dropped (global mimalloc).
-    let mut out = Vec::with_capacity(first.len() + second.len());
+    let mut out: crate::vec::ChanVec<u8> = crate::vec::ChanVec::with_capacity(first.len() + second.len());
     out.extend_from_slice(first);
     out.extend_from_slice(second);
-    Ok(out.into_boxed_slice())
+    Ok(out.into_iter().collect::<::std::vec::Vec<u8>>().into_boxed_slice())
 }
 
 // 31 character string or a slice
@@ -1182,7 +1182,7 @@ pub fn quoted_alloc(self_: &[u8]) -> Result<Box<[u8]>, AllocError> {
         i += 1;
     }
 
-    Ok(out)
+    Ok(out.into_iter().collect::<::std::vec::Vec<u8>>().into_boxed_slice())
 }
 
 pub fn eql_any_comptime(self_: &[u8], list: &'static [&'static [u8]]) -> bool {
@@ -2187,13 +2187,13 @@ pub fn join(slices: &[&[u8]], delimiter: &[u8]) -> Result<Box<[u8]>, AllocError>
     }
     let total: usize =
         slices.iter().map(|s| s.len()).sum::<usize>() + delimiter.len() * (slices.len() - 1);
-    let mut out = Vec::with_capacity(total);
+    let mut out: crate::vec::ChanVec<u8> = crate::vec::ChanVec::with_capacity(total);
     out.extend_from_slice(slices[0]);
     for s in &slices[1..] {
         out.extend_from_slice(delimiter);
         out.extend_from_slice(s);
     }
-    Ok(out.into_boxed_slice())
+    Ok(out.into_iter().collect::<::std::vec::Vec<u8>>().into_boxed_slice())
 }
 
 // ── Lexicographic slice ordering ──────────────────────────────────────────
@@ -2903,12 +2903,12 @@ pub fn to_utf16_alloc_for_real(
         return Ok(v);
     }
     // All-ASCII path: widen each byte.
-    let mut out = Vec::with_capacity(bytes.len() + sentinel as usize);
+    let mut out: crate::vec::ChanVec<u16> = crate::vec::ChanVec::with_capacity(bytes.len() + sentinel as usize);
     out.extend(bytes.iter().map(|&b| u16::from(b)));
     if sentinel {
         out.push(0);
     }
-    Ok(out)
+    Ok(out.into_iter().collect::<::std::vec::Vec<u16>>())
 }
 
 /// `withoutPrefix` (runtime) — strip `prefix` from `input` if present.
@@ -3031,7 +3031,7 @@ fn decode_wtf8_one(s: &[u8]) -> (u32, usize) {
 /// `list` and return the (possibly-reallocated) list. Port of
 /// `unicode.zig:toUTF8ListWithType` (always uses simdutf path; Bun is built
 /// with `FeatureFlags.use_simdutf = true`).
-pub fn to_utf8_list_with_type(mut list: Vec<u8>, utf16: &[u16]) -> Result<Vec<u8>, AllocError> {
+pub fn to_utf8_list_with_type(mut list: crate::vec::ChanVec<u8>, utf16: &[u16]) -> Result<crate::vec::ChanVec<u8>, AllocError> {
     if utf16.is_empty() {
         return Ok(list);
     }
@@ -3087,7 +3087,7 @@ pub fn to_utf16_alloc(
     // which for large source files (build/create-next benches) is a measurable
     // memset. `.max(1)` keeps the buffer pointer non-dangling so simdutf never
     // sees `Vec::with_capacity(0)`'s `0x2` sentinel.
-    let mut out: Vec<u16> = Vec::with_capacity(cap.max(1));
+    let mut out: crate::vec::ChanVec<u16> = crate::vec::ChanVec::with_capacity(cap.max(1));
     // SAFETY: `out` has ≥ `out_length` u16 of capacity (just reserved). simdutf
     // never reads from the output buffer and writes at most `out_length` code
     // units (the upper bound returned by `utf16_length_from_utf8`), so passing
@@ -3106,7 +3106,7 @@ pub fn to_utf16_alloc(
         if sentinel {
             out.push(0);
         }
-        return Ok(Some(out));
+        return Ok(Some(out.into_iter().collect::<::std::vec::Vec<u16>>()));
     }
     if fail_if_invalid {
         return Err(ToUTF16Error::InvalidByteSequence);
@@ -3131,7 +3131,7 @@ pub fn to_utf16_alloc(
     if sentinel {
         out.push(0);
     }
-    Ok(Some(out))
+    Ok(Some(out.into_iter().collect::<::std::vec::Vec<u16>>()))
 }
 
 /// `PATTERN_KEY_COMPARE` from the Node.js ESM resolution spec — the comparator

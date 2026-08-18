@@ -5,6 +5,10 @@ use css::css_properties::Property;
 use css::{PrintErr, Printer, PropertyHandlerContext};
 
 use css::css_values::ident::DashedIdent;
+// Dual-mode plain vec (stable api2 mirror).
+use bun_alloc::core_alloc::AllocVec as PlainVec;
+use bun_alloc::core_alloc::Global as _G;
+type PlainVec2<T> = PlainVec<T, _G>;
 
 // bumpalo::Bump re-export (CSS is an arena crate)
 
@@ -170,7 +174,7 @@ fn define_var(name: &'static [u8], value: css::Token) -> Property {
     Property::Custom(css::css_properties::custom::CustomProperty {
         name: css::css_properties::custom::CustomPropertyName::Custom(DashedIdent { v: name }),
         value: css::TokenList {
-            v: vec![css::css_properties::custom::TokenOrValue::Token(value)],
+            v: PlainVec2::from_iter([css::css_properties::custom::TokenOrValue::Token(value)]),
         },
     })
 }

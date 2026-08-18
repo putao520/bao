@@ -34,12 +34,33 @@ use crate::stmt;
 // `thread_local!` macro) so there is no destructor: a parked arena at thread
 // exit is reclaimed by mimalloc's own thread-teardown, avoiding an unspecified
 // destructor-ordering hazard with `mi_heap_destroy`.
+// Dual-mode TLS station (#66 idiom): nightly bare __thread slot, stable
+// const-init thread_local!; set/take/replace accessors hide the .with frame.
+#[cfg(bao_nightly)]
 #[thread_local]
 static ARENA_POOL: Cell<Option<Arena>> = Cell::new(None);
+#[cfg(not(bao_nightly))]
+::std::thread_local! {
+    static ARENA_POOL: Cell<Option<Arena>> = const { Cell::new(None) };
+}
+#[inline]
+fn arena_pool_take() -> Option<Arena> {
+    #[cfg(bao_nightly)]
+    { ARENA_POOL.take() }
+    #[cfg(not(bao_nightly))]
+    { ARENA_POOL.with(Cell::take) }
+}
+#[inline]
+fn arena_pool_replace(v: Option<Arena>) -> Option<Arena> {
+    #[cfg(bao_nightly)]
+    { ARENA_POOL.replace(v) }
+    #[cfg(not(bao_nightly))]
+    { ARENA_POOL.with(|c| c.replace(v)) }
+}
 
 #[inline]
 fn take_pooled_arena() -> Arena {
-    ARENA_POOL.take().unwrap_or_default()
+    arena_pool_take().unwrap_or_default()
 }
 
 /// Park a *clean* (reset) arena for reuse by the next `ASTMemoryAllocator` on
@@ -47,7 +68,7 @@ fn take_pooled_arena() -> Arena {
 /// arena is dropped here (`mi_heap_destroy`).
 #[inline]
 fn return_pooled_arena(arena: Arena) {
-    drop(ARENA_POOL.replace(Some(arena)));
+    drop(arena_pool_replace(Some(arena)));
 }
 
 pub struct ASTMemoryAllocator {

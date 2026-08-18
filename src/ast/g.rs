@@ -6,6 +6,7 @@ use crate::expr::Expr as ExprNodeIndex;
 use crate::stmt::Stmt;
 use crate::ts as TypeScript;
 use crate::{ExprData, ExprNodeList, LocRef, StmtNodeList, StoreSlice, StoreStr, flags};
+use crate::AstVec;
 
 /// Zig: `G.Fn.flags: Flags.Function.Set`. Downstream crates address the flag
 /// enum via `G::FnFlags::IsExport` etc.; re-export the enum + set type here.
@@ -24,7 +25,7 @@ pub struct Decl {
 
 // Zig: `pub const List = Vec(Decl);` (nested decl) — inherent assoc types
 // are nightly; free alias.
-pub type DeclList = Vec<Decl, bun_alloc::AstAlloc>;
+pub type DeclList = AstVec<Decl>;
 
 pub struct NamespaceAlias {
     pub namespace_ref: Ref,
@@ -128,7 +129,7 @@ pub struct Comment {
 }
 
 pub struct ClassStaticBlock {
-    pub stmts: Vec<Stmt, bun_alloc::AstAlloc>,
+    pub stmts: AstVec<Stmt>,
     pub loc: crate::Loc,
 }
 
@@ -169,7 +170,7 @@ pub struct Property {
 }
 
 // Zig: nested `pub const List = Vec(Property);` — free alias.
-pub type PropertyList = Vec<Property, bun_alloc::AstAlloc>;
+pub type PropertyList = AstVec<Property>;
 
 impl Default for Property {
     fn default() -> Self {

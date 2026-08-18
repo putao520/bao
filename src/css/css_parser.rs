@@ -23,6 +23,10 @@ use bun_core::strings;
 use bun_ast::Index as SrcIndex;
 type SymbolList = Vec<bun_ast::Symbol>;
 use bun_ast::{ImportKind, ImportRecord};
+// Dual-mode plain vec (stable api2 mirror) for VecExt-typed fields.
+use bun_alloc::core_alloc::AllocVec as _PVec;
+use bun_alloc::core_alloc::Global as _PG;
+type PlainVec2<T> = _PVec<T, _PG>;
 
 pub use crate::compat::{self, Feature};
 pub use crate::css_modules::{
@@ -412,7 +416,7 @@ pub trait DeriveValueType {
 fn consume_until_end_of_block(block_type: BlockType, tokenizer: &mut Tokenizer) -> bool {
     // PERF(port): was SmallList<BlockType, 16> + appendAssumeCapacity — Vec is
     // fine for the cold path.
-    let mut stack: Vec<BlockType> = Vec::with_capacity(16);
+    let mut stack: PlainVec2<BlockType> = PlainVec2::with_capacity(16);
     stack.push(block_type);
 
     while let Ok(tok) = tokenizer.next() {
@@ -803,8 +807,8 @@ pub trait CustomAtRuleParser {
     /// when `P == BundlerAtRuleParser` (css_parser.zig:3324); Rust can't
     /// type-specialize at the call site, so this is a trait hook with a
     /// default no-op for parsers that don't track layers.
-    fn take_layer_names(_this: &mut Self) -> Vec<LayerName> {
-        Vec::new()
+    fn take_layer_names(_this: &mut Self) -> PlainVec2<LayerName> {
+        PlainVec2::new()
     }
 }
 
@@ -889,8 +893,8 @@ pub struct BundlerAtRuleParser<'a> {
     /// SharedRW provenance (see `parse_bundler`); each materialises a
     /// short-lived `&mut` only at the point of use, so accesses interleave
     /// soundly under Stacked Borrows.
-    pub import_records: *mut Vec<ImportRecord>,
-    pub layer_names: Vec<LayerName>,
+    pub import_records: *mut PlainVec2<ImportRecord>,
+    pub layer_names: PlainVec2<LayerName>,
     pub options: &'a ParserOptions<'a>,
     /// Having _named_ layers nested inside of an _anonymous_ layer has no
     /// effect. See: https://drafts.csswg.org/css-cascade-5/#example-787042b6
@@ -1007,7 +1011,7 @@ impl<'a> CustomAtRuleParser for BundlerAtRuleParser<'a> {
         this.enclosing_layer.v.append_slice(name.v.slice());
     }
 
-    fn take_layer_names(this: &mut Self) -> Vec<LayerName> {
+    fn take_layer_names(this: &mut Self) -> PlainVec2<LayerName> {
         core::mem::take(&mut this.layer_names)
     }
 
@@ -1063,7 +1067,7 @@ pub enum AtRulePrelude<T> {
         prefix: VendorPrefix,
     },
     // TODO(port): real type is `Vec<css_rules::page::PageSelector>` — gated.
-    Page(Vec<PageSelector>),
+    Page(PlainVec2<PageSelector>),
     MozDocument,
     Layer(SmallList<LayerName, 1>),
     Container {
@@ -1759,7 +1763,7 @@ mod rule_parsers {
                         // .err returns empty list. EOF inside `PageSelector::parse`
                         // (e.g. `@page foo` with nothing after) propagates here and is
                         // swallowed by `try_parse` — matches css_parser.zig:2073.
-                        let selectors: Vec<PageSelector> = input
+                        let selectors: PlainVec2<PageSelector> = input
                             .try_parse(|input2| {
                                 input2.parse_comma_separated(css_rules::page::PageSelector::parse)
                             })
@@ -1786,7 +1790,7 @@ mod rule_parsers {
                     b"layer" => {
                         let names: SmallList<LayerName, 1> =
                             match input.parse_comma_separated(LayerName::parse) {
-                                Ok(vv) => SmallList::<LayerName, 1>::from_list(vv),
+                                Ok(vv) => SmallList::<LayerName, 1>::from_list(vv.into_iter().collect()),
                                 Err(e) => {
                                     if matches!(
                                         e.kind,
@@ -1883,8 +1887,8 @@ mod rule_parsers {
                         let mut parser = RuleBodyParser::new(input, &mut decl_parser);
                         // todo_stuff.think_mem_mgmt
                         // PERF(port): was arena bulk-free — profile if hot.
-                        let mut properties: Vec<css_rules::font_face::FontFaceProperty> =
-                            Vec::new();
+                        let mut properties: PlainVec2<css_rules::font_face::FontFaceProperty> =
+                            PlainVec2::new();
                         while let Some(result) = parser.next() {
                             if let Ok(decl) = result {
                                 properties.push(decl);
@@ -1983,7 +1987,7 @@ mod rule_parsers {
                         let mut iter = RuleBodyParser::new(input, &mut parser);
                         // todo_stuff.think_mem_mgmt
                         // PERF(port): was arena bulk-free — profile if hot.
-                        let mut keyframes: Vec<css_rules::keyframes::Keyframe> = Vec::new();
+                        let mut keyframes: PlainVec2<css_rules::keyframes::Keyframe> = PlainVec2::new();
                         while let Some(result) = iter.next() {
                             if let Ok(keyframe) = result {
                                 keyframes.push(keyframe);
@@ -2267,7 +2271,7 @@ mod rule_parsers {
                 {
                     let len = input.position() - location;
                     let mut usage = PropertyBitset::init_empty();
-                    let mut custom_properties: Vec<&'static [u8]> = Vec::new();
+                    let mut custom_properties: PlainVec2<&'static [u8]> = PlainVec2::new();
                     fill_property_bit_set(&mut usage, &declarations, &mut custom_properties);
 
                     let custom_properties_slice = custom_properties.slice();
@@ -2521,7 +2525,7 @@ pub type PropertyBitset = ArrayBitSet<1024, { num_masks_for(1024) }>;
 pub fn fill_property_bit_set(
     bitset: &mut PropertyBitset,
     block: &DeclarationBlock<'_>,
-    custom_properties: &mut Vec<&'static [u8]>,
+    custom_properties: &mut PlainVec2<&'static [u8]>,
 ) {
     for prop in block.declarations.iter() {
         let tag = match prop {
@@ -2576,7 +2580,7 @@ pub struct StyleSheet<AtRule> {
     // Zig: `tailwind: if (AtRule == BundlerAtRule) ?*BundlerTailwindState else u0`
     // TODO(port): conditional field; for now Option<Box<_>> always.
     pub tailwind: Option<Box<BundlerTailwindState>>,
-    pub layer_names: Vec<LayerName>,
+    pub layer_names: PlainVec2<LayerName>,
 
     /// Used when css modules is enabled. Maps `local name string` -> `Ref`.
     pub local_scope: LocalScope,
@@ -2596,7 +2600,7 @@ impl<AtRule> StyleSheet<AtRule> {
             license_comments: Vec::new(),
             options: ParserOptions::default(None),
             tailwind: None,
-            layer_names: Vec::new(),
+            layer_names: PlainVec2::new(),
             local_scope: LocalScope::default(),
             local_properties: LocalPropertyUsage::default(),
             composes: ComposesMap::default(),
@@ -2831,7 +2835,7 @@ mod stylesheet_impl {
             arena: &'static Bump,
             code: &[u8],
             options: ParserOptions<'static>,
-            import_records: Option<&mut Vec<ImportRecord>>,
+            import_records: Option<&mut PlainVec2<ImportRecord>>,
             source_index: SrcIndex,
         ) -> Maybe<(StyleSheet<DefaultAtRule>, StylesheetExtra), Err<ParserError>> {
             // PORT NOTE: Zig instantiated `StyleSheet(DefaultAtRule).parse`; Rust
@@ -2858,7 +2862,7 @@ mod stylesheet_impl {
             code: &[u8],
             options: ParserOptions<'static>,
             at_rule_parser: &mut P,
-            import_records: Option<core::ptr::NonNull<Vec<ImportRecord>>>,
+            import_records: Option<core::ptr::NonNull<PlainVec2<ImportRecord>>>,
             source_index: SrcIndex,
         ) -> Maybe<(Self, StylesheetExtra), Err<ParserError>> {
             // TODO(port): 'bump lifetime threading — every arena-backed slice the
@@ -3004,7 +3008,7 @@ mod stylesheet_impl {
                 license_comments: Vec::new(),
                 options,
                 tailwind: None,
-                layer_names: Vec::new(),
+                layer_names: PlainVec2::new(),
                 local_scope: LocalScope::default(),
                 local_properties: LocalPropertyUsage::default(),
                 composes: ComposesMap::default(),
@@ -3018,7 +3022,7 @@ mod stylesheet_impl {
         pub fn pluck_imports(
             &mut self,
             out: &mut CssRuleList<AtRule>,
-            new_import_records: &mut Vec<ImportRecord>,
+            new_import_records: &mut PlainVec2<ImportRecord>,
         ) {
             // PORT NOTE: the Zig fn takes `*const @This()` but writes
             // `rule.* = .ignored;` through it (Zig has no const-transitivity).
@@ -3108,7 +3112,7 @@ mod stylesheet_impl {
             arena: &'static Bump,
             code: &[u8],
             options: &ParserOptions,
-            import_records: &mut Vec<ImportRecord>,
+            import_records: &mut PlainVec2<ImportRecord>,
             source_index: SrcIndex,
         ) -> Maybe<StyleAttribute, Err<ParserError>> {
             // TODO(port): 'bump lifetime threading — `DeclarationBlock<'static>` in
@@ -3185,7 +3189,7 @@ mod stylesheet_impl {
             arena: &'static Bump,
             code: &[u8],
             options: ParserOptions<'static>,
-            import_records: &mut Vec<ImportRecord>,
+            import_records: &mut PlainVec2<ImportRecord>,
             source_index: SrcIndex,
         ) -> Maybe<(Self, StylesheetExtra), Err<ParserError>> {
             // PORT NOTE: Zig aliased `import_records` into both `BundlerAtRuleParser`
@@ -3211,7 +3215,7 @@ mod stylesheet_impl {
                 arena,
                 import_records: import_records_ptr.as_ptr(),
                 options: &options,
-                layer_names: Vec::new(),
+                layer_names: PlainVec2::new(),
                 anon_layer_count: 0,
                 enclosing_layer: LayerName::default(),
             };
@@ -3494,7 +3498,7 @@ pub struct Parser<'a> {
     /// be invalidated under Stacked Borrows the moment `on_import_rule`
     /// derives its own `&mut` from the sibling raw pointer. Each access site
     /// materialises a fresh short-lived `&mut` instead.
-    pub import_records: Option<core::ptr::NonNull<Vec<ImportRecord>>>,
+    pub import_records: Option<core::ptr::NonNull<PlainVec2<ImportRecord>>>,
     pub extra: Option<&'a mut ParserExtra>,
 }
 
@@ -3609,7 +3613,7 @@ impl<'a> Parser<'a> {
     /// error.
     pub fn new(
         input: &'a mut ParserInput<'a>,
-        import_records: Option<core::ptr::NonNull<Vec<ImportRecord>>>,
+        import_records: Option<core::ptr::NonNull<PlainVec2<ImportRecord>>>,
         flags: ParserOpts,
         extra: Option<&'a mut ParserExtra>,
     ) -> Parser<'a> {
@@ -3667,7 +3671,7 @@ impl<'a> Parser<'a> {
     pub fn parse_list<T>(
         &mut self,
         parse_one: impl Fn(&mut Parser) -> CssResult<T>,
-    ) -> CssResult<Vec<T>> {
+    ) -> CssResult<PlainVec2<T>> {
         self.parse_comma_separated(parse_one)
     }
 
@@ -3675,7 +3679,7 @@ impl<'a> Parser<'a> {
     pub fn parse_comma_separated<T>(
         &mut self,
         parse_one: impl Fn(&mut Parser) -> CssResult<T>,
-    ) -> CssResult<Vec<T>> {
+    ) -> CssResult<PlainVec2<T>> {
         self.parse_comma_separated_internal(|(), p| parse_one(p), false)
     }
 
@@ -3683,7 +3687,7 @@ impl<'a> Parser<'a> {
         &mut self,
         closure: C,
         parse_one: impl Fn(&mut C, &mut Parser) -> CssResult<T>,
-    ) -> CssResult<Vec<T>> {
+    ) -> CssResult<PlainVec2<T>> {
         let mut closure = closure;
         self.parse_comma_separated_internal(move |(), p| parse_one(&mut closure, p), false)
     }
@@ -3692,13 +3696,13 @@ impl<'a> Parser<'a> {
         &mut self,
         mut parse_one: impl FnMut((), &mut Parser) -> CssResult<T>,
         ignore_errors: bool,
-    ) -> CssResult<Vec<T>> {
+    ) -> CssResult<PlainVec2<T>> {
         // Vec grows from 0 to 4 by default on first push().  So allocate with
         // capacity 1, so in the somewhat common case of only one item we don't
         // way overallocate.  Note that we always push at least one item if
         // parsing succeeds.
         // PERF(port): was stack-fallback
-        let mut values: Vec<T> = Vec::with_capacity(1);
+        let mut values: PlainVec2<T> = PlainVec2::with_capacity(1);
 
         loop {
             self.skip_whitespace(); // Unnecessary for correctness, but may help try() rewind less.
@@ -6552,7 +6556,7 @@ pub mod parse_utility {
         parse_one: fn(&mut Parser) -> CssResult<T>,
     ) -> CssResult<T> {
         // I hope this is okay
-        let mut import_records = Vec::<ImportRecord>::default();
+        let mut import_records = PlainVec2::<ImportRecord>::default();
         let mut i = ParserInput::new(input, arena);
         let mut parser = Parser::new(
             &mut i,

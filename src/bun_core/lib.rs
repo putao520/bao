@@ -385,6 +385,137 @@ pub fn powf(x: f32, y: f32) -> f32 {
 /// pattern (S025) so the single `unsafe { set_len }` lives here behind a
 /// locally-proven invariant instead of being open-coded at every fill site.
 pub mod vec {
+
+/// Dual-mode allocator-parameterized Vec for the byte helpers below
+/// (stable api2 mirror; byte-identical std Vec on nightly).
+#[cfg(bao_nightly)]
+pub type ChanVec<T> = ::std::vec::Vec<T>;
+#[cfg(not(bao_nightly))]
+pub type ChanVec<T> = allocator_api2::vec::Vec<T>;
+
+    /// Byte-vec primitives shared by `std::vec::Vec<u8>` and the
+    /// `allocator_api2` mirror, so the spare-capacity helpers below
+    /// (`spare_bytes_mut` / `commit_spare` / …) accept either channel's
+    /// vec unchanged — downstream call sites keep passing plain
+    /// `Vec<u8>` buffers on both channels.
+    pub trait SpareBytesVec {
+        fn sb_reserve(&mut self, additional: usize);
+        fn sb_capacity(&self) -> usize;
+        fn sb_len(&self) -> usize;
+        /// Pointer to the start of the backing byte buffer (valid for
+        /// `sb_capacity()` bytes).
+        fn sb_as_mut_ptr(&mut self) -> *mut u8;
+        fn sb_truncate(&mut self, len: usize);
+        fn sb_extend_from_slice(&mut self, bytes: &[u8]);
+        fn sb_push(&mut self, byte: u8);
+        /// # Safety
+        /// `len` must be ≤ `sb_capacity()`; every byte in `[0, len)` must be
+        /// initialized (the `commit_spare` contract upholds this).
+        unsafe fn sb_set_len(&mut self, len: usize);
+    }
+
+    impl SpareBytesVec for ::std::vec::Vec<u8> {
+        #[inline]
+        fn sb_reserve(&mut self, additional: usize) {
+            self.reserve(additional);
+        }
+        #[inline]
+        fn sb_capacity(&self) -> usize {
+            self.capacity()
+        }
+        #[inline]
+        fn sb_len(&self) -> usize {
+            self.len()
+        }
+        #[inline]
+        fn sb_as_mut_ptr(&mut self) -> *mut u8 {
+            self.as_mut_ptr()
+        }
+        #[inline]
+        fn sb_truncate(&mut self, len: usize) {
+            self.truncate(len);
+        }
+        #[inline]
+        fn sb_extend_from_slice(&mut self, bytes: &[u8]) {
+            self.extend_from_slice(bytes);
+        }
+        #[inline]
+        fn sb_push(&mut self, byte: u8) {
+            self.push(byte);
+        }
+        #[inline]
+        unsafe fn sb_set_len(&mut self, len: usize) {
+            // SAFETY: caller contract on the trait method.
+            unsafe { self.set_len(len) }
+        }
+    }
+
+    /// UTF-16 twin of [`SpareBytesVec`]: just the append ops
+    /// `push_codepoint_utf16` needs, so callers keep passing whichever
+    /// channel's `Vec<u16>` they hold.
+    pub trait Utf16List {
+        fn push16(&mut self, unit: u16);
+        fn extend16(&mut self, units: &[u16]);
+    }
+
+    impl Utf16List for ::std::vec::Vec<u16> {
+        #[inline]
+        fn push16(&mut self, unit: u16) {
+            self.push(unit);
+        }
+        #[inline]
+        fn extend16(&mut self, units: &[u16]) {
+            self.extend_from_slice(units);
+        }
+    }
+
+    impl<A: allocator_api2::alloc::Allocator> Utf16List for allocator_api2::vec::Vec<u16, A> {
+        #[inline]
+        fn push16(&mut self, unit: u16) {
+            self.push(unit);
+        }
+        #[inline]
+        fn extend16(&mut self, units: &[u16]) {
+            self.extend_from_slice(units);
+        }
+    }
+
+    impl<A: allocator_api2::alloc::Allocator> SpareBytesVec for allocator_api2::vec::Vec<u8, A> {
+        #[inline]
+        fn sb_reserve(&mut self, additional: usize) {
+            self.reserve(additional);
+        }
+        #[inline]
+        fn sb_capacity(&self) -> usize {
+            self.capacity()
+        }
+        #[inline]
+        fn sb_len(&self) -> usize {
+            self.len()
+        }
+        #[inline]
+        fn sb_as_mut_ptr(&mut self) -> *mut u8 {
+            self.as_mut_ptr()
+        }
+        #[inline]
+        fn sb_truncate(&mut self, len: usize) {
+            self.truncate(len);
+        }
+        #[inline]
+        fn sb_extend_from_slice(&mut self, bytes: &[u8]) {
+            self.extend_from_slice(bytes);
+        }
+        #[inline]
+        fn sb_push(&mut self, byte: u8) {
+            self.push(byte);
+        }
+        #[inline]
+        unsafe fn sb_set_len(&mut self, len: usize) {
+            // SAFETY: caller contract on the trait method.
+            unsafe { self.set_len(len) }
+        }
+    }
+
     /// Extend `v` by `n` elements, each produced by `f(i)` for `i in 0..n`.
     ///
     /// Equivalent to `for i in 0..n { v.push(f(i)) }` but reserves once and
@@ -460,7 +591,7 @@ pub mod vec {
     /// Caller must fully write the returned slice before any read of
     /// `v[prev_len..]` (the slots are uninitialized on entry).
     #[inline]
-    pub(crate) unsafe fn writable_slice<T>(v: &mut Vec<T>, additional: usize) -> &mut [T] {
+    pub(crate) unsafe fn writable_slice<T>(v: &mut ChanVec<T>, additional: usize) -> &mut [T] {
         v.reserve(additional);
         let prev = v.len();
         // SAFETY: caller contract — slice is fully written before any read.
@@ -477,7 +608,7 @@ pub mod vec {
     /// fully written before any read.
     #[inline]
     pub(crate) unsafe fn writable_slice_assume_capacity<T>(
-        v: &mut Vec<T>,
+        v: &mut ChanVec<T>,
         additional: usize,
     ) -> &mut [T] {
         debug_assert!(v.len() + additional <= v.capacity());
@@ -527,12 +658,13 @@ pub mod vec {
     /// might. After the producer writes `n` bytes to the front of this
     /// slice, call [`commit_spare`]`(v, n)` to expose them.
     #[inline]
-    pub unsafe fn spare_bytes_mut(v: &mut Vec<u8>) -> &mut [u8] {
-        let spare = v.spare_capacity_mut();
+    pub unsafe fn spare_bytes_mut(v: &mut impl SpareBytesVec) -> &mut [u8] {
+        let len = v.sb_len();
+        let cap = v.sb_capacity();
         // SAFETY: `MaybeUninit<u8>` and `u8` have identical layout; the slice
         // covers exactly `[len, capacity)` of `v`'s allocation. Caller upholds
         // the write-only contract above.
-        unsafe { core::slice::from_raw_parts_mut(spare.as_mut_ptr().cast::<u8>(), spare.len()) }
+        unsafe { core::slice::from_raw_parts_mut(v.sb_as_mut_ptr().add(len), cap - len) }
     }
 
     /// `reserve(n)` then [`spare_bytes_mut`] — the libuv `uv_alloc_cb` shape
@@ -544,8 +676,8 @@ pub mod vec {
     /// # Safety
     /// Same as [`spare_bytes_mut`].
     #[inline]
-    pub unsafe fn reserve_spare_bytes(v: &mut Vec<u8>, n: usize) -> &mut [u8] {
-        v.reserve(n);
+    pub unsafe fn reserve_spare_bytes(v: &mut impl SpareBytesVec, n: usize) -> &mut [u8] {
+        v.sb_reserve(n);
         // SAFETY: caller upholds the write-only contract of `spare_bytes_mut`.
         unsafe { spare_bytes_mut(v) }
     }
@@ -559,12 +691,12 @@ pub mod vec {
     /// write-only (same contract as [`spare_bytes_mut`]). The caller must not
     /// rely on the tail's prior contents.
     #[inline]
-    pub unsafe fn allocated_bytes_mut(v: &mut Vec<u8>) -> &mut [u8] {
-        let cap = v.capacity();
-        // SAFETY: `as_mut_ptr()` returns a pointer valid for `cap` bytes of
+    pub unsafe fn allocated_bytes_mut(v: &mut impl SpareBytesVec) -> &mut [u8] {
+        let cap = v.sb_capacity();
+        // SAFETY: `sb_as_mut_ptr()` returns a pointer valid for `cap` bytes of
         // the backing allocation; caller upholds the write-only contract on
         // the uninitialized tail.
-        unsafe { core::slice::from_raw_parts_mut(v.as_mut_ptr(), cap) }
+        unsafe { core::slice::from_raw_parts_mut(v.sb_as_mut_ptr(), cap) }
     }
 
     /// Advance `v.len()` by `n` after a producer has initialized the first
@@ -574,11 +706,11 @@ pub mod vec {
     /// `n <= v.capacity() - v.len()` and `v[len .. len+n]` must have been
     /// fully initialized (typically by the FFI/syscall that just returned `n`).
     #[inline]
-    pub unsafe fn commit_spare(v: &mut Vec<u8>, n: usize) {
-        debug_assert!(n <= v.capacity() - v.len());
+    pub unsafe fn commit_spare(v: &mut impl SpareBytesVec, n: usize) {
+        debug_assert!(n <= v.sb_capacity() - v.sb_len());
         // SAFETY: caller contract — `n <= capacity - len` and `v[len .. len+n]`
         // was fully initialized by the producer before this call.
-        unsafe { v.set_len(v.len() + n) };
+        unsafe { v.sb_set_len(v.sb_len() + n) };
     }
 
     /// One-shot "reserve → hand spare bytes to producer → commit" combinator.
@@ -596,12 +728,12 @@ pub mod vec {
     /// actually initialized.
     #[inline]
     pub unsafe fn fill_spare<R>(
-        v: &mut Vec<u8>,
+        v: &mut impl SpareBytesVec,
         min_spare: usize,
         f: impl FnOnce(&mut [u8]) -> (usize, R),
     ) -> R {
         if min_spare > 0 {
-            v.reserve(min_spare);
+            v.sb_reserve(min_spare);
         }
         // SAFETY: caller upholds the `spare_bytes_mut` write-only contract via
         // `f`; `n` is `f`'s reported written-byte count, which by contract is
@@ -1347,11 +1479,11 @@ pub(crate) mod strings_impl {
     /// Append `cp` to `buf` as 1 or 2 UTF-16 code units (BMP vs surrogate
     /// pair). Lone-surrogate code points pass through unchanged (WTF-16).
     #[inline]
-    pub fn push_codepoint_utf16(buf: &mut Vec<u16>, cp: u32) {
+    pub fn push_codepoint_utf16(buf: &mut impl crate::vec::Utf16List, cp: u32) {
         if cp <= 0xFFFF {
-            buf.push(cp as u16);
+            buf.push16(cp as u16);
         } else {
-            buf.extend_from_slice(&encode_surrogate_pair(cp));
+            buf.extend16(&encode_surrogate_pair(cp));
         }
     }
 
@@ -1747,31 +1879,31 @@ pub(crate) mod strings_impl {
     /// Port of `allocateLatin1IntoUTF8WithList`.
     /// PERF(port): Zig hand-rolls a SWAR/@Vector ASCII-span scanner; here we use
     /// `first_non_ascii` (simdutf SIMD) for the span scan — equivalent throughput.
-    pub fn allocate_latin1_into_utf8_with_list(
-        mut list: Vec<u8>,
+    pub fn allocate_latin1_into_utf8_with_list<V: crate::vec::SpareBytesVec>(
+        mut list: V,
         offset_into_list: usize,
         latin1: &[u8],
-    ) -> Vec<u8> {
-        list.truncate(offset_into_list);
-        list.reserve(latin1.len());
+    ) -> V {
+        list.sb_truncate(offset_into_list);
+        list.sb_reserve(latin1.len());
         let mut rest = latin1;
         while !rest.is_empty() {
             match first_non_ascii(rest) {
                 None => {
-                    list.extend_from_slice(rest);
+                    list.sb_extend_from_slice(rest);
                     break;
                 }
                 Some(i) => {
-                    list.extend_from_slice(&rest[..i]);
+                    list.sb_extend_from_slice(&rest[..i]);
                     rest = &rest[i..];
                     while let Some(&c) = rest.first() {
                         if c < 0x80 {
                             break;
                         }
-                        list.reserve(2);
+                        list.sb_reserve(2);
                         let [a, b] = latin1_to_codepoint_bytes_assume_not_ascii(c);
-                        list.push(a);
-                        list.push(b);
+                        list.sb_push(a);
+                        list.sb_push(b);
                         rest = &rest[1..];
                     }
                 }
@@ -1786,28 +1918,33 @@ pub(crate) mod strings_impl {
             return None;
         }
         Some(allocate_latin1_into_utf8_with_list(
-            Vec::with_capacity(latin1.len()),
+            crate::vec::ChanVec::with_capacity(latin1.len()),
             0,
             latin1,
-        ))
+        )
+        .into_iter()
+        .collect())
     }
 
     /// Slow-path fallback for unpaired surrogates (port of `toUTF8ListWithTypeBun` core loop).
     /// Unpaired surrogates are replaced with U+FFFD, matching `utf16CodepointWithFFFDAndFirstInputChar`.
-    fn append_wtf8_from_utf16(list: &mut Vec<u8>, utf16: &[u16]) {
+    fn append_wtf8_from_utf16(list: &mut impl crate::vec::SpareBytesVec, utf16: &[u16]) {
         let mut i = 0usize;
         let mut buf = [0u8; 4];
         while i < utf16.len() {
             let (cp, adv) = decode_utf16_with_fffd(&utf16[i..]);
             i += adv as usize;
             let n = encode_wtf8_rune(&mut buf, cp);
-            list.extend_from_slice(&buf[..n]);
+            list.sb_extend_from_slice(&buf[..n]);
         }
     }
 
     /// Port of `convertUTF16ToUTF8Append`. Caller must reserve
     /// `simdutf::length::utf8::from::utf16::le(utf16)` spare bytes for the fast path.
-    pub fn convert_utf16_to_utf8_append(list: &mut Vec<u8>, utf16: &[u16]) {
+    pub fn convert_utf16_to_utf8_append(
+        list: &mut impl crate::vec::SpareBytesVec,
+        utf16: &[u16],
+    ) {
         // SAFETY: simdutf writes only initialized bytes into the spare slice and
         // reports the count; on SURROGATE we commit 0 and fall back below.
         let r = unsafe {
@@ -1832,16 +1969,19 @@ pub(crate) mod strings_impl {
         }
     }
 
-    pub fn convert_utf16_to_utf8(mut list: Vec<u8>, utf16: &[u16]) -> Vec<u8> {
+    pub fn convert_utf16_to_utf8<V: crate::vec::SpareBytesVec>(
+        mut list: V,
+        utf16: &[u16],
+    ) -> V {
         let need = simdutf::length::utf8::from::utf16::le(utf16);
-        list.reserve(need + 16);
+        list.sb_reserve(need + 16);
         convert_utf16_to_utf8_append(&mut list, utf16);
         list
     }
 
     #[inline]
     pub fn to_utf8_alloc(utf16: &[u16]) -> Vec<u8> {
-        convert_utf16_to_utf8(Vec::new(), utf16)
+        convert_utf16_to_utf8(crate::vec::ChanVec::new(), utf16).into_iter().collect()
     }
 
     /// Transcode raw UTF-16-LE *bytes* (no alignment requirement) to a fresh
@@ -1882,9 +2022,9 @@ pub(crate) mod strings_impl {
         to_utf8_alloc(&aligned)
     }
 
-    pub fn to_utf8_append_to_list(list: &mut Vec<u8>, utf16: &[u16]) {
+    pub fn to_utf8_append_to_list(list: &mut impl crate::vec::SpareBytesVec, utf16: &[u16]) {
         let need = simdutf::length::utf8::from::utf16::le(utf16);
-        list.reserve(need + 16);
+        list.sb_reserve(need + 16);
         convert_utf16_to_utf8_append(list, utf16);
     }
 

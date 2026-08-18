@@ -1,3 +1,5 @@
+use crate::ArenaVec;
+use crate::ArenaBox;
 use crate as css;
 use crate::css_rules::{CssRuleList, Location, MinifyContext};
 use crate::error::MinifyErr;
@@ -12,13 +14,13 @@ use bun_alloc::ArenaPtr;
 // TODO(refactor): re-thread `'i` once `PropertyId<'i>` and the parser arena are real.
 pub enum SupportsCondition {
     /// A `not` expression.
-    Not(Box<SupportsCondition, ArenaPtr>),
+    Not(ArenaBox<SupportsCondition>),
 
     /// An `and` expression.
-    And(Vec<SupportsCondition, ArenaPtr>),
+    And(ArenaVec<SupportsCondition>),
 
     /// An `or` expression.
-    Or(Vec<SupportsCondition, ArenaPtr>),
+    Or(ArenaVec<SupportsCondition>),
 
     /// A declaration to evaluate.
     Declaration(Declaration),
@@ -80,7 +82,7 @@ impl SupportsCondition {
         // with a fresh `'__bump`).
         let alloc = ArenaPtr::new(bump);
         match self {
-            Self::Not(c) => Self::Not(Box::new_in(c.deep_clone(bump), alloc)),
+            Self::Not(c) => Self::Not(ArenaBox::new_in(c.deep_clone(bump), alloc)),
             Self::And(v) => Self::And(Self::clone_vec_in(v, bump, alloc)),
             Self::Or(v) => Self::Or(Self::clone_vec_in(v, bump, alloc)),
             Self::Declaration(d) => Self::Declaration(d.deep_clone(bump)),
@@ -93,8 +95,8 @@ impl SupportsCondition {
         v: &[SupportsCondition],
         bump: &bun_alloc::Arena,
         alloc: ArenaPtr,
-    ) -> Vec<SupportsCondition, ArenaPtr> {
-        let mut out = Vec::with_capacity_in(v.len(), alloc);
+    ) -> ArenaVec<SupportsCondition> {
+        let mut out = ArenaVec::with_capacity_in(v.len(), alloc);
         out.extend(v.iter().map(|c| c.deep_clone(bump)));
         out
     }
@@ -273,7 +275,7 @@ impl SupportsCondition {
 
         if input.try_parse(|i| i.expect_ident_matching(b"not")).is_ok() {
             let in_parens = SupportsCondition::parse_in_parens(input)?;
-            return Ok(SupportsCondition::Not(Box::new_in(
+            return Ok(SupportsCondition::Not(ArenaBox::new_in(
                 in_parens,
                 ArenaPtr::new(input.arena()),
             )));
@@ -281,8 +283,8 @@ impl SupportsCondition {
 
         let in_parens: SupportsCondition = SupportsCondition::parse_in_parens(input)?;
         let mut expected_type: Option<i32> = None;
-        let mut conditions: Vec<SupportsCondition, ArenaPtr> =
-            Vec::new_in(ArenaPtr::new(input.arena()));
+        let mut conditions: ArenaVec<SupportsCondition> =
+            ArenaVec::new_in(ArenaPtr::new(input.arena()));
         // PORT NOTE: Zig used std.ArrayHashMap with an inline custom hash/eql context;
         // SeenDeclKey below carries equivalent Hash/Eq impls.
         let mut seen_declarations: ArrayHashMap<SeenDeclKey, usize> = ArrayHashMap::new();

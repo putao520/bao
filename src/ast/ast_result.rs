@@ -4,7 +4,8 @@
 //! a `bun_js_parser` dep. The previous blocker (`Target`/`ImportRecord` living
 //! in `bun_options_types`) is gone now that those are canonical in `bun_ast`.
 
-use bun_alloc::{AstAlloc, AstVec};
+use bun_alloc::AstAlloc;
+use crate::AstVec;
 use bun_collections::array_hash_map::{AutoContext, StringContext};
 use bun_collections::{ArrayHashMap, StringArrayHashMap, StringHashMap};
 

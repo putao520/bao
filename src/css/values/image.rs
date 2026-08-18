@@ -9,6 +9,9 @@ use crate::values::url::Url;
 use crate::{PrintErr, VendorPrefix};
 use bun_alloc::Arena;
 use bun_ast::ImportKind;
+use bun_alloc::core_alloc::AllocVec as _PVec;
+use bun_alloc::core_alloc::Global as _PG;
+type PlainVec2<T> = _PVec<T, _PG>;
 
 /// A CSS [`<image>`](https://www.w3.org/TR/css-images-3/#image-values) value.
 // TODO(port): `parse`/`to_css` were `css.DeriveParse(@This()).parse` / `css.DeriveToCss(@This()).toCss`
@@ -294,7 +297,7 @@ impl crate::small_list::ImageFallback for Image {
 pub struct ImageSet {
     /// The image options to choose from.
     // PERF(port): was ArrayListUnmanaged fed arena — profile if hot
-    pub options: Vec<ImageSetOption>,
+    pub options: PlainVec2<ImageSetOption>,
 
     /// The vendor prefix for the `image-set()` function.
     pub vendor_prefix: VendorPrefix,

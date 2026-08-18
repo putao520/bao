@@ -1,3 +1,5 @@
+use crate::ArenaBox;
+use crate::ArenaVec;
 use crate::css_parser as css;
 
 // blocked_on: rules/media + media_query::{MediaCondition,MediaFeature,...} +
@@ -183,14 +185,14 @@ impl<'a> PropertyHandlerContext<'a> {
             dest.push(css::CssRule::Media(MediaRule {
                 query: MediaList {
                     media_queries: {
-                        // Arena-backed to match `MediaList.media_queries: Vec<_, ArenaPtr>`.
-                        let mut list: Vec<MediaQuery, ArenaPtr> =
-                            Vec::with_capacity_in(1, ArenaPtr::new(self.bump_static()));
+                        // Arena-backed to match `MediaList.media_queries: ArenaVec<_>`.
+                        let mut list: ArenaVec<MediaQuery> =
+                            ArenaVec::with_capacity_in(1, ArenaPtr::new(self.bump_static()));
 
                         list.push(MediaQuery {
                             qualifier: None,
                             media_type: css::media_query::MediaType::All,
-                            condition: Some(MediaCondition::Feature(Box::new_in(
+                            condition: Some(MediaCondition::Feature(ArenaBox::new_in(
                                 MediaFeature::Plain {
                                     // TODO(port): verify exact MediaFeatureName / MediaFeatureValue
                                     // variant shapes from css::media_query once ported.

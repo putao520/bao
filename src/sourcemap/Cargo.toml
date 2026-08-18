@@ -18,6 +18,7 @@ workspace = true
 
 [dependencies]
 bun_opaque.workspace = true
+allocator-api2.workspace = true
 strum.workspace = true
 phf.workspace = true
 bstr.workspace = true

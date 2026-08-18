@@ -11,6 +11,7 @@ use bun_core::Output;
 
 use crate::char_freq::CHAR_FREQ_COUNT;
 use crate::{Binding, E, Expr, Index, Ref, Scope, Stmt, symbol};
+use crate::AstVec;
 
 pub use crate::flags as Flags;
 
@@ -526,7 +527,7 @@ pub const NAMESPACE_EXPORT_PART_INDEX: u32 = 0;
 // But we must have pointers somewhere in here because can't have types that contain themselves
 
 /// Slice that stores capacity and length in the same space as a regular slice.
-pub type ExprNodeList = Vec<Expr, bun_alloc::AstAlloc>;
+pub type ExprNodeList = AstVec<Expr>;
 
 // Arena-owned `[Stmt]` / `[Binding]` views — see `StoreSlice<T>` doc above.
 // A `PhantomData<&'arena ()>` can be added to `StoreSlice` later as a
@@ -891,7 +892,7 @@ impl ExportsKind {
     // `impl From<ExportsKind> for ModuleType` (would cycle here).
 }
 
-#[derive(Copy, Clone)]
+#[derive(bun_collections::SoaRowDerive, Copy, Clone)]
 pub struct DeclaredSymbol {
     pub ref_: Ref,
     pub is_top_level: bool,
@@ -911,7 +912,7 @@ impl Default for DeclaredSymbolList {
 
 impl DeclaredSymbolList {
     pub fn refs(&self) -> &[Ref] {
-        self.entries.items::<"ref_", Ref>()
+        self.entries.items_named::<Ref>("ref_")
     }
 
     pub fn to_owned_slice(&mut self) -> DeclaredSymbolList {
@@ -1004,8 +1005,8 @@ impl DeclaredSymbol {
         f: impl Fn(&mut C, Ref),
     ) {
         let entries = decls.entries.slice();
-        let is_top_level: &[bool] = entries.items::<"is_top_level", bool>();
-        let refs: &[Ref] = entries.items::<"ref_", Ref>();
+        let is_top_level: &[bool] = entries.items_named::<bool>("is_top_level");
+        let refs: &[Ref] = entries.items_named::<Ref>("ref_");
 
         // TODO: SIMD
         debug_assert_eq!(is_top_level.len(), refs.len());
@@ -1041,7 +1042,7 @@ impl Default for Dependency {
     }
 }
 
-pub type DependencyList = bun_alloc::AstVec<Dependency>;
+pub type DependencyList = AstVec<Dependency>;
 
 pub type ExprList = Vec<Expr>;
 pub type StmtList = Vec<Stmt>;
@@ -1097,7 +1098,7 @@ pub struct Part {
     pub tag: PartTag,
 }
 
-pub type PartImportRecordIndices = Vec<u32, bun_alloc::AstAlloc>;
+pub type PartImportRecordIndices = AstVec<u32>;
 pub type PartList<'a> = bun_alloc::ArenaVec<'a, Part>;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -1133,7 +1134,7 @@ impl Default for Part {
             declared_symbols: DeclaredSymbolList::default(),
             symbol_uses: PartSymbolUseMap::default(),
             import_symbol_property_uses: PartSymbolPropertyUseMap::default(),
-            dependencies: Vec::new_in(bun_alloc::AstAlloc),
+            dependencies: AstVec::new_in(bun_alloc::AstAlloc),
             can_be_removed_if_unused: false,
             force_tree_shaking: false,
             tag: PartTag::None,

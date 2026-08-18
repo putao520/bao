@@ -16,7 +16,7 @@ use super::use_directive::UseDirective;
 // `` generates `ServerComponentBoundaryField` +
 // `ServerComponentBoundary{Slice,List}Ext` (`source_index()`,
 // `items_reference_source_index()`, …) used by the bundler.
-#[derive(Clone, Copy)]
+#[derive(bun_collections::SoaRowDerive, Clone, Copy)]
 pub struct ServerComponentBoundary {
     pub use_directive: UseDirective,
 
@@ -81,7 +81,7 @@ impl List {
         let gop = self.map.get_or_put_adapted(
             &source_index,
             &Adapter {
-                source_indices: self.list.items::<"source_index", IndexInt>(),
+                source_indices: self.list.items_named::<IndexInt>("source_index"),
             },
         )?;
         debug_assert!(!gop.found_existing);
@@ -93,7 +93,7 @@ impl List {
         self.map.get_index_adapted(
             &real_source_index,
             &Adapter {
-                source_indices: self.list.items::<"source_index", IndexInt>(),
+                source_indices: self.list.items_named::<IndexInt>("source_index"),
             },
         )
     }
@@ -118,7 +118,7 @@ impl<'a> Slice<'a> {
         self.map.get_index_adapted(
             &real_source_index,
             &Adapter {
-                source_indices: self.list.items::<"source_index", IndexInt>(),
+                source_indices: self.list.items_named::<IndexInt>("source_index"),
             },
         )
     }
@@ -127,13 +127,13 @@ impl<'a> Slice<'a> {
         let i = self.map.get_index_adapted(
             &real_source_index,
             &Adapter {
-                source_indices: self.list.items::<"source_index", IndexInt>(),
+                source_indices: self.list.items_named::<IndexInt>("source_index"),
             },
         )?;
         // Zig: `bun.unsafeAssert(l.list.capacity > 0)` — optimization hint for
         // `MultiArrayList.Slice.items`. The Rust `items()` already short-circuits
         // on `capacity == 0`, so the assert is dropped.
-        Some(self.list.items::<"reference_source_index", IndexInt>()[i])
+        Some(self.list.items_named::<IndexInt>("reference_source_index")[i])
     }
 
     pub fn bit_set(
@@ -141,7 +141,7 @@ impl<'a> Slice<'a> {
         input_file_count: usize,
     ) -> Result<DynamicBitSetUnmanaged, bun_alloc::AllocError> {
         let mut scb_bitset = DynamicBitSetUnmanaged::init_empty(input_file_count)?;
-        for &source_index in self.list.items::<"source_index", IndexInt>() {
+        for &source_index in self.list.items_named::<IndexInt>("source_index") {
             scb_bitset.set(source_index as usize);
         }
         Ok(scb_bitset)

@@ -11,6 +11,10 @@ use crate::values::time::Time;
 use crate::values::protocol::{IsCompatible, ToCss};
 
 use core::cmp::Ordering;
+// Dual-mode plain vec (stable api2 mirror) for MathFunction argument lists.
+use bun_alloc::core_alloc::AllocVec as _PVec;
+use bun_alloc::core_alloc::Global as _PG;
+type PlainVec2<T> = _PVec<T, _PG>;
 
 #[derive(Copy, Clone, PartialEq, Eq, strum::IntoStaticStr, strum::EnumString)]
 #[strum(serialize_all = "lowercase")]
@@ -347,7 +351,7 @@ impl<V: CalcValue> Calc<V> {
                 Ok(Calc::Function(Box::new(MathFunction::Calc(calc))))
             }
             CalcUnit::Min => {
-                let mut reduced = input.parse_nested_block(|i| {
+                let mut reduced: PlainVec2<Self> = input.parse_nested_block(|i| {
                     i.parse_comma_separated(|i| Self::parse_sum(i, ctx, parse_ident))
                 })?;
                 // PERF(alloc): i don't like this additional allocation
@@ -359,7 +363,7 @@ impl<V: CalcValue> Calc<V> {
                 Ok(Calc::Function(Box::new(MathFunction::Min(reduced))))
             }
             CalcUnit::Max => {
-                let mut reduced = input.parse_nested_block(|i| {
+                let mut reduced: PlainVec2<Self> = input.parse_nested_block(|i| {
                     i.parse_comma_separated(|i| Self::parse_sum(i, ctx, parse_ident))
                 })?;
                 // PERF: i don't like this additional allocation
@@ -1044,10 +1048,10 @@ impl<V: CalcValue> Calc<V> {
     /// I am pretty sure we could do this reduction in place, or do it as the
     /// arguments are being parsed.
     // PERF(port): `args`/`reduced` were arena bulk-free (ArrayList fed input.arena()) — profile if hot
-    fn reduce_args(args: &mut Vec<Self>, order: Ordering) {
+    fn reduce_args(args: &mut PlainVec2<Self>, order: Ordering) {
         // Reduces the arguments of a min() or max() expression, combining compatible values.
         // e.g. min(1px, 1em, 2px, 3in) => min(1px, 1em)
-        let mut reduced: Vec<Self> = Vec::new();
+        let mut reduced: PlainVec2<Self> = PlainVec2::new();
 
         for arg in args.iter_mut() {
             let mut found: Option<Option<usize>> = None;
@@ -1134,10 +1138,10 @@ pub enum MathFunction<V> {
     Calc(Calc<V>),
     /// The `min()` function.
     // PERF(port): was arena bulk-free (ArrayList fed input.arena()) — profile if hot
-    Min(Vec<Calc<V>>),
+    Min(PlainVec2<Calc<V>>),
     /// The `max()` function.
     // PERF(port): was arena bulk-free (ArrayList fed input.arena()) — profile if hot
-    Max(Vec<Calc<V>>),
+    Max(PlainVec2<Calc<V>>),
     /// The `clamp()` function.
     Clamp {
         min: Calc<V>,
@@ -1160,7 +1164,7 @@ pub enum MathFunction<V> {
     Sign(Calc<V>),
     /// The `hypot()` function.
     // PERF(port): was arena bulk-free (ArrayList fed input.arena()) — profile if hot
-    Hypot(Vec<Calc<V>>),
+    Hypot(PlainVec2<Calc<V>>),
 }
 
 impl<V: PartialEq + Clone> PartialEq for MathFunction<V> {
@@ -1478,9 +1482,9 @@ pub enum RoundingStrategy {
     ToZero,
 }
 
-fn arr2<T>(a: T, b: T) -> Vec<T> {
+fn arr2<T>(a: T, b: T) -> PlainVec2<T> {
     // PERF(port): was arena bulk-free (ArrayList fed input.arena()) — profile if hot
-    vec![a, b]
+    PlainVec2::from_iter([a, b])
 }
 
 fn round(_: (), value: f32, to: f32, strategy: RoundingStrategy) -> f32 {

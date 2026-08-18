@@ -7,7 +7,9 @@ use css::error::MinifyErr;
 // PERF(port): heap-backed shim — Zig used arena-backed `std.ArrayListUnmanaged`.
 // TODO(refactor): thread `'bump` and replace this with `crate::generics::ArrayList<'bump, T>`
 // (= `bun_alloc::ArenaVec`) crate-wide in one pass.
-pub(super) type ArrayList<T> = Vec<T>;
+// Dual-mode list (stable api2 mirror; the css generics trait impls serve
+// this exact type on both channels).
+pub(super) type ArrayList<T> = ::bun_alloc::core_alloc::AllocVec<T, ::bun_alloc::core_alloc::Global>;
 
 pub mod container;
 pub mod counter_style;

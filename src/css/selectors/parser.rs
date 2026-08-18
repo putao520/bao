@@ -1,6 +1,7 @@
 //! CSS selector parser — ported from `src/css/selectors/parser.zig`.
 //! Originally derived from servo/lightningcss selector parsing.
 
+use crate::ArenaVec;
 use core::fmt;
 
 use bun_alloc::{Arena as Bump, ArenaPtr};
@@ -45,8 +46,12 @@ type Str = &'static [u8]; // arena-backed `[]const u8` source slice
 // useless — equality recurses on `Impl::Assoc`, not `Impl`).
 //
 // `deep_clone` on the grammar types drops the `&Arena` parameter: `GenericSelector.components`
-// is `Vec<_, ArenaPtr>` and clones into the *source* allocator (intra-arena only).
+// is `ArenaVec<_>` and clones into the *source* allocator (intra-arena only).
 use css::generics::{CssEql, CssHash};
+// Dual-mode plain vec (stable api2 mirror) for CssEql/CssHash-derived fields.
+use bun_alloc::core_alloc::AllocVec as _PVec;
+use bun_alloc::core_alloc::Global as _PG;
+type PlainVec2<T> = _PVec<T, _PG>;
 
 /// Drain a `SmallList<T, N>` into a `Box<[T]>`. `SmallList` has no `into_vec`;
 /// this bitwise-moves each element out and `set_len(0)`s the source so its
@@ -908,7 +913,7 @@ pub enum PseudoClass {
     /// The [:lang()](https://drafts.csswg.org/selectors-4/#the-lang-pseudo) pseudo class.
     Lang {
         /// A list of language codes.
-        languages: Vec<Str>,
+        languages: PlainVec2<Str>,
         // PERF(port): was arena ArrayList — profile if it shows up on a hot path.
     },
     /// The [:dir()](https://drafts.csswg.org/selectors-4/#the-dir-pseudo) pseudo class.
@@ -1323,7 +1328,7 @@ impl<'a> SelectorParser<'a> {
         // until the real `custom.rs` un-gates.
 
         {
-            let mut args: Vec<css::css_properties::custom::TokenOrValue> = Vec::new();
+            let mut args: PlainVec2<css::css_properties::custom::TokenOrValue> = PlainVec2::new();
             TokenList::parse_raw(input, &mut args, self.options, 0)?;
             return Ok(PseudoElement::CustomFunction {
                 name,
@@ -1420,7 +1425,7 @@ impl<'a> SelectorParser<'a> {
                         ),
                     );
                 }
-                let mut args: Vec<css::css_properties::custom::TokenOrValue> = Vec::new();
+                let mut args: PlainVec2<css::css_properties::custom::TokenOrValue> = PlainVec2::new();
                 css::TokenListFns::parse_raw(parser, &mut args, self.options, 0)?;
                 PseudoClass::CustomFunction {
                     name,
@@ -1633,7 +1638,7 @@ impl<Impl: SelectorImpl> Default for GenericSelector<Impl> {
                 specificity: 0,
                 flags: SelectorFlags::empty(),
             },
-            components: Vec::new_in(ArenaPtr::global()),
+            components: ArenaVec::new_in(ArenaPtr::global()),
         }
     }
 }
@@ -1923,7 +1928,7 @@ impl<Impl: BunSelectorImpl> CssHash for GenericSelectorList<Impl> {
 #[derive(Clone)]
 pub struct GenericSelector<Impl: SelectorImpl> {
     pub specificity_and_flags: SpecificityAndFlags,
-    pub components: Vec<GenericComponent<Impl>, ArenaPtr>,
+    pub components: ArenaVec<GenericComponent<Impl>>,
 }
 
 pub struct SelectorDebugFmt<'a, Impl: SelectorImpl>(pub &'a GenericSelector<Impl>);
@@ -1976,7 +1981,7 @@ impl<Impl: BunSelectorImpl> GenericSelector<Impl> {
 
     pub fn deep_clone(&self) -> Self {
         let alloc = *self.components.allocator();
-        let mut components = Vec::with_capacity_in(self.components.len(), alloc);
+        let mut components = ArenaVec::with_capacity_in(self.components.len(), alloc);
         components.extend(self.components.iter().map(|c| c.deep_clone()));
         Self {
             specificity_and_flags: self.specificity_and_flags,

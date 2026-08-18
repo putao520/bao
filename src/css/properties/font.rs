@@ -33,6 +33,11 @@ use css_values::number::{CSSNumber, CSSNumberFns};
 use css_values::percentage::{DimensionPercentage, Percentage};
 
 use bun_collections::VecExt;
+// Dual-mode plain vec: std `Vec<T>` on nightly (facade Global), api2 mirror
+// on stable — the channel both VecExt impl arms serve.
+use bun_alloc::core_alloc::AllocVec;
+use bun_alloc::core_alloc::Global;
+pub type FontFamilyList = AllocVec<FontFamily, Global>;
 
 use crate::generics::{CssEql, DeepClone};
 use css::CssResult;
@@ -696,7 +701,7 @@ impl LineHeight {
 #[derive(DeepClone, CssEql)]
 pub struct Font {
     /// The font family.
-    pub family: Vec<FontFamily>,
+    pub family: FontFamilyList,
     /// The font size.
     pub size: FontSize,
     /// The font style.
@@ -781,9 +786,7 @@ impl Font {
 
         // PORT NOTE: Zig `Vec(FontFamily).parse` parsed a comma-separated
         // list and packed it; route through `parse_comma_separated` + move.
-        let family = input
-            .parse_comma_separated(FontFamily::parse)
-            .map(Vec::<FontFamily>::move_from_list)?;
+        let family: FontFamilyList = input.parse_comma_separated(FontFamily::parse)?;
 
         Ok(Font {
             family,
@@ -899,7 +902,7 @@ impl FontProperty {
 
 #[derive(Default)]
 pub struct FontHandler {
-    family: Option<Vec<FontFamily>>,
+    family: Option<FontFamilyList>,
     size: Option<FontSize>,
     style: Option<FontStyle>,
     weight: Option<FontWeight>,
@@ -1030,7 +1033,7 @@ impl FontHandler {
 
         self.has_any = false;
 
-        let mut family: Option<Vec<FontFamily>> = self.family.take();
+        let mut family: Option<FontFamilyList> = self.family.take();
         if !self.flushed_properties.contains(FontProperty::FONT_FAMILY) {
             family = compatible_font_family(
                 family,
@@ -1153,9 +1156,9 @@ const DEFAULT_SYSTEM_FONTS: &[&[u8]] = &[
 // blocked_on: Vec::insert arena threading + arena Bump param.
 #[inline]
 fn compatible_font_family(
-    _family: Option<Vec<FontFamily>>,
+    _family: Option<FontFamilyList>,
     is_supported: bool,
-) -> Option<Vec<FontFamily>> {
+) -> Option<FontFamilyList> {
     let mut family = _family;
     if is_supported {
         return family;

@@ -6,6 +6,10 @@ use crate::{Parser, PrintErr, Printer, SmallList};
 
 use bun_collections::VecExt;
 use bun_core::strings;
+// Dual-mode plain vec (stable api2 mirror — the VecExt impl arm).
+use bun_alloc::core_alloc::AllocVec;
+use bun_alloc::core_alloc::Global;
+type PlainVec<T> = AllocVec<T, Global>;
 
 /// A [track sizing](https://drafts.csswg.org/css-grid-2/#track-sizing) value
 /// for the `grid-template-rows` and `grid-template-columns` properties.
@@ -23,15 +27,15 @@ pub enum TrackSizing {
 /// See [TrackSizing](TrackSizing).
 pub struct TrackList {
     /// A list of line names.
-    pub line_names: Vec<CustomIdentList>,
+    pub line_names: PlainVec<CustomIdentList>,
     /// A list of grid track items.
-    pub items: Vec<TrackListItem>,
+    pub items: PlainVec<TrackListItem>,
 }
 
 impl TrackList {
     pub fn parse(input: &mut Parser) -> css::Result<Self> {
-        let mut line_names = Vec::<CustomIdentList>::default();
-        let mut items = Vec::<TrackListItem>::default();
+        let mut line_names = PlainVec::<CustomIdentList>::default();
+        let mut items = PlainVec::<TrackListItem>::default();
 
         loop {
             let line_name = input.try_parse(parse_line_names).ok().unwrap_or_default();
@@ -279,9 +283,9 @@ pub struct TrackRepeat {
     /// The repeat count.
     pub count: RepeatCount,
     /// The line names to repeat.
-    pub line_names: Vec<CustomIdentList>,
+    pub line_names: PlainVec<CustomIdentList>,
     /// The track sizes to repeat.
-    pub track_sizes: Vec<TrackSize>,
+    pub track_sizes: PlainVec<TrackSize>,
 }
 
 impl TrackRepeat {
@@ -296,8 +300,8 @@ impl TrackRepeat {
 
             // TODO: this code will not compile if used
             // TODO(port): Zig calls `bun.Vec(T).init(i.arena)` — using default + push(alloc, ..) here
-            let mut line_names = Vec::<CustomIdentList>::default();
-            let mut track_sizes = Vec::<TrackSize>::default();
+            let mut line_names = PlainVec::<CustomIdentList>::default();
+            let mut track_sizes = PlainVec::<TrackSize>::default();
 
             loop {
                 let line_name = i

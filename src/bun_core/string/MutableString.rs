@@ -30,7 +30,9 @@ pub struct SocketBuffer {
 #[derive(Default, Clone)]
 pub struct MutableString {
     // Zig field `std.mem.Allocator` param — deleted (global mimalloc).
-    pub list: Vec<u8>,
+    // Dual-mode plain vec (stable api2 mirror) — VecExt byte methods
+    // (writable_slice_exact/reserve_spare family) serve this type on both channels.
+    pub list: bun_alloc::core_alloc::AllocVec<u8, bun_alloc::core_alloc::Global>,
 }
 
 // Zig: `Npm.Registry.BodyPool = ObjectPool(MutableString, MutableString.init2048, true, 8)`
@@ -128,15 +130,15 @@ impl MutableString {
     pub fn init(capacity: usize) -> Result<MutableString, AllocError> {
         Ok(MutableString {
             list: if capacity > 0 {
-                Vec::with_capacity(capacity)
+                crate::vec::ChanVec::with_capacity(capacity)
             } else {
-                Vec::new()
+                crate::vec::ChanVec::new()
             },
         })
     }
 
     pub fn init_empty() -> MutableString {
-        MutableString { list: Vec::new() }
+        MutableString { list: crate::vec::ChanVec::new() }
     }
 
     #[inline]
@@ -375,13 +377,13 @@ impl MutableString {
         i32::try_from(self.list.len()).expect("int cast")
     }
 
-    pub fn take_slice(&mut self) -> Vec<u8> {
+    pub fn take_slice(&mut self) -> crate::vec::ChanVec<u8> {
         core::mem::take(&mut self.list)
     }
 
-    pub fn to_owned_slice(&mut self) -> Box<[u8]> {
+    pub fn to_owned_slice(&mut self) -> ::std::boxed::Box<[u8]> {
         // Zig: bun.handleOom(self.list.toOwnedSlice(self.allocator))
-        core::mem::take(&mut self.list).into_boxed_slice()
+        core::mem::take(&mut self.list).into_iter().collect::<::std::vec::Vec<u8>>().into_boxed_slice()
     }
 
     pub fn to_dynamic_owned(&mut self) -> Box<[u8]> {

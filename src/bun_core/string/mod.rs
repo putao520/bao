@@ -1610,7 +1610,7 @@ impl ZigString {
         let mut list = if self.is_16bit() {
             crate::strings::to_utf8_alloc(self.utf16_slice())
         } else {
-            crate::strings::allocate_latin1_into_utf8_with_list(Vec::new(), 0, self.slice())
+            crate::strings::allocate_latin1_into_utf8_with_list(crate::vec::ChanVec::new(), 0, self.slice()).into_iter().collect()
         };
         list.push(0);
         crate::ZBox::from_vec_with_nul(list)

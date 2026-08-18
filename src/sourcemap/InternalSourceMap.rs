@@ -102,6 +102,11 @@ use bun_core::MutableString;
 
 use crate::vlq::decode as vlq_decode;
 use crate::{LineColumnOffset, Mapping, SourceMapState, append_mapping_to_buffer};
+// Dual-mode plain vec (stable api2 mirror) — VecExt methods serve this type
+// on both channels.
+use bun_alloc::core_alloc::AllocVec as _PVec;
+use bun_alloc::core_alloc::Global as _PG;
+type PlainVec2<T> = _PVec<T, _PG>;
 
 /// A sync entry is emitted every `SYNC_INTERVAL` mappings.
 pub const SYNC_INTERVAL: usize = 64;
@@ -962,7 +967,7 @@ pub struct Builder {
     count: u32,
     pending_n: u8,
     sync_entries: Vec<SyncEntry>,
-    win_stream: Vec<u8>,
+    win_stream: PlainVec2<u8>,
     pending_generated_line: [i32; SYNC_INTERVAL],
     pending_generated_column: [i32; SYNC_INTERVAL],
     pending_source_index: [i32; SYNC_INTERVAL],
@@ -979,7 +984,7 @@ impl Default for Builder {
             count: 0,
             pending_n: 0,
             sync_entries: Vec::new(),
-            win_stream: Vec::new(),
+            win_stream: PlainVec2::new(),
             pending_generated_line: [0; SYNC_INTERVAL],
             pending_generated_column: [0; SYNC_INTERVAL],
             pending_source_index: [0; SYNC_INTERVAL],
@@ -1284,7 +1289,7 @@ impl Builder {
                 .copy_from_slice(&self.win_stream);
             blob[total - STREAM_TAIL_PAD..total].fill(0);
 
-            self.win_stream = Vec::new();
+            self.win_stream = PlainVec2::new();
             self.sync_entries = Vec::new();
 
             self.finalized = Some(out);
@@ -1408,7 +1413,23 @@ pub fn from_vlq(vlq: &[u8], input_line_count_hint: u32) -> Result<Box<[u8]>, Fro
     blob[8..16].copy_from_slice(&mapping_count.to_ne_bytes());
     blob[16..24].copy_from_slice(&input_lines.to_ne_bytes());
 
-    let owned = core::mem::take(&mut out.list).into_boxed_slice();
+    // Boundary bridge: `MutableString.list` is the dual-channel AllocVec
+    // (api2 mirror on stable), but this fn's public signature returns std
+    // `Box<[u8]>`. On stable, adopt the buffer by raw parts — api2's `Global`
+    // and std's `Global` are the same underlying allocator, so this is a
+    // pointer move, not a copy (same pattern as `VecExt::move_from_list`'s
+    // IS_GLOBAL fast path).
+    let mut list = core::mem::take(&mut out.list);
+    let owned: Box<[u8]> = {
+        let (ptr, len, cap) = (list.as_mut_ptr(), list.len(), list.capacity());
+        core::mem::forget(list);
+        // SAFETY: `ptr` is a Global-allocation of `cap` bytes with `len`
+        // initialized bytes owned solely by `list` (just taken, then
+        // forgotten); `Vec::from_raw_parts` re-adopts it under std's
+        // identical Global allocator, and `into_boxed_slice` shrinks (same
+        // allocator) or keeps it as-is.
+        unsafe { ::std::vec::Vec::from_raw_parts(ptr, len, cap).into_boxed_slice() }
+    };
     builder.finalized = None;
     Ok(owned)
 }

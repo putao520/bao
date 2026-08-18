@@ -7,6 +7,10 @@ type SymbolList = Vec<bun_ast::Symbol>;
 
 use bun_alloc::Arena as Bump;
 use bun_collections::ArrayHashMap;
+// Dual-mode plain vec (stable api2 mirror).
+use bun_alloc::core_alloc::AllocVec as _PVec;
+use bun_alloc::core_alloc::Global as _PG;
+type PlainVec2<T> = _PVec<T, _PG>;
 
 bun_core::declare_scope!(CSS_SELECTORS, visible);
 
@@ -216,7 +220,7 @@ fn downlevel_dir<'bump>(bump: &'bump Bump, dir: parser::Direction, targets: &Tar
     if !targets.should_compile_same(Feature::LangSelectorList) {
         let c = Component::NonTsPseudoClass(PseudoClass::Lang {
             // PERF(port): was appendSliceAssumeCapacity (arena) — could re-thread bump.
-            languages: RTL_LANGS.to_vec(),
+            languages: PlainVec2::from_iter(RTL_LANGS.iter().copied()),
         });
         if dir == parser::Direction::Ltr {
             return Component::Negation(vec![Selector::from_component(c)].into_boxed_slice());
@@ -239,7 +243,7 @@ fn lang_list_to_selectors<'bump>(_bump: &'bump Bump, langs: &[&'static [u8]]) ->
         selectors.push(Selector::from_component(Component::NonTsPseudoClass(
             PseudoClass::Lang {
                 // PERF(port): was appendAssumeCapacity (arena)
-                languages: vec![*lang],
+                languages: PlainVec2::from_iter([*lang]),
             },
         )));
     }

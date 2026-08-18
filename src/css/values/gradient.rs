@@ -11,6 +11,9 @@ use crate::values::position::{
 };
 use crate::{PrintErr, Printer, VendorPrefix};
 use bun_alloc::Arena;
+use bun_alloc::core_alloc::AllocVec as _PVec;
+use bun_alloc::core_alloc::Global as _PG;
+type PlainVec2<T> = _PVec<T, _PG>;
 
 // `'bump` arena threading dropped for now: `BumpVec<'bump,_>` →
 // `Vec<_>` (matches `Parser::parse_comma_separated → Vec<T>`); re-thread once
@@ -665,12 +668,12 @@ pub struct WebKitGradientLinear {
     /// The ending point of the gradient.
     pub to: WebKitGradientPoint,
     /// The color stops in the gradient.
-    pub stops: Vec<WebKitColorStop>,
+    pub stops: PlainVec2<WebKitColorStop>,
 }
 
 impl WebKitGradientLinear {
     pub(crate) fn deep_clone(&self, bump: &Arena) -> Self {
-        let mut stops: Vec<WebKitColorStop> = Vec::with_capacity(self.stops.len());
+        let mut stops: PlainVec2<WebKitColorStop> = PlainVec2::with_capacity(self.stops.len());
         for in_ in self.stops.iter() {
             stops.push(in_.deep_clone(bump));
         }
@@ -694,12 +697,12 @@ pub struct WebKitGradientRadial {
     /// The ending radius of the gradient.
     pub r1: CSSNumber,
     /// The color stops in the gradient.
-    pub stops: Vec<WebKitColorStop>,
+    pub stops: PlainVec2<WebKitColorStop>,
 }
 
 impl WebKitGradientRadial {
     pub(crate) fn deep_clone(&self, bump: &Arena) -> Self {
-        let mut stops: Vec<WebKitColorStop> = Vec::with_capacity(self.stops.len());
+        let mut stops: PlainVec2<WebKitColorStop> = PlainVec2::with_capacity(self.stops.len());
         for in_ in self.stops.iter() {
             stops.push(in_.deep_clone(bump));
         }
@@ -797,7 +800,7 @@ impl WebKitGradient {
     pub(crate) fn get_fallback(&self, bump: &Arena, kind: ColorFallbackKind) -> WebKitGradient {
         match self {
             WebKitGradient::Linear(linear) => {
-                let stops: Vec<_> = linear
+                let stops: PlainVec2<WebKitColorStop> = linear
                     .stops
                     .iter()
                     .map(|s| s.get_fallback(bump, kind))
@@ -809,7 +812,7 @@ impl WebKitGradient {
                 })
             }
             WebKitGradient::Radial(radial) => {
-                let stops: Vec<_> = radial
+                let stops: PlainVec2<WebKitColorStop> = radial
                     .stops
                     .iter()
                     .map(|s| s.get_fallback(bump, kind))
@@ -1545,8 +1548,8 @@ pub(crate) fn serialize_items<D: GradientPosition>(
 pub(crate) fn convert_stops_to_webkit(
     bump: &Arena,
     items: &[GradientItem<LengthPercentage>],
-) -> Option<Vec<WebKitColorStop>> {
-    let mut stops: Vec<WebKitColorStop> = Vec::with_capacity(items.len());
+) -> Option<PlainVec2<WebKitColorStop>> {
+    let mut stops: PlainVec2<WebKitColorStop> = PlainVec2::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
         match item {
             GradientItem::ColorStop(stop) => {

@@ -25,7 +25,7 @@ crate::declare_scope!(strings, hidden);
 /// the `reserve + set_len + copy_u8_into_u16` triple repeated across the
 /// UTF-8→UTF-16 paths into one audited block.
 #[inline]
-fn append_u8_as_u16(dst: &mut Vec<u16>, src: &[u8]) {
+fn append_u8_as_u16(dst: &mut crate::vec::ChanVec<u16>, src: &[u8]) {
     if src.is_empty() {
         return;
     }
@@ -36,7 +36,7 @@ fn append_u8_as_u16(dst: &mut Vec<u16>, src: &[u8]) {
 /// Narrow-append `src` Latin-1/ASCII `u16` code units onto `dst` as bytes.
 /// Mirrors [`append_u8_as_u16`] for the UTF-16→UTF-8 fast path.
 #[inline]
-fn append_u16_as_u8(dst: &mut Vec<u8>, src: &[u16]) {
+fn append_u16_as_u8(dst: &mut crate::vec::ChanVec<u8>, src: &[u16]) {
     if src.is_empty() {
         return;
     }
@@ -136,7 +136,7 @@ pub use crate::strings::codepoint_size;
 /// dangling lead surrogate is at the end; otherwise `None`. When `SKIP_TRAILING_REPLACEMENT` is
 /// false the Zig version returned the list by value — in Rust the caller already owns `list`.
 pub fn to_utf8_list_with_type_bun<const SKIP_TRAILING_REPLACEMENT: bool>(
-    list: &mut Vec<u8>,
+    list: &mut crate::vec::ChanVec<u8>,
     utf16: &[u16],
 ) -> Result<Option<u16>, AllocError> {
     let mut utf16_remaining = utf16;
@@ -201,10 +201,12 @@ use crate::strings::EncodeIntoResult;
 /// PORTING.md §Allocators (panic-on-OOM), so this is always `Ok`.
 pub fn allocate_latin1_into_utf8(latin1_: &[u8]) -> Result<Vec<u8>, AllocError> {
     Ok(crate::strings::allocate_latin1_into_utf8_with_list(
-        Vec::with_capacity(latin1_.len()),
+        crate::vec::ChanVec::with_capacity(latin1_.len()),
         0,
         latin1_,
-    ))
+    )
+    .into_iter()
+    .collect())
 }
 
 // ─── CANONICAL: UTF-16 codepoint decode ─────────────────────────────────────
@@ -722,15 +724,15 @@ pub fn to_utf16_alloc_maybe_buffered<const FAIL_IF_INVALID: bool, const FLUSH: b
     };
     let first_non_ascii_idx = first_non_ascii_idx as usize;
 
-    let mut output: Vec<u16> = if crate::FeatureFlags::USE_SIMDUTF {
+    let mut output: crate::vec::ChanVec<u16> = if crate::FeatureFlags::USE_SIMDUTF {
         'output: {
             let out_length = simdutf::length::utf16::from::utf8(bytes);
 
             if out_length == 0 {
-                break 'output Vec::new();
+                break 'output crate::vec::ChanVec::new();
             }
 
-            let mut out = vec![0u16; out_length];
+            let mut out: crate::vec::ChanVec<u16> = crate::vec::ChanVec::from_iter(core::iter::repeat(0u16).take(out_length));
 
             let res = simdutf::convert::utf8::to::utf16::with_errors::le(bytes, &mut out);
             if res.status == simdutf::Status::SUCCESS {
@@ -740,7 +742,7 @@ pub fn to_utf16_alloc_maybe_buffered<const FAIL_IF_INVALID: bool, const FLUSH: b
                     bytes.len(),
                     out_length
                 );
-                return Ok(Some((out, [0; 3], 0)));
+                return Ok(Some((out.into_iter().collect::<::std::vec::Vec<u16>>(), [0; 3], 0)));
             }
 
             // `out` was `vec![0u16; out_length]`; `first_non_ascii_idx <= out.len()`.
@@ -748,7 +750,7 @@ pub fn to_utf16_alloc_maybe_buffered<const FAIL_IF_INVALID: bool, const FLUSH: b
             break 'output out;
         }
     } else {
-        Vec::new()
+        crate::vec::ChanVec::new()
     };
     // errdefer output.deinit(allocator) — Vec drops on `?`
 
@@ -793,7 +795,7 @@ pub fn to_utf16_alloc_maybe_buffered<const FAIL_IF_INVALID: bool, const FLUSH: b
                     _ => unreachable!(),
                 };
                 return Ok(Some((
-                    output,
+                    output.into_iter().collect::<::std::vec::Vec<u16>>(),
                     buffered,
                     u8::try_from(remaining.len()).expect("int cast"),
                 )));
@@ -827,7 +829,7 @@ pub fn to_utf16_alloc_maybe_buffered<const FAIL_IF_INVALID: bool, const FLUSH: b
         bytes.len(),
         output.len()
     );
-    Ok(Some((output, [0; 3], 0)))
+    Ok(Some((output.into_iter().collect::<::std::vec::Vec<u16>>(), [0; 3], 0)))
 }
 
 #[inline]

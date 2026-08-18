@@ -36,6 +36,10 @@ use crate::values::number::{CSSInteger, CSSIntegerFns, CSSNumber, CSSNumberFns};
 use crate::values::rect::Rect;
 use crate::values::size::Size2D;
 use crate::{PrintErr, VendorPrefix};
+#[cfg(bao_nightly)]
+type ParseListVec<T> = Vec<T>;
+#[cfg(not(bao_nightly))]
+type ParseListVec<T> = ::allocator_api2::vec::Vec<T, ::bun_alloc::core_alloc::Global>;
 
 // `ArrayList(T)` in the Zig is `std.ArrayListUnmanaged(T)` fed the parser arena.
 // In this AST crate that maps to `bun_alloc::ArenaVec<'bump, T>`.
@@ -116,6 +120,15 @@ impl<'bump, T: DeepClone<'bump>> DeepClone<'bump> for ArrayList<'bump, T> {
     }
 }
 
+#[cfg(not(bao_nightly))]
+impl<'bump, T: DeepClone<'bump>> DeepClone<'bump> for ::allocator_api2::vec::Vec<T, ::bun_alloc::core_alloc::Global> {
+    #[inline]
+    fn deep_clone(&self, bump: &'bump Arena) -> Self {
+        self.deep_clone_with(|e| e.deep_clone(bump))
+    }
+}
+
+#[cfg(bao_nightly)]
 impl<'bump, T: DeepClone<'bump>> DeepClone<'bump> for Vec<T> {
     #[inline]
     fn deep_clone(&self, bump: &'bump Arena) -> Self {
@@ -266,6 +279,15 @@ impl<'bump, T: CssEql> CssEql for ArrayList<'bump, T> {
     }
 }
 
+#[cfg(not(bao_nightly))]
+impl<T: CssEql> CssEql for ::allocator_api2::vec::Vec<T, ::bun_alloc::core_alloc::Global> {
+    #[inline]
+    fn eql(&self, other: &Self) -> bool {
+        self.slice_const().eql(other.slice_const())
+    }
+}
+
+#[cfg(bao_nightly)]
 impl<T: CssEql> CssEql for Vec<T> {
     #[inline]
     fn eql(&self, other: &Self) -> bool {
@@ -909,8 +931,9 @@ pub(crate) fn hash_array_list<V: CssHash>(this: &ArrayList<'_, V>, hasher: &mut 
     }
 }
 
-pub(crate) fn hash_baby_list<V: CssHash>(this: &Vec<V>, hasher: &mut Wyhash) {
-    for item in this.slice_const() {
+#[cfg(bao_nightly)]
+pub(crate) fn hash_baby_list<V: CssHash>(this: &[V], hasher: &mut Wyhash) {
+    for item in this {
         item.hash(hasher);
     }
 }
@@ -969,6 +992,17 @@ impl<'bump, T: CssHash> CssHash for ArrayList<'bump, T> {
     }
 }
 
+#[cfg(not(bao_nightly))]
+impl<T: CssHash> CssHash for ::allocator_api2::vec::Vec<T, ::bun_alloc::core_alloc::Global> {
+    #[inline]
+    fn hash(&self, hasher: &mut Wyhash) {
+        for item in self.slice_const() {
+            item.hash(hasher);
+        }
+    }
+}
+
+#[cfg(bao_nightly)]
 impl<T: CssHash> CssHash for Vec<T> {
     #[inline]
     fn hash(&self, hasher: &mut Wyhash) {
@@ -1066,7 +1100,15 @@ impl<T> ListContainer for Vec<T> {
     type Item = T;
     #[inline]
     fn slice(&self) -> &[T] {
-        self.slice_const()
+        self.as_slice()
+    }
+}
+#[cfg(not(bao_nightly))]
+impl<T> ListContainer for ::allocator_api2::vec::Vec<T, ::bun_alloc::core_alloc::Global> {
+    type Item = T;
+    #[inline]
+    fn slice(&self) -> &[T] {
+        self.as_slice()
     }
 }
 impl<T, const N: usize> ListContainer for SmallList<T, N> {
@@ -1144,6 +1186,15 @@ impl<T: IsCompatible, const N: usize> IsCompatible for [T; N] {
     }
 }
 
+#[cfg(not(bao_nightly))]
+impl<T: IsCompatible> IsCompatible for ::allocator_api2::vec::Vec<T, ::bun_alloc::core_alloc::Global> {
+    #[inline]
+    fn is_compatible(&self, browsers: &crate::targets::Browsers) -> bool {
+        self.as_slice().is_compatible(browsers)
+    }
+}
+
+#[cfg(bao_nightly)]
 impl<T: IsCompatible> IsCompatible for Vec<T> {
     #[inline]
     fn is_compatible(&self, browsers: &crate::targets::Browsers) -> bool {
@@ -1243,13 +1294,30 @@ impl<T: Parse> ParseWithOptions for Option<T> {
     }
 }
 
+#[cfg(bao_nightly)]
 impl<T: Parse> Parse for Vec<T> {
     #[inline]
     fn parse(input: &mut Parser) -> CssResult<Self> {
         input.parse_comma_separated(T::parse)
     }
 }
+#[cfg(not(bao_nightly))]
+impl<T: Parse> Parse for ::allocator_api2::vec::Vec<T, ::bun_alloc::core_alloc::Global> {
+    #[inline]
+    fn parse(input: &mut Parser) -> CssResult<Self> {
+        input.parse_comma_separated(T::parse)
+    }
+}
+
+#[cfg(bao_nightly)]
 impl<T: Parse> ParseWithOptions for Vec<T> {
+    #[inline]
+    fn parse_with_options(input: &mut Parser, _options: &ParserOptions) -> CssResult<Self> {
+        <Self as Parse>::parse(input)
+    }
+}
+#[cfg(not(bao_nightly))]
+impl<T: Parse> ParseWithOptions for ::allocator_api2::vec::Vec<T, ::bun_alloc::core_alloc::Global> {
     #[inline]
     fn parse_with_options(input: &mut Parser, _options: &ParserOptions) -> CssResult<Self> {
         <Self as Parse>::parse(input)
@@ -1275,7 +1343,7 @@ impl<T: Parse, const N: usize> Parse for SmallList<T, N> {
     fn parse(input: &mut Parser) -> CssResult<Self> {
         input
             .parse_comma_separated(T::parse)
-            .map(SmallList::from_list)
+            .map(|v: ParseListVec<T>| SmallList::from_list(v.into_iter().collect()))
     }
 }
 impl<T: Parse, const N: usize> ParseWithOptions for SmallList<T, N> {
@@ -1387,6 +1455,15 @@ impl<'bump, T: ToCss> ToCss for ArrayList<'bump, T> {
     }
 }
 
+#[cfg(not(bao_nightly))]
+impl<T: ToCss> ToCss for ::allocator_api2::vec::Vec<T, ::bun_alloc::core_alloc::Global> {
+    #[inline]
+    fn to_css(&self, dest: &mut Printer) -> core::result::Result<(), PrintErr> {
+        css::to_css::from_list(self.as_slice(), dest)
+    }
+}
+
+#[cfg(bao_nightly)]
 impl<T: ToCss> ToCss for Vec<T> {
     #[inline]
     fn to_css(&self, dest: &mut Printer) -> core::result::Result<(), PrintErr> {

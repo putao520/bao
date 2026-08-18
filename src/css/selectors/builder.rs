@@ -17,6 +17,7 @@
 //! is non-trivial. This module encapsulates those details and presents an
 //! easy-to-use API for the parser.
 
+use crate::ArenaVec;
 use crate::SmallList;
 pub use crate::{PrintErr, Printer};
 use bun_alloc::ArenaPtr;
@@ -55,7 +56,7 @@ pub struct SelectorBuilder<Impl: ValidSelectorImpl> {
 
 pub struct BuildResult<Impl: ValidSelectorImpl> {
     pub specificity_and_flags: SpecificityAndFlags,
-    pub components: Vec<GenericComponent<Impl>, ArenaPtr>,
+    pub components: ArenaVec<GenericComponent<Impl>>,
 }
 
 impl<Impl: ValidSelectorImpl> Default for SelectorBuilder<Impl> {
@@ -163,7 +164,7 @@ impl<Impl: ValidSelectorImpl> SelectorBuilder<Impl> {
         );
         let combinators = self.combinators.slice();
 
-        let mut components: Vec<GenericComponent<Impl>, ArenaPtr> = Vec::new_in(self.alloc);
+        let mut components: ArenaVec<GenericComponent<Impl>> = ArenaVec::new_in(self.alloc);
 
         let mut current_simple_selectors_i: usize = 0;
         let mut combinator_i: i64 = i64::from(combinators_len) - 1;
