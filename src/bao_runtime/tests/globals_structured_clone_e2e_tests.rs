@@ -178,12 +178,20 @@ check('transfer_scalar_typeerror', function() {
   try { structuredClone({a:1}, { transfer: 3 }); return false; }
   catch (e) { return e instanceof TypeError; }
 });
-check('transfer_arraylike_accepted', function() {
-  // WebIDL sequence input: array-likes materialize into the transfer list.
+check('transfer_arraylike_typeerror', function() {
+  // WebIDL sequence conversion (Node 24 ground truth, re-probed 2026-08-18):
+  // a length-only array-like is NOT an iterable — TypeError with the
+  // verbatim message below. Only iterables (Array, Set, generators, …)
+  // convert; the old assertion (accepted + materialized) encoded the
+  // inverted ground truth.
   var ab = new ArrayBuffer(2);
   var list = { length: 1, 0: ab };
-  var c = structuredClone(ab, { transfer: list });
-  return c.byteLength === 2 && ab.byteLength === 0;
+  try { structuredClone(ab, { transfer: list }); return false; }
+  catch (e) {
+    return e instanceof TypeError
+      && e.message === "Failed to execute 'structuredClone': transfer in Options can not be converted to sequence."
+      && ab.byteLength === 2;
+  }
 });
 
 globalThis.__r.all = results.join('|');
