@@ -1,16 +1,26 @@
 //! bun_collections — crate root.
 //! Thin re-export hub mirroring `src/collections/collections.zig`.
 
-#![feature(
-    type_info,
-    adt_const_params,
-    unsized_const_params,
-    const_cmp,
-    const_trait_impl,
-    core_intrinsics,
-    allocator_api
+// Dual-mode (stable ⇄ nightly; channel probe in build.rs). The four
+// attrs below serve multi_array_list's reflection path
+// (`core::mem::type_info` + `const NAME: &str` column generics, the latter
+// needing adt_const_params + unsized_const_params + const_cmp +
+// const_trait_impl — removing any one of them fails the const field lookup).
+// All seven original attrs therefore ride the nightly cfg together; stable
+// builds stop at this file (see the dual-mode stop report).
+#![cfg_attr(
+    bao_nightly,
+    feature(
+        type_info,
+        core_intrinsics,
+        allocator_api,
+        adt_const_params,
+        unsized_const_params,
+        const_cmp,
+        const_trait_impl
+    )
 )]
-#![allow(incomplete_features, internal_features)]
+#![cfg_attr(bao_nightly, allow(internal_features, incomplete_features))]
 #![warn(unused_must_use)]
 
 pub mod hive_array;

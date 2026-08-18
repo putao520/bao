@@ -25,7 +25,7 @@
 //! // `&sf` borrows ⇒ `sf` is pinned for `list`'s lifetime; `Vec` is 32 B.
 //! ```
 
-use core::alloc::{AllocError, Allocator, Layout};
+use crate::core_alloc::{AllocError, Allocator, Layout};
 use core::cell::{Cell, UnsafeCell};
 use core::mem::MaybeUninit;
 use core::ptr::{self, NonNull};
@@ -45,7 +45,7 @@ use crate::{MimallocArena, alloc_result, mimalloc};
 /// threshold). **4096** for path-ish buffers. Cap at **16 KB** — anything
 /// larger should go straight to `MimallocArena`/`Global`.
 #[repr(C)] // keep `buf` at a fixed offset; `align_of::<Self>() == align_of::<A>().max(word)`
-pub struct StackFallback<const N: usize, A: Allocator = std::alloc::Global> {
+pub struct StackFallback<const N: usize, A: Allocator = crate::core_alloc::Global> {
     /// Bump cursor into `buf`. `Cell` so `Allocator::allocate(&self)` can advance it.
     cur: Cell<usize>,
     /// `get_called` debug guard (Zig heap.zig:398) — trips on second `get()`
@@ -166,12 +166,12 @@ impl<const N: usize, A: Allocator> StackFallback<N, A> {
     }
 }
 
-impl<const N: usize> StackFallback<N, std::alloc::Global> {
+impl<const N: usize> StackFallback<N, crate::core_alloc::Global> {
     /// `std.heap.stackFallback(N, bun.default_allocator)` — the 90 % case
     /// (15 of 20 Zig callsites pass `default_allocator`/`bun.default_allocator`).
     #[inline]
     pub const fn with_global() -> Self {
-        Self::new(std::alloc::Global)
+        Self::new(crate::core_alloc::Global)
     }
 }
 
@@ -401,7 +401,7 @@ unsafe impl Allocator for ArenaPtr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::alloc::Global;
+    use crate::core_alloc::Global;
 
     /// Fallback that counts every call so tests can prove which path was taken.
     struct Counting {
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn vec_roundtrip() {
         let sf = StackFallback::<256>::with_global();
-        let mut v: Vec<u32, _> = Vec::new_in(&sf);
+        let mut v: crate::core_alloc::AllocVec<u32, _> = crate::core_alloc::AllocVec::new_in(&sf);
         for i in 0..8 {
             v.push(i);
         }

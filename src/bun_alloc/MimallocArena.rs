@@ -18,7 +18,7 @@
 //! the `pub type Arena = MimallocArena` swap is mostly source-compatible
 //! with the previous `Arena = bumpalo::Bump` alias.
 
-use core::alloc::{AllocError, Allocator, Layout};
+use crate::core_alloc::{AllocError, Allocator, Layout};
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
 use core::ptr::{self, NonNull};
@@ -790,25 +790,25 @@ pub fn std_vtables() -> [&'static crate::AllocatorVTable; 2] {
 /// Thin newtype over `Vec<u8, &'a MimallocArena>` so `write!` works and
 /// `into_bump_str()` leaks into the arena.
 pub struct ArenaString<'a> {
-    buf: Vec<u8, &'a MimallocArena>,
+    buf: crate::core_alloc::AllocVec<u8, &'a MimallocArena>,
 }
 
 impl<'a> ArenaString<'a> {
     #[inline]
     pub fn new_in(arena: &'a MimallocArena) -> Self {
         Self {
-            buf: Vec::new_in(arena),
+            buf: crate::core_alloc::AllocVec::new_in(arena),
         }
     }
     #[inline]
     pub fn with_capacity_in(cap: usize, arena: &'a MimallocArena) -> Self {
         Self {
-            buf: Vec::with_capacity_in(cap, arena),
+            buf: crate::core_alloc::AllocVec::with_capacity_in(cap, arena),
         }
     }
     #[inline]
     pub fn from_str_in(s: &str, arena: &'a MimallocArena) -> Self {
-        let mut buf = Vec::with_capacity_in(s.len(), arena);
+        let mut buf = crate::core_alloc::AllocVec::with_capacity_in(s.len(), arena);
         buf.extend_from_slice(s.as_bytes());
         Self { buf }
     }
@@ -873,12 +873,12 @@ pub trait ArenaVecExt<'a, T> {
     fn bump(&self) -> &'a MimallocArena;
 }
 
-impl<'a, T> ArenaVecExt<'a, T> for Vec<T, &'a MimallocArena> {
+impl<'a, T> ArenaVecExt<'a, T> for crate::core_alloc::AllocVec<T, &'a MimallocArena> {
     #[inline]
     fn from_iter_in<I: IntoIterator<Item = T>>(iter: I, arena: &'a MimallocArena) -> Self {
         let iter = iter.into_iter();
         let (lo, _) = iter.size_hint();
-        let mut v = Vec::with_capacity_in(lo, arena);
+        let mut v = crate::core_alloc::AllocVec::with_capacity_in(lo, arena);
         v.extend(iter);
         v
     }

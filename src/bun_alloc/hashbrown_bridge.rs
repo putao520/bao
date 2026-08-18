@@ -21,13 +21,16 @@
 //! `RawTableInner::resize_inner`), and the polyfill's defaulted
 //! `allocate_zeroed` correctly forwards to our `allocate`.
 
-use core::alloc::{Allocator, Layout};
+use crate::core_alloc::{AllocError, Allocator, Layout};
 use core::ptr::NonNull;
 
 /// Implement `allocator_api2::alloc::Allocator` for a type that already
 /// implements `core::alloc::Allocator`, by delegation. Only the two methods
 /// hashbrown actually calls are forwarded; the rest keep the polyfill's
 /// default bodies (which themselves call back into `allocate`/`deallocate`).
+// Nightly only: on stable the facade Allocator IS the api2 trait, so
+// allocators already implement what hashbrown needs and no bridge exists.
+#[cfg(bao_nightly)]
 macro_rules! bridge_allocator_api2 {
     ($t:ty) => {
         // SAFETY: every method is a 1:1 forward to the corresponding
@@ -65,6 +68,11 @@ macro_rules! bridge_allocator_api2 {
     };
 }
 
+#[cfg(not(bao_nightly))]
+macro_rules! bridge_allocator_api2 {
+    ($t:ty) => {};
+}
+
 // `crate::DefaultAlloc` is the existing ZST marker for `bun.default_allocator`
 // (Zig); here it gains `core::alloc::Allocator` (forwarding to
 // `std::alloc::Global`, since `#[global_allocator] = Mimalloc` makes that the
@@ -78,20 +86,24 @@ use crate::DefaultAlloc;
 // SAFETY: thin forwarder to `std::alloc::Global`, which upholds the
 // `Allocator` contract; every method delegates to the corresponding `Global`
 // method on the same arguments and returns the result unchanged.
+// Dual-mode: on nightly this implements core's Allocator (byte-identical
+// fast path) and the bridge macro above mirrors it onto the api2 trait for
+// hashbrown; on stable the facade IS the api2 trait, so this single impl
+// serves hashbrown directly.
 unsafe impl Allocator for DefaultAlloc {
     #[inline]
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, core::alloc::AllocError> {
-        std::alloc::Global.allocate(layout)
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        crate::core_alloc::Global.allocate(layout)
     }
     #[inline]
-    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, core::alloc::AllocError> {
-        std::alloc::Global.allocate_zeroed(layout)
+    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        crate::core_alloc::Global.allocate_zeroed(layout)
     }
     #[inline]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         // SAFETY: forwarded; caller guarantees `ptr` came from `allocate` on
         // this allocator (i.e. `Global`) with `layout`.
-        unsafe { std::alloc::Global.deallocate(ptr, layout) }
+        unsafe { crate::core_alloc::Global.deallocate(ptr, layout) }
     }
     #[inline]
     unsafe fn grow(
@@ -99,9 +111,9 @@ unsafe impl Allocator for DefaultAlloc {
         ptr: NonNull<u8>,
         old: Layout,
         new: Layout,
-    ) -> Result<NonNull<[u8]>, core::alloc::AllocError> {
+    ) -> Result<NonNull<[u8]>, AllocError> {
         // SAFETY: forwarded; caller upholds `Allocator::grow`'s preconditions.
-        unsafe { std::alloc::Global.grow(ptr, old, new) }
+        unsafe { crate::core_alloc::Global.grow(ptr, old, new) }
     }
     #[inline]
     unsafe fn grow_zeroed(
@@ -109,9 +121,9 @@ unsafe impl Allocator for DefaultAlloc {
         ptr: NonNull<u8>,
         old: Layout,
         new: Layout,
-    ) -> Result<NonNull<[u8]>, core::alloc::AllocError> {
+    ) -> Result<NonNull<[u8]>, AllocError> {
         // SAFETY: forwarded.
-        unsafe { std::alloc::Global.grow_zeroed(ptr, old, new) }
+        unsafe { crate::core_alloc::Global.grow_zeroed(ptr, old, new) }
     }
     #[inline]
     unsafe fn shrink(
@@ -119,9 +131,9 @@ unsafe impl Allocator for DefaultAlloc {
         ptr: NonNull<u8>,
         old: Layout,
         new: Layout,
-    ) -> Result<NonNull<[u8]>, core::alloc::AllocError> {
+    ) -> Result<NonNull<[u8]>, AllocError> {
         // SAFETY: forwarded.
-        unsafe { std::alloc::Global.shrink(ptr, old, new) }
+        unsafe { crate::core_alloc::Global.shrink(ptr, old, new) }
     }
 }
 

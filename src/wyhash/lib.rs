@@ -12,7 +12,13 @@
 // Wyhash11 (legacy, 32-byte rounds, 5 primes)
 // ════════════════════════════════════════════════════════════════════════════
 
-#![feature(hasher_prefixfree_extras)]
+// Dual-mode: nightly keeps the prefix-free fast path (`write_length_prefix`
+// override, no length mix — matches Zig's `bun.StringHashMapContext.hash`);
+// stable compiles without the override, so `Hasher`'s provided default
+// (`write_usize(len)`) mixes the length instead. Hash VALUES differ between
+// channels (stable tables just reorder); both are behaviorally correct and
+// pinned separately by the test suite.
+#![cfg_attr(bao_nightly, feature(hasher_prefixfree_extras))]
 const PRIMES: [u64; 5] = [
     0xa0761d6478bd642f,
     0xe7037ed1a0b428db,
@@ -772,12 +778,15 @@ impl core::hash::Hasher for OneShotHasher {
         // primitive wyhash uses internally (`mum`).
         self.hash = mum(self.hash ^ n, PRIMES[4]);
     }
-    /// No-op: keys hashed through this hasher are never cross-type, so the
-    /// prefix-freedom guarantee `<[T] as Hash>` buys is unused. Skipping it
-    /// makes `<[u8] as Hash>` collapse to a single `write(bytes)` →
-    /// `Wyhash11::hash(0, bytes)` — the exact shape of Zig's
+    /// No-op (nightly only): keys hashed through this hasher are never
+    /// cross-type, so the prefix-freedom guarantee `<[T] as Hash>` buys is
+    /// unused. Skipping it makes `<[u8] as Hash>` collapse to a single
+    /// `write(bytes)` → `Wyhash11::hash(0, bytes)` — the exact shape of Zig's
     /// `bun.StringHashMapContext.hash`. perf showed `hashbrown::make_hash`
     /// outlined with the extra `mum` from the length prefix as dead weight.
+    /// On stable the override is absent and `Hasher`'s provided default
+    /// (`write_usize`) applies — see the crate-root dual-mode note.
+    #[cfg(bao_nightly)]
     #[inline(always)]
     fn write_length_prefix(&mut self, _len: usize) {}
     #[inline(always)]

@@ -4,19 +4,69 @@
 // depend on; importing either to satisfy the disallowed-types lint would create
 // a dependency cycle.
 #![allow(clippy::disallowed_types)]
-#![feature(allocator_api)]
+// Dual-mode (stable ⇄ nightly; channel probe in build.rs):
+// - allocator_api: on nightly the allocators implement the real
+//   `core::alloc::Allocator` (byte-identical fast path, `Vec<T, A>` and all);
+//   on stable they implement the `allocator_api2` mirror trait via the
+//   `core_alloc` facade below — same method shapes, `hashbrown` keeps
+//   working because its bound was already the api2 trait.
+// - thread_local: the bare `#[thread_local]` TLS slot (single-mov access)
+//   stays on nightly; stable uses `thread_local!` with a const initializer.
+#![cfg_attr(bao_nightly, feature(allocator_api))]
 // `#[thread_local]` (vs the `thread_local!` macro) compiles to a bare
 // `__thread` slot — single `mov reg, fs:[OFFSET]` access, no `LocalKey`
 // `__getit()` wrapper, no lazy-init flag check, no dtor-registration probe.
 // Used for the per-allocation hot-path TLS in `ast_alloc::AST_ALLOC`; matches
 // Zig's `threadlocal var` semantics exactly.
-#![feature(thread_local)]
+#![cfg_attr(bao_nightly, feature(thread_local))]
 
 use core::fmt::Write as _;
 use core::mem::{MaybeUninit, size_of};
 use core::ptr::{NonNull, addr_of_mut};
 use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::collections::HashMap;
+
+// ──────────────────────────────────────────────────────────────────────────
+// Dual-mode allocator facade
+// ──────────────────────────────────────────────────────────────────────────
+// Every `use core::alloc::{AllocError, Allocator, Layout}` in this crate
+// routes through here. On nightly the names ARE core's (byte-identical
+// trait objects and impls — zero-regression red line); on stable they are
+// the `allocator_api2` mirror (same method shapes modulo the unit
+// `AllocError`, which is exactly what the hashbrown bridge already
+// delegated across). Allocators implementing `core_alloc::Allocator`
+// therefore work for `hashbrown` on both channels.
+// The `alloc` crate (std's, already linked) for the nightly-only
+// `alloc::vec::Vec<T, A>` / `alloc::alloc::Global` paths.
+#[cfg(bao_nightly)]
+extern crate alloc;
+
+pub mod core_alloc {
+    #[cfg(bao_nightly)]
+    pub use core::alloc::AllocError;
+    #[cfg(bao_nightly)]
+    pub use core::alloc::Allocator;
+    #[cfg(not(bao_nightly))]
+    pub use allocator_api2::alloc::AllocError;
+    #[cfg(not(bao_nightly))]
+    pub use allocator_api2::alloc::Allocator;
+    // `Layout` is stable core; identical on both channels.
+    pub use core::alloc::Layout;
+    // `Global`: std's on nightly (implements core's Allocator); the api2
+    // mirror's on stable (implements the api2 trait).
+    #[cfg(bao_nightly)]
+    pub use alloc::alloc::Global;
+    #[cfg(not(bao_nightly))]
+    pub use allocator_api2::alloc::Global;
+
+    /// The allocator-parameterized `Vec` (nightly `alloc::vec::Vec<T, A>`;
+    /// stable `allocator_api2` mirror). Plain `Vec<T>` sites stay on std's
+    /// single-parameter Vec on both channels.
+    #[cfg(bao_nightly)]
+    pub type AllocVec<T, A> = alloc::vec::Vec<T, A>;
+    #[cfg(not(bao_nightly))]
+    pub type AllocVec<T, A> = allocator_api2::vec::Vec<T, A>;
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Re-exports (thin — match Zig `pub const X = @import(...)` lines)
@@ -648,10 +698,10 @@ pub fn ascii_lowercase_buf<const N: usize>(input: &[u8]) -> Option<([u8; N], usi
 pub(crate) fn alloc_result<T>(
     p: *mut T,
     size: usize,
-) -> core::result::Result<NonNull<[u8]>, core::alloc::AllocError> {
+) -> core::result::Result<NonNull<[u8]>, crate::core_alloc::AllocError> {
     NonNull::new(p.cast::<u8>())
         .map(|p| NonNull::slice_from_raw_parts(p, size))
-        .ok_or(core::alloc::AllocError)
+        .ok_or(crate::core_alloc::AllocError)
 }
 
 /// Port of `std.fmt.count`: number of bytes the formatted args would produce.

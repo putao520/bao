@@ -120,9 +120,44 @@ pub const INVALID: ThreadId = ThreadId::MAX;
 /// Win32 thread IDs are all nonzero. A bare `#[thread_local]` slot (not the
 /// `thread_local!` macro) so this is a single TLS load with no `LocalKey`
 /// initialization-state branch or destructor registration — same as Zig's
-/// `threadlocal var`.
+/// `threadlocal var`. Stable builds (no `#[thread_local]` attribute) use
+/// `thread_local!` with a const initializer — also no lazy-init branch and
+/// no destructor, just the `LocalKey::with` call frame.
+#[cfg(bao_nightly)]
 #[thread_local]
 static TLS_THREAD_ID: core::cell::Cell<ThreadId> = core::cell::Cell::new(0);
+
+#[cfg(not(bao_nightly))]
+thread_local! {
+    static TLS_THREAD_ID: core::cell::Cell<ThreadId> = const { core::cell::Cell::new(0) };
+}
+
+/// Read the cached TID (dual-mode: direct TLS load on nightly, `with` on
+/// stable; both inline away in release).
+#[inline]
+fn tls_thread_id() -> ThreadId {
+    #[cfg(bao_nightly)]
+    {
+        TLS_THREAD_ID.get()
+    }
+    #[cfg(not(bao_nightly))]
+    {
+        TLS_THREAD_ID.with(|slot| slot.get())
+    }
+}
+
+/// Store the cached TID.
+#[inline]
+fn tls_thread_id_set(id: ThreadId) {
+    #[cfg(bao_nightly)]
+    {
+        TLS_THREAD_ID.set(id);
+    }
+    #[cfg(not(bao_nightly))]
+    {
+        TLS_THREAD_ID.with(|slot| slot.set(id));
+    }
+}
 
 /// Returns the platform's notion of the calling thread's ID.
 ///
@@ -136,12 +171,12 @@ static TLS_THREAD_ID: core::cell::Cell<ThreadId> = core::cell::Cell::new(0);
 /// by Bun's pool (FFI callbacks, the main thread) still get a valid ID.
 #[inline]
 pub fn current() -> ThreadId {
-    let cached = TLS_THREAD_ID.get();
+    let cached = tls_thread_id();
     if cached != 0 {
         return cached;
     }
     let id = current_uncached();
-    TLS_THREAD_ID.set(id);
+    tls_thread_id_set(id);
     id
 }
 

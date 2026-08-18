@@ -10,7 +10,7 @@
 //! `len`/`cap` are stored as `u32` (`usize` on the public API for ergonomics).
 //! No bundler list approaches 2³² elements; debug-asserted on every grow path.
 
-use core::alloc::{Allocator, Layout};
+use crate::core_alloc::{Allocator, Layout};
 use core::mem::{ManuallyDrop, size_of};
 use core::ops::{Deref, DerefMut, RangeBounds};
 use core::ptr::{self, NonNull};

@@ -1963,7 +1963,38 @@ pub mod io {
     }
 
     /// In-memory growable sink. Zig: `std.Io.Writer.Allocating`.
+    // Dual-mode: nightly keeps the allocator-generic impl over core's
+    // `alloc::vec::Vec<u8, A>`; stable (no `Vec<T, A>`) covers both the
+    /// std `Vec<u8>` and the `allocator_api2` mirror the alloc cluster
+    /// compiles against.
+    #[cfg(bao_nightly)]
     impl<A: core::alloc::Allocator> Write for Vec<u8, A> {
+        #[inline]
+        fn write_all(&mut self, buf: &[u8]) -> Result<(), crate::Error> {
+            self.extend_from_slice(buf);
+            Ok(())
+        }
+        #[inline]
+        fn written_len(&self) -> usize {
+            self.len()
+        }
+    }
+
+    #[cfg(not(bao_nightly))]
+    impl Write for std::vec::Vec<u8> {
+        #[inline]
+        fn write_all(&mut self, buf: &[u8]) -> Result<(), crate::Error> {
+            self.extend_from_slice(buf);
+            Ok(())
+        }
+        #[inline]
+        fn written_len(&self) -> usize {
+            self.len()
+        }
+    }
+
+    #[cfg(not(bao_nightly))]
+    impl<A: allocator_api2::alloc::Allocator> Write for allocator_api2::vec::Vec<u8, A> {
         #[inline]
         fn write_all(&mut self, buf: &[u8]) -> Result<(), crate::Error> {
             self.extend_from_slice(buf);

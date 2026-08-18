@@ -28,7 +28,7 @@
 //! ExprNodeList` and `bun_collections::VecExt` — both below `js_parser` in the
 //! crate graph — can name `Vec<T, AstAlloc>`.
 
-use core::alloc::{AllocError, Allocator, Layout};
+use crate::core_alloc::{AllocError, Allocator, Layout};
 use core::cell::Cell;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
@@ -155,9 +155,18 @@ impl AstAllocState {
 /// (allocations then fall back to global mimalloc).
 ///
 /// `#[thread_local]` (not `thread_local!`): read on every `AstAlloc`
-/// allocation, so it must stay a bare `__thread` slot.
+/// allocation, so it must stay a bare `__thread` slot. Stable (no
+/// `#[thread_local]` attribute) uses a const-init `thread_local!` — no
+/// lazy-init branch and no destructor either, just the `LocalKey::with`
+/// frame on the hot path.
+#[cfg(bao_nightly)]
 #[thread_local]
 static AST_ALLOC: Cell<Option<Box<AstAllocState>>> = Cell::new(None);
+
+#[cfg(not(bao_nightly))]
+std::thread_local! {
+    static AST_ALLOC: Cell<Option<Box<AstAllocState>>> = const { Cell::new(None) };
+}
 
 // One-slot recycler so a per-job `acquire_state`/`release_state` pair doesn't
 // pay a 16 KB malloc each time. Uses `thread_local!` (unlike `AST_ALLOC`) so
@@ -167,14 +176,28 @@ std::thread_local! {
     static AST_ALLOC_SPARE: Cell<Option<Box<AstAllocState>>> = const { Cell::new(None) };
 }
 
-/// Mutable access to the installed state without moving the box out of the
-/// thread-local.
+/// Run `f` against the installed state (if any) without moving the box out
+/// of the thread-local. Dual-mode: bare-slot pointer read on nightly; a
+/// const-initialized `thread_local!` + `with` on stable (same no-lazy-init /
+/// no-dtor storage class, one extra call frame that inlines away).
 #[inline(always)]
-fn active_state<'a>() -> Option<&'a mut AstAllocState> {
-    // SAFETY: `AST_ALLOC` is thread-local and this module never re-enters
-    // itself while the returned reference is live, so this is the only
-    // reference to the boxed state for its lifetime.
-    unsafe { (*AST_ALLOC.as_ptr()).as_deref_mut() }
+fn with_active_state<R>(f: impl FnOnce(Option<&mut AstAllocState>) -> R) -> R {
+    #[cfg(bao_nightly)]
+    {
+        // SAFETY: `AST_ALLOC` is thread-local and this module never re-enters
+        // itself while the reference is live, so this is the only reference
+        // to the boxed state for its lifetime.
+        unsafe { f((*AST_ALLOC.as_ptr()).as_deref_mut()) }
+    }
+    #[cfg(not(bao_nightly))]
+    {
+        AST_ALLOC.with(|slot| {
+            // SAFETY: const-initialized `thread_local!` storage lives for the
+            // thread's lifetime; the same never-re-enters-itself argument as
+            // the nightly side holds for the reference's lifetime.
+            f(unsafe { (*slot.as_ptr()).as_deref_mut() })
+        })
+    }
 }
 
 /// Take the recycled spare state for this thread, or allocate a fresh one.
@@ -200,15 +223,33 @@ pub fn release_state(mut state: Box<AstAllocState>) {
 /// detaches to the global-mimalloc fallback.
 #[inline]
 pub fn swap_state(state: Option<Box<AstAllocState>>) -> Option<Box<AstAllocState>> {
-    AST_ALLOC.replace(state)
+    #[cfg(bao_nightly)]
+    {
+        AST_ALLOC.replace(state)
+    }
+    #[cfg(not(bao_nightly))]
+    {
+        AST_ALLOC.with(|slot| slot.replace(state))
+    }
 }
 
 /// Address of the active state (null when none is installed). Identity checks
 /// only; never dereferenced.
 #[inline]
 pub fn active_state_id() -> *const AstAllocState {
-    // SAFETY: see `active_state` — shared read of the thread-local slot.
-    unsafe { (*AST_ALLOC.as_ptr()).as_deref() }.map_or(core::ptr::null(), core::ptr::from_ref)
+    #[cfg(bao_nightly)]
+    {
+        // SAFETY: see `with_active_state` — shared read of the thread-local
+        // slot; identity checks only, never dereferenced.
+        unsafe { (*AST_ALLOC.as_ptr()).as_deref() }.map_or(core::ptr::null(), core::ptr::from_ref)
+    }
+    #[cfg(not(bao_nightly))]
+    {
+        AST_ALLOC.with(|slot| {
+            // SAFETY: const-init thread-local storage; identity only.
+            unsafe { (*slot.as_ptr()).as_deref() }.map_or(core::ptr::null(), core::ptr::from_ref)
+        })
+    }
 }
 
 /// Bulk-free the *installed* state in place. For owners that keep their state
@@ -216,18 +257,22 @@ pub fn active_state_id() -> *const AstAllocState {
 /// field. No-op when no state is installed.
 #[inline]
 pub fn reset_active_state() {
-    if let Some(state) = active_state() {
-        state.reset();
-    }
+    with_active_state(|state| {
+        if let Some(state) = state {
+            state.reset();
+        }
+    });
 }
 
 /// [`AstAllocState::set_spill_heap`] on the *installed* state. No-op when no
 /// state is installed.
 #[inline]
 pub fn set_active_spill_heap(heap: *mut mimalloc::Heap) {
-    if let Some(state) = active_state() {
-        state.set_spill_heap(heap);
-    }
+    with_active_state(|state| {
+        if let Some(state) = state {
+            state.set_spill_heap(heap);
+        }
+    });
 }
 
 /// RAII guard: for its lifetime, [`AstAlloc`] allocates on **global** mimalloc
@@ -326,35 +371,41 @@ impl Drop for ScopedAstAlloc {
 pub struct AstAlloc;
 
 /// `Vec` whose backing buffer lives in the thread-local AST allocation state.
-pub type AstVec<T> = Vec<T, AstAlloc>;
+#[cfg(bao_nightly)]
+pub type AstVec<T> = alloc::vec::Vec<T, AstAlloc>;
+#[cfg(not(bao_nightly))]
+pub type AstVec<T> = crate::core_alloc::AllocVec<T, AstAlloc>;
 
 use crate::alloc_result;
 
 #[inline(always)]
 fn heap_alloc(layout: Layout) -> *mut u8 {
-    let Some(state) = active_state() else {
+    with_active_state(|state| match state {
         // Global fallback (no AST scope active). `mi_malloc` tolerates
         // `size == 0` (unique non-null pointer), so no special-casing.
-        return mimalloc::mi_malloc_auto_align(layout.size(), layout.align()).cast();
-    };
-    // Small, normally-aligned requests: carve from the state's inline chunk so
-    // a burst of tiny `AstVec`s costs zero mallocs (and stays out of
-    // `_mi_malloc_generic`). Zero-size layouts and over-aligned ones (no AST
-    // list type needs `> MI_MAX_ALIGN_SIZE`) fall through to mimalloc, which
-    // handles both.
-    if layout.size() != 0
-        && layout.size() <= BUMP_MAX
-        && layout.align() <= mimalloc::MI_MAX_ALIGN_SIZE
-    {
-        if let Some(p) = state.bump_alloc(layout.size(), layout.align()) {
-            return p;
+        None => mimalloc::mi_malloc_auto_align(layout.size(), layout.align()).cast(),
+        Some(state) => {
+            // Small, normally-aligned requests: carve from the state's inline
+            // chunk so a burst of tiny `AstVec`s costs zero mallocs (and stays
+            // out of `_mi_malloc_generic`). Zero-size layouts and over-aligned
+            // ones (no AST list type needs `> MI_MAX_ALIGN_SIZE`) fall through
+            // to mimalloc, which handles both.
+            if layout.size() != 0
+                && layout.size() <= BUMP_MAX
+                && layout.align() <= mimalloc::MI_MAX_ALIGN_SIZE
+            {
+                if let Some(p) = state.bump_alloc(layout.size(), layout.align()) {
+                    return p;
+                }
+            }
+            // SAFETY: `heap_ptr` returns the live spill heap owned by `state`,
+            // which is owned by the thread-local for the duration of this call.
+            unsafe {
+                mimalloc::mi_heap_malloc_auto_align(state.heap_ptr(), layout.size(), layout.align())
+                    .cast()
+            }
         }
-    }
-    // SAFETY: `heap_ptr` returns the live spill heap owned by `state`, which
-    // is owned by the thread-local for the duration of this call.
-    unsafe {
-        mimalloc::mi_heap_malloc_auto_align(state.heap_ptr(), layout.size(), layout.align()).cast()
-    }
+    })
 }
 
 // SAFETY:
@@ -405,7 +456,7 @@ unsafe impl Allocator for AstAlloc {
         // `allocate` + `ptr::write_bytes(0)` cannot. Never bump-carved (the
         // chunk is uninitialised); same lifetime semantics as `heap_alloc`.
         // Mirrors `MimallocArena::allocate_zeroed`.
-        let p: *mut u8 = match active_state() {
+        let p: *mut u8 = with_active_state(|state| match state {
             None => mimalloc::mi_zalloc_auto_align(layout.size(), layout.align()).cast(),
             // SAFETY: `heap_ptr` returns the live spill heap owned by the
             // installed state; see `heap_alloc`.
@@ -413,7 +464,7 @@ unsafe impl Allocator for AstAlloc {
                 mimalloc::mi_heap_zalloc_auto_align(state.heap_ptr(), layout.size(), layout.align())
                     .cast()
             },
-        };
+        });
         alloc_result(p, layout.size())
     }
 
@@ -503,19 +554,19 @@ impl AstAlloc {
     /// `Vec::new()` parity. `const` so it is usable in `Default` impls.
     #[inline]
     pub const fn vec<T>() -> AstVec<T> {
-        Vec::new_in(AstAlloc)
+        crate::core_alloc::AllocVec::new_in(AstAlloc)
     }
 
     /// `Vec::with_capacity` parity.
     #[inline]
     pub fn vec_with_capacity<T>(cap: usize) -> AstVec<T> {
-        Vec::with_capacity_in(cap, AstAlloc)
+        crate::core_alloc::AllocVec::with_capacity_in(cap, AstAlloc)
     }
 
     /// `<[T]>::to_vec` parity (Zig: `BabyList.fromSlice`).
     #[inline]
     pub fn vec_from_slice<T: Clone>(items: &[T]) -> AstVec<T> {
-        let mut v = Vec::with_capacity_in(items.len(), AstAlloc);
+        let mut v = crate::core_alloc::AllocVec::with_capacity_in(items.len(), AstAlloc);
         v.extend_from_slice(items);
         v
     }
@@ -528,7 +579,7 @@ impl AstAlloc {
     pub fn vec_from_iter<T, I: IntoIterator<Item = T>>(iter: I) -> AstVec<T> {
         let iter = iter.into_iter();
         let (lo, _) = iter.size_hint();
-        let mut v = Vec::with_capacity_in(lo, AstAlloc);
+        let mut v = crate::core_alloc::AllocVec::with_capacity_in(lo, AstAlloc);
         v.extend(iter);
         v
     }
@@ -544,6 +595,6 @@ impl AstAlloc {
     /// contents.
     #[inline]
     pub fn take<T>(v: &mut AstVec<T>) -> AstVec<T> {
-        core::mem::replace(v, Vec::new_in(AstAlloc))
+        core::mem::replace(v, crate::core_alloc::AllocVec::new_in(AstAlloc))
     }
 }

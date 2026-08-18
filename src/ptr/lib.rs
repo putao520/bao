@@ -1,4 +1,8 @@
-#![feature(allocator_api)]
+// Dual-mode (stable ⇄ nightly; channel probe in build.rs): the sole
+// allocator-api site (`boxed_slices_as_borrowed`) rides the facade —
+// nightly keeps core's `Box<[T], A>` byte-identical, stable uses the
+// allocator_api2 mirror.
+#![cfg_attr(bao_nightly, feature(allocator_api))]
 #![allow(
     non_snake_case,
     non_camel_case_types,
@@ -15,6 +19,18 @@
 //! Per PORTING.md §Pointers, most consumers of `bun.ptr.*` map directly to std
 //! types (`Box`, `Rc`, `Arc`, `Cow`) and `bun_collections` (`TaggedPtr`,
 //! `TaggedPtrUnion`). This crate hosts the intrusive/FFI-crossing variants.
+#[cfg(bao_nightly)]
+extern crate alloc;
+
+#[cfg(bao_nightly)]
+use alloc::boxed::Box as AllocBox;
+#[cfg(not(bao_nightly))]
+use allocator_api2::boxed::Box as AllocBox;
+#[cfg(bao_nightly)]
+pub use core::alloc::Allocator;
+#[cfg(not(bao_nightly))]
+pub use allocator_api2::alloc::Allocator;
+
 
 // Cow/CowSlice → std (PORTING.md says these ARE std::borrow::Cow)
 pub use std::borrow::Cow;
@@ -340,10 +356,10 @@ pub use detach_lifetime_ref as detach_ref;
 /// outside the bundler SoA-column read-only fan-out it was written for.
 #[doc(hidden)]
 #[inline(always)]
-pub unsafe fn boxed_slices_as_borrowed<T, A: core::alloc::Allocator>(s: &[Box<[T], A>]) -> &[&[T]] {
+pub unsafe fn boxed_slices_as_borrowed<T, A: Allocator>(s: &[AllocBox<[T], A>]) -> &[&[T]] {
     const {
-        assert!(core::mem::size_of::<Box<[T], A>>() == core::mem::size_of::<&[T]>());
-        assert!(core::mem::align_of::<Box<[T], A>>() == core::mem::align_of::<&[T]>());
+        assert!(core::mem::size_of::<AllocBox<[T], A>>() == core::mem::size_of::<&[T]>());
+        assert!(core::mem::align_of::<AllocBox<[T], A>>() == core::mem::align_of::<&[T]>());
     }
     // SAFETY: layout-identical per the const asserts above; every `Box<[T]>`
     // element is a valid non-null `(ptr, len)` pair, which is exactly the

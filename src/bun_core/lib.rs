@@ -1,6 +1,13 @@
-#![feature(allocator_api)]
-#![feature(adt_const_params)]
-#![feature(thread_local)] // bare `__thread` slot for `thread_id::current()` cache
+// Dual-mode (stable ⇄ nightly): see build.rs for the channel probe.
+// - allocator_api: the Vec<u8, A> `Write` impl in util.rs compiles against
+//   `allocator_api2`'s Vec on stable (nightly keeps core's).
+// - adt_const_params: REMOVED — fmt.rs was already rewritten to const-bool
+//   params; the attribute was a leftover.
+// - thread_local: the bare `#[thread_local]` TLS slot (single-mov access,
+//   no LocalKey init/dtor) stays on nightly; stable uses `thread_local!`
+//   with a const initializer (no lazy-init, no dtor either).
+#![cfg_attr(bao_nightly, feature(allocator_api))]
+#![cfg_attr(bao_nightly, feature(thread_local))] // bare `__thread` slot for `thread_id::current()` cache
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 // bun_core is the T0 foundation crate that bun_threading, bun_sys, and
 // bun_collections depend on; importing any of them to satisfy the disallowed-*

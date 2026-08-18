@@ -14,6 +14,9 @@ path = "lib.rs"
 workspace = true
 
 [dependencies]
+# Dual-mode: stable builds route the allocator-generic `Write` sink through
+# the allocator_api2 mirror (see util.rs); nightly keeps core's types.
+allocator-api2.workspace = true
 bytemuck = "1"
 itoa.workspace = true
 bun_opaque.workspace = true
