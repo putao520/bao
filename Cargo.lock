@@ -2757,6 +2757,7 @@ dependencies = [
 name = "bun_core"
 version = "0.1.0"
 dependencies = [
+ "allocator-api2",
  "bstr",
  "bun_alloc",
  "bun_core_macros",
@@ -3482,6 +3483,7 @@ dependencies = [
 name = "bun_ptr"
 version = "0.1.0"
 dependencies = [
+ "allocator-api2",
  "bitflags 2.11.1",
  "bstr",
  "bun_alloc",
@@ -4009,7 +4011,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
