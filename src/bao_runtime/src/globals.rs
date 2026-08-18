@@ -14,10 +14,9 @@ use mozjs::rust::wrappers2::{
 };
 // Structured-clone engine bridge (structuredClone rides the same
 // JS_WriteStructuredClone / JS_ReadStructuredClone facility as worker
-// postMessage — see structured_clone_fn).
-use mozjs::glue::{CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData};
+// postMessage — see structured_clone_fn; the write end itself lives in
+// node_worker_threads::sc_serialize_with_transfer).
 use mozjs::rust::wrappers2 as w2;
-use mozjs::rust::JSAutoStructuredCloneBufferWrapper;
 
 /// Maximum byte length of a Buffer.
 ///
@@ -5400,16 +5399,9 @@ pub fn install_structured_clone(
             1,
             JSPROP_ENUMERATE as u32,
         );
-    }
-}
-
-/// Clone data policy for the structuredClone bridge: shared-memory objects
-/// are rejected (no cross-agent SAB semantics on this surface); everything
-/// else clones. Mirrors node_worker_threads::sc_clone_policy.
-fn sc_clone_policy() -> CloneDataPolicy {
-    CloneDataPolicy {
-        allowIntraClusterClonableSharedObjects_: false,
-        allowSharedMemoryObjects_: false,
+        // Same realm sits at the write end of the SC bridge: install the
+        // Error-boundary (AggregateError degradation) walk helpers.
+        crate::node_worker_threads::install_sc_boundary_helpers(cx, global);
     }
 }
 
@@ -5431,11 +5423,15 @@ unsafe fn sc_report_data_clone_error(raw_cx: *mut JSContext) -> bool {
 
 /// `structuredClone(value, {transfer})` — the HTML structured clone algorithm
 /// bridged onto SpiderMonkey's own JS_WriteStructuredClone /
-/// JS_ReadStructuredClone (the same engine facility worker postMessage rides —
-/// engine reuse, not a hand-rolled serializer). Date/RegExp/Map/Set/
+/// JS_ReadStructuredClone via the SAME write/read pair as worker postMessage
+/// (`sc_serialize_with_transfer` / `sc_deserialize`) — engine reuse, one
+/// serializer, isomorphic surfaces by construction. Date/RegExp/Map/Set/
 /// TypedArray/ArrayBuffer/BigInt keep their prototypes, cyclic graphs
 /// preserve identity (clone.a === clone.b when a === b), and the `transfer`
 /// list detaches (moves) ArrayBuffers via the engine's transfer map.
+/// The Error plain boundary (AggregateError → plain Error, WHATWG §2.7.3
+/// step 17 seven-name rule / Node 24 semantics) is enforced inside the
+/// bridge write end.
 /// Non-clonable values (functions, WeakMap, symbols) fail the write →
 /// DataCloneError, matching Node.
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -5452,10 +5448,13 @@ unsafe extern "C" fn structured_clone_fn(cx: *mut JSContext, argc: u32, vp: *mut
     rooted!(&in(cx_ref) let value = val);
 
     // `transfer` list → a real Array. SM's parseTransferable only accepts an
-    // actual Array object; the WebIDL input is any array-like sequence, so
-    // non-Array objects are materialized into one. A present-but-scalar
-    // transfer value is a TypeError (Node rejects the options shape before
-    // cloning starts).
+    // actual Array object; the WebIDL input is an ITERABLE sequence (Node 24
+    // ground truth, probed: `structuredClone(v, {transfer: {length:1, 0:buf}})`
+    // throws TypeError "can not be converted to sequence" — a length-only
+    // array-like is NOT accepted). Non-Array iterables (Set, generators,
+    // custom iterators) are materialized into an Array via the iterator
+    // protocol; a present-but-scalar transfer value is a TypeError before
+    // cloning starts.
     rooted!(&in(cx_ref) let mut transferable = UndefinedValue());
     if argc >= 2 {
         let opts = *args.get(1).ptr;
@@ -5472,90 +5471,170 @@ unsafe extern "C" fn structured_clone_fn(cx: *mut JSContext, argc: u32, vp: *mut
                 },
             );
             if !tval.is_undefined() && !tval.is_null() && !tval.is_object() {
-                mozjs::error::throw_type_error(cx, c"The transfer option must be an array");
+                mozjs::error::throw_type_error(
+                    cx,
+                    c"Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.",
+                );
                 return false;
             }
             if tval.is_object() {
-                rooted!(&in(cx_ref) let t_obj = tval.to_object());
-                let mut is_arr = false;
                 rooted!(&in(cx_ref) let t_val_root = tval);
+                let mut is_arr = false;
                 IsArrayObject(cx, t_val_root.handle().into(), &mut is_arr);
                 if is_arr {
                     transferable.set(tval);
                 } else {
-                    let mut length_val = UndefinedValue();
-                    JS_GetProperty(
-                        cx,
-                        t_obj.handle().into(),
-                        c"length".as_ptr(),
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut length_val,
-                        },
-                    );
-                    let list_len: i64 = if length_val.is_int32() {
-                        length_val.to_int32() as i64
-                    } else if length_val.is_double() {
-                        length_val.to_double() as i64
-                    } else {
-                        0
-                    };
-                    let arr = NewArrayObject1(cx_ref, 0);
-                    if !arr.is_null() {
-                        rooted!(&in(cx_ref) let arr_root = arr);
-                        for i in 0..list_len.max(0) {
-                            let mut item = UndefinedValue();
-                            JS_GetElement(
+                    // Iterable-only: pull Symbol.iterator and drain the
+                    // protocol into a fresh Array. Absent iterator → the
+                    // Node TypeError above.
+                    let mut iter_val = UndefinedValue();
+                    {
+                        rooted!(&in(cx_ref) let t_obj = tval.to_object());
+                        let sym_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
+                            cx,
+                            mozjs_sys::jsapi::JS::SymbolCode::iterator,
+                        );
+                        JS_GetPropertyById(
+                            cx,
+                            t_obj.handle().into(),
+                            Handle::from_marked_location(&sym_key),
+                            MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut iter_val,
+                            },
+                        );
+                    }
+                    let drainable = iter_val.is_object();
+                    if drainable {
+                        let arr = NewArrayObject1(cx_ref, 0);
+                        if !arr.is_null() {
+                            rooted!(&in(cx_ref) let arr_root = arr);
+                            rooted!(&in(cx_ref) let iter_fn = ObjectValue(iter_val.to_object()));
+                            // Iterator-method this is the transfer object
+                            // itself (Set.prototype[Symbol.iterator].call(set)).
+                            rooted!(&in(cx_ref) let t_self = tval.to_object());
+                            let mut it = UndefinedValue();
+                            let it_ok = JS_CallFunctionValue(
                                 cx,
-                                t_obj.handle().into(),
-                                i as u32,
+                                t_self.handle().into(),
+                                iter_fn.handle().into(),
+                                &HandleValueArray::empty(),
                                 MutableHandle::<Value> {
                                     _phantom_0: ::std::marker::PhantomData,
-                                    ptr: &mut item,
+                                    ptr: &mut it,
                                 },
                             );
-                            rooted!(&in(cx_ref) let item_root = item);
-                            JS_SetElement(
-                                cx,
-                                arr_root.handle().into(),
-                                i as u32,
-                                item_root.handle().into(),
-                            );
+                            let mut idx: u32 = 0;
+                            let mut fail = false;
+                            if it_ok && it.is_object() {
+                                rooted!(&in(cx_ref) let it_root = it.to_object());
+                                loop {
+                                    let mut next_fn = UndefinedValue();
+                                    if !JS_GetProperty(
+                                        cx,
+                                        it_root.handle().into(),
+                                        c"next".as_ptr(),
+                                        MutableHandle::<Value> {
+                                            _phantom_0: ::std::marker::PhantomData,
+                                            ptr: &mut next_fn,
+                                        },
+                                    ) {
+                                        fail = true;
+                                        break;
+                                    }
+                                    if !next_fn.is_object() {
+                                        fail = true;
+                                        break;
+                                    }
+                                    rooted!(&in(cx_ref) let nf = ObjectValue(next_fn.to_object()));
+                                    rooted!(&in(cx_ref) let it_obj2 = it_root.get());
+                                    let mut step = UndefinedValue();
+                                    if !JS_CallFunctionValue(
+                                        cx,
+                                        it_obj2.handle().into(),
+                                        nf.handle().into(),
+                                        &HandleValueArray::empty(),
+                                        MutableHandle::<Value> {
+                                            _phantom_0: ::std::marker::PhantomData,
+                                            ptr: &mut step,
+                                        },
+                                    ) || !step.is_object()
+                                    {
+                                        fail = true;
+                                        break;
+                                    }
+                                    rooted!(&in(cx_ref) let step_obj = step.to_object());
+                                    let mut done_val = UndefinedValue();
+                                    let mut item = UndefinedValue();
+                                    if !JS_GetProperty(
+                                        cx,
+                                        step_obj.handle().into(),
+                                        c"done".as_ptr(),
+                                        MutableHandle::<Value> {
+                                            _phantom_0: ::std::marker::PhantomData,
+                                            ptr: &mut done_val,
+                                        },
+                                    ) || !JS_GetProperty(
+                                        cx,
+                                        step_obj.handle().into(),
+                                        c"value".as_ptr(),
+                                        MutableHandle::<Value> {
+                                            _phantom_0: ::std::marker::PhantomData,
+                                            ptr: &mut item,
+                                        },
+                                    ) {
+                                        fail = true;
+                                        break;
+                                    }
+                                    if done_val.to_boolean() {
+                                        break;
+                                    }
+                                    rooted!(&in(cx_ref) let item_root = item);
+                                    JS_SetElement(
+                                        cx,
+                                        arr_root.handle().into(),
+                                        idx,
+                                        item_root.handle().into(),
+                                    );
+                                    idx += 1;
+                                }
+                            } else {
+                                fail = true;
+                            }
+                            if fail {
+                                mozjs::error::throw_type_error(
+                                    cx,
+                                    c"Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.",
+                                );
+                                return false;
+                            }
+                            transferable.set(ObjectValue(arr_root.get()));
                         }
-                        transferable.set(ObjectValue(arr_root.get()));
+                    } else {
+                        mozjs::error::throw_type_error(
+                            cx,
+                            c"Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.",
+                        );
+                        return false;
                     }
                 }
             }
         }
     }
 
-    // Write side: value (+ the engine transfer map, which detaches every
-    // transferred ArrayBuffer) into a DifferentProcess clone buffer → flat
-    // bytes. SAFETY: scbuf owns the clone buffer until the bytes are copied
-    // out below; null callbacks = no host custom types (unsupported → write
-    // fails, the DataCloneError path).
-    let scbuf = JSAutoStructuredCloneBufferWrapper::new(
-        StructuredCloneScope::DifferentProcess,
-        ::std::ptr::null(),
-    );
-    let scdata = &mut ((*scbuf.as_raw_ptr()).data_);
-    let ok = w2::JS_WriteStructuredClone(
-        cx_ref,
-        value.handle(),
-        scdata,
-        StructuredCloneScope::DifferentProcess,
-        &sc_clone_policy(),
-        ::std::ptr::null(),
-        ::std::ptr::null_mut(),
-        transferable.handle(),
-    );
-    if !ok {
-        return sc_report_data_clone_error(cx);
-    }
-    let nbytes = GetLengthOfJSStructuredCloneData(scdata);
-    let mut bytes = Vec::with_capacity(nbytes);
-    CopyJSStructuredCloneData(scdata, bytes.as_mut_ptr());
-    bytes.set_len(nbytes);
+    // Write side: the SAME bridge the worker postMessage path rides
+    // (sc_serialize_with_transfer — engine write + the Error plain-boundary
+    // orchestration), with the materialized transfer list. One serializer
+    // for both surfaces keeps structuredClone and postMessage isomorphic by
+    // construction instead of by parallel maintenance.
+    let bytes = match crate::node_worker_threads::sc_serialize_with_transfer(
+        cx,
+        val,
+        Some(transferable.handle()),
+    ) {
+        Ok(b) => b,
+        Err(()) => return sc_report_data_clone_error(cx),
+    };
 
     // Read side: the worker postMessage deserializer (same wire format);
     // objects are created in the caller's realm, which is current here.

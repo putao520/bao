@@ -16,6 +16,7 @@ use crate::require::cache_builtin;
 // @trace REQ-ENG-007 [code:bun_url::URL, bun_url::PercentEncoding]
 use bun_url::{PercentEncoding, URL as BunUrl};
 
+#[derive(Clone)]
 struct UrlState {
     href: String,
     protocol: String,
@@ -203,23 +204,209 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
 }
 
 const SLOT_URL: u32 = 0;
+
+/// Finalize a URL instance: free the Box'd UrlState parked in the private
+/// reserved slot (PrivateValue is not GC-traced, so the only release point
+/// is this finalizer). BCE-20260818-URL-SC-BOUNDARY — the copy-out/copy-in
+/// slot discipline left every collected URL's state Box leaked.
+unsafe extern "C" fn url_finalize(_gcx: *mut mozjs_sys::jsapi::JS::GCContext, obj: *mut JSObject) {
+    unsafe {
+        let mut slot = UndefinedValue();
+        JS_GetReservedSlot(obj, SLOT_URL, &mut slot);
+        if slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0 {
+            let ptr = slot.to_private() as *mut UrlState;
+            if !ptr.is_null() {
+                drop(Box::from_raw(ptr));
+            }
+        }
+    }
+}
+
+static URL_CLASS_OPS: JSClassOps = JSClassOps {
+    addProperty: None,
+    delProperty: None,
+    enumerate: None,
+    newEnumerate: None,
+    resolve: None,
+    mayResolve: None,
+    finalize: Some(url_finalize),
+    call: None,
+    construct: None,
+    trace: None,
+};
+
 const URL_CLASS: JSClass = JSClass {
     name: c"URL".as_ptr(),
     flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
-    cOps: ::std::ptr::null(),
+    cOps: &URL_CLASS_OPS as *const JSClassOps as *mut JSClassOps,
     spec: ::std::ptr::null(),
     ext: ::std::ptr::null(),
     oOps: ::std::ptr::null(),
 };
 
+/// slot 0 — the decoded (name, value) pair list (PrivateValue of a Box; not
+/// GC-traced, released by the finalizer). slot 1 — the owning URL object
+/// (ObjectValue, GC-traced) for live searchParams → url.search writeback,
+/// undefined for standalone `new URLSearchParams(...)`.
+const SLOT_SP_DATA: u32 = 0;
+const SLOT_SP_HOST: u32 = 1;
+
+unsafe extern "C" fn sp_finalize(_gcx: *mut mozjs_sys::jsapi::JS::GCContext, obj: *mut JSObject) {
+    unsafe {
+        let mut slot = UndefinedValue();
+        JS_GetReservedSlot(obj, SLOT_SP_DATA, &mut slot);
+        if slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0 {
+            let ptr = slot.to_private() as *mut Vec<(String, String)>;
+            if !ptr.is_null() {
+                drop(Box::from_raw(ptr));
+            }
+        }
+    }
+}
+
+static URL_SP_CLASS_OPS: JSClassOps = JSClassOps {
+    addProperty: None,
+    delProperty: None,
+    enumerate: None,
+    newEnumerate: None,
+    resolve: None,
+    mayResolve: None,
+    finalize: Some(sp_finalize),
+    call: None,
+    construct: None,
+    trace: None,
+};
+
 const URL_SEARCH_PARAMS_CLASS: JSClass = JSClass {
     name: c"URLSearchParams".as_ptr(),
-    flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
-    cOps: ::std::ptr::null(),
+    flags: (2 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: &URL_SP_CLASS_OPS as *const JSClassOps as *mut JSClassOps,
     spec: ::std::ptr::null(),
     ext: ::std::ptr::null(),
     oOps: ::std::ptr::null(),
 };
+
+// ── URLSearchParams pair-list core ─────────────────────────────────────────
+//
+// WHATWG urlencoded list semantics (Node 24 ground truth, probed): an
+// ordered Vec<(name, value)> of percent-DECODED strings. The old shape
+// stored pairs as own enumerable properties with "\x01"-joined multi-values
+// and undecoded keys — three observable deviations: Object.keys() leaked
+// the internal storage, `get()` could not find encoded keys, and a live
+// url.searchParams could never write back.
+
+/// Take the pair list out of the data slot (the Box is re-created by
+/// [`sp_set_pairs`]; the finalizer releases whatever is parked last).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_take_pairs(obj: *mut JSObject) -> Vec<(String, String)> {
+    unsafe {
+        let mut slot = UndefinedValue();
+        JS_GetReservedSlot(obj, SLOT_SP_DATA, &mut slot);
+        if slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0 {
+            let ptr = slot.to_private() as *mut Vec<(String, String)>;
+            if !ptr.is_null() {
+                // Deep-copy read — the Box stays parked in the slot until
+                // the next sp_set_pairs (which releases it) or the finalizer.
+                return (*ptr).clone();
+            }
+        }
+        Vec::new()
+    }
+}
+
+/// Park the pair list in the data slot, releasing whatever Box was there.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_set_pairs(obj: *mut JSObject, pairs: Vec<(String, String)>) {
+    unsafe {
+        let mut old = UndefinedValue();
+        JS_GetReservedSlot(obj, SLOT_SP_DATA, &mut old);
+        if old.is_double() && (old.asBits_ & 0xFFFF000000000000) == 0 {
+            let ptr = old.to_private() as *mut Vec<(String, String)>;
+            if !ptr.is_null() {
+                drop(Box::from_raw(ptr));
+            }
+        }
+        let val = PrivateValue(Box::into_raw(Box::new(pairs)) as *const ::std::os::raw::c_void);
+        JS_SetReservedSlot(obj, SLOT_SP_DATA, &val);
+    }
+}
+
+/// WHATWG init-string parse: strip ONE leading '?', split on '&', split
+/// each pair at the FIRST '=' (no '=' → empty value), percent-decode with
+/// '+'-as-space on both name and value.
+fn sp_parse_init_str(init: &str) -> Vec<(String, String)> {
+    let qs = init.strip_prefix('?').unwrap_or(init);
+    let mut out = Vec::new();
+    for pair in qs.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (k, v) = match pair.split_once('=') {
+            Some((k, v)) => (k, v),
+            None => (pair, ""),
+        };
+        out.push((qs_decode(k), qs_decode(v)));
+    }
+    out
+}
+
+/// application/x-www-form-urlencoded serializer: join pairs with '&',
+/// encoding each name/value (space → '+', unescaped set = ASCII
+/// alphanumeric + `*` `-` `.` `_`).
+fn sp_pairs_to_string(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", url_encode(k), url_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// Write the pair list back into the owning URL's search (live linkage).
+/// The empty list clears the query (WHATWG: empty list → null query), and
+/// `url_prop_set` re-syncs this very object's data slot from the re-parsed
+/// state — the mutator's list and the URL's search stay one source of truth.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_sync_host(cx: *mut JSContext, sp_obj: *mut JSObject, pairs: &[(String, String)]) {
+    unsafe {
+        let mut host = UndefinedValue();
+        JS_GetReservedSlot(sp_obj, SLOT_SP_HOST, &mut host);
+        if !host.is_object() {
+            return;
+        }
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let host_obj = host.to_object());
+        let qs = sp_pairs_to_string(pairs);
+        url_prop_set(cx, host_obj.get(), "search", &qs);
+    }
+}
+
+/// Re-sync a URL object's searchParams data slot from its (re-parsed)
+/// UrlState. Called from the URL property setters for the fields that can
+/// change the query (`search`, `href`).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sync_search_params_data(cx: *mut JSContext, url_obj: *mut JSObject, state: &UrlState) {
+    unsafe {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let url_root = url_obj);
+        let mut sp_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            url_root.handle().into(),
+            c"searchParams".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut sp_val,
+            },
+        );
+        if !sp_val.is_object() {
+            return;
+        }
+        rooted!(&in(cx_ref) let sp_obj = sp_val.to_object());
+        sp_set_pairs(sp_obj.get(), sp_parse_init_str(&state.search));
+    }
+}
 
 /// Get the UrlState from a URL object's reserved slot.
 /// @trace BCE-20260618-002 [level:regression]
@@ -233,7 +420,10 @@ unsafe fn get_url_state(obj: *mut JSObject) -> Option<UrlState> {
         if slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0 {
             let ptr = slot.to_private() as *mut UrlState;
             if !ptr.is_null() {
-                return Some(*Box::from_raw(ptr));
+                // Deep-copy read — never take ownership here: the Box stays
+                // parked in the slot until the next set_url_state (which
+                // releases it) or the finalizer.
+                return Some((*ptr).clone());
             }
         }
         None
@@ -242,6 +432,16 @@ unsafe fn get_url_state(obj: *mut JSObject) -> Option<UrlState> {
 
 fn set_url_state(obj: *mut JSObject, state: UrlState) {
     unsafe {
+        // Release the Box currently parked in the slot — overwriting a
+        // PrivateValue without freeing the previous pointer leaks it.
+        let mut old = UndefinedValue();
+        JS_GetReservedSlot(obj, SLOT_URL, &mut old);
+        if old.is_double() && (old.asBits_ & 0xFFFF000000000000) == 0 {
+            let ptr = old.to_private() as *mut UrlState;
+            if !ptr.is_null() {
+                drop(Box::from_raw(ptr));
+            }
+        }
         let boxed = Box::new(state);
         let val = PrivateValue(Box::into_raw(boxed) as *const ::std::os::raw::c_void);
         JS_SetReservedSlot(obj, SLOT_URL, &val);
@@ -361,6 +561,10 @@ fn rebuild_href(state: &UrlState, field: &str, new_val: &str) -> String {
 }
 
 /// Generic URL property setter — modifies UrlState, re-parses, and syncs all properties.
+/// `search`/`hash` values are normalized to the WHATWG basic URL parser
+/// setter shapes first: an empty value clears the component, a value
+/// without the leading marker gains it (so `u.hash = "z"` produces
+/// `href ...#z`, never a marker-less splice into the query).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn url_prop_set(cx: *mut JSContext, obj: *mut JSObject, field: &str, new_val: &str) -> bool {
     let state = match get_url_state(obj) {
@@ -368,7 +572,8 @@ unsafe fn url_prop_set(cx: *mut JSContext, obj: *mut JSObject, field: &str, new_
         None => return false,
     };
 
-    let new_href = rebuild_href(&state, field, new_val);
+    let normalized = normalize_url_marker(field, new_val);
+    let new_href = rebuild_href(&state, field, &normalized);
 
     // Re-parse from the new href
     let new_state = if let Some(parsed) = parse_url(&new_href, None) {
@@ -393,6 +598,17 @@ unsafe fn url_prop_set(cx: *mut JSContext, obj: *mut JSObject, field: &str, new_
 
     // Store updated state — getters will automatically return new values
     set_url_state(obj, new_state);
+
+    // Fields that can move the query must re-sync the live searchParams
+    // list (WHATWG: the query object's list is re-initialized from the new
+    // URL record's query).
+    if matches!(field, "search" | "href") {
+        let synced_state = match get_url_state(obj) {
+            Some(s) => s,
+            None => return true,
+        };
+        sync_search_params_data(cx, obj, &synced_state);
+    }
 
     // Update the computed read-only properties (host, origin) that don't have getters
     let updated_state = match get_url_state(obj) {
@@ -494,6 +710,22 @@ macro_rules! url_prop_accessors {
     };
 }
 
+/// Setter-side normalization for the marker-prefixed components: empty →
+/// clear, already-prefixed (incl. a bare marker = empty component) → keep,
+/// else prepend the marker.
+fn normalize_url_marker(field: &str, v: &str) -> String {
+    let marker = match field {
+        "search" => '?',
+        "hash" => '#',
+        _ => return v.to_string(),
+    };
+    if v.is_empty() || v.starts_with(marker) {
+        v.to_string()
+    } else {
+        format!("{}{}", marker, v)
+    }
+}
+
 // Generate getter functions for all URL properties
 url_prop_accessors! {
     url_get_href => "href",
@@ -504,9 +736,65 @@ url_prop_accessors! {
     url_get_hostname => "hostname",
     url_get_port => "port",
     url_get_pathname => "pathname",
-    url_get_search => "search",
-    url_get_hash => "hash",
     url_get_origin => "origin",
+}
+
+/// search getter — WHATWG: an empty query (no '?' or a bare '?') serializes
+/// as "" (never "?" / null). Node 24 ground truth: probed.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn url_get_search(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = this.to_object());
+    let state = get_url_state(obj.get());
+    if let Some(state) = state {
+        let val = if state.search == "?" { "" } else { state.search.as_str() };
+        let js_str = JS_NewStringCopyN(cx, val.as_ptr() as *const ::std::os::raw::c_char, val.len());
+        set_url_state(obj.get(), state);
+        args.rval().set(if !js_str.is_null() {
+            StringValue(&*js_str)
+        } else {
+            UndefinedValue()
+        });
+    } else {
+        args.rval().set(UndefinedValue());
+    }
+    true
+}
+
+/// hash getter — WHATWG: an empty fragment (no '#' or a bare '#')
+/// serializes as "" (never "#" / null). Node 24 ground truth: probed.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn url_get_hash(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = this.to_object());
+    let state = get_url_state(obj.get());
+    if let Some(state) = state {
+        let val = if state.hash == "#" { "" } else { state.hash.as_str() };
+        let js_str = JS_NewStringCopyN(cx, val.as_ptr() as *const ::std::os::raw::c_char, val.len());
+        set_url_state(obj.get(), state);
+        args.rval().set(if !js_str.is_null() {
+            StringValue(&*js_str)
+        } else {
+            UndefinedValue()
+        });
+    } else {
+        args.rval().set(UndefinedValue());
+    }
+    true
 }
 
 macro_rules! url_prop_setters {
@@ -543,12 +831,86 @@ url_prop_setters! {
     url_set_hash => "hash",
 }
 
+/// Fetch a constructor's `prototype` object off the current realm's global
+/// (`globalThis[name].prototype`). The prototype lives on the global (a GC
+/// root) so no extra rooting is held across allocations.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn ctor_proto_from_global(cx: *mut JSContext, ctor_name: &str) -> *mut JSObject {
+    unsafe {
+        let global = CurrentGlobalOrNull(cx);
+        if global.is_null() {
+            return ::std::ptr::null_mut();
+        }
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let global_root = global);
+        let c_name = ZBox::from_bytes(ctor_name.as_bytes());
+        let mut ctor_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            global_root.handle().into(),
+            c_name.as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ctor_val,
+            },
+        );
+        if !ctor_val.is_object() {
+            return ::std::ptr::null_mut();
+        }
+        rooted!(&in(cx_ref) let ctor = ctor_val.to_object());
+        let mut proto_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            ctor.handle().into(),
+            c"prototype".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut proto_val,
+            },
+        );
+        if !proto_val.is_object() {
+            return ::std::ptr::null_mut();
+        }
+        proto_val.to_object()
+    }
+}
+
+/// Create a standalone URLSearchParams instance (no host linkage).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_instance(cx: *mut JSContext, pairs: Vec<(String, String)>) -> *mut JSObject {
+    unsafe {
+        let proto = ctor_proto_from_global(cx, "URLSearchParams");
+        let obj = if proto.is_null() {
+            JS_NewObject(cx, &URL_SEARCH_PARAMS_CLASS)
+        } else {
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let proto_root = proto);
+            JS_NewObjectWithGivenProto(cx, &URL_SEARCH_PARAMS_CLASS, proto_root.handle().into())
+        };
+        if obj.is_null() {
+            return obj;
+        }
+        sp_set_pairs(obj, pairs);
+        obj
+    }
+}
+
 unsafe fn url_to_js(cx: *mut JSContext, state: &UrlState) -> *mut JSObject {
     unsafe {
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
 
-        let obj = JS_NewObject(cx, &URL_CLASS);
+        // Instance with URL.prototype (instanceof URL; the class carries the
+        // UrlState private slot).
+        let proto = ctor_proto_from_global(cx, "URL");
+        let obj = if proto.is_null() {
+            JS_NewObject(cx, &URL_CLASS)
+        } else {
+            rooted!(&in(cx_ref) let proto_root = proto);
+            JS_NewObjectWithGivenProto(cx, &URL_CLASS, proto_root.handle().into())
+        };
         if obj.is_null() {
             return obj;
         }
@@ -649,155 +1011,21 @@ unsafe fn url_to_js(cx: *mut JSContext, state: &UrlState) -> *mut JSObject {
         define_url_prop(cx, obj, "host", &state.host, Some(url_get_host), None);
         define_url_prop(cx, obj, "origin", &state.origin, Some(url_get_origin), None);
 
-        // searchParams — create a URLSearchParams object with get/has/toString
+        // searchParams — a REAL URLSearchParams instance (methods come from
+        // URLSearchParams.prototype; the pair list lives in the private data
+        // slot) carrying a host backref so mutators write back into
+        // url.search (WHATWG live query object).
         {
-            let sp_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+            let sp_obj = sp_instance(cx, sp_parse_init_str(&state.search));
             if !sp_obj.is_null() {
                 rooted!(&in(cx_ref) let sp_r = sp_obj);
-                let search_str = if state.search.starts_with('?') {
-                    &state.search[1..]
-                } else {
-                    &state.search
-                };
-                let pairs: Vec<(String, String)> = if search_str.is_empty() {
-                    Vec::new()
-                } else {
-                    search_str
-                        .split('&')
-                        .filter_map(|p| {
-                            let mut parts = p.splitn(2, '=');
-                            let k = parts.next()?.to_string();
-                            let v = parts.next().unwrap_or("").to_string();
-                            Some((k, v))
-                        })
-                        .collect()
-                };
-                for (k, v) in &pairs {
-                    let c_k = ZBox::from_bytes(k.as_bytes());
-                    let mut existing = UndefinedValue();
-                    JS_GetProperty(
-                        cx,
-                        sp_r.handle().into(),
-                        c_k.as_ptr(),
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut existing,
-                        },
-                    );
-                    let combined = if existing.is_string() {
-                        let prev = crate::js_to_rust_string(cx, existing);
-                        format!("{}\x01{}", prev, v)
-                    } else {
-                        v.clone()
-                    };
-                    let c_v = ZBox::from_bytes(combined.as_bytes());
-                    let vs = JS_NewStringCopyZ(cx, c_v.as_ptr());
-                    if !vs.is_null() {
-                        let vv = StringValue(&*vs);
-                        rooted!(&in(cx_ref) let vv_r = vv);
-                        JS_DefineProperty(
-                            cx,
-                            sp_r.handle().into(),
-                            c_k.as_ptr(),
-                            vv_r.handle().into(),
-                            JSPROP_ENUMERATE as u32,
-                        );
-                    }
-                }
-                let sp_fn = JS_NewFunction(cx, Some(sp_get), 1, 0, c"get".as_ptr());
-                if !sp_fn.is_null() {
-                    let fn_obj = JS_GetFunctionObject(sp_fn);
-                    let fv = ObjectValue(fn_obj);
-                    rooted!(&in(cx_ref) let fv_r = fv);
-                    JS_DefineProperty(
-                        cx,
-                        sp_r.handle().into(),
-                        c"get".as_ptr(),
-                        fv_r.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-                let has_fn = JS_NewFunction(cx, Some(sp_has), 1, 0, c"has".as_ptr());
-                if !has_fn.is_null() {
-                    let fn_obj = JS_GetFunctionObject(has_fn);
-                    let fv = ObjectValue(fn_obj);
-                    rooted!(&in(cx_ref) let fv_r = fv);
-                    JS_DefineProperty(
-                        cx,
-                        sp_r.handle().into(),
-                        c"has".as_ptr(),
-                        fv_r.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-                let set_fn = JS_NewFunction(cx, Some(sp_set), 2, 0, c"set".as_ptr());
-                if !set_fn.is_null() {
-                    let fn_obj = JS_GetFunctionObject(set_fn);
-                    let fv = ObjectValue(fn_obj);
-                    rooted!(&in(cx_ref) let fv_r = fv);
-                    JS_DefineProperty(
-                        cx,
-                        sp_r.handle().into(),
-                        c"set".as_ptr(),
-                        fv_r.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-                let delete_fn = JS_NewFunction(cx, Some(sp_delete), 1, 0, c"delete".as_ptr());
-                if !delete_fn.is_null() {
-                    let fn_obj = JS_GetFunctionObject(delete_fn);
-                    let fv = ObjectValue(fn_obj);
-                    rooted!(&in(cx_ref) let fv_r = fv);
-                    JS_DefineProperty(
-                        cx,
-                        sp_r.handle().into(),
-                        c"delete".as_ptr(),
-                        fv_r.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-                let append_fn = JS_NewFunction(cx, Some(sp_append), 2, 0, c"append".as_ptr());
-                if !append_fn.is_null() {
-                    let fn_obj = JS_GetFunctionObject(append_fn);
-                    let fv = ObjectValue(fn_obj);
-                    rooted!(&in(cx_ref) let fv_r = fv);
-                    JS_DefineProperty(
-                        cx,
-                        sp_r.handle().into(),
-                        c"append".as_ptr(),
-                        fv_r.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-                let getall_fn = JS_NewFunction(cx, Some(sp_get_all), 1, 0, c"getAll".as_ptr());
-                if !getall_fn.is_null() {
-                    let fn_obj = JS_GetFunctionObject(getall_fn);
-                    let fv = ObjectValue(fn_obj);
-                    rooted!(&in(cx_ref) let fv_r = fv);
-                    JS_DefineProperty(
-                        cx,
-                        sp_r.handle().into(),
-                        c"getAll".as_ptr(),
-                        fv_r.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-                let tostr_fn = JS_NewFunction(cx, Some(sp_to_string), 0, 0, c"toString".as_ptr());
-                if !tostr_fn.is_null() {
-                    let fn_obj = JS_GetFunctionObject(tostr_fn);
-                    let fv = ObjectValue(fn_obj);
-                    rooted!(&in(cx_ref) let fv_r = fv);
-                    JS_DefineProperty(
-                        cx,
-                        sp_r.handle().into(),
-                        c"toString".as_ptr(),
-                        fv_r.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-                let sp_val = ObjectValue(sp_obj);
-                rooted!(&in(cx_ref) let sp_v = sp_val);
                 rooted!(&in(cx_ref) let obj_r = obj);
+                let mut host_val = ObjectValue(obj_r.get());
+                unsafe {
+                    JS_SetReservedSlot(sp_r.get(), SLOT_SP_HOST, &mut host_val);
+                }
+                let sp_val = ObjectValue(sp_r.get());
+                rooted!(&in(cx_ref) let sp_v = sp_val);
                 JS_DefineProperty(
                     cx,
                     obj_r.handle().into(),
@@ -807,24 +1035,6 @@ unsafe fn url_to_js(cx: *mut JSContext, state: &UrlState) -> *mut JSObject {
                 );
             }
         }
-
-        rooted!(&in(cx_ref) let obj_r = obj);
-        w2::JS_DefineFunction(
-            cx_ref,
-            obj_r.handle(),
-            c"toString".as_ptr(),
-            Some(url_to_string),
-            0,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx_ref,
-            obj_r.handle(),
-            c"toJSON".as_ptr(),
-            Some(url_to_string),
-            0,
-            0,
-        );
 
         obj
     }
@@ -853,6 +1063,111 @@ unsafe extern "C" fn url_to_string(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     );
     args.rval().set(href_val);
     true
+}
+
+/// Define a WebIDL-style constructor surface on the global: the function,
+/// a `prototype` object carrying the methods + Symbol.toStringTag, and the
+/// global binding. Instances pick up `instanceof` via GivenProto. Native
+/// constructors in SM do NOT get an automatic `.prototype` (V8/JSC do) —
+/// without this, `x instanceof URL` throws "'prototype' property of URL is
+/// not an object" (probed; Node ground truth returns true).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn install_ctor_with_proto(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+    ctor_obj: *mut JSObject,
+    name: &str,
+    to_string_tag: &str,
+    methods: &[(&'static ::core::ffi::CStr, JSNative, u32)],
+    getters: &[(&'static ::core::ffi::CStr, JSNative)],
+    iterable_fn: JSNative,
+) {
+    unsafe {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let ctor_r = ctor_obj);
+        let proto = mozjs_sys::jsapi::JS_NewPlainObject(cx.raw_cx());
+        if proto.is_null() {
+            return;
+        }
+        rooted!(&in(cx_ref) let proto_r = proto);
+
+        for (name, native, nargs) in methods {
+            w2::JS_DefineFunction(cx_ref, proto_r.handle(), name.as_ptr(), *native, *nargs, 0);
+        }
+        for (name, native) in getters {
+            JS_DefineProperty1(
+                cx.raw_cx(),
+                proto_r.handle().into(),
+                name.as_ptr(),
+                *native,
+                None,
+                0,
+            );
+        }
+
+        // Symbol.toStringTag → name ([object URL] / [object URLSearchParams]).
+        let tag_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
+            cx.raw_cx(),
+            mozjs_sys::jsapi::JS::SymbolCode::toStringTag,
+        );
+        let tag_str = qs_js_string_utf8(cx.raw_cx(), to_string_tag);
+        if !tag_str.is_null() {
+            rooted!(&in(cx_ref) let tag_val = StringValue(&*tag_str));
+            JS_DefinePropertyById2(
+                cx.raw_cx(),
+                proto_r.handle().into(),
+                Handle::from_marked_location(&tag_key),
+                tag_val.handle().into(),
+                0,
+            );
+        }
+
+        // Asynchronous-iterable surfaces: Symbol.iterator → the entries
+        // method (for..of over the object itself yields [k, v] pairs).
+        if let Some(iter_fn) = iterable_fn {
+            let sym_iter_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
+                cx.raw_cx(),
+                mozjs_sys::jsapi::JS::SymbolCode::iterator,
+            );
+            let iter_f = JS_NewFunction(cx.raw_cx(), Some(iter_fn), 0, 0, c"[Symbol.iterator]".as_ptr());
+            if !iter_f.is_null() {
+                let iter_obj = JS_GetFunctionObject(iter_f);
+                if !iter_obj.is_null() {
+                    rooted!(&in(cx_ref) let iv = ObjectValue(iter_obj));
+                    JS_DefinePropertyById2(
+                        cx.raw_cx(),
+                        proto_r.handle().into(),
+                        Handle::from_marked_location(&sym_iter_key),
+                        iv.handle().into(),
+                        0,
+                    );
+                }
+            }
+        }
+
+        // ctor.prototype — non-writable / non-enumerable / non-configurable,
+        // the built-in constructor shape.
+        rooted!(&in(cx_ref) let pv = ObjectValue(proto_r.get()));
+        JS_DefineProperty(
+            cx.raw_cx(),
+            ctor_r.handle().into(),
+            c"prototype".as_ptr(),
+            pv.handle().into(),
+            0,
+        );
+
+        // Global binding.
+        let c_name = ZBox::from_bytes(name.as_bytes());
+        rooted!(&in(cx_ref) let cv = ObjectValue(ctor_r.get()));
+        JS_DefineProperty(
+            cx.raw_cx(),
+            global.into(),
+            c_name.as_ptr(),
+            cv.handle().into(),
+            (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+        );
+    }
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*mut JSObject>) {
@@ -884,27 +1199,49 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
         }
     });
 
+    // Constructor prototypes: methods live ON URL.prototype /
+    // URLSearchParams.prototype (instances are GivenProto-built), so
+    // instanceof / Object.keys don't see per-instance copies and the
+    // iterator surface is shared. install_ctor_with_proto also makes the
+    // global bindings.
     unsafe {
         if !url_ctor_obj.get().is_null() {
-            let val = ObjectValue(url_ctor_obj.get());
-            rooted!(&in(cx) let v = val);
-            JS_DefineProperty(
-                cx.raw_cx(),
-                global.into(),
-                c"URL".as_ptr(),
-                v.handle().into(),
-                (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+            install_ctor_with_proto(
+                cx,
+                global,
+                url_ctor_obj.get(),
+                "URL",
+                "URL",
+                &[
+                    (c"toString", Some(url_to_string), 0),
+                    (c"toJSON", Some(url_to_string), 0),
+                ],
+                &[],
+                None,
             );
         }
         if !sp_ctor_obj.get().is_null() {
-            let val = ObjectValue(sp_ctor_obj.get());
-            rooted!(&in(cx) let v = val);
-            JS_DefineProperty(
-                cx.raw_cx(),
-                global.into(),
-                c"URLSearchParams".as_ptr(),
-                v.handle().into(),
-                (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+            install_ctor_with_proto(
+                cx,
+                global,
+                sp_ctor_obj.get(),
+                "URLSearchParams",
+                "URLSearchParams",
+                &[
+                    (c"append", Some(sp_append), 2),
+                    (c"delete", Some(sp_delete), 1),
+                    (c"forEach", Some(sp_for_each), 1),
+                    (c"get", Some(sp_get), 1),
+                    (c"getAll", Some(sp_get_all), 1),
+                    (c"has", Some(sp_has), 1),
+                    (c"set", Some(sp_set), 2),
+                    (c"keys", Some(sp_keys), 0),
+                    (c"values", Some(sp_values), 0),
+                    (c"entries", Some(sp_entries), 0),
+                    (c"toString", Some(sp_to_string), 0),
+                ],
+                &[(c"size", Some(sp_size_getter))],
+                Some(sp_entries),
             );
         }
     }
@@ -1169,98 +1506,22 @@ unsafe extern "C" fn url_search_params_constructor(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    let obj = JS_NewObject(cx, &URL_SEARCH_PARAMS_CLASS);
-    if obj.is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj_r = obj);
-    w2::JS_DefineFunction(cx_ref, obj_r.handle(), c"get".as_ptr(), Some(sp_get), 1, 0);
-    w2::JS_DefineFunction(cx_ref, obj_r.handle(), c"set".as_ptr(), Some(sp_set), 2, 0);
-    w2::JS_DefineFunction(cx_ref, obj_r.handle(), c"has".as_ptr(), Some(sp_has), 1, 0);
-    w2::JS_DefineFunction(
-        cx_ref,
-        obj_r.handle(),
-        c"delete".as_ptr(),
-        Some(sp_delete),
-        1,
-        0,
-    );
-    w2::JS_DefineFunction(
-        cx_ref,
-        obj_r.handle(),
-        c"append".as_ptr(),
-        Some(sp_append),
-        2,
-        0,
-    );
-    w2::JS_DefineFunction(
-        cx_ref,
-        obj_r.handle(),
-        c"toString".as_ptr(),
-        Some(sp_to_string),
-        0,
-        0,
-    );
-    w2::JS_DefineFunction(
-        cx_ref,
-        obj_r.handle(),
-        c"keys".as_ptr(),
-        Some(sp_keys),
-        0,
-        0,
-    );
-    w2::JS_DefineFunction(
-        cx_ref,
-        obj_r.handle(),
-        c"values".as_ptr(),
-        Some(sp_values),
-        0,
-        0,
-    );
-    w2::JS_DefineFunction(
-        cx_ref,
-        obj_r.handle(),
-        c"entries".as_ptr(),
-        Some(sp_entries),
-        0,
-        0,
-    );
-    w2::JS_DefineFunction(
-        cx_ref,
-        obj_r.handle(),
-        c"forEach".as_ptr(),
-        Some(sp_for_each),
-        1,
-        0,
-    );
-    w2::JS_DefineFunction(
-        cx_ref,
-        obj_r.handle(),
-        c"getAll".as_ptr(),
-        Some(sp_get_all),
-        1,
-        0,
-    );
-
-    if argc > 0 {
+    // WHATWG init dispatch: USVString (urlencoded parse), sequence<
+    // sequence<USVString>> (pairs array), or record<USVString, USVString>.
+    // The result is a decoded ordered pair list in the private data slot;
+    // methods live on URLSearchParams.prototype (installed by `install`).
+    let pairs: Vec<(String, String)> = if argc == 0 {
+        Vec::new()
+    } else {
         let init_val = *args.get(0).ptr;
         if init_val.is_string() {
-            let init_str = crate::js_to_rust_string(cx, init_val);
-            let search = init_str.strip_prefix('?').unwrap_or(&init_str);
-            for pair in search.split('&') {
-                if pair.is_empty() {
-                    continue;
-                }
-                let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-                let _ = append_sp_value(cx, obj, k, v);
-            }
+            sp_parse_init_str(&crate::js_to_rust_string(cx, init_val))
         } else if init_val.is_object() {
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
             rooted!(&in(cx_ref) let init_obj = init_val.to_object());
-            // Check if it's array-like (has numeric indices) or a plain object
+            // Array-like (has numeric length) → sequence of [k, v] pairs;
+            // otherwise → record of own enumerable string-keyed properties.
             let mut length_val = UndefinedValue();
             JS_GetProperty(
                 cx,
@@ -1271,14 +1532,13 @@ unsafe extern "C" fn url_search_params_constructor(
                     ptr: &mut length_val,
                 },
             );
-
             if length_val.is_number() {
-                // Array form: [["key", "val"], ["key2", "val2"]]
                 let len = if length_val.is_int32() {
-                    length_val.to_int32() as u32
+                    length_val.to_int32().max(0) as u32
                 } else {
                     0
                 };
+                let mut out: Vec<(String, String)> = Vec::new();
                 for i in 0..len {
                     let mut elem = UndefinedValue();
                     JS_GetElement(
@@ -1314,20 +1574,19 @@ unsafe extern "C" fn url_search_params_constructor(
                             ptr: &mut v_val,
                         },
                     );
-                    let key = if k_val.is_string() {
-                        crate::js_to_rust_string(cx, k_val)
-                    } else {
+                    if !k_val.is_string() {
                         continue;
-                    };
+                    }
+                    let key = crate::js_to_rust_string(cx, k_val);
                     let val = if v_val.is_string() {
                         crate::js_to_rust_string(cx, v_val)
                     } else {
                         String::new()
                     };
-                    let _ = append_sp_value(cx, obj, &key, &val);
+                    out.push((key, val));
                 }
+                out
             } else {
-                // Object form: {key: "val", key2: "val2"}
                 let mut ids = IdVector::new(cx);
                 let ok = GetPropertyKeys(
                     cx,
@@ -1335,6 +1594,7 @@ unsafe extern "C" fn url_search_params_constructor(
                     JSITER_OWNONLY,
                     ids.handle_mut(),
                 );
+                let mut out: Vec<(String, String)> = Vec::new();
                 if ok {
                     for jsid in &*ids {
                         if !jsid.is_string() {
@@ -1358,732 +1618,95 @@ unsafe extern "C" fn url_search_params_constructor(
                         } else {
                             String::new()
                         };
-                        let _ = append_sp_value(cx, obj, &key, &val);
+                        out.push(((*key).to_string(), val));
                     }
                 }
+                out
             }
+        } else {
+            Vec::new()
         }
-    }
+    };
 
+    let obj = unsafe { sp_instance(cx, pairs) };
+    if obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
     args.rval().set(ObjectValue(obj));
     true
 }
 
-unsafe fn set_sp_property(cx: *mut JSContext, obj: *mut JSObject, key: &str, value: &str) -> bool {
+/// Commit a mutated pair list back to the data slot and write the query
+/// through to the owning URL (live linkage).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_commit(cx: *mut JSContext, sp_obj: *mut JSObject, pairs: Vec<(String, String)>) {
     unsafe {
-        let c_key = ZBox::from_bytes(key.as_bytes());
-        let js_str = JS_NewStringCopyN(
-            cx,
-            value.as_ptr() as *const ::std::os::raw::c_char,
-            value.len(),
-        );
-        if js_str.is_null() {
-            return false;
-        }
-        let val = StringValue(&*js_str);
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-        rooted!(&in(cx_ref) let obj_r = obj);
-        rooted!(&in(cx_ref) let v = val);
-        // Use JS_DefineProperty with JSPROP_ENUMERATE so GetPropertyKeys can find these
-        // First try to set existing property (for update), fall back to define
-        let mut found = false;
-        JS_HasProperty(cx, obj_r.handle().into(), c_key.as_ptr(), &mut found);
-        if found {
-            JS_SetProperty(cx, obj_r.handle().into(), c_key.as_ptr(), v.handle().into())
-        } else {
-            JS_DefineProperty(
-                cx,
-                obj_r.handle().into(),
-                c_key.as_ptr(),
-                v.handle().into(),
-                (JSPROP_ENUMERATE as u32) | JSPROP_RESOLVING,
-            )
-        }
+        sp_sync_host(cx, sp_obj, &pairs);
+        sp_set_pairs(sp_obj, pairs);
     }
 }
 
-/// Append a value to a URLSearchParams key, joining with \x01 for multi-values.
-unsafe fn append_sp_value(cx: *mut JSContext, obj: *mut JSObject, key: &str, value: &str) -> bool {
+/// Common prologue: bind `this` to an object and take its pair list.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_this_pairs(
+    cx: *mut JSContext,
+    this: Handle<Value>,
+) -> ::std::option::Option<(*mut JSObject, Vec<(String, String)>)> {
     unsafe {
-        let c_key = ZBox::from_bytes(key.as_bytes());
+        if !this.is_object() {
+            return None;
+        }
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
-        rooted!(&in(cx_ref) let obj_r = obj);
-        let mut existing = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            obj_r.handle().into(),
-            c_key.as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut existing,
-            },
-        );
-        let combined = if existing.is_string() {
-            let prev = crate::js_to_rust_string(cx, existing);
-            format!("{}\x01{}", prev, value)
-        } else {
-            value.to_string()
-        };
-        set_sp_property(cx, obj, key, &combined)
+        rooted!(&in(cx_ref) let obj = this.to_object());
+        Some((obj.get(), sp_take_pairs(obj.get())))
     }
 }
 
+/// get(name) — the FIRST matching pair's value, or null when absent
+/// (WHATWG; the old bridge returned undefined).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn sp_get(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj = this.to_object());
-    if argc == 0 {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let key_val = *args.get(0).ptr;
-    if !key_val.is_string() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let key = crate::js_to_rust_string(cx, key_val);
-    let c_key = ZBox::from_bytes(key.as_bytes());
-    let mut result = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj.handle().into(),
-        c_key.as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut result,
-        },
-    );
-    if result.is_string() {
-        let full = crate::js_to_rust_string(cx, result);
-        let first = full.split('\x01').next().unwrap_or(&full);
-        let decoded = url_decode(first);
-        let c_dec = ZBox::from_bytes(decoded.as_bytes());
-        let js_str = JS_NewStringCopyZ(cx, c_dec.as_ptr());
-        args.rval().set(if js_str.is_null() {
-            UndefinedValue()
-        } else {
-            StringValue(&*js_str)
-        });
-    } else {
-        args.rval().set(result);
-    }
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_set(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    if argc < 2 {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let key_val = *args.get(0).ptr;
-    let val_val = *args.get(1).ptr;
-    if !key_val.is_string() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let key = crate::js_to_rust_string(cx, key_val);
-    let value = if val_val.is_string() {
-        crate::js_to_rust_string(cx, val_val)
-    } else {
-        String::new()
-    };
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let this_obj = this.to_object());
-    set_sp_property(cx, this_obj.get(), &key, &value);
-    args.rval().set(UndefinedValue());
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_has(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(BooleanValue(false));
-        return true;
-    }
-    if argc == 0 {
-        args.rval().set(BooleanValue(false));
-        return true;
-    }
-    let key_val = *args.get(0).ptr;
-    if !key_val.is_string() {
-        args.rval().set(BooleanValue(false));
-        return true;
-    }
-    let key = crate::js_to_rust_string(cx, key_val);
-    let c_key = ZBox::from_bytes(key.as_bytes());
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj = this.to_object());
-    let mut found = false;
-    JS_HasProperty(cx, obj.handle().into(), c_key.as_ptr(), &mut found);
-    if !found {
-        args.rval().set(BooleanValue(false));
-        return true;
-    }
-    // has(name, value) — check if a specific value exists for the key
-    if argc >= 2 {
-        let value_val = *args.get(1).ptr;
-        let mut stored = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            obj.handle().into(),
-            c_key.as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut stored,
-            },
-        );
-        if !stored.is_string() {
-            args.rval().set(BooleanValue(false));
+    let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
             return true;
         }
-        let stored_str = crate::js_to_rust_string(cx, stored);
-        let target = if value_val.is_string() {
-            url_decode(&crate::js_to_rust_string(cx, value_val))
-        } else {
-            String::new()
-        };
-        let has_match = stored_str.split('\x01').any(|v| url_decode(v) == target);
-        args.rval().set(BooleanValue(has_match));
-        return true;
-    }
-    args.rval().set(BooleanValue(found));
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_delete(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(BooleanValue(false));
-        return true;
-    }
-    if argc == 0 {
-        args.rval().set(BooleanValue(false));
-        return true;
-    }
-    let key_val = *args.get(0).ptr;
-    if !key_val.is_string() {
-        args.rval().set(BooleanValue(false));
-        return true;
-    }
-    let key = crate::js_to_rust_string(cx, key_val);
-    let c_key = ZBox::from_bytes(key.as_bytes());
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj = this.to_object());
-    JS_DeleteProperty1(cx, obj.handle().into(), c_key.as_ptr());
-    args.rval().set(BooleanValue(true));
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_append(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    if argc < 2 {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let key_val = *args.get(0).ptr;
-    let val_val = *args.get(1).ptr;
-    if !key_val.is_string() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let key = crate::js_to_rust_string(cx, key_val);
-    let value = if val_val.is_string() {
-        crate::js_to_rust_string(cx, val_val)
-    } else {
-        String::new()
     };
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj = this.to_object());
-    let c_key = ZBox::from_bytes(&*key.as_bytes());
-    let mut existing = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj.handle().into(),
-        c_key.as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut existing,
-        },
-    );
-    let combined = if existing.is_string() {
-        let prev = crate::jsstr_to_rust_string(cx, existing.to_string());
-        format!("{}\x01{}", prev, value)
-    } else {
-        value
-    };
-    set_sp_property(cx, obj.get(), &key, &combined);
-    args.rval().set(UndefinedValue());
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_to_string(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        let empty = JS_NewStringCopyZ(cx, c"".as_ptr());
-        args.rval().set(if empty.is_null() {
-            UndefinedValue()
-        } else {
-            StringValue(&*empty)
-        });
+    if argc == 0 || !(*args.get(0).ptr).is_string() {
+        args.rval().set(mozjs::jsval::NullValue());
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj = this.to_object());
-
-    let mut parts: Vec<String> = Vec::new();
-    let mut ids = IdVector::new(cx);
-    let ok = GetPropertyKeys(cx, obj.handle().into(), JSITER_OWNONLY, ids.handle_mut());
-    if ok {
-        for jsid in &*ids {
-            if !jsid.is_string() {
-                continue;
-            }
-            let key_str = jsid.to_string();
-            let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_str));
-            if key.starts_with("__") {
-                continue;
-            }
-            let c_key = ZBox::from_bytes(&*key.as_bytes());
-            let mut val = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                obj.handle().into(),
-                c_key.as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut val,
-                },
-            );
-            if !val.is_string() {
-                continue;
-            }
-            let val_str = crate::js_to_rust_string(cx, val);
-            for v in val_str.split('\x01') {
-                parts.push(format!("{}={}", url_encode(&key), url_encode(v)));
-            }
-        }
-    }
-    let result = parts.join("&");
-    let c_result = ZBox::from_bytes(result.as_bytes());
-    let js_str = JS_NewStringCopyZ(cx, c_result.as_ptr());
-    args.rval().set(if js_str.is_null() {
-        UndefinedValue()
-    } else {
-        StringValue(&*js_str)
-    });
-    true
-}
-
-// @trace REQ-ENG-007 [code:bun_url::PercentEncoding]
-fn url_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 3);
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
-}
-
-// @trace REQ-ENG-007 [code:bun_url::PercentEncoding::decode_alloc]
-fn url_decode(s: &str) -> String {
-    // Node.js querystring.unescape semantics: '+' → space, '%XX' → byte.
-    // bun_url::PercentEncoding only handles '%XX' (RFC 3986) and not '+',
-    // so use manual decode for full compatibility with legacy Node URL APIs.
-    let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'+' {
-            out.push(' ');
-            i += 1;
-        } else if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push(char::from_u32(h * 16 + l).unwrap_or('?'));
-                i += 3;
+    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    match pairs.iter().find(|(k, _)| *k == key) {
+        Some((_, v)) => {
+            let js = qs_js_string_utf8(cx, v);
+            args.rval().set(if js.is_null() {
+                mozjs::jsval::NullValue()
             } else {
-                out.push(bytes[i] as char);
-                i += 1;
-            }
-        } else {
-            out.push(bytes[i] as char);
-            i += 1;
+                StringValue(unsafe { &*js })
+            });
         }
+        None => args.rval().set(mozjs::jsval::NullValue()),
     }
-    out
-}
-
-/// Collect (key, value) pairs from a URLSearchParams object using GetPropertyKeys.
-/// Returns Vec of (key, all_values_joined_with_\x01).
-unsafe fn sp_collect_entries(cx: *mut JSContext, obj: *mut JSObject) -> Vec<(String, String)> {
-    let mut result: Vec<(String, String)> = Vec::new();
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj_r = obj);
-    let mut ids = IdVector::new(cx);
-    let ok = GetPropertyKeys(cx, obj_r.handle().into(), JSITER_OWNONLY, ids.handle_mut());
-    if !ok {
-        return result;
-    }
-    for jsid in &*ids {
-        if !jsid.is_string() {
-            continue;
-        }
-        let key_str = jsid.to_string();
-        let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_str));
-        if key.starts_with("__") {
-            continue;
-        }
-        let c_key = ZBox::from_bytes(&*key.as_bytes());
-        let mut val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            obj_r.handle().into(),
-            c_key.as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut val,
-            },
-        );
-        if !val.is_string() {
-            continue;
-        }
-        let val_str = crate::js_to_rust_string(cx, val);
-        result.push((key, val_str));
-    }
-    result
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_keys(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj_r = this.to_object());
-    let obj = obj_r.get();
-
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let arr_root = mozjs_sys::jsapi::JS_NewPlainObject(cx));
-    if arr_root.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let mut idx: u32 = 0;
-    let entries = sp_collect_entries(cx, obj);
-    for (key, val_str) in &entries {
-        for v in val_str.split('\x01') {
-            let _ = v;
-            let js_key =
-                JS_NewStringCopyN(cx, key.as_ptr() as *const ::std::os::raw::c_char, key.len());
-            if js_key.is_null() {
-                continue;
-            }
-            let key_val = StringValue(&*js_key);
-            rooted!(&in(cx_ref) let kv = key_val);
-            JS_DefineElement(
-                cx,
-                arr_root.handle().into(),
-                idx,
-                kv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-            idx += 1;
-        }
-    }
-    let len_val = Int32Value(idx as i32);
-    rooted!(&in(cx_ref) let lv = len_val);
-    JS_DefineProperty(
-        cx,
-        arr_root.handle().into(),
-        c"length".as_ptr(),
-        lv.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-    args.rval().set(ObjectValue(arr_root.get()));
     true
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_values(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    let mut wrapped_cx2 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref2 = &mut wrapped_cx2;
-    rooted!(&in(cx_ref2) let obj_r = this.to_object());
-    let obj = obj_r.get();
-
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let arr_root = mozjs_sys::jsapi::JS_NewPlainObject(cx));
-    if arr_root.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let mut idx: u32 = 0;
-    let entries = sp_collect_entries(cx, obj);
-    for (_key, val_str) in &entries {
-        for v in val_str.split('\x01') {
-            let decoded = url_decode(v);
-            let c_dec = ZBox::from_bytes(decoded.as_bytes());
-            let js_val = JS_NewStringCopyZ(cx, c_dec.as_ptr());
-            if js_val.is_null() {
-                continue;
-            }
-            let v_val = StringValue(&*js_val);
-            rooted!(&in(cx_ref) let vv = v_val);
-            JS_DefineElement(
-                cx,
-                arr_root.handle().into(),
-                idx,
-                vv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-            idx += 1;
-        }
-    }
-    let len_val = Int32Value(idx as i32);
-    rooted!(&in(cx_ref) let lv = len_val);
-    JS_DefineProperty(
-        cx,
-        arr_root.handle().into(),
-        c"length".as_ptr(),
-        lv.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-    args.rval().set(ObjectValue(arr_root.get()));
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_entries(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    let mut wrapped_cx3 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref3 = &mut wrapped_cx3;
-    rooted!(&in(cx_ref3) let obj_r = this.to_object());
-    let obj = obj_r.get();
-
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let arr_root = mozjs_sys::jsapi::JS_NewPlainObject(cx));
-    if arr_root.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let mut idx: u32 = 0;
-    let entries = sp_collect_entries(cx, obj);
-    for (key, val_str) in &entries {
-        for v in val_str.split('\x01') {
-            rooted!(&in(cx_ref) let pair = mozjs_sys::jsapi::JS_NewPlainObject(cx));
-            if pair.get().is_null() {
-                continue;
-            }
-            let c_key = ZBox::from_bytes(key.as_bytes());
-            let decoded = url_decode(v);
-            let c_dec = ZBox::from_bytes(decoded.as_bytes());
-            let js_key = JS_NewStringCopyZ(cx, c_key.as_ptr());
-            let js_val = JS_NewStringCopyZ(cx, c_dec.as_ptr());
-            if js_key.is_null() || js_val.is_null() {
-                continue;
-            }
-            let key_val = StringValue(&*js_key);
-            let v_val = StringValue(&*js_val);
-            rooted!(&in(cx_ref) let kv = key_val);
-            rooted!(&in(cx_ref) let vv = v_val);
-            JS_DefineElement(
-                cx,
-                pair.handle().into(),
-                0u32,
-                kv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-            JS_DefineElement(
-                cx,
-                pair.handle().into(),
-                1u32,
-                vv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-            let pair_val = ObjectValue(pair.get());
-            rooted!(&in(cx_ref) let pv = pair_val);
-            JS_DefineElement(
-                cx,
-                arr_root.handle().into(),
-                idx,
-                pv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-            idx += 1;
-        }
-    }
-    let len_val = Int32Value(idx as i32);
-    rooted!(&in(cx_ref) let lv = len_val);
-    JS_DefineProperty(
-        cx,
-        arr_root.handle().into(),
-        c"length".as_ptr(),
-        lv.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-    args.rval().set(ObjectValue(arr_root.get()));
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_for_each(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    if argc == 0 {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let callback_val = *args.get(0).ptr;
-    if !callback_val.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let callback_obj = callback_val.to_object());
-
-    rooted!(&in(wrapped_cx) let this_obj = this.to_object());
-
-    let mut ids = IdVector::new(cx);
-    let ok = GetPropertyKeys(
-        cx,
-        this_obj.handle().into(),
-        JSITER_OWNONLY,
-        ids.handle_mut(),
-    );
-    if !ok {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    for jsid in &*ids {
-        if !jsid.is_string() {
-            continue;
-        }
-        let key_str = jsid.to_string();
-        let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_str));
-        let c_key = ZBox::from_bytes(&*key.as_bytes());
-
-        let mut val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_obj.handle().into(),
-            c_key.as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut val,
-            },
-        );
-        if !val.is_string() {
-            continue;
-        }
-        let val_rust = crate::js_to_rust_string(cx, val);
-
-        for v in val_rust.split('\x01') {
-            let decoded = url_decode(v);
-            let c_dec = ZBox::from_bytes(decoded.as_bytes());
-            let c_key2 = ZBox::from_bytes(&*key.as_bytes());
-            let v_js = JS_NewStringCopyZ(cx, c_dec.as_ptr());
-            let key_js = JS_NewStringCopyZ(cx, c_key2.as_ptr());
-            if v_js.is_null() || key_js.is_null() {
-                continue;
-            }
-
-            let mut args_arr: [JSVal; 3] = [
-                StringValue(&*v_js),
-                StringValue(&*key_js),
-                ObjectValue(this_obj.get()),
-            ];
-            let handle_arr = HandleValueArray {
-                length_: 3,
-                elements_: args_arr.as_mut_ptr(),
-            };
-            let mut rval = UndefinedValue();
-            rooted!(&in(wrapped_cx) let callback_val = ObjectValue(callback_obj.get()));
-            JS_CallFunctionValue(
-                cx,
-                this_obj.handle().into(),
-                callback_val.handle().into(),
-                &handle_arr,
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut rval,
-                },
-            );
-        }
-    }
-
-    args.rval().set(UndefinedValue());
-    true
-}
-
+/// getAll(name) — every matching pair's value in order (empty Array when
+/// absent).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn sp_get_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    // Return empty array if no key argument
+    let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
     if argc == 0 || !(*args.get(0).ptr).is_string() {
         let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
         args.rval().set(if arr.is_null() {
@@ -2094,79 +1717,576 @@ unsafe extern "C" fn sp_get_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         return true;
     }
     let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
-    let this = args.thisv();
-    if !this.is_object() {
-        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
-        args.rval().set(if arr.is_null() {
-            UndefinedValue()
-        } else {
-            ObjectValue(arr)
-        });
-        return true;
-    }
+    let vals: Vec<&String> = pairs
+        .iter()
+        .filter(|(k, _)| *k == key)
+        .map(|(_, v)| v)
+        .collect();
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj_r = this.to_object());
-
-    let c_key = ZBox::from_bytes(key.as_bytes());
-
-    let mut has = false;
-    JS_HasProperty(cx, obj_r.handle().into(), c_key.as_ptr(), &mut has);
-    if !has {
-        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
-        args.rval().set(if arr.is_null() {
-            UndefinedValue()
-        } else {
-            ObjectValue(arr)
-        });
-        return true;
-    }
-
-    let mut val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_r.handle().into(),
-        c_key.as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut val,
-        },
-    );
-    if !val.is_string() {
-        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
-        args.rval().set(if arr.is_null() {
-            UndefinedValue()
-        } else {
-            ObjectValue(arr)
-        });
-        return true;
-    }
-
-    let val_str = crate::js_to_rust_string(cx, val);
-    let parts: Vec<String> = val_str.split('\x01').map(url_decode).collect();
-    rooted!(&in(cx_ref) let arr = mozjs::jsapi::NewArrayObject1(cx, parts.len()));
+    rooted!(&in(cx_ref) let arr = mozjs::jsapi::NewArrayObject1(cx, vals.len()));
     if arr.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-    for (i, part) in parts.iter().enumerate() {
-        let c_part = ZBox::from_bytes(part.as_bytes());
-        let js_str = JS_NewStringCopyZ(cx, c_part.as_ptr());
-        if js_str.is_null() {
+    for (i, v) in vals.iter().enumerate() {
+        let js = qs_js_string_utf8(cx, v);
+        if js.is_null() {
             continue;
         }
-        let str_val = StringValue(&*js_str);
-        rooted!(&in(cx_ref) let sv = str_val);
+        let sv = StringValue(unsafe { &*js });
+        rooted!(&in(cx_ref) let sv_root = sv);
         JS_DefineElement(
             cx,
             arr.handle().into(),
             i as u32,
-            sv.handle().into(),
+            sv_root.handle().into(),
             JSPROP_ENUMERATE as u32,
         );
     }
     args.rval().set(ObjectValue(arr.get()));
     true
+}
+
+/// has(name[, value]) — pair presence, optionally value-qualified.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_has(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(BooleanValue(false));
+            return true;
+        }
+    };
+    if argc == 0 || !(*args.get(0).ptr).is_string() {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    if argc >= 2 && (*args.get(1).ptr).is_string() {
+        let val = crate::js_to_rust_string(cx, *args.get(1).ptr);
+        let found = pairs.iter().any(|(k, v)| *k == key && *v == val);
+        args.rval().set(BooleanValue(found));
+        return true;
+    }
+    args.rval().set(BooleanValue(pairs.iter().any(|(k, _)| *k == key)));
+    true
+}
+
+/// set(name, value) — set the FIRST matching pair in place and remove the
+/// rest; append when absent (WHATWG step order preserved).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_set(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let (obj, mut pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    if argc < 2 || !(*args.get(0).ptr).is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    let value = if (*args.get(1).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(1).ptr)
+    } else {
+        String::new()
+    };
+    let mut replaced = false;
+    let mut i = 0;
+    while i < pairs.len() {
+        if pairs[i].0 == key {
+            if replaced {
+                pairs.remove(i);
+                continue;
+            }
+            pairs[i] = (key.clone(), value.clone());
+            replaced = true;
+        }
+        i += 1;
+    }
+    if !replaced {
+        pairs.push((key, value));
+    }
+    unsafe { sp_commit(cx, obj, pairs) };
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// append(name, value) — append a pair.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_append(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let (obj, mut pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    if argc < 2 || !(*args.get(0).ptr).is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    let value = if (*args.get(1).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(1).ptr)
+    } else {
+        String::new()
+    };
+    pairs.push((key, value));
+    unsafe { sp_commit(cx, obj, pairs) };
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// delete(name[, value]) — remove all pairs with name (optionally only
+/// those also matching value).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_delete(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let (obj, mut pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    if argc == 0 || !(*args.get(0).ptr).is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    if argc >= 2 && (*args.get(1).ptr).is_string() {
+        let val = crate::js_to_rust_string(cx, *args.get(1).ptr);
+        pairs.retain(|(k, v)| !(k == &key && v == &val));
+    } else {
+        pairs.retain(|(k, _)| k != &key);
+    }
+    unsafe { sp_commit(cx, obj, pairs) };
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// toString() — the application/x-www-form-urlencoded serialization.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_to_string(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    let out = sp_pairs_to_string(&pairs);
+    let js = qs_js_string_utf8(cx, &out);
+    args.rval().set(if js.is_null() {
+        UndefinedValue()
+    } else {
+        StringValue(unsafe { &*js })
+    });
+    true
+}
+
+/// size getter — the pair count (Node URLSearchParams.size).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_size_getter(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    args.rval().set(Int32Value(pairs.len() as i32));
+    true
+}
+
+// ── URLSearchParams iterators (JS iterator protocol) ────────────────────────
+//
+// keys()/values()/entries() return real iterators (next + Symbol.iterator),
+// NOT array-like snapshots — for..of and spread must work (Node ground
+// truth: probed; the old plain-object returns were not iterable).
+
+const SLOT_ITER_SNAPSHOT: u32 = 0;
+const SLOT_ITER_IDX: u32 = 1;
+
+const URL_SP_ITER_CLASS: JSClass = JSClass {
+    name: c"URLSearchParamsIterator".as_ptr(),
+    flags: (2 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_iter_next(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = this.to_object());
+
+    let mut snapshot = UndefinedValue();
+    JS_GetReservedSlot(obj.get(), SLOT_ITER_SNAPSHOT, &mut snapshot);
+    let mut idx_val = Int32Value(0);
+    JS_GetReservedSlot(obj.get(), SLOT_ITER_IDX, &mut idx_val);
+    let idx = if idx_val.is_int32() { idx_val.to_int32() } else { 0 };
+
+    let result = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if result.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    rooted!(&in(cx_ref) let result_r = result);
+
+    // done:true when the snapshot is exhausted (or malformed); otherwise
+    // {value: el, done:false} and the index advances.
+    let mut have_el = false;
+    rooted!(&in(cx_ref) let mut el = UndefinedValue());
+    if snapshot.is_object() {
+        let sobj = snapshot.to_object();
+        rooted!(&in(cx_ref) let sobj_r = sobj);
+        let mut len: u32 = 0;
+        w2::GetArrayLength(cx_ref, sobj_r.handle().into(), &mut len);
+        if idx >= 0 && (idx as u32) < len {
+            w2::JS_GetElement(
+                cx_ref,
+                sobj_r.handle().into(),
+                idx as u32,
+                el.handle_mut(),
+            );
+            have_el = true;
+        }
+    }
+    if have_el {
+        rooted!(&in(cx_ref) let done = BooleanValue(false));
+        JS_DefineProperty(
+            cx,
+            result_r.handle().into(),
+            c"value".as_ptr(),
+            el.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+        JS_DefineProperty(
+            cx,
+            result_r.handle().into(),
+            c"done".as_ptr(),
+            done.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+        let next_idx = Int32Value(idx + 1);
+        JS_SetReservedSlot(obj.get(), SLOT_ITER_IDX, &next_idx);
+    } else {
+        rooted!(&in(cx_ref) let done = BooleanValue(true));
+        JS_DefineProperty(
+            cx,
+            result_r.handle().into(),
+            c"done".as_ptr(),
+            done.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    args.rval().set(ObjectValue(result_r.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_iter_self(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(*args.thisv());
+    true
+}
+
+/// Build a protocol-conformant iterator over a snapshot Array (the array is
+/// stored as a traced JSVal in the iterator's slot, so GC-safe).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_make_iterator(cx: *mut JSContext, snapshot: *mut JSObject) -> *mut JSObject {
+    unsafe {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        let obj = JS_NewObject(cx, &URL_SP_ITER_CLASS);
+        if obj.is_null() {
+            return obj;
+        }
+        rooted!(&in(cx_ref) let obj_r = obj);
+        let snap_val = ObjectValue(snapshot);
+        JS_SetReservedSlot(obj_r.get(), SLOT_ITER_SNAPSHOT, &snap_val);
+        let idx = Int32Value(0);
+        JS_SetReservedSlot(obj_r.get(), SLOT_ITER_IDX, &idx);
+
+        let next_fn = JS_NewFunction(cx, Some(sp_iter_next), 0, 0, c"next".as_ptr());
+        if !next_fn.is_null() {
+            let fn_obj = JS_GetFunctionObject(next_fn);
+            if !fn_obj.is_null() {
+                let fv = ObjectValue(fn_obj);
+                rooted!(&in(cx_ref) let fv_r = fv);
+                JS_DefineProperty(
+                    cx,
+                    obj_r.handle().into(),
+                    c"next".as_ptr(),
+                    fv_r.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+        // Symbol.iterator → this (for..of support; sqlite iterator pattern).
+        let sym_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
+            cx,
+            mozjs_sys::jsapi::JS::SymbolCode::iterator,
+        );
+        let self_fn = JS_NewFunction(cx, Some(sp_iter_self), 0, 0, c"[Symbol.iterator]".as_ptr());
+        if !self_fn.is_null() {
+            let fn_obj = JS_GetFunctionObject(self_fn);
+            if !fn_obj.is_null() {
+                rooted!(&in(cx_ref) let fv = ObjectValue(fn_obj));
+                JS_DefinePropertyById2(
+                    cx,
+                    obj_r.handle().into(),
+                    Handle::from_marked_location(&sym_key),
+                    fv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+        obj
+    }
+}
+
+/// keys() — iterator over pair names in list order (duplicates included).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_keys(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    let it = unsafe { sp_string_snapshot_iterator(cx, pairs.iter().map(|(k, _)| k)) };
+    args.rval().set(if it.is_null() {
+        UndefinedValue()
+    } else {
+        ObjectValue(it)
+    });
+    true
+}
+
+/// values() — iterator over pair values in list order.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_values(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    let it = unsafe { sp_string_snapshot_iterator(cx, pairs.iter().map(|(_, v)| v)) };
+    args.rval().set(if it.is_null() {
+        UndefinedValue()
+    } else {
+        ObjectValue(it)
+    });
+    true
+}
+
+/// entries() — iterator over [name, value] pairs in list order.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_entries(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let snap = mozjs::jsapi::NewArrayObject1(cx, pairs.len()));
+    if snap.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        rooted!(&in(cx_ref) let pair = mozjs::jsapi::NewArrayObject1(cx, 2));
+        if pair.get().is_null() {
+            continue;
+        }
+        let kj = qs_js_string_utf8(cx, k);
+        let vj = qs_js_string_utf8(cx, v);
+        if kj.is_null() || vj.is_null() {
+            continue;
+        }
+        let kv = StringValue(unsafe { &*kj });
+        let vv = StringValue(unsafe { &*vj });
+        rooted!(&in(cx_ref) let kv_r = kv);
+        rooted!(&in(cx_ref) let vv_r = vv);
+        JS_DefineElement(
+            cx,
+            pair.handle().into(),
+            0u32,
+            kv_r.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+        JS_DefineElement(
+            cx,
+            pair.handle().into(),
+            1u32,
+            vv_r.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+        rooted!(&in(cx_ref) let pv = ObjectValue(pair.get()));
+        JS_DefineElement(
+            cx,
+            snap.handle().into(),
+            i as u32,
+            pv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    let it = unsafe { sp_make_iterator(cx, snap.get()) };
+    args.rval().set(if it.is_null() {
+        UndefinedValue()
+    } else {
+        ObjectValue(it)
+    });
+    true
+}
+
+/// forEach(callback[, thisArg]) — invoke per pair in list order with
+/// (value, key, this).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_for_each(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let (obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    if argc == 0 || !(*args.get(0).ptr).is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let callback = (*args.get(0).ptr).to_object());
+    let this_arg = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    rooted!(&in(cx_ref) let obj_r = obj);
+    // WHATWG callback thisArg: the object when given, else null.
+    rooted!(&in(cx_ref) let mut this_obj: *mut JSObject = ::std::ptr::null_mut());
+    if this_arg.is_object() {
+        let t = this_arg.to_object();
+        rooted!(&in(cx_ref) let t_r = t);
+        this_obj.set(t);
+    }
+
+    for (k, v) in &pairs {
+        let kj = qs_js_string_utf8(cx, k);
+        let vj = qs_js_string_utf8(cx, v);
+        if kj.is_null() || vj.is_null() {
+            continue;
+        }
+        let mut call_args: [JSVal; 3] = [
+            StringValue(unsafe { &*vj }),
+            StringValue(unsafe { &*kj }),
+            ObjectValue(obj_r.get()),
+        ];
+        let handle_arr = HandleValueArray {
+            length_: 3,
+            elements_: call_args.as_mut_ptr(),
+        };
+        rooted!(&in(cx_ref) let cb_val = ObjectValue(callback.get()));
+        let mut rval = UndefinedValue();
+        JS_CallFunctionValue(
+            cx,
+            this_obj.handle().into(),
+            cb_val.handle().into(),
+            &handle_arr,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            },
+        );
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// Build an iterator whose snapshot is an Array of the given strings.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_string_snapshot_iterator<'a, I: Iterator<Item = &'a String>>(
+    cx: *mut JSContext,
+    items: I,
+) -> *mut JSObject {
+    unsafe {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        let collected: Vec<&String> = items.collect();
+        rooted!(&in(cx_ref) let snap = mozjs::jsapi::NewArrayObject1(cx, collected.len()));
+        if snap.get().is_null() {
+            return ::std::ptr::null_mut();
+        }
+        for (i, s) in collected.iter().enumerate() {
+            let js = qs_js_string_utf8(cx, s);
+            if js.is_null() {
+                continue;
+            }
+            let sv = StringValue(unsafe { &*js });
+            rooted!(&in(cx_ref) let sv_root = sv);
+            JS_DefineElement(
+                cx,
+                snap.handle().into(),
+                i as u32,
+                sv_root.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        sp_make_iterator(cx, snap.get())
+    }
+}
+
+// @trace REQ-ENG-007 [code:bun_url::PercentEncoding]
+/// application/x-www-form-urlencoded percent-encoding for the
+/// URLSearchParams serializer: unescaped set is ASCII alphanumeric plus
+/// `*`, `-`, `.`, `_`; space encodes as `+` (WHATWG urlencoded serializer
+/// byte set; `~` and friends are NOT unescaped here, unlike RFC 3986).
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+// @trace REQ-ENG-007 [code:bun_url::PercentEncoding::decode_alloc]
+/// querystring/form-urlencoded decode: '+' → space, '%XX' → byte, byte
+/// string then UTF-8-decoded (invalid sequences replace per U+FFFD).
+/// JS_NewStringCopyN would read the bytes as Latin-1 and mangle multibyte.
+fn url_decode(s: &str) -> String {
+    qs_decode(s)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2411,35 +2531,57 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                     mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
                 let cx_ref1 = &mut wrapped_cx1;
                 rooted!(&in(cx_ref1) let obj_r = obj);
-                let null_val = mozjs::jsval::NullValue();
+                // Legacy url.parse (Node 24 ground truth, probed): absent
+                // query/fragment serialize as null — "" only marks the
+                // parsed-in marker forms ("?" alone / "#" alone).
+                let search_field: Option<&str> =
+                    if search.is_empty() { None } else { Some(search.as_str()) };
+                let hash_field: Option<&str> =
+                    if hash.is_empty() { None } else { Some(hash.as_str()) };
+                let href_val = input.as_str();
+                let path_val = format!("{}{}", pathname, search);
                 for (name, value) in [
-                    ("href", input.as_str()),
-                    ("path", format!("{}{}", pathname, search).as_str()),
-                    ("pathname", pathname),
-                    ("search", search.as_str()),
-                    ("hash", hash.as_str()),
+                    ("href", Some(href_val)),
+                    ("path", Some(path_val.as_str())),
+                    ("pathname", Some(pathname)),
+                    ("search", search_field),
+                    ("hash", hash_field),
                 ] {
                     let c_name = ZBox::from_bytes(name.as_bytes());
-                    let js_str = JS_NewStringCopyN(
-                        cx,
-                        value.as_ptr() as *const ::std::os::raw::c_char,
-                        value.len(),
-                    );
-                    if !js_str.is_null() {
-                        let val = StringValue(&*js_str);
-                        rooted!(&in(cx_ref1) let v = val);
-                        JS_DefineProperty(
-                            cx,
-                            obj_r.handle().into(),
-                            c_name.as_ptr(),
-                            v.handle().into(),
-                            JSPROP_ENUMERATE as u32,
-                        );
+                    match value {
+                        Some(v) => {
+                            let js_str = JS_NewStringCopyN(
+                                cx,
+                                v.as_ptr() as *const ::std::os::raw::c_char,
+                                v.len(),
+                            );
+                            if !js_str.is_null() {
+                                let val = StringValue(&*js_str);
+                                rooted!(&in(cx_ref1) let v = val);
+                                JS_DefineProperty(
+                                    cx,
+                                    obj_r.handle().into(),
+                                    c_name.as_ptr(),
+                                    v.handle().into(),
+                                    JSPROP_ENUMERATE as u32,
+                                );
+                            }
+                        }
+                        None => {
+                            rooted!(&in(cx_ref1) let nv = mozjs::jsval::NullValue());
+                            JS_DefineProperty(
+                                cx,
+                                obj_r.handle().into(),
+                                c_name.as_ptr(),
+                                nv.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                        }
                     }
                 }
                 for name in ["protocol", "host", "hostname", "port", "auth"] {
                     let c_name = ZBox::from_bytes(name.as_bytes());
-                    rooted!(&in(cx_ref1) let nv = null_val);
+                    rooted!(&in(cx_ref1) let nv = mozjs::jsval::NullValue());
                     JS_DefineProperty(
                         cx,
                         obj_r.handle().into(),
@@ -2474,37 +2616,63 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     } else {
         String::new()
     };
+    // Legacy url.parse (Node 24 ground truth, probed): absent query/fragment
+    // → null; present markers ("?" alone, "#") stay as-is; `auth` is null
+    // when there are no credentials (Node), not "".
+    let search_field: Option<&str> = if state.search.is_empty() {
+        None
+    } else {
+        Some(state.search.as_str())
+    };
+    let hash_field: Option<&str> = if state.hash.is_empty() {
+        None
+    } else {
+        Some(state.hash.as_str())
+    };
+    let auth_field: Option<&str> = if auth.is_empty() { None } else { Some(auth.as_str()) };
+    let path_val = format!("{}{}", state.pathname, state.search);
     for (name, value) in [
-        ("href", state.href.as_str()),
-        ("protocol", state.protocol.as_str()),
-        ("host", state.host.as_str()),
-        ("hostname", state.hostname.as_str()),
-        ("port", state.port.as_str()),
-        ("pathname", state.pathname.as_str()),
-        ("search", state.search.as_str()),
-        ("hash", state.hash.as_str()),
-        (
-            "path",
-            format!("{}{}", state.pathname, state.search).as_str(),
-        ),
-        ("auth", auth.as_str()),
+        ("href", Some(state.href.as_str())),
+        ("protocol", Some(state.protocol.as_str())),
+        ("host", Some(state.host.as_str())),
+        ("hostname", Some(state.hostname.as_str())),
+        ("port", Some(state.port.as_str())),
+        ("pathname", Some(state.pathname.as_str())),
+        ("search", search_field),
+        ("hash", hash_field),
+        ("path", Some(path_val.as_str())),
+        ("auth", auth_field),
     ] {
         let c_name = ZBox::from_bytes(name.as_bytes());
-        let js_str = JS_NewStringCopyN(
-            cx,
-            value.as_ptr() as *const ::std::os::raw::c_char,
-            value.len(),
-        );
-        if !js_str.is_null() {
-            let val = StringValue(&*js_str);
-            rooted!(&in(cx_ref2) let v = val);
-            JS_DefineProperty(
-                cx,
-                obj_r.handle().into(),
-                c_name.as_ptr(),
-                v.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
+        match value {
+            Some(v) => {
+                let js_str = JS_NewStringCopyN(
+                    cx,
+                    v.as_ptr() as *const ::std::os::raw::c_char,
+                    v.len(),
+                );
+                if !js_str.is_null() {
+                    let val = StringValue(&*js_str);
+                    rooted!(&in(cx_ref2) let v = val);
+                    JS_DefineProperty(
+                        cx,
+                        obj_r.handle().into(),
+                        c_name.as_ptr(),
+                        v.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+            None => {
+                rooted!(&in(cx_ref2) let nv = mozjs::jsval::NullValue());
+                JS_DefineProperty(
+                    cx,
+                    obj_r.handle().into(),
+                    c_name.as_ptr(),
+                    nv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
         }
     }
     define_query_property(cx, obj_r.get(), &state.search, parse_query_string);
@@ -3291,7 +3459,11 @@ mod tests {
 
     #[test]
     fn url_encode_unreserved_not_encoded() {
-        assert_eq!(url_encode("A-Z_.~"), "A-Z_.~");
+        // WHATWG urlencoded serializer set: alphanumeric + `*-._` (tilde and
+        // friends are NOT unescaped — Node ground truth: 'k=%7E').
+        assert_eq!(url_encode("A-Z_."), "A-Z_.");
+        assert_eq!(url_encode("~"), "%7E");
+        assert_eq!(url_encode("*"), "*");
     }
 
     #[test]
@@ -3351,8 +3523,11 @@ mod tests {
     }
 
     #[test]
-    fn url_encode_hyphen_underscore_dot_tilde_not_encoded() {
-        assert_eq!(url_encode("-_.~"), "-_.~");
+    fn url_encode_hyphen_underscore_dot_not_encoded() {
+        // WHATWG urlencoded serializer set: `*`, `-`, `.`, `_` unescaped;
+        // tilde escapes (Node ground truth: 'k=%7E').
+        assert_eq!(url_encode("-_.*"), "-_.*");
+        assert_eq!(url_encode("~"), "%7E");
     }
 
     #[test]
@@ -3474,6 +3649,91 @@ mod tests {
     fn parse_url_fragment_only_hash() {
         let s = parse_url("https://x.com/#", None).unwrap();
         assert_eq!(s.hash, "#");
+    }
+
+    // ── marker-prefixed component semantics (search/hash) ─────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] — WHATWG/Node ""-vs-marker rules.
+
+    #[test]
+    fn parse_url_bare_markers_kept_in_state() {
+        // "?#" → state keeps the empty-query/empty-fragment markers ("?" /
+        // "#"); the GETTERS project them to "" (WHATWG: null or empty
+        // query/fragment serializes as "").
+        let s = parse_url("https://x.com/a?#", None).unwrap();
+        assert_eq!(s.search, "?");
+        assert_eq!(s.hash, "#");
+        assert_eq!(s.href, "https://x.com/a?#");
+    }
+
+    #[test]
+    fn normalize_marker_empty_clears() {
+        assert_eq!(normalize_url_marker("search", ""), "");
+        assert_eq!(normalize_url_marker("hash", ""), "");
+    }
+
+    #[test]
+    fn normalize_marker_bare_kept() {
+        assert_eq!(normalize_url_marker("search", "?"), "?");
+        assert_eq!(normalize_url_marker("hash", "#"), "#");
+    }
+
+    #[test]
+    fn normalize_marker_prepended() {
+        assert_eq!(normalize_url_marker("hash", "z"), "#z");
+        assert_eq!(normalize_url_marker("search", "k=v"), "?k=v");
+    }
+
+    #[test]
+    fn normalize_marker_passthrough_other_fields() {
+        assert_eq!(normalize_url_marker("pathname", "/x"), "/x");
+    }
+
+    #[test]
+    fn sp_parse_strips_single_leading_question() {
+        assert_eq!(
+            sp_parse_init_str("?a=1&b=2"),
+            vec![("a".into(), "1".into()), ("b".into(), "2".into())]
+        );
+    }
+
+    #[test]
+    fn sp_parse_decodes_key_and_value() {
+        assert_eq!(
+            sp_parse_init_str("pl+c=d%20e&%E6%97%A5=x"),
+            vec![
+                ("pl c".into(), "d e".into()),
+                ("日".into(), "x".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn sp_parse_pair_without_equals_has_empty_value() {
+        assert_eq!(sp_parse_init_str("flag&"), vec![("flag".into(), "".into())]);
+    }
+
+    #[test]
+    fn sp_parse_empty_is_empty() {
+        assert!(sp_parse_init_str("").is_empty());
+        assert!(sp_parse_init_str("?").is_empty());
+        assert!(sp_parse_init_str("&&").is_empty());
+    }
+
+    #[test]
+    fn sp_serialize_roundtrip() {
+        let pairs = vec![
+            ("k".to_string(), "v v".to_string()),
+            ("日".to_string(), "本".to_string()),
+        ];
+        assert_eq!(sp_pairs_to_string(&pairs), "k=v+v&%E6%97%A5=%E6%9C%AC");
+        assert_eq!(sp_parse_init_str("k=v+v&%E6%97%A5=%E6%9C%AC"), pairs);
+    }
+
+    #[test]
+    fn sp_serialize_whatwg_escape_set() {
+        // Unescaped: alphanumeric + `*-._`; space → '+'; everything else
+        // percent-encodes (incl. ~ and !).
+        assert_eq!(sp_pairs_to_string(&[("k~!".into(), "*-._".into())]), "k%7E%21=*-._");
     }
 
     #[test]

@@ -101,16 +101,232 @@ fn sc_clone_policy() -> CloneDataPolicy {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Error plain boundary (AggregateError degradation)
+//
+// WHATWG HTML §2.7.3 step 17 (Node 24 ground truth, probed 2026-08-18):
+// a Serializable Error keeps its name ONLY for the seven standard names
+// ("Error", "EvalError", "RangeError", "ReferenceError", "SyntaxError",
+// "TypeError", "URIError"); every other name — including "AggregateError" —
+// degrades to a plain Error with name "Error" and no `errors` property
+// (cause/message/stack survive; Node: structuredClone(new AggregateError)
+// → instanceof AggregateError === false, 'errors' in clone === false).
+// SpiderMonkey's engine serializer is a superset: it round-trips
+// AggregateError identity + errors (SCTAG_ERROR_OBJECT + JSEXN_AGGREGATEERR,
+// "not yet specified" per its own comment). The bridge enforces the
+// Node/spec boundary on top of the engine: when the graph contains an
+// AggregateError, the value is materialized once through the engine
+// (identity/backrefs resolved), demoted IN PLACE on the mirror — the
+// caller's original objects are never touched — and re-serialized.
+
+/// Graph-walk helpers installed on every realm that rides the SC bridge.
+/// The walk reads descriptors only (accessor properties are never invoked,
+/// so user getters/proxy traps cannot fire spuriously) and covers plain
+/// objects/arrays (own data properties incl. the non-enumerable `cause`),
+/// Map entries and Set values — every reachability edge the engine
+/// serializer itself follows for clonable values.
+const SC_BOUNDARY_HELPERS_SRC: &str = r#"(function(g){
+function _baoSCWalk(v, seen, visit) {
+  if (v === null || typeof v !== 'object') return false;
+  if (seen.has(v)) return false;
+  seen.add(v);
+  if (visit(v)) return true;
+  var descs = Object.getOwnPropertyDescriptors(v);
+  var keys = Object.keys(descs);
+  for (var i = 0; i < keys.length; i++) {
+    var d = descs[keys[i]];
+    if (d && 'value' in d && _baoSCWalk(d.value, seen, visit)) return true;
+  }
+  if (v instanceof Map) {
+    var entries = [];
+    var it = v.entries();
+    for (;;) { var e = it.next(); if (e.done) break; entries.push(e.value); }
+    for (var j = 0; j < entries.length; j++) {
+      if (_baoSCWalk(entries[j][0], seen, visit)) return true;
+      if (_baoSCWalk(entries[j][1], seen, visit)) return true;
+    }
+  } else if (v instanceof Set) {
+    var vals = [];
+    var it2 = v.values();
+    for (;;) { var e2 = it2.next(); if (e2.done) break; vals.push(e2.value); }
+    for (var k = 0; k < vals.length; k++) {
+      if (_baoSCWalk(vals[k], seen, visit)) return true;
+    }
+  }
+  return false;
+}
+Object.defineProperty(g, '__baoSCHasAggregateError', {
+  configurable: true, enumerable: false, writable: true,
+  value: function(v) {
+    return _baoSCWalk(v, new WeakSet(), function(o) {
+      return o instanceof AggregateError;
+    });
+  }
+});
+Object.defineProperty(g, '__baoSCDemoteAggregateErrors', {
+  configurable: true, enumerable: false, writable: true,
+  value: function(v) {
+    _baoSCWalk(v, new WeakSet(), function(o) {
+      if (o instanceof AggregateError) {
+        Object.setPrototypeOf(o, Error.prototype);
+        try { delete o.errors; } catch (e) {}
+      }
+      return false;
+    });
+  }
+});
+})(globalThis)"#;
+
+/// Install the SC boundary walk helpers on a realm's global. Called for
+/// every realm that can sit at the write end of the bridge: the main
+/// runtime global (globals.rs `install_structured_clone`) and each worker
+/// realm (`worker_global_setup` — a worker's postMessage serializes in the
+/// worker's own realm).
+// @trace REQ-ENG-006 [api:structuredClone/Error-boundary] — helper install.
+#[allow(unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn install_sc_boundary_helpers(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    let mut source_text = mozjs::rust::transform_str_to_source_text(SC_BOUNDARY_HELPERS_SRC);
+    let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<sc-boundary-helpers>".as_ptr(), 1);
+    if opts.is_null() {
+        return;
+    }
+    let mut rval = UndefinedValue();
+    let rval_handle = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    let _ = JS::Evaluate2(cx.raw_cx(), opts, &mut source_text, rval_handle);
+    libc::free(opts as *mut _);
+    rooted!(&in(cx) let _global_guard = global.get());
+}
+
+/// Call one of the boundary helpers with `value`; returns the helper's
+/// boolean result. `Err(())` when the helper is missing (realm not set up by
+/// the bridge — a fail-closed condition, never silently skipped) or when the
+/// walk throws (e.g. a Proxy ownKeys trap: the engine write would fail on
+/// the same object anyway, so the caller surfaces a DataCloneError).
+// @trace REQ-ENG-006 [api:structuredClone/Error-boundary] — helper call.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sc_boundary_helper_call(
+    raw_cx: *mut JSContext,
+    name: &str,
+    value: JSVal,
+) -> ::std::result::Result<bool, ()> {
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    let cx = &mut wrapped;
+
+    let global = CurrentGlobalOrNull(raw_cx);
+    if global.is_null() {
+        return Err(());
+    }
+    rooted!(&in(cx) let global_root = global);
+
+    let c_name = CString::new(name).map_err(|_| ())?;
+    let mut fn_val = UndefinedValue();
+    JS_GetProperty(
+        raw_cx,
+        global_root.handle().into(),
+        c_name.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut fn_val,
+        },
+    );
+    if !fn_val.is_object() {
+        if w2::JS_IsExceptionPending(cx) {
+            JS_ClearPendingException(raw_cx);
+        }
+        return Err(());
+    }
+    rooted!(&in(cx) let fn_obj = fn_val.to_object());
+    rooted!(&in(cx) let arg = value);
+    let args = HandleValueArray {
+        length_: 1,
+        elements_: &arg.get() as *const Value,
+    };
+    rooted!(&in(cx) let fn_handle = ObjectValue(fn_obj.get()));
+    let mut rval = UndefinedValue();
+    if !JS_CallFunctionValue(
+        raw_cx,
+        global_root.handle().into(),
+        fn_handle.handle().into(),
+        &args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    ) {
+        if w2::JS_IsExceptionPending(cx) {
+            JS_ClearPendingException(raw_cx);
+        }
+        return Err(());
+    }
+    Ok(rval.is_boolean() && rval.to_boolean())
+}
+
 /// Serialize `value` into structured-clone bytes. `Err(())` when the value
 /// contains anything the structured clone algorithm cannot clone — the caller
 /// must report a DataCloneError (Node ERR_DATACLONE_ERROR semantics).
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe fn sc_serialize(raw_cx: *mut JSContext, value: JSVal) -> ::std::result::Result<Vec<u8>, ()> {
+    sc_serialize_with_transfer(raw_cx, value, None)
+}
+
+/// The bridge write end with an optional transfer list (structuredClone's
+/// `{transfer}` — the engine detaches every transferred ArrayBuffer during
+/// the first write pass). PostMessage callers pass `None`.
+// @trace REQ-ENG-006 [api:structuredClone/Error-boundary] — write orchestration.
+#[allow(unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn sc_serialize_with_transfer(
+    raw_cx: *mut JSContext,
+    value: JSVal,
+    transferable: ::std::option::Option<mozjs::rust::Handle<'_, Value>>,
+) -> ::std::result::Result<Vec<u8>, ()> {
+    // Pass 1: engine write with the caller's transfer list.
+    let bytes = sc_write_bytes(raw_cx, value, transferable)?;
+
+    // Fast path: no AggregateError anywhere in the graph → the engine's
+    // Error handling already matches Node for the seven standard names.
+    if !sc_boundary_helper_call(raw_cx, "__baoSCHasAggregateError", value)? {
+        return Ok(bytes);
+    }
+
+    // Slow path (AggregateError present): materialize a mirror through the
+    // engine (cyclic backrefs become shared identities), demote in place on
+    // the mirror, and serialize the demoted mirror. The transfer list is
+    // deliberately NOT passed again — pass 1 already detached the caller's
+    // buffers and the mirror carries fresh, still-attached copies.
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    let cx = &mut wrapped;
+    rooted!(&in(cx) let mut mirror = UndefinedValue());
+    if !sc_deserialize(raw_cx, &bytes, mirror.handle_mut()) {
+        return Err(());
+    }
+    rooted!(&in(cx) let mirror_val = mirror.get());
+    sc_boundary_helper_call(raw_cx, "__baoSCDemoteAggregateErrors", mirror_val.get())?;
+    sc_write_bytes(raw_cx, mirror_val.get(), None)
+}
+
+/// Engine write pass: value (+ transfer map) → flat DifferentProcess bytes.
+/// `Err(())` when the engine cannot clone the value.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sc_write_bytes(
+    raw_cx: *mut JSContext,
+    value: JSVal,
+    transferable: ::std::option::Option<mozjs::rust::Handle<'_, Value>>,
+) -> ::std::result::Result<Vec<u8>, ()> {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
     let cx = &mut wrapped_cx;
 
     rooted!(&in(cx) let val = value);
-    rooted!(&in(cx) let mut no_transfer = UndefinedValue());
+    rooted!(&in(cx) let no_transfer = UndefinedValue());
+    let transfer_handle = match transferable {
+        Some(h) => h,
+        None => no_transfer.handle(),
+    };
 
     // SAFETY: scbuf owns the clone buffer until the bytes are copied out
     // below; null callbacks = no host custom types (unsupported → write
@@ -132,7 +348,7 @@ pub(crate) unsafe fn sc_serialize(raw_cx: *mut JSContext, value: JSVal) -> ::std
             &sc_clone_policy(),
             ::std::ptr::null(),
             ::std::ptr::null_mut(),
-            no_transfer.handle(),
+            transfer_handle,
         )
     };
     if !ok {
@@ -426,6 +642,10 @@ unsafe fn worker_global_setup(
         1,
         JSPROP_ENUMERATE as u32,
     );
+
+    // SC bridge write end lives in this realm too (self.postMessage below
+    // serializes here): install the Error-boundary walk helpers.
+    install_sc_boundary_helpers(cx, global);
 
     // Node / WorkerGlobalScope semantics: `self` is an alias of the worker
     // global. SpiderMonkey does not provide it on a bare embedding global,

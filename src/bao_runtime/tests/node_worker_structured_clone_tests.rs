@@ -221,3 +221,117 @@ self.onmessage = function(e) { self.postMessage(e.data); };
     let _ = ::std::fs::remove_file(&worker_path);
     bun_runtime::shutdown_thread_sm();
 }
+
+/// Error plain-boundary + postMessage/structuredClone isomorphism.
+/// @trace REQ-ENG-006 [api:structuredClone/Error-boundary]
+///
+/// Node 24 ground truth (probed 2026-08-18): both surfaces serialize with
+/// ONE algorithm — seven standard Error names survive with identity;
+/// every other name (incl. AggregateError) degrades to a plain Error
+/// (name "Error", no `errors` property); cause chains and cycles ride the
+/// same clone; custom own properties are dropped. The bridge enforces the
+/// same boundary on BOTH write ends (main structuredClone and main→worker
+/// postMessage ride sc_serialize_with_transfer; worker→main rides the same
+/// serializer in the worker realm).
+#[test]
+fn test_worker_error_boundary_isomorphism() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+
+    let worker_path = write_worker_file(
+        "erriso",
+        r#"
+self.onmessage = function(e) { self.postMessage(e.data); };
+"#,
+    );
+
+    let mut ctx = make_ctx();
+
+    let tid = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
+(function() {{
+  function describe(v, depth) {{
+    depth = depth || 0;
+    if (v === null || typeof v !== 'object' || depth > 3) return typeof v === 'object' ? 'obj' : String(v);
+    if (v instanceof Error) return {{
+      t: 'Error', name: v.name, msg: v.message,
+      cause: v.cause instanceof Error ? 'Err:' + v.cause.name : String(v.cause),
+      hasErrors: 'errors' in v, agg: v instanceof AggregateError, own: Object.keys(v).length
+    }};
+    if (Array.isArray(v)) return v.map(function(x) {{ return describe(x, depth + 1); }});
+    var o = {{ t: Object.prototype.toString.call(v), k: Object.keys(v).length }};
+    var keys = Object.keys(v);
+    for (var i = 0; i < keys.length; i++) o[keys[i]] = describe(v[keys[i]], depth + 1);
+    return o;
+  }}
+  var a = new Error('a');
+  var b = new Error('b', {{ cause: a }});
+  a.cause = b;
+  var value = {{
+    p1: {{ e: (function() {{ var e = new Error('boom'); e.custom = 'cz'; return e; }})() }},
+    p2: new TypeError('t'),
+    p3: new Error('root', {{ cause: new TypeError('inner', {{ cause: 42 }}) }}),
+    p4: a,
+    p5: new AggregateError([new Error('e1')], 'many', {{ cause: 'why' }}),
+    p6: [new AggregateError([1], 'n')]
+  }};
+  globalThis.__isoExpected = JSON.stringify(describe(structuredClone(value)));
+  var wt = require('worker_threads');
+  var w = new wt.Worker({worker_path:?});
+  globalThis.__isoWorker = w;
+  w.postMessage(value);
+  return String(w.threadId);
+}})()
+"#
+        ),
+    );
+    let tid: u32 = tid.parse().expect("threadId as number");
+
+    recv_worker_reply(&mut ctx, tid, "__isoReply");
+
+    let result = eval_string(
+        &mut ctx,
+        r#"
+(function() {
+  function describe(v, depth) {
+    depth = depth || 0;
+    if (v === null || typeof v !== 'object' || depth > 3) return typeof v === 'object' ? 'obj' : String(v);
+    if (v instanceof Error) return {
+      t: 'Error', name: v.name, msg: v.message,
+      cause: v.cause instanceof Error ? 'Err:' + v.cause.name : String(v.cause),
+      hasErrors: 'errors' in v, agg: v instanceof AggregateError, own: Object.keys(v).length
+    };
+    if (Array.isArray(v)) return v.map(function(x) { return describe(x, depth + 1); });
+    var o = { t: Object.prototype.toString.call(v), k: Object.keys(v).length };
+    var keys = Object.keys(v);
+    for (var i = 0; i < keys.length; i++) o[keys[i]] = describe(v[keys[i]], depth + 1);
+    return o;
+  }
+  var r = globalThis.__isoReply;
+  var iso = JSON.stringify(describe(r)) === globalThis.__isoExpected;
+  // Shape the Node ground truth fixes (probed):
+  var okAgg = r.p5 instanceof Error && !(r.p5 instanceof AggregateError)
+    && r.p5.name === 'Error' && r.p5.message === 'many' && r.p5.cause === 'why'
+    && !('errors' in r.p5)
+    && r.p6[0] instanceof Error && !(r.p6[0] instanceof AggregateError);
+  var okType = r.p2 instanceof TypeError && r.p2.message === 't';
+  var okCause = r.p3.cause instanceof TypeError && r.p3.cause.cause === 42;
+  var okCycle = r.p4.cause instanceof Error && r.p4.cause.cause === r.p4;
+  var okPlain = r.p1.e instanceof Error && r.p1.e.message === 'boom'
+    && !('custom' in r.p1.e);
+  globalThis.__isoWorker.terminate();
+  return (iso ? 'iso' : 'diff') + ',' + (okAgg ? 'agg' : 'aggBAD') + ',' + (okType ? 'type' : 'typeBAD')
+    + ',' + (okCause ? 'cause' : 'causeBAD') + ',' + (okCycle ? 'cyc' : 'cycBAD') + ',' + (okPlain ? 'plain' : 'plainBAD');
+})()
+"#,
+    );
+    assert_eq!(
+        result, "iso,agg,type,cause,cyc,plain",
+        "error boundary / isomorphism checks failed"
+    );
+
+    let _ = ::std::fs::remove_file(&worker_path);
+    bun_runtime::shutdown_thread_sm();
+}
