@@ -587,6 +587,7 @@ pub mod node {
     /// disambiguating name for callers building the dependency vec.
     pub use super::Ids as DependencyIds;
 
+    #[derive(bun_collections::SoaRowDerive)]
     pub struct Node {
         pub dep_id: DependencyID,
         pub pkg_id: PackageID,

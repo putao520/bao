@@ -113,7 +113,10 @@ impl BOM {
     /// `removeAndConvertToUTF8WithoutDealloc` — required for `use_shared_buffer`.
     /// We cannot free `list`'s pointer; the returned slice always points to
     /// `list.as_ptr()`. `list` may be grown.
-    pub fn remove_and_convert_to_utf8_without_dealloc<'a>(self, list: &'a mut Vec<u8>) -> &'a [u8] {
+    pub fn remove_and_convert_to_utf8_without_dealloc<'a>(
+        self,
+        list: &'a mut bun_alloc::core_alloc::AllocVec<u8, bun_alloc::core_alloc::Global>,
+    ) -> &'a [u8] {
         match self {
             BOM::Utf8 => {
                 let n = Self::UTF8_BYTES.len();

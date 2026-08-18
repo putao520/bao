@@ -22,7 +22,7 @@
 // non-Windows crash path (all profiles) and `breakpoint()` on Windows debug
 // builds only. Declaring the feature where neither is compiled (Windows
 // release) trips `unused_features`.
-#![cfg_attr(any(not(windows), debug_assertions), feature(core_intrinsics))]
+#![cfg_attr(all(bao_nightly, any(not(windows), debug_assertions)), feature(core_intrinsics))]
 #![allow(internal_features)]
 #![allow(nonstandard_style, static_mut_refs, unexpected_cfgs)]
 #![warn(unused_must_use)]
@@ -513,15 +513,19 @@ mod draft {
     fn abort() -> ! {
         #[cfg(windows)]
         {
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, bao_nightly))]
             core::intrinsics::breakpoint();
             bun_sys::windows::kernel32::ExitProcess(3)
         }
-        #[cfg(not(windows))]
+        #[cfg(all(not(windows), bao_nightly))]
         // SAFETY: libc::abort has no preconditions; never returns.
         unsafe {
             libc::abort()
         }
+        #[cfg(all(not(windows), not(bao_nightly)))]
+        // std::process::abort is `!`-typed; identical async-signal story as
+        // libc::abort (SIGABRT) without the unsafe call.
+        std::process::abort()
     }
     use super::cpu_features::CPUFeatures;
     use super::debug::{Color, SelfInfo, SourceLocation, TtyConfig};
@@ -2978,10 +2982,15 @@ mod draft {
                 }
             }
             // Zig: `@trap()` — emits ud2 (x86_64 → SIGILL) / brk (aarch64 → SIGTRAP).
-            // `core::intrinsics::abort()` lowers to the same trap instruction, preserving
-            // the Zig exit signal. Do NOT use `libc::abort()` here — that raises SIGABRT
-            // (exit 134), which is the *Windows* path's behaviour.
+            // Nightly keeps `core::intrinsics::abort()` (lowers to the same trap
+            // instruction, preserving the Zig exit signal). Stable has no
+            // intrinsics: `std::process::abort` raises SIGABRT instead — the
+            // documented dual-mode divergence for the fatal path (a process
+            // that is already crashing exits via a different fatal signal).
+            #[cfg(bao_nightly)]
             core::intrinsics::abort();
+            #[cfg(not(bao_nightly))]
+            std::process::abort();
         }
         #[cfg(windows)]
         {

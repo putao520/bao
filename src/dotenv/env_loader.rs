@@ -484,7 +484,7 @@ impl<'a> Loader<'a> {
                 .map
                 .get_or_put_without_value(b"CMAKE_CXX_COMPILER_LAUNCHER")?;
             if !cxx_gop.found_existing {
-                *cxx_gop.key_ptr = Box::<[u8]>::from(&**cxx_gop.key_ptr);
+                *cxx_gop.key_ptr = KeyBox::from(&**cxx_gop.key_ptr);
                 *cxx_gop.value_ptr = HashTableValue {
                     value: ccache_path.clone(),
                     conditional: false,
@@ -494,7 +494,7 @@ impl<'a> Loader<'a> {
                 .map
                 .get_or_put_without_value(b"CMAKE_C_COMPILER_LAUNCHER")?;
             if !c_gop.found_existing {
-                *c_gop.key_ptr = Box::<[u8]>::from(&**c_gop.key_ptr);
+                *c_gop.key_ptr = KeyBox::from(&**c_gop.key_ptr);
                 *c_gop.value_ptr = HashTableValue {
                     value: ccache_path,
                     conditional: false,
@@ -1361,6 +1361,14 @@ pub struct HashTableValue {
 // Spec: env_loader.zig:1220 — `bun.CaseInsensitiveASCIIStringArrayHashMap` on Windows.
 #[cfg(not(windows))]
 pub type HashTable = bun_collections::StringArrayHashMap<HashTableValue>;
+
+/// Dual-mode map key box: std `Box<[u8]>` on nightly (allocator_api's
+/// default), the `allocator_api2` mirror on stable — the StringArrayHashMap
+/// keys are the facade Box on stable, so the public surface follows.
+#[cfg(bao_nightly)]
+pub type KeyBox = Box<[u8]>;
+#[cfg(not(bao_nightly))]
+pub type KeyBox = bun_alloc::core_alloc::AllocBox<[u8], bun_alloc::core_alloc::Global>;
 #[cfg(windows)]
 pub type HashTable = bun_collections::CaseInsensitiveAsciiStringArrayHashMap<HashTableValue>;
 
@@ -1474,7 +1482,7 @@ impl Map {
     #[inline]
     pub fn iter(
         &self,
-    ) -> core::iter::Zip<core::slice::Iter<'_, Box<[u8]>>, core::slice::Iter<'_, HashTableValue>>
+    ) -> core::iter::Zip<core::slice::Iter<'_, KeyBox>, core::slice::Iter<'_, HashTableValue>>
     {
         self.map.iter()
     }
@@ -1534,7 +1542,7 @@ impl Map {
             conditional: false,
         };
         if !gop.found_existing {
-            *gop.key_ptr = Box::from(key);
+            *gop.key_ptr = KeyBox::from(key);
         }
         Ok(())
     }
@@ -1560,7 +1568,7 @@ impl Map {
     pub fn get_or_put_without_value(
         &mut self,
         key: &[u8],
-    ) -> Result<GetOrPutResult<'_, Box<[u8]>, HashTableValue>, AllocError> {
+    ) -> Result<GetOrPutResult<'_, KeyBox, HashTableValue>, AllocError> {
         self.map.get_or_put(key)
     }
 

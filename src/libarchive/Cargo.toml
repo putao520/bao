@@ -14,6 +14,8 @@ path = "lib.rs"
 workspace = true
 
 [dependencies]
+# Dual-mode key box rides bun_alloc's core_alloc facade (see lib.rs).
+bun_alloc.workspace = true
 bytemuck = "1"
 bun_opaque.workspace = true
 strum.workspace = true

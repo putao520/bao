@@ -67,14 +67,14 @@ impl ExprStr for Expr {
 // Defaulted to `u64` so bare `Package` matches Zig's primary `Package(u64)`
 // instantiation (the only one the lockfile/PM call sites name unqualified).
 //
-// PORT NOTE: `` cannot be used here — the derive
-// emits a `PackageField` enum with snake_case variants and an inherent
-// `__MAL_SIZES` const that fail to const-eval through the defaulted
-// `SemverIntType` param. The trait impl, field enum, and `PackageColumns` /
-// `PackageColumns` accessor traits are therefore expanded by hand below
-// (mirroring Zig's `MultiArrayList(Package).items(.field)`).
+// PORT NOTE (updated for the SoaRow registry): the OLD hand-expansion reason
+// is gone — the retired enum + `__MAL_SIZES` const-eval mechanism could not
+// pass the defaulted `SemverIntType` param, but `derive(SoaRow)` only emits
+// `size_of::<FieldType>()` / `offset_of!` consts, which are legal in a
+// generic impl context. The derive is used directly; the `PackageColumns`
+// accessor traits still come from `multi_array_columns!` below.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bun_collections::SoaRowDerive)]
 pub struct Package<SemverIntType: VersionInt = u64> {
     pub name: String,
     pub name_hash: PackageNameHash,
@@ -3234,7 +3234,7 @@ pub mod serializer {
             if matches!(field, PackageField::Resolution) {
                 // copy each resolution to make sure the union is zero initialized
                 let resolutions: &[Resolution<SemverIntType>] =
-                    sliced.items::<"resolution", Resolution<SemverIntType>>();
+                    sliced.items_named::<Resolution<SemverIntType>>("resolution");
                 for val in resolutions {
                     // `ResolutionType::copy` builds a fresh zero-initialised
                     // `Resolution` and writes only the active union member,

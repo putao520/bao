@@ -8,6 +8,13 @@
 use core::ffi::{c_int, c_void};
 use core::ptr;
 
+// Dual-mode map key box (see dotenv::env_loader::KeyBox): std Box<[u8]> on
+// nightly, the allocator_api2 mirror on stable.
+#[cfg(bao_nightly)]
+type KeyBox = Box<[u8]>;
+#[cfg(not(bao_nightly))]
+type KeyBox = bun_alloc::core_alloc::AllocBox<[u8], bun_alloc::core_alloc::Global>;
+
 use bun_collections::{ArrayHashMap, StringArrayHashMap};
 use bun_core::{MutableString, slice_to_nul, strings};
 use bun_core::{Output, ZStr, slice_as_bytes};
@@ -1668,7 +1675,7 @@ impl Archiver {
                                 // appender-owned slice as the map key. StringArrayHashMap
                                 // already boxed `path_to_use` on insert; overwrite with the
                                 // appender-owned bytes to match Zig lifetime intent.
-                                *overwrite_entry.key_ptr = Box::from(appender.append(path_to_use)?);
+                                *overwrite_entry.key_ptr = KeyBox::from(appender.append(path_to_use)?);
                             }
                         }
                     }
