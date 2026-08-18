@@ -76,8 +76,45 @@ fn test_require_deep() {
         // === require.resolve (BUG-ENG-365: now implemented) ===
         check("require_resolve_is_function", function() { return typeof require.resolve === 'function'; });
 
-        // === require.cache (not yet implemented) ===
-        check("require_cache_not_impl", function() { return typeof require.cache === 'undefined'; });
+        // === require.cache (REAL since 23b76dbd — Node semantics) ===
+        // A per-context singleton object; file modules are recorded under
+        // their canonical path as { id, filename, exports, loaded };
+        // builtins are NOT recorded (they never appear in require.cache).
+        check("require_cache_is_object", function() {
+            return typeof require.cache === 'object' && require.cache !== null;
+        });
+        check("require_cache_singleton_writable", function() {
+            require.cache.__deep_probe = 1;
+            return require.cache.__deep_probe === 1;
+        });
+        check("require_cache_file_module_semantics", function() {
+            var fs = require('fs');
+            var os = require('os');
+            var path = require('path');
+            var modPath = path.join(os.tmpdir(), 'require_deep_cache_probe_' + Date.now() + '.js');
+            fs.writeFileSync(modPath, 'module.exports = { marker: 42 };');
+            try {
+                var a = require(modPath);
+                var b = require(modPath);
+                var keys = Object.keys(require.cache).filter(function(k) {
+                    return k.indexOf('require_deep_cache_probe_') >= 0;
+                });
+                if (keys.length !== 1) return false;
+                var entry = require.cache[keys[0]];
+                return a === b                          // second require hits the cache (reference equal)
+                    && entry.exports === a              // cache entry's exports IS the require return
+                    && entry.id === keys[0]             // entry.id is the canonical path key
+                    && a.marker === 42;                 // the loaded module's real exports
+            } finally {
+                try { fs.rmSync(modPath); } catch (e) {}
+            }
+        });
+        check("require_cache_builtin_absent", function() {
+            require('fs'); require('node:path');        // builtins load...
+            return !('fs' in require.cache)             // ...but never appear in require.cache
+                && !('node:path' in require.cache)
+                && !('path' in require.cache);
+        });
 
         // === unknown module throws ===
         check("require_unknown_throws", function() {
