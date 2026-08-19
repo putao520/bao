@@ -1,7 +1,9 @@
 [package]
 name = "bun_zlib"
 # 0.1.1 (2026-08-19): ChanVec/VecExt sweep
-version = "0.1.1"
+# 0.1.2 (2026-08-19): +pub adopt_std_vec (std Vec<u8> → ChanVec adopter;
+# 971a81e3 tail) — bun_install 0.1.2 consumes it.
+version = "0.1.2"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
