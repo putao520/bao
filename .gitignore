@@ -1,6 +1,9 @@
 # Build artifacts
 /target
 **/target/
+# Prefixed target dirs (scratch build outputs like target-v-c1) never land in git.
+/target-*/
+**/target-*/
 
 # Rust compile artifacts
 *.rlib
