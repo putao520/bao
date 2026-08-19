@@ -419,6 +419,24 @@ fn build_spidermonkey(build_dir: &Path) {
     cppflags.push(get_cc_rs_env_os("CPPFLAGS").unwrap_or_default());
     cmd.env("CPPFLAGS", cppflags);
 
+    // BAO PATCH (DWARF line-tables downgrade, in-package): configure's
+    // --enable-debug-symbols defaults ON and toolchain.configure
+    // default_debug_flags() injects `-gdwarf-4` (implies full -g2 level) —
+    // SM's ~4k Unified CUs at -g2 are the consumer-disk bully this package
+    // exists to protect against. Precedence in debug_flags(): explicit
+    // --enable-debug-symbols VALUE > env MOZ_DEBUG_FLAGS > default. We ride
+    // the env tier: `-gdwarf-4` pins DWARF v4, `-g1` sets line-tables level
+    // (last level flag wins) — value-order matters, see the CXXFLAGS note
+    // below for why user CXXFLAGS cannot reach this (configure prepends env
+    // CXXFLAGS and appends its own debug flags after; the trailing -gdwarf-4
+    // would always win — verified empirically as `-g1 -gdwarf-4 -O3`).
+    // Env-carried (not makefile `--enable-debug-symbols='...'`): spaces ride
+    // the environment with zero make word-splitting/quoting hazard, and the
+    // downgrade ships WITH the package for every downstream consumer. A
+    // user-level `[env] MOZ_DEBUG_FLAGS` (e.g. ~/.cargo/config.toml) is now
+    // redundant — the package value below wins by construction here.
+    cmd.env("MOZ_DEBUG_FLAGS", "-gdwarf-4 -g1");
+
     // With make 4.4 a new jobserver style was added, which cargo doesn't support yet.
     // Unfortunately, the old pipe jobserver that cargo exposes, has a new bug in 4.4,
     // which is exposed by spidermonkeys makefiles and makes compilation largely
