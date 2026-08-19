@@ -3,7 +3,10 @@ name = "bao-browser"
 # crates.io name; lib target name pinned to `bao_browser` below so in-tree
 # `bao_browser::` code and downstream re-exports are unchanged.
 # 0.1.1 (2026-08-19): PageState load_complete root fix (30cc90c9); servo =0.5.0 pins unchanged
-version = "0.1.1"
+# 0.1.2 (2026-08-19): terminal-gate re-stamp — same tree as 0.1.1
+# (PageState load_complete 30cc90c9 already in 0.1.1); re-publish so
+# registry consumers re-resolve the full 0.1.x dep set unambiguously.
+version = "0.1.2"
 edition = "2021"
 description.workspace = true
 license.workspace = true
