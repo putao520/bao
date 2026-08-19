@@ -90,6 +90,12 @@ const res = await fetch('https://example.com/robots.txt');  // Node fetch
   `rust-toolchain.toml`);rustup 使用者执行 `rustup override set
   nightly-2026-07-20` 或等价操作。stable 编译器会报 E0554(非 nightly
   使用 `#![feature]`)。
+- **磁盘与构建时间**——首次构建从源码编译 SpiderMonkey,符号已随
+  `bao-mozjs-sys` 的 DWARF 降级工程降到 line-tables(`-gdwarf-4
+  -g1`):SM 对象约 **284 MB**(较全量 DWARF 缩约 6 倍,单个编译单元
+  降 ~83%)。首次构建预估 **20–40 分钟**,target 目录峰值预估**个位数
+  GB 量级(而非数十 GB)**。想进一步瘦身的消费者可给自己的 crate 加
+  `[profile.dev] debug = "line-tables-only"`。
 - `BAO_<SUFFIX>` 环境变量别名到 `BUN_<SUFFIX>`。
 
 ## 包族

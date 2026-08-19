@@ -96,6 +96,14 @@ surface).
   `nightly-2026-07-20` (see `rust-toolchain.toml`); rustup consumers run
   `rustup override set nightly-2026-07-20` or equivalent. Stable fails
   with E0554 (`#![feature]` on a non-nightly compiler).
+- **Disk & build time** — the first build compiles SpiderMonkey from
+  source with symbols downgraded to line-tables (`-gdwarf-4 -g1`, shipped
+  in the `bao-mozjs-sys` build since the DWARF downgrade): the SM objects
+  land at **~284 MB** (roughly 6× smaller than full DWARF; single
+  translation units shrink ~83%). Expect **~20–40 min** for the first
+  build and a target-dir peak in the **single-digit GBs, not tens of GB**.
+  Consumers who want their own crates leaner can add
+  `[profile.dev] debug = "line-tables-only"`.
 - `BAO_<SUFFIX>` environment variables are aliased onto `BUN_<SUFFIX>`.
 
 ## Package family
