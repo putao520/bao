@@ -21,4 +21,4 @@ markup5ever = { workspace = true }
 regex = { workspace = true }
 
 [dev-dependencies]
-bao-servo-webvtt = { path = ".", version = "=0.5.0", features = ["test-util"] }
+bao-servo-webvtt = { path = ".", version = "=0.5.1", features = ["test-util"] }

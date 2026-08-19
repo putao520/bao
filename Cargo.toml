@@ -102,8 +102,8 @@ rust-version = "1.89"
 # BAO PATCH (W0b publish fork): dep keys stay `mozjs`/`mozjs_sys` (members use
 # `mozjs.workspace = true` and code does `use mozjs::`); packages are published
 # as bao-mozjs / bao-mozjs-sys with lib names mozjs / mozjs_sys unchanged.
-mozjs = { path = "vendor/mozjs/mozjs", package = "bao-mozjs", version = "=0.21.4" }
-mozjs_sys = { path = "vendor/mozjs/mozjs-sys", package = "bao-mozjs-sys", version = "=140.13.0-4" }
+mozjs = { path = "vendor/mozjs/mozjs", package = "bao-mozjs", version = "^0.21.5" }
+mozjs_sys = { path = "vendor/mozjs/mozjs-sys", package = "bao-mozjs-sys", version = "^140.13.0-5" }
 bao-core = { path = "src/bao", version = "0.0.1" }
 bao_crypto = { path = "src/bao_crypto", version = "0.1.0" }
 bao_boringssl_bridge = { path = "src/bao_boringssl_bridge", version = "0.1.0" }

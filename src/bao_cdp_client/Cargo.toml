@@ -71,14 +71,6 @@ name = "cookies"
 path = "examples/cookies.rs"
 
 # CDP conformance 审计测试 — 对照 Chrome DevTools Protocol 官方规范审计
-# bao_cdp_client 193 method 的返回值 schema / 错误码 / 事件序列。
-#
-# 按域分文件(Page/Runtime/DOM/Network/Input/Emulation/Target/CSS/Log/Debugger),
-# 每个文件覆盖该域所有 method 的 conformance 检查。
-#
-# @trace REQ-CDP-001 [level:integration]
-# @trace REQ-CDP-002 [level:integration]
-# @trace REQ-CDP-003 [level:integration]
-[[test]]
-name = "cdp_conformance"
-path = "tests/cdp_conformance/main.rs"
+# CDP conformance 测试已并入 tests/suite/(tests/suite/cdp_conformance/,
+# 其 main.rs 改名 mod.rs 作为模块根,由 tests/suite/main.rs `mod cdp_conformance;`
+# 引入)。@trace REQ-CDP-001/002/003 注解保留在 suite 内各域文件中。

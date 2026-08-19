@@ -4,7 +4,7 @@ name = "bun_runtime"
 # so this patch release ships alone. runtime fix batch: atob/btoa binary fidelity, async_hooks promise identity, spawn watch, SC bridge + WHATWG URL parity, premature loop exit fetch teardown.
 # 0.1.2 (2026-08-19): stable-channel fix — http_client body handoff via
 # bun_core::vec::chan_vec_to_std (Bytes::From needs the std Vec).
-version = "0.1.2"
+version = "0.1.3"
 description = "Bao runtime integration — JS engine + Bun API + event loop"
 edition.workspace = true
 license.workspace = true
@@ -132,63 +132,10 @@ bao_bundler = { path = "../bao_bundler", version = "0.1.0" }
 # bao_uloop / product #[used] anchors only.
 
 # Node.js conformance suite (ported from ~/code/rust/bun/test/js/node/, MIT).
-# Lives in a subdirectory so each module is a separate test binary.
-[[test]]
-name = "buffer_conformance"
-path = "tests/node_conformance/buffer_conformance.rs"
-
-[[test]]
-name = "path_conformance"
-path = "tests/node_conformance/path_conformance.rs"
-
-[[test]]
-name = "fs_conformance"
-path = "tests/node_conformance/fs_conformance.rs"
-
-[[test]]
-name = "crypto_conformance"
-path = "tests/node_conformance/crypto_conformance.rs"
-
-[[test]]
-name = "url_conformance"
-path = "tests/node_conformance/url_conformance.rs"
-
-[[test]]
-name = "events_conformance"
-path = "tests/node_conformance/events_conformance.rs"
-
-[[test]]
-name = "assert_conformance"
-path = "tests/node_conformance/assert_conformance.rs"
-
-[[test]]
-name = "util_conformance"
-path = "tests/node_conformance/util_conformance.rs"
-
-[[test]]
-name = "stream_conformance"
-path = "tests/node_conformance/stream_conformance.rs"
-
-[[test]]
-name = "http_conformance"
-path = "tests/node_conformance/http_conformance.rs"
-
-[[test]]
-name = "fetch_c13_minimal"
-path = "tests/fetch_c13_minimal.rs"
-
-[[test]]
-name = "fetch_e2e_tests"
-path = "tests/fetch_e2e_tests.rs"
-
-[[test]]
-name = "bun_build_e2e_tests"
-path = "tests/bun_build_e2e_tests.rs"
-
-[[test]]
-name = "fs_watch_events_tests"
-path = "tests/fs_watch_events_tests.rs"
-
-[[test]]
-name = "cluster_pump_loop_tests"
-path = "tests/cluster_pump_loop_tests.rs"
+# All integration tests — including the node_conformance/ modules and the
+# former explicit targets (fetch_c13_minimal, fetch_e2e_tests,
+# bun_build_e2e_tests, fs_watch_events_tests, cluster_pump_loop_tests) — now
+# live in the single-harness target `suite` (tests/suite/main.rs). Test-level
+# process isolation comes from cargo-nextest (one process per #[test]); use
+# `cargo nextest run -p bun_runtime -E 'test(buffer_conformance)'` to scope a
+# run. No per-file [[test]] targets are declared anymore.
