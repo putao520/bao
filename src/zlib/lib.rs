@@ -285,6 +285,31 @@ pub fn deflate_compress(input: &[u8], window_bits: c_int, level: c_int) -> Optio
 /// std's Global — both channels use the same underlying global allocator,
 /// so this moves pointers, never bytes. Used by the one-shot inflate
 /// entrypoints whose public signatures (rightly) stay on std `Vec<u8>`.
+/// Zero-copy std `Vec<u8>` → `ChanVec<u8>` adopter — the public twin of
+/// `chan_vec_to_std` (below): the one-shot inflate entrypoints return std
+/// Vec (stable public surface); callers that store the result back into a
+/// facade-typed list (install's `BodyPool.list`) re-adopt the buffer
+/// instead of copying bytes. Same channel-divergence story as
+/// `bun_alloc::core_alloc::adopt_std_box`.
+#[cfg(bao_nightly)]
+#[inline]
+pub fn adopt_std_vec(v: Vec<u8>) -> bun_core::vec::ChanVec<u8> {
+    v
+}
+#[cfg(not(bao_nightly))]
+#[inline]
+pub fn adopt_std_vec(v: Vec<u8>) -> bun_core::vec::ChanVec<u8> {
+    use allocator_api2::alloc::Global as Api2Global;
+    use allocator_api2::vec::Vec as Api2Vec;
+    let mut v = ::core::mem::ManuallyDrop::new(v);
+    let (ptr, len, cap) = (v.as_mut_ptr(), v.len(), v.capacity());
+    // SAFETY: the std Vec (now ManuallyDrop — never freed by its own Drop)
+    // uniquely owned a Global allocation; api2's Global is the same
+    // underlying allocator (process-global mimalloc), so adopting the exact
+    // (ptr, len, cap) triple preserves every invariant — pointer move.
+    unsafe { Api2Vec::from_raw_parts_in(ptr, len, cap, Api2Global) }
+}
+
 #[cfg(bao_nightly)]
 #[inline]
 pub(crate) fn chan_vec_to_std(v: bun_core::vec::ChanVec<u8>) -> Vec<u8> {

@@ -333,7 +333,7 @@ impl ExtractTarball {
                     // Pure Rust fast-path: use bun_zlib (flate2 + miniz_oxide).
                     zlib_pool.list.clear();
                     if let Some(decompressed) = bun_zlib::inflate_decompress(tgz_bytes, 31) {
-                        zlib_pool.list = decompressed;
+                        zlib_pool.list = bun_zlib::adopt_std_vec(decompressed);
                         needs_to_decompress = false;
                     }
                 }
