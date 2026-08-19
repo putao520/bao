@@ -479,7 +479,7 @@ pub fn generate_code_for_file_in_chunk_js<'r, 'src>(
                 default_expr = Expr::allocate(
                     temp_arena,
                     E::Object {
-                        properties: Vec::move_from_list(new_properties),
+                        properties: bun_alloc::AstVec::move_from_list(new_properties),
                         ..Default::default()
                     },
                     default_expr.loc,
@@ -608,7 +608,7 @@ pub fn generate_code_for_file_in_chunk_js<'r, 'src>(
                             },
                             bun_ast::Loc::EMPTY,
                         ),
-                        args: Vec::move_from_list(cjs_args),
+                        args: bun_alloc::AstVec::move_from_list(cjs_args),
                         ..Default::default()
                     },
                     bun_ast::Loc::EMPTY,
@@ -832,7 +832,7 @@ pub fn generate_code_for_file_in_chunk_js<'r, 'src>(
                     let value = Expr::init(
                         E::Call {
                             target: Expr::init_identifier(c.esm_runtime_ref, bun_ast::Loc::EMPTY),
-                            args: Vec::move_from_list(esm_args),
+                            args: bun_alloc::AstVec::move_from_list(esm_args),
                             ..Default::default()
                         },
                         bun_ast::Loc::EMPTY,
@@ -1102,7 +1102,7 @@ fn merge_adjacent_local_stmts(stmts: &mut Vec<Stmt>, _arena: &Bump) {
                         stmts[end - 1] = Stmt::allocate(
                             _arena,
                             S::Local {
-                                decls: Vec::move_from_list(clone),
+                                decls: bun_alloc::AstVec::move_from_list(clone),
                                 is_export: before.is_export,
                                 was_commonjs_export: before.was_commonjs_export,
                                 was_ts_import_equals: before.was_ts_import_equals,

@@ -1,4 +1,6 @@
 use bun_alloc::AstAlloc;
+use bun_alloc::AstBox;
+use bun_alloc::core_alloc::{AllocVec, Global};
 use bun_ast::{ImportKind, ImportRecord, ImportRecordFlags, ImportRecordTag, Index as AstIndex};
 use bun_ast::{Loc, Log, Range, Source};
 use bun_core::Error;
@@ -15,7 +17,9 @@ bun_core::declare_scope!(HTMLScanner, hidden);
 // (LIFETIMES.tsv had no row for this file; classified locally as BORROW_PARAM).
 pub(crate) struct HTMLScanner<'a> {
     // arena field dropped — global mimalloc (see PORTING.md §Allocators).
-    pub import_records: Vec<ImportRecord>, // Zig: ImportRecord.List
+    // Facade-typed to match `css::BundlerStyleSheet::parse_bundler`'s
+    // `PlainVec2<ImportRecord>` contract (`AllocVec<T, Global>`).
+    pub import_records: AllocVec<ImportRecord, Global>, // Zig: ImportRecord.List
     pub log: &'a mut Log,
     pub source: &'a Source,
 }
@@ -23,7 +27,7 @@ pub(crate) struct HTMLScanner<'a> {
 impl<'a> HTMLScanner<'a> {
     pub(crate) fn init(log: &'a mut Log, source: &'a Source) -> HTMLScanner<'a> {
         HTMLScanner {
-            import_records: Vec::new(),
+            import_records: AllocVec::new(),
             log,
             source,
         }
@@ -68,7 +72,7 @@ impl<'a> HTMLScanner<'a> {
         };
 
         let owned: &'static [u8] =
-            Box::leak(AstAlloc::vec_from_slice(path_to_use).into_boxed_slice());
+            AstBox::leak(AstAlloc::vec_from_slice(path_to_use).into_boxed_slice());
         let record = ImportRecord {
             path: FsPath::init(owned),
             kind,

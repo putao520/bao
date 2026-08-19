@@ -269,12 +269,16 @@ pub fn generate(c: &mut LinkerContext, chunks: &mut [Chunk]) -> Result<Box<[u8]>
                 "{}",
                 bfmt::format_json_string_utf8(path, Default::default())
             )?;
-            j.push_owned(buf.into_boxed_slice());
+            j.push_owned(bun_alloc::core_alloc::adopt_std_box(
+                buf.into_boxed_slice(),
+            ));
         }
         {
             let mut buf: Vec<u8> = Vec::new();
             write!(buf, ": {{\n      \"bytes\": {}", source.contents.len())?;
-            j.push_owned(buf.into_boxed_slice());
+            j.push_owned(bun_alloc::core_alloc::adopt_std_box(
+                buf.into_boxed_slice(),
+            ));
         }
 
         // Write imports
@@ -302,7 +306,9 @@ pub fn generate(c: &mut LinkerContext, chunks: &mut [Chunk]) -> Result<Box<[u8]>
                         "{}",
                         bfmt::format_json_string_utf8(record.path.text, Default::default())
                     )?;
-                    j.push_owned(buf.into_boxed_slice());
+                    j.push_owned(bun_alloc::core_alloc::adopt_std_box(
+                        buf.into_boxed_slice(),
+                    ));
                 }
                 j.push_static(b",\n          \"kind\": \"");
                 j.push_static(record.kind.label());
@@ -317,7 +323,9 @@ pub fn generate(c: &mut LinkerContext, chunks: &mut [Chunk]) -> Result<Box<[u8]>
                         "{}",
                         bfmt::format_json_string_utf8(record.original_path, Default::default())
                     )?;
-                    j.push_owned(buf.into_boxed_slice());
+                    j.push_owned(bun_alloc::core_alloc::adopt_std_box(
+                        buf.into_boxed_slice(),
+                    ));
                 }
 
                 // Add "external": true for external imports

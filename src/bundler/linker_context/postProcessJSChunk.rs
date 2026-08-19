@@ -609,7 +609,7 @@ pub fn post_process_js_chunk(
         if !code.is_empty() {
             newline_before_comment = true;
             line_offset.advance(&code);
-            j.push_owned(code);
+            j.push_owned(bun_alloc::core_alloc::adopt_std_box(code));
         }
     }
 
@@ -687,7 +687,9 @@ pub fn post_process_js_chunk(
                     sanitized[i + 1] = b'_';
                 }
                 line_offset.advance(&sanitized);
-                j.push_owned(sanitized.into_boxed_slice());
+                j.push_owned(bun_alloc::core_alloc::adopt_std_box(
+                    sanitized.into_boxed_slice(),
+                ));
             } else {
                 j.push_static(pretty);
                 line_offset.advance(pretty);
@@ -761,7 +763,7 @@ pub fn post_process_js_chunk(
             // Stick the entry point tail at the end of the file. Deliberately don't
             // include any source mapping information for this because it's automatically
             // generated and doesn't correspond to a location in the input file.
-            j.push_owned(tail_code);
+            j.push_owned(bun_alloc::core_alloc::adopt_std_box(tail_code));
         }
     }
 
@@ -773,7 +775,7 @@ pub fn post_process_js_chunk(
             if newline_before_comment {
                 j.push_static(b"\n");
             }
-            j.push_owned(code);
+            j.push_owned(bun_alloc::core_alloc::adopt_std_box(code));
         }
     }
 

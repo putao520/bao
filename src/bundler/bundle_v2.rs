@@ -363,8 +363,14 @@ pub mod bv2_impl {
     /// bun_bake (post tier-6 collapse: bun_runtime::bake) re-exports from here.
     pub mod bake_types {
         /// Mirrors src/bake/lib.zig `Side`.
+        ///
+        /// No `ConstParamTy` derive: nothing consumes `Side` as a const
+        /// generic today (checked — no `<const _:
+        /// Side>` station exists), and that derive is nightly-only
+        /// (`min_adt_const_params`); if a comptime station returns, it rides
+        /// the u8-reification pattern (see `js_printer::Encoding`).
         #[repr(u8)]
-        #[derive(Copy, Clone, Eq, PartialEq, Debug, core::marker::ConstParamTy)]
+        #[derive(Copy, Clone, Eq, PartialEq, Debug)]
         pub enum Side {
             Client = 0,
             Server = 1,
@@ -2032,7 +2038,7 @@ pub mod bv2_impl {
             let input_files_cols = input_files_slice.split_mut();
             let additional_files: &mut [bun_alloc::AstVec<crate::AdditionalFile>] =
                 input_files_cols.additional_files;
-            let unique_keys: &mut [Box<[u8], bun_alloc::AstAlloc>] =
+            let unique_keys: &mut [bun_alloc::AstBox<[u8]>] =
                 input_files_cols.unique_key_for_additional_file;
             let content_hashes: &mut [u64] = input_files_cols.content_hash_for_additional_file;
             for (index, url_for_css) in all_urls_for_css.iter().enumerate() {

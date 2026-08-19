@@ -1,10 +1,12 @@
 // Dual-mode build (stable ⇄ nightly): the bare `#[thread_local]` TLS slot in
 // ThreadPool.rs is `#[cfg(bao_nightly)]`-gated with a const-init
-// `thread_local!` stable fallback (bun_core::thread_id idiom). The two
-// remaining features below are NOT dual-moded yet — they are the api2 medium
-// tier (`allocator_api` Vec identity swap + bundler adt stations) owned by
-// other waves; bundler goes stable-green only after those land.
-#![feature(adt_const_params, allocator_api)]
+// `thread_local!` stable fallback (bun_core::thread_id idiom). The adt
+// const-param stations ride `js_printer::Encoding` reified as `u8` consts
+// (module-shaped namespace, `{ Encoding::Utf8 }` spellings unchanged) — no
+// `adt_const_params` feature needed on either channel. `allocator_api` stays
+// nightly-only (gated): arena lists come through the `bun_alloc::AstVec` /
+// `AstBox` facade, which is the api2 mirror on stable.
+#![cfg_attr(bao_nightly, feature(allocator_api))]
 #![cfg_attr(bao_nightly, feature(thread_local))]
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 #![warn(unused_must_use)]

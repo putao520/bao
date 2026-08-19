@@ -376,6 +376,13 @@ pub type AstVec<T> = alloc::vec::Vec<T, AstAlloc>;
 #[cfg(not(bao_nightly))]
 pub type AstVec<T> = crate::core_alloc::AllocVec<T, AstAlloc>;
 
+/// `Box` in the same arena ([`AstVec`]'s boxed-slice sibling — the
+/// `Box<[u8], AstAlloc>` shape key-records and export-alias lists use).
+#[cfg(bao_nightly)]
+pub type AstBox<T> = alloc::boxed::Box<T, AstAlloc>;
+#[cfg(not(bao_nightly))]
+pub type AstBox<T> = crate::core_alloc::AllocBox<T, AstAlloc>;
+
 use crate::alloc_result;
 
 #[inline(always)]

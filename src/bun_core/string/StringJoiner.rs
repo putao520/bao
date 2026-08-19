@@ -4,6 +4,7 @@
 
 use crate::string::strings;
 use bun_alloc::AllocError;
+use bun_alloc::core_alloc::{AllocBox, Global};
 
 // PORT NOTE: Zig's `std.mem.Allocator` param field dropped — global mimalloc is used for
 // node and duplicated-string allocations.
@@ -27,7 +28,10 @@ enum Node<'a> {
     Borrowed(&'a [u8]),
     /// Heap-allocated by this joiner (via `push_owned`/`push_cloned`); freed
     /// when the node drops.
-    Owned(Box<[u8]>),
+    /// Facade box: byte-identical std `Box<[u8]>` on nightly, the api2
+    /// mirror on stable — `push_owned` callers on both channels hand in
+    /// whichever boxed slice their channel's `Vec::into_boxed_slice` makes.
+    Owned(AllocBox<[u8], Global>),
 }
 
 impl Node<'_> {
@@ -37,6 +41,38 @@ impl Node<'_> {
             Node::Borrowed(slice) => slice,
             Node::Owned(boxed) => boxed,
         }
+    }
+}
+
+/// Anything `push_owned` can take: the facade box, or a plain std
+/// `Box<[u8]>` (adopted zero-copy — same Global allocator). On nightly the
+/// two types are identical, so only the reflexive impl exists there; on
+/// stable both impls coexist for the two distinct types.
+pub trait IntoOwnedSliceBox {
+    fn into_owned_slice_box(self) -> AllocBox<[u8], Global>;
+}
+
+#[cfg(bao_nightly)]
+impl IntoOwnedSliceBox for ::std::boxed::Box<[u8]> {
+    #[inline]
+    fn into_owned_slice_box(self) -> AllocBox<[u8], Global> {
+        self
+    }
+}
+
+#[cfg(not(bao_nightly))]
+impl IntoOwnedSliceBox for ::std::boxed::Box<[u8]> {
+    #[inline]
+    fn into_owned_slice_box(self) -> AllocBox<[u8], Global> {
+        bun_alloc::core_alloc::adopt_std_box(self)
+    }
+}
+
+#[cfg(not(bao_nightly))]
+impl IntoOwnedSliceBox for AllocBox<[u8], Global> {
+    #[inline]
+    fn into_owned_slice_box(self) -> Self {
+        self
     }
 }
 
@@ -60,7 +96,7 @@ impl<'a> StringJoiner<'a> {
     }
 
     /// Takes ownership of `data` (no copy). Freed when the node is dropped.
-    pub fn push_owned(&mut self, data: Box<[u8]>) {
+    pub fn push_owned(&mut self, data: AllocBox<[u8], Global>) {
         if data.is_empty() {
             return;
         }
@@ -73,7 +109,7 @@ impl<'a> StringJoiner<'a> {
             return;
         }
         // bun.handleOom(this.allocator.dupe(u8, data)) → Box<[u8]> (aborts on OOM)
-        self.push_owned(Box::from(data));
+        self.push_owned(AllocBox::from(data));
     }
 
     // PORT NOTE: Zig signature was `push(data: []const u8, ?Allocator param)`.

@@ -2,7 +2,7 @@ use core::ptr::NonNull;
 
 use crate::BundledAst as JSAst;
 use bun_alloc::Arena as ThreadLocalArena;
-use bun_alloc::{AstAlloc, AstVec};
+use bun_alloc::{AstAlloc, AstBox, AstVec};
 use bun_ast::server_component_boundary;
 use bun_collections::MultiArrayList;
 use enum_map::EnumMap;
@@ -110,7 +110,7 @@ pub struct InputFile {
     // here so deinit could free `source`/`secondary_path` with the right alloc.
     // In Rust the owned fields (Box/Vec) carry their arena; field dropped.
     pub additional_files: AstVec<AdditionalFile>,
-    pub unique_key_for_additional_file: Box<[u8], AstAlloc>,
+    pub unique_key_for_additional_file: AstBox<[u8]>,
     pub content_hash_for_additional_file: u64,
     pub flags: InputFileFlags,
 }
@@ -140,7 +140,7 @@ bun_collections::multi_array_columns! {
         loader: options::Loader,
         side_effects: SideEffects,
         additional_files: AstVec<AdditionalFile>,
-        unique_key_for_additional_file: Box<[u8], AstAlloc>,
+        unique_key_for_additional_file: AstBox<[u8]>,
         content_hash_for_additional_file: u64,
         flags: InputFileFlags,
     }

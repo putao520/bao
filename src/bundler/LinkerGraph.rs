@@ -72,7 +72,7 @@ pub mod entry_point {
 }
 
 pub mod js_meta {
-    use bun_alloc::{AstAlloc, AstVec};
+    use bun_alloc::{AstAlloc, AstBox, AstVec};
     use bun_ast::{Dependency, Ref};
     use bun_collections::array_hash_map::StringContext;
     use bun_collections::{ArrayHashMap, AutoContext, StringArrayHashMap};
@@ -110,7 +110,7 @@ pub mod js_meta {
     pub type RefImportData = ArrayHashMap<Ref, ImportData, AutoContext, AstAlloc>;
     pub type ResolvedExports = StringArrayHashMap<ExportData, StringContext, AstAlloc>;
     pub type ProbablyTypescriptType = ArrayHashMap<Ref, (), AutoContext, AstAlloc>;
-    pub type SortedAndFilteredExportAliases = AstVec<Box<[u8], AstAlloc>>;
+    pub type SortedAndFilteredExportAliases = AstVec<AstBox<[u8]>>;
     pub type CjsExportCopies = AstVec<Ref>;
     pub type TopLevelSymbolToParts = bun_ast::ast_result::TopLevelSymbolToParts;
 

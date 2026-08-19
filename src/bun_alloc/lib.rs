@@ -73,6 +73,29 @@ pub mod core_alloc {
     pub type AllocBox<T, A> = alloc::boxed::Box<T, A>;
     #[cfg(not(bao_nightly))]
     pub type AllocBox<T, A> = allocator_api2::boxed::Box<T, A>;
+
+    /// Zero-copy adopter for handing a std `Box<[u8]>` to a facade-typed
+    /// slot (e.g. `StringJoiner::push_owned`). Identity on nightly (the two
+    /// types are the same); on stable it re-adopts the buffer by raw parts —
+    /// std's `Global` and the api2 mirror's `Global` are the same underlying
+    /// allocator, so this is a pointer move, not a copy.
+    #[cfg(bao_nightly)]
+    #[inline]
+    pub fn adopt_std_box(b: ::std::boxed::Box<[u8]>) -> AllocBox<[u8], Global> {
+        b
+    }
+    #[cfg(not(bao_nightly))]
+    #[inline]
+    pub fn adopt_std_box(b: ::std::boxed::Box<[u8]>) -> AllocBox<[u8], Global> {
+        use allocator_api2::vec::Vec as Api2Vec;
+        // SAFETY: `b` uniquely owns a Global allocation of `b.len()` bytes
+        // (boxed slices always have len == capacity); `into_raw` moves
+        // ownership out, and `from_raw_parts_in` re-adopts it under the
+        // identical allocator — no byte is copied, duplicated, or freed.
+        let len = b.len();
+        let ptr = ::std::boxed::Box::into_raw(b) as *mut u8;
+        unsafe { Api2Vec::from_raw_parts_in(ptr, len, len, Global) }.into_boxed_slice()
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -587,7 +610,7 @@ pub use stack_fallback::{ArenaPtr, StackFallback};
 pub mod mimalloc_arena;
 
 pub mod ast_alloc;
-pub use ast_alloc::{AstAlloc, AstVec};
+pub use ast_alloc::{AstAlloc, AstBox, AstVec};
 mod hashbrown_bridge;
 /// Re-export so `bun_collections` can name the polyfill trait in
 /// `StringHashMap`'s `A` bound without taking its own direct dep on

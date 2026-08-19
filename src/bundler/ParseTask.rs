@@ -1207,7 +1207,8 @@ pub mod parse_worker {
             }
             Loader::Css => {
                 // make css ast
-                let mut import_records = Vec::<ImportRecord>::default();
+                let mut import_records =
+                    bun_alloc::core_alloc::AllocVec::<ImportRecord, bun_alloc::core_alloc::Global>::new();
                 let source_code = &source.contents;
                 let mut temp_log = Log::init();
                 // PORT NOTE: Zig `defer { temp_log.appendToMaybeRecycled(log, source) }` —
