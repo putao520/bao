@@ -96,7 +96,8 @@ impl<'a> StringJoiner<'a> {
     }
 
     /// Takes ownership of `data` (no copy). Freed when the node is dropped.
-    pub fn push_owned(&mut self, data: AllocBox<[u8], Global>) {
+    pub fn push_owned(&mut self, data: impl IntoOwnedSliceBox) {
+        let data = data.into_owned_slice_box();
         if data.is_empty() {
             return;
         }

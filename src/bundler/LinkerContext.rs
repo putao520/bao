@@ -1147,9 +1147,9 @@ impl<'a> LinkerContext<'a> {
                 js_printer::quote_for_json(pretty, &mut quote_buf, false)?;
                 // PERF(port): was arena-backed; `to_default_owned` moves the
                 // buffer into the joiner (joiner owns it until `done`).
-                j.push_owned(bun_alloc::core_alloc::adopt_std_box(
+                j.push_owned(
                     quote_buf.to_default_owned(),
-                ));
+                  );
             }
 
             let mut next_mapping_source_index: i32 = 1;
@@ -1176,9 +1176,9 @@ impl<'a> LinkerContext<'a> {
                 let mut quote_buf = MutableString::init(pretty.len() + ", ".len() + 2)?;
                 quote_buf.append_assume_capacity(b", "); // PERF(port): was assume_capacity
                 js_printer::quote_for_json(pretty, &mut quote_buf, false)?;
-                j.push_owned(bun_alloc::core_alloc::adopt_std_box(
+                j.push_owned(
                     quote_buf.to_default_owned(),
-                ));
+                  );
             }
         }
 
@@ -1256,9 +1256,9 @@ impl<'a> LinkerContext<'a> {
             use std::io::Write;
             write!(&mut buf, "{}", DebugIDFormatter { id: isolated_hash })
                 .expect("infallible: in-memory write");
-            j.push_owned(bun_alloc::core_alloc::adopt_std_box(
+            j.push_owned(
                 buf.into_boxed_slice(),
-            ));
+              );
             j.push_static(b"\",\n  \"names\": []\n}");
         } else {
             j.push_static(b"\",\n  \"names\": []\n}");

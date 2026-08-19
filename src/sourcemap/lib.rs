@@ -1273,10 +1273,10 @@ pub fn append_source_map_chunk<'a>(
     let mut start_state = start_state_;
     // Handle line breaks in between this mapping and the previous one
     if start_state.generated_line != 0 {
-        j.push_owned(bun_alloc::core_alloc::adopt_std_box(bun_core::strings::repeating_alloc(
+        j.push_owned(bun_core::strings::repeating_alloc(
             usize::try_from(start_state.generated_line).expect("int cast"),
             b';',
-        )?));
+        )?);
         prev_end_state.generated_column = 0;
     }
 
@@ -1317,7 +1317,7 @@ pub fn append_source_map_chunk<'a>(
 
     let mut str = bun_core::MutableString::init_empty();
     append_mapping_to_buffer(&mut str, j.last_byte(), prev_end_state, start_state);
-    j.push_owned(bun_alloc::core_alloc::adopt_std_box(str.to_owned_slice()));
+    j.push_owned(str.to_owned_slice());
 
     // Then append everything after that without modification.
     j.push_static(source_map);

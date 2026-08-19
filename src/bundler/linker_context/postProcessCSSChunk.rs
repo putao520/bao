@@ -84,9 +84,9 @@ pub fn post_process_css_chunk(
                     escaped.push(byte);
                 }
                 line_offset.advance(&escaped);
-                j.push_owned(bun_alloc::core_alloc::adopt_std_box(
+                j.push_owned(
                     escaped.into_boxed_slice(),
-                ));
+                  );
             } else {
                 j.push_static(pretty);
                 line_offset.advance(pretty);
