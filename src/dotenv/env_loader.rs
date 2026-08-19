@@ -137,6 +137,33 @@ pub struct Loader<'a> {
 
 // Module-level mutable statics from the Zig (`var` decls inside `Loader`).
 static DID_LOAD_CCACHE_PATH: AtomicBool = AtomicBool::new(false);
+
+/// Serializes every mutation of a process-shared `Loader`. The `INSTANCE`
+/// singleton is aliased into every `Transpiler` as a raw `*mut` (the ported
+/// Zig "global env loader" shape), so two concurrent transpile sessions —
+/// worker threads, parallel test harnesses — can interleave
+/// `load_process`/`load` map writes on the SAME `StringArrayHashMap`
+/// (check-then-act on `did_load_process` races; `push_entry` grows the
+/// values Vec while the other thread indexes it) and corrupt the bucket
+/// storage: the next replaced entry drops a garbage `Box<[u8]>` and aborts
+/// the process on a non-unwinding `Layout` panic. Taking this lock around
+/// the whole mutate phase restores the ported single-thread CLI-init
+/// invariant for aliased loaders; fresh caller-owned Loaders (no alias)
+/// serialize harmlessly. Reads outside the lock keep the documented
+/// post-configure stability invariant (map quiescent after bring-up).
+static LOADER_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Acquire the loader mutation lock, tolerating poisoning (a panic in a
+/// previous critical section must not cascade into a poisoned-lock panic
+/// here — the map state itself is only ever appends/replaces under the
+/// lock, so recovery is safe).
+#[inline]
+fn loader_mutation_guard() -> std::sync::MutexGuard<'static, ()> {
+    match LOADER_MUTATION_LOCK.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 // Zig: `var node_path_to_use_set_once: []const u8 = ""` — overwritten on every
 // `loadNodeJSConfig` call (env_loader.zig:344). NOT set-once despite the name,
 // so RwLock<Option> (not OnceLock) — a 2nd call with an override must update the cache.
@@ -618,6 +645,10 @@ impl<'a> Loader<'a> {
     }
 
     pub fn load_process(&mut self) -> Result<(), AllocError> {
+        // Whole-of-mutation lock: the `did_load_process` check-then-act and
+        // the environ `put` loop must be one critical section when `self` is
+        // the `INSTANCE`-aliased singleton (see `LOADER_MUTATION_LOCK`).
+        let _guard = loader_mutation_guard();
         if self.did_load_process {
             return Ok(());
         }
@@ -663,6 +694,9 @@ impl<'a> Loader<'a> {
         suffix: DotEnvFileSuffix,
         skip_default_env: bool,
     ) -> Result<(), bun_core::Error> {
+        // Same shared-singleton rationale as `load_process` — `.env` file
+        // parses append/replace into the aliased map under the same lock.
+        let _guard = loader_mutation_guard();
         // PERF(port): SUFFIX was `comptime DotEnvFileSuffix` — demoted to runtime arg
         // (avoids unstable adt_const_params; cold path). Argument order matches the Zig
         // signature (`dir, env_files, comptime suffix, skip_default_env`) so high-tier
