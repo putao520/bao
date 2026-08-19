@@ -5,7 +5,10 @@
 name = "bao-mozjs-sys"
 description = "System crate for the Mozilla SpiderMonkey JavaScript engine."
 repository.workspace = true
-version = "140.13.0-4"
+# 140.13.0-5 (2026-08-20): DWARF line-tables downgrade ships in-package
+# (15a4a699): build.rs now pins MOZ_DEBUG_FLAGS="-gdwarf-4 -g1" so the
+# mozjs C++ builds with DWARF4 line-tables without any user env/makefile.
+version = "140.13.0-5"
 authors = ["Mozilla", "The Servo Project Developers"]
 links = "mozjs"
 license.workspace = true
