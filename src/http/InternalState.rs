@@ -360,7 +360,7 @@ impl<'a> InternalState<'a> {
     // and pass it here as an owned Vec — no `&` into `self` survives across `&mut self`.
     pub fn process_body_buffer(
         &mut self,
-        mut buffer: Vec<u8>,
+        mut buffer: bun_core::vec::ChanVec<u8>,
         is_final_chunk: bool,
     ) -> Result<bool, Error> {
         if self.flags.is_redirect_pending {

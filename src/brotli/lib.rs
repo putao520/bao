@@ -125,7 +125,7 @@ pub use bun_core::compress::State as ReaderState;
 
 pub struct BrotliReaderArrayList<'a> {
     pub input: &'a [u8],
-    pub list_ptr: &'a mut Vec<u8>,
+    pub list_ptr: &'a mut bun_core::vec::ChanVec<u8>,
     pub state: ReaderState,
     pub total_out: usize,
     pub total_in: usize,
@@ -153,7 +153,7 @@ impl<'a> BrotliReaderArrayList<'a> {
 
     pub fn new_with_options(
         input: &'a [u8],
-        list: &'a mut Vec<u8>,
+        list: &'a mut bun_core::vec::ChanVec<u8>,
         options: &DecoderOptions,
     ) -> Result<Box<Self>, Error> {
         Ok(Self::new(Self::init_with_options(
@@ -165,7 +165,7 @@ impl<'a> BrotliReaderArrayList<'a> {
 
     pub fn init_with_options(
         input: &'a [u8],
-        list: &'a mut Vec<u8>,
+        list: &'a mut bun_core::vec::ChanVec<u8>,
         _options: &DecoderOptions,
     ) -> Result<Self, Error> {
         Ok(Self {

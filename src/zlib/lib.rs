@@ -278,6 +278,31 @@ pub fn deflate_compress(input: &[u8], window_bits: c_int, level: c_int) -> Optio
     }
 }
 
+
+/// Zero-copy `ChanVec<u8>` → std `Vec<u8>` handoff (mirror of
+/// `bun_alloc::core_alloc::adopt_std_box`'s pattern). Nightly is identity
+/// (`ChanVec` IS std Vec); on stable the api2 buffer is re-adopted under
+/// std's Global — both channels use the same underlying global allocator,
+/// so this moves pointers, never bytes. Used by the one-shot inflate
+/// entrypoints whose public signatures (rightly) stay on std `Vec<u8>`.
+#[cfg(bao_nightly)]
+#[inline]
+pub(crate) fn chan_vec_to_std(v: bun_core::vec::ChanVec<u8>) -> Vec<u8> {
+    v
+}
+#[cfg(not(bao_nightly))]
+#[inline]
+pub(crate) fn chan_vec_to_std(v: bun_core::vec::ChanVec<u8>) -> Vec<u8> {
+    let mut v = ::core::mem::ManuallyDrop::new(v);
+    let (ptr, len, cap) = (v.as_mut_ptr(), v.len(), v.capacity());
+    // SAFETY: the api2 Vec (now ManuallyDrop — never freed by its own Drop)
+    // uniquely owned a Global allocation; std's Global is the same
+    // underlying allocator (process-global mimalloc), so adopting the exact
+    // (ptr, len, cap) triple under std's Vec preserves every invariant —
+    // pointer move, no copy, no double free.
+    unsafe { Vec::from_raw_parts(ptr, len, cap) }
+}
+
 pub fn inflate_decompress(input: &[u8], window_bits: c_int) -> Option<Vec<u8>> {
     use std::io::Read;
 
@@ -368,7 +393,7 @@ pub fn inflate_decompress_checked(
         return Err(InflateFailure::Truncated);
     }
 
-    let mut out = Vec::new();
+    let mut out: bun_core::vec::ChanVec<u8> = Default::default();
     // Scope the reader so its `&mut out` borrow (held until drop) ends
     // before `out` is returned.
     let outcome: Result<(), InflateFailure> = {
@@ -391,7 +416,7 @@ pub fn inflate_decompress_checked(
         })
     };
     match outcome {
-        Ok(()) => Ok(out),
+        Ok(()) => Ok(chan_vec_to_std(out)),
         Err(reason) => {
             if (window_bits == 0 || window_bits > 30)
                 && input.len() >= 2
@@ -554,7 +579,7 @@ enum GzipPhase {
 
 pub struct ZlibReaderArrayList<'a> {
     pub input: &'a [u8],
-    pub list_ptr: &'a mut Vec<u8>,
+    pub list_ptr: &'a mut bun_core::vec::ChanVec<u8>,
     pub state: ZlibReaderArrayListState,
     pub max_output_size: usize,
     window_bits: c_int,
@@ -598,13 +623,13 @@ impl<'a> ZlibReaderArrayList<'a> {
         self.state = ZlibReaderArrayListState::End;
     }
 
-    pub fn init(input: &'a [u8], list: &'a mut Vec<u8>) -> Result<Box<Self>, ZlibError> {
+    pub fn init(input: &'a [u8], list: &'a mut bun_core::vec::ChanVec<u8>) -> Result<Box<Self>, ZlibError> {
         Self::init_with_options(input, list, Options { window_bits: 15 + 32, ..Default::default() })
     }
 
     pub fn init_with_options(
         input: &'a [u8],
-        list: &'a mut Vec<u8>,
+        list: &'a mut bun_core::vec::ChanVec<u8>,
         options: Options,
     ) -> Result<Box<Self>, ZlibError> {
         Self::init_with_options_and_list_allocator(input, list, options)
@@ -612,7 +637,7 @@ impl<'a> ZlibReaderArrayList<'a> {
 
     pub fn init_with_options_and_list_allocator(
         input: &'a [u8],
-        list: &'a mut Vec<u8>,
+        list: &'a mut bun_core::vec::ChanVec<u8>,
         options: Options,
     ) -> Result<Box<Self>, ZlibError> {
         Ok(Box::new(Self {
@@ -944,7 +969,7 @@ impl<'a> ZlibReaderArrayList<'a> {
 
 pub struct ZlibCompressorArrayList<'a> {
     pub input: &'a [u8],
-    pub list_ptr: &'a mut Vec<u8>,
+    pub list_ptr: &'a mut bun_core::vec::ChanVec<u8>,
     pub state: ZlibCompressorArrayListState,
     options: Options,
 }
@@ -960,11 +985,11 @@ impl<'a> ZlibCompressorArrayList<'a> {
         self.state = ZlibCompressorArrayListState::End;
     }
 
-    pub fn init(input: &'a [u8], list: &'a mut Vec<u8>, options: Options) -> Result<Box<Self>, ZlibError> {
+    pub fn init(input: &'a [u8], list: &'a mut bun_core::vec::ChanVec<u8>, options: Options) -> Result<Box<Self>, ZlibError> {
         Self::init_with_list_allocator(input, list, options)
     }
 
-    pub fn init_with_list_allocator(input: &'a [u8], list: &'a mut Vec<u8>, options: Options) -> Result<Box<Self>, ZlibError> {
+    pub fn init_with_list_allocator(input: &'a [u8], list: &'a mut bun_core::vec::ChanVec<u8>, options: Options) -> Result<Box<Self>, ZlibError> {
         let bound = compress_bound_for(input.len(), options.gzip);
         list.reserve(bound.saturating_sub(list.capacity()));
         Ok(Box::new(Self {

@@ -36,7 +36,10 @@ pub enum Decompressor {
 /// (the only other access is the immediate re-seat on the next chunk, which
 /// overwrites `list_ptr`).
 #[inline(always)]
-unsafe fn seat<'a>(input: &'a [u8], out: &'a mut Vec<u8>) -> (&'static [u8], &'static mut Vec<u8>) {
+unsafe fn seat<'a>(
+    input: &'a [u8],
+    out: &'a mut bun_core::vec::ChanVec<u8>,
+) -> (&'static [u8], &'static mut bun_core::vec::ChanVec<u8>) {
     // SAFETY: (`Interned::assume` — Population B, holder-backed) `input` is
     // `InternalState::compressed_body` (or the caller's body chunk), owned by
     // the surrounding `HTTPClient` request and freed in `InternalState::deinit`

@@ -1588,13 +1588,15 @@ pub(crate) mod body_out {
     /// `const body = out_str.*`) so a following `state.reset()` doesn't
     /// deliver an empty body.
     #[inline]
-    pub(super) fn take_list(p: Option<NonNull<MutableString>>) -> Option<Vec<u8>> {
+    pub(super) fn take_list(
+        p: Option<NonNull<MutableString>>,
+    ) -> Option<bun_core::vec::ChanVec<u8>> {
         p.map(|p| core::mem::take(&mut as_mut(p).list))
     }
     /// Restore the body bytes that `state.reset()` cleared (http.zig
     /// `result.body.?.* = body`).
     #[inline]
-    pub(super) fn restore_list(p: Option<NonNull<MutableString>>, v: Option<Vec<u8>>) {
+    pub(super) fn restore_list(p: Option<NonNull<MutableString>>, v: Option<bun_core::vec::ChanVec<u8>>) {
         if let (Some(p), Some(v)) = (p, v) {
             as_mut(p).list = v;
         }

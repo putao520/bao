@@ -1613,7 +1613,7 @@ pub(crate) fn download_to_path(
             }
         }
 
-        let mut tarball_bytes: Vec<u8> = Vec::new();
+        let mut tarball_bytes: bun_core::vec::ChanVec<u8> = Vec::new();
         {
             refresher.refresh();
             // defer compressed_archive_bytes.list.deinit(allocator) — handled by Drop

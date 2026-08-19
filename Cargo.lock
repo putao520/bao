@@ -3269,6 +3269,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
+ "bun_alloc",
  "bun_collections",
  "bun_core",
  "bun_opaque",
@@ -4134,6 +4135,7 @@ dependencies = [
 name = "bun_zlib"
 version = "0.1.0"
 dependencies = [
+ "allocator-api2",
  "bitflags 2.11.1",
  "bstr",
  "bun_alloc",
