@@ -79,7 +79,12 @@ fn recorder_callback(
     let bytes = result
         .body
         .as_deref()
-        .map(|b| b.list.clone())
+        // `MutableString.list` is the dual-channel facade vec (api2 mirror
+        // on stable); `Delivery.bytes` is a plain std Vec. Copy from the
+        // slice — one std allocation, channel-identical bytes (the previous
+        // `.list.clone()` only worked on nightly, where the two Vec types
+        // are the same).
+        .map(|b| b.list.as_slice().to_vec())
         .unwrap_or_default();
     let status = result.metadata.as_ref().map(|m| m.response.status_code);
     let has_more = result.has_more;

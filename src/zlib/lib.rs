@@ -569,9 +569,9 @@ enum GzipPhase {
     Payload,
 }
 
-pub struct ZlibReaderArrayList<'a> {
+pub struct ZlibReaderArrayList<'a, V: bun_core::vec::SpareBytesVec = bun_core::vec::ChanVec<u8>> {
     pub input: &'a [u8],
-    pub list_ptr: &'a mut bun_core::vec::ChanVec<u8>,
+    pub list_ptr: &'a mut V,
     pub state: ZlibReaderArrayListState,
     pub max_output_size: usize,
     window_bits: c_int,
@@ -604,24 +604,24 @@ pub struct ZlibReaderArrayList<'a> {
     failure: Option<InflateFailure>,
 }
 
-impl<'a> Drop for ZlibReaderArrayList<'a> {
+impl<'a, V: bun_core::vec::SpareBytesVec> Drop for ZlibReaderArrayList<'a, V> {
     fn drop(&mut self) {
         self.end();
     }
 }
 
-impl<'a> ZlibReaderArrayList<'a> {
+impl<'a, V: bun_core::vec::SpareBytesVec> ZlibReaderArrayList<'a, V> {
     pub fn end(&mut self) {
         self.state = ZlibReaderArrayListState::End;
     }
 
-    pub fn init(input: &'a [u8], list: &'a mut bun_core::vec::ChanVec<u8>) -> Result<Box<Self>, ZlibError> {
+    pub fn init(input: &'a [u8], list: &'a mut V) -> Result<Box<Self>, ZlibError> {
         Self::init_with_options(input, list, Options { window_bits: 15 + 32, ..Default::default() })
     }
 
     pub fn init_with_options(
         input: &'a [u8],
-        list: &'a mut bun_core::vec::ChanVec<u8>,
+        list: &'a mut V,
         options: Options,
     ) -> Result<Box<Self>, ZlibError> {
         Self::init_with_options_and_list_allocator(input, list, options)
@@ -629,7 +629,7 @@ impl<'a> ZlibReaderArrayList<'a> {
 
     pub fn init_with_options_and_list_allocator(
         input: &'a [u8],
-        list: &'a mut bun_core::vec::ChanVec<u8>,
+        list: &'a mut V,
         options: Options,
     ) -> Result<Box<Self>, ZlibError> {
         Ok(Box::new(Self {
@@ -866,14 +866,14 @@ impl<'a> ZlibReaderArrayList<'a> {
                 let written = (self.inflater.total_out() - out_before) as usize;
                 self.cursor += consumed;
                 if written > 0 {
-                    if self.list_ptr.len() + written > self.max_output_size {
+                    if self.list_ptr.sb_len() + written > self.max_output_size {
                         return Err(self.fail_reason(InflateFailure::Corrupt));
                     }
                     if format == WireFormat::Gzip {
                         self.member_crc.update(&out[..written]);
                         self.member_out += written as u64;
                     }
-                    self.list_ptr.extend_from_slice(&out[..written]);
+                    self.list_ptr.sb_extend_from_slice(&out[..written]);
                 }
                 match status {
                     flate2::Status::StreamEnd => {
@@ -959,31 +959,31 @@ impl<'a> ZlibReaderArrayList<'a> {
 // ZlibCompressorArrayList — one-shot compression into Vec<u8>
 // ──────────────────────────────────────────────────────────────────────────
 
-pub struct ZlibCompressorArrayList<'a> {
+pub struct ZlibCompressorArrayList<'a, V: bun_core::vec::SpareBytesVec = bun_core::vec::ChanVec<u8>> {
     pub input: &'a [u8],
-    pub list_ptr: &'a mut bun_core::vec::ChanVec<u8>,
+    pub list_ptr: &'a mut V,
     pub state: ZlibCompressorArrayListState,
     options: Options,
 }
 
-impl<'a> Drop for ZlibCompressorArrayList<'a> {
+impl<'a, V: bun_core::vec::SpareBytesVec> Drop for ZlibCompressorArrayList<'a, V> {
     fn drop(&mut self) {
         self.end();
     }
 }
 
-impl<'a> ZlibCompressorArrayList<'a> {
+impl<'a, V: bun_core::vec::SpareBytesVec> ZlibCompressorArrayList<'a, V> {
     pub fn end(&mut self) {
         self.state = ZlibCompressorArrayListState::End;
     }
 
-    pub fn init(input: &'a [u8], list: &'a mut bun_core::vec::ChanVec<u8>, options: Options) -> Result<Box<Self>, ZlibError> {
+    pub fn init(input: &'a [u8], list: &'a mut V, options: Options) -> Result<Box<Self>, ZlibError> {
         Self::init_with_list_allocator(input, list, options)
     }
 
-    pub fn init_with_list_allocator(input: &'a [u8], list: &'a mut bun_core::vec::ChanVec<u8>, options: Options) -> Result<Box<Self>, ZlibError> {
+    pub fn init_with_list_allocator(input: &'a [u8], list: &'a mut V, options: Options) -> Result<Box<Self>, ZlibError> {
         let bound = compress_bound_for(input.len(), options.gzip);
-        list.reserve(bound.saturating_sub(list.capacity()));
+        list.sb_reserve(bound.saturating_sub(list.sb_capacity()));
         Ok(Box::new(Self {
             input,
             list_ptr: list,
@@ -1001,7 +1001,7 @@ impl<'a> ZlibCompressorArrayList<'a> {
         let wb = if self.options.gzip { self.options.window_bits + 16 } else { -self.options.window_bits };
         match deflate_compress(self.input, wb, self.options.level) {
             Some(compressed) => {
-                self.list_ptr.extend_from_slice(&compressed);
+                self.list_ptr.sb_extend_from_slice(&compressed);
                 self.state = ZlibCompressorArrayListState::End;
                 Ok(())
             }
