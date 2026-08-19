@@ -331,10 +331,15 @@ fn read_package_json_from_disk<R: FolderResolverImpl>(
             // defer file.close()
             body.reset();
             // PORT NOTE: toManaged/moveToUnmanaged dance is a no-op in Rust
-            // (Vec owns its allocator).
+            // (Vec owns its allocator). `read_to_end_with_array_list` takes a
+            // std `&mut Vec<u8>` while `body.list` is facade-typed (api2 Vec
+            // on stable) — read through a std Vec, then adopt (pointer move
+            // on both channels; identity on nightly).
+            let mut read_buf: Vec<u8> = Vec::new();
             let read_result = file
-                .read_to_end_with_array_list(&mut body.list, bun_sys::SizeHint::ProbablySmall)
+                .read_to_end_with_array_list(&mut read_buf, bun_sys::SizeHint::ProbablySmall)
                 .map(|_| ());
+            body.list = bun_zlib::adopt_std_vec(read_buf);
             let _ = file.close();
             read_result?;
 

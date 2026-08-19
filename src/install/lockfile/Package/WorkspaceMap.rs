@@ -36,7 +36,16 @@ impl WorkspaceMap {
         }
     }
 
+    // Dual-mode key slice: mirrors collections' `StringArrayHashMap::keys`
+    // (nightly std `Box<[u8]>`, stable the api2 mirror's boxed slice).
+    #[cfg(bao_nightly)]
     pub(crate) fn keys(&self) -> &[Box<[u8]>] {
+        self.map.keys()
+    }
+    #[cfg(not(bao_nightly))]
+    pub(crate) fn keys(
+        &self,
+    ) -> &[bun_alloc::core_alloc::AllocBox<[u8], bun_alloc::core_alloc::Global>] {
         self.map.keys()
     }
 
@@ -61,7 +70,9 @@ impl WorkspaceMap {
         // `process_workspace_name`, so the check is dropped.
         let entry = self.map.get_or_put(key)?;
         if !entry.found_existing {
-            *entry.key_ptr = Box::<[u8]>::from(key);
+            // Facade-typed key slot: adopt_std_box is identity on nightly,
+            // pointer re-adopt on stable (same Global allocator).
+            *entry.key_ptr = bun_alloc::core_alloc::adopt_std_box(Box::<[u8]>::from(key));
         }
         // old value (incl. owned `name`) dropped automatically on assignment
         *entry.value_ptr = Entry {
