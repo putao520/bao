@@ -92,7 +92,9 @@ const res = await fetch('https://example.com/robots.txt');  // Node fetch
   使用 `#![feature]`)。
 - **磁盘与构建时间**——首次构建从源码编译 SpiderMonkey,符号已随
   `bao-mozjs-sys` 的 DWARF 降级工程降到 line-tables(`-gdwarf-4
-  -g1`):SM 对象约 **284 MB**(较全量 DWARF 缩约 6 倍,单个编译单元
+  -g1`——需依赖闭包解析到 `bao-mozjs-sys` ≥ 140.13.0-5,即 `bao-core`
+  ≥ 0.0.3 全链 bump 之后;旧闭包经 `bao-mozjs` 0.21.4 钉锁解析到
+  sys 140.13.0-4,仍是全量 DWARF):SM 对象约 **284 MB**(较全量 DWARF 缩约 6 倍,单个编译单元
   降 ~83%)。首次构建预估 **20–40 分钟**,target 目录峰值预估**个位数
   GB 量级(而非数十 GB)**。想进一步瘦身的消费者可给自己的 crate 加
   `[profile.dev] debug = "line-tables-only"`。
