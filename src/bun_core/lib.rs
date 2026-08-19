@@ -393,6 +393,49 @@ pub type ChanVec<T> = ::std::vec::Vec<T>;
 #[cfg(not(bao_nightly))]
 pub type ChanVec<T> = allocator_api2::vec::Vec<T>;
 
+/// Zero-copy std `Vec<u8>` → `ChanVec<u8>` adopter. Identity on nightly
+/// (`ChanVec` IS std Vec); on stable the buffer is re-adopted under the
+/// api2 mirror's Global — the same process-global allocator std's Global
+/// uses — so this moves pointers, never bytes. Callers converting the
+/// result of a std-Vec API into a facade-typed slot use this instead of
+/// copying. (Mirror of `core_alloc::adopt_std_box`'s pattern.)
+#[cfg(bao_nightly)]
+#[inline]
+pub fn adopt_std_vec(v: ::std::vec::Vec<u8>) -> ChanVec<u8> {
+    v
+}
+#[cfg(not(bao_nightly))]
+#[inline]
+pub fn adopt_std_vec(v: ::std::vec::Vec<u8>) -> ChanVec<u8> {
+    use allocator_api2::alloc::Global as Api2Global;
+    use allocator_api2::vec::Vec as Api2Vec;
+    let mut v = ::core::mem::ManuallyDrop::new(v);
+    let (ptr, len, cap) = (v.as_mut_ptr(), v.len(), v.capacity());
+    // SAFETY: the std Vec (ManuallyDrop — its Drop never runs) uniquely
+    // owned a Global allocation; api2's Global is the same underlying
+    // allocator (process-global mimalloc), so adopting the exact
+    // (ptr, len, cap) triple preserves every invariant — pointer move.
+    unsafe { Api2Vec::from_raw_parts_in(ptr, len, cap, Api2Global) }
+}
+
+/// Zero-copy `ChanVec<u8>` → std `Vec<u8>` handoff (the inverse of
+/// [`adopt_std_vec`]): std-Vec-typed APIs consume a facade buffer without
+/// copying bytes.
+#[cfg(bao_nightly)]
+#[inline]
+pub fn chan_vec_to_std(v: ChanVec<u8>) -> ::std::vec::Vec<u8> {
+    v
+}
+#[cfg(not(bao_nightly))]
+#[inline]
+pub fn chan_vec_to_std(v: ChanVec<u8>) -> ::std::vec::Vec<u8> {
+    let mut v = ::core::mem::ManuallyDrop::new(v);
+    let (ptr, len, cap) = (v.as_mut_ptr(), v.len(), v.capacity());
+    // SAFETY: mirror of adopt_std_vec — same allocator on both sides of
+    // the handoff, exact (ptr, len, cap) triple adopted under std's Vec.
+    unsafe { ::std::vec::Vec::from_raw_parts(ptr, len, cap) }
+}
+
     /// Byte-vec primitives shared by `std::vec::Vec<u8>` and the
     /// `allocator_api2` mirror, so the spare-capacity helpers below
     /// (`spare_bytes_mut` / `commit_spare` / …) accept either channel's

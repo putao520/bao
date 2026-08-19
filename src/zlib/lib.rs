@@ -291,42 +291,9 @@ pub fn deflate_compress(input: &[u8], window_bits: c_int, level: c_int) -> Optio
 /// facade-typed list (install's `BodyPool.list`) re-adopt the buffer
 /// instead of copying bytes. Same channel-divergence story as
 /// `bun_alloc::core_alloc::adopt_std_box`.
-#[cfg(bao_nightly)]
-#[inline]
-pub fn adopt_std_vec(v: Vec<u8>) -> bun_core::vec::ChanVec<u8> {
-    v
-}
-#[cfg(not(bao_nightly))]
-#[inline]
-pub fn adopt_std_vec(v: Vec<u8>) -> bun_core::vec::ChanVec<u8> {
-    use allocator_api2::alloc::Global as Api2Global;
-    use allocator_api2::vec::Vec as Api2Vec;
-    let mut v = ::core::mem::ManuallyDrop::new(v);
-    let (ptr, len, cap) = (v.as_mut_ptr(), v.len(), v.capacity());
-    // SAFETY: the std Vec (now ManuallyDrop — never freed by its own Drop)
-    // uniquely owned a Global allocation; api2's Global is the same
-    // underlying allocator (process-global mimalloc), so adopting the exact
-    // (ptr, len, cap) triple preserves every invariant — pointer move.
-    unsafe { Api2Vec::from_raw_parts_in(ptr, len, cap, Api2Global) }
-}
+pub use bun_core::vec::adopt_std_vec;
 
-#[cfg(bao_nightly)]
-#[inline]
-pub(crate) fn chan_vec_to_std(v: bun_core::vec::ChanVec<u8>) -> Vec<u8> {
-    v
-}
-#[cfg(not(bao_nightly))]
-#[inline]
-pub(crate) fn chan_vec_to_std(v: bun_core::vec::ChanVec<u8>) -> Vec<u8> {
-    let mut v = ::core::mem::ManuallyDrop::new(v);
-    let (ptr, len, cap) = (v.as_mut_ptr(), v.len(), v.capacity());
-    // SAFETY: the api2 Vec (now ManuallyDrop — never freed by its own Drop)
-    // uniquely owned a Global allocation; std's Global is the same
-    // underlying allocator (process-global mimalloc), so adopting the exact
-    // (ptr, len, cap) triple under std's Vec preserves every invariant —
-    // pointer move, no copy, no double free.
-    unsafe { Vec::from_raw_parts(ptr, len, cap) }
-}
+use bun_core::vec::chan_vec_to_std;
 
 pub fn inflate_decompress(input: &[u8], window_bits: c_int) -> Option<Vec<u8>> {
     use std::io::Read;

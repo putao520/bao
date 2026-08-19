@@ -116,7 +116,7 @@ pub fn http_request(
         status_code,
         status_text,
         headers,
-        body: Bytes::from(body_vec),
+        body: Bytes::from(bun_core::vec::chan_vec_to_std(body_vec)),
     })
 }
 
