@@ -2,7 +2,9 @@
 name = "bun_standalone_graph"
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. SoA items_named migration sweep.
-version = "0.1.1"
+# 0.1.2 (2026-08-19): stable-channel fix — ChanVec<u8> initializer was
+# std Vec::new() (nightly-only coincidence); now Default::default().
+version = "0.1.2"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
