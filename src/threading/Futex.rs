@@ -162,7 +162,7 @@ mod windows_impl {
         let rc = unsafe {
             windows::ntdll::RtlWaitOnAddress(
                 ptr.as_ptr().cast::<c_void>(),
-                (&expect as *const u32).cast::<c_void>(),
+                (::std::ptr::from_ref(&expect)).cast::<c_void>(),
                 core::mem::size_of::<u32>(),
                 timeout_ptr,
             )

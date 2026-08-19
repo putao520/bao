@@ -1446,7 +1446,7 @@ impl WTFStringImplStruct {
     // needed, and a plain `&mut` receiver is stable.
     pub fn ref_count_allocator(&mut self) -> StdAllocator {
         StdAllocator {
-            ptr: (self as *mut Self).cast(),
+            ptr: ::std::ptr::from_mut(self).cast(),
             vtable: StringImplAllocator::VTABLE_PTR,
         }
     }

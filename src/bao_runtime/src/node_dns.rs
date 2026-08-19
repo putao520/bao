@@ -1751,7 +1751,7 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let mut host_buf = [0i8; 1025];
         let rc = unsafe {
             libc::getnameinfo(
-                &sa as *const _ as *const libc::sockaddr,
+                ::std::ptr::from_ref(&sa).cast::<libc::sockaddr>(),
                 sa_len,
                 host_buf.as_mut_ptr(),
                 host_buf.len() as libc::socklen_t,
@@ -1891,7 +1891,7 @@ unsafe extern "C" fn dns_lookup_service(cx: *mut JSContext, argc: u32, vp: *mut 
     let mut serv_buf = [0i8; 32];
     let rc = unsafe {
         libc::getnameinfo(
-            &sa as *const _ as *const libc::sockaddr,
+            ::std::ptr::from_ref(&sa).cast::<libc::sockaddr>(),
             sa_len,
             host_buf.as_mut_ptr(),
             host_buf.len() as libc::socklen_t,

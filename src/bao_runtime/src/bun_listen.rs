@@ -1998,7 +1998,7 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         let payloads: [*const u8; 1] = [data.as_ptr()];
         let lengths: [usize; 1] = [data.len()];
         let addresses: [*const ::std::ffi::c_void; 1] =
-            [&addr_storage as *const _ as *const ::std::ffi::c_void];
+            [::std::ptr::from_ref(&addr_storage).cast::<::std::ffi::c_void>()];
 
         let sent = unsafe { (*socket_ptr).send(&payloads, &lengths, &addresses) };
         args.rval().set(Int32Value(sent));
@@ -3342,7 +3342,7 @@ fn build_sockaddr(host: &str, port: u16, storage: &mut libc::sockaddr_storage) -
             };
             let sa_bytes = unsafe {
                 ::std::slice::from_raw_parts(
-                    &sa as *const _ as *const u8,
+                    ::std::ptr::from_ref(&sa).cast::<u8>(),
                     ::std::mem::size_of::<libc::sockaddr_in>(),
                 )
             };
@@ -3367,7 +3367,7 @@ fn build_sockaddr(host: &str, port: u16, storage: &mut libc::sockaddr_storage) -
             };
             let sa_bytes = unsafe {
                 ::std::slice::from_raw_parts(
-                    &sa as *const _ as *const u8,
+                    ::std::ptr::from_ref(&sa).cast::<u8>(),
                     ::std::mem::size_of::<libc::sockaddr_in6>(),
                 )
             };

@@ -2375,7 +2375,7 @@ unsafe fn qs_js_string_utf8(cx: *mut JSContext, s: &str) -> *mut JSString {
     let chars = mozjs::conversions::Utf8Chars::from(s);
     mozjs_sys::jsapi::JS_NewStringCopyUTF8N(
         cx,
-        &*chars as *const _ as *const mozjs_sys::jsapi::JS::UTF8Chars,
+        ::std::ptr::from_ref(&*chars).cast::<mozjs_sys::jsapi::JS::UTF8Chars>(),
     )
 }
 
