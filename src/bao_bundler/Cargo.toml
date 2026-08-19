@@ -1,6 +1,7 @@
 [package]
 name = "bao_bundler"
-version = "0.1.0"
+# 0.1.1 (2026-08-19): no_mangle __force_link_entry single-owner (6f515eab); non-closure, lead-approved.
+version = "0.1.1"
 description = "SpiderMonkey CYCLEBREAK bridge for bun_bundler — provides SM-backed link-time symbols and dispatch interfaces"
 edition.workspace = true
 license.workspace = true

@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "bao-browser"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bao-mozjs",
  "bao-servo",
@@ -483,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "bao-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bao-browser",
  "bao_cdp",
@@ -2056,7 +2056,7 @@ dependencies = [
 
 [[package]]
 name = "bao_bundler"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bao_engine",
  "bun_alloc",
@@ -2456,7 +2456,7 @@ dependencies = [
 
 [[package]]
 name = "bun_alloc"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "bun_brotli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "brotli",
  "bun_core",
@@ -2604,7 +2604,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bundler"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2766,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -2801,7 +2801,7 @@ dependencies = [
 
 [[package]]
 name = "bun_crash_handler"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2898,7 +2898,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dotenv"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3023,7 +3023,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bao_boringssl_bridge",
  "bao_native_stubs",
@@ -3191,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_parser"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3226,7 +3226,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_printer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3265,7 +3265,7 @@ dependencies = [
 
 [[package]]
 name = "bun_libarchive"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3532,7 +3532,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolver"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3753,7 +3753,7 @@ dependencies = [
 
 [[package]]
 name = "bun_shell_parser"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3811,7 +3811,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sourcemap"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -4133,7 +4133,7 @@ dependencies = [
 
 [[package]]
 name = "bun_zlib"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",

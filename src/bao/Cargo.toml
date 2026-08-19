@@ -3,7 +3,9 @@
 # stays `bao` below, so in-tree `bao::` code and downstream `use bao::` are
 # unchanged; only the published package/version identity moves to bao-core.
 name = "bao-core"
-version = "0.0.1"
+# 0.0.2 (2026-08-19): README facade docs refresh (6a29ca8e/9574254e) +
+# full 0.1.1 dep-tree convergence beneath.
+version = "0.0.2"
 edition.workspace = true
 license.workspace = true
 description = "Bao unified library — SpiderMonkey + servo + Node/Bun API + CDP + Stealth (always-on full stack)"

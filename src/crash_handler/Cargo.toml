@@ -1,6 +1,7 @@
 [package]
 name = "bun_crash_handler"
-version.workspace = true
+# 0.1.1 (2026-08-19): ChanVec/VecExt sweep
+version = "0.1.1"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
