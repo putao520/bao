@@ -30,32 +30,59 @@ use crate::stmt;
 // (`reset()` bulk-frees this module's nodes — leaving it pristine) and parks
 // it here; the next `ASTMemoryAllocator` on this thread reclaims it, reusing
 // its committed pages. The pool holds at most one arena (nested scopes — rare
-// — fall back to a fresh `Arena::new()`). `#[thread_local]` (not the
-// `thread_local!` macro) so there is no destructor: a parked arena at thread
-// exit is reclaimed by mimalloc's own thread-teardown, avoiding an unspecified
-// destructor-ordering hazard with `mi_heap_destroy`.
+// — fall back to a fresh `Arena::new()`).
+//
+// BCE (TLS-destructor vs "no destructor" claim, 2026-08-20 heap-hunt #1):
+// the previous comment claimed the stable arm has "no destructor" — false:
+// `thread_local!` const-init removes the LAZY-INIT branch, not the
+// destructor. A `Cell<Option<Arena>>` TLS on stable really ran
+// `Arena::drop` → `mi_heap_destroy` (plus chunk recycling) at THREAD EXIT,
+// in unspecified ordering against mimalloc's own thread-teardown — the
+// free.c:550 "heap already destroyed / keys swapped" failure shape, and a
+// nightly⇄stable behavior divergence the nightly bare `#[thread_local]`
+// slot (genuinely dtor-less) never had. The build thread spawns-and-exits
+// per Bun.build (bun_build.rs), so the e2e drives this path repeatedly.
+// Fix: the stable arm parks the arena in `ManuallyDrop`, severing the TLS
+// dtor chain — a parked arena is reclaimed by mimalloc's own
+// thread-teardown, identical semantics to the nightly arm on both counts.
 // Dual-mode TLS station (#66 idiom): nightly bare __thread slot, stable
-// const-init thread_local!; set/take/replace accessors hide the .with frame.
+// const-init thread_local!; set/take/replace accessors hide the .with frame
+// and the ManuallyDrop handoff.
 #[cfg(bao_nightly)]
 #[thread_local]
 static ARENA_POOL: Cell<Option<Arena>> = Cell::new(None);
 #[cfg(not(bao_nightly))]
 ::std::thread_local! {
-    static ARENA_POOL: Cell<Option<Arena>> = const { Cell::new(None) };
+    static ARENA_POOL: Cell<Option<::core::mem::ManuallyDrop<Arena>>> =
+        const { Cell::new(None) };
 }
 #[inline]
 fn arena_pool_take() -> Option<Arena> {
     #[cfg(bao_nightly)]
     { ARENA_POOL.take() }
     #[cfg(not(bao_nightly))]
-    { ARENA_POOL.with(Cell::take) }
+    {
+        // SAFETY: the ManuallyDrop wrapper owns a live Arena whenever the
+        // slot is Some (parked by `arena_pool_replace`); taking it out moves
+        // sole ownership to the caller. Never dropped twice — the TLS dtor
+        // only sees the (empty or ManuallyDrop-severed) cell afterwards.
+        ARENA_POOL.with(|c| c.take()).map(|md| unsafe {
+            ::core::mem::ManuallyDrop::take(md)
+        })
+    }
 }
 #[inline]
 fn arena_pool_replace(v: Option<Arena>) -> Option<Arena> {
     #[cfg(bao_nightly)]
     { ARENA_POOL.replace(v) }
     #[cfg(not(bao_nightly))]
-    { ARENA_POOL.with(|c| c.replace(v)) }
+    {
+        // SAFETY: mirror of `arena_pool_take` — both sides hand a live,
+        // uniquely-owned Arena across the ManuallyDrop seam exactly once.
+        ARENA_POOL
+            .with(|c| c.replace(v.map(::core::mem::ManuallyDrop::new)))
+            .map(|md| unsafe { ::core::mem::ManuallyDrop::take(md) })
+    }
 }
 
 #[inline]

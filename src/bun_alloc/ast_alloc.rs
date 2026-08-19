@@ -157,15 +157,25 @@ impl AstAllocState {
 /// `#[thread_local]` (not `thread_local!`): read on every `AstAlloc`
 /// allocation, so it must stay a bare `__thread` slot. Stable (no
 /// `#[thread_local]` attribute) uses a const-init `thread_local!` — no
-/// lazy-init branch and no destructor either, just the `LocalKey::with`
-/// frame on the hot path.
+/// lazy-init branch, just the `LocalKey::with` frame on the hot path.
+///
+/// BCE (TLS-destructor vs "no destructor" claim, 2026-08-20 heap-hunt #1,
+/// same class as ARENA_POOL in ast_memory_allocator.rs): const-init does
+/// NOT remove the destructor — the stable arm really dropped an active
+/// `Box<AstAllocState>` at thread exit (the nightly bare slot never does),
+/// a channel divergence plus an unspecified ordering window against
+/// mimalloc's own thread-teardown. The stable arm now severs the dtor
+/// chain with `ManuallyDrop` (accessors hand the live box across the seam
+/// exactly once); an abandoned active box at thread exit is reclaimed by
+/// the process exit / mimalloc teardown, matching nightly semantics.
 #[cfg(bao_nightly)]
 #[thread_local]
 static AST_ALLOC: Cell<Option<Box<AstAllocState>>> = Cell::new(None);
 
 #[cfg(not(bao_nightly))]
 std::thread_local! {
-    static AST_ALLOC: Cell<Option<Box<AstAllocState>>> = const { Cell::new(None) };
+    static AST_ALLOC: Cell<Option<::core::mem::ManuallyDrop<Box<AstAllocState>>>> =
+        const { Cell::new(None) };
 }
 
 // One-slot recycler so a per-job `acquire_state`/`release_state` pair doesn't
@@ -194,8 +204,10 @@ fn with_active_state<R>(f: impl FnOnce(Option<&mut AstAllocState>) -> R) -> R {
         AST_ALLOC.with(|slot| {
             // SAFETY: const-initialized `thread_local!` storage lives for the
             // thread's lifetime; the same never-re-enters-itself argument as
-            // the nightly side holds for the reference's lifetime.
-            f(unsafe { (*slot.as_ptr()).as_deref_mut() })
+            // the nightly side holds for the reference's lifetime. The
+            // ManuallyDrop seam is transparent here: a Some slot always wraps
+            // a live, uniquely-owned box.
+            f(unsafe { (*slot.as_ptr()).as_mut().map(|md| &mut **md) })
         })
     }
 }
@@ -229,7 +241,11 @@ pub fn swap_state(state: Option<Box<AstAllocState>>) -> Option<Box<AstAllocState
     }
     #[cfg(not(bao_nightly))]
     {
-        AST_ALLOC.with(|slot| slot.replace(state))
+        // SAFETY: both directions hand a live, uniquely-owned box across the
+        // ManuallyDrop seam exactly once (mirror of the ARENA_POOL fix).
+        AST_ALLOC
+            .with(|slot| slot.replace(state.map(::core::mem::ManuallyDrop::new)))
+            .map(|md| unsafe { ::core::mem::ManuallyDrop::take(md) })
     }
 }
 
@@ -246,8 +262,10 @@ pub fn active_state_id() -> *const AstAllocState {
     #[cfg(not(bao_nightly))]
     {
         AST_ALLOC.with(|slot| {
-            // SAFETY: const-init thread-local storage; identity only.
-            unsafe { (*slot.as_ptr()).as_deref() }.map_or(core::ptr::null(), core::ptr::from_ref)
+            // SAFETY: const-init thread-local storage; identity only. The
+            // ManuallyDrop seam derefs to the same Box address.
+            unsafe { (*slot.as_ptr()).as_ref().map(|md| &**md) }
+                .map_or(core::ptr::null(), core::ptr::from_ref)
         })
     }
 }
