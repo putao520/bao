@@ -3794,13 +3794,11 @@ version = "0.1.2"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
- "bao_engine",
  "bao_engine_macros",
  "bun_collections",
  "bun_core",
  "bun_event_loop",
  "bun_io",
- "bun_runtime",
  "bun_sys",
  "bun_threading",
  "bun_transpiler",
