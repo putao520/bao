@@ -357,7 +357,7 @@ fn page_net_bun_full_destination_matrix() {
     eprintln!("[matrix-e2e] h1 shell page created");
     wait_for_load(&page, 3000);
 
-    let counter_before = net::fetch::bun_bridge::page_net_bun_request_count();
+    let counter_before = servo_net::fetch::bun_bridge::page_net_bun_request_count();
 
     let inject = |label: &str, js: &str| {
         match page.evaluate_js_web(js) {
@@ -453,7 +453,7 @@ fn page_net_bun_full_destination_matrix() {
             "(function(){ return JSON.stringify({img: window.__img||null, xhr: window.__xhr||null, fetch: window.__fetch||null, script: window.__scriptRan||false}); })()",
         )
         .unwrap_or_default();
-        eprintln!("[matrix-e2e] settle poll: {diag} (counter={})", net::fetch::bun_bridge::page_net_bun_request_count());
+        eprintln!("[matrix-e2e] settle poll: {diag} (counter={})", servo_net::fetch::bun_bridge::page_net_bun_request_count());
         if diag.contains("loaded") && diag.contains("xhr-data") {
             break;
         }
@@ -465,7 +465,7 @@ fn page_net_bun_full_destination_matrix() {
 
     // Four subresources through the bridge (img + script + css + xhr); the
     // window.fetch probe rides the Node stack and must NOT count.
-    let counter_after_subs = net::fetch::bun_bridge::page_net_bun_request_count();
+    let counter_after_subs = servo_net::fetch::bun_bridge::page_net_bun_request_count();
     assert_eq!(
         counter_after_subs - counter_before,
         4,
@@ -503,7 +503,7 @@ fn page_net_bun_full_destination_matrix() {
         let _ = doc_page.evaluate_js("");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let counter_after_doc = net::fetch::bun_bridge::page_net_bun_request_count();
+    let counter_after_doc = servo_net::fetch::bun_bridge::page_net_bun_request_count();
     assert_eq!(
         counter_after_doc - counter_after_subs,
         1,
@@ -514,7 +514,7 @@ fn page_net_bun_full_destination_matrix() {
     let _ = doc_page.close();
 
     // ── Block 2: semantic pass-through (redirect / CORS / nosniff) ────────
-    let semantic_counter_before = net::fetch::bun_bridge::page_net_bun_request_count();
+    let semantic_counter_before = servo_net::fetch::bun_bridge::page_net_bun_request_count();
     inject(
         "redirect-xhr",
         &format!(
@@ -579,7 +579,7 @@ fn page_net_bun_full_destination_matrix() {
         "nosniff-blocked module script must not execute, got {diag}"
     );
     // Redirect = 2 bridge hops (302 + final); cors + nosniff = 1 each.
-    let semantic_counter_after = net::fetch::bun_bridge::page_net_bun_request_count();
+    let semantic_counter_after = servo_net::fetch::bun_bridge::page_net_bun_request_count();
     assert_eq!(
         semantic_counter_after - semantic_counter_before,
         4,
@@ -615,7 +615,7 @@ fn page_net_bun_full_destination_matrix() {
     );
     eprintln!("[matrix-e2e] h2 document served (streams: {:?})", h2.streams.lock().unwrap());
 
-    let h2_counter_before = net::fetch::bun_bridge::page_net_bun_request_count();
+    let h2_counter_before = servo_net::fetch::bun_bridge::page_net_bun_request_count();
     let inject_h2 = |label: &str, js: &str| {
         match h2_page.evaluate_js_web(js) {
             Ok(value) => eprintln!("[matrix-e2e] h2 inject {label}: ok {value}"),
@@ -672,7 +672,7 @@ fn page_net_bun_full_destination_matrix() {
         let _ = h2_page.evaluate_js("");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let h2_counter_after = net::fetch::bun_bridge::page_net_bun_request_count();
+    let h2_counter_after = servo_net::fetch::bun_bridge::page_net_bun_request_count();
     assert_eq!(
         h2_counter_after - h2_counter_before,
         4,

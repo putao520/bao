@@ -734,7 +734,7 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
     // Every subresource destination rides the bridge: img + css (the
     // fingerprint-captured ones) plus script + xhr.
 
-    let bridge_count = net::fetch::bun_bridge::page_net_bun_request_count();
+    let bridge_count = servo_net::fetch::bun_bridge::page_net_bun_request_count();
     assert_eq!(
         bridge_count, 4,
         "bridge must have driven img+css+script+xhr (got {bridge_count}; fixture paths: {:?})",

@@ -458,7 +458,7 @@ fn page_net_bun_streaming_chunked_upload() {
     eprintln!("[upload-e2e] shell page created");
     wait_for_load(&page, 3000);
 
-    let counter_before = net::fetch::bun_bridge::page_net_bun_request_count();
+    let counter_before = servo_net::fetch::bun_bridge::page_net_bun_request_count();
 
     // Leg 1 — slow paced chunked upload via XHR POST. The 512 KiB body is
     // built with a rotating per-KiB byte pattern so any truncation,
@@ -567,7 +567,7 @@ fn page_net_bun_streaming_chunked_upload() {
         "peer closed before the upload completed"
     );
 
-    let counter_after_upload = net::fetch::bun_bridge::page_net_bun_request_count();
+    let counter_after_upload = servo_net::fetch::bun_bridge::page_net_bun_request_count();
     assert!(
         counter_after_upload > counter_before,
         "the upload must ride the bun bridge (counter did not advance)"
