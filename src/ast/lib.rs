@@ -3887,3 +3887,59 @@ extern "Rust" fn __bun_crash_handler_out_of_memory() -> ! {
     eprintln!("bun: out of memory");
     std::process::abort()
 }
+
+// ── #20 regression pin (be56fa5c) ──────────────────────────────────────────
+// Registration: `Source::init_path_string` erased `&[u8]` lifetimes via
+// IntoStr's `detach_lifetime`, storing caller TEMPORARIES as `&'static` —
+// the Source dangled the moment the buffer dropped (symptom: from the
+// second parse on, offset-0 "Unexpected " errors). be56fa5c cured the class
+// at the type level (`IntoStr` is `'static`-only; runtime inputs route to
+// the owned/interned constructors). These tests pin the ownership semantics
+// the cure routes to: the caller's buffers may die, the Source bytes may
+// not.
+#[cfg(test)]
+mod init_path_ub_pin {
+    use super::Source;
+
+    const PATH: &[u8] = b"/tmp/runtime-built-entry.ts";
+    const CONTENTS: &[u8] = b"export const k = 1;\n";
+
+    #[test]
+    fn interned_owned_source_survives_buffer_drop() {
+        let src = {
+            let path_buf = PATH.to_vec();
+            let contents_buf = CONTENTS.to_vec();
+            let src = Source::init_path_string_interned_owned(&path_buf, contents_buf);
+            drop(path_buf);
+            src
+        };
+        // Both caller buffers are dead here (block exit + explicit drop);
+        // every byte the Source exposes must still be the original ones.
+        assert_eq!(src.path.pretty, PATH);
+        assert_eq!(&src.contents[..], CONTENTS);
+    }
+
+    #[test]
+    fn second_read_after_drop_stays_clean() {
+        // The original symptom appeared from the SECOND use of a dangling
+        // Source on. Interned path + 'static contents; read everything
+        // twice after the path buffer is gone.
+        let path_buf = PATH.to_vec();
+        let src = Source::init_path_string_interned(&path_buf, CONTENTS);
+        drop(path_buf);
+        for _ in 0..2 {
+            assert_eq!(src.path.pretty, PATH);
+            assert_eq!(&src.contents[..], CONTENTS);
+            assert_eq!(src.contents.len(), CONTENTS.len());
+        }
+    }
+
+    #[test]
+    fn static_literals_still_ride_the_borrowed_arm() {
+        // The safe borrowed constructor keeps serving 'static data — the
+        // cure must not have over-restricted the literal path.
+        let src = Source::init_path_string("/literals-only.ts", "const x = 2;\n");
+        assert_eq!(src.path.pretty, b"/literals-only.ts");
+        assert!(matches!(src.contents, std::borrow::Cow::Borrowed(_)));
+    }
+}
