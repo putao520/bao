@@ -41,6 +41,11 @@ pub struct PageInner {
     pub delegate: Rc<BaoWebViewDelegate>,
     pub state: Rc<RefCell<PageState>>,
     pub webview_state: Rc<RefCell<BaoWebViewState>>,
+    /// Monotonic navigation counter (navigate/reload/go_back/go_forward).
+    /// `wait_for_pipeline_ready` Phase 2 keys on it: only a page that has
+    /// actually navigated keeps being driven until the load completes —
+    /// never-navigated callers keep the old first-frame contract.
+    pub nav_seq: ::std::cell::Cell<u64>,
     pub viewport: PhysicalSize<u32>,
     pub stealth_profile: Option<bao_stealth::StealthProfile>,
     pub permission: PermissionGuard,
@@ -84,6 +89,7 @@ impl PageInner {
         // report Interactive for a load that just began. Reset to Started
         // (identical to the event servo is about to deliver; idempotent).
         self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
+        self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
     }
 
@@ -244,6 +250,7 @@ impl PageInner {
         *self.state.borrow_mut() = PageState::Navigating;
         // BCE (stale Complete race) — see navigate().
         self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
+        self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
     }
 
@@ -254,6 +261,7 @@ impl PageInner {
         *self.state.borrow_mut() = PageState::Navigating;
         // BCE (stale Complete race) — see navigate().
         self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
+        self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
     }
 
@@ -264,6 +272,7 @@ impl PageInner {
         *self.state.borrow_mut() = PageState::Navigating;
         // BCE (stale Complete race) — see navigate().
         self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
+        self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
     }
 
@@ -901,6 +910,7 @@ impl PageHandle {
             delegate: webview_delegate,
             state,
             webview_state,
+            nav_seq: ::std::cell::Cell::new(0),
             viewport,
             stealth_profile: config.stealth_profile.clone(),
             permission: match &config.permission {
@@ -952,6 +962,40 @@ impl PageHandle {
                 .unwrap_or(false);
             if ready {
                 // Frame ready — verify pipeline by draining callbacks.
+                // BCE (pump-contract restore, 2026-08-19): the first frame is
+                // the INITIAL page's (about:blank); returning here left a
+                // pending navigation with no event-loop driver, so the
+                // verbatim README path1 (navigate → wait → evaluate) read a
+                // permanently blank page (the #48-era green was a race —
+                // archaeology shows no historical build ever drove the load
+                // to completion either). Phase 2 below keeps driving servo
+                // until the navigation's load completes (LoadStatus::Complete)
+                // or the shared timeout expires. Never-navigated pages
+                // (nav_seq == 0) keep the old first-frame contract, so
+                // create_page→wait callers are unaffected.
+                let nav_seq = self
+                    .with_inner_opt(|inner| Some(inner.nav_seq.get()))
+                    .unwrap_or(0);
+                if nav_seq > 0 {
+                    while start.elapsed() < timeout {
+                        let loaded = self
+                            .with_inner_opt(|inner| {
+                                Some(
+                                    inner.webview_state.borrow().load_status
+                                        == servo::LoadStatus::Complete,
+                                )
+                            })
+                            .unwrap_or(false);
+                        if loaded {
+                            break;
+                        }
+                        self.with_inner(|inner| {
+                            inner.servo.spin_event_loop();
+                            Ok(())
+                        })?;
+                        std::thread::yield_now();
+                    }
+                }
                 return self.drain_callbacks().map(|_| ());
             }
 

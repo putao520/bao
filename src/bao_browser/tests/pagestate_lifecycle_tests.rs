@@ -23,6 +23,11 @@ use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PageState};
 
 const TITLE: &str = "page-state-fixture";
 
+/// servo/BaoRuntime carry process-global slots (one JSContext per thread;
+/// embedder state) — two runtimes racing in one test binary deadlock one
+/// side. Serialize the tests in this suite.
+static RUNTIME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct Fixture {
     port: u16,
     shutdown: Arc<AtomicBool>,
@@ -94,6 +99,7 @@ fn poll_until(page: &PageHandle, timeout: Duration, cond: &dyn Fn() -> bool) -> 
 
 #[test]
 fn pagestate_reaches_interactive_in_step_with_title() {
+    let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let fixture = Fixture::spawn();
     let runtime = match BaoRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
@@ -148,4 +154,45 @@ fn pagestate_reaches_interactive_in_step_with_title() {
         page.get_state() == PageState::Interactive
     });
     assert!(t2.is_some(), "re-navigation must reach Interactive again");
+}
+
+#[test]
+fn verbatim_readme_path1_no_external_pump() {
+    let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // BCE (pump-contract restore, 2026-08-19) regression pin: the README
+    // path1 snippet has NO external pump — navigate → wait_for_pipeline_ready
+    // → evaluate must observe the NAVIGATED page. Pre-fix, wait returned at
+    // the about:blank first frame and the pending load had no driver.
+    let fixture = Fixture::spawn();
+    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[skip] runtime init failed: {e}");
+            return;
+        }
+    };
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some("about:blank".into()),
+            ..Default::default()
+        })
+        .expect("create_page");
+
+    page.navigate(&fixture.url()).expect("navigate");
+    page.wait_for_pipeline_ready(Duration::from_secs(30))
+        .expect("wait_for_pipeline_ready");
+
+    // No pump loop here — the wait contract itself must have driven the load.
+    let url = page.current_url().unwrap_or_default();
+    let title = page.evaluate_js_web("document.title").unwrap_or_default();
+    let state = page.get_state();
+    assert!(
+        url.contains("127.0.0.1"),
+        "verbatim wait must leave the NAVIGATED url (got {url:?})"
+    );
+    assert!(
+        title.contains(TITLE),
+        "verbatim wait must expose the loaded document's title (got {title:?})"
+    );
+    assert_eq!(state, PageState::Interactive);
 }
