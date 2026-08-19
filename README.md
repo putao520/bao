@@ -14,7 +14,7 @@ says `bao-core`, your code says `use bao::…`:
 
 ```toml
 [dependencies]
-bao-core = "0.0.1"
+bao-core = "0.0.3"
 ```
 
 ```rust
@@ -141,13 +141,12 @@ thumb, straight from `src/bao/src/lib.rs`:
   with E0554 (`#![feature]` on a non-nightly compiler).
 - **Disk & build time** — the first build compiles SpiderMonkey from
   source with symbols downgraded to line-tables (`-gdwarf-4 -g1`, shipped
-  in the `bao-mozjs-sys` build since the DWARF downgrade — resolves from
-  `bao-mozjs-sys` ≥ 140.13.0-5, i.e. once your dependency closure reaches
-  it (the `bao-core` ≥ 0.0.3 full-chain bump; older closures pin
-  `bao-mozjs` 0.21.4 → sys 140.13.0-4 and build with full DWARF): the SM objects
+  in the `bao-mozjs-sys` build since the DWARF downgrade): the SM objects
   land at **~284 MB** (roughly 6× smaller than full DWARF; single
   translation units shrink ~83%). Expect **~20–40 min** for the first
   build and a target-dir peak in the **single-digit GBs, not tens of GB**.
+  Requires `bao-core` ≥ 0.0.3 (its dependency closure locks
+  `bao-mozjs-sys` 140.13.0-6, where the downgrade ships).
   Consumers who want their own crates leaner can add
   `[profile.dev] debug = "line-tables-only"`.
 - **Environment variables**: `BUN_*` is honoured, and `BAO_<SUFFIX>` is
