@@ -83,9 +83,9 @@ pub fn get_decompressed_size(src: &[u8]) -> usize {
 
 pub use bun_core::compress::State;
 
-pub struct ZstdReaderArrayList<'a> {
+pub struct ZstdReaderArrayList<'a, V: bun_core::vec::SpareBytesVec = bun_core::vec::ChanVec<u8>> {
     pub input: &'a [u8],
-    pub list_ptr: &'a mut bun_core::vec::ChanVec<u8>,
+    pub list_ptr: &'a mut V,
     zstd: Option<Box<zstd_api::ZSTD_DStream>>,
     pub state: State,
     pub total_out: usize,
@@ -93,18 +93,18 @@ pub struct ZstdReaderArrayList<'a> {
     pub max_output_size: usize,
 }
 
-impl<'a> ZstdReaderArrayList<'a> {
+impl<'a, V: bun_core::vec::SpareBytesVec> ZstdReaderArrayList<'a, V> {
     pub fn init(
         input: &'a [u8],
-        list: &'a mut bun_core::vec::ChanVec<u8>,
-    ) -> core::result::Result<Box<ZstdReaderArrayList<'a>>, ZstdError> {
+        list: &'a mut V,
+    ) -> core::result::Result<Box<ZstdReaderArrayList<'a, V>>, ZstdError> {
         Self::init_with_list_allocator(input, list)
     }
 
     pub fn init_with_list_allocator(
         input: &'a [u8],
-        list: &'a mut bun_core::vec::ChanVec<u8>,
-    ) -> core::result::Result<Box<ZstdReaderArrayList<'a>>, ZstdError> {
+        list: &'a mut V,
+    ) -> core::result::Result<Box<ZstdReaderArrayList<'a, V>>, ZstdError> {
         let mut dstream = zstd_api::ZSTD_createDStream().ok_or(ZstdError::ZstdFailedToCreateInstance)?;
         let _ = zstd_api::ZSTD_initDStream(&mut *dstream);
 
@@ -147,7 +147,7 @@ impl<'a> ZstdReaderArrayList<'a> {
                 return Ok(());
             }
 
-            let remaining_output = self.max_output_size.saturating_sub(self.list_ptr.len());
+            let remaining_output = self.max_output_size.saturating_sub(self.list_ptr.sb_len());
             if remaining_output == 0 {
                 self.state = State::Error;
                 return Err(ZstdError::ZstdDecompressionError);
@@ -210,7 +210,7 @@ impl<'a> ZstdReaderArrayList<'a> {
     }
 }
 
-impl Drop for ZstdReaderArrayList<'_> {
+impl<V: bun_core::vec::SpareBytesVec> Drop for ZstdReaderArrayList<'_, V> {
     fn drop(&mut self) {
         self.end();
     }
