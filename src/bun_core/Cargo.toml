@@ -7,7 +7,9 @@ name = "bun_core"
 # sourcemap/zstd 0.1.1 and collections 0.1.2 build against.
 # 0.1.3 (2026-08-19): +pub AstBox<T> arena-box alias (bundler AstBox
 # migration companion, 71afadb4).
-version = "0.1.3"
+# 0.1.4 (2026-08-19): +pub chan_vec_to_std zero-copy reverse adopter
+# (ChanVec → std Vec handoff; bun_runtime 0.1.2 consumes it).
+version = "0.1.4"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
