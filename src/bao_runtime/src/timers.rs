@@ -891,9 +891,12 @@ pub struct BaoTimeoutObject {
     pub epoch: u32,
     /// GC-safe: GcStore key for the JS callback. None = virgin state.
     /// The actual `*mut JSObject` is stored as a property on the JS global
-    /// via `gc_store_insert`; this field only holds the string key.
-    /// Retrieval via `gc_store_get(cx, &key)` is GC-safe (the property is
+    /// via `gc_store_insert_ns(cx, "timer", &key, ..)`; this field only
+    /// holds the string key. Retrieval via
+    /// `gc_store_get_ns(cx, "timer", key)` is GC-safe (the property is
     /// rooted on the global object, managed by SpiderMonkey's GC).
+    /// (Doc-link residue of the BUG-ENG-360 migration: these lines still
+    /// named the un-namespaced pre-migration accessors.)
     pub callback_key: ::std::option::Option<String>,
     /// Marshalled JS arguments preserved across the schedule→fire window.
     pub args: ::std::vec::Vec<JSVal>,

@@ -168,7 +168,11 @@ pub fn gc_store_remove_ns(cx: *mut JSContext, namespace: &str, key: &str) {
 /// Generate a namespaced GcStore key. Format: `"__gc_{namespace}_{id}"`.
 /// Use this to avoid key collisions between different modules storing objects
 /// in the global GcStore (e.g., `"http_server_1_handler"` vs `"timer_cb_42"`).
-pub fn gc_store_key(namespace: &str, id: u64) -> String {
+/// Crate-internal key formatter (the `__gc_{ns}_{id}` shape): only
+/// `gc_store_unique_key` consumes it now — the historical external callers
+/// were replaced by the `_ns` accessors during BUG-ENG-360. Dead-link
+/// triage: visibility narrowed from `pub` to match the real surface.
+pub(crate) fn gc_store_key(namespace: &str, id: u64) -> String {
     format!("__gc_{}_{}", namespace, id)
 }
 
