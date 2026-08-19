@@ -6,7 +6,11 @@ name = "bao-browser"
 # 0.1.2 (2026-08-19): terminal-gate re-stamp — same tree as 0.1.1
 # (PageState load_complete 30cc90c9 already in 0.1.1); re-publish so
 # registry consumers re-resolve the full 0.1.x dep set unambiguously.
-version = "0.1.2"
+# 0.1.3 (2026-08-19): wait_for_pipeline_ready pump-contract restored
+# (c45aee6f): Phase 2 drives a pending navigation's load to completion
+# (nav_seq-gated), so the verbatim README path1 snippet works as
+# documented; servo =0.5.0 pins unchanged.
+version = "0.1.3"
 edition = "2021"
 description.workspace = true
 license.workspace = true
