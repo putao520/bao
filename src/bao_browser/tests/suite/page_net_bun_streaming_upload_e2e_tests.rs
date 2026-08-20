@@ -433,6 +433,11 @@ fn wait_for_load(page: &bao_browser::PageHandle, max_ms: u64) {
 
 #[test]
 fn page_net_bun_streaming_chunked_upload() {
+    // Full-engine e2e: per-process singletons — self-isolate so plain
+    // `cargo test` (any thread count) matches nextest's per-test process.
+    if !common::run_isolated("page_net_bun_streaming_upload_e2e_tests::page_net_bun_streaming_chunked_upload") {
+        return;
+    }
     bun_core::Output::init_test();
 
     let config = BaoConfig {

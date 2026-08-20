@@ -250,6 +250,11 @@ fn create_page(pool: &PagePool, url: String) -> bao_browser::PageHandle {
 
 #[test]
 fn page_net_bun_full_destination_matrix() {
+    // Full-engine e2e: per-process singletons — self-isolate so plain
+    // `cargo test` (any thread count) matches nextest's per-test process.
+    if !common::run_isolated("page_net_bun_full_matrix_e2e_tests::page_net_bun_full_destination_matrix") {
+        return;
+    }
     bun_core::Output::init_test();
     // U2 terminal posture: EVERY destination through the bun bridge (the
     // hyper escape hatch was removed — the bridge is the only path).

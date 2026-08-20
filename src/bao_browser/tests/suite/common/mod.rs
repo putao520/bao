@@ -7,6 +7,53 @@ pub mod h2_server;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Self-isolation for full-engine e2e tests (mozjs Runtime / servo Opts /
+/// HTTPThread / bridge destination state are per-process singletons).
+///
+/// The suite merges every former top-level target into ONE harness binary;
+/// cargo-nextest restores per-test process isolation, but plain
+/// `cargo test` — even with `--test-threads=1` — still runs tests in the
+/// SAME process, and singleton-dependent e2e tests poison each other there
+/// (observed: fingerprint e2e green alone but leaving h2 state that crashes
+/// the full-matrix e2e's h2 leg; parallel runs additionally lose img/css
+/// subresource deliveries to worker-test contention).
+///
+/// Usage — wrap the test body:
+///
+/// ```ignore
+/// #[test]
+/// fn my_e2e() {
+///     if !common::run_isolated("my_module::my_e2e") {
+///         return; // parent path: the child process already ran the body
+///     }
+///     // …real body…
+/// }
+/// ```
+///
+/// Returns `true` in the child (or when already isolated): run the body.
+/// Returns `false` in the parent: a fresh process ran just this test
+/// (`--exact`, `--test-threads=1`, output inherited) and its exit status
+/// was asserted — early-return instead of running the body again.
+pub fn run_isolated(test_name: &str) -> bool {
+    const ISOLATED_ENV: &str = "BAO_SUITE_ISOLATED_TEST";
+    if std::env::var_os(ISOLATED_ENV).is_some() {
+        return true; // child (or an outer runner already isolated us)
+    }
+    let exe = std::env::current_exe().expect("current_exe for isolated re-exec");
+    let status = std::process::Command::new(exe)
+        .arg(test_name)
+        .arg("--exact")
+        .arg("--test-threads=1")
+        .arg("--nocapture")
+        .env(ISOLATED_ENV, "1")
+        .status()
+        .unwrap_or_else(|e| panic!("spawn isolated test process for {test_name}: {e}"));
+    if !status.success() {
+        panic!("isolated test process {test_name} failed: {status}");
+    }
+    false
+}
+
 /// Wait for a condition to become true, with explicit timeout.
 ///
 /// Spins with small sleep intervals (10ms) checking the predicate.

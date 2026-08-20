@@ -38,6 +38,9 @@
 
 #![allow(dead_code)]
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -492,6 +495,11 @@ fn data_url_escape(s: &str) -> String {
 
 #[test]
 fn page_net_bun_same_fingerprint_and_destination_pilot() {
+    // Full-engine e2e: per-process singletons — self-isolate so plain
+    // `cargo test` (any thread count) matches nextest's per-test process.
+    if !common::run_isolated("page_net_bun_fingerprint_e2e_tests::page_net_bun_same_fingerprint_and_destination_pilot") {
+        return;
+    }
     // bao output sinks: the HTTPThread's per-thread configure asserts
     // STDOUT_STREAM_SET unless the embedder initialized Output first (the
     // product binary does this in bun_runtime::dispatch; test harnesses use
