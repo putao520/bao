@@ -2043,10 +2043,22 @@ impl Error {
     }
 
     pub fn get(rc: i32) -> Option<Error> {
-        // https://github.com/nodejs/node/blob/2eff28fb7a93d3f672f80b582f664a7c701569fb/lib/internal/errors.js#L807-L815
-        if rc == ARES_ENODATA || rc == ARES_ENONAME {
-            return Self::get(ARES_ENOTFOUND);
-        }
+        // 1:1 c-ares status → Error, matching Node's resolve-path mapping
+        // (ToErrorCodeString maps ARES_ENODATA→"ENODATA", ARES_ENONAME→
+        // "ENONAME" with no remap):
+        // https://github.com/nodejs/node/blob/v24.5.0/src/cares_wrap.h#L43-L67
+        //
+        // The ENODATA/ENONAME→ENOTFOUND remap that used to live here cited
+        // internal/errors.js, but that table fabricates ENOTFOUND for the
+        // getaddrinfo/lookup-side UV_EAI_NODATA/UV_EAI_NONAME — a different
+        // error namespace that never flows through c-ares here (dns.lookup/
+        // reverse go through libc getaddrinfo/getnameinfo in node_dns.rs;
+        // bun_dns consumes only the hints types + ntop). Applied to ARES_*
+        // statuses it corrupted resolve RR errors: resolveNaptr on a
+        // NAPTR-less domain surfaced ENOTFOUND where Node reports
+        // "queryNaptr ENODATA <host>". The lookup-side EAI mapping now lives
+        // at its one real consumer (node_dns.rs resolve_hostname_libc error
+        // plumbing).
 
         if rc == 0 {
             return None;

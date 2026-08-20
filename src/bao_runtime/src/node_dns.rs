@@ -765,19 +765,23 @@ thread_local! {
 /// return each address's display string alongside its family (4 = IPv4,
 /// 6 = IPv6). The returned Vec mirrors getaddrinfo's result-chain order.
 ///
-/// Empty on resolution failure (matches the prior ToSocketAddrs fallback that
-/// produced an empty lookup result).
+/// Failure is `Err(raw_gai_rc)` — the getaddrinfo EAI_* return code, so the
+/// dns.resolve* arms can surface Node-style errors instead of a silent `[]`
+/// (lookup callers collapse it back to an empty result via `unwrap_or_default`,
+/// preserving dns.lookup's behavior).
 ///
 /// @trace REQ-ENG-007 [api:dns.lookup/resolve] [code:bun_dns]
-fn resolve_hostname_libc(hostname: &str) -> Vec<(::std::string::String, i32)> {
+fn resolve_hostname_libc(
+    hostname: &str,
+) -> ::std::result::Result<Vec<(::std::string::String, i32)>, i32> {
     // Shared-cache consultation (fusion point with the usockets and
     // servo/hyper paths — one resolver per process, not per stack). Hit →
     // render straight from the cached addresses, no system call.
     if let Some(addrs) = bun_dns::cache::lookup(hostname.as_bytes()) {
-        return addrs
+        return Ok(addrs
             .iter()
             .map(|ip| (render_cache_ip(ip), cache_ip_family(ip)))
-            .collect();
+            .collect());
     }
 
     // Build the typed request via bun_dns so the hints structure, family flag,
@@ -794,11 +798,12 @@ fn resolve_hostname_libc(hostname: &str) -> Vec<(::std::string::String, i32)> {
         },
     };
 
-    // libc::getaddrinfo wants a NUL-terminated hostname. Rejected hostnames
-    // (NUL byte in input) simply yield an empty result.
+    // libc::getaddrinfo wants a NUL-terminated hostname. A NUL byte in the
+    // input can never be a resolvable name — report it as EAI_NONAME (the
+    // "name not known" class) rather than swallowing it.
     let c_host = match CString::new(hostname) {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(_) => return Err(libc::EAI_NONAME),
     };
     let hints = req.options.to_libc();
 
@@ -814,8 +819,11 @@ fn resolve_hostname_libc(hostname: &str) -> Vec<(::std::string::String, i32)> {
             &mut result_head,
         )
     };
-    if rc != 0 || result_head.is_null() {
-        return Vec::new();
+    if rc != 0 {
+        return Err(rc);
+    }
+    if result_head.is_null() {
+        return Ok(Vec::new());
     }
 
     // Walk the chain; freeaddrinfo on scope exit (Drop would require wrapping,
@@ -846,7 +854,32 @@ fn resolve_hostname_libc(hostname: &str) -> Vec<(::std::string::String, i32)> {
     // getaddrinfo returns no TTL (see bun_dns GetAddrInfoResult::ttl) — the
     // cache applies its engine cap (BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS).
     bun_dns::cache::insert(hostname.as_bytes(), cache_ips, None);
-    out
+    Ok(out)
+}
+
+/// Map a raw `getaddrinfo` EAI_* return code (the `Err` side of
+/// [`resolve_hostname_libc`]) to the Node dns error-code string for the
+/// resolve arms. EAI_NONAME → ENOTFOUND and EAI_NODATA → ENODATA follow the
+/// observable Node 24.5.0 resolve oracle ("queryA ENOTFOUND <host>" /
+/// "queryA ENODATA <host>"); the rest keep their getSystemErrorName
+/// spellings (libuv translates EAI_MEMORY → ENOMEM), and an unrecognized
+/// code surfaces its raw value rather than a placeholder.
+/// https://github.com/nodejs/node/blob/v24.5.0/lib/internal/errors.js#L795-L823
+fn gai_error_to_dns_code(rc: i32) -> ::std::string::String {
+    match rc {
+        libc::EAI_NONAME => "ENOTFOUND".to_string(),
+        libc::EAI_NODATA => "ENODATA".to_string(),
+        libc::EAI_AGAIN => "EAI_AGAIN".to_string(),
+        libc::EAI_MEMORY => "ENOMEM".to_string(),
+        libc::EAI_BADFLAGS => "EAI_BADFLAGS".to_string(),
+        libc::EAI_FAIL => "EAI_FAIL".to_string(),
+        libc::EAI_FAMILY => "EAI_FAMILY".to_string(),
+        libc::EAI_SERVICE => "EAI_SERVICE".to_string(),
+        libc::EAI_SOCKTYPE => "EAI_SOCKTYPE".to_string(),
+        libc::EAI_SYSTEM => "EAI_SYSTEM".to_string(),
+        libc::EAI_OVERFLOW => "EAI_OVERFLOW".to_string(),
+        _ => format!("EAI_{}", rc),
+    }
 }
 
 /// Render a shared-cache address to canonical text (same forms as
@@ -1612,7 +1645,9 @@ unsafe extern "C" fn dns_lookup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 
     // @trace REQ-ENG-007 [api:dns.lookup] [code:bun_dns] — resolve through
     // bun_dns (Backend::Libc); take the first address for the lookup result.
-    let resolved = resolve_hostname_libc(&hostname);
+    // lookup keeps its empty-result-on-failure behavior (unwrap_or_default);
+    // the resolve* arms are the consumers that surface the EAI error.
+    let resolved = resolve_hostname_libc(&hostname).unwrap_or_default();
     if let Some((ip, family)) = resolved.into_iter().next() {
         let c_ip = ZBox::from_bytes(ip.as_bytes());
         {
@@ -1698,7 +1733,7 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     // @trace REQ-ENG-007 [api:dns.resolve] [code:bun_dns] — resolve all
     // addresses via bun_dns (Backend::Libc) and push each into the JS array.
-    let resolved = resolve_hostname_libc(&hostname);
+    let resolved = resolve_hostname_libc(&hostname).unwrap_or_default();
     let mut idx = 0u32;
     for (ip, _family) in resolved {
         let c_ip = ZBox::from_bytes(ip.as_bytes());
@@ -1746,7 +1781,7 @@ unsafe extern "C" fn dns_resolve6(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 
     // @trace REQ-ENG-007 [api:dns.resolve6] [code:bun_dns] — resolve via
     // bun_dns (Backend::Libc) and keep only the IPv6 (family == 6) addresses.
-    let resolved = resolve_hostname_libc(&hostname);
+    let resolved = resolve_hostname_libc(&hostname).unwrap_or_default();
     let mut idx = 0u32;
     for (ip, family) in resolved {
         if family == 6 {
@@ -2217,14 +2252,24 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 
     match rrtype.to_uppercase().as_str() {
         "A" => {
-            // Resolve IPv4 only via libc::getaddrinfo
+            // Resolve IPv4 only via libc::getaddrinfo. Failure surfaces as
+            // Node's "queryA <code> <host>" error (EAI_NONAME → ENOTFOUND);
+            // a domain that resolves but yields no IPv4 records is ENODATA —
+            // both byte-match Node's resolve4 oracle (queryA / queryAaaa
+            // spellings: nodejs/node cares_wrap.cc QueryWrap dispatch).
             let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
             if arr_obj.is_null() {
                 args.rval().set(UndefinedValue());
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            let resolved = resolve_hostname_libc(&hostname);
+            let resolved = match resolve_hostname_libc(&hostname) {
+                Ok(r) => r,
+                Err(rc) => {
+                    let code = gai_error_to_dns_code(rc);
+                    return throw_resolve_error(cx, "queryA", &code, &hostname);
+                }
+            };
             let mut idx = 0u32;
             for (ip, family) in resolved {
                 if family == 4 {
@@ -2243,17 +2288,29 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                     }
                 }
             }
+            // Resolved fine but no IPv4 records: Node reports ENODATA, not [].
+            if idx == 0 {
+                return throw_resolve_error(cx, "queryA", "ENODATA", &hostname);
+            }
             args.rval().set(ObjectValue(arr_root.get()));
         }
         "AAAA" => {
-            // Resolve IPv6 only via libc::getaddrinfo
+            // Resolve IPv6 only via libc::getaddrinfo — same error plumbing
+            // as the A arm; the syscall is "queryAaaa" (Node's exact casing,
+            // not "queryAAAA").
             let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
             if arr_obj.is_null() {
                 args.rval().set(UndefinedValue());
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            let resolved = resolve_hostname_libc(&hostname);
+            let resolved = match resolve_hostname_libc(&hostname) {
+                Ok(r) => r,
+                Err(rc) => {
+                    let code = gai_error_to_dns_code(rc);
+                    return throw_resolve_error(cx, "queryAaaa", &code, &hostname);
+                }
+            };
             let mut idx = 0u32;
             for (ip, family) in resolved {
                 if family == 6 {
@@ -2271,6 +2328,10 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                         idx += 1;
                     }
                 }
+            }
+            // Resolved fine but no IPv6 records: Node reports ENODATA, not [].
+            if idx == 0 {
+                return throw_resolve_error(cx, "queryAaaa", "ENODATA", &hostname);
             }
             args.rval().set(ObjectValue(arr_root.get()));
         }
