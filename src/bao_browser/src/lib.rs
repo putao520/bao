@@ -9,6 +9,7 @@
 // REQ-CLI-002: bao browser 子命令 → servo 初始化 + CDP 端口输出
 // REQ-LIB-004: BaoRuntime top-level coordinator
 mod cdp_handler;
+pub mod cdp_memory;
 mod config;
 mod delegate;
 mod error;
@@ -85,6 +86,14 @@ pub struct BaoRuntime {
     delegate: Rc<BaoServoDelegate>,
     page_pool: Rc<PagePool>,
     cdp_port: Option<u16>,
+    /// Receiver side of the memory:// CDP bridge installed into
+    /// `bao_cdp_client`'s process registry — `run()` drains it so
+    /// servo-touching in-process CDP commands get real execution.
+    cdp_bridge: Option<std::sync::Arc<cdp_memory::MemoryCdpBridge>>,
+    cdp_bridge_rx: Option<bao_cdp::servo_bridge::BridgeReceiver>,
+    /// Generation token for registry teardown (Drop clears only if this
+    /// runtime's bridge is still the installed one).
+    cdp_bridge_token: Option<usize>,
 }
 
 impl BaoRuntime {
@@ -224,11 +233,25 @@ impl BaoRuntime {
             &config,
         ));
 
+        // memory:// CDP transport (published consumer contract:
+        // `Browser::connect("memory://bao")` → `version()`/`pages()`).
+        // Install the host-side bridge into bao_cdp_client's process
+        // registry (last-writer-wins across runtimes); `run()` drains the
+        // receiver so servo-routed commands execute for real.
+        let (cdp_bridge, cdp_bridge_rx) = cdp_memory::MemoryCdpBridge::new("");
+        let cdp_bridge_token =
+            bao_cdp_client::browser::set_process_memory_bridge(
+                cdp_bridge.clone() as std::sync::Arc<dyn bao_cdp_client::transport::InMemoryBridge>,
+            );
+
         Ok(BaoRuntime {
             servo,
             delegate,
             page_pool,
             cdp_port: config.cdp_port,
+            cdp_bridge: Some(cdp_bridge),
+            cdp_bridge_rx: Some(cdp_bridge_rx),
+            cdp_bridge_token: Some(cdp_bridge_token),
         })
     }
 
@@ -246,6 +269,10 @@ impl BaoRuntime {
         page.wait_for_pipeline_ready(Duration::from_secs(5))?;
 
         runtime_bridge::inject_all_with_profile(&page, &config.stealth_profile)?;
+        // The memory:// flat client face follows the newest page.
+        if let Some(bridge) = &self.cdp_bridge {
+            bridge.set_default_target(page.id().to_string());
+        }
         Ok(page)
     }
 
@@ -400,6 +427,12 @@ impl BaoRuntime {
         while start.elapsed() < max_wait {
             self.servo.spin_event_loop();
             self.page_pool.check_idle_pages();
+            // memory:// CDP commands (process-registry bridge) execute here:
+            // the drain answers every in-process client command that routed
+            // through the bridge channel (Runtime.evaluate, Target listing…).
+            if let Some(rx) = &self.cdp_bridge_rx {
+                rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
+            }
             // Yield instead of sleep — servo spin_event_loop is non-blocking.
             std::thread::yield_now();
         }
@@ -407,6 +440,26 @@ impl BaoRuntime {
         let _stats = self.page_pool.stats();
 
         Ok(())
+    }
+
+    /// Bounded single-thread CDP pump: spin the servo loop and drain the
+    /// memory:// CDP bridge for `duration`. This is the single-threaded
+    /// consumer contract for in-process CDP — the `BaoRuntime` is `!Send`
+    /// (per-thread JSContext model), so the runtime thread pumps while a
+    /// helper thread holds the `Browser` client whose dispatches arrive
+    /// through the bridge channel this drain answers.
+    ///
+    /// `BaoRuntime::run` is the unbounded version (it also drains).
+    pub fn pump_cdp(&self, duration: std::time::Duration) {
+        let start = std::time::Instant::now();
+        while start.elapsed() < duration {
+            self.servo.spin_event_loop();
+            self.page_pool.check_idle_pages();
+            if let Some(rx) = &self.cdp_bridge_rx {
+                rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
+            }
+            std::thread::yield_now();
+        }
     }
 
     /// Run with a CDP bridge that processes commands during the event loop.
@@ -450,6 +503,11 @@ impl BaoRuntime {
 impl Drop for BaoRuntime {
     fn drop(&mut self) {
         self.page_pool.close_all();
+        // Remove this runtime's memory bridge unless a newer runtime has
+        // already replaced it in the process registry.
+        if let Some(token) = self.cdp_bridge_token.take() {
+            bao_cdp_client::browser::clear_process_memory_bridge(token);
+        }
     }
 }
 

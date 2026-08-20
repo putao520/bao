@@ -24,6 +24,49 @@ use crate::transport::{
 };
 use std::sync::Arc;
 
+// ── process-global memory bridge registry ──────────────────────────────────
+//
+// The documented consumer contract is `Browser::connect("memory://bao")` —
+// but the real InMemoryBridge lives host-side (the embedder that owns the
+// page pool / servo runtime; in this workspace that is bao_browser's
+// `MemoryCdpBridge`, installed by `BaoRuntime::new`). The registry is the
+// decoupling point: the client crate stays independent of the host, and
+// `connect` gains a real in-process Connection whenever a host runtime is
+// alive in this process.
+//
+// No bridge installed → `connect("memory://…")` keeps the legacy lazy shape
+// (route-only, commands later fail with ConnectionClosed) so URL-parsing
+// unit tests and explicit `connect_with_bridge` users are unaffected.
+static PROCESS_MEMORY_BRIDGE: std::sync::Mutex<Option<(usize, Arc<dyn InMemoryBridge>)>> =
+    std::sync::Mutex::new(None);
+
+/// Install (replace) the process-global memory bridge. The embedder calls
+/// this when its runtime comes up. Returns the installation token needed
+/// for a generation-checked [`clear_process_memory_bridge`] on teardown.
+pub fn set_process_memory_bridge(bridge: Arc<dyn InMemoryBridge>) -> usize {
+    let token = Arc::as_ptr(&bridge) as *const () as usize;
+    *PROCESS_MEMORY_BRIDGE.lock().unwrap() = Some((token, bridge));
+    token
+}
+
+/// Remove the installed bridge, but only if it is still the one identified
+/// by `token` (a newer runtime may have replaced it — last-writer-wins).
+pub fn clear_process_memory_bridge(token: usize) {
+    let mut guard = PROCESS_MEMORY_BRIDGE.lock().unwrap();
+    if guard.as_ref().is_some_and(|(t, _)| *t == token) {
+        *guard = None;
+    }
+}
+
+/// Clone out the installed bridge, if any.
+pub fn process_memory_bridge() -> Option<Arc<dyn InMemoryBridge>> {
+    PROCESS_MEMORY_BRIDGE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|(_, b)| Arc::clone(b))
+}
+
 /// CDP Browser 实例。
 ///
 /// 代表一次成功的 `connect` —— 持有解析后的 URL、Connection 和 transport 类型。
@@ -56,6 +99,25 @@ impl Browser {
     /// @trace REQ-BAO-API-001 [level:library]
     pub fn connect(url: &str) -> Result<Self, ConnectError> {
         let parsed = Self::route(url)?;
+        // memory:// is EAGER when a host runtime has installed the
+        // process-global bridge (the documented consumer shape:
+        // `BaoRuntime::new(..)` then `Browser::connect("memory://bao")` →
+        // `version()`/`pages()` work). Without an installed bridge the
+        // legacy lazy shape is kept (route-only) for URL-parsing tests and
+        // explicit `connect_with_bridge` callers.
+        if parsed.scheme == "memory" {
+            if let Some(bridge) = process_memory_bridge() {
+                let transport = InMemoryTransport::new(bridge);
+                let config = ConnectionConfig {
+                    default_timeout_ms: 30_000,
+                    transport_kind: TransportKind::InMemory,
+                };
+                return Ok(Browser {
+                    parsed,
+                    connection: Some(Connection::new(Box::new(transport), config)),
+                });
+            }
+        }
         // Lazy connect:只解析 URL,不创建 Transport/Connection。
         // 实际连接通过 connect_with_bridge / connect_with_discovered_ws 完成。
         Ok(Browser {
