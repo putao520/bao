@@ -10,7 +10,7 @@
 
 ```toml
 [dependencies]
-bao-core = "0.0.3"
+bao-core = "0.1.0"
 ```
 
 ## Usage — three entry points

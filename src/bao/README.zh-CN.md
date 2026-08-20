@@ -9,7 +9,7 @@
 
 ```toml
 [dependencies]
-bao-core = "0.0.3"
+bao-core = "0.1.0"
 ```
 
 ## 用法 —— 三个入口
