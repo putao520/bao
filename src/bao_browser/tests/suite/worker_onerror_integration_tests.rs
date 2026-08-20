@@ -38,6 +38,7 @@ use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
 use std::sync::Mutex;
 use std::time::Duration;
 
+#[path = "common/mod.rs"]
 mod common;
 
 /// Serializes all servo-touching tests in this binary (servo single-instance).

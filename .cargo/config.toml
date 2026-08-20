@@ -1,0 +1,26 @@
+# C/C++ 编译产物调试信息降级:line-tables-only(保留符号表与 file:line,消灭全量 DWARF)。
+# C++ 注入共两条链,压制点不同(均实测验证;g++/clang 语义:最后一个级别 flag 赢):
+#   1. cc crate 系(boringssl/harfbuzz/sqlite/uws/lsquic 等):cc 1.2.62 注入
+#      `-g -gdwarf-4` —— cargo 将 profile.dev debug=1 序列化为 DEBUG="true"(探针实测
+#      ENV DEBUG=Ok("true")),cc 把 "true" 映射为全量 -g;env CFLAGS/CXXFLAGS 追加在其后
+#      (实测 producer: `-g -gdwarf-4 -g1`,最终级别 line-tables)。本文件 [env] 即此链。
+#   2. mozjs configure 系(g++13,SM Unified CU,DWARF 大头):toolchain.configure
+#      default_debug_flags() 默认注入 `-gdwarf-4`(隐含 -g2 全量)。**env CXXFLAGS 对此链
+#      无效**:configure 把用户 CXXFLAGS 前置、自家 flags 后置(实测 producer
+#      `-g1 -gdwarf-4 -O3`,后置 -gdwarf-4 盖掉 -g1)。有效通道见
+#      vendor/mozjs/mozjs-sys 的 build.rs 子进程 env MOZ_DEBUG_FLAGS="-gdwarf-4 -g1"
+#      (机制随 bao-mozjs-sys ≥140.13.0-5/6 包内分发;debug_flags() 中 env 替换默认。
+#      本文件 [env] 的 MOZ_DEBUG_FLAGS 与之同值,现为冗余兜底;CFLAGS/CXXFLAGS 的
+#      -g1 仍独管第 1 条 cc 链,不可撤)。
+# `-g1` 两家互认:clang -g1 ≡ -gline-tables-only;gcc -g1 = line tables + minimal。
+# 不能写 "-g1 -gdwarf-4" 顺序——-gdwarf-4 后置会拉回全量级别。
+# 仅影响 C/C++ 编译单元;Rust 侧由 workspace [profile.dev] debug=1 管(其函数全名
+# subprogram DIE 是 .debug_str 大头,与本配置无关)。
+# 改 [env] 后需强制重编 cc 系 C 依赖(build script 不因 env 变化自动失效 .o):
+# 清对应 crate 的 .fingerprint/<pkg>-* + build/<pkg>-* + deps/lib<pkg>-*(见 CLAUDE.md
+# mozjs 清理顺序);cc 系涉及 bao-mozjs-sys / bun_boringssl_sys / harfbuzz-sys /
+# freetype-sys / libsqlite3-sys / libz-sys / bun_uws_sys / bun_lsquic_sys /
+# bun_mimalloc_sys / ring / zstd-sys / stacker / psm / glslopt / rav1e / fontsan 等。
+[env]
+CFLAGS = "-g1"
+CXXFLAGS = "-g1"

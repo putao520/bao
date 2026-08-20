@@ -60,3 +60,4 @@ rust_out
 # Tooling runtime state (not source — coord/state, project tracking, AI session logs)
 .grok/
 .gsc/
+src/bao_browser/bottles/

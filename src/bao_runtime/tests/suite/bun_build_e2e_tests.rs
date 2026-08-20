@@ -53,6 +53,15 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 /// Bun.build resolves via a ConcurrentTask, so ticks must run for both the
 /// worker completion AND the promise reaction jobs.
 fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
+    // BCE (bun_build_e2e flake, 2026-08-19): this loop used to be a BLIND
+    // fixed window (1500 passes x 2ms = 3s) racing the BuildTasklet
+    // worker's completion time — under CPU contention the worker overshoots
+    // the window, `settled` stays false and the assertion fires at a
+    // drifting scenario (observed at lines 278 and 202 across runs).
+    // Event-driven wait instead: poll BOTH settle flags (build scenarios
+    // flip `__r.settled`; the artifact.text() scenario fills `__r.text`)
+    // and exit the moment either holds; the iteration cap stays as the
+    // deadline only (raised to 30s), never as a blind duration.
     let cx_raw = ctx.raw_cx();
     for _ in 0..max_iters {
         unsafe {
@@ -62,6 +71,14 @@ fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
             loop_.tick_without_idle(std::ptr::null_mut());
         });
         std::thread::sleep(Duration::from_millis(2));
+        if eval_string(
+            ctx,
+            "(globalThis.__r && globalThis.__r.settled === true) || \
+             (globalThis.__r && globalThis.__r.text !== null && globalThis.__r.text !== undefined)",
+        ) == "true"
+        {
+            return;
+        }
     }
 }
 
@@ -83,7 +100,7 @@ fn run_build_scenario(ctx: &mut JsContext, config: &str) {
         Ok(_) => {}
         Err(e) => panic!("Bun.build eval failed: {}", e.message),
     }
-    drive_event_loop(ctx, 1500);
+    drive_event_loop(ctx, 15000);
 }
 
 fn settled(ctx: &mut JsContext) -> bool {
@@ -349,7 +366,7 @@ fn run_await_text_scenario(ctx: &mut JsContext) {
     "#;
     ctx.eval(script, "<test>")
         .expect("artifact.text() eval must succeed");
-    drive_event_loop(ctx, 1500);
+    drive_event_loop(ctx, 15000);
     assert_eq!(
         eval_string(ctx, "globalThis.__r.text === null"),
         "false",

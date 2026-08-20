@@ -176,12 +176,26 @@ cargo build
 # 构建二进制
 cargo build -p bao_bin        # 产物:target/debug/bao
 
-# 运行测试(EBUSY patch 生效后默认多线程零 SIGSEGV,不需要 --test-threads=1)
-cargo test
+# 运行测试(见下方「测试运行纪律」:plain cargo test 必须 --test-threads=1)
+cargo test --test-threads=1
 
 # BCE 门禁(参见 Makefile)
 make bce-check
 ```
+
+### 测试运行纪律(集成测试已收敛为单 harness suite)
+
+7 个重引擎 crate(`bao_runtime` / `bao_browser` / `bao_stealth` / `cdp-server` / `bao_engine` / `bao_cdp` / `bao_cdp_client`)的集成测试已结构性收敛:原 `tests/` 顶层每个 `.rs` 都是独立 auto-discovered target(每个全引擎链接,332 个测试二进制、267 个 ≥500M、合计 225G),现全部并入各自 `tests/suite/` 单 harness target(`tests/suite/main.rs` 为聚合根,子目录不被 auto-discover)。**运行时隔离由 cargo-nextest 保证**——每个 `#[test]` 独立进程运行,合并二进制不改变测试隔离语义(这是本结构的成立前提)。
+
+| 场景 | 命令 | 说明 |
+|------|------|------|
+| 日常迭代(**必须 scoped**) | `cargo nt -p <crate>` 或 `-E '<filterset>'` 过滤 | dev profile;禁无过滤全量。例:`cargo nt -p bun_runtime -E 'test(buffer_conformance)'` |
+| 批量 / 回归 | `cargo nextest run --cargo-profile test-ci`(`-p <crate>` 可选) | stripped + opt-level 2 二进制(workspace `[profile.test-ci]`),磁盘占用最小 |
+| dev profile 全量构建 | 仅限需要 backtrace 符号调试时 | dev(debug=1)测试二进制极大;批量跑测试不要用 dev 全量 |
+| plain `cargo test` | `cargo test --test-threads=1` | suite 单二进制内 libtest 默认多线程与引擎进程内单例(mozjs per-process singleton)冲突;nextest 每 test 独立进程,无此问题 |
+
+- **`--cargo-profile` ≠ `-P`**:nextest 的 `--cargo-profile test-ci` 选 cargo 构建 profile;`-P/--profile` 选 nextest 自身配置(`.config/nextest.toml`),两者不同
+- **suite 结构约定**:新增集成测试一律放 `tests/suite/<name>_tests.rs` 并在 `tests/suite/main.rs` 加 `mod <name>_tests;`。**禁止在 `tests/` 顶层新建 `.rs` 文件**(每个都会重新变成独立全引擎 target),也禁止在 `tests/` 下新建含 `main.rs` 的子目录**(cargo 会 auto-discover 为新 target;共享 helper 用 `mod.rs` + `#[path]` 引入,参照 `tests/suite/node_conformance/mod.rs`、`tests/suite/common/`)
 
 ### mozjs 构建经验
 

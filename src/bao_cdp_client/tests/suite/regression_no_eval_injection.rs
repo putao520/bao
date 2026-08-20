@@ -25,19 +25,19 @@
 // ────────────────────────────────────────────────────────────────────
 
 /// b_class_handlers.rs 源码 — 主要的 Eval 路径。
-const B_CLASS_SRC: &str = include_str!("../src/bridge/b_class_handlers.rs");
+const B_CLASS_SRC: &str = include_str!("../../src/bridge/b_class_handlers.rs");
 
 /// a_class_handlers.rs 源码 — A 类机械映射(理论上无 Eval 表达式拼接)。
-const A_CLASS_SRC: &str = include_str!("../src/bridge/a_class_handlers.rs");
+const A_CLASS_SRC: &str = include_str!("../../src/bridge/a_class_handlers.rs");
 
 /// command_dispatcher.rs 源码 — 路由分发。
-const DISPATCHER_SRC: &str = include_str!("../src/bridge/command_dispatcher.rs");
+const DISPATCHER_SRC: &str = include_str!("../../src/bridge/command_dispatcher.rs");
 
 /// eval_synthesizer.rs 源码 — IIFE 构造(允许 format!,但只用于硬编码模板)。
-const EVAL_SYNTH_SRC: &str = include_str!("../src/bridge/eval_synthesizer.rs");
+const EVAL_SYNTH_SRC: &str = include_str!("../../src/bridge/eval_synthesizer.rs");
 
 /// cdp_rdp_bridge.rs 源码。
-const BRIDGE_SRC: &str = include_str!("../src/bridge/cdp_rdp_bridge.rs");
+const BRIDGE_SRC: &str = include_str!("../../src/bridge/cdp_rdp_bridge.rs");
 
 // ════════════════════════════════════════════════════════════════════
 // §1 危险 pattern 检测 — 字符串拼接 JS
@@ -384,7 +384,7 @@ fn regression_mock_servo_backend_echoes_eval_expression() {
     // MockServoBackend.runtime_evaluate 必须把 expression echo 回 value
     // 这是注入防御测试的基础(让测试可观察 IIFE 生成的表达式)
     // Act
-    const SERVO_BACKEND_SRC: &str = include_str!("../src/bridge/servo_backend.rs");
+    const SERVO_BACKEND_SRC: &str = include_str!("../../src/bridge/servo_backend.rs");
     // Assert
     assert!(
         SERVO_BACKEND_SRC.contains("fn runtime_evaluate"),

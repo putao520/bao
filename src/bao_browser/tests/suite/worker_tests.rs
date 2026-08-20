@@ -40,6 +40,7 @@ use std::sync::Arc;
 
 // Shared test helpers (deterministic wait_for_condition to replace sleep polling).
 // @trace NFR-TEST-REPRODUCIBILITY [criterion:no_magic_sleep]
+#[path = "common/mod.rs"]
 mod common;
 use common::{wait_for_condition, wait_for_worker_stopped};
 

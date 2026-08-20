@@ -221,7 +221,7 @@ fn shared_result_channel_overwrites_default_with_err() {
 /// Verify EvaluateResult struct exists in runtime_bridge.rs (REQ-SEC-002).
 #[test]
 fn evaluate_result_struct_exists() {
-    let source = include_str!("../src/runtime_bridge.rs");
+    let source = include_str!("../../src/runtime_bridge.rs");
     assert!(
         source.contains("pub struct EvaluateResult"),
         "REQ-SEC-002 REGRESSION: EvaluateResult struct must exist in runtime_bridge.rs"
@@ -231,7 +231,7 @@ fn evaluate_result_struct_exists() {
 /// Verify EvaluateResult has value and error fields (REQ-SEC-002).
 #[test]
 fn evaluate_result_has_value_and_error_fields() {
-    let source = include_str!("../src/runtime_bridge.rs");
+    let source = include_str!("../../src/runtime_bridge.rs");
     assert!(
         source.contains("pub value: Option<String>"),
         "REQ-SEC-002 REGRESSION: EvaluateResult must have pub value: Option<String>"
@@ -247,7 +247,7 @@ fn evaluate_result_has_value_and_error_fields() {
 /// (single-producer, single-consumer), making OnceLock both safer and more efficient.
 #[test]
 fn evaluate_in_node_realm_accepts_result_channel() {
-    let source = include_str!("../src/runtime_bridge.rs");
+    let source = include_str!("../../src/runtime_bridge.rs");
     assert!(
         source.contains("result_out: Arc<OnceLock<EvaluateResult>>"),
         "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must accept Arc<OnceLock<EvaluateResult>>"
@@ -257,7 +257,7 @@ fn evaluate_in_node_realm_accepts_result_channel() {
 /// Verify evaluate_in_node_realm no longer discards the return value (REQ-SEC-002).
 #[test]
 fn evaluate_in_node_realm_does_not_discard_result() {
-    let source = include_str!("../src/runtime_bridge.rs");
+    let source = include_str!("../../src/runtime_bridge.rs");
 
     // Find the evaluate_in_node_realm function body
     let func_start = source
@@ -291,7 +291,7 @@ fn evaluate_in_node_realm_does_not_discard_result() {
 /// Verify evaluate_in_node_realm handles null node_global with error (REQ-SEC-002).
 #[test]
 fn evaluate_in_node_realm_reports_null_node_global_error() {
-    let source = include_str!("../src/runtime_bridge.rs");
+    let source = include_str!("../../src/runtime_bridge.rs");
     let func_start = source
         .find("pub unsafe fn evaluate_in_node_realm")
         .expect("evaluate_in_node_realm function not found");
@@ -318,7 +318,7 @@ fn evaluate_in_node_realm_reports_null_node_global_error() {
 /// Verify evaluate_in_node_realm handles null JSContext with error (REQ-SEC-002).
 #[test]
 fn evaluate_in_node_realm_reports_null_context_error() {
-    let source = include_str!("../src/runtime_bridge.rs");
+    let source = include_str!("../../src/runtime_bridge.rs");
     let func_start = source
         .find("pub unsafe fn evaluate_in_node_realm")
         .expect("evaluate_in_node_realm function not found");
@@ -341,7 +341,7 @@ fn evaluate_in_node_realm_reports_null_context_error() {
 /// Verify evaluate_in_node_realm serializes different JS value types (REQ-SEC-002).
 #[test]
 fn evaluate_in_node_realm_serializes_value_types() {
-    let source = include_str!("../src/runtime_bridge.rs");
+    let source = include_str!("../../src/runtime_bridge.rs");
     let func_start = source
         .find("pub unsafe fn evaluate_in_node_realm")
         .expect("evaluate_in_node_realm function not found");
@@ -381,7 +381,7 @@ fn evaluate_in_node_realm_serializes_value_types() {
 /// Verify EvaluateResult is exported from bao_browser crate (REQ-SEC-002).
 #[test]
 fn evaluate_result_exported_from_crate() {
-    let source = include_str!("../src/lib.rs");
+    let source = include_str!("../../src/lib.rs");
     assert!(
         source.contains("EvaluateResult"),
         "REQ-SEC-002 REGRESSION: EvaluateResult must be exported in lib.rs"

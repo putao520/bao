@@ -27,6 +27,7 @@
 
 #![allow(dead_code)]
 
+#[path = "common/mod.rs"]
 mod common;
 
 use std::io::{Read, Write};
