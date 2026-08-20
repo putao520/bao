@@ -70,6 +70,59 @@ pub fn install_fetch_global(
             1,
             JSPROP_ENUMERATE as u32,
         );
+        // Native stream entry points for the streaming Response body
+        // (`__baoFetchBodyPull` / `__baoFetchBodyCancel`) — same
+        // installation phase as fetch itself.
+        // SAFETY: cx live; global is the realm global.
+        crate::fetch_async::install_fetch_stream_natives(cx, global);
+    }
+}
+
+/// `BAO_FETCH_STREAM` opt-in for the streaming response-body mode
+/// (adapter stage): any value other than empty/`0` switches the WHATWG
+/// fetch() entry to `start_fetch_streaming` — headers-arrival Promise
+/// resolve + native pull/cancel ReadableStream body. Node-API entries
+/// (http/https/http2) never read this switch (buffered forever).
+///
+/// Mode resolution: 0 = unset (read the env once, then pin), 1 = off,
+/// 2 = on. The test hook pins the value explicitly (the plain `cargo test`
+/// suite runs every test in ONE process, where the env-derived default
+/// would be raced by test order).
+static STREAM_MODE: ::std::sync::atomic::AtomicU8 = ::std::sync::atomic::AtomicU8::new(0);
+
+fn fetch_streaming_enabled() -> bool {
+    use ::std::sync::atomic::Ordering::Relaxed;
+    match STREAM_MODE.load(Relaxed) {
+        1 => false,
+        2 => true,
+        _ => {
+            let on = ::std::env::var("BAO_FETCH_STREAM")
+                .map(|v| !v.is_empty() && v != "0")
+                .unwrap_or(false);
+            STREAM_MODE.store(if on { 2 } else { 1 }, Relaxed);
+            on
+        }
+    }
+}
+
+/// Test hook: pin the fetch delivery mode process-wide (streaming on/off).
+/// Restores to buffered (`false`) with the returned guard's Drop.
+pub fn set_fetch_streaming_override(on: bool) -> FetchStreamingGuard {
+    use ::std::sync::atomic::Ordering::Relaxed;
+    STREAM_MODE.store(if on { 2 } else { 1 }, Relaxed);
+    FetchStreamingGuard { _priv: () }
+}
+
+/// Restores buffered delivery mode on Drop (test-only pairing with
+/// [`set_fetch_streaming_override`]).
+pub struct FetchStreamingGuard {
+    _priv: (),
+}
+
+impl Drop for FetchStreamingGuard {
+    fn drop(&mut self) {
+        use ::std::sync::atomic::Ordering::Relaxed;
+        STREAM_MODE.store(1, Relaxed);
     }
 }
 
@@ -409,20 +462,37 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         let flag = Arc::new(AtomicBool::new(false));
         // SAFETY: cx is live on this thread; promise_val is the pending Promise.
         unsafe {
-            crate::fetch_async::start_fetch(
-                cx,
-                promise_val,
-                profile,
-                bun_method,
-                url,
-                headers,
-                body,
-                ::std::option::Option::Some(crate::fetch_async::AbortRequest {
-                    id: abort_id,
-                    flag: ::std::sync::Arc::clone(&flag),
-                }),
-                tls_init,
-            );
+            if fetch_streaming_enabled() {
+                crate::fetch_async::start_fetch_streaming(
+                    cx,
+                    promise_val,
+                    profile,
+                    bun_method,
+                    url,
+                    headers,
+                    body,
+                    ::std::option::Option::Some(crate::fetch_async::AbortRequest {
+                        id: abort_id,
+                        flag: ::std::sync::Arc::clone(&flag),
+                    }),
+                    tls_init,
+                );
+            } else {
+                crate::fetch_async::start_fetch(
+                    cx,
+                    promise_val,
+                    profile,
+                    bun_method,
+                    url,
+                    headers,
+                    body,
+                    ::std::option::Option::Some(crate::fetch_async::AbortRequest {
+                        id: abort_id,
+                        flag: ::std::sync::Arc::clone(&flag),
+                    }),
+                    tls_init,
+                );
+            }
             register_abort_listener(cx, sv, abort_id);
         }
         args.rval().set(promise_val);
@@ -431,17 +501,31 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 
     // SAFETY: cx is live on this thread; promise_val is the pending Promise.
     unsafe {
-        crate::fetch_async::start_fetch(
-            cx,
-            promise_val,
-            profile,
-            bun_method,
-            url,
-            headers,
-            body,
-            None,
-            tls_init,
-        );
+        if fetch_streaming_enabled() {
+            crate::fetch_async::start_fetch_streaming(
+                cx,
+                promise_val,
+                profile,
+                bun_method,
+                url,
+                headers,
+                body,
+                None,
+                tls_init,
+            );
+        } else {
+            crate::fetch_async::start_fetch(
+                cx,
+                promise_val,
+                profile,
+                bun_method,
+                url,
+                headers,
+                body,
+                None,
+                tls_init,
+            );
+        }
     }
 
     args.rval().set(promise_val);

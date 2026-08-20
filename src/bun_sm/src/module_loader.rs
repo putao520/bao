@@ -2095,7 +2095,11 @@ unsafe extern "C" fn host_dynamic_import(
                 // await-based consumers observe the error.
                 let c_msg = CString::new(err.as_str())
                     .unwrap_or_else(|_| CString::new("Module load error").unwrap());
-                unsafe { mozjs::error::throw_type_error(raw_cx, c_msg.as_ref()) };
+                {
+                    let mut cx_s =
+                        unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)) };
+                    mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+                }
                 let _ = unsafe { reject_dynamic_promise(raw_cx, promise, &err) };
                 return false;
             }

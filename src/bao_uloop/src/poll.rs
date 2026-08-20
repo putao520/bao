@@ -41,6 +41,22 @@ pub const POLL_TYPE_KIND_MASK: c_int = 0b111;
 /// Mask to extract the polling direction (bits 3..5).
 pub const POLL_TYPE_POLLING_MASK: c_int = 0b11000;
 
+// ────────────────── libus interest bits (epoll_kqueue.h) ──────────────────
+// The dispatch contract is in LIBUS_* units, in every direction: the C
+// `us_poll_events` returns them and `us_internal_dispatch_ready_poll`
+// consumes them. On Linux the header defines them AS the epoll flags
+// (EPOLLIN / EPOLLOUT); on kqueue platforms EVFILT_* is not a bitfield, so
+// libus has its own (1 / 2). Both arms below must speak these units.
+
+#[cfg(target_os = "linux")]
+pub(crate) const LIBUS_SOCKET_READABLE: c_int = libc::EPOLLIN;
+#[cfg(target_os = "linux")]
+pub(crate) const LIBUS_SOCKET_WRITABLE: c_int = libc::EPOLLOUT;
+#[cfg(target_os = "macos")]
+pub(crate) const LIBUS_SOCKET_READABLE: c_int = 1;
+#[cfg(target_os = "macos")]
+pub(crate) const LIBUS_SOCKET_WRITABLE: c_int = 2;
+
 // ────────────────────────── us_poll_t ──────────────────────────────────
 
 /// Rust mirror of the C `us_poll_t`. Layout:
@@ -106,13 +122,16 @@ impl BaoPoll {
         self.poll_type() & POLL_TYPE_KIND_MASK
     }
 
-    /// Decode the polling events to epoll flags.
-    /// `(POLLING_IN ? EPOLLIN : 0) | (POLLING_OUT ? EPOLLOUT : 0)`
+    /// Decode the polling events to libus interest bits.
+    /// `(POLLING_IN ? LIBUS_SOCKET_READABLE : 0) | (POLLING_OUT ? LIBUS_SOCKET_WRITABLE : 0)`
+    /// — on Linux these numerically equal EPOLLIN/EPOLLOUT (epoll_kqueue.h
+    /// defines the libus bits AS the epoll flags); on kqueue they are libus'
+    /// own bitfield (1/2). Same values the C `us_poll_events` returns.
     #[inline]
     pub fn events(&self) -> c_int {
         let pt = self.poll_type();
-        (((pt & POLL_TYPE_POLLING_IN != 0) as c_int) * libc::EPOLLIN)
-            | (((pt & POLL_TYPE_POLLING_OUT != 0) as c_int) * libc::EPOLLOUT)
+        (((pt & POLL_TYPE_POLLING_IN != 0) as c_int) * LIBUS_SOCKET_READABLE)
+            | (((pt & POLL_TYPE_POLLING_OUT != 0) as c_int) * LIBUS_SOCKET_WRITABLE)
     }
 
     /// Return a pointer to the trailing extension bytes.
@@ -361,18 +380,23 @@ const LIBUS_POLL_EOF: c_int = 1;
 const LIBUS_POLL_HANGUP: c_int = 2;
 
 /// Dispatch all ready polls from the `ready_polls` array.
-/// Called from `run_epoll` after `epoll_wait` returns.
+/// Called from `run_epoll` (Linux) / `kqueue::run_kqueue` (macOS) after the
+/// platform wait returns.
 ///
 /// For each ready event:
-///   1. Get `data.ptr` as `*mut BaoPoll`
+///   1. Get the poll pointer (`epoll_event.data` on Linux,
+///      `kevent64_s.udata` on macOS) as `*mut BaoPoll`
 ///   2. If it's a tagged pointer (high bits set) → FilePoll dispatch
 ///   3. Otherwise → `us_internal_dispatch_ready_poll(poll, error, eof, events)`
 ///
-/// This matches the upstream `us_internal_dispatch_ready_polls` function.
+/// This matches the upstream `us_internal_dispatch_ready_polls` function —
+/// the epoll branch verbatim on Linux, the kqueue branch (with its two-pass
+/// per-poll coalescing) on macOS.
 pub(crate) unsafe fn dispatch_ready_polls(loop_: *mut Loop) {
     let loop_ptr: *mut PosixLoop = loop_;
     let num_ready = unsafe { (*loop_ptr).num_ready_polls };
 
+    #[cfg(target_os = "linux")]
     for i in 0..num_ready {
         unsafe {
             (*loop_ptr).current_ready_poll = i;
@@ -425,6 +449,146 @@ pub(crate) unsafe fn dispatch_ready_polls(loop_: *mut Loop) {
             unsafe {
                 // In tests, no C library — call the Rust stub for unit tests.
                 dispatch_ready_poll(poll as *mut BaoPoll, error, eof, events);
+            }
+        }
+    }
+
+    // ──────────────────── kqueue arm (macOS, 74-C.8) ────────────────────
+    // Mirror of the kqueue branch of C `us_internal_dispatch_ready_polls`
+    // (epoll_kqueue.c): kqueue delivers each filter (READ, WRITE, TIMER,
+    // MACHPORT...) as a separate kevent, so the same poll can appear twice
+    // in ready_polls. Two passes, exactly like the C:
+    //   1. decode each kevent into per-poll flag bits and coalesce duplicate
+    //      poll entries (backward scan — kqueue returns at most READ+WRITE
+    //      per fd) into the first slot;
+    //   2. dispatch in order: tagged FilePoll pointers through
+    //      Bun__internal_dispatch_ready_poll, coalesced untagged polls
+    //      through us_internal_dispatch_ready_poll with libus-unit events.
+    #[cfg(target_os = "macos")]
+    {
+        #[derive(Clone, Copy, Default)]
+        struct KeventFlags {
+            readable: bool,
+            writable: bool,
+            error: bool,
+            eof: bool,
+            skip: bool,
+        }
+
+        /// `LIBUS_MAX_READY_POLLS` (internal.h) — mirrors the
+        /// `[kevent64_s; 1024]` field of `bun_uws_sys::PosixLoop`.
+        const MAX_READY_POLLS: usize = 1024;
+
+        let mut coalesced: [KeventFlags; MAX_READY_POLLS] =
+            [KeventFlags::default(); MAX_READY_POLLS];
+
+        // First pass: decode kevents and coalesce same-poll entries.
+        for i in 0..num_ready as usize {
+            let kev = unsafe { (*loop_ptr).ready_polls[i] };
+            let poll_ptr = kev.udata as usize as *mut c_void;
+            if poll_ptr.is_null() || is_tagged_pointer(poll_ptr) {
+                // Null polls and tagged FilePoll entries dispatch in pass 2
+                // (or get skipped); they never coalesce.
+                coalesced[i].skip = true;
+                continue;
+            }
+
+            let bits = KeventFlags {
+                // EVFILT_TIMER / EVFILT_MACHPORT are "readable" dispatches of
+                // callback polls (timers, the C-layer machport wakeup) — the
+                // __APPLE__ arm of the C mapping.
+                readable: kev.filter == libc::EVFILT_READ
+                    || kev.filter == libc::EVFILT_TIMER
+                    || kev.filter == libc::EVFILT_MACHPORT,
+                writable: kev.filter == libc::EVFILT_WRITE,
+                // EV_ERROR carries the errno in `data`; like the C arm, only
+                // the 0/1 verdict is forwarded — a raw errno would read as a
+                // libus close code (the same normalization the epoll arm
+                // applies to EPOLLERR).
+                error: kev.flags & libc::EV_ERROR != 0,
+                // EV_EOF maps to LIBUS_POLL_EOF (1): the half-open-honored
+                // read-side EOF hint. Unlike epoll's level-triggered EPOLLHUP
+                // (=LIBUS_POLL_HANGUP, both directions down, loop.c closes),
+                // EV_EOF on EVFILT_READ leaves the write side intact.
+                eof: kev.flags & libc::EV_EOF != 0,
+                skip: false,
+            };
+
+            // Look backward for a prior entry with the same poll. Compares
+            // the raw udata slot (tag bits included) like the C's
+            // GET_READY_POLL comparison.
+            let mut merged = false;
+            for j in (0..i).rev() {
+                if !coalesced[j].skip
+                    && unsafe { (*loop_ptr).ready_polls[j].udata } == kev.udata
+                {
+                    coalesced[j].readable |= bits.readable;
+                    coalesced[j].writable |= bits.writable;
+                    coalesced[j].error |= bits.error;
+                    coalesced[j].eof |= bits.eof;
+                    coalesced[i].skip = true;
+                    merged = true;
+                    break;
+                }
+            }
+            if !merged {
+                coalesced[i] = bits;
+            }
+        }
+
+        // Second pass: dispatch everything in order — tagged pointers and
+        // coalesced events. current_ready_poll advances over every slot so
+        // us_internal_loop_update_pending_ready_polls (called from
+        // poll change/stop inside handlers) scans from the right index.
+        for i in 0..num_ready as usize {
+            unsafe {
+                (*loop_ptr).current_ready_poll = i as i32;
+            }
+            let kev = unsafe { (*loop_ptr).ready_polls[i] };
+            let poll_ptr = kev.udata as usize as *mut c_void;
+
+            if poll_ptr.is_null() {
+                continue;
+            }
+
+            // Tagged pointer (FilePoll) → Bun's own dispatch
+            if is_tagged_pointer(poll_ptr) {
+                unsafe {
+                    Bun__internal_dispatch_ready_poll(loop_, poll_ptr);
+                }
+                continue;
+            }
+
+            let bits = coalesced[i];
+            if bits.skip {
+                continue;
+            }
+
+            // Build events in libus units (EVFILT_* is not a bitfield) and
+            // mask to the armed interest — a kqueue one-shot EVFILT_WRITE
+            // must not report a readable interest the poll never armed.
+            let mut events: c_int = 0;
+            if bits.readable {
+                events |= LIBUS_SOCKET_READABLE;
+            }
+            if bits.writable {
+                events |= LIBUS_SOCKET_WRITABLE;
+            }
+            events &= unsafe { us_poll_events(poll_ptr as *mut BaoPoll) };
+
+            let error = bits.error as c_int;
+            let eof = if bits.eof { LIBUS_POLL_EOF } else { 0 };
+
+            if events != 0 || error != 0 || eof != 0 {
+                #[cfg(not(test))]
+                unsafe {
+                    us_internal_dispatch_ready_poll(poll_ptr, error, eof, events);
+                }
+                #[cfg(test)]
+                unsafe {
+                    // In tests, no C library — call the Rust stub for unit tests.
+                    dispatch_ready_poll(poll_ptr as *mut BaoPoll, error, eof, events);
+                }
             }
         }
     }

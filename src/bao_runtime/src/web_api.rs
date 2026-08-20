@@ -1781,10 +1781,13 @@ unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut
     // TypeError. Guard BEFORE to_object(): to_object() on a non-object
     // asserts.
     if !input.is_object() {
-        mozjs::error::throw_type_error(
-            cx,
-            c"The provided value is not an instance of ArrayBuffer or ArrayBufferView".as_ref(),
-        );
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_type_error_safe(
+                &mut cx_s,
+                c"The provided value is not an instance of ArrayBuffer or ArrayBufferView".as_ref(),
+            );
+        }
         return false;
     }
 
@@ -1816,11 +1819,14 @@ unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut
             } else if !ab_unwrapped.is_null() {
                 Vec::new() // detached ArrayBuffer
             } else {
-                mozjs::error::throw_type_error(
-                    cx,
-                    c"The provided value is not an instance of ArrayBuffer or ArrayBufferView"
-                        .as_ref(),
-                );
+                {
+                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                    mozjs::error::throw_type_error_safe(
+                        &mut cx_s,
+                        c"The provided value is not an instance of ArrayBuffer or ArrayBufferView"
+                            .as_ref(),
+                    );
+                }
                 return false;
             }
         }

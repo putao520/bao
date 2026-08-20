@@ -58,6 +58,7 @@ mod fetch_e2e_tests;
 mod fetch_headers_e2e_tests;
 mod fetch_init_e2e_tests;
 mod fetch_tls_init_e2e_tests;
+mod fetch_stream_tests;
 mod ffi_ptr_view_qsort_e2e_tests;
 mod final_remaining_integration_tests;
 mod fs_buffer_write_tests;

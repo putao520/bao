@@ -59,9 +59,12 @@
 #![allow(dead_code)]
 // BUG-353 fix: loop entry points now extern "C" from C/C++ libs.
 // Internal helpers retained for poll.rs (FilePoll graft).
-#![cfg(target_os = "linux")] // 74-C.1: Linux epoll only; kqueue = 74-C.8
+#![cfg(any(target_os = "linux", target_os = "macos"))] // 74-C.1: Linux epoll; 74-C.8 (macOS M2): kqueue arm — see src/kqueue.rs
 
 pub mod poll;
+
+#[cfg(target_os = "macos")]
+mod kqueue;
 
 use core::ffi::{c_char, c_int, c_uint, c_void};
 use core::ptr;
@@ -234,6 +237,13 @@ thread_local! {
 /// tied to it. Stores the state in the current thread's `BAO_LOOP`.
 ///
 /// Returns the raw `*mut PosixLoop` for FFI consumption.
+///
+/// Linux-only: this constructs the Rust-owned epoll backend (epoll fd +
+/// eventfd wakeup). On macOS the loop is C-exclusive (BUG-353 fix) — C
+/// `us_create_loop` creates the kqueue fd (`loop->fd = kqueue()`) and arms
+/// the EVFILT_MACHPORT wakeup, so no Rust-side construction exists there
+/// (wakeup goes through the C mechanism, never a Rust eventfd).
+#[cfg(target_os = "linux")]
 fn create_loop(
     wakeup_cb: Option<LoopCb>,
     pre_cb: Option<LoopCb>,
@@ -411,6 +421,12 @@ enum HandlerKind {
 ///   2. Delegate all other events to `poll::dispatch_ready_polls`
 ///      which uses the `CLEAR_POINTER_TAG` pattern: tagged → FilePoll,
 ///      untagged → `us_internal_dispatch_ready_poll`.
+///
+/// Linux arm of the Rust tick. The macOS counterpart is
+/// `kqueue::run_kqueue` (kevent64 + the same dispatch entry point; wakeup
+/// there is the C layer's EVFILT_MACHPORT, which flows through the untagged
+/// dispatch instead of a dedicated eventfd drain).
+#[cfg(target_os = "linux")]
 fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
     let timeout_ms: c_int = if pending > 0 || timeout.is_null() {
         0
@@ -599,7 +615,19 @@ pub unsafe extern "C" fn bao_loop_tick(loop_: *mut Loop, timeout: *const Timespe
     });
 
     if has_rust_state {
-        run_epoll(loop_, pending, timeout);
+        // Platform arm of the Rust tick — same shape on both: controlled-
+        // timeout wait + poll::dispatch_ready_polls normalisation/dispatch.
+        // Linux harvests via epoll_wait (eventfd wakeup drained inside);
+        // macOS harvests via kevent64 (wakeup is the C layer's machport
+        // kevent, dispatched as a normal untagged CALLBACK poll — 74-C.8).
+        #[cfg(target_os = "linux")]
+        {
+            run_epoll(loop_, pending, timeout);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            kqueue::run_kqueue(loop_, pending, timeout);
+        }
     } else {
         // HTTPThread or any thread without BaoLoopState: use C tick.
         // The C version has its own epoll_wait + dispatch for socket events.

@@ -6874,7 +6874,10 @@ unsafe extern "C" fn tty_wrap_tty_ctor(cx: *mut JSContext, argc: u32, vp: *mut J
     // Node: throws on non-tty fd. Mirror that behaviour.
     if fd < 0 || libc::isatty(fd) != 1 {
         let c_msg = c"UV_EINVAL: invalid file descriptor";
-        mozjs::error::throw_type_error(cx, c_msg.as_ref());
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+        }
         return false;
     }
     // Build a minimal handle object exposing getWindowSize / setRawMode as
@@ -7686,7 +7689,10 @@ unsafe extern "C" fn bun_concat_array_buffers(
         // memory disclosure.
         if data.is_null() {
             let c_msg = c"Cannot perform Bun.concatArrayBuffers on a detached ArrayBuffer";
-            mozjs::error::throw_type_error(cx, c_msg.as_ref());
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+            }
             return false;
         }
         element_lengths.push(len);
@@ -7735,7 +7741,10 @@ unsafe extern "C" fn bun_concat_array_buffers(
         let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_e| {
             ::std::ffi::CString::new("Failed to allocate ArrayBuffer").unwrap()
         });
-        mozjs::error::throw_range_error(cx, c_msg.as_ref());
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+        }
         return false;
     }
 
@@ -7743,7 +7752,10 @@ unsafe extern "C" fn bun_concat_array_buffers(
         Some(_) => Vec::new(),
         None => {
             let c_msg = c"Failed to allocate ArrayBuffer: size overflow";
-            mozjs::error::throw_range_error(cx, c_msg.as_ref());
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+            }
             return false;
         }
     };
@@ -7758,7 +7770,10 @@ unsafe extern "C" fn bun_concat_array_buffers(
         let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_e| {
             ::std::ffi::CString::new("Failed to allocate ArrayBuffer").unwrap()
         });
-        mozjs::error::throw_range_error(cx, c_msg.as_ref());
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+        }
         return false;
     }
     all_bytes.resize(target_total, 0u8);

@@ -192,7 +192,7 @@ struct ServerTlsIo {
 }
 
 impl ServerTlsIo {
-    fn handshake(tcp: &mut TcpStream, tls: &mut TlsConnection) -> std::io::Result<()> {
+    fn handshake(tcp: &mut TcpStream, tls: &mut TlsConnection) -> std::io::Result<Vec<u8>> {
         loop {
             let res = tls
                 .process()
@@ -205,7 +205,16 @@ impl ServerTlsIo {
                 tcp.write_all(&outgoing)?;
             }
             if res.state == TlsState::Active || res.state == TlsState::PeerClosed {
-                return Ok(());
+                // The handshake-completing process() may have decrypted
+                // application data that piggybacked on the final handshake
+                // record (e.g. the client's Finished + first h2 record read
+                // as one segment). It must be delivered, not discarded, or
+                // the server waits forever for bytes it already consumed.
+                let mut piggybacked = Vec::new();
+                for chunk in res.plaintext {
+                    piggybacked.extend_from_slice(&chunk);
+                }
+                return Ok(piggybacked);
             }
             let mut buf = [0u8; 16_384];
             match tcp.read(&mut buf) {
@@ -324,16 +333,17 @@ fn spawn_tsu_h2_server(shape: BlockShape) -> u16 {
         let Ok(mut tls) = server.accept() else {
             return;
         };
-        if ServerTlsIo::handshake(&mut tcp, &mut tls).is_err() {
-            return;
-        }
+        let piggybacked = match ServerTlsIo::handshake(&mut tcp, &mut tls) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
         if tls.alpn_protocol() != Some(&b"h2"[..]) {
             return;
         }
         let mut io = ServerTlsIo {
             tcp,
             tls,
-            pending_plain: Vec::new(),
+            pending_plain: piggybacked,
             pending_off: 0,
         };
         serve_tsu_h2(&mut io, shape);

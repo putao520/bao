@@ -126,11 +126,13 @@ pub struct HttpThread {
     pub queued_writes: Vec<WriteMessage>,
     pub queued_response_body_drains: Vec<DrainMessage>,
     pub queued_cert_check_resumes: Vec<CertCheckResumeMessage>,
+    pub queued_transport_pauses: Vec<TransportPauseMessage>,
 
     pub queued_shutdowns_lock: Mutex,
     pub queued_writes_lock: Mutex,
     pub queued_response_body_drains_lock: Mutex,
     pub queued_cert_check_resumes_lock: Mutex,
+    pub queued_transport_pauses_lock: Mutex,
 
     pub queued_threadlocal_proxy_derefs: Vec<*mut ProxyTunnel>,
 
@@ -181,10 +183,12 @@ impl HttpThread {
             queued_writes: Vec::new(),
             queued_response_body_drains: Vec::new(),
             queued_cert_check_resumes: Vec::new(),
+            queued_transport_pauses: Vec::new(),
             queued_shutdowns_lock: Mutex::new(),
             queued_writes_lock: Mutex::new(),
             queued_response_body_drains_lock: Mutex::new(),
             queued_cert_check_resumes_lock: Mutex::new(),
+            queued_transport_pauses_lock: Mutex::new(),
             queued_threadlocal_proxy_derefs: Vec::new(),
             has_awoken: AtomicBool::new(false),
             timer: Instant::now(),
@@ -219,6 +223,23 @@ pub enum WriteMessageType {
 
 pub struct DrainMessage {
     pub async_http_id: u32,
+}
+
+/// W2 transport backpressure: gate one request's response-body transport.
+/// h1 pauses the socket's read side (kernel receive buffer fills → TCP
+/// backpressure stalls the server); h2 withholds that stream's
+/// WINDOW_UPDATE (connection window and sibling streams keep flowing).
+/// Pure hook: nothing enqueues these unless a consumer opts in.
+pub struct TransportPauseMessage {
+    pub async_http_id: u32,
+    pub kind: TransportPauseKind,
+}
+
+#[repr(u8)] // mirrors WriteMessageType's shape
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum TransportPauseKind {
+    Pause = 0,
+    Resume = 1,
 }
 
 pub struct ShutdownMessage {
@@ -790,9 +811,94 @@ impl HttpThread {
         }
     }
 
+    fn drain_queued_transport_pauses(&mut self) {
+        loop {
+            let queued_transport_pauses = {
+                let _guard = self.queued_transport_pauses_lock.lock_guard();
+                core::mem::take(&mut self.queued_transport_pauses)
+            };
+            for msg in &queued_transport_pauses {
+                if let Some(socket_ptr) = abort_tracker().get(&msg.async_http_id) {
+                    match *socket_ptr {
+                        uws::AnySocket::SocketTls(socket) => {
+                            let tagged = HTTPContext::<true>::get_tagged_from_socket(socket);
+                            // h1: the client owns the socket — gate its read side.
+                            if let Some(client) = tagged.client_mut() {
+                                match msg.kind {
+                                    TransportPauseKind::Pause => {
+                                        client.pause_response_transport::<true>(socket)
+                                    }
+                                    TransportPauseKind::Resume => {
+                                        client.resume_response_transport::<true>(socket)
+                                    }
+                                }
+                                continue;
+                            }
+                            // h2: never pause the session socket — that would
+                            // starve every sibling stream. Gate the one
+                            // stream's WINDOW_UPDATE instead.
+                            if let Some(session) = tagged.session() {
+                                match msg.kind {
+                                    TransportPauseKind::Pause => h2::ClientSession::pause_stream_by_http_id(
+                                        session,
+                                        msg.async_http_id,
+                                    ),
+                                    TransportPauseKind::Resume => h2::ClientSession::resume_stream_by_http_id(
+                                        session,
+                                        msg.async_http_id,
+                                    ),
+                                }
+                            }
+                        }
+                        uws::AnySocket::SocketTcp(socket) => {
+                            let tagged = HTTPContext::<false>::get_tagged_from_socket(socket);
+                            if let Some(client) = tagged.client_mut() {
+                                match msg.kind {
+                                    TransportPauseKind::Pause => {
+                                        client.pause_response_transport::<false>(socket)
+                                    }
+                                    TransportPauseKind::Resume => {
+                                        client.resume_response_transport::<false>(socket)
+                                    }
+                                }
+                                continue;
+                            }
+                            if let Some(session) = tagged.session() {
+                                match msg.kind {
+                                    TransportPauseKind::Pause => h2::ClientSession::pause_stream_by_http_id(
+                                        session,
+                                        msg.async_http_id,
+                                    ),
+                                    TransportPauseKind::Resume => h2::ClientSession::resume_stream_by_http_id(
+                                        session,
+                                        msg.async_http_id,
+                                    ),
+                                }
+                            }
+                        }
+                    }
+                }
+                // No tracker entry (h3/QUIC has no us_socket, request not yet
+                // connected or already terminal): the message is dropped —
+                // same contract as the drain queue.
+            }
+            let len = queued_transport_pauses.len();
+            drop(queued_transport_pauses);
+            if len == 0 {
+                break;
+            }
+            bun_core::scoped_log!(HTTPThread, "drained {} transport pauses", len);
+        }
+    }
+
     pub fn drain_events(&mut self) {
         // Process any pending writes **before** aborting.
         self.drain_queued_http_response_body_drains();
+        // After staged bytes are drained forward: park the transport of any
+        // consumer that asked, and lift parks whose consumer came back — both
+        // land before the next tick, so a pause stops reads at the next
+        // epoll wait and a resume re-arms them for it.
+        self.drain_queued_transport_pauses();
         self.drain_queued_writes();
         self.drain_queued_shutdowns();
         // After shutdowns: an abort or cert-rejection scheduled in the same JS
@@ -899,6 +1005,21 @@ impl HttpThread {
             let _guard = self.queued_response_body_drains_lock.lock_guard();
             self.queued_response_body_drains
                 .push(DrainMessage { async_http_id });
+        }
+        self.wakeup();
+    }
+
+    /// HTTP-thread-local enqueue of a transport pause/resume for one request
+    /// (e.g. from a delivery callback running on this thread). Cross-thread
+    /// callers (the JS-thread consumer) use
+    /// [`Self::schedule_transport_pause_from_any_thread`].
+    pub fn schedule_transport_pause(&mut self, async_http_id: u32, kind: TransportPauseKind) {
+        {
+            let _guard = self.queued_transport_pauses_lock.lock_guard();
+            self.queued_transport_pauses.push(TransportPauseMessage {
+                async_http_id,
+                kind,
+            });
         }
         self.wakeup();
     }
@@ -1194,6 +1315,71 @@ impl HttpThread {
                 if std::time::Instant::now() > deadline {
                     panic!(
                         "HTTPThread::schedule_request_write_from_any_thread() timed out waiting for HTTPThread::init()"
+                    );
+                }
+                ::std::hint::spin_loop();
+            }
+        }
+        // SAFETY: wakeup only touches atomics + the uws loop pointer, both
+        // valid after on_start() (guaranteed by the has_awoken check above).
+        unsafe { (&*this).wakeup() };
+    }
+
+    /// Cross-thread transport-backpressure entry: gate (`Pause`) or release
+    /// (`Resume`) the response-body transport of the request owning
+    /// `async_http_id` — the JS-thread consumer's hook (fetch streaming
+    /// staging). The HTTP-thread tick (`drain_queued_transport_pauses`)
+    /// resolves the id to its socket: h1 pauses the socket read side
+    /// (TCP backpressure to the server), h2 withholds that stream's
+    /// WINDOW_UPDATE (sibling streams unaffected).
+    ///
+    /// Safe to call from any thread, mirroring
+    /// [`Self::schedule_request_write_from_any_thread`]: the push is guarded
+    /// by `queued_transport_pauses_lock` (shared with the HTTP-thread drain)
+    /// and `wakeup()` is atomics + raw FFI. A message for an id with no
+    /// registered socket (h3, not yet connected, already terminal) is
+    /// dropped by the tick — the request keeps today's unthrottled delivery.
+    pub fn schedule_transport_pause_from_any_thread(async_http_id: u32, kind: TransportPauseKind) {
+        if async_http_id == 0 {
+            return;
+        }
+        // Release guard + assertion: same pairing with `init_once` as
+        // `schedule()` above.
+        assert!(
+            crate::HTTP_THREAD_INIT.load(Ordering::Acquire),
+            "HTTPThread::schedule_transport_pause_from_any_thread() called before HTTPThread::init()"
+        );
+        // SAFETY: `HTTP_THREAD_INIT == true` ⇒ `HTTP_THREAD` is fully
+        // written. Raw field access (not `ParentRef`): `queued_transport_pauses`
+        // is a plain `Vec` needing `&mut` for `push`, but every read/write —
+        // here and in `drain_queued_transport_pauses` — happens under
+        // `queued_transport_pauses_lock`, so the lock serializes all access
+        // and no aliasing is observable.
+        let this: *mut Self = unsafe {
+            (*crate::HTTP_THREAD.get_unchecked()).as_mut_ptr()
+        };
+        unsafe {
+            let pauses = ::std::ptr::addr_of_mut!((*this).queued_transport_pauses);
+            let lock = ::std::ptr::addr_of!((*this).queued_transport_pauses_lock);
+            {
+                let _guard = (*lock).lock_guard();
+                (*pauses).push(TransportPauseMessage {
+                    async_http_id,
+                    kind,
+                });
+            }
+        }
+        // Same has_awoken handshake as `schedule()`.
+        // SAFETY: `this` points at the initialized HttpThread; both fields
+        // below are designed for cross-thread shared access.
+        let has_awoken = unsafe { &*::std::ptr::addr_of!((*this).has_awoken) };
+        if !has_awoken.load(Ordering::Acquire) {
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(100);
+            while !has_awoken.load(Ordering::Acquire) {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "HTTPThread::schedule_transport_pause_from_any_thread() timed out waiting for HTTPThread::init()"
                     );
                 }
                 ::std::hint::spin_loop();

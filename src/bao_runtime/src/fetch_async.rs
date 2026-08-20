@@ -39,14 +39,15 @@
 //! `h3_fetch.rs` is excluded — it has no `send_sync` path.
 
 use ::std::cell::RefCell;
-use ::std::collections::HashMap;
-use ::std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
+use ::std::collections::{HashMap, VecDeque};
+use ::std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering as AtomicOrdering};
 use ::std::sync::{Arc, Mutex};
 
 use bao_engine::context::RawValueRootGuard;
 use bun_core::ZBox;
+use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::jsval::{DoubleValue, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 
@@ -112,6 +113,10 @@ pub struct AbortRequest {
 #[derive(Clone)]
 struct AbortEntry {
     flag: Arc<AtomicBool>,
+    /// Streaming-mode backref to the `signals::Store.aborted` slot the
+    /// transport observes (heap-stable inside the StreamingState Box).
+    /// `None` in buffered mode (the Arc `flag` IS the transport-wired slot).
+    store_aborted: ::std::option::Option<core::ptr::NonNull<AtomicBool>>,
     async_http_id: u32,
 }
 
@@ -156,15 +161,246 @@ pub fn new_abort_id() -> u32 {
     NEXT_ABORT_ID.fetch_add(1, AtomicOrdering::Relaxed)
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Streaming response-body state machine (FetchStreamLifecycle SM)
+//
+// `BAO_FETCH_STREAM=1` switches the WHATWG fetch() entry to streaming
+// semantics: the Promise resolves when HEADERS arrive (first
+// metadata-carrying delivery) with a Response whose body is backed by a
+// native pull/cancel ReadableStream source; body chunks flow incrementally
+// through a bounded staging buffer instead of the terminal full-body copy.
+//
+// Transport contract (bun_http, already in place — see the servo bridge
+// `bun_bridge.rs on_http_done` for the reference consumer):
+//   - `Signals.response_body_streaming` + `Signals.header_progress` are
+//     wired from a per-fetch `signals::Store` BEFORE scheduling, so the
+//     transport delivers per-chunk progress (`has_more=true`) instead of
+//     buffering to terminal.
+//   - Each delivery's `result.body` holds ONLY the newly arrived increment
+//     (the transport take/restore snapshot). The consumer MUST copy the
+//     bytes out and clear the buffer, then round-trip
+//     `schedule_response_body_drain` so the HTTPThread keeps reading.
+//   - The first delivery carrying `metadata` is the head (headers/status).
+//     Cert-progress or redirect-hop deliveries carry no metadata and are
+//     skipped by the head-published gate.
+//   - The terminal delivery (`has_more=false`) closes the stream; it may
+//     still carry final body bytes.
+//
+// Park (unobserved-body bound): once ≥ [`UNOBSERVED_BODY_HIGH_WATER_MARK`]
+// bytes sit staged with no pending JS pull, the fetch parks — removed from
+// PENDING (the liveness probe no longer keeps the loop ticking), the event
+// loop keepalive is unref'd (a parked, unobserved stream cannot keep the
+// process alive), and the response-body drain round-trip is skipped (the
+// only consumer-side transport lever: real flow-control back-pressure on
+// h2; the h1 socket read needs a transport pause hook — W2 interface,
+// see the W2 handoff note in the wave report). A JS pull unparks: PENDING
+// re-added, keepalive re-ref'd, drain resumed.
+//
+// Ownership (FetchTaskletLifecycle SM, upstream `ThreadSafeRefCount`
+// alignment): the PendingFetch is reference-counted.
+//   - ref A "promise/fetch": from start until the fetch Promise settles.
+//   - ref B "transport": from start until the terminal delivery's event is
+//     processed on the JS thread (NEVER deref'd on the HTTP thread — the
+//     final teardown touches SM roots and thread-locals, JS thread only).
+//   - ref C "stream": taken when the JS stream source is created at
+//     headers-resolve; released by explicit stream cancel or the source
+//     object's GC finalizer (Parked+GC ⇒ Canceled).
+// The last deref runs the full teardown (registries, keepalive, lifted
+// buffers, the RAII promise_root Drop, deallocation).
+//
+// Threading: the HTTP thread touches ONLY `signals_store`, `async_http_id`,
+// `shared` (Mutex), `phase` and `parked` (atomics). `pending_pull`,
+// `promise_settled` and `keepalive_held` are JS-thread exclusive.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Staging high-water mark: once this many body bytes sit staged without a
+/// pending JS pull, the fetch parks (unobserved-body bound; upstream Bun
+/// FetchTasklet alignment).
+pub const UNOBSERVED_BODY_HIGH_WATER_MARK: usize = 256 * 1024;
+
+/// Streaming state-machine phase (`FetchStreamLifecycle` SM). Atomic u8 so
+/// tests and the HTTP thread can observe transitions without the Mutex.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum StreamPhase {
+    /// Scheduled; no delivery yet.
+    Pending = 0,
+    /// First metadata-carrying delivery arrived; the Promise resolves now.
+    HeadersArrived = 1,
+    /// Body chunks flow staging → JS pulls.
+    Streaming = 2,
+    /// High-water reached with no reader: PENDING removed + unref'd.
+    Parked = 3,
+    /// Terminal delivery processed; staging drained.
+    Done = 4,
+    /// Canceled (abort / stream cancel / GC of an unfinished stream).
+    Canceled = 5,
+}
+
+impl StreamPhase {
+    fn from_u8(v: u8) -> StreamPhase {
+        match v {
+            1 => StreamPhase::HeadersArrived,
+            2 => StreamPhase::Streaming,
+            3 => StreamPhase::Parked,
+            4 => StreamPhase::Done,
+            5 => StreamPhase::Canceled,
+            _ => StreamPhase::Pending,
+        }
+    }
+}
+
+/// Head snapshot from the first metadata-carrying delivery (written once on
+/// the HTTP thread, consumed by the JS-thread resolve).
+pub(crate) struct StreamHead {
+    pub status_code: u32,
+    pub status_text: String,
+    pub headers: Vec<(String, String)>,
+}
+
+/// Transport failure recorded for the stream side. `Aborted` maps to a
+/// DOMException AbortError rejection; `Other` to the fetch network-error
+/// shape.
+#[derive(Clone)]
+pub(crate) enum StreamFail {
+    Aborted,
+    Other(String),
+}
+
+/// HTTP-thread ⇄ JS-thread shared slot (all under one lock — the delivery
+/// path is chunk-rate, not byte-rate).
+pub(crate) struct StreamShared {
+    /// Head snapshot; `None` until the first metadata-carrying delivery.
+    pub head: Option<StreamHead>,
+    /// Staged body chunks in delivery order. HTTP thread pushes; the JS
+    /// thread pops one per pull.
+    pub staging: VecDeque<Vec<u8>>,
+    /// Total staged bytes (park check under the same lock).
+    pub staged_bytes: usize,
+    /// Terminal delivery observed on the transport side.
+    pub closed: bool,
+    /// Transport failure (mid- or terminal). Aborted ⇒ AbortError.
+    pub fail: Option<StreamFail>,
+}
+
+/// Per-fetch streaming state. Allocated only in streaming mode
+/// (`BAO_FETCH_STREAM`); buffered fetches keep the single-outcome flow.
+pub(crate) struct StreamingState {
+    /// Signals store the transport backrefs point into (BACKREF contract:
+    /// lives in this heap Box, outlives the AsyncHTTP — the PendingFetch is
+    /// freed strictly after the transport's terminal reclaim).
+    pub signals_store: bun_http::signals::Store,
+    /// Transport handle: response-body drain resume + cancel shutdown
+    /// routing. 0 until `start_with_kind` stashes it (before scheduling).
+    pub async_http_id: AtomicU32,
+    /// Shared delivery slot (see [`StreamShared`]).
+    pub shared: Mutex<StreamShared>,
+    /// Phase transitions (JS thread writes; atomics for observation).
+    pub phase: AtomicU8,
+    /// Park flag: `on_http_done` (HTTP thread) reads it to decide whether
+    /// to round-trip the response-body drain. Set/cleared on the JS thread.
+    pub parked: AtomicBool,
+    /// The JS stream source was collected while the stream was unfinished:
+    /// set by the source finalizer (GC context — no SM API allowed there);
+    /// the next ConcurrentTask run performs the cancel + stream-ref deref
+    /// on the JS thread proper (Parked+GC ⇒ Canceled).
+    pub finalize_pending: AtomicBool,
+    // ── JS-thread exclusive below ──
+    /// The fetch Promise settled (resolved at HeadersArrived or rejected on
+    /// an early transport failure).
+    pub promise_settled: bool,
+    /// Transport reference released (terminal observed on the JS thread —
+    /// exactly once). JS-thread exclusive.
+    pub transport_released: bool,
+    /// Stream-source reference released (explicit cancel or finalize) —
+    /// exactly once. Atomic for uniform CAS-once semantics.
+    pub stream_released: AtomicBool,
+    /// Heap-rooted pending `__baoFetchBodyPull` Promise (`None` unless a
+    /// pull is parked awaiting data). Resolved inside its own realm
+    /// (BCE-BUG-ENG-370 discipline — ConcurrentTask dispatch runs outside
+    /// any JS activation). Never dropped in a GC finalizer — the finalize
+    /// path routes through the ConcurrentTask instead.
+    pub pending_pull: Option<RawValueRootGuard>,
+    /// `ref_concurrently` outstanding (balanced by unref at park/free).
+    pub keepalive_held: bool,
+    /// STREAM_REGISTRY key of the JS stream source (0 until the source is
+    /// created at headers-resolve).
+    pub source_id: u64,
+}
+
+impl StreamingState {
+    fn new(aborted_wired: bool) -> StreamingState {
+        let mut store = bun_http::signals::Store::default();
+        if aborted_wired {
+            // The cancel path arms this directly (stream cancel / GC /
+            // AbortSignal); the transport observes it through the Signals
+            // backref wired in start_with_kind.
+            store.aborted = AtomicBool::new(false);
+        }
+        StreamingState {
+            signals_store: store,
+            async_http_id: AtomicU32::new(0),
+            shared: Mutex::new(StreamShared {
+                head: None,
+                staging: VecDeque::new(),
+                staged_bytes: 0,
+                closed: false,
+                fail: None,
+            }),
+            phase: AtomicU8::new(StreamPhase::Pending as u8),
+            parked: AtomicBool::new(false),
+            finalize_pending: AtomicBool::new(false),
+            promise_settled: false,
+            transport_released: false,
+            stream_released: AtomicBool::new(false),
+            pending_pull: None,
+            keepalive_held: false,
+            source_id: 0,
+        }
+    }
+}
+
+// JS-thread registry: stream-source id → live PendingFetch. The JS holder
+// object (and the native pull/cancel entry points) resolve their fetch
+// through this map; the entry is removed at the final teardown, after
+// which pull(id) reads as an inert closed stream.
+thread_local! {
+    static STREAM_REGISTRY: RefCell<HashMap<u64, *mut PendingFetch>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Process-global stream-source id allocator.
+static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Read the current phase (test/observation hook).
+pub fn stream_phase(this: *mut PendingFetch) -> StreamPhase {
+    if this.is_null() {
+        return StreamPhase::Pending;
+    }
+    // SAFETY: callers hold a live reference (the entry stays allocated
+    // until the last deref, which is itself a JS-thread exclusive path).
+    let phase = unsafe { &*this }
+        .streaming
+        .as_ref()
+        .map(|s| s.phase.load(AtomicOrdering::Acquire))
+        .unwrap_or(StreamPhase::Pending as u8);
+    StreamPhase::from_u8(phase)
+}
+
 /// A fetch tasklet: pending Promise + event-driven HTTP integration.
 ///
 /// Invariants (FetchTaskletLifecycle SM):
 /// - `promise_root` holds the heap root while the Promise is outstanding;
-///   it is released RAII-style when the PendingFetch Box drops (every
-///   terminal resolve/reject path ends in that drop).
+///   it is released RAII-style when the PendingFetch Box drops (the last
+///   `deref_tasklet` — every terminal path ends in that drop).
 /// - `has_schedule_callback` prevents duplicate ConcurrentTask scheduling.
 /// - `outcome` is written by `on_http_done` (HTTPThread) and consumed by
 ///   `resolve_tasklet` (JS thread via ConcurrentTask).
+/// - `refcount` is the tasklet lifetime (upstream ThreadSafeRefCount
+///   alignment): buffered mode starts at 1 (the settle path owns it);
+///   streaming mode starts at 2 (promise/fetch + transport) and gains a
+///   third stream-source reference at headers-resolve. All derefs run on
+///   the JS thread; the last one performs the full teardown.
 pub struct PendingFetch {
     /// SpiderMonkey context that owns the Promise. Only touched on the JS thread.
     pub cx: *mut JSContext,
@@ -177,6 +413,8 @@ pub struct PendingFetch {
     /// fallback when rooting failed.
     pub promise_val: JSVal,
     /// HTTPThread result slot. `None` until `on_http_done` writes the outcome.
+    /// Unused in streaming mode (the streaming deliveries stage into
+    /// `StreamingState.shared` instead).
     pub outcome: Arc<Mutex<Option<FetchOutcome>>>,
     /// How to materialize the result on the JS thread.
     pub kind: ResolveKind,
@@ -191,6 +429,14 @@ pub struct PendingFetch {
     /// compare_exchange(false → true) before enqueuing; `resolve_tasklet`
     /// stores false after consuming.
     has_schedule_callback: AtomicBool,
+    /// Tasklet reference count (see struct docs). Atomic: the HTTP thread
+    /// never derefs (all derefs are JS-thread), but the count is read
+    /// across threads for liveness asserts.
+    refcount: AtomicU32,
+    /// Streaming state (`None` in buffered mode — the adapter-stage default).
+    /// Heap-stable Box: the transport's Signals backrefs point into
+    /// `signals_store` inside it.
+    streaming: Option<Box<StreamingState>>,
     /// BUG-ENG-369 / BCE-007-R5: Backing `Box<[u8]>` for the `&'static` URL
     /// href that the heap-allocated AsyncHTTP borrows. Leaked via
     /// `Box::leak` in `start_with_kind`, reclaimed by `resolve_tasklet`
@@ -214,10 +460,15 @@ pub struct PendingFetch {
 }
 
 // SAFETY: `cx`/`promise_val` are only ever dereferenced on the JS thread that
-// created them; the HTTPThread only touches `outcome` and
-// `has_schedule_callback` (pure Rust / atomic). Sending the struct across
+// created them; the HTTPThread only touches `outcome`,
+// `has_schedule_callback`, `refcount` (reads), and — in streaming mode — the
+// thread-safe subset of `StreamingState` (`signals_store`, `async_http_id`,
+// `shared` under its Mutex, `phase`/`parked` atomics). The JS-thread
+// exclusive fields (`pending_pull` root, `promise_settled`,
+// `keepalive_held`) are never touched off-thread. Sending the struct across
 // threads is sound as long as no SM API is called off the JS thread --
-// enforced by keeping all SM access behind `resolve_tasklet` (JS-thread only).
+// enforced by keeping all SM access behind `resolve_tasklet` and the
+// JS-thread pull/cancel/finalize paths.
 unsafe impl Send for PendingFetch {}
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -280,6 +531,7 @@ pub unsafe fn start(
             ResolveKind::Response,
             None,
             None,
+            false,
         )
     }
 }
@@ -316,6 +568,7 @@ pub unsafe fn start_with_signal(
             ResolveKind::Response,
             Some(abort),
             None,
+            false,
         )
     }
 }
@@ -324,6 +577,10 @@ pub unsafe fn start_with_signal(
 /// channels — `init.signal` (abort) and `init.tls` (undici dispatcher tls
 /// subset, see [`FetchTlsInit`]). `start`/`start_with_signal` are the
 /// Node-API entries (http/https/http2) and carry no per-fetch tls options.
+///
+/// Buffered mode (the adapter-stage default): the Promise resolves at the
+/// terminal delivery with the full body. See [`start_fetch_streaming`] for
+/// the streaming variant.
 ///
 /// # Safety
 ///
@@ -353,6 +610,47 @@ pub unsafe fn start_fetch(
             ResolveKind::Response,
             abort,
             tls,
+            false,
+        )
+    }
+}
+
+/// WHATWG fetch() streaming entry (`BAO_FETCH_STREAM=1`): identical inputs
+/// to [`start_fetch`], but the transport runs with
+/// `response_body_streaming` + `header_progress` armed — the Promise
+/// resolves when headers arrive and the Response body streams through the
+/// native pull/cancel source (see the `FetchStreamLifecycle` section docs).
+/// Node-API entries stay on the buffered [`start_fetch`] path.
+///
+/// # Safety
+///
+/// - `cx` must be a live `JSContext*` on the current thread.
+/// - `promise_val` must be an Object JSVal holding a *pending* Promise.
+pub unsafe fn start_fetch_streaming(
+    cx: *mut JSContext,
+    promise_val: JSVal,
+    profile: Option<crate::stealth_http::StealthProfile>,
+    method: bun_http::Method,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+    abort: Option<AbortRequest>,
+    tls: Option<FetchTlsInit>,
+) {
+    // SAFETY: delegate with the default Response form; streaming armed.
+    unsafe {
+        start_with_kind(
+            cx,
+            promise_val,
+            profile,
+            method,
+            url,
+            headers,
+            body,
+            ResolveKind::Response,
+            abort,
+            tls,
+            true,
         )
     }
 }
@@ -389,12 +687,16 @@ pub unsafe fn start_tls_probe(cx: *mut JSContext, promise_val: JSVal, host: Stri
             ResolveKind::TlsSocket { host_idx },
             None,
             None,
+            false,
         )
     }
 }
 
 /// Kind-aware scheduler. Creates `AsyncHTTP::init`, schedules on the
 /// HTTPThread, and registers the PendingFetch for GC root protection.
+///
+/// `streaming` selects the delivery mode (adapter stage: buffered default,
+/// `BAO_FETCH_STREAM` opt-in via [`start_fetch_streaming`]).
 ///
 /// # Safety
 ///
@@ -411,6 +713,7 @@ unsafe fn start_with_kind(
     kind: ResolveKind,
     abort: Option<AbortRequest>,
     tls: Option<FetchTlsInit>,
+    streaming: bool,
 ) {
     // GUARD-A (GC root): heap-root the pending Promise value across the async
     // window. The async window spans ticks AND frames (root lives from here
@@ -431,9 +734,11 @@ unsafe fn start_with_kind(
 
     // Allocate the PendingFetch on the heap. The pointer is shared between
     // the HTTPThread callback (on_http_done) and the JS-thread ConcurrentTask
-    // callback (resolve_tasklet). It is freed by resolve_tasklet after
-    // resolving/rejecting the promise (single-consumer: resolve_tasklet owns
-    // the deallocation).
+    // callback (resolve_tasklet). Deallocation happens at the last
+    // `deref_tasklet` (JS thread): buffered mode has a single logical owner
+    // (the settle path); streaming mode carries the promise/fetch +
+    // transport references, plus the stream-source reference taken at
+    // headers-resolve.
     let pending = Box::new(PendingFetch {
         cx,
         promise_root,
@@ -444,6 +749,12 @@ unsafe fn start_with_kind(
         concurrent_task: bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(
         ),
         has_schedule_callback: AtomicBool::new(false),
+        refcount: AtomicU32::new(if streaming { 2 } else { 1 }),
+        streaming: if streaming {
+            Some(Box::new(StreamingState::new(abort.is_some())))
+        } else {
+            None
+        },
         url_owned: None,     // filled after url lift below
         body_owned: None,    // filled after body lift below
         headers_owned: None, // filled after headers_buf lift below
@@ -585,17 +896,50 @@ unsafe fn start_with_kind(
         Some(bun_http::ssl_config::GlobalRegistry::intern(ssl_config))
     };
 
-    // AbortSignal wiring: flag → Signals.aborted backref. Wiring `aborted`
-    // also makes AsyncHTTP::init allocate a unique `async_http_id` (the id is
-    // the HTTPThread's handle for shutdown routing). BACKREF contract: the
-    // Arc-owned AtomicBool outlives every Signals copy (the PendingFetch and
-    // ABORT_REGISTRY entries are dropped after the AsyncHTTP).
-    let signals = abort.as_ref().map(|req| bun_http::Signals {
-        aborted: Some(unsafe {
-            core::ptr::NonNull::new_unchecked(Arc::as_ptr(&req.flag).cast_mut())
-        }),
-        ..Default::default()
-    });
+    // AbortSignal + streaming wiring: flag → Signals backrefs. BACKREF
+    // contract: every pointed-at AtomicBool outlives the AsyncHTTP (the
+    // streaming `signals::Store` lives in the heap-stable StreamingState
+    // Box inside the PendingFetch, freed at the last deref — strictly after
+    // the transport's terminal reclaim).
+    //
+    // Streaming mode wires `header_progress` + `response_body_streaming`
+    // (per-delivery progress instead of terminal-only buffering) AND routes
+    // `aborted` through the store — the cancel path (stream cancel / GC
+    // finalize / AbortSignal) arms the SAME atomic the transport observes.
+    // Wiring `aborted` also makes AsyncHTTP::init allocate a unique
+    // `async_http_id` (the HTTPThread's handle for shutdown + drain
+    // routing). Buffered mode keeps the Arc backref byte-for-byte.
+    let signals: ::std::option::Option<bun_http::Signals> = if streaming {
+        // SAFETY: pending_ptr is a live heap allocation (Box::into_raw'd
+        // above); the StreamingState Box is heap-stable and never moves.
+        let store_ptr: *mut bun_http::signals::Store = unsafe {
+            core::ptr::addr_of_mut!(
+                (*(*pending_ptr).streaming.as_mut().unwrap()).signals_store
+            )
+        };
+        Some(bun_http::signals::Signals {
+            // SAFETY: field addresses inside the stable store allocation.
+            header_progress: Some(unsafe {
+                core::ptr::NonNull::new_unchecked(core::ptr::addr_of_mut!((*store_ptr).header_progress))
+            }),
+            response_body_streaming: Some(unsafe {
+                core::ptr::NonNull::new_unchecked(core::ptr::addr_of_mut!(
+                    (*store_ptr).response_body_streaming
+                ))
+            }),
+            aborted: Some(unsafe {
+                core::ptr::NonNull::new_unchecked(core::ptr::addr_of_mut!((*store_ptr).aborted))
+            }),
+            ..Default::default()
+        })
+    } else {
+        abort.as_ref().map(|req| bun_http::Signals {
+            aborted: Some(unsafe {
+                core::ptr::NonNull::new_unchecked(Arc::as_ptr(&req.flag).cast_mut())
+            }),
+            ..Default::default()
+        })
+    };
 
     // Build AsyncHTTP::Options with TLS props (+ abort signals when wired).
     // init.tls.rejectUnauthorized rides the explicit Options channel (Node
@@ -654,18 +998,54 @@ unsafe fn start_with_kind(
     // listener can cancel this fetch. Registration happens before scheduling
     // (and before fetch_api installs the listener), so an abort can never
     // race a half-registered entry.
-    if let Some(req) = &abort {
+    //
+    // Streaming mode additionally: stash the async_http_id into the
+    // StreamingState (drain-resume + cancel routing) and arm the transport's
+    // per-delivery progress signals — BOTH before the schedule handoff, so
+    // the HTTP thread observes them from the first callback (Release store /
+    // the Batch::from publish pairs with the HTTPThread's Acquire reads).
+    {
         // SAFETY: async_http_box is a live heap allocation just created above.
         let async_http_id = unsafe { (*async_http_box).async_http_id };
-        ABORT_REGISTRY.with(|r| {
-            r.borrow_mut().insert(
-                req.id,
-                AbortEntry {
-                    flag: Arc::clone(&req.flag),
-                    async_http_id,
-                },
-            );
-        });
+        if streaming {
+            // SAFETY: pending_ptr is live; JS-thread-only setup phase (the
+            // HTTP thread has not seen the task yet).
+            let state = unsafe { (*pending_ptr).streaming.as_mut().unwrap() };
+            state
+                .async_http_id
+                .store(async_http_id, AtomicOrdering::Release);
+            // SAFETY: async_http_box is the live JS-thread box; the signal
+            // writes go through the backrefs wired into Options above.
+            unsafe {
+                (*async_http_box).enable_response_body_streaming();
+                (*async_http_box).signal_header_progress();
+            }
+        }
+        if let Some(req) = &abort {
+            let store_aborted = if streaming {
+                // SAFETY: the store lives in the heap-stable StreamingState
+                // Box; the slot address is stable for the request lifetime.
+                unsafe {
+                    ::std::option::Option::Some(core::ptr::NonNull::new_unchecked(
+                        core::ptr::addr_of_mut!(
+                            (*(*pending_ptr).streaming.as_mut().unwrap()).signals_store.aborted
+                        ),
+                    ))
+                }
+            } else {
+                ::std::option::Option::None
+            };
+            ABORT_REGISTRY.with(|r| {
+                r.borrow_mut().insert(
+                    req.id,
+                    AbortEntry {
+                        flag: Arc::clone(&req.flag),
+                        store_aborted,
+                        async_http_id,
+                    },
+                );
+            });
+        }
     }
 
     // Capture the MiniEventLoop pointer for concurrent-task scheduling.
@@ -724,6 +1104,14 @@ unsafe fn start_with_kind(
         });
         if ctx.is_js() {
             ctx.ref_concurrently();
+            if streaming {
+                // Park unrefs early; free_tasklet balances only what is
+                // still held (JS-thread exclusive field, setup phase).
+                // SAFETY: pending_ptr is live; pre-schedule.
+                unsafe {
+                    (*pending_ptr).streaming.as_mut().unwrap().keepalive_held = true;
+                }
+            }
         }
     }
 
@@ -764,8 +1152,15 @@ pub fn trigger_abort(abort_id: u32) {
     // Flag first (Release), then the shutdown schedule: the HTTPThread
     // observes the flag either via the shutdown drain or on its next
     // queue/h2/h3 scan, and every fail path lands in `on_http_done` with
-    // `Aborted`, which rejects the promise.
+    // `Aborted`, which rejects the promise. Streaming mode arms the
+    // transport-wired store slot too (the Arc flag is only the buffered
+    // transport's backref there).
     entry.flag.store(true, AtomicOrdering::Release);
+    if let ::std::option::Option::Some(store_aborted) = entry.store_aborted {
+        // SAFETY: the slot lives in the heap-stable StreamingState Box,
+        // which outlives the in-flight transport (freed at the last deref).
+        unsafe { store_aborted.as_ref().store(true, AtomicOrdering::Release) };
+    }
     schedule_abort_shutdown(entry.async_http_id);
 }
 
@@ -826,6 +1221,14 @@ fn on_http_done(
     // step 5 needs `has_more` after that. `bool` is `Copy`, so reading it
     // here is safe regardless of later partial moves.
     let result_is_terminal = !result.has_more;
+
+    // Streaming mode: EVERY delivery is consumed (mid deliveries stage the
+    // increment; the terminal closes). Buffered mode keeps the single
+    // terminal-outcome flow below.
+    if unsafe { &*this }.streaming.is_some() {
+        on_http_done_streaming(this, async_http_box, result, result_is_terminal);
+        return;
+    }
 
     // A buffered fetch delivers exactly ONE outcome, on the terminal
     // callback. Mid-response progress callbacks (`has_more=true` — e.g. an
@@ -999,45 +1402,215 @@ fn on_http_done(
     // explicitly here, once — the body bytes have already been copied into
     // `body_bytes` above.
     //
-    // GUARD: only reclaim on the terminal callback (`!result.has_more`).
-    // `on_async_http_callback_raw` invokes `callback.run` in BOTH the
-    // `has_more` and `!has_more` branches; for `has_more` the clone is kept
-    // alive (no dealloc, no clone-owned teardown) because the HTTPThread is
-    // still streaming. Freeing box (a) prematurely on a `has_more` callback
-    // would leave the live clone's shared fields dangling. For fetch,
-    // `has_more` is always false (single buffered response), but the guard
-    // makes the contract explicit and protects future streaming callers.
-    if !async_http_box.is_null() && result_is_terminal {
-        // SAFETY: `async_http_box` is the live HTTPThread clone; `real` was
-        // set by `start_queued_task`:1190 to the JS-thread `Box<AsyncHTTP>`
-        // allocated at `start_with_kind`:420. `take` claims sole ownership
-        // of the backref; no other code path reads `real` after this point
-        // (the post-callback tail at AsyncHTTP.rs:805-830 only does
-        // `from_field_ptr` pointer arithmetic, `in_flight` swap_remove by
-        // pointer identity, and a raw `dealloc`).
-        let real = unsafe { (*async_http_box).real.take() };
-        if let Some(real_ptr) = real {
-            let js_box_ptr = real_ptr.as_ptr();
-
-            // Free the shared `response_buffer` (raw *mut; not handled by
-            // either box's Drop). SAFETY: allocated via `Box::into_raw` at
-            // start_with_kind:367; bitwise-shared by both boxes, freed once
-            // here; body bytes already copied into `body_bytes` above.
-            let resp_buf = unsafe { (*js_box_ptr).response_buffer };
-            if !resp_buf.is_null() {
-                drop(unsafe { Box::from_raw(resp_buf) });
-            }
-
-            // Drop box (a): runs Drop on the shared fields once (freeing
-            // their heap allocations) and deallocates box (a)'s storage.
-            // Clone-owned fields (redirect/state/proxy_tunnel/…) on box (a)
-            // are still `Default` (populated only on the HTTPThread clone),
-            // so their Drop glue is a no-op. SAFETY: `js_box_ptr` was
-            // produced by `Box::into_raw(Box::new(AsyncHTTP::init(..)))` at
-            // start_with_kind:420; we are the sole reclaiming site.
-            drop(unsafe { Box::from_raw(js_box_ptr) });
-        }
+    // GUARD: only reclaim on the terminal callback (`!result.has_more`) —
+    // see [`reclaim_async_http_boxes`]. For buffered fetch, `has_more` is
+    // always false (single buffered response).
+    if result_is_terminal {
+        reclaim_async_http_boxes(async_http_box);
     }
+}
+
+/// Reclaim the JS-thread `Box<AsyncHTTP>` (box (a)) + the shared
+/// `response_buffer` via the `real` backref on the HTTPThread clone
+/// (box (b)). Terminal-callback only, in BOTH delivery modes (the streaming
+/// delivery path calls this from its terminal branch — the staging copy has
+/// already taken the body bytes).
+///
+/// OWNERSHIP AUDIT (BCE-007-R6, double-free + leak root-cause fix): box (b)
+/// (the clone this pointer refers to) drops only its clone-owned fields and
+/// is RAW-deallocated by `on_async_http_callback_raw`; box (a) — recovered
+/// through `real` — is the SOLE dropper of the bitwise-shared fields
+/// (request_headers, header_entries, tls_props, response_buffer, …). The
+/// `response_buffer` raw `*mut MutableString` has no Drop glue in either
+/// box: freed here, once.
+fn reclaim_async_http_boxes(async_http_box: *mut bun_http::AsyncHTTP<'static>) {
+    if async_http_box.is_null() {
+        return;
+    }
+    // SAFETY: `async_http_box` is the live HTTPThread clone; `real` was set
+    // by `start_queued_task` to the JS-thread `Box<AsyncHTTP>` allocated at
+    // `start_with_kind`. `take` claims sole ownership of the backref; no
+    // other code path reads `real` after this point (the post-callback tail
+    // in `on_async_http_callback_raw` only does `from_field_ptr` pointer
+    // arithmetic, `in_flight` swap_remove by pointer identity, and a raw
+    // `dealloc`).
+    let real = unsafe { (*async_http_box).real.take() };
+    let Some(real_ptr) = real else {
+        return;
+    };
+    let js_box_ptr = real_ptr.as_ptr();
+
+    // Free the shared `response_buffer` (raw *mut; not handled by either
+    // box's Drop). SAFETY: allocated via `Box::into_raw` at
+    // start_with_kind; bitwise-shared by both boxes, freed once here.
+    let resp_buf = unsafe { (*js_box_ptr).response_buffer };
+    if !resp_buf.is_null() {
+        drop(unsafe { Box::from_raw(resp_buf) });
+    }
+
+    // Drop box (a): runs Drop on the shared fields once (freeing their heap
+    // allocations) and deallocates box (a)'s storage. Clone-owned fields
+    // (redirect/state/proxy_tunnel/…) on box (a) are still `Default`
+    // (populated only on the HTTPThread clone), so their Drop glue is a
+    // no-op. SAFETY: `js_box_ptr` was produced by
+    // `Box::into_raw(Box::new(AsyncHTTP::init(..)))` at start_with_kind; we
+    // are the sole reclaiming site.
+    drop(unsafe { Box::from_raw(js_box_ptr) });
+}
+
+/// Streaming-mode delivery (HTTPThread, pure Rust, zero SM API — INV-5).
+///
+/// Every callback participates:
+///   - the FIRST metadata-carrying delivery snapshots the head (status /
+///     statusText / headers) into the shared slot — cert-progress and
+///     redirect-hop deliveries carry no metadata and leave it unpublished
+///     (the bridge `head_unpublished` gate);
+///   - every delivery's `body` increment is copied into staging and the
+///     shared transport buffer is CLEARED (the take/restore snapshot
+///     contract — the next delivery must carry only newly arrived bytes);
+///   - non-terminal deliveries round-trip `schedule_response_body_drain`
+///     so the HTTPThread keeps reading — skipped while parked (the park
+///     lever; see the FetchStreamLifecycle section docs);
+///   - the terminal delivery marks `closed` and reclaims the AsyncHTTP
+///     boxes (identical to buffered mode — the staging copy above already
+///     took the bytes).
+///
+/// The JS-thread wake is the same CAS + cross-thread ConcurrentTask enqueue
+/// as buffered mode (level-triggered: one queued run drains all staged
+/// state; the flag reset at run-start re-arms mid-run arrivals).
+fn on_http_done_streaming(
+    this: *mut PendingFetch,
+    async_http_box: *mut bun_http::AsyncHTTP<'static>,
+    mut result: bun_http::HTTPClientResult<'_>,
+    terminal: bool,
+) {
+    let Some(state) = (unsafe { &*this }).streaming.as_ref() else {
+        return;
+    };
+    let mut wake = false;
+
+    if let Some(fail) = result.fail {
+        // A failure is always terminal on this transport (`to_result`
+        // derives has_more = fail.is_none() && !is_done).
+        let fail_str = format!("{:?}", fail);
+        let stream_fail = if fail_str.contains("Aborted") {
+            StreamFail::Aborted
+        } else {
+            StreamFail::Other(fail_str)
+        };
+        if let Ok(mut g) = state.shared.lock() {
+            g.fail = Some(stream_fail);
+            g.closed = true;
+        }
+        wake = true;
+    } else {
+        let mut staged_bytes = 0usize;
+        {
+            let mut g = state.shared.lock().unwrap();
+            if g.head.is_none() {
+                if let Some(metadata) = result.metadata.as_ref() {
+                    g.head = Some(StreamHead {
+                        status_code: metadata.response.status_code,
+                        status_text: ::std::str::from_utf8(metadata.response.status)
+                            .unwrap_or("")
+                            .to_string(),
+                        headers: metadata
+                            .response
+                            .headers
+                            .list
+                            .iter()
+                            .map(|h| {
+                                (
+                                    ::std::str::from_utf8(h.name()).unwrap_or("").to_string(),
+                                    ::std::str::from_utf8(h.value()).unwrap_or("").to_string(),
+                                )
+                            })
+                            .collect(),
+                    });
+                    wake = true;
+                }
+                // A metadata-less mid delivery (TLS cert progress) publishes
+                // nothing; the bytes below still stream, the head publishes
+                // with the next delivery.
+            }
+            if let Some(body) = result.body.as_deref() {
+                let bytes = body.list.as_slice();
+                if !bytes.is_empty() {
+                    staged_bytes = bytes.len();
+                    g.staged_bytes += bytes.len();
+                    g.staging.push_back(bytes.to_vec());
+                }
+            }
+            if terminal {
+                g.closed = true;
+            }
+        }
+        // Consumer contract: hand the transport buffer back EMPTY so the
+        // next delivery carries only the new increment.
+        if let Some(body) = result.body.as_deref_mut() {
+            body.list.clear();
+        }
+        // Drain round-trip (skipped while parked — the park lever; h2-real
+        // flow control, h1 needs the W2 read-pause hook).
+        if !terminal && staged_bytes > 0 && !state.parked.load(AtomicOrdering::Acquire) {
+            let id = state.async_http_id.load(AtomicOrdering::Acquire);
+            if id != 0 {
+                // SAFETY/THREADING: same-thread idiom — this callback runs
+                // on the HTTP thread, which owns the HTTP_THREAD cell
+                // (mirrors the servo bridge on_http_done).
+                bun_http::http_thread_mut().schedule_response_body_drain(id);
+            }
+        }
+        wake = wake || staged_bytes > 0 || terminal;
+    }
+
+    if wake {
+        // SAFETY: live allocation (the refcount keeps it alive past the
+        // terminal delivery until the JS-thread event processing derefs the
+        // transport reference).
+        unsafe { schedule_tasklet_wake(this) };
+    }
+
+    // Terminal: the transport's last touch — reclaim the AsyncHTTP boxes.
+    if terminal {
+        reclaim_async_http_boxes(async_http_box);
+    }
+}
+
+/// CAS-claim the scheduling slot and enqueue `resolve_tasklet` on the JS
+/// thread's MiniEventLoop. Shared by the buffered outcome path, the
+/// streaming delivery path, and the stream-source finalizer (which runs in
+/// a GC context — the enqueue is pure MPSC + wakeup, no SM API).
+///
+/// SAFETY: `this` must be a live heap-allocated PendingFetch.
+unsafe fn schedule_tasklet_wake(this: *mut PendingFetch) {
+    // SAFETY: live allocation per the fn contract.
+    if unsafe { &*this }
+        .has_schedule_callback
+        .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+        .is_err()
+    {
+        // A task is already queued (or running): level-triggered — that run
+        // observes everything staged so far.
+        return;
+    }
+    let loop_ptr = unsafe { &*this }.mini_loop_ptr;
+    if loop_ptr.is_null() {
+        return;
+    }
+    // BCE-20260814-TLS-DRIVER-UAF discipline: route through the
+    // process-global liveness registry so enqueue+wakeup cannot race the
+    // owning thread's uws-loop free.
+    // SAFETY: the concurrent_task is embedded in the live PendingFetch;
+    // loop_ptr was captured via with_event_loop on the JS thread. `false` =
+    // owning thread exited: skip (the queued task dies with the thread).
+    let concurrent_task_ptr = unsafe { core::ptr::addr_of_mut!((*this).concurrent_task) };
+    let _ = unsafe {
+        bun_event_loop::ConcurrentWakeup::enqueue_task_concurrent_cross_thread(
+            loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>,
+            core::ptr::NonNull::new_unchecked(concurrent_task_ptr),
+        )
+    };
 }
 
 /// Shim that bridges `AnyTaskWithExtraContext` callback signature to
@@ -1050,23 +1623,34 @@ fn resolve_tasklet_shim(ctx: *mut PendingFetch, _parent: *mut ()) {
     unsafe { resolve_tasklet(ctx) };
 }
 
-/// JS-thread ConcurrentTask callback. Fires when `on_http_done` enqueues
-/// this task on the MiniEventLoop. Runs on the JS thread (safe to call SM API).
+/// JS-thread ConcurrentTask callback. Fires when `on_http_done` (or the
+/// stream-source finalizer) enqueues this task on the MiniEventLoop. Runs
+/// on the JS thread (safe to call SM API).
 ///
-/// It:
+/// Buffered mode:
 ///   1. Resets `has_schedule_callback` (allows future scheduling if needed).
 ///   2. Takes the outcome from the shared slot.
 ///   3. Builds the Response/error JS object and resolves/rejects the Promise.
-///   4. `unref_concurrently` (keepalive decrement).
-///   5. Removes from PENDING registry + reclaims the lifted URL/body/headers
-///      buffers.
-///   6. Deallocates the `PendingFetch` Box — the RAII `promise_root` Drop
-///      releases the heap root (liveness-guarded) on every exit path.
+///   4. Derefs the tasklet reference — the last deref performs the full
+///      teardown (PENDING removal, keepalive decrement, lifted-buffer
+///      reclaims, deallocation; the RAII `promise_root` Drop releases the
+///      heap root on every exit path).
+///
+/// Streaming mode: [`process_stream_event`] owns the flow (headers-resolve,
+/// chunk delivery, park, terminal close-out, finalize-cancel).
 unsafe fn resolve_tasklet(this: *mut PendingFetch) {
-    // 1. Reset scheduling flag.
+    // 1. Reset scheduling flag FIRST — the HTTP thread may deliver again
+    //    while this run executes (single-node re-enqueue is safe:
+    //    tick_concurrent_with_count pops + detaches the batch before run).
     unsafe { &*this }
         .has_schedule_callback
         .store(false, AtomicOrdering::Release);
+
+    if unsafe { &*this }.streaming.is_some() {
+        // SAFETY: streaming dispatch on a live streaming PendingFetch.
+        unsafe { process_stream_event(this) };
+        return;
+    }
 
     // 2. Take the outcome from the shared slot.
     let outcome = unsafe { &*this }
@@ -1161,22 +1745,71 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
         }
     }
 
-    // 4. Terminal unroot is RAII: the `promise_root` Drop below (step 7,
-    //    PendingFetch Box deallocation) removes the heap root with the
-    //    correct registered address on every exit path.
+    // 4. Release this path's tasklet reference. The last deref (step 7 in
+    //    the old numbering — free_tasklet) removes the PENDING entry, the
+    //    abort-registry entry, reclaims the lifted URL/body/headers buffers,
+    //    unrefs the keepalive and deallocates the Box (the RAII
+    //    `promise_root` Drop unroots with the correct registered address on
+    //    every exit path).
+    // SAFETY: this pointer was allocated by Box::into_raw in start_with_kind;
+    // buffered mode holds exactly this one reference.
+    unsafe {
+        deref_tasklet(this);
+    }
 
-    // 5. unref_concurrently: decrement keepalive (must balance ref_concurrently
-    //    in start_with_kind). Only valid for JS-VM-backed loops.
+    // Flush microtasks queued by ResolvePromise/RejectPromise.
+    mozjs_sys::jsapi::js::RunJobs(cx);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Streaming JS-thread processing + tasklet reference counting
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Release one tasklet reference (JS thread). The last release runs the
+/// full teardown via [`free_tasklet`]. All deref sites are JS-thread:
+///   - promise settle (buffered resolve_tasklet / streaming headers-resolve
+///     or early-fail reject),
+///   - terminal event processed (streaming transport reference),
+///   - stream cancel / stream-source GC finalize (stream reference).
+///
+/// SAFETY: `this` must be a live heap-allocated PendingFetch; must be
+/// called on the JS thread that owns the Promise.
+unsafe fn deref_tasklet(this: *mut PendingFetch) {
+    // SAFETY: live allocation per the fn contract.
+    let prev = unsafe { &*this }.refcount.fetch_sub(1, AtomicOrdering::AcqRel);
+    debug_assert!(prev >= 1, "FetchTasklet refcount underflow");
+    if prev == 1 {
+        // SAFETY: we hold the final reference — sole teardown path.
+        unsafe { free_tasklet(this) };
+    }
+}
+
+/// Final tasklet teardown (JS thread, exactly once — the last deref):
+/// keepalive balance, PENDING/STREAM_REGISTRY/ABORT_REGISTRY removals,
+/// lifted-buffer reclaims, and the PendingFetch deallocation (the RAII
+/// `promise_root` / `pending_pull` Drops unroot).
+///
+/// SAFETY: `this` must be the last live reference; hands off ownership.
+unsafe fn free_tasklet(this: *mut PendingFetch) {
+    // Keepalive balance. Buffered mode unrefs exactly where the old code
+    // did; streaming mode unrefs only if still held (park unref'd early).
+    let streaming = unsafe { (*this).streaming.is_some() };
+    let keepalive_held = unsafe {
+        (*this)
+            .streaming
+            .as_ref()
+            .is_some_and(|s| s.keepalive_held)
+    };
     {
         let ctx = crate::timers::with_event_loop(|loop_| {
             bun_event_loop::MiniEventLoop::MiniEventLoop::as_event_loop_ctx(loop_)
         });
-        if ctx.is_js() {
+        if ctx.is_js() && (!streaming || keepalive_held) {
             ctx.unref_concurrently();
         }
     }
 
-    // 6. Remove from PENDING registry.
+    // PENDING registry removal.
     PENDING.with(|p| {
         let mut guard = p.borrow_mut();
         if let Some(pos) = guard.iter().position(|&ptr| ptr == this) {
@@ -1184,22 +1817,34 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
         }
     });
 
-    // 6a. Drop the abort registry entry: the fetch has settled, so a later
-    // abort event is a no-op (trigger_abort misses and returns). Releasing
-    // the Arc also lets the Signals backref storage retire once the
-    // PendingFetch Box below drops the other ref.
+    // STREAM_REGISTRY removal (a late pull on a collected fetch then reads
+    // as an inert closed stream).
+    if let Some(source_id) = unsafe {
+        (*this)
+            .streaming
+            .as_ref()
+            .map(|s| s.source_id)
+            .filter(|&id| id != 0)
+    } {
+        STREAM_REGISTRY.with(|r| {
+            r.borrow_mut().remove(&source_id);
+        });
+    }
+
+    // Abort registry removal: the fetch has settled, so a later abort event
+    // is a no-op (trigger_abort misses and returns).
     if let Some(abort_id) = unsafe { (*this).abort_id } {
         ABORT_REGISTRY.with(|r| {
             r.borrow_mut().remove(&abort_id);
         });
     }
 
-    // 6b. BUG-ENG-369 / BCE-007-R5: Reclaim the leaked 'static URL, body and
-    // headers backing buffers. The AsyncHTTP was dropped in on_http_done
-    // (step 5), which already finished reading these slices — they are now
-    // safe to free.
+    // BUG-ENG-369 / BCE-007-R5: reclaim the leaked 'static URL, body and
+    // headers backing buffers. The AsyncHTTP was dropped in on_http_done's
+    // terminal reclaim, which already finished reading these slices — both
+    // delivery modes reach this point strictly after that.
     // SAFETY: url_owned/body_owned/headers_owned were set in start_with_kind;
-    // we are the sole consumer and the AsyncHTTP is no longer referencing them.
+    // we are the sole consumer and the AsyncHTTP no longer references them.
     unsafe {
         if let Some(url_ptr) = (*this).url_owned.take() {
             drop(Box::from_raw(url_ptr));
@@ -1212,16 +1857,1102 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
         }
     }
 
-    // 7. Deallocate the PendingFetch Box.
-    // SAFETY: this pointer was allocated by Box::into_raw in start_with_kind.
-    // We are the sole consumer (ConcurrentTask runs once); no other code
-    // accesses the Box after this point.
+    // Deallocate. The RAII `promise_root` Drop unroots (liveness-guarded);
+    // a still-parked `pending_pull` root unroots here too (its awaiters
+    // died with the stream — the finalize path guarantees this runs on the
+    // JS thread, never in a GC finalizer).
+    // SAFETY: allocated by Box::into_raw in start_with_kind; final reference.
     unsafe {
         drop(Box::from_raw(this));
     }
+}
 
-    // Flush microtasks queued by ResolvePromise/RejectPromise.
+/// Streaming-state JS-thread event processing (ConcurrentTask dispatch —
+/// safe to call SM API; BCE-BUG-ENG-370: entered realms for every settle).
+///
+/// One run drains ALL staged state (level-triggered):
+///   0. finalize-cancel (the JS source was GC'd while unfinished),
+///   1. head — resolve the fetch Promise on the first metadata snapshot
+///      (takes + releases the promise reference),
+///   2. fail — reject a parked pull, latch Canceled, release the transport
+///      reference (a failure is always terminal),
+///   3. deliver ONE chunk to a parked pull (the JS controller's re-pull
+///      loop drains the rest through the native pull),
+///   4. terminal close-out — resolve a parked pull with done / latch Done /
+///      release the transport reference,
+///   5. park check — unobserved staging at/above the high-water mark.
+///
+/// SAFETY: `this` must be a live streaming PendingFetch; JS thread only.
+unsafe fn process_stream_event(this: *mut PendingFetch) {
+    let cx = unsafe { (*this).cx };
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    // 0. Finalize-cancel: Parked+GC ⇒ Canceled. No parked pull can exist
+    //    here (a parked pull's promise chain keeps the source — and the
+    //    whole stream cluster — GC-reachable).
+    let finalize = unsafe {
+        (*this)
+            .streaming
+            .as_ref()
+            .expect("streaming dispatch on buffered fetch")
+            .finalize_pending
+            .load(AtomicOrdering::Acquire)
+    };
+    if finalize {
+        cancel_stream_core(this);
+        // The source object is gone — its tasklet reference MUST be released
+        // here regardless of phase: at Done/Canceled `cancel_stream_core`
+        // no-ops, and an unreleased stream reference would keep the entry
+        // (and its PENDING registration — the liveness probe) alive forever.
+        // Idempotent (CAS-once). When the transport reference is already
+        // released, this release frees the tasklet — bail out before the
+        // generic steps (nothing may touch `this` afterwards).
+        // SAFETY: JS thread; live entry until the release below.
+        let transport_already_released = unsafe {
+            (*this).streaming.as_ref().unwrap().transport_released
+        };
+        release_stream_ref_once(this);
+        if transport_already_released {
+            mozjs_sys::jsapi::js::RunJobs(cx);
+            return;
+        }
+    }
+
+    // 1. Head: settle the fetch Promise exactly once. `closed` with neither
+    //    head nor fail is the defensive never-carried-metadata terminal
+    //    (bridge parity) — reject rather than leave the Promise pending.
+    let settle_now = unsafe {
+        let state = (*this).streaming.as_ref().unwrap();
+        !state.promise_settled && {
+            let g = state.shared.lock().unwrap();
+            g.head.is_some() || g.fail.is_some() || g.closed
+        }
+    };
+    if settle_now {
+        let (head, fail) = unsafe {
+            let state = (*this).streaming.as_ref().unwrap();
+            let mut g = state.shared.lock().unwrap();
+            (g.head.take(), g.fail.clone())
+        };
+        // BCE-BUG-ENG-370: enter the Promise's realm for the settle window.
+        let pending = unsafe { &*this };
+        let promise_val = pending
+            .promise_root
+            .as_ref()
+            .map_or(pending.promise_val, |g| g.get(0));
+        rooted!(&in(cx_ref) let promise_obj = promise_val.to_object());
+        let promise_h = promise_obj.handle().into();
+        {
+            let mut realm = AutoRealm::new_from_handle(cx_ref, promise_obj.handle());
+            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+            let aborted = unsafe {
+                let state = (*this).streaming.as_ref().unwrap();
+                state.signals_store.aborted.load(AtomicOrdering::Acquire)
+                    || pending
+                        .abort_flag
+                        .as_ref()
+                        .is_some_and(|f| f.load(AtomicOrdering::Acquire))
+            };
+            if let Some(fail) = fail.as_ref().filter(|_| !aborted) {
+                reject_with_network_error(cx, promise_h, &match fail {
+                    StreamFail::Aborted => "error.Aborted".to_string(),
+                    StreamFail::Other(msg) => msg.clone(),
+                });
+            } else if aborted {
+                reject_promise_with_abort_error(cx, promise_h);
+            } else if let Some(head) = head.as_ref() {
+                // SAFETY: cx live, promise's realm entered; head from the
+                // HTTP-thread snapshot.
+                match unsafe { build_streaming_response_js(cx, this, head) } {
+                    ::std::option::Option::Some(resp_obj) if !resp_obj.is_null() => {
+                        rooted!(&in(realm_cx) let resp_val = ObjectValue(resp_obj));
+                        JS::ResolvePromise(cx, promise_h, resp_val.handle().into());
+                        set_phase(this, StreamPhase::HeadersArrived);
+                    }
+                    _ => {
+                        // Fail closed — no silent degraded Response shape.
+                        reject_with_message(cx, promise_h, "http: failed to build streaming Response");
+                        // The stream source (if partially built) cleaned
+                        // itself up; cancel the transport so it does not
+                        // stream into a dead fetch.
+                        cancel_stream_core(this);
+                    }
+                }
+            } else {
+                // Terminal success that never carried metadata: fail closed
+                // (bridge `publish_failure` parity) — never a silent
+                // never-settling Promise.
+                reject_with_message(
+                    cx,
+                    promise_h,
+                    "fetch: streaming response completed without metadata",
+                );
+            }
+        }
+        unsafe {
+            (*this).streaming.as_mut().unwrap().promise_settled = true;
+        }
+        // Release the promise/fetch reference (ref A).
+        // SAFETY: JS thread; live entry.
+        unsafe { deref_tasklet(this) };
+    }
+
+    // 2. Fail: reject a parked pull, latch Canceled, release the transport
+    //    reference (a transport failure is always terminal).
+    let fail = unsafe {
+        (*this)
+            .streaming
+            .as_ref()
+            .unwrap()
+            .shared
+            .lock()
+            .unwrap()
+            .fail
+            .clone()
+    };
+    if let Some(fail) = fail {
+        // SAFETY: JS thread; the parked pull root (if any) is dropped after
+        // the rejection.
+        unsafe { reject_parked_pull(this, |cx, pull_h| {
+            match &fail {
+                StreamFail::Aborted => reject_promise_with_abort_error(cx, pull_h),
+                StreamFail::Other(msg) => reject_with_network_error(cx, pull_h, msg),
+            }
+        }) };
+        let phase = current_phase(this);
+        if phase != StreamPhase::Canceled {
+            set_phase(this, StreamPhase::Canceled);
+        }
+        // NOTE: the transport reference is released at the TAIL of this
+        // event (after every other step) — the release may free the tasklet
+        // (stream source already canceled/GC'd), and nothing may touch
+        // `this` afterwards.
+    }
+
+    // 3. Deliver ONE chunk to a parked pull. The web-streams controller
+    //    re-pulls after each resolution, so multi-chunk staging drains
+    //    through the native pull without further transport events.
+    let deliver = unsafe {
+        let state = (*this).streaming.as_ref().unwrap();
+        state.pending_pull.is_some() && {
+            let g = state.shared.lock().unwrap();
+            g.staging.front().is_some()
+        }
+    };
+    if deliver {
+        let chunk = unsafe {
+            let state = (*this).streaming.as_ref().unwrap();
+            let mut g = state.shared.lock().unwrap();
+            match g.staging.pop_front() {
+                ::std::option::Option::Some(c) => {
+                    g.staged_bytes -= c.len();
+                    ::std::option::Option::Some(c)
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            }
+        };
+        if let ::std::option::Option::Some(chunk) = chunk {
+            // SAFETY: JS thread; resolves + unroots the parked pull.
+            unsafe { resolve_parked_pull_with_chunk(this, chunk) };
+            if current_phase(this) == StreamPhase::HeadersArrived {
+                set_phase(this, StreamPhase::Streaming);
+            }
+        }
+    }
+
+    // 4. Terminal close-out: resolve a parked pull with done / latch Done.
+    //    (The transport's AsyncHTTP boxes were already reclaimed on the
+    //    HTTP thread at the terminal delivery.)
+    let (closed, staged_bytes) = unsafe {
+        let state = (*this).streaming.as_ref().unwrap();
+        let g = state.shared.lock().unwrap();
+        (g.closed, g.staged_bytes)
+    };
+    if closed {
+        if staged_bytes == 0 {
+            // Nothing staged: a parked pull resolves done; the phase latches
+            // Done only on the success path (fail latched Canceled above).
+            // SAFETY: JS thread; resolves + unroots the parked pull.
+            unsafe { resolve_parked_pull_with_done(this) };
+            if current_phase(this) == StreamPhase::Streaming
+                || current_phase(this) == StreamPhase::HeadersArrived
+                || current_phase(this) == StreamPhase::Parked
+            {
+                set_phase(this, StreamPhase::Done);
+            }
+        }
+    }
+
+    // 5. Park check: unobserved staging at/above the high-water mark with
+    //    no reader interest. Only in a live (non-terminal, non-canceled)
+    //    stream.
+    if !closed
+        && staged_bytes >= UNOBSERVED_BODY_HIGH_WATER_MARK
+        && unsafe {
+            let state = (*this).streaming.as_ref().unwrap();
+            state.pending_pull.is_none() && !state.parked.load(AtomicOrdering::Acquire)
+        }
+        && matches!(
+            current_phase(this),
+            StreamPhase::HeadersArrived | StreamPhase::Streaming
+        )
+    {
+        park_stream(this);
+    }
+
+    // 6. Transport reference release — MUST be the last `this` access: the
+    //    release may drop the final reference (stream source already
+    //    canceled / GC-finalized) and free the tasklet right here.
+    // SAFETY: JS thread; live entry until this call.
+    unsafe {
+        let terminal_observed =
+            closed || (*this).streaming.as_ref().unwrap().shared.lock().unwrap().fail.is_some();
+        if terminal_observed {
+            release_transport_ref_once(this);
+        }
+    }
+
+    // Flush microtasks queued by the settles above (cx captured at entry —
+    // `this` may be freed by step 6; never touch it past this point).
     mozjs_sys::jsapi::js::RunJobs(cx);
+}
+
+/// Current phase snapshot.
+fn current_phase(this: *mut PendingFetch) -> StreamPhase {
+    // SAFETY: callers hold a live reference (JS-thread processing paths).
+    unsafe { &*this }
+        .streaming
+        .as_ref()
+        .map(|s| StreamPhase::from_u8(s.phase.load(AtomicOrdering::Acquire)))
+        .unwrap_or(StreamPhase::Pending)
+}
+
+/// Phase transition (JS thread).
+fn set_phase(this: *mut PendingFetch, phase: StreamPhase) {
+    // SAFETY: callers hold a live reference (JS-thread processing paths).
+    if let Some(state) = unsafe { &*this }.streaming.as_ref() {
+        state.phase.store(phase as u8, AtomicOrdering::Release);
+    }
+}
+
+/// Park the fetch: PENDING removal + keepalive unref + transport pause
+/// (the unobserved-body bound). A later JS pull unparks.
+fn park_stream(this: *mut PendingFetch) {
+    // SAFETY: JS-thread processing path on a live entry.
+    let Some(state) = (unsafe { &*this }).streaming.as_ref() else {
+        return;
+    };
+    state.parked.store(true, AtomicOrdering::Release);
+    set_phase(this, StreamPhase::Parked);
+    PENDING.with(|p| {
+        let mut guard = p.borrow_mut();
+        if let Some(pos) = guard.iter().position(|&ptr| ptr == this) {
+            guard.swap_remove(pos);
+        }
+    });
+    if state.keepalive_held {
+        let ctx = crate::timers::with_event_loop(|loop_| {
+            bun_event_loop::MiniEventLoop::MiniEventLoop::as_event_loop_ctx(loop_)
+        });
+        if ctx.is_js() {
+            ctx.unref_concurrently();
+        }
+        // SAFETY: JS thread; keepalive_held is JS-thread exclusive.
+        unsafe {
+            (*this).streaming.as_mut().unwrap().keepalive_held = false;
+        }
+    }
+    // W2 transport back-pressure: real read pause (h1 socket
+    // pause_stream → kernel back-pressure; h2 stream-level window
+    // withholding). h3/unconnected/terminal ids are silently dropped by
+    // the transport. The fetch is in flight ⇒ HTTPThread initialized
+    // (the entry asserts fail-closed otherwise).
+    bun_http::HTTPThread::schedule_transport_pause_from_any_thread(
+        state.async_http_id.load(AtomicOrdering::Acquire),
+        bun_http::http_thread::TransportPauseKind::Pause,
+    );
+}
+
+/// Unpark the fetch: PENDING re-add + keepalive re-ref + transport drain
+/// resume. Runs from the native pull (reader interest arrived).
+fn unpark_stream(this: *mut PendingFetch) {
+    // SAFETY: JS-thread processing path on a live entry.
+    let Some(state) = (unsafe { &*this }).streaming.as_ref() else {
+        return;
+    };
+    let closed = state.shared.lock().map_or(true, |g| g.closed);
+    if closed {
+        // Nothing to resume — the terminal close-out handles the drain-down.
+        return;
+    }
+    PENDING.with(|p| {
+        p.borrow_mut().push(this);
+    });
+    if !state.keepalive_held {
+        let ctx = crate::timers::with_event_loop(|loop_| {
+            bun_event_loop::MiniEventLoop::MiniEventLoop::as_event_loop_ctx(loop_)
+        });
+        if ctx.is_js() {
+            ctx.ref_concurrently();
+        }
+        // SAFETY: JS thread; keepalive_held is JS-thread exclusive.
+        unsafe {
+            (*this).streaming.as_mut().unwrap().keepalive_held = true;
+        }
+    }
+    if current_phase(this) == StreamPhase::Parked {
+        set_phase(this, StreamPhase::Streaming);
+    }
+    // W2 transport back-pressure: resume the paused read side FIRST (h1
+    // un-pause → kernel-resident data re-triggers on_data; h2 immediate
+    // window replenish + flush), then the drain round-trip.
+    bun_http::HTTPThread::schedule_transport_pause_from_any_thread(
+        state.async_http_id.load(AtomicOrdering::Acquire),
+        bun_http::http_thread::TransportPauseKind::Resume,
+    );
+    schedule_response_body_drain_from_any_thread(
+        state.async_http_id.load(AtomicOrdering::Acquire),
+    );
+}
+
+/// Cross-thread response-body drain scheduling from the JS thread — the
+/// same shared-field pattern as [`schedule_abort_shutdown`] (Mutex-queued
+/// message + wakeup; the HTTP-thread owner assert is skipped by design).
+fn schedule_response_body_drain_from_any_thread(async_http_id: u32) {
+    if async_http_id == 0 {
+        return;
+    }
+    bun_http::http_thread::init(&Default::default());
+    // SAFETY: HTTP_THREAD is fully written (init above); only the
+    // cross-thread-safe fields are touched (mirrors HTTPThread::schedule).
+    let ht = unsafe { (*bun_http::HTTP_THREAD.get_unchecked()).as_mut_ptr() };
+    unsafe {
+        {
+            let _guard = (*ht).queued_response_body_drains_lock.lock_guard();
+            (*ht)
+                .queued_response_body_drains
+                .push(bun_http::http_thread::DrainMessage { async_http_id });
+        }
+        (*ht).wakeup();
+    }
+}
+
+/// Release the transport reference exactly once (JS thread). Called when a
+/// terminal state is observed — the fail path or the terminal close-out.
+fn release_transport_ref_once(this: *mut PendingFetch) {
+    // SAFETY: JS-thread processing path on a live entry (exclusive access).
+    let Some(state) = (unsafe { &mut *this }).streaming.as_mut() else {
+        return;
+    };
+    if state.transport_released {
+        return;
+    }
+    state.transport_released = true;
+    // SAFETY: JS thread; live entry; the pending SM teardown (free_tasklet)
+    // must never run on the HTTP thread.
+    unsafe { deref_tasklet(this) };
+}
+
+/// Release the stream-source reference exactly once (JS thread): explicit
+/// cancel or the finalize-cancel path.
+fn release_stream_ref_once(this: *mut PendingFetch) {
+    // SAFETY: JS-thread processing path on a live entry.
+    let Some(state) = (unsafe { &*this }).streaming.as_ref() else {
+        return;
+    };
+    if state.stream_released.swap(true, AtomicOrdering::AcqRel) {
+        return;
+    }
+    // SAFETY: JS thread; live entry.
+    unsafe { deref_tasklet(this) };
+}
+
+/// Core cancel: latch Canceled + abort the in-flight transport (unless it
+/// already reached terminal). SM-free.
+fn cancel_stream_core(this: *mut PendingFetch) {
+    // SAFETY: live entry (JS thread or the routed finalize event).
+    let Some(state) = (unsafe { &*this }).streaming.as_ref() else {
+        return;
+    };
+    if matches!(current_phase(this), StreamPhase::Done | StreamPhase::Canceled) {
+        return;
+    }
+    set_phase(this, StreamPhase::Canceled);
+    let closed = state.shared.lock().map_or(true, |g| g.closed);
+    if !closed {
+        state
+            .signals_store
+            .aborted
+            .store(true, AtomicOrdering::Release);
+        let id = state.async_http_id.load(AtomicOrdering::Acquire);
+        if id != 0 {
+            bun_http::HTTPThread::schedule_shutdown_from_any_thread(id);
+        }
+    }
+}
+
+/// Take the parked pull root (if any), run `reject` inside ITS realm, then
+/// drop the root. Used by the fail and cancel paths.
+///
+/// SAFETY: JS thread; live entry.
+unsafe fn reject_parked_pull<F>(this: *mut PendingFetch, reject: F)
+where
+    F: FnOnce(*mut JSContext, Handle<*mut JSObject>),
+{
+    // SAFETY: JS thread; exclusive access to the live entry.
+    let Some(root) = (unsafe { &mut *this })
+        .streaming
+        .as_mut()
+        .and_then(|s| s.pending_pull.take())
+    else {
+        return;
+    };
+    let cx = unsafe { (*this).cx };
+    let pull_val = root.get(0);
+    if pull_val.is_object() {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let pull_obj = pull_val.to_object());
+        {
+            // The pull promise's own realm (BCE-BUG-ENG-370 discipline).
+            let _realm = AutoRealm::new_from_handle(cx_ref, pull_obj.handle());
+            reject(cx, pull_obj.handle().into());
+        }
+    }
+    drop(root);
+    mozjs_sys::jsapi::js::RunJobs(cx);
+}
+
+/// Resolve the parked pull with one chunk `{value: Uint8Array, done:false}`
+/// inside its realm, then drop the root.
+///
+/// SAFETY: JS thread; live entry.
+unsafe fn resolve_parked_pull_with_chunk(this: *mut PendingFetch, chunk: Vec<u8>) {
+    // SAFETY: JS thread; exclusive access to the live entry.
+    let Some(root) = (unsafe { &mut *this })
+        .streaming
+        .as_mut()
+        .and_then(|s| s.pending_pull.take())
+    else {
+        return;
+    };
+    let cx = unsafe { (*this).cx };
+    let pull_val = root.get(0);
+    if pull_val.is_object() {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let pull_obj = pull_val.to_object());
+        {
+            let _realm = AutoRealm::new_from_handle(cx_ref, pull_obj.handle());
+            // SAFETY: cx live, pull's realm entered.
+            unsafe { resolve_pull_result(cx, pull_obj.handle().into(), ::std::option::Option::Some(chunk)) };
+        }
+    }
+    drop(root);
+    mozjs_sys::jsapi::js::RunJobs(cx);
+}
+
+/// Resolve the parked pull with `{done:true}` inside its realm, then drop
+/// the root.
+///
+/// SAFETY: JS thread; live entry.
+unsafe fn resolve_parked_pull_with_done(this: *mut PendingFetch) {
+    // SAFETY: JS thread; exclusive access to the live entry.
+    let Some(root) = (unsafe { &mut *this })
+        .streaming
+        .as_mut()
+        .and_then(|s| s.pending_pull.take())
+    else {
+        return;
+    };
+    let cx = unsafe { (*this).cx };
+    let pull_val = root.get(0);
+    if pull_val.is_object() {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let pull_obj = pull_val.to_object());
+        {
+            let _realm = AutoRealm::new_from_handle(cx_ref, pull_obj.handle());
+            // SAFETY: cx live, pull's realm entered.
+            unsafe { resolve_pull_result(cx, pull_obj.handle().into(), ::std::option::Option::None) };
+        }
+    }
+    drop(root);
+    mozjs_sys::jsapi::js::RunJobs(cx);
+}
+
+/// Build the pull result object on `promise`: `Some(chunk)` →
+/// `{value: Uint8Array, done: false}`; `None` → `{done: true}`; then
+/// `ResolvePromise`. Must run in the pull promise's realm.
+///
+/// SAFETY: cx live on the JS thread; promise_h a pending Promise handle.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn resolve_pull_result(
+    cx: *mut JSContext,
+    promise_h: Handle<*mut JSObject>,
+    chunk: ::std::option::Option<Vec<u8>>,
+) {
+    unsafe {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let result_obj = JS_NewPlainObject(cx));
+        if result_obj.is_null() {
+            return;
+        }
+        match chunk {
+            ::std::option::Option::Some(bytes) => {
+                rooted!(&in(cx_ref) let arr = JS_NewUint8Array(cx, bytes.len()));
+                if !arr.is_null() && !bytes.is_empty() {
+                    let mut ta_len: usize = 0;
+                    let mut shared = false;
+                    let mut data: *mut u8 = ::std::ptr::null_mut();
+                    let unwrapped =
+                        JS_GetObjectAsUint8Array(arr.get(), &mut ta_len, &mut shared, &mut data);
+                    if !unwrapped.is_null() && !data.is_null() && ta_len >= bytes.len() {
+                        ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
+                    }
+                    rooted!(&in(cx_ref) let val_v = ObjectValue(arr.get()));
+                    JS_DefineProperty(
+                        cx,
+                        result_obj.handle().into(),
+                        c"value".as_ptr(),
+                        val_v.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                } else {
+                    // Zero-length chunk: an empty Uint8Array value.
+                    rooted!(&in(cx_ref) let arr0 = JS_NewUint8Array(cx, 0));
+                    if !arr0.is_null() {
+                        rooted!(&in(cx_ref) let val_v = ObjectValue(arr0.get()));
+                        JS_DefineProperty(
+                            cx,
+                            result_obj.handle().into(),
+                            c"value".as_ptr(),
+                            val_v.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
+                }
+                rooted!(&in(cx_ref) let done_v = mozjs::jsval::BooleanValue(false));
+                JS_DefineProperty(
+                    cx,
+                    result_obj.handle().into(),
+                    c"done".as_ptr(),
+                    done_v.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            ::std::option::Option::None => {
+                rooted!(&in(cx_ref) let done_v = mozjs::jsval::BooleanValue(true));
+                JS_DefineProperty(
+                    cx,
+                    result_obj.handle().into(),
+                    c"done".as_ptr(),
+                    done_v.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+        rooted!(&in(cx_ref) let result_v = ObjectValue(result_obj.get()));
+        JS::ResolvePromise(cx, promise_h, result_v.handle().into());
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// JS stream-source holder + native pull/cancel entry points
+//
+// The Response's `_bodyStreamSource` is a `BaoFetchStreamSource`-class JS
+// object: reserved slot 0 carries the STREAM_REGISTRY id (unforgeable by JS
+// property writes). The web_fetch_classes body getter wires
+// `__baoFetchBodyPull(source)` / `__baoFetchBodyCancel(source)` into a
+// WHATWG ReadableStream underlying source (hwm 0 — lazy pull).
+// The finalizer implements Parked+GC ⇒ Canceled: GC context permits the
+// non-allocating slot read, but no context-requiring SM API, roots, or
+// allocation, so cancellation is routed through a ConcurrentTask.
+// ──────────────────────────────────────────────────────────────────────────
+
+const SLOT_STREAM_ID: u32 = 0;
+
+fn stream_id_from_slot(slot: JSVal) -> u64 {
+    if slot.is_double() {
+        // Plain double id (>= 1; 0 = uninitialized).
+        slot.to_double() as u64
+    } else {
+        0
+    }
+}
+
+/// Reserved-slot id read off a rooted `BaoFetchStreamSource` instance.
+///
+/// SAFETY: `obj` must hold a live BaoFetchStreamSource instance.
+unsafe fn stream_source_id(obj: mozjs::rust::Handle<'_, *mut JSObject>) -> u64 {
+    unsafe {
+        let mut slot = UndefinedValue();
+        JS_GetReservedSlot(obj.get(), SLOT_STREAM_ID, &mut slot);
+        stream_id_from_slot(slot)
+    }
+}
+
+/// Reserved-slot id read during `BaoFetchStreamSource` finalization.
+///
+/// SAFETY: `obj` must be the live object supplied to its SpiderMonkey finalizer.
+unsafe fn finalizing_stream_source_id(obj: *mut JSObject) -> u64 {
+    unsafe {
+        let mut slot = UndefinedValue();
+        JS_GetReservedSlot(obj, SLOT_STREAM_ID, &mut slot);
+        stream_id_from_slot(slot)
+    }
+}
+
+/// Source finalizer: the JS side dropped the Response/stream while the
+/// fetch was unfinished. GC context: only the non-allocating reserved-slot
+/// read is permitted; no JSContext API, rooting, or allocation.
+unsafe extern "C" fn stream_source_finalize(
+    _gcx: *mut mozjs_sys::jsapi::JS::GCContext,
+    obj: *mut JSObject,
+) {
+    unsafe {
+        let id = finalizing_stream_source_id(obj);
+        if id == 0 {
+            return;
+        }
+        let Some(this) = STREAM_REGISTRY.with(|r| r.borrow().get(&id).copied()) else {
+            return; // Already torn down (terminal + deref).
+        };
+        let Some(state) = (*this).streaming.as_ref() else {
+            return;
+        };
+        // Route the cancel + stream-ref deref through the ConcurrentTask —
+        // finalize context cannot touch SM roots/thread-locals safely.
+        state.finalize_pending.store(true, AtomicOrdering::Release);
+        // SAFETY: live heap entry (refcount keeps it alive past this call).
+        schedule_tasklet_wake(this);
+    }
+}
+
+static STREAM_SOURCE_CLASS_OPS: JSClassOps = JSClassOps {
+    addProperty: None,
+    delProperty: None,
+    enumerate: None,
+    newEnumerate: None,
+    resolve: None,
+    mayResolve: None,
+    finalize: Some(stream_source_finalize),
+    call: None,
+    construct: None,
+    trace: None,
+};
+
+const STREAM_SOURCE_CLASS: JSClass = JSClass {
+    name: c"BaoFetchStreamSource".as_ptr(),
+    flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: &STREAM_SOURCE_CLASS_OPS as *const JSClassOps as *mut JSClassOps,
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
+
+/// Create the stream-source holder: `new BaoFetchStreamSource()` with the
+/// registry id parked in reserved slot 0, register the entry, and take the
+/// stream-source tasklet reference (+1).
+///
+/// SAFETY: cx live on the JS thread, current realm = the Promise's realm.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn build_stream_source_object(cx: *mut JSContext, this: *mut PendingFetch) -> *mut JSObject {
+    unsafe {
+        let id = NEXT_STREAM_ID.fetch_add(1, AtomicOrdering::Relaxed);
+        // Register BEFORE the object escapes: a pull can only arrive after
+        // the JS side sees the Response, which happens after this returns.
+        STREAM_REGISTRY.with(|r| {
+            r.borrow_mut().insert(id, this);
+        });
+        // SAFETY: JS-thread exclusive field.
+        (*this).streaming.as_mut().unwrap().source_id = id;
+
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj = JS_NewObject(cx, &STREAM_SOURCE_CLASS));
+        if obj.is_null() {
+            // Roll the registration back and fail closed (caller rejects).
+            STREAM_REGISTRY.with(|r| {
+                r.borrow_mut().remove(&id);
+            });
+            (*this).streaming.as_mut().unwrap().source_id = 0;
+            return ::std::ptr::null_mut();
+        }
+        // Stream-source reference (ref C).
+        // SAFETY: live entry.
+        (*this).refcount.fetch_add(1, AtomicOrdering::AcqRel);
+        rooted!(&in(cx_ref) let id_val = DoubleValue(id as f64));
+        JS_SetReservedSlot(obj.get(), SLOT_STREAM_ID, &id_val.get());
+        obj.get()
+    }
+}
+
+/// Construct the streaming Response via the realm's WHATWG `Response` class
+// — `new Response(undefined, { status, statusText, headers })` — with the
+/// native stream source attached as `_bodyStreamSource`. Takes the
+/// stream-source tasklet reference (via [`build_stream_source_object`]);
+/// on failure rolls everything back and returns `None` (fail closed).
+///
+/// SAFETY: cx live on the JS thread with the fetch Promise's realm entered;
+/// `this` a live streaming PendingFetch; `head` the HTTP-thread snapshot.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn build_streaming_response_js(
+    cx: *mut JSContext,
+    this: *mut PendingFetch,
+    head: &StreamHead,
+) -> ::std::option::Option<*mut JSObject> {
+    unsafe {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+
+        let global = JS::CurrentGlobalOrNull(cx);
+        if global.is_null() {
+            return ::std::option::Option::None;
+        }
+        rooted!(&in(cx_ref) let global_root = global);
+        let mut resp_ctor_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            global_root.handle().into(),
+            c"Response".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut resp_ctor_val,
+            },
+        );
+        if !resp_ctor_val.is_object() {
+            return ::std::option::Option::None;
+        }
+        rooted!(&in(cx_ref) let resp_ctor = resp_ctor_val.to_object());
+        rooted!(&in(cx_ref) let resp_fn = ObjectValue(resp_ctor.get()));
+
+        // init: { status, statusText, headers: [[name, value], ...] }
+        rooted!(&in(cx_ref) let init_obj = JS_NewPlainObject(cx));
+        if init_obj.is_null() {
+            return ::std::option::Option::None;
+        }
+        let init_h = init_obj.handle().into();
+        rooted!(&in(cx_ref) let status_val = mozjs::jsval::Int32Value(head.status_code as i32));
+        JS_DefineProperty(
+            cx,
+            init_h,
+            c"status".as_ptr(),
+            status_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+        let c_st = ZBox::from_bytes(head.status_text.as_bytes());
+        let st_js = JS_NewStringCopyZ(cx, c_st.as_ptr());
+        if !st_js.is_null() {
+            rooted!(&in(cx_ref) let st_val = StringValue(&*st_js));
+            JS_DefineProperty(
+                cx,
+                init_h,
+                c"statusText".as_ptr(),
+                st_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        rooted!(&in(cx_ref) let headers_arr =
+            mozjs_sys::jsapi::JS::NewArrayObject1(cx, head.headers.len()));
+        if headers_arr.is_null() {
+            return ::std::option::Option::None;
+        }
+        let hdrs_h = headers_arr.handle().into();
+        for (i, (k, v)) in head.headers.iter().enumerate() {
+            rooted!(&in(cx_ref) let pair =
+                mozjs_sys::jsapi::JS::NewArrayObject1(cx, 2usize));
+            if pair.is_null() {
+                continue;
+            }
+            let pair_h = pair.handle().into();
+            let c_k = ZBox::from_bytes(k.as_bytes());
+            let k_js = JS_NewStringCopyZ(cx, c_k.as_ptr());
+            if !k_js.is_null() {
+                rooted!(&in(cx_ref) let kv = StringValue(&*k_js));
+                JS_DefineElement(cx, pair_h, 0, kv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            let c_v = ZBox::from_bytes(v.as_bytes());
+            let v_js = JS_NewStringCopyZ(cx, c_v.as_ptr());
+            if !v_js.is_null() {
+                rooted!(&in(cx_ref) let vv = StringValue(&*v_js));
+                JS_DefineElement(cx, pair_h, 1, vv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            rooted!(&in(cx_ref) let pv = ObjectValue(pair.get()));
+            JS_DefineElement(cx, hdrs_h, i as u32, pv.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+        rooted!(&in(cx_ref) let hv = ObjectValue(headers_arr.get()));
+        JS_DefineProperty(
+            cx,
+            init_h,
+            c"headers".as_ptr(),
+            hv.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+
+        // body = undefined (the stream source attaches below); the JS class
+        // body getter branches on _bodyStreamSource before the byte slots.
+        let elems = [UndefinedValue(), ObjectValue(init_obj.get())];
+        let call_args = HandleValueArray {
+            length_: 2,
+            elements_: elems.as_ptr(),
+        };
+        rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
+        let mut resp_val = UndefinedValue();
+        let called = JS_CallFunctionValue(
+            cx,
+            undef_this.handle().into(),
+            resp_fn.handle().into(),
+            &call_args,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut resp_val,
+            },
+        );
+        if !called || !resp_val.is_object() {
+            return ::std::option::Option::None;
+        }
+        rooted!(&in(cx_ref) let resp_root = resp_val);
+        rooted!(&in(cx_ref) let resp_obj_root = resp_root.get().to_object());
+
+        // Stream source + registration (takes the stream reference).
+        // SAFETY: cx live, realm entered, live entry.
+        let source_obj = build_stream_source_object(cx, this);
+        if source_obj.is_null() {
+            return ::std::option::Option::None;
+        }
+        rooted!(&in(cx_ref) let source_val = ObjectValue(source_obj));
+        // Non-enumerable + readonly: JS must not shadow the native source.
+        if !JS_DefineProperty(
+            cx,
+            resp_obj_root.handle().into(),
+            c"_bodyStreamSource".as_ptr(),
+            source_val.handle().into(),
+            (JSPROP_PERMANENT | JSPROP_READONLY) as u32,
+        ) {
+            // Roll the source registration + reference back, fail closed.
+            let id = (*this).streaming.as_mut().unwrap().source_id;
+            STREAM_REGISTRY.with(|r| {
+                r.borrow_mut().remove(&id);
+            });
+            (*this).streaming.as_mut().unwrap().source_id = 0;
+            // SAFETY: the reference we just took.
+            (*this).refcount.fetch_sub(1, AtomicOrdering::AcqRel);
+            return ::std::option::Option::None;
+        }
+        ::std::option::Option::Some(resp_root.get().to_object())
+    }
+}
+
+/// `__baoFetchBodyPull(source)` — the ReadableStream underlying-source pull.
+/// Returns a Promise settling to `{value: Uint8Array, done:false}` /
+/// `{done:true}`, or rejecting with the stream failure (AbortError for
+/// aborts). Empty+open staging parks the returned Promise until the next
+/// delivery event.
+#[allow(non_snake_case)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fetch_body_pull_native(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    unsafe {
+        let args = CallArgs::from_vp(vp, argc);
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let null_global = ::std::ptr::null_mut::<JSObject>());
+        let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, null_global.handle().into());
+        if promise.is_null() {
+            // Degraded: a non-Promise return makes the controller's pull
+            // complete immediately (it re-pulls on the next read).
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        args.rval().set(ObjectValue(promise));
+        rooted!(&in(cx_ref) let promise_root = promise);
+        let promise_h = promise_root.handle().into();
+
+        // Source → id → entry. Misses read as an inert closed stream.
+        let src_val = *args.get(0).ptr;
+        if !src_val.is_object() {
+            // SAFETY: cx live, current realm = the pull's.
+            resolve_pull_result(cx, promise_h, ::std::option::Option::None);
+            return true;
+        }
+        rooted!(&in(cx_ref) let src_obj = src_val.to_object());
+        // SAFETY: src_obj is the holder object created by
+        // build_stream_source_object (reserved slot 0 = registry id).
+        let id = stream_source_id(src_obj.handle());
+        if id == 0 {
+            // SAFETY: see above.
+            resolve_pull_result(cx, promise_h, ::std::option::Option::None);
+            return true;
+        }
+        let Some(this) = STREAM_REGISTRY.with(|r| r.borrow().get(&id).copied()) else {
+            // SAFETY: see above.
+            resolve_pull_result(cx, promise_h, ::std::option::Option::None);
+            return true;
+        };
+
+        let Some(state) = (*this).streaming.as_ref() else {
+            // SAFETY: see above.
+            resolve_pull_result(cx, promise_h, ::std::option::Option::None);
+            return true;
+        };
+
+        // Canceled / finalize latched: AbortError rejection.
+        if state.finalize_pending.load(AtomicOrdering::Acquire)
+            || matches!(current_phase(this), StreamPhase::Canceled)
+        {
+            reject_promise_with_abort_error(cx, promise_h);
+            return true;
+        }
+
+        // Reader interest arrived: unpark (PENDING re-add + re-ref + drain
+        // resume) BEFORE consulting the staging.
+        if state.parked.swap(false, AtomicOrdering::AcqRel) {
+            unpark_stream(this);
+        }
+
+        enum PullAction {
+            Fail(StreamFail),
+            Chunk(Vec<u8>),
+            Done,
+            Park,
+        }
+        let action = {
+            let mut g = state.shared.lock().unwrap();
+            if let ::std::option::Option::Some(fail) = g.fail.clone() {
+                PullAction::Fail(fail)
+            } else if let ::std::option::Option::Some(front) = g.staging.pop_front() {
+                g.staged_bytes -= front.len();
+                PullAction::Chunk(front)
+            } else if g.closed {
+                PullAction::Done
+            } else {
+                PullAction::Park
+            }
+        };
+        match action {
+            PullAction::Fail(fail) => match &fail {
+                StreamFail::Aborted => reject_promise_with_abort_error(cx, promise_h),
+                StreamFail::Other(msg) => reject_with_network_error(cx, promise_h, msg),
+            },
+            PullAction::Chunk(bytes) => {
+                // SAFETY: cx live, pull's realm (the JS caller's realm).
+                resolve_pull_result(cx, promise_h, ::std::option::Option::Some(bytes));
+            }
+            PullAction::Done => {
+                // SAFETY: see above.
+                resolve_pull_result(cx, promise_h, ::std::option::Option::None);
+            }
+            PullAction::Park => {
+                // Park the promise: resolved by the next delivery event
+                // (process_stream_event) inside its realm.
+                let pull_val = ObjectValue(promise_root.get());
+                // SAFETY: cx live; the value is the just-created Promise.
+                let root = RawValueRootGuard::new(
+                    cx,
+                    ::std::slice::from_ref(&pull_val),
+                    c"FetchStream.pull",
+                );
+                if let ::std::option::Option::Some(root) = root {
+                    // Replace any stale park (controller serializes pulls;
+                    // defensive only).
+                    // SAFETY: JS thread; live entry.
+                    if let ::std::option::Option::Some(old) =
+                        (*this).streaming.as_mut().unwrap().pending_pull.replace(root)
+                    {
+                        drop(old);
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
+/// `__baoFetchBodyCancel(source)` — the ReadableStream underlying-source
+/// cancel: latch Canceled, abort the in-flight transport, reject a parked
+/// pull with AbortError, release the stream-source reference.
+#[allow(non_snake_case)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fetch_body_cancel_native(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    unsafe {
+        let args = CallArgs::from_vp(vp, argc);
+        args.rval().set(UndefinedValue());
+        let src_val = *args.get(0).ptr;
+        if !src_val.is_object() {
+            return true;
+        }
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let src_obj = src_val.to_object());
+        // SAFETY: reserved slot 0 = registry id (see pull).
+        let id = stream_source_id(src_obj.handle());
+        if id == 0 {
+            return true;
+        }
+        let Some(this) = STREAM_REGISTRY.with(|r| r.borrow().get(&id).copied()) else {
+            return true;
+        };
+        if (*this).streaming.is_none() {
+            return true;
+        }
+        // Reject any parked pull, then cancel + release the stream ref
+        // (JS thread; live entry).
+        reject_parked_pull(this, |cx, pull_h| {
+            reject_promise_with_abort_error(cx, pull_h)
+        });
+        cancel_stream_core(this);
+        release_stream_ref_once(this);
+        true
+    }
+}
+
+/// Install the native stream entry points (`__baoFetchBodyPull` /
+/// `__baoFetchBodyCancel`) on the global. Called by
+/// `fetch_api::install_fetch_global` — same installation phase as `fetch`
+/// itself.
+///
+/// SAFETY: cx live; global is the realm global.
+pub unsafe fn install_fetch_stream_natives(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        mozjs::rust::wrappers2::JS_DefineFunction(
+            cx,
+            global,
+            c"__baoFetchBodyPull".as_ptr(),
+            ::std::option::Option::Some(fetch_body_pull_native),
+            1,
+            0,
+        );
+        mozjs::rust::wrappers2::JS_DefineFunction(
+            cx,
+            global,
+            c"__baoFetchBodyCancel".as_ptr(),
+            ::std::option::Option::Some(fetch_body_cancel_native),
+            1,
+            0,
+        );
+    }
 }
 
 /// Helper: schedule resolve_tasklet on the JS thread immediately (used when
@@ -1851,6 +3582,8 @@ mod tests {
             mini_loop_ptr: ::std::ptr::null(),
             concurrent_task: Default::default(),
             has_schedule_callback: AtomicBool::new(false),
+            refcount: AtomicU32::new(1),
+            streaming: None,
             url_owned: None,
             body_owned: None,
             headers_owned: None,

@@ -127,6 +127,15 @@ pub struct ClientSession {
     /// DATA bytes consumed since the last connection-level WINDOW_UPDATE.
     pub conn_unacked_bytes: u32,
 
+    /// Stream ids whose stream-level WINDOW_UPDATE [`Self::replenish_window`]
+    /// withholds while the consumer parks that response body (transport
+    /// backpressure, `pause_stream_by_http_id`). Connection-level updates
+    /// stay automatic so sibling streams on this session keep flowing; the
+    /// already-granted-but-unconsumed window naturally caps the paused
+    /// stream's in-flight backlog. Empty unless someone calls the pause hook
+    /// — zero behavior change by default.
+    pub paused_stream_ids: Vec<u31>,
+
     /// Index in the context's active-session list while reachable for
     /// concurrent attachment; maxInt when not listed.
     pub registry_index: Cell<u32>,
@@ -291,6 +300,18 @@ impl ClientSession {
         Self::enter(this, |s| s.drain_response_body(async_http_id));
     }
 
+    /// HTTP-thread wake-up from the transport-pause queue (Pause arm); see
+    /// [`Self::pause_response_stream`].
+    pub fn pause_stream_by_http_id(this: SessionPtr, async_http_id: u32) {
+        Self::enter(this, |s| s.pause_response_stream(async_http_id));
+    }
+
+    /// HTTP-thread wake-up from the transport-pause queue (Resume arm); see
+    /// [`Self::resume_paused_stream`].
+    pub fn resume_stream_by_http_id(this: SessionPtr, async_http_id: u32) {
+        Self::enter(this, |s| s.resume_paused_stream(async_http_id));
+    }
+
     /// Park a request that was coalesced onto this session's connect until the
     /// server's SETTINGS arrive; see [`Self::park`].
     pub fn enqueue(this: SessionPtr, client: &mut HTTPClient<'_>) {
@@ -395,6 +416,7 @@ impl ClientSession {
             pending_hpack_enc_capacity: None,
             conn_send_window: wire::DEFAULT_WINDOW_SIZE as i32,
             conn_unacked_bytes: 0,
+            paused_stream_ids: Vec::new(),
             registry_index: Cell::new(u32::MAX),
         }));
         super::live_sessions.fetch_add(1, Ordering::Relaxed);
@@ -615,7 +637,12 @@ impl ClientSession {
         if self.expecting_continuation == s.id {
             self.orphan_header_block = core::mem::take(&mut s.header_block);
         }
-        self.streams.swap_remove(&s.id);
+        let id = s.id;
+        self.streams.swap_remove(&id);
+        // The stream is gone (completed or aborted while its gate was on) —
+        // drop the backpressure entry with it so the Vec never carries ids of
+        // streams that can no longer match.
+        self.paused_stream_ids.retain(|&x| x != id);
         drop_stream(stream);
     }
 
@@ -679,6 +706,50 @@ impl ClientSession {
         }
     }
 
+    /// Stop granting stream-level receive window for `async_http_id`'s stream
+    /// (transport backpressure). The server may keep sending inside its
+    /// already-granted window; once that is exhausted the stream stalls
+    /// server-side. Sibling streams and the connection-level window are
+    /// unaffected — one parked consumer must not starve the session.
+    fn pause_response_stream(&mut self, async_http_id: u32) {
+        if let Some(id) = self.stream_id_by_http_id(async_http_id) {
+            if !self.paused_stream_ids.contains(&id) {
+                self.paused_stream_ids.push(id);
+            }
+        }
+    }
+
+    /// Lift the per-stream gate and push the withheld WINDOW_UPDATE
+    /// immediately. The stalled server sends nothing that would trigger the
+    /// next `handle_data`, so waiting for the next inbound batch to run
+    /// `replenish_window` would deadlock — resume grants on its own.
+    fn resume_paused_stream(&mut self, async_http_id: u32) {
+        let Some(id) = self.stream_id_by_http_id(async_http_id) else {
+            return;
+        };
+        let Some(pos) = self.paused_stream_ids.iter().position(|&x| x == id) else {
+            return;
+        };
+        self.paused_stream_ids.swap_remove(pos);
+        self.replenish_window();
+        if let Err(err) = self.flush() {
+            self.fail_all(err);
+        }
+    }
+
+    /// The live stream id serving `async_http_id`, if any.
+    fn stream_id_by_http_id(&self, async_http_id: u32) -> Option<u31> {
+        for &s in self.streams.values() {
+            if stream_ref(s)
+                .client_ref()
+                .is_some_and(|c| c.async_http_id == async_http_id)
+            {
+                return Some(stream_ref(s).id);
+            }
+        }
+        None
+    }
+
     /// New request body bytes (or end-of-body) are available in the request's
     /// ThreadSafeStreamBuffer.
     fn stream_request_body(&mut self, async_http_id: u32, ended: bool) {
@@ -735,7 +806,13 @@ impl ClientSession {
         let mut updates: Vec<(u32, u32)> = Vec::new();
         for &s in self.streams.values() {
             let s = stream_mut(s);
-            if s.unacked_bytes >= threshold && !s.remote_closed() {
+            // Paused streams (transport backpressure) keep their unacked bytes
+            // banked instead of re-granting them; the gate clears on resume,
+            // which sends the withheld update in one shot.
+            if s.unacked_bytes >= threshold
+                && !s.remote_closed()
+                && !self.paused_stream_ids.contains(&s.id)
+            {
                 updates.push((s.id, s.unacked_bytes));
                 s.unacked_bytes = 0;
             }
@@ -927,6 +1004,8 @@ impl ClientSession {
             }
         }
         self.streams.clear_retaining_capacity();
+        // Every gate belonged to a stream that no longer exists.
+        self.paused_stream_ids.clear();
         self.give_up_socket_ref();
     }
 

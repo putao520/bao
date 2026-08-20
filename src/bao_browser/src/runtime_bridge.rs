@@ -946,7 +946,7 @@ unsafe fn lazy_constructor_getter_impl(
 /// (which would cause a confusing "X is not a constructor" TypeError
 /// when the user tries `new Worker()`).
 ///
-/// Uses `JS_ReportErrorNumberUTF8` (same pattern as `mozjs::error::throw_type_error`)
+/// Uses `JS_ReportErrorNumberUTF8` (same pattern as `mozjs::error::throw_type_error_safe`)
 /// with `JSEXN_REFERENCEERR` to produce a proper ReferenceError exception.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn report_reference_error(cx: *mut mozjs::jsapi::JSContext, message: &str) {

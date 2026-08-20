@@ -436,9 +436,40 @@ pub fn install_fetch_classes(
       enumerable: true
     });
 
-    // body getter
+    // body getter — streaming source branch first: `_bodyStreamSource` is a
+    // native holder (installed by fetch_async's streaming resolve) whose
+    // pull/cancel feed a WHATWG ReadableStream. The strategy is
+    // `{ highWaterMark: 1 }` with the DEFAULT count size (one-chunk
+    // lookahead): this port's `_readableStreamDefaultControllerRead`
+    // empty-queue branch adds the read request WITHOUT invoking the
+    // controller's pull steps, so a `{ highWaterMark: 0 }` stream stalls
+    // after its first parked pull. With count-hwm 1 the invariant "a read
+    // against an empty queue always has a pull in flight" holds (every
+    // dequeue re-fills the one-chunk lookahead), and an UNREAD stream keeps
+    // at most the initial lookahead queued — no parked pulls — so the
+    // fetch-side park (unobserved staging ≥ high-water) still engages.
+    // The constructed stream is CACHED on the instance: the WHATWG body
+    // getter must return the same stream object on every access (a fresh
+    // stream per access would double-consume a live body).
     Object.defineProperty(this, 'body', {
       get: function() {
+        if (this._bodyStreamSource) {
+          if (!this._bodyStream) {
+            var src = this._bodyStreamSource;
+            this._bodyStream = new ReadableStream({
+              pull: function(controller) {
+                return __baoFetchBodyPull(src).then(function(r) {
+                  if (r.done) controller.close();
+                  else controller.enqueue(r.value);
+                });
+              },
+              cancel: function(reason) {
+                return __baoFetchBodyCancel(src);
+              }
+            }, { highWaterMark: 1 });
+          }
+          return this._bodyStream;
+        }
         if (this._bodyUsed) return null;
         if (this._bodySource == null) return null;
         var bytes;
@@ -453,7 +484,37 @@ pub fn install_fetch_classes(
     });
   };
 
+  // Streaming-body reader pump: drains the native pull stream into an
+  // accumulated result. `collect` receives each Uint8Array chunk and the
+  // accumulated state; returns the final state at done.
+  var _bao_drain_stream = function _bao_drain_stream(response, collect, init) {
+    var reader = response.body.getReader();
+    var acc = init;
+    function pump() {
+      return reader.read().then(function(r) {
+        if (r.done) return acc;
+        acc = collect(acc, r.value);
+        return pump();
+      });
+    }
+    return pump();
+  };
+
   _g.Response.prototype.text = function text() {
+    if (this._bodyStreamSource) {
+      if (this._bodyUsed) return Promise.reject(new TypeError('Body is unusable'));
+      this._bodyUsed = true;
+      var dec = new TextDecoder();
+      var self = this;
+      return _bao_drain_stream(self, function(parts, chunk) {
+        parts.push(dec.decode(chunk, { stream: true }));
+        return parts;
+      }, []).then(function(parts) {
+        var tail = dec.decode();
+        if (tail) parts.push(tail);
+        return parts.join('');
+      });
+    }
     this._bodyUsed = true;
     if (this._bodyText !== undefined) return Promise.resolve(this._bodyText);
     if (this._bodyBytes) return Promise.resolve(new TextDecoder().decode(this._bodyBytes));
@@ -466,6 +527,24 @@ pub fn install_fetch_classes(
   };
 
   _g.Response.prototype.arrayBuffer = function arrayBuffer() {
+    if (this._bodyStreamSource) {
+      if (this._bodyUsed) return Promise.reject(new TypeError('Body is unusable'));
+      this._bodyUsed = true;
+      return _bao_drain_stream(this, function(chunks, chunk) {
+        chunks.push(chunk);
+        return chunks;
+      }, []).then(function(chunks) {
+        var total = 0;
+        for (var i = 0; i < chunks.length; i++) total += chunks[i].byteLength;
+        var out = new Uint8Array(total);
+        var off = 0;
+        for (var j = 0; j < chunks.length; j++) {
+          out.set(chunks[j], off);
+          off += chunks[j].byteLength;
+        }
+        return out.buffer;
+      });
+    }
     this._bodyUsed = true;
     if (this._bodyBytes) return Promise.resolve(this._bodyBytes.buffer.slice(0));
     if (this._bodyText !== undefined) return Promise.resolve(new TextEncoder().encode(this._bodyText).buffer);
@@ -474,6 +553,12 @@ pub fn install_fetch_classes(
   };
 
   _g.Response.prototype.blob = function blob() {
+    if (this._bodyStreamSource) {
+      var type = this.headers.get('content-type') || '';
+      return this.arrayBuffer().then(function(buf) {
+        return new _g.Blob([new Uint8Array(buf)], { type: type });
+      });
+    }
     this._bodyUsed = true;
     if (this._bodyBlob) return Promise.resolve(this._bodyBlob);
     if (this._bodyBytes) return Promise.resolve(new _g.Blob([this._bodyBytes], { type: this.headers.get('content-type') || '' }));
@@ -484,6 +569,12 @@ pub fn install_fetch_classes(
   _g.Response.prototype.clone = function clone() {
     if (this._bodyUsed) {
       throw new TypeError('Cannot clone a used Response');
+    }
+    if (this._bodyStreamSource) {
+      // A streaming body is a single-consumer live transport stream — it
+      // cannot be duplicated (WHATWG clone would tee, which needs two
+      // independent consumers of one socket).
+      throw new TypeError('Cannot clone a Response with a streaming body');
     }
     var cloned = new _g.Response(this._bodySource, {
       status: this.status,

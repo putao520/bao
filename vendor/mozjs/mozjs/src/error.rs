@@ -63,11 +63,13 @@ unsafe fn throw_js_error(cx: *mut RawJSContext, error: &CStr, error_number: u32)
 }
 
 /// Throw a `TypeError` with the given message.
+#[deprecated = "use throw_type_error_safe instead"]
 pub unsafe fn throw_type_error(cx: *mut RawJSContext, error: &CStr) {
     throw_js_error(cx, error, JSExnType::JSEXN_TYPEERR as u32);
 }
 
 /// Throw a `RangeError` with the given message.
+#[deprecated = "use throw_range_error_safe instead"]
 pub unsafe fn throw_range_error(cx: *mut RawJSContext, error: &CStr) {
     throw_js_error(cx, error, JSExnType::JSEXN_RANGEERR as u32);
 }

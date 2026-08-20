@@ -2521,10 +2521,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     if argc == 0 {
         // @trace REQ-ENG-005 — Buffer.from() (no args) throws
         // ERR_INVALID_ARG_TYPE per Node.js (test "Buffer,poolSize").
-        mozjs::error::throw_type_error(
-            cx,
-            c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received undefined".as_ref(),
-        );
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_type_error_safe(
+                &mut cx_s,
+                    c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received undefined".as_ref(),
+            );
+        }
         return false;
     }
 
@@ -2532,10 +2535,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // @trace REQ-ENG-005 — Buffer.from(null/undefined/boolean/number) throws
     // ERR_INVALID_ARG_TYPE (test "Buffer,poolSize" drives Buffer.from(null)).
     if input.is_null() || input.is_undefined() || input.is_boolean() || input.is_number() {
-        mozjs::error::throw_type_error(
-            cx,
-            c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received null".as_ref(),
-        );
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_type_error_safe(
+                &mut cx_s,
+                    c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received null".as_ref(),
+            );
+        }
         return false;
     }
     if input.is_string() {
@@ -2577,7 +2583,10 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 let msg = format!("Unknown encoding: {}", encoding);
                 let c_msg = ::std::ffi::CString::new(msg)
                     .unwrap_or_else(|_| ::std::ffi::CString::new("Unknown encoding").unwrap());
-                mozjs::error::throw_type_error(cx, c_msg.as_ref());
+                {
+                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                    mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+                }
                 return false;
             }
         }
@@ -2702,10 +2711,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         // typeof === 'function' and reaches the throw fallback. SM treats
         // functions as objects, so we explicitly reject them here.
         if unsafe { mozjs_sys::jsapi::JS::IsCallable(obj_root.get()) } {
-            mozjs::error::throw_type_error(
-                cx,
-                c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.".as_ref(),
-            );
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_type_error_safe(
+                    &mut cx_s,
+                        c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.".as_ref(),
+                );
+            }
             return false;
         }
 
@@ -2805,10 +2817,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     if d.is_nan() {
                         0
                     } else if d == f64::INFINITY {
-                        mozjs::error::throw_range_error(
-                            cx,
-                            c"Offset is outside the bounds of the DataView".as_ref(),
-                        );
+                        {
+                            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                            mozjs::error::throw_range_error_safe(
+                                &mut cx_s,
+                                    c"Offset is outside the bounds of the DataView".as_ref(),
+                            );
+                        }
                         return false;
                     } else {
                         (d.max(0.0) as isize).max(0) as usize
@@ -2820,10 +2835,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                             if d.is_nan() {
                                 0
                             } else if d == f64::INFINITY {
-                                mozjs::error::throw_range_error(
-                                    cx,
-                                    c"Offset is outside the bounds of the DataView".as_ref(),
-                                );
+                                {
+                                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                                    mozjs::error::throw_range_error_safe(
+                                        &mut cx_s,
+                                            c"Offset is outside the bounds of the DataView".as_ref(),
+                                    );
+                                }
                                 return false;
                             } else {
                                 (d.max(0.0) as isize).max(0) as usize
@@ -2840,10 +2858,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             // ArrayBuffer length and throws RangeError on overflow
             // (buffer.test.js "ParseArrayIndex() should handle full uint32").
             if offset > data_len {
-                mozjs::error::throw_range_error(
-                    cx,
-                    c"Offset is outside the bounds of the DataView".as_ref(),
-                );
+                {
+                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                    mozjs::error::throw_range_error_safe(
+                        &mut cx_s,
+                            c"Offset is outside the bounds of the DataView".as_ref(),
+                    );
+                }
                 return false;
             }
 
@@ -2861,10 +2882,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     if d.is_nan() {
                         0
                     } else if d == f64::INFINITY {
-                        mozjs::error::throw_range_error(
-                            cx,
-                            c"\"length\" is outside of buffer bounds".as_ref(),
-                        );
+                        {
+                            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                            mozjs::error::throw_range_error_safe(
+                                &mut cx_s,
+                                    c"\"length\" is outside of buffer bounds".as_ref(),
+                            );
+                        }
                         return false;
                     } else {
                         (d.max(0.0) as isize).max(0) as usize
@@ -2878,10 +2902,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                             if d.is_nan() {
                                 0
                             } else if d == f64::INFINITY {
-                                mozjs::error::throw_range_error(
-                                    cx,
-                                    c"\"length\" is outside of buffer bounds".as_ref(),
-                                );
+                                {
+                                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                                    mozjs::error::throw_range_error_safe(
+                                        &mut cx_s,
+                                            c"\"length\" is outside of buffer bounds".as_ref(),
+                                    );
+                                }
                                 return false;
                             } else {
                                 (d.max(0.0) as isize).max(0) as usize
@@ -2899,10 +2926,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             // overflows the available range). buffer.test.js "new Buffer()"
             // drives Buffer.from(ab.buffer, 3, 6) on a 5-byte buffer to throw.
             if offset + len > data_len {
-                mozjs::error::throw_range_error(
-                    cx,
-                    c"\"length\" is outside of buffer bounds".as_ref(),
-                );
+                {
+                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                    mozjs::error::throw_range_error_safe(
+                        &mut cx_s,
+                            c"\"length\" is outside of buffer bounds".as_ref(),
+                    );
+                }
                 return false;
             }
 
@@ -3157,10 +3187,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             // accepted as an empty Buffer.
             let length_is_undefined = length_val.is_undefined() || length_val.is_null();
             if length_is_undefined && !is_legacy_buffer_blob {
-                mozjs::error::throw_type_error(
-                    cx,
-                    c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.".as_ref(),
-                );
+                {
+                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                    mozjs::error::throw_type_error_safe(
+                        &mut cx_s,
+                            c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.".as_ref(),
+                    );
+                }
                 return false;
             }
 
@@ -3273,10 +3306,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     } else {
         // @trace REQ-ENG-005 — Non-object, non-string input (Symbol, bigint,
         // function, undefined, null already handled above). Node.js throws.
-        mozjs::error::throw_type_error(
-            cx,
-            c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.".as_ref(),
-        );
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_type_error_safe(
+                &mut cx_s,
+                    c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.".as_ref(),
+            );
+        }
         false
     }
 }
@@ -3479,7 +3515,10 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
                 let msg = format!("Unknown encoding: {}", other);
                 let c_msg = ::std::ffi::CString::new(msg)
                     .unwrap_or_else(|_| ::std::ffi::CString::new("Unknown encoding").unwrap());
-                mozjs::error::throw_type_error(cx, c_msg.as_ref());
+                {
+                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                    mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+                }
                 return false;
             }
         }
@@ -3548,10 +3587,13 @@ unsafe extern "C" fn buffer_alloc(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             // @trace REQ-ENG-005 — Node.js rejects object/string/symbol size
             // (including objects with valueOf) with ERR_INVALID_ARG_TYPE.
             // buffer.test.js "alloc() should throw on non-numeric size".
-            mozjs::error::throw_type_error(
-                cx,
-                c"The \"size\" argument must be of type number.".as_ref(),
-            );
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_type_error_safe(
+                    &mut cx_s,
+                        c"The \"size\" argument must be of type number.".as_ref(),
+                );
+            }
             return false;
         }
     } else {
@@ -3570,7 +3612,10 @@ unsafe extern "C" fn buffer_alloc(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         );
         let c_msg = ::std::ffi::CString::new(msg)
             .unwrap_or_else(|_| ::std::ffi::CString::new("Buffer size out of range").unwrap());
-        mozjs::error::throw_range_error(cx, c_msg.as_ref());
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+        }
         return false;
     }
 
@@ -3738,7 +3783,10 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
                     ::std::ffi::CString::new("list argument must be Buffer or Uint8Array")
                         .unwrap()
                 });
-            mozjs::error::throw_type_error(cx, c_msg.as_ref());
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+            }
             return false;
         }
         let elem_obj = elem.to_object();
@@ -3752,7 +3800,10 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
                     ::std::ffi::CString::new("list argument must be Buffer or Uint8Array")
                         .unwrap()
                 });
-            mozjs::error::throw_type_error(cx, c_msg.as_ref());
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+            }
             return false;
         }
         rooted_vec.append(elem_obj);
@@ -3783,7 +3834,10 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         // heap in the output.
         if unwrapped.is_null() || cur_data.is_null() {
             let c_msg = c"Cannot perform Buffer.concat on a detached ArrayBuffer";
-            mozjs::error::throw_type_error(cx, c_msg.as_ref());
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+            }
             return false;
         }
         // @trace REQ-ENG-005 [entity:Buffer] — refuse concat that would
@@ -3799,7 +3853,10 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
                 ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap()
             });
-            mozjs::error::throw_range_error(cx, c_msg.as_ref());
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+            }
             return false;
         }
         element_lengths.push(cur_len);
@@ -3819,20 +3876,26 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         if tl_val.is_int32() {
             let n = tl_val.to_int32();
             if n < 0 {
-                mozjs::error::throw_range_error(
-                    cx,
-                    c"\"totalLength\" must be a non-negative integer".as_ref(),
-                );
+                {
+                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                    mozjs::error::throw_range_error_safe(
+                        &mut cx_s,
+                            c"\"totalLength\" must be a non-negative integer".as_ref(),
+                    );
+                }
                 return false;
             }
             target_total = n as usize;
         } else if tl_val.is_double() {
             let d = tl_val.to_double();
             if !d.is_finite() || d < 0.0 {
-                mozjs::error::throw_range_error(
-                    cx,
-                    c"\"totalLength\" must be a non-negative integer".as_ref(),
-                );
+                {
+                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                    mozjs::error::throw_range_error_safe(
+                        &mut cx_s,
+                            c"\"totalLength\" must be a non-negative integer".as_ref(),
+                    );
+                }
                 return false;
             }
             target_total = d as usize;
@@ -3840,10 +3903,13 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             // undefined/null → use sum of lengths (Node treats as omitted).
         } else {
             // Strings, booleans, objects → ERR_INVALID_ARG_TYPE (TypeError).
-            mozjs::error::throw_type_error(
-                cx,
-                c"\"totalLength\" must be a non-negative integer".as_ref(),
-            );
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_type_error_safe(
+                    &mut cx_s,
+                        c"\"totalLength\" must be a non-negative integer".as_ref(),
+                );
+            }
             return false;
         }
         if target_total > MAX_BUFFER_SIZE {
@@ -3854,7 +3920,10 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
                 ::std::ffi::CString::new("Buffer.concat totalLength out of range").unwrap()
             });
-            mozjs::error::throw_range_error(cx, c_msg.as_ref());
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+            }
             return false;
         }
     }
@@ -3929,11 +3998,16 @@ unsafe extern "C" fn buffer_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                 -1
             };
             if byte_len == 0 {
-                mozjs::error::throw_type_error(
-                    cx,
-                    c"Cannot perform %TypedArray.prototype%.slice on a detached ArrayBuffer"
-                        .as_ref(),
-                );
+                {
+                    let mut cx_s = unsafe {
+                        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
+                    };
+                    mozjs::error::throw_type_error_safe(
+                        &mut cx_s,
+                        c"Cannot perform %TypedArray.prototype%.slice on a detached ArrayBuffer"
+                            .as_ref(),
+                    );
+                }
                 return false;
             }
         }
@@ -4131,7 +4205,10 @@ unsafe extern "C" fn buffer_copy(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // (TypeError) when `target` is missing or not a Buffer/Uint8Array. Test
     // "Buffer,poolSize" drives Buffer.allocUnsafe(10).copy().
     if !this.is_object() || argc == 0 || !(*args.get(0).ptr).is_object() {
-        mozjs::error::throw_type_error(cx, c"The \"target\" argument must be an instance of ArrayBufferView. Received type undefined".as_ref());
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_type_error_safe(&mut cx_s, c"The \"target\" argument must be an instance of ArrayBufferView. Received type undefined".as_ref());
+        }
         return false;
     }
 
@@ -4311,9 +4388,15 @@ unsafe fn throw_error_with_code(cx: *mut JSContext, range: bool, code: &str, msg
     let c_msg = ::std::ffi::CString::new(msg)
         .unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
     if range {
-        mozjs::error::throw_range_error(cx, c_msg.as_ref());
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+        }
     } else {
-        mozjs::error::throw_type_error(cx, c_msg.as_ref());
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+        }
     }
     if JS_IsExceptionPending(cx) {
         rooted!(in(cx) let mut exn = UndefinedValue());
@@ -4874,10 +4957,13 @@ unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut 
     if argc == 0 {
         // @trace REQ-ENG-005 — Buffer.byteLength() (no args) throws
         // ERR_INVALID_ARG_TYPE (a TypeError) per Node.js.
-        mozjs::error::throw_type_error(
-            cx,
-            c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received undefined".as_ref(),
-        );
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_type_error_safe(
+                &mut cx_s,
+                    c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received undefined".as_ref(),
+            );
+        }
         return false;
     }
     let input = *args.get(0).ptr;
@@ -4978,10 +5064,13 @@ unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut 
         let is_ab = mozjs_sys::jsapi::JS::IsArrayBufferObject(obj_root.get());
         let is_view = unsafe { mozjs_sys::jsapi::JS_IsArrayBufferViewObject(obj_root.get()) };
         if !is_ab && !is_view {
-            mozjs::error::throw_type_error(
-                cx,
-                c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received [object Object]".as_ref(),
-            );
+            {
+                let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                mozjs::error::throw_type_error_safe(
+                    &mut cx_s,
+                        c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received [object Object]".as_ref(),
+                );
+            }
             return false;
         }
         // @trace REQ-ENG-005 — ArrayBuffer → byteLength via the JS
@@ -5031,10 +5120,13 @@ unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut 
         // @trace REQ-ENG-005 — Node.js throws ERR_INVALID_ARG_TYPE (a
         // TypeError) for non-string/non-ArrayBufferView/non-ArrayBuffer
         // input. Test "Buffer.byteLength()" drives 32/NaN/{}/().
-        mozjs::error::throw_type_error(
-            cx,
-            c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ".as_ref(),
-        );
+        {
+            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+            mozjs::error::throw_type_error_safe(
+                &mut cx_s,
+                    c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ".as_ref(),
+            );
+        }
         return false;
     }
     true
@@ -5471,10 +5563,13 @@ unsafe extern "C" fn structured_clone_fn(cx: *mut JSContext, argc: u32, vp: *mut
                 },
             );
             if !tval.is_undefined() && !tval.is_null() && !tval.is_object() {
-                mozjs::error::throw_type_error(
-                    cx,
-                    c"Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.",
-                );
+                {
+                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                    mozjs::error::throw_type_error_safe(
+                        &mut cx_s,
+                            c"Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.",
+                    );
+                }
                 return false;
             }
             if tval.is_object() {
@@ -5602,19 +5697,25 @@ unsafe extern "C" fn structured_clone_fn(cx: *mut JSContext, argc: u32, vp: *mut
                                 fail = true;
                             }
                             if fail {
-                                mozjs::error::throw_type_error(
-                                    cx,
-                                    c"Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.",
-                                );
+                                {
+                                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                                    mozjs::error::throw_type_error_safe(
+                                        &mut cx_s,
+                                            c"Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.",
+                                    );
+                                }
                                 return false;
                             }
                             transferable.set(ObjectValue(arr_root.get()));
                         }
                     } else {
-                        mozjs::error::throw_type_error(
-                            cx,
-                            c"Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.",
-                        );
+                        {
+                            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                            mozjs::error::throw_type_error_safe(
+                                &mut cx_s,
+                                    c"Failed to execute 'structuredClone': transfer in Options can not be converted to sequence.",
+                            );
+                        }
                         return false;
                     }
                 }

@@ -857,13 +857,12 @@ fn resolve_hostname_libc(
     Ok(out)
 }
 
-/// Map a raw `getaddrinfo` EAI_* return code (the `Err` side of
-/// [`resolve_hostname_libc`]) to the Node dns error-code string for the
-/// resolve arms. EAI_NONAME → ENOTFOUND and EAI_NODATA → ENODATA follow the
-/// observable Node 24.5.0 resolve oracle ("queryA ENOTFOUND <host>" /
-/// "queryA ENODATA <host>"); the rest keep their getSystemErrorName
-/// spellings (libuv translates EAI_MEMORY → ENOMEM), and an unrecognized
-/// code surfaces its raw value rather than a placeholder.
+/// Map a raw `getaddrinfo`/`getnameinfo` EAI_* return code to the Node dns
+/// error-code string for OS resolver paths. EAI_NONAME → ENOTFOUND and
+/// EAI_NODATA → ENODATA follow the observable Node 24.5.0 resolve oracle;
+/// the rest keep their getSystemErrorName spellings (libuv translates
+/// EAI_MEMORY → ENOMEM), and an unrecognized code surfaces its raw value
+/// rather than a placeholder.
 /// https://github.com/nodejs/node/blob/v24.5.0/lib/internal/errors.js#L795-L823
 fn gai_error_to_dns_code(rc: i32) -> ::std::string::String {
     match rc {
@@ -1807,6 +1806,10 @@ unsafe extern "C" fn dns_resolve6(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 
 /// Build a `sockaddr_storage` from an IP string (no port needed).
 /// Returns `(sockaddr_storage, actual_len)` or `None` if the IP is invalid.
+///
+/// Node's `dns.reverse(ip)` takes a bare IP — no port. Parse as `IpAddr` and
+/// attach port 0; parsing as `SocketAddr` would reject every bare IP (it
+/// requires `host:port`), which made reverse lookups never run at all.
 fn ip_to_sockaddr(
     ip_str: &str,
 ) -> Option<(
@@ -1814,9 +1817,14 @@ fn ip_to_sockaddr(
     libc::sockaddr_storage,
     libc::socklen_t,
 )> {
-    let addr: ::std::net::SocketAddr = match ip_str.parse() {
-        Ok(a) => a,
-        Err(_) => return None,
+    let ip: ::std::net::IpAddr = ip_str.parse().ok()?;
+    let addr: ::std::net::SocketAddr = match ip {
+        ::std::net::IpAddr::V4(v4) => {
+            ::std::net::SocketAddrV4::new(v4, 0).into()
+        }
+        ::std::net::IpAddr::V6(v6) => {
+            ::std::net::SocketAddrV6::new(v6, 0, 0, 0).into()
+        }
     };
     let mut sa: libc::sockaddr_storage = unsafe { ::std::mem::zeroed() };
     let len = match addr {
@@ -1873,38 +1881,40 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     rooted!(&in(cx_wrap) let arr_root = arr_obj);
 
     // Use libc::getnameinfo with NI_NAMEREQD for real reverse DNS lookup.
-    if let Some((_addr, sa, sa_len)) = ip_to_sockaddr(&ip_str) {
-        let mut host_buf = [0i8; 1025];
-        let rc = unsafe {
-            libc::getnameinfo(
-                ::std::ptr::from_ref(&sa).cast::<libc::sockaddr>(),
-                sa_len,
-                host_buf.as_mut_ptr(),
-                host_buf.len() as libc::socklen_t,
-                ::std::ptr::null_mut(),
-                0,
-                libc::NI_NAMEREQD,
-            )
-        };
-        if rc == 0 {
-            let hostname = unsafe { ::std::ffi::CStr::from_ptr(host_buf.as_ptr()) }
-                .to_string_lossy()
-                .into_owned();
-            let c_host = ZBox::from_bytes(hostname.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_host.as_ptr());
-            if !js_str.is_null() {
-                rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
-                JS_DefineElement(
-                    cx,
-                    arr_root.handle().into(),
-                    0,
-                    val.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-        }
-        // If getnameinfo fails (rc != 0), return empty array (matches Node.js
-        // behavior of throwing ENOTFOUND which the JS layer handles).
+    let Some((_addr, sa, sa_len)) = ip_to_sockaddr(&ip_str) else {
+        return throw_resolve_error(cx, "getHostByAddr", "EINVAL", &ip_str);
+    };
+    let mut host_buf = [0i8; 1025];
+    let rc = unsafe {
+        libc::getnameinfo(
+            ::std::ptr::from_ref(&sa).cast::<libc::sockaddr>(),
+            sa_len,
+            host_buf.as_mut_ptr(),
+            host_buf.len() as libc::socklen_t,
+            ::std::ptr::null_mut(),
+            0,
+            libc::NI_NAMEREQD,
+        )
+    };
+    if rc != 0 {
+        let code = gai_error_to_dns_code(rc);
+        return throw_resolve_error(cx, "getHostByAddr", &code, &ip_str);
+    }
+
+    let hostname = unsafe { ::std::ffi::CStr::from_ptr(host_buf.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    let c_host = ZBox::from_bytes(hostname.as_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_host.as_ptr());
+    if !js_str.is_null() {
+        rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+        JS_DefineElement(
+            cx,
+            arr_root.handle().into(),
+            0,
+            val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     args.rval().set(ObjectValue(arr_root.get()));

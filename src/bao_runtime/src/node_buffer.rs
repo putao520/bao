@@ -441,7 +441,10 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 unsafe extern "C" fn buffer_transcode(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let msg = ::std::ffi::CString::new("Not implemented").unwrap();
-    mozjs::error::throw_type_error(cx, msg.as_ref());
+    {
+        let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+        mozjs::error::throw_type_error_safe(&mut cx_s, msg.as_ref());
+    }
     args.rval().set(UndefinedValue());
     false
 }

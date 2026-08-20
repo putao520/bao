@@ -235,6 +235,12 @@ pub struct Flags {
     /// fetch path only; downgrading page egress to h1 would change the
     /// page's TLS fingerprint).
     pub is_page_egress: bool,
+    /// h1 transport backpressure: the response socket's read side was paused
+    /// by the consumer (via `pause_response_transport` on the HTTP thread)
+    /// and must be resumed before the socket leaves this request's control
+    /// (keep-alive pool hand-off, redirect follow) — a socket parked in the
+    /// pool with reads de-armed would hang the next request on it.
+    pub response_transport_paused: bool,
 }
 
 impl Default for Flags {
@@ -261,6 +267,7 @@ impl Default for Flags {
             is_node_http_client: false,
             is_page_egress: false,
             omit_connection_header: false,
+            response_transport_paused: false,
         }
     }
 }
@@ -2588,6 +2595,9 @@ impl<'a> HTTPClient<'a> {
         self.flags.redirected = true;
         debug_assert!(self.redirect_type == FetchRedirect::Follow);
         self.unregister_abort_tracker();
+        // The socket may be pooled or reused for the next hop below — a
+        // paused read side would stall the redirect response.
+        self.resume_response_transport::<IS_SSL>(socket);
 
         // By the time doRedirect runs, handleResponseMetadata has already mutated
         // this.url to the redirect destination. Pooling the tunnel here would
@@ -3850,6 +3860,45 @@ impl<'a> HTTPClient<'a> {
         socket.set_timeout(idle_timeout_seconds());
     }
 
+    /// Transport backpressure, h1 arm: pause the socket's read side so the
+    /// kernel receive buffer fills and TCP backpressure stalls the server.
+    /// Driven by the HTTP thread's transport-pause queue (the consumer never
+    /// touches the socket cross-thread). uSockets semantics are safe at any
+    /// point relative to the delivery callback: `us_socket_pause` keeps the
+    /// poll writable-only, and the C read loop re-checks `is_paused` after
+    /// `us_dispatch_data` returns, so a pause issued from inside `on_data`
+    /// also stops further reads in the same dispatch (loop.c/socket.c).
+    pub fn pause_response_transport<const IS_SSL: bool>(&mut self, socket: HttpSocket<IS_SSL>) {
+        // Same gates as `drain_response_body`: a terminal or redirect-pending
+        // request must not stall a socket the pool / next hop is about to
+        // reuse.
+        match self.state.stage {
+            Stage::Done | Stage::Fail => return,
+            _ => {}
+        }
+        if self.state.flags.is_redirect_pending {
+            return;
+        }
+        if socket.pause_stream() {
+            self.flags.response_transport_paused = true;
+            bun_core::scoped_log!(fetch, "transport paused (id {})", self.async_http_id);
+        }
+    }
+
+    /// Lift the h1 transport pause (idempotent). Doubles as the terminal
+    /// safety net: every site that hands a still-usable socket to the
+    /// keep-alive pool or the next redirect hop calls this first, so a
+    /// paused socket can never strand with reads de-armed. Failure paths
+    /// close the socket, which discards the pause with it.
+    pub fn resume_response_transport<const IS_SSL: bool>(&mut self, socket: HttpSocket<IS_SSL>) {
+        if !self.flags.response_transport_paused {
+            return;
+        }
+        self.flags.response_transport_paused = false;
+        socket.resume_stream();
+        bun_core::scoped_log!(fetch, "transport resumed (id {})", self.async_http_id);
+    }
+
     pub fn drain_response_body<const IS_SSL: bool>(&mut self, socket: HttpSocket<IS_SSL>) {
         // Find out if we should not send any update.
         match self.state.stage {
@@ -3954,6 +4003,9 @@ impl<'a> HTTPClient<'a> {
 
         if is_done {
             self.unregister_abort_tracker();
+            // A paused response socket must never reach the pool below with
+            // reads de-armed — the next request on it would hang.
+            self.resume_response_transport::<IS_SSL>(socket);
             // is_done is response-driven. A server can reply early (HTTP 413)
             // with keep-alive while request_stage is still .proxy_body or the
             // tunnel still has buffered encrypted writes. Pooling that tunnel

@@ -1,0 +1,22 @@
+# cargo-nextest configuration.
+#
+# Test resource isolation (task: bun_http h2 tail flake):
+#
+# `connection_deadline_both_directions_under_oversubscription` deliberately
+# spins `CpuHogs::spawn(2)` — 2 × nproc busy-loop threads — to verify deadline
+# semantics under designed oversubscription. When nextest schedules the rest
+# of the bun_http fleet alongside it, the machine reaches ~3× oversubscription
+# (runq ~60 on 20 cores with co-tenant load), and sibling h2/hpack tests trip
+# their 20s wall-clock collection deadlines with zero deliveries ("no delivery
+# before deadline (fetch hung)") — a batch-tail flake that is green in
+# isolation. Socket/conntrack exhaustion was measured and ruled out (TIME_WAIT
+# peak 277/262144, conntrack ~1k/262144 during the failure window).
+#
+# Quarantine the interference source, not the victims: reserving the entire
+# test-thread budget for the hog test makes it mutually exclusive with all
+# other tests (per nextest docs, "num-test-threads" is the documented way to
+# do this), so its spinners never co-run with the fleet. No test code or
+# assertions are weakened.
+[[profile.default.overrides]]
+filter = 'package(bun_http) and test(connection_deadline_both_directions_under_oversubscription)'
+threads-required = "num-test-threads"
