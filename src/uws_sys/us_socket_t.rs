@@ -23,8 +23,8 @@ bun_opaque::opaque_ffi! { pub struct us_socket_t; }
 pub enum CloseCode {
     /// TLS: send close_notify and defer fd close until peer replies. TCP: FIN.
     normal = 0,
-    /// TLS: fast-shutdown (no wait). TCP: SO_LINGER{1,0} → RST, dropping any
-    /// unflushed send buffer. Only for `terminate()` / GC abort.
+    /// TLS: sends no close_notify (abortive). TCP: SO_LINGER{1,0} → RST,
+    /// dropping any unflushed send buffer. Only for `terminate()` / GC abort.
     failure = 1,
     /// TLS: fast-shutdown (no wait). TCP: FIN. For `_handle.close()` where
     /// the JS wrapper detaches immediately so `.normal`'s deferral would

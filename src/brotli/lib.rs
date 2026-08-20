@@ -123,6 +123,22 @@ pub struct DecoderOptions {
 
 pub use bun_core::compress::State as ReaderState;
 
+/// The decoder's allocator (its `alloc_func`) returned null — mirror of
+/// upstream 8bc4d2a88's `BrotliDecoderErrorCode2::is_alloc_failure`
+/// (brotli_c.rs). Numeric because `brotli` 8.x does not re-export the
+/// `BrotliDecoderErrorCode` enum from its top level.
+fn is_alloc_failure(code: i32) -> bool {
+    matches!(
+        code,
+        -21 | // ERROR_ALLOC_CONTEXT_MODES
+        -22 | // ERROR_ALLOC_TREE_GROUPS
+        -25 | // ERROR_ALLOC_CONTEXT_MAP
+        -26 | // ERROR_ALLOC_RING_BUFFER_1
+        -27 | // ERROR_ALLOC_RING_BUFFER_2
+        -30 // ERROR_ALLOC_BLOCK_TYPE_TREES
+    )
+}
+
 pub struct BrotliReaderArrayList<'a> {
     pub input: &'a [u8],
     pub list_ptr: &'a mut bun_core::vec::ChanVec<u8>,
@@ -190,6 +206,9 @@ impl<'a> BrotliReaderArrayList<'a> {
 
     fn fail(&mut self) -> Error {
         self.state = ReaderState::Error;
+        if is_alloc_failure(self.decoder.error_code as i32) {
+            return err!("OutOfMemory");
+        }
         err!("BrotliDecompressionError")
     }
 
@@ -201,6 +220,10 @@ impl<'a> BrotliReaderArrayList<'a> {
         if self.list_ptr.len() + slice.len() > self.max_output_size {
             self.state = ReaderState::Error;
             return Err(err!("BrotliDecompressionError"));
+        }
+        if self.list_ptr.try_reserve(slice.len()).is_err() {
+            self.state = ReaderState::Error;
+            return Err(err!("OutOfMemory"));
         }
         self.list_ptr.extend_from_slice(slice);
         self.total_out += slice.len();
@@ -314,6 +337,10 @@ impl BrotliCompressionStream {
 
         let compressed = compress(&self.buffer, self.quality, self.lgwin);
         self.total_out = compressed.len();
+        if output.try_reserve(compressed.len()).is_err() {
+            self.state = CompressionState::Error;
+            return Err(err!("OutOfMemory"));
+        }
         output.extend_from_slice(&compressed);
         self.buffer.clear();
         self.state = CompressionState::End;

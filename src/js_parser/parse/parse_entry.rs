@@ -319,6 +319,7 @@ impl<'a> Parser<'a> {
         define: &'a Define,
         bump: &'a Arena,
     ) -> Result<Parser<'a>, Error> {
+        source.check_parseable_len(log, "File")?;
         let lexer = js_lexer::Lexer::init(log, source, bump)?;
         // Copy the lexer's `NonNull<Log>` so both handles share one provenance
         // chain (the `&'a mut Log` was consumed by `Lexer::init`).

@@ -469,6 +469,9 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
             struct us_loop_t* loop = s->group->loop;
             /* Captured before the read loop folds recv()==0 into `eof`; error events keep the error path. */
             const int hangup = (eof & LIBUS_POLL_HANGUP) && !error;
+            /* Set once recv() returns 0 below: the only proof that the peer's stream ended with a FIN. The
+             * eof hint this dispatch was called with (EPOLLHUP, kqueue's EV_EOF) also rides on a reset. */
+            int read_fin = 0;
             if (events & LIBUS_SOCKET_WRITABLE && !error) {
                 s->flags.last_write_failed = 0;
                 #ifdef LIBUS_USE_KQUEUE
@@ -678,9 +681,17 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                         #endif
                     } else if (!length) {
                         eof = LIBUS_POLL_EOF; // lets handle EOF in the same place
+                        read_fin = 1;
                         break;
                     } else if (length == LIBUS_SOCKET_ERROR && !bsd_would_block()) {
-                        /* Peer-initiated TCP error (RST etc.) — go straight to
+                        /* A read error closes with its errno even when the drain above
+                         * delivered data first, which is what libuv reports to node as
+                         * well: a reset behind unread data (the kernel keeps the receive
+                         * queue, so recv() returns the data and then the error) never
+                         * reached a FIN, so there is no end of stream to report. The eof
+                         * hint this event carried is the reset's own (EPOLLHUP; EV_EOF
+                         * with the error in fflags); a FIN is recv()==0 above.
+                         * Peer-initiated TCP error (RST etc.) — go straight to
                          * raw-close. us_socket_close() would route through
                          * us_internal_ssl_close() now that s->ssl is the
                          * discriminator, and that path fires
@@ -728,6 +739,17 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                  * the read loop drain it, instead of closing over the unread tail. */
                 eof = 0;
             }
+            if (eof && error && !read_fin) {
+                /* An error event whose read loop did not reach a FIN (the socket is
+                 * paused, or on_data paused it mid-drain): the eof hint next to the
+                 * error flag is the reset taking both directions down (EPOLLHUP beside
+                 * EPOLLERR; EV_EOF with the error in fflags), not an end of stream, so
+                 * it must not take the end path below. That path dispatched on_end for
+                 * a reset, and a TLS socket's on_end closes with a clean code itself,
+                 * so the error close never ran. A FIN this dispatch did read still
+                 * delivers its end first; the error close follows either way. */
+                eof = 0;
+            }
             if(eof && s) {
                 if (UNLIKELY(us_socket_is_closed(s))) {
                     // Do not call on_end after the socket has been closed
@@ -765,8 +787,13 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                     return;
                 }
             }
-            /* Such as epollerr or EV_ERROR */
-            if (error && s) {
+            /* Such as epollerr or EV_ERROR. A handler above (on_data, on_end, or the
+             * close they triggered) may already have closed this socket: its fd number
+             * is free again, and a socket that handler opened can own it by now, so
+             * nothing left to do here may touch this socket's fd (upstream #39621:
+             * a stale getsockopt(SO_ERROR) on the reused number consumed the new
+             * socket's connect error). Nothing is left to close in that case. */
+            if (error && s && !us_socket_is_closed(s)) {
                 /* Peer-initiated error event — same rationale as the recv-error
                  * branch above: bypass us_internal_ssl_close so on_handshake
                  * isn't fired for a passive close. */

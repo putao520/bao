@@ -566,10 +566,10 @@ impl PageInner {
         let y = pos["y"].as_f64().unwrap_or(0.0) as f32;
 
         // Dispatch mouseDown then mouseUp
-        self.dispatch_mouse_event(MouseButtonAction::Down, MouseButton::Left, x, y);
+        self.dispatch_mouse_event(MouseButtonAction::Down, MouseButton::Primary, x, y);
         self.servo.spin_event_loop();
         self.webview.paint();
-        self.dispatch_mouse_event(MouseButtonAction::Up, MouseButton::Left, x, y);
+        self.dispatch_mouse_event(MouseButtonAction::Up, MouseButton::Primary, x, y);
         Ok(())
     }
 

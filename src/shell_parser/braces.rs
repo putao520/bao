@@ -654,7 +654,7 @@ pub fn expand(
     contains_nested: bool,
 ) -> Result<(), ExpandError> {
     check_brace_group_count(tokens)?;
-    let mut out_key_counter: u16 = 1;
+    let mut out_key_counter: usize = 1;
     if !contains_nested {
         let expansions_table = build_expansion_table_alloc(tokens)?;
 
@@ -688,8 +688,8 @@ pub fn expand(
 unsafe fn expand_nested(
     root: *mut ast::Group,
     out: &mut [Vec<u8>],
-    out_key: u16,
-    out_key_counter: &mut u16,
+    out_key: usize,
+    out_key_counter: &mut usize,
     start: u32,
 ) -> Result<(), ExpandError> {
     // SAFETY: see fn doc comment — raw-pointer derefs mirror Zig pointer semantics;
@@ -713,7 +713,7 @@ unsafe fn expand_nested(
 
             match &(*root).atoms {
                 ast::GroupAtoms::Single(ast::Atom::Text(txt)) => {
-                    out[usize::from(out_key)].extend_from_slice(txt.slice());
+                    out[out_key].extend_from_slice(txt.slice());
                     if !(*root).bubble_up.is_null() {
                         let bubble_up = (*root).bubble_up;
                         let next = (*root).bubble_up_next.unwrap();
@@ -728,11 +728,11 @@ unsafe fn expand_nested(
                     return Ok(());
                 }
                 ast::GroupAtoms::Single(ast::Atom::Expansion(expansion)) => {
-                    let length = out[usize::from(out_key)].len();
+                    let length = out[out_key].len();
                     // PORT NOTE: reshaped for borrowck — snapshot prefix once; Zig re-sliced
                     // out[out_key].items[0..length] each iteration (same bytes).
                     // PERF(port): extra Vec alloc for prefix snapshot — profile if hot.
-                    let prefix: Vec<u8> = out[usize::from(out_key)][..length].to_vec();
+                    let prefix: Vec<u8> = out[out_key][..length].to_vec();
                     let variants = expansion.variants;
                     let variants_len = variants.len();
                     for j in 0..variants_len {
@@ -743,7 +743,7 @@ unsafe fn expand_nested(
                             out_key
                         } else {
                             let new_key = *out_key_counter;
-                            out[usize::from(new_key)].extend_from_slice(&prefix);
+                            out[new_key].extend_from_slice(&prefix);
                             *out_key_counter += 1;
                             new_key
                         };
@@ -776,13 +776,13 @@ unsafe fn expand_nested(
             let atom: &ast::Atom = &(*many)[i_];
             match atom {
                 ast::Atom::Text(txt) => {
-                    out[usize::from(out_key)].extend_from_slice(txt.slice());
+                    out[out_key].extend_from_slice(txt.slice());
                 }
                 ast::Atom::Expansion(expansion) => {
-                    let length = out[usize::from(out_key)].len();
+                    let length = out[out_key].len();
                     // PORT NOTE: reshaped for borrowck — see above.
                     // PERF(port): extra Vec alloc for prefix snapshot — profile if hot.
-                    let prefix: Vec<u8> = out[usize::from(out_key)][..length].to_vec();
+                    let prefix: Vec<u8> = out[out_key][..length].to_vec();
                     let variants = expansion.variants;
                     let variants_len = variants.len();
                     for j in 0..variants_len {
@@ -793,7 +793,7 @@ unsafe fn expand_nested(
                             out_key
                         } else {
                             let new_key = *out_key_counter;
-                            out[usize::from(new_key)].extend_from_slice(&prefix);
+                            out[new_key].extend_from_slice(&prefix);
                             *out_key_counter += 1;
                             new_key
                         };
@@ -821,8 +821,8 @@ fn expand_flat(
     tokens: &[Token],
     expansion_table: &[ExpansionVariant],
     out: &mut [Vec<u8>],
-    out_key: u16,
-    out_key_counter: &mut u16,
+    out_key: usize,
+    out_key_counter: &mut usize,
     depth_: u8,
     start: usize,
     end: usize,
@@ -836,7 +836,7 @@ fn expand_flat(
     for atom in tokens[start..end].iter() {
         match atom {
             Token::Text(txt) => {
-                out[usize::from(out_key)].extend_from_slice(txt.slice());
+                out[out_key].extend_from_slice(txt.slice());
             }
             Token::Close => {
                 depth -= 1;
@@ -851,16 +851,16 @@ fn expand_flat(
                     [usize::from(expansion_variants.idx)..usize::from(expansion_variants.end)];
                 let skip_over_idx = variants[variants.len() - 1].end();
 
-                let starting_len = out[usize::from(out_key)].len();
+                let starting_len = out[out_key].len();
                 // PORT NOTE: reshaped for borrowck — snapshot prefix once.
                 // PERF(port): extra Vec alloc for prefix snapshot — profile if hot.
-                let prefix: Vec<u8> = out[usize::from(out_key)][..starting_len].to_vec();
+                let prefix: Vec<u8> = out[out_key][..starting_len].to_vec();
                 for (i, variant) in variants.iter().enumerate() {
                     let new_key = if i == 0 {
                         out_key
                     } else {
                         let new_key = *out_key_counter;
-                        out[usize::from(new_key)].extend_from_slice(&prefix);
+                        out[new_key].extend_from_slice(&prefix);
                         *out_key_counter += 1;
                         new_key
                     };

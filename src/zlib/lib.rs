@@ -873,6 +873,10 @@ impl<'a, V: bun_core::vec::SpareBytesVec> ZlibReaderArrayList<'a, V> {
                         self.member_crc.update(&out[..written]);
                         self.member_out += written as u64;
                     }
+                    if !self.list_ptr.sb_try_reserve(written) {
+                        self.state = ZlibReaderArrayListState::Error;
+                        return Err(ZlibError::OutOfMemory);
+                    }
                     self.list_ptr.sb_extend_from_slice(&out[..written]);
                 }
                 match status {
@@ -983,7 +987,9 @@ impl<'a, V: bun_core::vec::SpareBytesVec> ZlibCompressorArrayList<'a, V> {
 
     pub fn init_with_list_allocator(input: &'a [u8], list: &'a mut V, options: Options) -> Result<Box<Self>, ZlibError> {
         let bound = compress_bound_for(input.len(), options.gzip);
-        list.sb_reserve(bound.saturating_sub(list.sb_capacity()));
+        if !list.sb_try_reserve(bound.saturating_sub(list.sb_capacity())) {
+            return Err(ZlibError::OutOfMemory);
+        }
         Ok(Box::new(Self {
             input,
             list_ptr: list,

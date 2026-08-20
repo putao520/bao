@@ -144,14 +144,12 @@ impl<'a> DataURL<'a> {
         let percent_decoded: &[u8] = percent_decoded_owned.as_deref().unwrap_or(self.data);
 
         if self.is_base64 {
-            let len = bun_base64::decode_len(percent_decoded);
-            let mut buf = vec![0u8; len];
-            // errdefer: `buf` drops automatically on error path
-            let result = bun_base64::decode(&mut buf, percent_decoded);
-            if !result.is_successful() || result.count != len {
+            let decoded = bun_base64::decode_alloc(percent_decoded)
+                .map_err(|_| bun_core::err!("Base64DecodeError"))?;
+            if decoded.len() != bun_base64::decode_len(percent_decoded) {
                 return Err(bun_core::err!("Base64DecodeError"));
             }
-            return Ok(buf);
+            return Ok(decoded);
         }
 
         Ok(percent_decoded.to_vec())
@@ -186,13 +184,11 @@ impl<'a> DataURL<'a> {
             return buf;
         }
 
-        // TODO(port): Zig source's `bufPrint` writes `text` raw with `{s}` here, not the
-        // base64-encoded form — ported faithfully; verify upstream intent.
-        let mut base64buf = Vec::with_capacity(total_base64_encode_len);
+        let mut base64buf: Vec<u8> = Vec::with_capacity(total_base64_encode_len);
         base64buf.extend_from_slice(b"data:");
         base64buf.extend_from_slice(mime_type);
         base64buf.extend_from_slice(b";base64,");
-        base64buf.extend_from_slice(text);
+        bun_base64::encode_append(&mut base64buf, text);
         base64buf
     }
 

@@ -360,9 +360,12 @@ impl ShadowRoot {
         self.delegates_focus.set(delegates_focus);
     }
 
-    pub(crate) fn details_name_groups(&self) -> RefMut<'_, DetailsNameGroups> {
+    pub(crate) fn details_name_groups<'a: 'b, 'b>(
+        &'a self,
+        no_gc: &'b NoGC,
+    ) -> RefMut<'b, DetailsNameGroups> {
         RefMut::map(
-            self.details_name_groups.borrow_mut(),
+            self.details_name_groups.safe_borrow_mut(no_gc),
             |details_name_groups| details_name_groups.get_or_insert_default(),
         )
     }
@@ -371,9 +374,9 @@ impl ShadowRoot {
         self.document_or_shadow_root.custom_element_registry()
     }
 
-    pub(crate) fn set_custom_element_registry(&self, registry: &CustomElementRegistry) {
+    pub(crate) fn set_custom_element_registry(&self, registry: Option<&CustomElementRegistry>) {
         self.document_or_shadow_root
-            .set_custom_element_registry(Some(registry));
+            .set_custom_element_registry(registry);
     }
 }
 

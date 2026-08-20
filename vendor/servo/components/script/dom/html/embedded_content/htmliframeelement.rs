@@ -108,10 +108,11 @@ pub(crate) struct HTMLIFrameElement {
     /// while script at this point(when the flag is set)
     /// expects those to run only for the navigated documented.
     pending_navigation: Cell<bool>,
-    /// Whether a load event was synchronously fired, for example when
-    /// an empty iframe is attached. In that case, we shouldn't fire a
-    /// subsequent asynchronous load event.
-    already_fired_synchronous_load_event: Cell<bool>,
+    /// Initial name set by the content of the `name` attribute on the
+    /// iframe. This is frozen in time, since it is only processed once
+    /// on the initial creation of the iframe contents. If the iframe
+    /// itself changes the `window.name`, that takes precedence.
+    frozen_name: DomRefCell<Option<String>>,
 }
 
 impl HTMLIFrameElement {
@@ -156,14 +157,6 @@ impl HTMLIFrameElement {
         target_snapshot_params: TargetSnapshotParams,
         cx: &mut JSContext,
     ) {
-        // In case we fired a synchronous load event, but navigate away
-        // in the event listener of that event, then we should still
-        // fire a second asynchronous load event when that navigation
-        // finishes. Therefore, on any navigation (but not the initial
-        // about blank), we should always set this to false, regardless
-        // of whether we synchronously fired a load in the same microtask.
-        self.already_fired_synchronous_load_event.set(false);
-
         self.start_new_pipeline(
             cx,
             load_data,
@@ -272,6 +265,7 @@ impl HTMLIFrameElement {
             inherited_secure_context: load_data.inherited_secure_context,
             history_handling,
             target_snapshot_params,
+            name: self.frozen_name.borrow().clone(),
         };
 
         let viewport_details = window
@@ -309,6 +303,7 @@ impl HTMLIFrameElement {
                     user_content_manager_id: None,
                     embedder_theme: window.embedder_theme(),
                     target_snapshot_params,
+                    frame_name: self.frozen_name.borrow().clone(),
                 };
 
                 self.pipeline_id.set(Some(new_pipeline_id));
@@ -459,20 +454,6 @@ impl HTMLIFrameElement {
 
         let window = self.owner_window();
 
-        // https://html.spec.whatwg.org/multipage/#attr-iframe-name
-        // Note: the spec says to set the name 'when the nested browsing context is created'.
-        // The current implementation sets the name on the window,
-        // when the iframe attributes are first processed.
-        if mode == ProcessingMode::FirstTime &&
-            let Some(window) = self.GetContentWindow()
-        {
-            window.set_name(
-                element
-                    .get_name()
-                    .map_or(DOMString::from(""), |n| DOMString::from(&*n)),
-            );
-        }
-
         // Step 2.1. Let url be the result of running the shared attribute processing steps
         // for iframe and frame elements given element and initialInsertion.
         let Some(url) = self.shared_attribute_processing_steps_for_iframe_and_frame_elements(mode)
@@ -483,8 +464,6 @@ impl HTMLIFrameElement {
 
         // Step 2.3. If url matches about:blank and initialInsertion is true, then:
         if url.matches_about_blank() && mode == ProcessingMode::FirstTime {
-            // We should **not** send a load event in `iframe_load_event_steps`.
-            self.already_fired_synchronous_load_event.set(true);
             // Step 2.3.1. Run the iframe load event steps given element.
             self.run_iframe_load_event_steps(cx);
             // Step 2.3.2. Return.
@@ -576,20 +555,27 @@ impl HTMLIFrameElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#create-a-new-child-navigable>
-    /// Synchronously create a new browsing context(This is not a navigation).
-    /// The pipeline started here should remain unnoticeable to script, but this is not easy
-    /// to refactor because it appears other features have come to rely on the current behavior.
-    /// For now only the iframe load event steps are skipped in some cases for this initial document,
-    /// and we still fire load and pageshow events as part of `maybe_queue_document_completion`.
-    /// Also, some controversy spec-wise remains: <https://github.com/whatwg/html/issues/4965>
+    /// Synchronously create a new browsing context; this is not a navigation.
     fn create_nested_browsing_context(&self, cx: &mut JSContext) {
-        let url = ServoUrl::parse("about:blank").unwrap();
+        // Step 1. Let parentNavigable be element's node navigable.
         let document = self.owner_document();
         let window = self.owner_window();
         let pipeline_id = Some(window.pipeline_id());
+        // Step 4. Let targetName be null.
+        // Step 5. If element has a name content attribute,
+        // then set targetName to the value of that attribute.
+        *self.frozen_name.borrow_mut() = self
+            .upcast::<Element>()
+            .get_name()
+            .map(|name| name.to_string());
+        // Step 6. Let documentState be a new document state, with
         let mut load_data = LoadData::new(
+            // > initiator origin
+            // >     document's origin
             LoadOrigin::Script(document.origin().snapshot()),
-            url,
+            ServoUrl::parse("about:blank").unwrap(),
+            // > about base URL
+            // >     document's about base URL
             Some(document.base_url()),
             pipeline_id,
             window.as_global_scope().get_referrer(),
@@ -603,12 +589,14 @@ impl HTMLIFrameElement {
         load_data.destination = Destination::IFrame;
         load_data.policy_container = Some(window.as_global_scope().policy_container());
 
+        // Step 7. Let navigable be a new navigable.
         let browsing_context_id = BrowsingContextId::new();
         let webview_id = window.window_proxy().webview_id();
         self.pipeline_id.set(None);
         self.pending_pipeline_id.set(None);
         self.webview_id.set(Some(webview_id));
         self.browsing_context_id.set(Some(browsing_context_id));
+        // Step 8. Initialize the navigable navigable given documentState and parentNavigable.
         self.start_new_pipeline(
             cx,
             load_data,
@@ -617,6 +605,13 @@ impl HTMLIFrameElement {
             ProcessingMode::FirstTime,
             snapshot_self(self),
         );
+        // > navigable target name
+        // >     targetName
+        if let Some(window) = self.GetContentWindow() &&
+            let Some(window_name) = &*self.frozen_name.borrow()
+        {
+            window.set_name(window_name.as_str().into());
+        }
     }
 
     fn destroy_nested_browsing_context(&self) {
@@ -684,7 +679,7 @@ impl HTMLIFrameElement {
             current_navigation_was_lazy_loaded: Default::default(),
             lazy_load_resumption_steps: Default::default(),
             pending_navigation: Default::default(),
-            already_fired_synchronous_load_event: Default::default(),
+            frozen_name: Default::default(),
         }
     }
 
@@ -788,10 +783,6 @@ impl HTMLIFrameElement {
             !self.pending_navigation.get()
         };
 
-        // If we already fired a synchronous load event, we shouldn't fire another
-        // one in this method.
-        let should_fire_event =
-            !self.already_fired_synchronous_load_event.replace(false) && should_fire_event;
         if should_fire_event {
             self.run_iframe_load_event_steps(cx);
         } else {

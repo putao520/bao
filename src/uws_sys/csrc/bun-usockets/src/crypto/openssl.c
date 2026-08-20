@@ -238,6 +238,14 @@ static long BIO_s_custom_ctrl(BIO *bio, int cmd, long num, void *user) {
 static int BIO_s_custom_write(BIO *bio, const char *data, int length) {
   struct loop_ssl_data *loop_ssl_data = (struct loop_ssl_data *)BIO_get_data(bio);
 
+  /* Deferred close tripped while a BoringSSL call is on the stack (a callback
+   * destroyed the socket): do not touch the socket again; report the bytes as
+   * written so the SSL state machine completes its path. Upstream 0825a8b3f. */
+  if (loop_ssl_data->ssl_socket && loop_ssl_data->ssl_socket->ssl_pending_detach) {
+    BIO_clear_retry_flags(bio);
+    return length;
+  }
+
   int written = us_socket_raw_write(loop_ssl_data->ssl_socket, data, length);
 
   BIO_clear_retry_flags(bio);
@@ -690,11 +698,22 @@ void us_internal_ssl_attach(struct us_socket_t *s, SSL_CTX *ctx,
   s->ssl_read_wants_write = 0;
   s->ssl_fatal_error = 0;
   s->ssl_raw_tap = 0;
+  s->ssl_in_use = 0;
+  s->ssl_pending_detach = 0;
+  s->ssl_pending_close_code = 0;
   s->ssl_is_server = is_client ? 0 : 1;
 }
 
 void us_internal_ssl_detach(struct us_socket_t *s) {
   if (s->ssl) {
+    if (s->ssl_in_use) {
+      /* SSL_do_handshake/SSL_read/SSL_write is on the stack (a JS callback run
+       * from inside it destroyed the socket); freeing now would leave BoringSSL
+       * working on freed memory when control returns. The driver frees it when
+       * the call unwinds. Upstream 0825a8b3f. */
+      s->ssl_pending_detach = 1;
+      return;
+    }
     SSL_free(s_ssl(s));
     s->ssl = NULL;
   }
@@ -882,6 +901,16 @@ static int ssl_handle_shutdown(struct us_socket_t *s, int force_fast_shutdown) {
 }
 
 struct us_socket_t *us_internal_ssl_close(struct us_socket_t *s, int code, void *reason) {
+  if (s->ssl && s->ssl_in_use) {
+    /* A JS callback running from inside SSL_do_handshake/SSL_read (ALPN, SNI,
+     * keylog, ...) destroyed this socket. Reaching ssl_set_loop_data /
+     * SSL_do_handshake here would re-enter BoringSSL on the same SSL* while
+     * the outer driver is still on the stack; defer to the SSL driver's
+     * epilogue. Upstream 0825a8b3f. */
+    s->ssl_pending_detach = 1;
+    s->ssl_pending_close_code = (unsigned char)code;
+    return s;
+  }
   /* SEMI_SOCKET never connected — SSL was attached eagerly on the fast-path
    * connect, but no bytes were ever exchanged. Firing on_handshake(0) here
    * lands in JS after onConnectError already tore down `this`/its handlers. */
@@ -899,9 +928,12 @@ struct us_socket_t *us_internal_ssl_close(struct us_socket_t *s, int code, void 
     if (ssl_gone(s)) return s;
   }
 
-  /* code != 0 (forceful — `_destroy()` / `_handle.close()` / abort): send
-   * close_notify best-effort and raw-close now. The Zig destroy path detaches
-   * + poll_ref.unref() right after, so deferring would orphan the us_socket_t.
+  /* code == 2 (forceful — `_destroy()` / `_handle.close()`): send close_notify
+   * best-effort and raw-close now. The destroy path detaches + poll_ref.unref()
+   * right after, so deferring would orphan the us_socket_t.
+   *
+   * code == 1 (reset — terminate() / abort): no close_notify, only the RST,
+   * like node's resetAndDestroy().
    *
    * code == 0 (graceful — `end()` → markInactive → closeAndDetach(.normal)):
    * send close_notify and DEFER the fd close until the peer replies. The
@@ -911,7 +943,7 @@ struct us_socket_t *us_internal_ssl_close(struct us_socket_t *s, int code, void 
    * under low-prio fan-out (connectionListener race). The actual raw-close
    * happens via on_end/ZERO_RETURN re-entering this function with
    * SSL_SENT_SHUTDOWN already set (ssl_handle_shutdown then returns 1). */
-  if (ssl_handle_shutdown(s, code != 0)) {
+  if (code == LIBUS_SOCKET_CLOSE_CODE_CONNECTION_RESET || ssl_handle_shutdown(s, code != 0)) {
     return us_internal_socket_close_raw(s, code, reason);
   }
   return s;
@@ -938,7 +970,17 @@ static void ssl_update_handshake(struct us_socket_t *s) {
     return;
   }
 
+  unsigned char ssl_was_in_use = s->ssl_in_use;
+  s->ssl_in_use = 1;
   int result = SSL_do_handshake(s_ssl(s));
+  s->ssl_in_use = ssl_was_in_use;
+  if (!ssl_was_in_use && s->ssl_pending_detach) {
+    /* A callback run from inside the handshake destroyed this socket; perform
+     * the deferred close now and do not touch the SSL again. */
+    s->ssl_pending_detach = 0;
+    us_socket_close(s, s->ssl_pending_close_code, NULL);
+    return;
+  }
 
   if (SSL_get_shutdown(s_ssl(s)) & SSL_RECEIVED_SHUTDOWN) {
     ssl_close(s, 0, NULL);
@@ -1051,9 +1093,18 @@ struct us_socket_t *us_internal_ssl_on_data(struct us_socket_t *s, char *data, i
   int read = 0;
 restart:
   while (1) {
+    unsigned char ssl_was_in_use = s->ssl_in_use;
+    s->ssl_in_use = 1;
     int just_read = SSL_read(s_ssl(s),
                              loop_ssl_data->ssl_read_output + LIBUS_RECV_BUFFER_PADDING + read,
                              LIBUS_RECV_BUFFER_LENGTH - read);
+    s->ssl_in_use = ssl_was_in_use;
+    if (!ssl_was_in_use && s->ssl_pending_detach) {
+      /* A callback run from inside this read destroyed the socket; perform
+       * the deferred close now and stop processing. */
+      s->ssl_pending_detach = 0;
+      return us_socket_close(s, s->ssl_pending_close_code, NULL);
+    }
 
     if (just_read <= 0) {
       int err = SSL_get_error(s_ssl(s), just_read);
@@ -1199,10 +1250,26 @@ int us_internal_ssl_write(struct us_socket_t *s, const char *data, int length) {
 
     struct loop_ssl_data *loop_ssl_data = (struct loop_ssl_data *)s->group->loop->data.ssl_data;
 
+  /* Called from inside SSL_read/SSL_do_handshake on this socket (an ALPN/SNI
+   * callback writing): wait for the handshake, same as WANT_READ below.
+   * Upstream 0825a8b3f. */
+  if (s->ssl_in_use) {
+    s->ssl_write_wants_read = 1;
+    return 0;
+  }
+
   loop_ssl_data->ssl_read_input_length = 0;
   loop_ssl_data->ssl_socket = s;
 
+  s->ssl_in_use = 1;
   int written = SSL_write(s_ssl(s), data, length);
+  s->ssl_in_use = 0;
+  if (s->ssl_pending_detach) {
+    /* Closed from inside the call: drop this write's records and close now. */
+    s->ssl_pending_detach = 0;
+    us_socket_close(s, s->ssl_pending_close_code, NULL);
+    return 0;
+  }
   if (written > 0) return written;
 
   int err = SSL_get_error(s_ssl(s), written);

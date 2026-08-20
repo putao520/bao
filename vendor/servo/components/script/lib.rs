@@ -33,6 +33,7 @@ mod devtools;
 #[macro_use]
 mod dom;
 pub(crate) use dom::canvas_context;
+mod drag;
 mod event_loop;
 pub(crate) mod fetch;
 pub(crate) mod indexeddb;
@@ -43,6 +44,7 @@ mod url;
 pub(crate) mod iframe_collection;
 pub(crate) mod image_animation;
 pub mod layout_dom;
+mod links;
 pub(crate) mod messaging;
 mod microtask;
 pub(crate) mod mime;
@@ -59,14 +61,10 @@ mod stylesheet_set;
 mod svg_font;
 pub mod test;
 mod timers;
+mod unminify;
 mod webdriver_handlers;
 mod window_named_properties;
 mod xpath;
-
-mod unminify;
-
-mod drag_data_store;
-mod links;
 
 pub use event_loop::script_thread::ScriptThread;
 pub use init::init;

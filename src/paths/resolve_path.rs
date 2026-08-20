@@ -1,4 +1,5 @@
 use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
 
 use crate::fs as Fs;
 use crate::{MAX_PATH_BYTES, PathBuffer, SEP, SEP_POSIX, SEP_WINDOWS};
@@ -1489,15 +1490,29 @@ pub fn join_string_buf_w_same<'a, P: PlatformT>(buf: &'a mut [u16], parts: &[&[u
 /// Same-width `joinStringBufT`: parts already match `T`, so no UTF-8→16 transcode.
 /// PORT NOTE: split out of `join_string_buf_t` because Rust can't monomorphize on
 /// `parts: anytype` element types like Zig — callers pick the overload.
+const JOIN_TEMP_LEN: usize = 4096;
+
+/// Uninitialized scratch for `join_string_buf_t*`'s unnormalized concatenation of `count` units.
+#[inline]
+fn join_temp_buf<'a, T>(
+    stack: &'a mut [MaybeUninit<T>; JOIN_TEMP_LEN],
+    heap: &'a mut Vec<T>,
+    count: usize,
+) -> &'a mut [MaybeUninit<T>] {
+    if count * 2 > JOIN_TEMP_LEN {
+        heap.reserve_exact(count * 2);
+        return heap.spare_capacity_mut();
+    }
+    stack
+}
+
 pub(crate) fn join_string_buf_t_same<'a, T: PathChar, P: PlatformT>(
     buf: &'a mut [T],
     parts: &[&[T]],
 ) -> &'a [T] {
     let mut written: usize = 0;
-    let mut temp_buf_: [T; 4096] = [T::from_u8(0); 4096];
-    let mut temp_buf: &mut [T] = &mut temp_buf_;
-    let mut heap_temp_buf: Vec<T>;
-    // PERF(port): was stack-fallback (manual free) — Vec drops on scope exit
+    let mut stack_temp_buf = [const { MaybeUninit::<T>::uninit() }; JOIN_TEMP_LEN];
+    let mut heap_temp_buf: Vec<T> = Vec::new();
 
     let mut count: usize = 0;
     for part in parts {
@@ -1507,12 +1522,7 @@ pub(crate) fn join_string_buf_t_same<'a, T: PathChar, P: PlatformT>(
         count += part.len() + 1;
     }
 
-    if count * 2 > temp_buf.len() {
-        heap_temp_buf = vec![T::from_u8(0); count * 2];
-        temp_buf = &mut heap_temp_buf;
-    }
-
-    temp_buf[0] = T::from_u8(0);
+    let temp_buf = join_temp_buf(&mut stack_temp_buf, &mut heap_temp_buf, count);
 
     for part in parts {
         if part.is_empty() {
@@ -1520,11 +1530,11 @@ pub(crate) fn join_string_buf_t_same<'a, T: PathChar, P: PlatformT>(
         }
 
         if written > 0 {
-            temp_buf[written] = T::from_u8(P::P.separator());
+            temp_buf[written].write(T::from_u8(P::P.separator()));
             written += 1;
         }
 
-        temp_buf[written..written + part.len()].copy_from_slice(part);
+        temp_buf[written..written + part.len()].write_copy_of_slice(part);
         written += part.len();
     }
 
@@ -1533,7 +1543,9 @@ pub(crate) fn join_string_buf_t_same<'a, T: PathChar, P: PlatformT>(
         return &buf[0..1];
     }
 
-    normalize_string_node_t::<T, P>(&temp_buf[0..written], buf)
+    // SAFETY: the loop above wrote every unit of `temp_buf[..written]`.
+    let joined = unsafe { temp_buf[..written].assume_init_ref() };
+    normalize_string_node_t::<T, P>(joined, buf)
 }
 
 pub fn join_string_buf_wz<'a, P: PlatformT>(buf: &'a mut [u16], parts: &[&[u8]]) -> &'a WStr {
@@ -1577,10 +1589,8 @@ pub(crate) fn join_string_buf_t<'a, T: PathChar, P: PlatformT>(
     // TODO(port): Zig used `parts: anytype` (tuple of slices, possibly mixed
     // element types). Rust takes `&[&[u8]]`; transcoding to u16 handled below.
     let mut written: usize = 0;
-    let mut temp_buf_: [T; 4096] = [T::from_u8(0); 4096];
-    let mut temp_buf: &mut [T] = &mut temp_buf_;
-    let mut heap_temp_buf: Vec<T>;
-    // PERF(port): was stack-fallback (manual free) — Vec drops on scope exit
+    let mut stack_temp_buf = [const { MaybeUninit::<T>::uninit() }; JOIN_TEMP_LEN];
+    let mut heap_temp_buf: Vec<T> = Vec::new();
 
     let mut count: usize = 0;
     for part in parts {
@@ -1590,12 +1600,7 @@ pub(crate) fn join_string_buf_t<'a, T: PathChar, P: PlatformT>(
         count += part.len() + 1;
     }
 
-    if count * 2 > temp_buf.len() {
-        heap_temp_buf = vec![T::from_u8(0); count * 2];
-        temp_buf = &mut heap_temp_buf;
-    }
-
-    temp_buf[0] = T::from_u8(0);
+    let temp_buf = join_temp_buf(&mut stack_temp_buf, &mut heap_temp_buf, count);
 
     for part in parts {
         if part.is_empty() {
@@ -1603,13 +1608,17 @@ pub(crate) fn join_string_buf_t<'a, T: PathChar, P: PlatformT>(
         }
 
         if written > 0 {
-            temp_buf[written] = T::from_u8(P::P.separator());
+            temp_buf[written].write(T::from_u8(P::P.separator()));
             written += 1;
         }
 
+        let spare = &mut temp_buf[written..];
+        // SAFETY: write-only view; `write_u8_part` only stores into it and returns the units written.
+        let dest: &mut [T] =
+            unsafe { core::slice::from_raw_parts_mut(spare.as_mut_ptr().cast::<T>(), spare.len()) };
         // TODO(port): Zig inspected std.meta.Elem(@TypeOf(part)); we always
         // receive u8 parts, so transcode iff T == u16.
-        written += T::write_u8_part(&mut temp_buf[written..], part);
+        written += T::write_u8_part(dest, part);
     }
 
     if written == 0 {
@@ -1617,7 +1626,9 @@ pub(crate) fn join_string_buf_t<'a, T: PathChar, P: PlatformT>(
         return &buf[0..1];
     }
 
-    normalize_string_node_t::<T, P>(&temp_buf[0..written], buf)
+    // SAFETY: the loop above wrote every unit of `temp_buf[..written]`.
+    let joined = unsafe { temp_buf[..written].assume_init_ref() };
+    normalize_string_node_t::<T, P>(joined, buf)
 }
 
 /// Scratch buffer for `_join_abs_string_buf`'s unnormalized concatenation.

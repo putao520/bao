@@ -974,9 +974,17 @@ impl<'a> LinkerContext<'a> {
                 css_reprs,
             };
 
-            // Tree shaking: Each entry point marks all files reachable from itself
+            // Tree shaking: Each entry point marks all files reachable from itself.
+            // `import()` targets are marked live from the live part that holds
+            // the `import()` instead (see `mark_part_live_for_tree_shaking`).
+            let root_dynamic_imports = !self.options.tree_shaking;
             for i in 0..entry_points_len {
                 let entry_point = entry_points[i];
+                if !root_dynamic_imports
+                    && entry_point_kinds[entry_point as usize] == EntryPoint::Kind::DynamicImport
+                {
+                    continue;
+                }
                 self.mark_file_live_for_tree_shaking(&mut ctx, entry_point);
             }
         }
@@ -2996,6 +3004,31 @@ impl<'a> LinkerContext<'a> {
                 dependency.part_index,
                 dependency.source_index.get(),
             );
+        }
+
+        // `scan_imports_and_exports` adds no wrapper dependency for external `import()`.
+        // PORT NOTE(upstream 4673c48bb): upstream's worklist shape pushes
+        // `TreeShakeWork::File(other)` here; this port tree-shakes by direct
+        // recursion, so mark the file live directly (same fixpoint either way).
+        if self.graph.code_splitting {
+            let record_indices_len = ctx.parts[source_index as usize].as_slice()
+                [part_index as usize]
+                .import_record_indices
+                .len();
+            for ri in 0..record_indices_len {
+                let import_index = ctx.parts[source_index as usize].as_slice()
+                    [part_index as usize]
+                    .import_record_indices[ri];
+                let record = &ctx.import_records[source_index as usize][import_index as usize];
+                if record.source_index.is_valid()
+                    && self.is_external_dynamic_import(record, source_index)
+                {
+                    let other = record.source_index.get();
+                    if !self.graph.files_live.is_set(other as usize) {
+                        self.mark_file_live_for_tree_shaking(ctx, other);
+                    }
+                }
+            }
         }
     }
 } // end tree-shaking impl

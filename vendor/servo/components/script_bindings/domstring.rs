@@ -115,8 +115,8 @@ impl Default for DOMStringType {
 
 impl DOMStringType {
     /// Warning:
-    /// This function does not checking and just returns the raw bytes of the string,
-    /// independently if they are  utf8 or latin1.
+    /// This function does not check and just returns the raw bytes of the string,
+    /// whether they are utf8 or latin1.
     /// The caller needs to take care that these make sense in context.
     fn as_raw_bytes(&self) -> &[u8] {
         match self {
@@ -549,6 +549,20 @@ impl DOMString {
         self.str().contains(needle)
     }
 
+    /// Returns whether this [`DOMString`] is an ASCII case-insensitive match for `other`,
+    /// without allocating and copying temporaries.
+    ///
+    /// <https://infra.spec.whatwg.org/#ascii-case-insensitive>
+    pub fn eq_ignore_ascii_case(&self, other: &str) -> bool {
+        if other.is_ascii() {
+            self.encoded_bytes()
+                .bytes()
+                .eq_ignore_ascii_case(other.as_bytes())
+        } else {
+            self.str().eq_ignore_ascii_case(other)
+        }
+    }
+
     pub fn to_ascii_lowercase(&self) -> String {
         let conversion = match self.encoded_bytes() {
             EncodedBytes::Latin1(bytes) => {
@@ -573,7 +587,7 @@ impl DOMString {
                 }
             },
             EncodedBytes::Utf8(bytes) => unsafe {
-                // Save because we know it was a utf8 string
+                // Safe because we know it was a utf8 string
                 Some(str::from_utf8_unchecked(&bytes).to_ascii_lowercase())
             },
         };

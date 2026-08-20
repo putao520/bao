@@ -228,13 +228,15 @@ impl<InputIterator: Iterator<Item = char>> Iterator for WhitespaceCollapse<Input
     }
 }
 
-pub(crate) struct TextTransformationIterator<'a>(
-    Box<dyn Iterator<Item = CharacterTransformIteration> + 'a>,
-);
+pub(crate) struct TextTransformationIterator<'a> {
+    case_map_iterator: Box<dyn Iterator<Item = CharacterTransformIteration> + 'a>,
+    full_width: bool,
+    full_size_kana: bool,
+}
 
 impl<'a> TextTransformationIterator<'a> {
     pub(crate) fn new(
-        text: &'a str,
+        mut text: &'a str,
         style: &ComputedValues,
         trim_leading_white_space: bool,
         on_word_boundary: bool,
@@ -243,20 +245,45 @@ impl<'a> TextTransformationIterator<'a> {
 
         // <https://drafts.csswg.org/css-text-4/#text-transform-property>
         let text_transform = style.clone_text_transform();
-        let full_size_kana = text_transform.intersects(TextTransform::FULL_SIZE_KANA);
-        // TODO: Implement `full-width` here
-        let _full_width = text_transform.intersects(TextTransform::FULL_WIDTH);
-        // TODO: Enable `math-auto` in Stylo and implement it here
 
-        let chars = text.chars().map(move |character| {
-            let character = map_character_for_webkit_text_security(text_security, character);
-            map_character_for_full_size_kana(full_size_kana, character)
-        });
+        if text_transform.intersects(TextTransform::MATH_AUTO) {
+            // `math-auto` only does anything “on text nodes containing a single character” per
+            // https://w3c.github.io/mathml-core/#math-auto-transform
+            //
+            // TODO: should this be single character after whitespace collapsing?
+            // TODO: does `::first-letter` mess with this check?
+            let mut char_iter = text.chars();
+            if let Some(first_char) = char_iter.next() &&
+                let None = char_iter.next() &&
+                let Some(&mapping) = super::mathml_italics::ITALICS_MAPPINGS.get(&first_char)
+            {
+                text = mapping
+            }
+        }
+
+        let chars = text
+            .chars()
+            .map(move |character| map_character_for_webkit_text_security(text_security, character));
         let white_space_collapse = style.clone_white_space_collapse();
         let iterator =
             WhitespaceCollapse::new(chars, white_space_collapse, trim_leading_white_space);
 
-        let iterator = match text_transform.case() {
+        // https://drafts.csswg.org/css-text-4/#text-transform-order
+        // > When multiple transformations need to be applied,
+        // > they are applied in the following order:
+        // >
+        // > * `word-space-transform`
+        // > * `capitalize`, `uppercase`, and `lowercase`
+        // > * `full-width`
+        // > * `full-size-kana`
+        // >
+        // > Word space transformation and text transformation happen after
+        // > § 4.3.1 Phase I: Collapsing and Transformation but before
+        // > § 4.3.2 Phase II: Trimming and Positioning. This means for instance that full-width
+        // > only transforms spaces (U+0020) to U+3000 IDEOGRAPHIC SPACE within
+        // > preserved white space.
+
+        let case_map_iterator = match text_transform.case() {
             TextTransformCase::None => {
                 Box::new(iterator) as Box<dyn Iterator<Item = CharacterTransformIteration>>
             },
@@ -277,14 +304,38 @@ impl<'a> TextTransformationIterator<'a> {
             )),
         };
 
-        Self(iterator)
+        Self {
+            case_map_iterator,
+            full_width: text_transform.intersects(TextTransform::FULL_WIDTH),
+            full_size_kana: text_transform.intersects(TextTransform::FULL_SIZE_KANA),
+        }
     }
 }
 
 impl Iterator for TextTransformationIterator<'_> {
     type Item = CharacterTransformIteration;
+
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
+        // https://drafts.csswg.org/css-text-4/#text-transform-order
+        // > When multiple transformations need to be applied,
+        // > they are applied in the following order:
+        // >
+        // > * `word-space-transform`
+        // > * `capitalize`, `uppercase`, and `lowercase`
+        // > * `full-width`
+        // > * `full-size-kana`
+        let mut iteration = self.case_map_iterator.next()?;
+        map_characters_with_phf(
+            self.full_width,
+            &mut iteration.characters,
+            &super::full_width::FULL_WIDTH_MAPPINGS,
+        );
+        map_characters_with_phf(
+            self.full_size_kana,
+            &mut iteration.characters,
+            &super::small_kana::SMALL_KANA_MAPPINGS,
+        );
+        Some(iteration)
     }
 }
 
@@ -383,15 +434,15 @@ fn map_character_for_webkit_text_security(mode: WebKitTextSecurity, character: c
     }
 }
 
-fn map_character_for_full_size_kana(full_size_kana_enabled: bool, character: char) -> char {
-    if !full_size_kana_enabled {
-        character
-    } else {
+fn map_characters_with_phf(enabled: bool, characters: &mut [char], map: &phf::Map<char, char>) {
+    if enabled {
         // TODO: When MSRV is 1.95+ use std::hint::cold_path().
-        super::small_kana::SMALL_KANA_MAPPINGS
-            .get(&character)
-            .copied()
-            .unwrap_or(character)
+
+        for character in characters {
+            if let Some(mapping) = map.get(character) {
+                *character = *mapping
+            }
+        }
     }
 }
 

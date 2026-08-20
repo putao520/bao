@@ -24,7 +24,7 @@ use bun_dns::{
 
 use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::jsval::{DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -52,6 +52,7 @@ enum DnsRRData {
     Mx(Vec<(u16, ::std::string::String)>), // (priority, exchange)
     Txt(Vec<::std::string::String>),       // array of text entries
     Ns(Vec<::std::string::String>),        // nameserver hostnames
+    Ptr(Vec<::std::string::String>),       // reverse-resolved hostnames
     Soa {
         nsname: ::std::string::String,
         hostmaster: ::std::string::String,
@@ -135,10 +136,40 @@ fn query_set_result(data: DnsRRData) {
     QUERY_DONE.with(|d| d.store(true, Ordering::SeqCst));
 }
 
-fn status_to_err(status: Option<cares::Error>) -> ::std::string::String {
-    status
-        .map(|e| e.label().to_string())
-        .unwrap_or_else(|| "UNKNOWN".to_string())
+/// Map a c-ares status to the Node.js `dns` error code string (the value of
+/// `err.code`, e.g. "ENOTFOUND") — the c-ares variant names are spelled
+/// exactly as the Node codes they map to. `None` means the query completed
+/// but the parse produced no records — Node reports that as ENODATA.
+fn status_to_code(status: Option<cares::Error>) -> &'static str {
+    match status {
+        None => "ENODATA",
+        Some(cares::Error::ENODATA) => "ENODATA",
+        Some(cares::Error::EFORMERR) => "EFORMERR",
+        Some(cares::Error::ESERVFAIL) => "ESERVFAIL",
+        Some(cares::Error::ENOTFOUND) => "ENOTFOUND",
+        Some(cares::Error::ENOTIMP) => "ENOTIMP",
+        Some(cares::Error::EREFUSED) => "EREFUSED",
+        Some(cares::Error::EBADQUERY) => "EBADQUERY",
+        Some(cares::Error::EBADNAME) => "EBADNAME",
+        Some(cares::Error::EBADFAMILY) => "EBADFAMILY",
+        Some(cares::Error::EBADRESP) => "EBADRESP",
+        Some(cares::Error::ECONNREFUSED) => "ECONNREFUSED",
+        Some(cares::Error::ETIMEOUT) => "ETIMEOUT",
+        Some(cares::Error::EOF) => "EOF",
+        Some(cares::Error::EFILE) => "EFILE",
+        Some(cares::Error::ENOMEM) => "ENOMEM",
+        Some(cares::Error::EDESTRUCTION) => "EDESTRUCTION",
+        Some(cares::Error::EBADSTR) => "EBADSTR",
+        Some(cares::Error::EBADFLAGS) => "EBADFLAGS",
+        Some(cares::Error::ENONAME) => "ENONAME",
+        Some(cares::Error::EBADHINTS) => "EBADHINTS",
+        Some(cares::Error::ENOTINITIALIZED) => "ENOTINITIALIZED",
+        Some(cares::Error::ELOADIPHLPAPI) => "ELOADIPHLPAPI",
+        Some(cares::Error::EADDRGETNETWORKPARAMS) => "EADDRGETNETWORKPARAMS",
+        Some(cares::Error::ECANCELLED) => "ECANCELLED",
+        Some(cares::Error::ESERVICE) => "ESERVICE",
+        Some(cares::Error::ENOSERVER) => "ENOSERVER",
+    }
 }
 
 /// Helper: read a NUL-terminated `*mut u8` from c-ares as a Rust String.
@@ -163,19 +194,24 @@ impl cares::HostentHandler for CnameHostentHandler {
         results: *mut cares::struct_hostent,
     ) {
         if status.is_some() || results.is_null() {
-            query_set_error(status_to_err(status));
+            query_set_error(status_to_code(status).to_string());
             return;
         }
         // SAFETY: results is non-null per check above.
         let h = unsafe { &*results };
         let cname = unsafe { c_ares_str_to_string(h.h_name.cast::<u8>()) };
-        // SAFETY: free the hostent.
-        unsafe { cares::ares_free_hostent(results) };
+        // Ownership: this handler is only registered via host_callback_wrapper
+        // on ares_gethostbyname, so the hostent is owned by c-ares itself —
+        // ares_gethostbyname(3): "the ares library will free it when the
+        // callback returns". Freeing here double-frees once end_hquery's
+        // teardown runs and was the mi_free invalid-pointer SIGSEGV on real
+        // CNAME/PTR answers. We copy h_name into an owned String above and
+        // must not touch `results` afterwards.
         query_set_result(DnsRRData::Cname(cname));
     }
 }
 
-// ── NS: hostent handler (stores h_name + h_aliases as Ns list) ───────
+// ── NS: hostent handler (collects nameserver hostnames) ──────────────
 
 struct NsHostentHandler;
 
@@ -187,13 +223,17 @@ impl cares::HostentHandler for NsHostentHandler {
         results: *mut cares::struct_hostent,
     ) {
         if status.is_some() || results.is_null() {
-            query_set_error(status_to_err(status));
+            query_set_error(status_to_code(status).to_string());
             return;
         }
         // SAFETY: results is non-null per check above.
         let h = unsafe { &*results };
-        let primary = unsafe { c_ares_str_to_string(h.h_name.cast::<u8>()) };
-        let mut names = vec![primary];
+        let mut names = Vec::new();
+        // ares_parse_ns_reply(3) fills h_name with the QUERIED DOMAIN and
+        // puts the NS server hostnames in h_aliases (probe-verified against
+        // system c-ares 1.27.0: query NS github.com → h_name="github.com",
+        // h_aliases=[dns2.p08.nsone.net, ns-1283.awsdns-32.org, ...]).
+        // Node's resolveNs returns the servers, so collect aliases only.
         if !h.h_aliases.is_null() {
             let mut alias_ptr = h.h_aliases;
             while !unsafe { *alias_ptr }.is_null() {
@@ -205,9 +245,60 @@ impl cares::HostentHandler for NsHostentHandler {
                 alias_ptr = unsafe { alias_ptr.add(1) };
             }
         }
-        // SAFETY: free the hostent.
+        // Ownership: this handler is registered ONLY via callback_wrapper_ns,
+        // whose hostent comes from ares_parse_ns_reply — allocated FOR THE
+        // CALLER and freed with ares_free_hostent (unlike the
+        // ares_gethostbyname callback hostent that c-ares itself owns; see
+        // CnameHostentHandler). All names are copied into owned Strings
+        // above, so freeing here is the correct end of the lease.
         unsafe { cares::ares_free_hostent(results) };
         query_set_result(DnsRRData::Ns(names));
+    }
+}
+
+// ── PTR: hostent handler (reverse-resolved hostnames) ────────────────
+
+struct PtrHostentHandler;
+
+impl cares::HostentHandler for PtrHostentHandler {
+    fn on_hostent(
+        &mut self,
+        status: Option<cares::Error>,
+        _timeouts: i32,
+        results: *mut cares::struct_hostent,
+    ) {
+        if status.is_some() || results.is_null() {
+            query_set_error(status_to_code(status).to_string());
+            return;
+        }
+        // SAFETY: results is non-null per check above.
+        let h = unsafe { &*results };
+        let mut names = Vec::new();
+        // Channel::get_host_by_addr → ares_gethostbyaddr: h_name is the
+        // primary reverse hostname and h_aliases carries the PTR targets —
+        // c-ares echoes the primary as aliases[0] (probe-verified:
+        // 8.8.8.8 → h_name=h_aliases[0]="dns.google"). Collecting aliases
+        // only therefore matches Node's resolvePtr without duplicating
+        // h_name; fall back to h_name when the alias list is empty.
+        if !h.h_aliases.is_null() {
+            let mut alias_ptr = h.h_aliases;
+            while !unsafe { *alias_ptr }.is_null() {
+                names.push(
+                    unsafe { ::std::ffi::CStr::from_ptr(*alias_ptr) }
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+                alias_ptr = unsafe { alias_ptr.add(1) };
+            }
+        }
+        if names.is_empty() && !h.h_name.is_null() {
+            names.push(unsafe { c_ares_str_to_string(h.h_name.cast::<u8>()) });
+        }
+        // Ownership: registered via host_callback_wrapper on
+        // ares_gethostbyaddr — the hostent is owned by c-ares and freed
+        // after the callback returns (same contract as CnameHostentHandler);
+        // do not free here.
+        query_set_result(DnsRRData::Ptr(names));
     }
 }
 
@@ -223,7 +314,7 @@ impl cares::ReplyHandler<cares::struct_ares_mx_reply> for MxHandler {
         results: *mut cares::struct_ares_mx_reply,
     ) {
         if status.is_some() || results.is_null() {
-            query_set_error(status_to_err(status));
+            query_set_error(status_to_code(status).to_string());
             return;
         }
         let mut mx_list = Vec::new();
@@ -253,7 +344,7 @@ impl cares::ReplyHandler<cares::struct_ares_txt_reply> for TxtHandler {
         results: *mut cares::struct_ares_txt_reply,
     ) {
         if status.is_some() || results.is_null() {
-            query_set_error(status_to_err(status));
+            query_set_error(status_to_code(status).to_string());
             return;
         }
         let mut txt_list = Vec::new();
@@ -282,23 +373,35 @@ impl cares::ReplyHandler<cares::struct_ares_soa_reply> for SoaHandler {
         results: *mut cares::struct_ares_soa_reply,
     ) {
         if status.is_some() || results.is_null() {
-            query_set_error(status_to_err(status));
+            query_set_error(status_to_code(status).to_string());
             return;
         }
         // SAFETY: results is non-null SOA reply.
         let soa = unsafe { &*results };
+        // Copy EVERY field out before ares_free_data — the old code read the
+        // five numeric fields from `soa` after freeing the reply (the two
+        // strings happened to be copied pre-free, which is why nsname /
+        // hostmaster came back right while serial/refresh/retry/expire/
+        // minttl read the allocator's post-free fill pattern — the
+        // -538976289 / 0xDFDFDFDF garbage). Reading freed memory is UB;
+        // snapshot all fields first, then end the lease.
         let nsname = unsafe { c_ares_str_to_string(soa.nsname) };
         let hostmaster = unsafe { c_ares_str_to_string(soa.hostmaster) };
+        let serial = soa.serial;
+        let refresh = soa.refresh;
+        let retry = soa.retry;
+        let expire = soa.expire;
+        let minttl = soa.minttl;
         // SAFETY: free the SOA reply.
         unsafe { cares::ares_free_data(results.cast::<::std::ffi::c_void>()) };
         query_set_result(DnsRRData::Soa {
             nsname,
             hostmaster,
-            serial: soa.serial,
-            refresh: soa.refresh,
-            retry: soa.retry,
-            expire: soa.expire,
-            minttl: soa.minttl,
+            serial,
+            refresh,
+            retry,
+            expire,
+            minttl,
         });
     }
 }
@@ -315,7 +418,7 @@ impl cares::ReplyHandler<cares::struct_ares_srv_reply> for SrvHandler {
         results: *mut cares::struct_ares_srv_reply,
     ) {
         if status.is_some() || results.is_null() {
-            query_set_error(status_to_err(status));
+            query_set_error(status_to_code(status).to_string());
             return;
         }
         let mut srv_list = Vec::new();
@@ -345,7 +448,7 @@ impl cares::ReplyHandler<cares::struct_ares_naptr_reply> for NaptrHandler {
         results: *mut cares::struct_ares_naptr_reply,
     ) {
         if status.is_some() || results.is_null() {
-            query_set_error(status_to_err(status));
+            query_set_error(status_to_code(status).to_string());
             return;
         }
         let mut naptr_list = Vec::new();
@@ -391,7 +494,7 @@ fn resolve_rr_cares(
             tries: Some(2),
         },
     ) {
-        return Err(err.label().to_string());
+        return Err(status_to_code(Some(err)).to_string());
     }
 
     let channel_ptr = *container.channel.borrow();
@@ -399,9 +502,12 @@ fn resolve_rr_cares(
     // a ZST (!Freeze) so &mut from raw is sound (no data to conflict).
     let channel_ref = unsafe { &mut *channel_ptr };
 
-    // Submit the query based on RR type. CNAME and NS use ares_gethostbyname
-    // (which returns struct_hostent); MX/TXT/SOA/SRV/NAPTR use ares_query
-    // with the generic ares_reply_callback<R, Handler> thunk.
+    // Submit the query based on RR type. CNAME uses ares_gethostbyname (which
+    // returns a c-ares-owned struct_hostent); MX/TXT/SOA/SRV/NAPTR use
+    // ares_query with the generic ares_reply_callback<R, Handler> thunk; NS
+    // uses ares_query + callback_wrapper_ns (ares_parse_ns_reply hostent,
+    // caller-owned); PTR uses Channel::get_host_by_addr
+    // (ares_gethostbyaddr, c-ares-owned hostent).
     match ns_type {
         cares::NSType::ns_t_cname => {
             let mut handler = CnameHostentHandler;
@@ -423,17 +529,32 @@ fn resolve_rr_cares(
             let mut handler = NsHostentHandler;
             let mut name_buf = [0u8; 1024];
             let name_ptr = nul_terminate(&mut name_buf, hostname.as_bytes());
-            // SAFETY: FFI call; name_ptr NUL-terminated; handler outlives query.
+            // A real NS query — ares_gethostbyname here issued an A query and
+            // handed back the host's own name/aliases (resolveNs("x.com")
+            // returned ["x.com"]). callback_wrapper_ns parses the NS answer
+            // with ares_parse_ns_reply, whose hostent carries the nameserver
+            // hostnames in h_aliases (and is caller-owned; see the handler).
+            // SAFETY: ares_query FFI; name_ptr NUL-terminated; handler outlives query.
             unsafe {
-                cares::ares_gethostbyname(
+                cares::ares_query(
                     channel_ptr,
                     name_ptr,
-                    cares::AF::INET,
-                    Some(cares::struct_hostent::host_callback_wrapper::<NsHostentHandler>),
+                    cares::NSClass::ns_c_in,
+                    cares::NSType::ns_t_ns,
+                    Some(cares::struct_hostent::callback_wrapper_ns::<NsHostentHandler>),
                     ::std::ptr::from_mut::<NsHostentHandler>(&mut handler)
                         .cast::<::std::ffi::c_void>(),
                 );
             }
+        }
+        cares::NSType::ns_t_ptr => {
+            let mut handler = PtrHostentHandler;
+            // Real reverse resolution via ares_gethostbyaddr — the old path
+            // re-queried the input STRING as CNAME, so resolvePtr echoed the
+            // IP back. get_host_by_addr parses the address (v4 or v6) and
+            // submits the in-addr.arpa/ip6.arpa PTR query; the hostent
+            // contract is c-ares-owned (see PtrHostentHandler).
+            channel_ref.get_host_by_addr(hostname.as_bytes(), &mut handler);
         }
         cares::NSType::ns_t_mx => {
             let mut handler = MxHandler;
@@ -823,181 +944,185 @@ const DNS_JS: &str = r#"
   // Default result order
   var _defaultResultOrder = "verbatim";
 
+  // Node ERR_INVALID_ARG_TYPE (TypeError) helper — mirrors Node's
+  // determineSpecificType (lib/internal/validators.js) for every shape the
+  // resolve*/reverse callback checks can reject.
+  function _invalidArgType(name, expected, value) {
+    var received;
+    if (value === null) {
+      received = "null";
+    } else if (Array.isArray(value)) {
+      received = "an instance of Array";
+    } else {
+      switch (typeof value) {
+        case "function":
+          received = "function " + (value.name || "");
+          break;
+        case "string":
+          // Node inspect truncates >27 chars: first 24 + "..."
+          var shown = value.length > 27 ? value.slice(0, 24) + "..." : value;
+          received = "type string ('" + shown + "')";
+          break;
+        case "number":
+          received = "type number (" + String(value) + ")";
+          break;
+        case "boolean":
+          received = "type boolean (" + String(value) + ")";
+          break;
+        case "undefined":
+          received = "type undefined";
+          break;
+        default:
+          received = "an instance of " +
+            ((value && value.constructor && value.constructor.name) || "Object");
+      }
+    }
+    var err = new TypeError('The "' + name + '" argument must be of type ' +
+      expected + '. Received ' + received);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+
+  // Callback-slot validation: a present-but-non-function callback throws
+  // ERR_INVALID_ARG_TYPE exactly like Node's validateFunction.
+  function _validateCallback(callback) {
+    if (callback !== undefined && typeof callback !== "function") {
+      _invalidArgType("callback", "function", callback);
+    }
+  }
+
+  // Shared __dns_resolve_rr driver. On resolution failure the native side
+  // throws an Error already carrying Node's `code` (e.g. ENOTFOUND) and
+  // Node's "<syscall> <CODE> <hostname>" message. Node's resolve* never
+  // throws synchronously on resolution failure — the error goes to the
+  // callback (the promise API rejects through that same callback) — so we
+  // route it there and return the per-type empty fallback.
+  function _resolveRR(hostname, rrtype, fallback, callback) {
+    var result;
+    try {
+      result = __dns_resolve_rr(hostname, rrtype);
+    } catch (e) {
+      if (callback) callback(e);
+      return fallback;
+    }
+    if (callback) callback(null, result);
+    return result;
+  }
+
   function Resolver() {
     this._servers = [];
   }
   Resolver.prototype.resolve = function(hostname, rrtype, callback) {
     if (typeof rrtype === "function") { callback = rrtype; rrtype = "A"; }
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, rrtype || "A");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, rrtype || "A", [], callback);
     }
     if (callback) callback(new Error("dns.resolve not available"));
     return [];
   };
   Resolver.prototype.resolve4 = function(hostname, options, callback) {
-    if (typeof options === "function") { callback = options; options = null; }
+    if (arguments.length <= 2) { callback = options; options = null; }
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "A");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "A", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   };
   Resolver.prototype.resolve6 = function(hostname, options, callback) {
-    if (typeof options === "function") { callback = options; options = null; }
+    if (arguments.length <= 2) { callback = options; options = null; }
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "AAAA");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "AAAA", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   };
   Resolver.prototype.resolveCname = function(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "CNAME");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "CNAME", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   };
   Resolver.prototype.resolveMx = function(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "MX");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "MX", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   };
   Resolver.prototype.resolveNaptr = function(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "NAPTR");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "NAPTR", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   };
   Resolver.prototype.resolveNs = function(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "NS");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "NS", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   };
   Resolver.prototype.resolvePtr = function(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "PTR");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "PTR", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   };
   Resolver.prototype.resolveSoa = function(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "SOA");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "SOA", {}, callback);
     }
     if (callback) callback(null, {});
     return {};
   };
   Resolver.prototype.resolveSrv = function(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "SRV");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "SRV", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   };
   Resolver.prototype.resolveTxt = function(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "TXT");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "TXT", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   };
   Resolver.prototype.resolveAny = function(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "A");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "A", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   };
   Resolver.prototype.reverse = function(ip, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_reverse === "function") {
       try {
         var result = __dns_reverse(ip);
@@ -1051,161 +1176,127 @@ const DNS_JS: &str = r#"
 
   function resolve(hostname, rrtype, callback) {
     if (typeof rrtype === "function") { callback = rrtype; rrtype = "A"; }
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, rrtype || "A");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, rrtype || "A", [], callback);
     }
     if (callback) callback(new Error("dns.resolve not available"));
     return [];
   }
 
   function resolve4(hostname, options, callback) {
-    if (typeof options === "function") { callback = options; options = null; }
+    if (arguments.length <= 2) { callback = options; options = null; }
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "A");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "A", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   }
 
   function resolve6(hostname, options, callback) {
-    if (typeof options === "function") { callback = options; options = null; }
+    if (arguments.length <= 2) { callback = options; options = null; }
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "AAAA");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) {
-        if (callback) callback(e);
-        throw e;
-      }
+      return _resolveRR(hostname, "AAAA", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   }
 
   function resolveCname(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "CNAME");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) { if (callback) callback(e); throw e; }
+      return _resolveRR(hostname, "CNAME", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   }
 
   function resolveMx(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "MX");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) { if (callback) callback(e); throw e; }
+      return _resolveRR(hostname, "MX", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   }
 
   function resolveNaptr(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "NAPTR");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) { if (callback) callback(e); throw e; }
+      return _resolveRR(hostname, "NAPTR", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   }
 
   function resolveNs(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "NS");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) { if (callback) callback(e); throw e; }
+      return _resolveRR(hostname, "NS", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   }
 
   function resolvePtr(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "PTR");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) { if (callback) callback(e); throw e; }
+      return _resolveRR(hostname, "PTR", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   }
 
   function resolveSoa(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "SOA");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) { if (callback) callback(e); throw e; }
+      return _resolveRR(hostname, "SOA", {}, callback);
     }
     if (callback) callback(null, {});
     return {};
   }
 
   function resolveSrv(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "SRV");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) { if (callback) callback(e); throw e; }
+      return _resolveRR(hostname, "SRV", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   }
 
   function resolveTxt(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "TXT");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) { if (callback) callback(e); throw e; }
+      return _resolveRR(hostname, "TXT", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   }
 
   function resolveAny(hostname, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      try {
-        var result = __dns_resolve_rr(hostname, "A");
-        if (callback) callback(null, result);
-        return result;
-      } catch(e) { if (callback) callback(e); throw e; }
+      return _resolveRR(hostname, "A", [], callback);
     }
     if (callback) callback(null, []);
     return [];
   }
 
   function reverse(ip, callback) {
+    if (arguments.length > 2) callback = arguments[2];
+    _validateCallback(callback);
     if (typeof __dns_reverse === "function") {
       try {
         var result = __dns_reverse(ip);
@@ -2046,6 +2137,52 @@ unsafe extern "C" fn dns_set_servers(cx: *mut JSContext, argc: u32, vp: *mut JSV
     true
 }
 
+/// Report a Node-style resolver failure — message `"<syscall> <CODE> <hostname>"`
+/// (e.g. `queryNs ENOTFOUND this-domain….invalid`, Node's exact format) with
+/// the machine-readable `code` property attached to the pending Error object —
+/// and return `false` so the JS caller observes a thrown exception whose
+/// `err.code` the DNS_JS catch sites route to the callback / promise rejection.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn throw_resolve_error(
+    cx: *mut JSContext,
+    syscall: &str,
+    code: &str,
+    hostname: &str,
+) -> bool {
+    let msg = format!("{} {} {}", syscall, code, hostname);
+    let c_msg = ZBox::from_bytes(msg.as_bytes());
+    // "%s" format with one NUL-terminated argument — hostname bytes (which
+    // may contain '%') are never interpreted as format specifiers.
+    JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+    // Attach `code` to the pending Error so the JS catch site reads err.code
+    // without parsing the message.
+    let mut pending = UndefinedValue();
+    JS_GetPendingException(
+        cx,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut pending,
+        },
+    );
+    if pending.is_object() {
+        let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let err_obj = pending.to_object());
+        let c_code = ZBox::from_bytes(code.as_bytes());
+        let js_code = JS_NewStringCopyZ(cx, c_code.as_ptr());
+        if !js_code.is_null() {
+            rooted!(&in(cx_ref) let code_val = StringValue(&*js_code));
+            JS_DefineProperty(
+                cx,
+                err_obj.handle().into(),
+                c"code".as_ptr(),
+                code_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+    false
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     // Generic per-RR-type resolve. A/AAAA use libc::getaddrinfo via
@@ -2145,21 +2282,25 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            if let Ok(DnsRRData::Cname(cname)) =
-                resolve_rr_cares(&hostname, cares::NSType::ns_t_cname)
-            {
-                let c_cname = ZBox::from_bytes(cname.as_bytes());
-                let js_str = JS_NewStringCopyZ(cx, c_cname.as_ptr());
-                if !js_str.is_null() {
-                    rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
-                    JS_DefineElement(
-                        cx,
-                        arr_root.handle().into(),
-                        0,
-                        val.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_cname) {
+                Ok(DnsRRData::Cname(cname)) => {
+                    let c_cname = ZBox::from_bytes(cname.as_bytes());
+                    let js_str = JS_NewStringCopyZ(cx, c_cname.as_ptr());
+                    if !js_str.is_null() {
+                        rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+                        JS_DefineElement(
+                            cx,
+                            arr_root.handle().into(),
+                            0,
+                            val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
                 }
+                // Node: resolveCname on a missing domain errors —
+                // "queryCname ENOTFOUND <host>" with err.code (not []).
+                Err(code) => return throw_resolve_error(cx, "queryCname", &code, &hostname),
+                Ok(_) => {}
             }
             args.rval().set(ObjectValue(arr_root.get()));
         }
@@ -2170,45 +2311,48 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            if let Ok(DnsRRData::Mx(mx_list)) = resolve_rr_cares(&hostname, cares::NSType::ns_t_mx)
-            {
-                let mut idx = 0u32;
-                for (priority, exchange) in mx_list {
-                    let entry_obj = JS_NewPlainObject(cx);
-                    if entry_obj.is_null() {
-                        continue;
-                    }
-                    rooted!(&in(cx_wrap) let entry_root = entry_obj);
-                    rooted!(&in(cx_wrap) let prio_val = Int32Value(priority as i32));
-                    JS_DefineProperty(
-                        cx,
-                        entry_root.handle().into(),
-                        c"priority".as_ptr(),
-                        prio_val.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                    let c_exchange = ZBox::from_bytes(exchange.as_bytes());
-                    let js_exchange = JS_NewStringCopyZ(cx, c_exchange.as_ptr());
-                    if !js_exchange.is_null() {
-                        rooted!(&in(cx_wrap) let ex_val = StringValue(&*js_exchange));
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_mx) {
+                Ok(DnsRRData::Mx(mx_list)) => {
+                    let mut idx = 0u32;
+                    for (priority, exchange) in mx_list {
+                        let entry_obj = JS_NewPlainObject(cx);
+                        if entry_obj.is_null() {
+                            continue;
+                        }
+                        rooted!(&in(cx_wrap) let entry_root = entry_obj);
+                        rooted!(&in(cx_wrap) let prio_val = Int32Value(priority as i32));
                         JS_DefineProperty(
                             cx,
                             entry_root.handle().into(),
-                            c"exchange".as_ptr(),
-                            ex_val.handle().into(),
+                            c"priority".as_ptr(),
+                            prio_val.handle().into(),
                             JSPROP_ENUMERATE as u32,
                         );
+                        let c_exchange = ZBox::from_bytes(exchange.as_bytes());
+                        let js_exchange = JS_NewStringCopyZ(cx, c_exchange.as_ptr());
+                        if !js_exchange.is_null() {
+                            rooted!(&in(cx_wrap) let ex_val = StringValue(&*js_exchange));
+                            JS_DefineProperty(
+                                cx,
+                                entry_root.handle().into(),
+                                c"exchange".as_ptr(),
+                                ex_val.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                        }
+                        rooted!(&in(cx_wrap) let entry_jsval = ObjectValue(entry_root.get()));
+                        JS_DefineElement(
+                            cx,
+                            arr_root.handle().into(),
+                            idx,
+                            entry_jsval.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                        idx += 1;
                     }
-                    rooted!(&in(cx_wrap) let entry_jsval = ObjectValue(entry_root.get()));
-                    JS_DefineElement(
-                        cx,
-                        arr_root.handle().into(),
-                        idx,
-                        entry_jsval.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                    idx += 1;
                 }
+                Err(code) => return throw_resolve_error(cx, "queryMx", &code, &hostname),
+                Ok(_) => {}
             }
             args.rval().set(ObjectValue(arr_root.get()));
         }
@@ -2219,29 +2363,31 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            if let Ok(DnsRRData::Txt(txt_list)) =
-                resolve_rr_cares(&hostname, cares::NSType::ns_t_txt)
-            {
-                let mut idx = 0u32;
-                // Node.js dns.resolveTxt returns array of arrays of strings
-                // (each outer element = one TXT record, each inner = chunk).
-                // c-ares gives us individual txt entries; we return flat
-                // array of strings (matching common Bun behavior).
-                for txt in txt_list {
-                    let c_txt = ZBox::from_bytes(txt.as_bytes());
-                    let js_str = JS_NewStringCopyZ(cx, c_txt.as_ptr());
-                    if !js_str.is_null() {
-                        rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
-                        JS_DefineElement(
-                            cx,
-                            arr_root.handle().into(),
-                            idx,
-                            val.handle().into(),
-                            JSPROP_ENUMERATE as u32,
-                        );
-                        idx += 1;
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_txt) {
+                Ok(DnsRRData::Txt(txt_list)) => {
+                    let mut idx = 0u32;
+                    // Node.js dns.resolveTxt returns array of arrays of strings
+                    // (each outer element = one TXT record, each inner = chunk).
+                    // c-ares gives us individual txt entries; we return flat
+                    // array of strings (matching common Bun behavior).
+                    for txt in txt_list {
+                        let c_txt = ZBox::from_bytes(txt.as_bytes());
+                        let js_str = JS_NewStringCopyZ(cx, c_txt.as_ptr());
+                        if !js_str.is_null() {
+                            rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+                            JS_DefineElement(
+                                cx,
+                                arr_root.handle().into(),
+                                idx,
+                                val.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                            idx += 1;
+                        }
                     }
                 }
+                Err(code) => return throw_resolve_error(cx, "queryTxt", &code, &hostname),
+                Ok(_) => {}
             }
             args.rval().set(ObjectValue(arr_root.get()));
         }
@@ -2252,24 +2398,27 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            if let Ok(DnsRRData::Ns(ns_list)) = resolve_rr_cares(&hostname, cares::NSType::ns_t_ns)
-            {
-                let mut idx = 0u32;
-                for ns in ns_list {
-                    let c_ns = ZBox::from_bytes(ns.as_bytes());
-                    let js_str = JS_NewStringCopyZ(cx, c_ns.as_ptr());
-                    if !js_str.is_null() {
-                        rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
-                        JS_DefineElement(
-                            cx,
-                            arr_root.handle().into(),
-                            idx,
-                            val.handle().into(),
-                            JSPROP_ENUMERATE as u32,
-                        );
-                        idx += 1;
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_ns) {
+                Ok(DnsRRData::Ns(ns_list)) => {
+                    let mut idx = 0u32;
+                    for ns in ns_list {
+                        let c_ns = ZBox::from_bytes(ns.as_bytes());
+                        let js_str = JS_NewStringCopyZ(cx, c_ns.as_ptr());
+                        if !js_str.is_null() {
+                            rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+                            JS_DefineElement(
+                                cx,
+                                arr_root.handle().into(),
+                                idx,
+                                val.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                            idx += 1;
+                        }
                     }
                 }
+                Err(code) => return throw_resolve_error(cx, "queryNs", &code, &hostname),
+                Ok(_) => {}
             }
             args.rval().set(ObjectValue(arr_root.get()));
         }
@@ -2280,80 +2429,86 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 return true;
             }
             rooted!(&in(cx_wrap) let result_root = result_obj);
-            if let Ok(DnsRRData::Soa {
-                nsname,
-                hostmaster,
-                serial,
-                refresh,
-                retry,
-                expire,
-                minttl,
-            }) = resolve_rr_cares(&hostname, cares::NSType::ns_t_soa)
-            {
-                let c_nsname = ZBox::from_bytes(nsname.as_bytes());
-                let js_nsname = JS_NewStringCopyZ(cx, c_nsname.as_ptr());
-                if !js_nsname.is_null() {
-                    rooted!(&in(cx_wrap) let v = StringValue(&*js_nsname));
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_soa) {
+                Ok(DnsRRData::Soa {
+                    nsname,
+                    hostmaster,
+                    serial,
+                    refresh,
+                    retry,
+                    expire,
+                    minttl,
+                }) => {
+                    let c_nsname = ZBox::from_bytes(nsname.as_bytes());
+                    let js_nsname = JS_NewStringCopyZ(cx, c_nsname.as_ptr());
+                    if !js_nsname.is_null() {
+                        rooted!(&in(cx_wrap) let v = StringValue(&*js_nsname));
+                        JS_DefineProperty(
+                            cx,
+                            result_root.handle().into(),
+                            c"nsname".as_ptr(),
+                            v.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
+                    let c_hm = ZBox::from_bytes(hostmaster.as_bytes());
+                    let js_hm = JS_NewStringCopyZ(cx, c_hm.as_ptr());
+                    if !js_hm.is_null() {
+                        rooted!(&in(cx_wrap) let v = StringValue(&*js_hm));
+                        JS_DefineProperty(
+                            cx,
+                            result_root.handle().into(),
+                            c"hostmaster".as_ptr(),
+                            v.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
+                    // SOA numerics are u32 (RFC 1035 serial can exceed
+                    // i32::MAX); DoubleValue carries the full range exactly
+                    // as JS numbers — Node prints them unsigned.
+                    rooted!(&in(cx_wrap) let v = DoubleValue(serial as f64));
                     JS_DefineProperty(
                         cx,
                         result_root.handle().into(),
-                        c"nsname".as_ptr(),
+                        c"serial".as_ptr(),
+                        v.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                    rooted!(&in(cx_wrap) let v = DoubleValue(refresh as f64));
+                    JS_DefineProperty(
+                        cx,
+                        result_root.handle().into(),
+                        c"refresh".as_ptr(),
+                        v.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                    rooted!(&in(cx_wrap) let v = DoubleValue(retry as f64));
+                    JS_DefineProperty(
+                        cx,
+                        result_root.handle().into(),
+                        c"retry".as_ptr(),
+                        v.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                    rooted!(&in(cx_wrap) let v = DoubleValue(expire as f64));
+                    JS_DefineProperty(
+                        cx,
+                        result_root.handle().into(),
+                        c"expire".as_ptr(),
+                        v.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                    rooted!(&in(cx_wrap) let v = DoubleValue(minttl as f64));
+                    JS_DefineProperty(
+                        cx,
+                        result_root.handle().into(),
+                        c"minttl".as_ptr(),
                         v.handle().into(),
                         JSPROP_ENUMERATE as u32,
                     );
                 }
-                let c_hm = ZBox::from_bytes(hostmaster.as_bytes());
-                let js_hm = JS_NewStringCopyZ(cx, c_hm.as_ptr());
-                if !js_hm.is_null() {
-                    rooted!(&in(cx_wrap) let v = StringValue(&*js_hm));
-                    JS_DefineProperty(
-                        cx,
-                        result_root.handle().into(),
-                        c"hostmaster".as_ptr(),
-                        v.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-                rooted!(&in(cx_wrap) let v = Int32Value(serial as i32));
-                JS_DefineProperty(
-                    cx,
-                    result_root.handle().into(),
-                    c"serial".as_ptr(),
-                    v.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-                rooted!(&in(cx_wrap) let v = Int32Value(refresh as i32));
-                JS_DefineProperty(
-                    cx,
-                    result_root.handle().into(),
-                    c"refresh".as_ptr(),
-                    v.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-                rooted!(&in(cx_wrap) let v = Int32Value(retry as i32));
-                JS_DefineProperty(
-                    cx,
-                    result_root.handle().into(),
-                    c"retry".as_ptr(),
-                    v.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-                rooted!(&in(cx_wrap) let v = Int32Value(expire as i32));
-                JS_DefineProperty(
-                    cx,
-                    result_root.handle().into(),
-                    c"expire".as_ptr(),
-                    v.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-                rooted!(&in(cx_wrap) let v = Int32Value(minttl as i32));
-                JS_DefineProperty(
-                    cx,
-                    result_root.handle().into(),
-                    c"minttl".as_ptr(),
-                    v.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
+                Err(code) => return throw_resolve_error(cx, "querySoa", &code, &hostname),
+                Ok(_) => {}
             }
             args.rval().set(ObjectValue(result_root.get()));
         }
@@ -2364,62 +2519,64 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            if let Ok(DnsRRData::Srv(srv_list)) =
-                resolve_rr_cares(&hostname, cares::NSType::ns_t_srv)
-            {
-                let mut idx = 0u32;
-                for (priority, weight, port, name) in srv_list {
-                    let entry_obj = JS_NewPlainObject(cx);
-                    if entry_obj.is_null() {
-                        continue;
-                    }
-                    rooted!(&in(cx_wrap) let entry_root = entry_obj);
-                    rooted!(&in(cx_wrap) let prio_val = Int32Value(priority as i32));
-                    JS_DefineProperty(
-                        cx,
-                        entry_root.handle().into(),
-                        c"priority".as_ptr(),
-                        prio_val.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                    rooted!(&in(cx_wrap) let wt_val = Int32Value(weight as i32));
-                    JS_DefineProperty(
-                        cx,
-                        entry_root.handle().into(),
-                        c"weight".as_ptr(),
-                        wt_val.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                    rooted!(&in(cx_wrap) let port_val = Int32Value(port as i32));
-                    JS_DefineProperty(
-                        cx,
-                        entry_root.handle().into(),
-                        c"port".as_ptr(),
-                        port_val.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                    let c_name = ZBox::from_bytes(name.as_bytes());
-                    let js_name = JS_NewStringCopyZ(cx, c_name.as_ptr());
-                    if !js_name.is_null() {
-                        rooted!(&in(cx_wrap) let nm_val = StringValue(&*js_name));
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_srv) {
+                Ok(DnsRRData::Srv(srv_list)) => {
+                    let mut idx = 0u32;
+                    for (priority, weight, port, name) in srv_list {
+                        let entry_obj = JS_NewPlainObject(cx);
+                        if entry_obj.is_null() {
+                            continue;
+                        }
+                        rooted!(&in(cx_wrap) let entry_root = entry_obj);
+                        rooted!(&in(cx_wrap) let prio_val = Int32Value(priority as i32));
                         JS_DefineProperty(
                             cx,
                             entry_root.handle().into(),
-                            c"name".as_ptr(),
-                            nm_val.handle().into(),
+                            c"priority".as_ptr(),
+                            prio_val.handle().into(),
                             JSPROP_ENUMERATE as u32,
                         );
+                        rooted!(&in(cx_wrap) let wt_val = Int32Value(weight as i32));
+                        JS_DefineProperty(
+                            cx,
+                            entry_root.handle().into(),
+                            c"weight".as_ptr(),
+                            wt_val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                        rooted!(&in(cx_wrap) let port_val = Int32Value(port as i32));
+                        JS_DefineProperty(
+                            cx,
+                            entry_root.handle().into(),
+                            c"port".as_ptr(),
+                            port_val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                        let c_name = ZBox::from_bytes(name.as_bytes());
+                        let js_name = JS_NewStringCopyZ(cx, c_name.as_ptr());
+                        if !js_name.is_null() {
+                            rooted!(&in(cx_wrap) let nm_val = StringValue(&*js_name));
+                            JS_DefineProperty(
+                                cx,
+                                entry_root.handle().into(),
+                                c"name".as_ptr(),
+                                nm_val.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                        }
+                        rooted!(&in(cx_wrap) let entry_jsval = ObjectValue(entry_root.get()));
+                        JS_DefineElement(
+                            cx,
+                            arr_root.handle().into(),
+                            idx,
+                            entry_jsval.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                        idx += 1;
                     }
-                    rooted!(&in(cx_wrap) let entry_jsval = ObjectValue(entry_root.get()));
-                    JS_DefineElement(
-                        cx,
-                        arr_root.handle().into(),
-                        idx,
-                        entry_jsval.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                    idx += 1;
                 }
+                Err(code) => return throw_resolve_error(cx, "querySrv", &code, &hostname),
+                Ok(_) => {}
             }
             args.rval().set(ObjectValue(arr_root.get()));
         }
@@ -2430,118 +2587,128 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            if let Ok(DnsRRData::Naptr(naptr_list)) =
-                resolve_rr_cares(&hostname, cares::NSType::ns_t_naptr)
-            {
-                let mut idx = 0u32;
-                for naptr in naptr_list {
-                    let entry_obj = JS_NewPlainObject(cx);
-                    if entry_obj.is_null() {
-                        continue;
-                    }
-                    rooted!(&in(cx_wrap) let entry_root = entry_obj);
-                    let c_flags = ZBox::from_bytes(naptr.flags.as_bytes());
-                    let js_flags = JS_NewStringCopyZ(cx, c_flags.as_ptr());
-                    if !js_flags.is_null() {
-                        rooted!(&in(cx_wrap) let v = StringValue(&*js_flags));
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_naptr) {
+                Ok(DnsRRData::Naptr(naptr_list)) => {
+                    let mut idx = 0u32;
+                    for naptr in naptr_list {
+                        let entry_obj = JS_NewPlainObject(cx);
+                        if entry_obj.is_null() {
+                            continue;
+                        }
+                        rooted!(&in(cx_wrap) let entry_root = entry_obj);
+                        let c_flags = ZBox::from_bytes(naptr.flags.as_bytes());
+                        let js_flags = JS_NewStringCopyZ(cx, c_flags.as_ptr());
+                        if !js_flags.is_null() {
+                            rooted!(&in(cx_wrap) let v = StringValue(&*js_flags));
+                            JS_DefineProperty(
+                                cx,
+                                entry_root.handle().into(),
+                                c"flags".as_ptr(),
+                                v.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                        }
+                        let c_svc = ZBox::from_bytes(naptr.service.as_bytes());
+                        let js_svc = JS_NewStringCopyZ(cx, c_svc.as_ptr());
+                        if !js_svc.is_null() {
+                            rooted!(&in(cx_wrap) let v = StringValue(&*js_svc));
+                            JS_DefineProperty(
+                                cx,
+                                entry_root.handle().into(),
+                                c"service".as_ptr(),
+                                v.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                        }
+                        let c_re = ZBox::from_bytes(naptr.regexp.as_bytes());
+                        let js_re = JS_NewStringCopyZ(cx, c_re.as_ptr());
+                        if !js_re.is_null() {
+                            rooted!(&in(cx_wrap) let v = StringValue(&*js_re));
+                            JS_DefineProperty(
+                                cx,
+                                entry_root.handle().into(),
+                                c"regexp".as_ptr(),
+                                v.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                        }
+                        let c_rep = ZBox::from_bytes(naptr.replacement.as_bytes());
+                        let js_rep = JS_NewStringCopyZ(cx, c_rep.as_ptr());
+                        if !js_rep.is_null() {
+                            rooted!(&in(cx_wrap) let v = StringValue(&*js_rep));
+                            JS_DefineProperty(
+                                cx,
+                                entry_root.handle().into(),
+                                c"replacement".as_ptr(),
+                                v.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                        }
+                        rooted!(&in(cx_wrap) let v = Int32Value(naptr.order as i32));
                         JS_DefineProperty(
                             cx,
                             entry_root.handle().into(),
-                            c"flags".as_ptr(),
+                            c"order".as_ptr(),
                             v.handle().into(),
                             JSPROP_ENUMERATE as u32,
                         );
-                    }
-                    let c_svc = ZBox::from_bytes(naptr.service.as_bytes());
-                    let js_svc = JS_NewStringCopyZ(cx, c_svc.as_ptr());
-                    if !js_svc.is_null() {
-                        rooted!(&in(cx_wrap) let v = StringValue(&*js_svc));
+                        rooted!(&in(cx_wrap) let v2 = Int32Value(naptr.preference as i32));
                         JS_DefineProperty(
                             cx,
                             entry_root.handle().into(),
-                            c"service".as_ptr(),
-                            v.handle().into(),
+                            c"preference".as_ptr(),
+                            v2.handle().into(),
                             JSPROP_ENUMERATE as u32,
                         );
-                    }
-                    let c_re = ZBox::from_bytes(naptr.regexp.as_bytes());
-                    let js_re = JS_NewStringCopyZ(cx, c_re.as_ptr());
-                    if !js_re.is_null() {
-                        rooted!(&in(cx_wrap) let v = StringValue(&*js_re));
-                        JS_DefineProperty(
+                        rooted!(&in(cx_wrap) let entry_jsval = ObjectValue(entry_root.get()));
+                        JS_DefineElement(
                             cx,
-                            entry_root.handle().into(),
-                            c"regexp".as_ptr(),
-                            v.handle().into(),
+                            arr_root.handle().into(),
+                            idx,
+                            entry_jsval.handle().into(),
                             JSPROP_ENUMERATE as u32,
                         );
+                        idx += 1;
                     }
-                    let c_rep = ZBox::from_bytes(naptr.replacement.as_bytes());
-                    let js_rep = JS_NewStringCopyZ(cx, c_rep.as_ptr());
-                    if !js_rep.is_null() {
-                        rooted!(&in(cx_wrap) let v = StringValue(&*js_rep));
-                        JS_DefineProperty(
-                            cx,
-                            entry_root.handle().into(),
-                            c"replacement".as_ptr(),
-                            v.handle().into(),
-                            JSPROP_ENUMERATE as u32,
-                        );
-                    }
-                    rooted!(&in(cx_wrap) let v = Int32Value(naptr.order as i32));
-                    JS_DefineProperty(
-                        cx,
-                        entry_root.handle().into(),
-                        c"order".as_ptr(),
-                        v.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                    rooted!(&in(cx_wrap) let v2 = Int32Value(naptr.preference as i32));
-                    JS_DefineProperty(
-                        cx,
-                        entry_root.handle().into(),
-                        c"preference".as_ptr(),
-                        v2.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                    rooted!(&in(cx_wrap) let entry_jsval = ObjectValue(entry_root.get()));
-                    JS_DefineElement(
-                        cx,
-                        arr_root.handle().into(),
-                        idx,
-                        entry_jsval.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                    idx += 1;
                 }
+                Err(code) => return throw_resolve_error(cx, "queryNaptr", &code, &hostname),
+                Ok(_) => {}
             }
             args.rval().set(ObjectValue(arr_root.get()));
         }
         "PTR" => {
-            // PTR uses reverse-DNS (gethostbyaddr). Construct the
-            // in-addr.arpa name from the IP, then resolve as CNAME.
+            // Real reverse resolution: ares_gethostbyaddr on the IP (v4/v6)
+            // via Channel::get_host_by_addr. The old path re-queried the
+            // input STRING as a CNAME, so resolvePtr echoed the IP back.
             let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
             if arr_obj.is_null() {
                 args.rval().set(UndefinedValue());
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            // For PTR, use ares_gethostbyaddr on the IP address.
-            if let Ok(DnsRRData::Cname(ptr_name)) =
-                resolve_rr_cares(&hostname, cares::NSType::ns_t_cname)
-            {
-                let c_ptr = ZBox::from_bytes(ptr_name.as_bytes());
-                let js_str = JS_NewStringCopyZ(cx, c_ptr.as_ptr());
-                if !js_str.is_null() {
-                    rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
-                    JS_DefineElement(
-                        cx,
-                        arr_root.handle().into(),
-                        0,
-                        val.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_ptr) {
+                Ok(DnsRRData::Ptr(ptr_names)) => {
+                    let mut idx = 0u32;
+                    for ptr_name in ptr_names {
+                        let c_ptr = ZBox::from_bytes(ptr_name.as_bytes());
+                        let js_str = JS_NewStringCopyZ(cx, c_ptr.as_ptr());
+                        if !js_str.is_null() {
+                            rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+                            JS_DefineElement(
+                                cx,
+                                arr_root.handle().into(),
+                                idx,
+                                val.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                            idx += 1;
+                        }
+                    }
                 }
+                // Node: resolvePtr with no PTR records errors —
+                // "queryPtr ENOTFOUND <ip>" with err.code.
+                Err(code) => return throw_resolve_error(cx, "queryPtr", &code, &hostname),
+                Ok(_) => {}
             }
             args.rval().set(ObjectValue(arr_root.get()));
         }

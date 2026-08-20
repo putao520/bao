@@ -62,6 +62,7 @@ impl<'a> TOML<'a> {
         bump: &'a Bump,
         redact_logs: bool,
     ) -> Result<Expr, bun_core::Error> {
+        source_.check_parseable_len(log, "TOML document")?;
         // TODO(port): narrow error set
         match source_.contents.len() {
             // This is to be consisntent with how disabled JS files are handled

@@ -33,6 +33,7 @@ impl YAML {
     ) -> Result<Expr, YamlParseError> {
         // Zig: `bun.analytics.Features.yaml_parse += 1;`
         bun_core::analytics::Features::yaml_parse_inc();
+        source.check_parseable_len(log, "YAML document")?;
 
         let mut parser: Parser<Utf8> = Parser::init(bump, source.contents());
 
@@ -81,6 +82,13 @@ pub enum YamlParseError {
 }
 
 bun_core::oom_from_alloc!(YamlParseError);
+
+/// Already logged, like every other `SyntaxError`.
+impl From<bun_ast::SourceTooLarge> for YamlParseError {
+    fn from(_: bun_ast::SourceTooLarge) -> Self {
+        YamlParseError::SyntaxError
+    }
+}
 
 impl From<YamlParseError> for bun_core::Error {
     // PORT NOTE: Zig `YAML.ParseError` is an `error{...}` set, so callers

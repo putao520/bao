@@ -882,6 +882,7 @@ dependencies = [
  "accesskit_consumer",
  "arboard",
  "bao-ipc-channel",
+ "bao-servo",
  "bao-servo-background-hang-monitor",
  "bao-servo-base",
  "bao-servo-bluetooth",
@@ -1802,6 +1803,7 @@ dependencies = [
  "bao-servo-fonts",
  "bao-servo-hyper-serde",
  "bao-servo-malloc-size-of",
+ "bao-servo-net",
  "bao-servo-net-traits",
  "bao-servo-paint-api",
  "bao-servo-pixels",
@@ -2253,6 +2255,7 @@ dependencies = [
  "bao-servo-url",
  "bao-servo-webgpu-traits",
  "bao-servo-webxr-api",
+ "bitflags 2.11.1",
  "crossbeam-channel",
  "euclid",
  "keyboard-types",
@@ -2458,6 +2461,7 @@ dependencies = [
 name = "bao-servo-webvtt"
 version = "0.5.1"
 dependencies = [
+ "bao-servo-webvtt",
  "html5ever",
  "markup5ever",
  "regex",

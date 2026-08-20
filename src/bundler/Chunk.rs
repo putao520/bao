@@ -437,17 +437,13 @@ type DynAlloc = ();
 /// `arena.alloc(u8, n)` — until `DynAlloc` is a real trait object, route
 /// through the global arena. PERF(port): Zig picked page_allocator for
 /// `n >= 512KiB`; mimalloc handles large allocations via mmap already so this
-/// is a behavior match in practice.
+/// is a behavior match in practice. Returns an empty `Vec` with `n` bytes of
+/// capacity for the caller to fill and commit.
 #[inline]
-fn alloc_buf(_arena: DynAlloc, n: usize) -> Result<Box<[u8]>, AllocError> {
-    // Zero-fill is required for soundness: `set_len` over uninit bytes violates
-    // `Vec`'s safety contract, and `into_boxed_slice` may shrink-realloc (memcpy
-    // of uninit). The memset cost is negligible next to the subsequent memcpy
-    // that fully overwrites the buffer.
+fn alloc_buf(_arena: DynAlloc, n: usize) -> Result<Vec<u8>, AllocError> {
     let mut v: Vec<u8> = Vec::new();
     v.try_reserve_exact(n).map_err(|_| AllocError)?;
-    v.resize(n, 0);
-    Ok(v.into_boxed_slice())
+    Ok(v)
 }
 
 /// Extract the `OutputFile` index from a trailing `AdditionalFile` entry.
@@ -802,8 +798,11 @@ impl IntermediateOutput {
                 };
 
                 let arena = allocator_to_use.unwrap_or_else(|| Self::allocator_for_size(count));
-                let mut total_buf = alloc_buf(*arena, count + debug_id_len)?;
-                let mut remain: &mut [u8] = &mut total_buf;
+                let total_len = count + debug_id_len;
+                let mut total_buf = alloc_buf(*arena, total_len)?;
+                // SAFETY: the loop below only copies bytes into `remain`; only the prefix it wrote is committed.
+                let mut remain: &mut [u8] =
+                    unsafe { &mut bun_core::vec::spare_bytes_mut(&mut total_buf)[..total_len] };
 
                 for piece in pieces.slice() {
                     let data = piece.data();
@@ -1012,10 +1011,13 @@ impl IntermediateOutput {
                 }
 
                 debug_assert!(remain.is_empty());
-                debug_assert!(total_buf.len() == count + debug_id_len);
+                let written = total_len - remain.len();
+                // SAFETY: `remain` advanced past exactly the `written` bytes the loop initialized.
+                unsafe { bun_core::vec::commit_spare(&mut total_buf, written) };
+                debug_assert!(total_buf.len() == total_len);
 
                 Ok(CodeResult {
-                    buffer: total_buf,
+                    buffer: total_buf.into_boxed_slice(),
                     shifts: if ENABLE_SOURCE_MAP_SHIFTS {
                         shifts
                     } else {

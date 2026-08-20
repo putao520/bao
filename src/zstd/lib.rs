@@ -17,6 +17,8 @@ pub enum Result {
 
 #[derive(strum::IntoStaticStr, Debug)]
 pub enum ZstdError {
+    /// The output, or the decoder state the frame's window size dictates, could not be allocated.
+    OutOfMemory,
     InvalidZstdData,
     DecompressionFailed,
     ZstdFailedToCreateInstance,
@@ -26,6 +28,20 @@ pub enum ZstdError {
 
 bun_core::impl_tag_error!(ZstdError);
 bun_core::named_error_set!(ZstdError);
+
+impl ZstdError {
+    /// The error for a failed (`ZSTD_isError`) decompression call; `other` is the non-allocation failure.
+    fn for_decompression(rc: usize, other: ZstdError) -> ZstdError {
+        if zstd_api::ZSTD_getErrorCode(rc) == zstd_api::ErrorCode::MemoryAllocation {
+            ZstdError::OutOfMemory
+        } else {
+            other
+        }
+    }
+}
+
+/// Minimum spare output capacity offered to `ZSTD_decompressStream` per call.
+const STREAMING_OUTPUT_STEP: usize = 4096;
 
 pub fn compress(dest: &mut [u8], src: &[u8], level: Option<i32>) -> Result {
     let level = level.unwrap_or_else(|| zstd_api::ZSTD_defaultCLevel());
@@ -60,21 +76,45 @@ pub fn decompress_alloc(src: &[u8]) -> core::result::Result<Vec<u8>, ZstdError> 
     }
 
     if size as u64 == ZSTD_CONTENTSIZE_UNKNOWN || size > MAX_PREALLOCATE_SIZE {
+        let initial_capacity = if size as u64 == ZSTD_CONTENTSIZE_UNKNOWN {
+            // A frame's output is rarely smaller than its input.
+            src.len().clamp(STREAMING_OUTPUT_STEP, MAX_PREALLOCATE_SIZE)
+        } else {
+            // The header size is untrusted: reserve no more than the fast path below would.
+            MAX_PREALLOCATE_SIZE
+        };
         let mut list: bun_core::vec::ChanVec<u8> = bun_core::vec::ChanVec::new();
+        if list.try_reserve_exact(initial_capacity).is_err() {
+            return Err(ZstdError::OutOfMemory);
+        }
         let mut reader = ZstdReaderArrayList::init(src, &mut list)?;
         reader.read_all(true)?;
         drop(reader);
         return Ok(list.into_iter().collect::<::std::vec::Vec<u8>>());
     }
 
-    let mut output = vec![0u8; size];
-    match decompress(&mut output, src) {
-        Result::Success(actual_size) => {
-            output.truncate(actual_size);
-            Ok(output)
-        }
-        Result::Err(_) => Err(ZstdError::DecompressionFailed),
+    // Fast path: size is known and within reasonable limits. zstd_pure_rs's
+    // safe `&mut [u8]` API cannot receive uninitialized spare capacity (the
+    // C-FFI `spare_capacity_mut` path upstream 8bc4d2a88 uses is unreachable
+    // here), so the reserve is fallible (OOM-hardened) but the fill stays.
+    let mut output: Vec<u8> = Vec::new();
+    if output.try_reserve_exact(size).is_err() {
+        return Err(ZstdError::OutOfMemory);
     }
+    output.spare_capacity_mut().fill(core::mem::MaybeUninit::new(0));
+    // SAFETY: every byte of `[0..size]` was initialized by the fill above.
+    unsafe { output.set_len(size) };
+
+    let rc = zstd_api::ZSTD_decompress(&mut output, src);
+    if zstd_api::ZSTD_isError(rc) {
+        // `output` is freed by Drop.
+        return Err(ZstdError::for_decompression(
+            rc,
+            ZstdError::DecompressionFailed,
+        ));
+    }
+    output.truncate(rc);
+    Ok(output)
 }
 
 pub fn get_decompressed_size(src: &[u8]) -> usize {
@@ -153,7 +193,11 @@ impl<'a, V: bun_core::vec::SpareBytesVec> ZstdReaderArrayList<'a, V> {
                 return Err(ZstdError::ZstdDecompressionError);
             }
 
-            let spare = unsafe { bun_core::vec::reserve_spare_bytes(self.list_ptr, 4096) };
+            if !self.list_ptr.sb_try_reserve(STREAMING_OUTPUT_STEP) {
+                self.state = State::Error;
+                return Err(ZstdError::OutOfMemory);
+            }
+            let spare = unsafe { bun_core::vec::spare_bytes_mut(self.list_ptr) };
             let out_cap = spare.len().min(remaining_output);
 
             let mut out_pos = 0usize;
@@ -168,7 +212,10 @@ impl<'a, V: bun_core::vec::SpareBytesVec> ZstdReaderArrayList<'a, V> {
 
             if zstd_api::ZSTD_isError(rc) {
                 self.state = State::Error;
-                return Err(ZstdError::ZstdDecompressionError);
+                return Err(ZstdError::for_decompression(
+                    rc,
+                    ZstdError::ZstdDecompressionError,
+                ));
             }
 
             let bytes_written = out_pos;

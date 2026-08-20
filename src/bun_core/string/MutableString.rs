@@ -96,8 +96,7 @@ impl MutableString {
 
     #[inline]
     pub fn grow_if_needed(&mut self, amount: usize) -> Result<(), AllocError> {
-        self.list.reserve(amount);
-        Ok(())
+        self.list.try_reserve(amount).map_err(|_| AllocError)
     }
 
     pub fn writable_n_bytes_assume_capacity(&mut self, amount: usize) -> &mut [u8] {
@@ -272,8 +271,7 @@ impl MutableString {
 
     #[inline]
     pub fn grow_by(&mut self, amount: usize) -> Result<(), AllocError> {
-        self.list.reserve(amount);
-        Ok(())
+        self.list.try_reserve(amount).map_err(|_| AllocError)
     }
 
     #[inline]

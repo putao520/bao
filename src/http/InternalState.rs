@@ -277,7 +277,12 @@ impl<'a> InternalState<'a> {
 
                 if let Some(decompressed) = bun_zlib::inflate_decompress(buffer, window_bits) {
                     body_out_str.list.clear();
-                    body_out_str.list.reserve_exact(decompressed.len().saturating_sub(body_out_str.list.len()));
+                    // The fast path already knows the real size; reserve it fallibly
+                    // (OOM is a recoverable request failure, not an abort).
+                    if body_out_str.list.try_reserve_exact(decompressed.len()).is_err() {
+                        self.compressed_body.reset();
+                        return Err(bun_alloc::AllocError.into());
+                    }
                     body_out_str.list.extend_from_slice(&decompressed);
                     still_needs_to_decompress = false;
                 }

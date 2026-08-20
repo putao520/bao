@@ -214,6 +214,9 @@ pub mod ssl_wrapper {
     /// writes we loop until we have no more data to write/backpressure.
     const BUFFER_SIZE: usize = 65536;
 
+    /// Stack scratch shared by `SSL_read` / `BIO_read`.
+    type IoBuffer = bun_core::vec::UninitBuf<BUFFER_SIZE>;
+
     /// Cap on peer-initiated TLS renegotiations per
     /// [`MAX_RENEGOTIATION_WINDOW`]. Mirrors the `us_reneg_policy` defaults in
     /// the uSockets C path (openssl.c) and Node's
@@ -940,7 +943,7 @@ pub mod ssl_wrapper {
         }
 
         /// Handle reading data. Returns true if we can call handle_writing.
-        fn handle_reading(&mut self, buffer: &mut [u8; BUFFER_SIZE]) -> bool {
+        fn handle_reading(&mut self, buffer: &mut IoBuffer) -> bool {
             let this: *mut Self = core::hint::black_box(core::ptr::from_mut(self));
             let mut read: usize = 0;
 
@@ -951,7 +954,8 @@ pub mod ssl_wrapper {
                     return false;
                 };
 
-                let available = &mut buffer[read..];
+                // SAFETY: write-only view of the unfilled tail; SSL_read only stores into it.
+                let available = unsafe { &mut buffer.as_bytes_mut()[read..] };
                 // SAFETY: ssl is a live SSL*; available is a valid mutable slice.
                 let just_read = unsafe {
                     boring_sys::SSL_read(
@@ -1023,7 +1027,8 @@ pub mod ssl_wrapper {
                         // flush the reading
                         if read > 0 {
                             log!("triggering data callback (read {})", read);
-                            Self::r(this).trigger_data_callback(&buffer[0..read]);
+                            // SAFETY: the SSL_read calls above wrote `[0..read]` contiguously.
+                            Self::r(this).trigger_data_callback(unsafe { buffer.filled(read) });
                             // The data callback may have closed the connection
                             if Self::r(this).ssl.is_none() || Self::r(this).flags.closed_notified()
                             {
@@ -1042,13 +1047,14 @@ pub mod ssl_wrapper {
                 Self::r(this).handle_end_of_renegotiation();
 
                 read += usize::try_from(just_read).expect("int cast");
-                if read == buffer.len() {
+                if read == BUFFER_SIZE {
                     log!(
                         "triggering data callback (read {}) and resetting read buffer",
                         read
                     );
                     // we filled the buffer
-                    Self::r(this).trigger_data_callback(&buffer[0..read]);
+                    // SAFETY: the SSL_read calls above wrote `[0..read]` contiguously.
+                    Self::r(this).trigger_data_callback(unsafe { buffer.filled(read) });
                     // The callback may have closed the connection - check before continuing
                     // Check ssl first as a proxy for whether we were deinited
                     if Self::r(this).ssl.is_none() || Self::r(this).flags.closed_notified() {
@@ -1060,7 +1066,8 @@ pub mod ssl_wrapper {
             // we finished reading
             if read > 0 {
                 log!("triggering data callback (read {})", read);
-                Self::r(this).trigger_data_callback(&buffer[0..read]);
+                // SAFETY: the SSL_read calls above wrote `[0..read]` contiguously.
+                Self::r(this).trigger_data_callback(unsafe { buffer.filled(read) });
                 // The callback may have closed the connection
                 // Check ssl first as a proxy for whether we were deinited
                 if Self::r(this).ssl.is_none() || Self::r(this).flags.closed_notified() {
@@ -1070,7 +1077,7 @@ pub mod ssl_wrapper {
             true
         }
 
-        fn handle_writing(&mut self, buffer: &mut [u8; BUFFER_SIZE]) {
+        fn handle_writing(&mut self, buffer: &mut IoBuffer) {
             // PORT_NOTES_PLAN R-2: `&mut self` carries LLVM `noalias`, but
             // `trigger_wanna_write_callback` invokes the user-supplied
             // `handlers.write` which can re-enter via a fresh
@@ -1092,7 +1099,8 @@ pub mod ssl_wrapper {
                 else {
                     return;
                 };
-                let available = &mut buffer[read..];
+                // SAFETY: write-only view of the unfilled tail; BIO_read only stores into it.
+                let available = unsafe { &mut buffer.as_bytes_mut()[read..] };
                 // SAFETY: output is a valid BIO*; available is a valid mutable slice.
                 let just_read = unsafe {
                     boring_sys::BIO_read(
@@ -1103,8 +1111,9 @@ pub mod ssl_wrapper {
                 };
                 if just_read > 0 {
                     read += usize::try_from(just_read).expect("int cast");
-                    if read == buffer.len() {
-                        Self::r(this).trigger_wanna_write_callback(&buffer[0..read]);
+                    if read == BUFFER_SIZE {
+                        // SAFETY: the BIO_read calls above wrote `[0..read]` contiguously.
+                        Self::r(this).trigger_wanna_write_callback(unsafe { buffer.filled(read) });
                         read = 0;
                     }
                 } else {
@@ -1112,7 +1121,8 @@ pub mod ssl_wrapper {
                 }
             }
             if read > 0 {
-                Self::r(this).trigger_wanna_write_callback(&buffer[0..read]);
+                // SAFETY: the BIO_read calls above wrote `[0..read]` contiguously.
+                Self::r(this).trigger_wanna_write_callback(unsafe { buffer.filled(read) });
             }
         }
 
@@ -1122,7 +1132,7 @@ pub mod ssl_wrapper {
             if Self::r(this).update_handshake_state() {
                 // shared stack buffer for reading and writing
                 // PERF(port): 64KiB on-stack array — was Zig stack array; verify Rust stack-size headroom.
-                let mut buffer = [0u8; BUFFER_SIZE];
+                let mut buffer = IoBuffer::uninit();
                 // drain the input BIO first
                 Self::r(this).handle_writing(&mut buffer);
 

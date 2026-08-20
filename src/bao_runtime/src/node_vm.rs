@@ -186,6 +186,224 @@ unsafe fn parse_code_generation_options(
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Node-style options validation (ERR_INVALID_ARG_TYPE)
+//
+// Node's lib/vm.js type-checks every `options` argument with
+// `validateObject(options, 'options')` (lib/internal/validators.js): null,
+// arrays, functions and primitives are all rejected with a TypeError whose
+// `.code` is ERR_INVALID_ARG_TYPE. `undefined` means "default options" at
+// every entry point and is handled by the callers before these helpers.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Non-throwing shape check: object that is neither an array nor a function
+/// (Node's validateObject with default flags). A Proxy around an array is
+/// rejected too — `JS_IsArrayObject` pierces proxies like `Array.isArray`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn is_plain_options_object(cx: *mut JSContext, val: JSVal) -> bool {
+    if !val.is_object() {
+        return false;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = val.to_object());
+    let mut is_arr = false;
+    if IsArrayObject1(cx, obj.handle().into(), &mut is_arr) && is_arr {
+        return false;
+    }
+    !mozjs_sys::jsapi::JS_ObjectIsFunction(obj.get())
+}
+
+/// Describe a rejected value the way Node's `determineSpecificType` does,
+/// for the ERR_INVALID_ARG_TYPE message suffix ("Received ...").
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn describe_received_value(cx: *mut JSContext, val: JSVal) -> String {
+    if val.is_null() {
+        return "null".to_string();
+    }
+    if val.is_undefined() {
+        return "type undefined".to_string();
+    }
+    if val.is_string() {
+        let s = crate::js_to_rust_string(cx, val);
+        // Node's inspect truncates strings past 27 chars: first 24 + "...".
+        let shown = if s.chars().count() > 27 {
+            let cut: String = s.chars().take(24).collect();
+            format!("{cut}...")
+        } else {
+            s
+        };
+        return format!("type string ('{shown}')");
+    }
+    if val.is_number() {
+        let n = if val.is_int32() {
+            val.to_int32().to_string()
+        } else {
+            val.to_double().to_string()
+        };
+        return format!("type number ({n})");
+    }
+    if val.is_boolean() {
+        return format!("type boolean ({})", val.to_boolean());
+    }
+    if val.is_symbol() {
+        return "type symbol".to_string();
+    }
+    if val.is_object() {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj = val.to_object());
+        let mut is_arr = false;
+        if IsArrayObject1(cx, obj.handle().into(), &mut is_arr) && is_arr {
+            return "an instance of Array".to_string();
+        }
+        if mozjs_sys::jsapi::JS_ObjectIsFunction(obj.get()) {
+            // Node: `function ${value.name}`
+            let mut name_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                obj.handle().into(),
+                c"name".as_ptr(),
+                MutableHandle::<JSVal> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut name_val,
+                },
+            );
+            let name = if name_val.is_string() {
+                crate::js_to_rust_string(cx, name_val)
+            } else {
+                String::new()
+            };
+            return format!("function {name}");
+        }
+    }
+    "an instance of Object".to_string()
+}
+
+/// Throw a Node-shaped `TypeError` with `code: "ERR_INVALID_ARG_TYPE"`.
+///
+/// Builds the error through the realm's real `TypeError` constructor (so
+/// `instanceof TypeError` holds), attaches `.code`, and makes it the pending
+/// exception. Falls back to a plain reported Error only when the realm has
+/// no TypeError constructor.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn throw_invalid_arg_type(cx: *mut JSContext, name: &str, expected: &str, received: &str) {
+    let msg = format!("The \"{name}\" argument must be of type {expected}. Received {received}");
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let global = JS::CurrentGlobalOrNull(cx);
+    if !global.is_null() {
+        rooted!(&in(cx_ref) let global_root = global);
+        let mut te_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            global_root.handle().into(),
+            c"TypeError".as_ptr(),
+            MutableHandle::<JSVal> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut te_val,
+            },
+        );
+        if te_val.is_object() {
+            rooted!(&in(cx_ref) let te_obj = te_val.to_object());
+            rooted!(&in(cx_ref) let te_fn = ObjectValue(te_obj.get()));
+            let c_msg = bun_core::ZBox::from_bytes(msg.as_bytes());
+            let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+            if !msg_js.is_null() {
+                rooted!(&in(cx_ref) let msg_root = mozjs::jsval::StringValue(&*msg_js));
+                let elems = [msg_root.get()];
+                let call_args = HandleValueArray {
+                    length_: 1,
+                    elements_: elems.as_ptr(),
+                };
+                rooted!(&in(cx_ref) let undef_this = ptr::null_mut::<JSObject>());
+                let mut err_val = UndefinedValue();
+                let called = JS_CallFunctionValue(
+                    cx,
+                    undef_this.handle().into(),
+                    te_fn.handle().into(),
+                    &call_args,
+                    MutableHandle::<JSVal> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut err_val,
+                    },
+                );
+                if called && err_val.is_object() {
+                    rooted!(&in(cx_ref) let err_obj = err_val.to_object());
+                    let c_code = bun_core::ZBox::from_bytes(b"ERR_INVALID_ARG_TYPE");
+                    let code_js = JS_NewStringCopyZ(cx, c_code.as_ptr());
+                    if !code_js.is_null() {
+                        rooted!(&in(cx_ref) let cv = mozjs::jsval::StringValue(&*code_js));
+                        JS_DefineProperty(
+                            cx,
+                            err_obj.handle().into(),
+                            c"code".as_ptr(),
+                            cv.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
+                    rooted!(&in(cx_ref) let ev = err_val);
+                    JS_SetPendingException(
+                        cx,
+                        ev.handle().into(),
+                        ExceptionStackBehavior::DoNotCapture,
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    // Degraded path: realm without a TypeError constructor.
+    let c_msg = bun_core::ZBox::from_bytes(msg.as_bytes());
+    JS_ReportErrorUTF8(cx, c_msg.as_ptr());
+}
+
+/// Throwing Node `validateObject` check for an `options` argument.
+/// Returns true for a plain (non-array, non-callable) object; otherwise
+/// throws ERR_INVALID_ARG_TYPE and returns false. Callers allow `undefined`
+/// (defaults) before calling this.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn validate_options_object(cx: *mut JSContext, opts: JSVal) -> bool {
+    if is_plain_options_object(cx, opts) {
+        return true;
+    }
+    throw_invalid_arg_type(
+        cx,
+        "options",
+        "object",
+        &describe_received_value(cx, opts),
+    );
+    false
+}
+
+/// Read `options.filename` from an already-validated options object.
+/// Defaults to "vm.js" when absent or not a string.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn options_filename(cx: *mut JSContext, opts_val: JSVal) -> String {
+    if !opts_val.is_object() {
+        return "vm.js".to_string();
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let opts = opts_val.to_object());
+    let mut fn_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        opts.handle().into(),
+        c"filename".as_ptr(),
+        MutableHandle::<JSVal> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut fn_val,
+        },
+    );
+    if fn_val.is_string() {
+        crate::js_to_rust_string(cx, fn_val)
+    } else {
+        "vm.js".to_string()
+    }
+}
+
 /// Native callback for the disabled `eval` / `Function` stub.
 ///
 /// Throws a `EvalError` mirroring Node's "Code generation from strings
@@ -455,6 +673,13 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
     } else {
         UndefinedValue()
     };
+    // Node's lib/vm.js validates the options argument with validateObject
+    // (after the already-contextified early return above, matching its
+    // order): arrays, functions, null and primitives throw
+    // ERR_INVALID_ARG_TYPE; undefined falls through to the defaults.
+    if !cgen_opts_val.is_undefined() && !validate_options_object(cx, cgen_opts_val) {
+        return false;
+    }
     let cgen_flags = unsafe { parse_code_generation_options(cx, cgen_opts_val) };
 
     // Phase 1: Collect sandbox properties in the CALLER's Realm (before
@@ -799,11 +1024,56 @@ unsafe extern "C" fn vm_run_in_new_context(cx: *mut JSContext, argc: u32, vp: *m
         // Forward arg 0 (sandbox) AND arg 2 (options, carries codeGeneration)
         // so vm_create_context parses the codeGeneration policy (criterion 8).
         // vp layout for CallArgs::from_vp: [rval_slot, magic_marker, arg0, ...]
-        let opts_val = if argc > 2 {
+        //
+        // Node's lib/vm.js spreads non-string options before createContext
+        // (`options = { ...options }`), so the module-level runInNewContext
+        // accepts ANY options value — unlike createContext itself, which
+        // validates. Forward a spread-equivalent plain object: strings become
+        // { filename }, already-plain objects pass through, everything else
+        // is copied into a fresh object (own enumerable string keys — the
+        // only keys createContext reads, i.e. codeGeneration).
+        let raw_opts = if argc > 2 {
             *args.get(2).ptr
         } else {
             UndefinedValue()
         };
+        let opts_val =
+            if raw_opts.is_undefined() || is_plain_options_object(cx, raw_opts) {
+                raw_opts
+            } else {
+                rooted!(&in(cx_ref) let spread = w2::JS_NewPlainObject(cx_ref));
+                if spread.get().is_null() {
+                    UndefinedValue()
+                } else {
+                    if raw_opts.is_string() {
+                        rooted!(&in(cx_ref) let fv = raw_opts);
+                        JS_DefineProperty(
+                            cx,
+                            spread.handle().into(),
+                            c"filename".as_ptr(),
+                            fv.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    } else if raw_opts.is_object() {
+                        // array/function: copy own enumerable string keys.
+                        let props = collect_sandbox_properties(cx_ref, raw_opts.to_object());
+                        for (key, hv) in &props {
+                            let c_key = bun_core::ZBox::from_bytes(key.as_bytes());
+                            if c_key.as_ptr().is_null() {
+                                continue;
+                            }
+                            JS_DefineProperty(
+                                cx,
+                                spread.handle().into(),
+                                c_key.as_ptr(),
+                                hv.handle(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                        }
+                    }
+                    ObjectValue(spread.get())
+                }
+            };
         let mut ctx_vp = [
             UndefinedValue(),
             UndefinedValue(),
@@ -934,21 +1204,17 @@ unsafe extern "C" fn vm_run_in_context(cx: *mut JSContext, argc: u32, vp: *mut J
         }
     };
 
-    // options (arg 2): filename override.
-    let filename = if argc > 2 && (*args.get(2).ptr).is_object() {
-        rooted!(&in(cx_ref) let opts = (*args.get(2).ptr).to_object());
-        let mut fn_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            opts.handle().into(),
-            c"filename".as_ptr(),
-            MutableHandle::<JSVal> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut fn_val,
-            },
-        );
-        if fn_val.is_string() {
-            crate::js_to_rust_string(cx, fn_val)
+    // options (arg 2): filename override. Node's lib/vm.js wrapper converts
+    // a string options value to { filename: options } and spreads every
+    // other value into a fresh object before Script, so runInContext accepts
+    // ANY options value ([]/function/null/1 all ok) — no validation here,
+    // only the filename read.
+    let filename = if argc > 2 {
+        let oval = *args.get(2).ptr;
+        if oval.is_string() {
+            crate::js_to_rust_string(cx, oval)
+        } else if oval.is_object() {
+            options_filename(cx, oval)
         } else {
             "vm.js".to_string()
         }
@@ -1009,27 +1275,22 @@ unsafe extern "C" fn vm_run_in_this_context(cx: *mut JSContext, argc: u32, vp: *
     }
 
     let code = crate::js_to_rust_string(cx, *args.get(0).ptr);
-    let filename = if argc > 1 && (*args.get(1).ptr).is_object() {
-        let mut wrapped_cx3 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref3 = &mut wrapped_cx3;
-        rooted!(&in(cx_ref3) let opts = (*args.get(1).ptr).to_object());
-        let mut fn_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            opts.handle().into(),
-            c"filename".as_ptr(),
-            MutableHandle::<JSVal> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut fn_val,
-            },
-        );
-        if fn_val.is_string() {
-            crate::js_to_rust_string(cx, fn_val)
-        } else {
+    // Options (arg 1): Node's lib/vm.js wrapper converts a string options
+    // value to { filename: options } for the module-level run functions;
+    // everything else reaches Script's options validation unchanged, so
+    // arrays/functions/null/primitives throw ERR_INVALID_ARG_TYPE.
+    let filename = if argc > 1 {
+        let oval = *args.get(1).ptr;
+        if oval.is_string() {
+            crate::js_to_rust_string(cx, oval)
+        } else if oval.is_undefined() {
             "vm.js".to_string()
+        } else {
+            if !validate_options_object(cx, oval) {
+                return false;
+            }
+            options_filename(cx, oval)
         }
-    } else if argc > 1 && (*args.get(1).ptr).is_string() {
-        crate::js_to_rust_string(cx, *args.get(1).ptr)
     } else {
         "vm.js".to_string()
     };
@@ -1158,6 +1419,16 @@ unsafe extern "C" fn vm_compile_function(cx: *mut JSContext, argc: u32, vp: *mut
         }
     }
 
+    // Options (arg 2): Node validates with validateObject (undefined ok).
+    // Previously the third argument was never read at all, so
+    // compileFunction("1", [], []) was silently accepted.
+    if argc > 2 {
+        let oval = *args.get(2).ptr;
+        if !oval.is_undefined() && !validate_options_object(cx, oval) {
+            return false;
+        }
+    }
+
     let wrapped = format!(
         "(function {}({}) {{ {} }})",
         fn_name,
@@ -1207,28 +1478,47 @@ unsafe extern "C" fn vm_script_ctor(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
-    let filename = if argc > 1 && (*args.get(1).ptr).is_object() {
-        rooted!(&in(cx_ref) let opts = (*args.get(1).ptr).to_object());
-        let mut fn_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            opts.handle().into(),
-            c"filename".as_ptr(),
-            MutableHandle::<JSVal> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut fn_val,
-            },
-        );
-        if fn_val.is_string() {
-            crate::js_to_rust_string(cx, fn_val)
-        } else {
-            "vm.js".to_string()
+    // Options (arg 1): Node validates with validateObject — a string is NOT
+    // accepted as a filename shorthand on the Script constructor (filename
+    // is an options property); arrays, functions, null and primitives all
+    // throw ERR_INVALID_ARG_TYPE. `undefined` means default options.
+    let filename = if argc > 1 && !(*args.get(1).ptr).is_undefined() {
+        if !validate_options_object(cx, *args.get(1).ptr) {
+            return false;
         }
-    } else if argc > 1 && (*args.get(1).ptr).is_string() {
-        crate::js_to_rust_string(cx, *args.get(1).ptr)
+        options_filename(cx, *args.get(1).ptr)
     } else {
         "vm.js".to_string()
     };
+
+    // Node compiles the source in the constructor: a syntax error throws
+    // SyntaxError HERE (with the filename on the error's stack), never at
+    // run time. Parse-only via JS::Compile — the compiled script is
+    // intentionally discarded (no cross-run caching; the run methods keep
+    // their evaluate path), so this adds zero side effects beyond the
+    // syntax check.
+    {
+        let c_filename = ::std::ffi::CString::new(filename.clone())
+            .unwrap_or_else(|_| ::std::ffi::CString::new("vm.js").unwrap());
+        let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr() as *const _, 1);
+        if opts.is_null() {
+            JS_ReportErrorUTF8(
+                cx,
+                c"Script: failed to allocate compile options".as_ptr(),
+            );
+            return false;
+        }
+        let mut src = mozjs::rust::transform_str_to_source_text(&code);
+        let compiled = mozjs_sys::jsapi::JS::Compile1(cx, opts, &mut src);
+        libc::free(opts as *mut _);
+        if compiled.is_null() {
+            // Pending exception is SM's SyntaxError for this source (the
+            // parser message, with "<filename>:<line>:<col>" on the stack
+            // from the compile options above) — propagate it as-is.
+            return false;
+        }
+        rooted!(&in(cx_ref) let _parse_check = compiled);
+    }
 
     // Use the `this` object that SM auto-creates for `new Script()` — it
     // already has Script.prototype as its prototype. If called without `new`,
@@ -1334,6 +1624,15 @@ unsafe extern "C" fn vm_script_run_in_this_context(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
+    // Options (arg 0): Node validates with validateObject (undefined ok);
+    // a string is NOT a filename shorthand on the Script methods.
+    if argc > 0 {
+        let oval = *args.get(0).ptr;
+        if !oval.is_undefined() && !validate_options_object(cx, oval) {
+            return false;
+        }
+    }
+
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
@@ -1396,6 +1695,15 @@ unsafe extern "C" fn vm_script_run_in_context(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+
+    // Options (arg 1): Node validates with validateObject (undefined ok);
+    // a string is NOT a filename shorthand on the Script methods.
+    if argc > 1 {
+        let oval = *args.get(1).ptr;
+        if !oval.is_undefined() && !validate_options_object(cx, oval) {
+            return false;
+        }
+    }
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -1502,6 +1810,16 @@ unsafe extern "C" fn vm_script_run_in_new_context(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+
+    // Options (arg 1): validated up-front so an already-contextified
+    // sandbox (which skips the vm_create_context forward below) still
+    // rejects bad options exactly like Node's Script#runInNewContext.
+    if argc > 1 {
+        let oval = *args.get(1).ptr;
+        if !oval.is_undefined() && !validate_options_object(cx, oval) {
+            return false;
+        }
+    }
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;

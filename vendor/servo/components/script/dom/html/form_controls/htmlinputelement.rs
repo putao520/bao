@@ -1669,7 +1669,7 @@ impl HTMLInputElement {
             },
 
             // Step 5.9: Otherwise, if the field element is an input element whose type attribute is in the Hidden state and name is an ASCII case-insensitive match for "_charset_":
-            InputType::Hidden(_) if name.to_ascii_lowercase() == "_charset_" => {
+            InputType::Hidden(_) if name.eq_ignore_ascii_case("_charset_") => {
                 // Step 5.9.1: Let charset be the name of encoding.
                 let charset = match encoding {
                     None => DOMString::from("UTF-8"),
@@ -1987,7 +1987,8 @@ impl HTMLInputElement {
     }
 
     fn handle_mouse_event(&self, mouse_event: &MouseEvent) {
-        if mouse_event.upcast::<Event>().DefaultPrevented() {
+        let event = mouse_event.upcast::<Event>();
+        if event.DefaultPrevented() {
             return;
         }
 
@@ -1996,7 +1997,15 @@ impl HTMLInputElement {
         if !self.input_type().is_textual_or_password() || self.textinput.borrow().is_empty() {
             return;
         }
-        if self.textinput.borrow_mut().handle_mouse_event(mouse_event) {
+        if event.type_() != atom!("mousedown") {
+            return;
+        }
+
+        if self
+            .textinput
+            .borrow_mut()
+            .handle_mousedown_event(self.upcast(), mouse_event)
+        {
             self.maybe_update_shared_selection();
         }
     }

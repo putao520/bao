@@ -110,7 +110,7 @@ use embedder_traits::{
     AnimationState, EmbedderControlId, EmbedderControlResponse, EmbedderProxy, FocusSequenceNumber,
     GenericEmbedderProxy, InputEvent, InputEventAndId, InputEventOutcome, JSValue,
     JavaScriptEvaluationError, JavaScriptEvaluationId, KeyboardEvent, MediaSessionActionType,
-    MediaSessionEvent, MediaSessionPlaybackState, MouseButton, MouseButtonAction, MouseButtonEvent,
+    MediaSessionEvent, MediaSessionPlaybackState, MouseButtonAction, MouseButtonEvent,
     NewWebViewDetails, PaintHitTestResult, Theme, ViewportDetails, WakeLockDelegate, WakeLockType,
     WebDriverCommandMsg, WebDriverLoadStatus, WebDriverScriptCommand,
 };
@@ -137,8 +137,8 @@ use rand::seq::IndexedRandom;
 use rand::{RngExt, SeedableRng, make_rng};
 use rustc_hash::{FxHashMap, FxHashSet};
 use script_traits::{
-    ConstellationInputEvent, DiscardBrowsingContext, DocumentActivity, NewPipelineInfo,
-    ProgressiveWebMetricType, ScriptThreadMessage, UpdatePipelineIdReason,
+    ConstellationInputEvent, DiscardBrowsingContext, DocumentActivity, MouseButtons,
+    NewPipelineInfo, ProgressiveWebMetricType, ScriptThreadMessage, UpdatePipelineIdReason,
 };
 use servo_background_hang_monitor::HangMonitorRegister;
 use servo_base::generic_channel::{
@@ -161,11 +161,12 @@ use servo_canvas_traits::webgl::WebGLThreads;
 use servo_config::{opts, pref};
 use servo_constellation_traits::{
     AuxiliaryWebViewCreationRequest, AuxiliaryWebViewCreationResponse, ConstellationInterest,
-    DocumentState, EmbedderToConstellationMessage, IFrameLoadInfo, IFrameLoadInfoWithData,
-    IFrameSizeMsg, LoadData, LogEntry, MessagePortMsg, NavigationHistoryBehavior, PaintMetricEvent,
-    PortMessageTask, PortTransferInfo, RemoteFocusOperation, SWManagerSenders,
-    ScreenshotReadinessResponse, ScriptToConstellationMessage, ScrollStateUpdate,
-    ServiceWorkerAlgorithm, ServiceWorkerManagerFactory, ServiceWorkerMsg,
+    DocumentState, EmbedderToConstellationMessage, HistoryTraversalSource, IFrameLoadInfo,
+    IFrameLoadInfoWithData, IFrameSizeMsg, LoadData, LogEntry, MessagePortMsg,
+    NavigationHistoryBehavior, PaintMetricEvent, PortMessageTask, PortTransferInfo,
+    RemoteFocusOperation, SWManagerSenders, ScreenshotReadinessResponse,
+    ScriptToConstellationMessage, ScrollStateUpdate, ServiceWorkerAlgorithm,
+    ServiceWorkerManagerFactory, ServiceWorkerMsg, SessionHistoryTraversalRequest,
     StructuredSerializedData, TargetSnapshotParams, TraversalDirection, UserContentManagerAction,
     WindowSizeType, WorkerAnimationFrameTick,
 };
@@ -187,7 +188,7 @@ use crate::browsingcontext::{
     AllBrowsingContextsIterator, BrowsingContext, FullyActiveBrowsingContextsIterator,
     NewBrowsingContextInfo,
 };
-use crate::constellation_webview::ConstellationWebView;
+use crate::constellation_webview::{ConstellationWebView, OngoingHistoryTraversalRequest};
 use crate::event_loop::EventLoop;
 use crate::pipeline::Pipeline;
 use crate::process_manager::ProcessManager;
@@ -478,7 +479,7 @@ pub struct Constellation<STF, SWF> {
 
     /// Bitmask which indicates which combination of mouse buttons are
     /// currently being pressed.
-    pressed_mouse_buttons: u16,
+    pressed_mouse_buttons: MouseButtons,
 
     /// The currently activated keyboard modifiers.
     active_keyboard_modifiers: Modifiers,
@@ -746,7 +747,7 @@ where
                     webxr_registry: state.webxr_registry,
                     canvas: OnceCell::new(),
                     pending_approval_navigations: Default::default(),
-                    pressed_mouse_buttons: 0,
+                    pressed_mouse_buttons: MouseButtons::empty(),
                     active_keyboard_modifiers: Modifiers::empty(),
                     hard_fail,
                     active_media_session: None,
@@ -811,6 +812,7 @@ where
             // This is for testing the hardening of the constellation.
             self.maybe_close_random_pipeline();
             self.handle_request();
+            self.finish_completed_session_history_traversal_requests();
             self.clean_up_finished_script_event_loops();
         }
         self.handle_shutdown();
@@ -1052,6 +1054,7 @@ where
         is_private: bool,
         throttled: bool,
         target_snapshot_params: TargetSnapshotParams,
+        name: Option<String>,
     ) {
         if self.shutting_down {
             return;
@@ -1094,6 +1097,7 @@ where
             user_content_manager_id,
             embedder_theme: theme,
             target_snapshot_params,
+            frame_name: name,
         };
         let pipeline = match Pipeline::spawn(new_pipeline_info, event_loop, self, throttled) {
             Ok(pipeline) => pipeline,
@@ -1400,15 +1404,8 @@ where
                     .send(ConstellationToEmbedderMsg::WebViewBlurred);
             },
             // Handle a forward or back request
-            EmbedderToConstellationMessage::TraverseHistory(
-                webview_id,
-                direction,
-                traversal_id,
-            ) => {
-                self.handle_traverse_history_msg(webview_id, direction);
-                self.constellation_to_embedder_proxy.send(
-                    ConstellationToEmbedderMsg::HistoryTraversalComplete(webview_id, traversal_id),
-                );
+            EmbedderToConstellationMessage::TraverseHistory(request) => {
+                self.handle_traverse_session_history_msg(request);
             },
             EmbedderToConstellationMessage::ChangeViewportDetails(
                 webview_id,
@@ -1824,8 +1821,8 @@ where
                 self.handle_navigated_to_fragment(source_pipeline_id, new_url, replacement_enabled);
             },
             // Handle a forward or back request
-            ScriptToConstellationMessage::TraverseHistory(direction) => {
-                self.handle_traverse_history_msg(webview_id, direction);
+            ScriptToConstellationMessage::TraverseHistory(request) => {
+                self.handle_traverse_session_history_msg(request);
             },
             // Handle a push history state request.
             ScriptToConstellationMessage::PushHistoryState(history_state_id, url) => {
@@ -3099,6 +3096,7 @@ where
             is_private,
             throttled,
             TargetSnapshotParams::default(),
+            None,
         );
         self.add_pending_change(SessionHistoryChange {
             webview_id,
@@ -3141,24 +3139,15 @@ where
     }
 
     fn update_pressed_mouse_buttons(&mut self, event: &MouseButtonEvent) {
-        // This value is ultimately used for a DOM mouse event, and the specification says that
-        // the pressed buttons should be represented as a bitmask with values defined at
-        // <https://w3c.github.io/uievents/#dom-mouseevent-buttons>.
-        let button_as_bitmask = match event.button {
-            MouseButton::Left => 1,
-            MouseButton::Right => 2,
-            MouseButton::Middle => 4,
-            MouseButton::Back => 8,
-            MouseButton::Forward => 16,
-            MouseButton::Other(_) => return,
+        let Ok(buttons) = MouseButtons::try_from(event.button) else {
+            return;
         };
-
         match event.action {
             MouseButtonAction::Down => {
-                self.pressed_mouse_buttons |= button_as_bitmask;
+                self.pressed_mouse_buttons |= buttons;
             },
             MouseButtonAction::Up => {
-                self.pressed_mouse_buttons &= !(button_as_bitmask);
+                self.pressed_mouse_buttons &= !(buttons);
             },
         }
     }
@@ -3322,6 +3311,7 @@ where
             is_private,
             throttled,
             TargetSnapshotParams::default(),
+            None,
         );
         self.add_pending_change(SessionHistoryChange {
             webview_id,
@@ -3350,8 +3340,22 @@ where
         // Step 5. Remove traversable from the user agent's top-level traversable set.
         let browsing_context =
             self.close_browsing_context(browsing_context_id, ExitPipelineMode::Normal);
+
+        // Any queued history traversal requests are never going to finish at this point,
+        // so notify the embedder that they are now finished.
+        let webview = self.webviews.remove(&webview_id);
+        if let Some(mut webview) = webview {
+            if let Some(ongoing_request) = webview.ongoing_history_traversal_request {
+                self.notify_embedder_of_completed_session_history_traversal_request(
+                    &ongoing_request.traversal_request,
+                );
+            }
+            for request in webview.session_history_traversal_request_queue.drain(..) {
+                self.notify_embedder_of_completed_session_history_traversal_request(&request);
+            }
+        }
+
         // Step 4. Remove traversable from the user interface (e.g., close or hide its tab in a tabbed browser).
-        self.webviews.remove(&webview_id);
         self.constellation_to_embedder_proxy
             .send(ConstellationToEmbedderMsg::WebViewClosed(webview_id));
 
@@ -3462,6 +3466,7 @@ where
             is_private,
             mut history_handling,
             target_snapshot_params,
+            name,
             ..
         } = load_info.info;
 
@@ -3542,6 +3547,7 @@ where
             is_private,
             browsing_context_throttled,
             target_snapshot_params,
+            name,
         );
         self.add_pending_change(SessionHistoryChange {
             webview_id,
@@ -4241,6 +4247,7 @@ where
                     is_private,
                     is_throttled,
                     target_snapshot_params,
+                    None,
                 );
                 self.add_pending_change(SessionHistoryChange {
                     webview_id,
@@ -4334,29 +4341,54 @@ where
         }
     }
 
+    /// Step 4 of <https://html.spec.whatwg.org/multipage/#traverse-the-history-by-a-delta>
+    ///
+    /// This change appends a session history traversal to the session history traversal queue,
+    /// which is stored as [`ConstellationWebView::history_traversal_request_queue`].
+    ///
+    /// See also: <https://html.spec.whatwg.org/multipage/#tn-session-history-traversal-queue>
     #[servo_tracing::instrument(skip_all)]
-    fn handle_traverse_history_msg(
+    fn handle_traverse_session_history_msg(
         &mut self,
-        webview_id: WebViewId,
-        direction: TraversalDirection,
+        traversal_request: SessionHistoryTraversalRequest,
     ) {
+        let webview_id = traversal_request.webview_id;
+        let Some(webview) = self.webviews.get_mut(&webview_id) else {
+            self.notify_embedder_of_completed_session_history_traversal_request(&traversal_request);
+            return warn!("Ignoring history traversal in non-existent WebView ({webview_id:?}).");
+        };
+
+        webview
+            .session_history_traversal_request_queue
+            .push_back(traversal_request);
+        self.apply_queued_session_history_traversal_requests(webview_id);
+    }
+
+    /// Apply the given [`HistoryTraversalRequest`], triggering the session history navigation.
+    /// Return the same [`HistoryTraversalRequest`] when it completes immediately or is out
+    /// of range, otherwise return `None` when it is still pending.
+    fn apply_session_history_traversal_request(
+        &mut self,
+        traversal_request: SessionHistoryTraversalRequest,
+    ) -> Option<SessionHistoryTraversalRequest> {
         let mut browsing_context_changes = FxHashMap::<BrowsingContextId, NeedsToReload>::default();
         let mut pipeline_changes =
             FxHashMap::<PipelineId, (Option<HistoryStateId>, ServoUrl)>::default();
         let mut url_to_load = FxHashMap::<PipelineId, ServoUrl>::default();
+        let webview_id = traversal_request.webview_id;
+
         {
             let Some(webview) = self.webviews.get_mut(&webview_id) else {
-                return warn!(
-                    "Ignoring history traversal in non-existent WebView ({webview_id:?})."
-                );
+                warn!("Ignoring history traversal in non-existent WebView ({webview_id:?}).");
+                return Some(traversal_request);
             };
 
-            match direction {
+            match traversal_request.direction {
                 TraversalDirection::Forward(forward) => {
                     let future_length = webview.session_history.future.len();
-
                     if future_length < forward {
-                        return warn!("Cannot traverse that far into the future.");
+                        warn!("Cannot traverse that far into the future.");
+                        return Some(traversal_request);
                     }
 
                     for diff in webview
@@ -4411,9 +4443,9 @@ where
                 },
                 TraversalDirection::Back(back) => {
                     let past_length = webview.session_history.past.len();
-
                     if past_length < back {
-                        return warn!("Cannot traverse that far into the past.");
+                        warn!("Cannot traverse that far into the past.");
+                        return Some(traversal_request);
                     }
 
                     for diff in webview
@@ -4469,31 +4501,139 @@ where
             }
         }
 
-        for (browsing_context_id, mut pipeline_reloader) in browsing_context_changes.drain() {
-            if let NeedsToReload::Yes(pipeline_id, ref mut load_data) = pipeline_reloader &&
-                let Some(url) = url_to_load.get(&pipeline_id)
-            {
-                load_data.url = url.clone();
-            }
-            self.update_browsing_context(browsing_context_id, pipeline_reloader);
-        }
+        let pipelines_awaiting_activation: FxHashSet<_> = browsing_context_changes
+            .drain()
+            .filter_map(|(browsing_context_id, mut pipeline_reloader)| {
+                if let NeedsToReload::Yes(pipeline_id, ref mut load_data) = pipeline_reloader &&
+                    let Some(url) = url_to_load.get(&pipeline_id)
+                {
+                    load_data.url = url.clone();
+                }
+                self.activate_history_entry_in_browsing_context(
+                    browsing_context_id,
+                    pipeline_reloader,
+                )
+            })
+            .collect();
 
         for (pipeline_id, (history_state_id, url)) in pipeline_changes.drain() {
-            self.update_pipeline(pipeline_id, history_state_id, url);
+            self.update_pipeline_history_state(pipeline_id, history_state_id, url);
         }
 
         self.notify_history_changed(webview_id);
-
         self.trim_history(webview_id);
         self.set_frame_tree_for_webview(webview_id);
+
+        // The traversal finishes immediately when we are traversing within the same document
+        // or between already live pipelines. Note that the script event loop may still be
+        // completing these navigations asynchronously.
+        if pipelines_awaiting_activation.is_empty() {
+            return Some(traversal_request);
+        }
+
+        let Some(webview) = self.webviews.get_mut(&webview_id) else {
+            return Some(traversal_request);
+        };
+        webview.ongoing_history_traversal_request = Some(OngoingHistoryTraversalRequest {
+            traversal_request,
+            pipelines_awaiting_activation,
+        });
+        None
     }
 
+    /// Finish any completed ongoing history traversal request from any active
+    /// [`ConstellationWebView`] and trigger (and possibly finish) any other queued history
+    /// traversals on that same `WebView` until there are no remaining completed ongoing history
+    /// traversal requests.
+    fn finish_completed_session_history_traversal_requests(&mut self) {
+        while let Some(traversal_request) =
+            self.take_next_completed_session_history_traversal_request()
+        {
+            self.notify_embedder_of_completed_session_history_traversal_request(&traversal_request);
+            self.apply_queued_session_history_traversal_requests(traversal_request.webview_id);
+        }
+    }
+
+    /// If any [`ConstellationWebView`] has a completed ongoing history traversal request, return
+    /// it. Otherwise, `None` is returned.
+    fn take_next_completed_session_history_traversal_request(
+        &mut self,
+    ) -> Option<SessionHistoryTraversalRequest> {
+        if self
+            .webviews
+            .values()
+            .all(|webview| webview.ongoing_history_traversal_request.is_none())
+        {
+            return None;
+        }
+
+        let pipelines_with_pending_changes = self
+            .pending_changes
+            .iter()
+            .map(|change| change.new_pipeline_id)
+            .collect::<FxHashSet<_>>();
+        self.webviews.values_mut().find_map(|webview| {
+            webview.maybe_finish_ongoing_session_history_traversal_request(
+                &pipelines_with_pending_changes,
+            )
+        })
+    }
+
+    /// Notify the embedder that the given [`HistoryTraversalRequest`] is complete, if it was
+    /// triggered by the embedder.
+    fn notify_embedder_of_completed_session_history_traversal_request(
+        &self,
+        traversal_request: &SessionHistoryTraversalRequest,
+    ) {
+        if traversal_request.source == HistoryTraversalSource::Embedder {
+            self.constellation_to_embedder_proxy.send(
+                ConstellationToEmbedderMsg::HistoryTraversalComplete(
+                    traversal_request.webview_id,
+                    traversal_request.id.clone(),
+                ),
+            );
+        }
+    }
+
+    /// If the [`ConstellationWebView`] with the given [`WebViewId`] does not have any
+    /// ongoing traversal history request, apply the next queued request, if one exists.
+    fn apply_next_queued_session_history_traversal_request(
+        &mut self,
+        webview_id: WebViewId,
+    ) -> Option<SessionHistoryTraversalRequest> {
+        let webview = self.webviews.get_mut(&webview_id)?;
+        if webview.ongoing_history_traversal_request.is_some() {
+            return None;
+        }
+
+        let traversal_request = webview
+            .session_history_traversal_request_queue
+            .pop_front()?;
+        self.apply_session_history_traversal_request(traversal_request)
+    }
+
+    /// If the [`ConstellationWebView`] with the given [`WebViewId`] does not have any ongoing
+    /// traversal history request, apply the next queued request and potentially finish it
+    /// until there is either an ongoing history request or no more queued requests.
+    fn apply_queued_session_history_traversal_requests(&mut self, webview_id: WebViewId) {
+        while let Some(traversal_request) =
+            self.apply_next_queued_session_history_traversal_request(webview_id)
+        {
+            self.notify_embedder_of_completed_session_history_traversal_request(&traversal_request);
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#activate-history-entry>
+    ///
+    /// Activate the history entry indicated by the given [`NeedsToReload`]. Returns the
+    /// [`PipelineId`] of the pipeline if the constellation is waiting for it to reload
+    /// and `None` otherwise.
     #[servo_tracing::instrument(skip_all)]
-    fn update_browsing_context(
+    fn activate_history_entry_in_browsing_context(
         &mut self,
         browsing_context_id: BrowsingContextId,
         new_reloader: NeedsToReload,
-    ) {
+    ) -> Option<PipelineId> {
         let new_pipeline_id = match new_reloader {
             NeedsToReload::No(pipeline_id) => pipeline_id,
             NeedsToReload::Yes(pipeline_id, mut load_data) => {
@@ -4524,7 +4664,10 @@ where
                         ctx.is_private,
                         ctx.throttled,
                     ),
-                    None => return warn!("No browsing context to traverse!"),
+                    None => {
+                        warn!("No browsing context to traverse!");
+                        return None;
+                    },
                 };
                 let opener = match self.pipelines.get(&old_pipeline_id) {
                     Some(pipeline) => pipeline.opener,
@@ -4545,6 +4688,7 @@ where
                     // with the pipeline when it's created, so we can support reloading
                     // a discarded document properly.
                     TargetSnapshotParams::default(),
+                    None,
                 );
                 self.add_pending_change(SessionHistoryChange {
                     webview_id,
@@ -4555,7 +4699,7 @@ where
                     new_browsing_context_info: None,
                     viewport_details,
                 });
-                return;
+                return Some(new_pipeline_id);
             },
         };
 
@@ -4571,7 +4715,8 @@ where
                     )
                 },
                 None => {
-                    return warn!("{}: Closed during traversal", browsing_context_id);
+                    warn!("{browsing_context_id}: Closed during traversal");
+                    return None;
                 },
             };
 
@@ -4612,10 +4757,12 @@ where
             );
             self.send_message_to_pipeline(parent_pipeline_id, msg, "Child traversed after closure");
         }
+
+        None
     }
 
     #[servo_tracing::instrument(skip_all)]
-    fn update_pipeline(
+    fn update_pipeline_history_state(
         &mut self,
         pipeline_id: PipelineId,
         history_state_id: Option<HistoryStateId>,
@@ -5531,6 +5678,7 @@ where
         // If it is found, remove it from the pending changes, and make it
         // the active document of its frame.
         let change = self.pending_changes.swap_remove(pending_index);
+        let webview_id = change.webview_id;
 
         self.send_screenshot_readiness_requests_to_pipelines();
 
@@ -5555,12 +5703,13 @@ where
             let msg = ScriptThreadMessage::UpdatePipelineId(
                 parent_pipeline_id,
                 change.browsing_context_id,
-                change.webview_id,
+                webview_id,
                 pipeline_id,
                 UpdatePipelineIdReason::Navigation,
             );
             let _ = parent_pipeline.event_loop.send(msg);
         }
+
         self.change_session_history(change);
     }
 

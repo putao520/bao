@@ -418,8 +418,9 @@ pub fn copy_file_range(
 }
 
 pub fn copy_file_read_write_loop(in_: fd_t, out: fd_t, len: usize) -> crate::Result<usize> {
-    // PERF(port): Zig used `undefined` (uninitialized) 32 KiB stack buffer — profile if it shows up on a hot path
-    let mut buf = [0u8; 8 * 4096];
+    let mut stack_buf = bun_core::vec::UninitBuf::<{ 8 * 4096 }>::uninit();
+    // SAFETY: `read` below is the only writer of `buf`; only `buf[..amt_read]` is read back.
+    let buf = unsafe { stack_buf.as_bytes_mut() };
     let adjusted_count = buf.len().min(len);
     match crate::read(Fd::from_native(in_ as _), &mut buf[0..adjusted_count]) {
         Ok(amt_read) => {
