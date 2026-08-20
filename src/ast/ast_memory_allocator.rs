@@ -66,9 +66,9 @@ fn arena_pool_take() -> Option<Arena> {
         // slot is Some (parked by `arena_pool_replace`); taking it out moves
         // sole ownership to the caller. Never dropped twice — the TLS dtor
         // only sees the (empty or ManuallyDrop-severed) cell afterwards.
-        ARENA_POOL.with(|c| c.take()).map(|md| unsafe {
-            ::core::mem::ManuallyDrop::take(md)
-        })
+        ARENA_POOL
+            .with(|c| c.take())
+            .map(|mut md| unsafe { ::core::mem::ManuallyDrop::take(&mut md) })
     }
 }
 #[inline]
@@ -81,7 +81,7 @@ fn arena_pool_replace(v: Option<Arena>) -> Option<Arena> {
         // uniquely-owned Arena across the ManuallyDrop seam exactly once.
         ARENA_POOL
             .with(|c| c.replace(v.map(::core::mem::ManuallyDrop::new)))
-            .map(|md| unsafe { ::core::mem::ManuallyDrop::take(md) })
+            .map(|mut md| unsafe { ::core::mem::ManuallyDrop::take(&mut md) })
     }
 }
 

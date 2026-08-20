@@ -207,7 +207,17 @@ fn with_active_state<R>(f: impl FnOnce(Option<&mut AstAllocState>) -> R) -> R {
             // the nightly side holds for the reference's lifetime. The
             // ManuallyDrop seam is transparent here: a Some slot always wraps
             // a live, uniquely-owned box.
-            f(unsafe { (*slot.as_ptr()).as_mut().map(|md| &mut **md) })
+            f(unsafe {
+                // Explicit-typed intermediate binding — Deref coercion
+                // (ManuallyDrop<Box<T>> -> &mut Box<T>) resolves at the
+                // annotation, identically on both channels (stable E0308
+                // fix, run6; ManuallyDrop::deref_mut itself is
+                // nightly-only and must not be named here).
+                (*slot.as_ptr()).as_mut().map(|md| {
+                    let b: &mut Box<AstAllocState> = md;
+                    &mut **b
+                })
+            })
         })
     }
 }
@@ -245,7 +255,7 @@ pub fn swap_state(state: Option<Box<AstAllocState>>) -> Option<Box<AstAllocState
         // ManuallyDrop seam exactly once (mirror of the ARENA_POOL fix).
         AST_ALLOC
             .with(|slot| slot.replace(state.map(::core::mem::ManuallyDrop::new)))
-            .map(|md| unsafe { ::core::mem::ManuallyDrop::take(md) })
+            .map(|mut md| unsafe { ::core::mem::ManuallyDrop::take(&mut md) })
     }
 }
 
@@ -264,7 +274,13 @@ pub fn active_state_id() -> *const AstAllocState {
         AST_ALLOC.with(|slot| {
             // SAFETY: const-init thread-local storage; identity only. The
             // ManuallyDrop seam derefs to the same Box address.
-            unsafe { (*slot.as_ptr()).as_ref().map(|md| &**md) }
+            unsafe {
+                // Same explicit-typed intermediate as with_active_state.
+                (*slot.as_ptr()).as_ref().map(|md| {
+                    let b: &Box<AstAllocState> = md;
+                    &**b
+                })
+            }
                 .map_or(core::ptr::null(), core::ptr::from_ref)
         })
     }
