@@ -1321,21 +1321,31 @@ mod stack_check_tests {
         // of a local as an SP proxy — tests run without ASAN fake stacks).
         // The guard must trip while roughly the 128 KiB headroom (linux; the
         // threshold inside `bun_core::StackCheck::is_safe_to_recurse`) is
-        // still unused — i.e. consumed stays just under the thread size, and
-        // well over half of it (proving the comparison is against the stack
-        // END, not the origin — the inverted-check regression from BCE #15).
+        // still unused — i.e. consumed stays just under the thread's ACTUAL
+        // usable span, and well over half of it (proving the comparison is
+        // against the stack END, not the origin — the inverted-check
+        // regression from BCE #15).
+        //
+        // The comparison bound is the thread's MEASURED usable span, NOT the
+        // `Builder::stack_size` request: the platform legitimately hands back
+        // usable > requested (glibc adds TLS block + thread descriptor at the
+        // mapping top and rounds the mapping up; the slack varies with glibc
+        // and the binary's TLS footprint). Comparing against the requested
+        // size made this assert environment-sensitive — green in run5, red in
+        // run6 on the same host with an unchanged guard (the self-calibrating
+        // ratio sibling passed in the very same run6 execution). Measuring
+        // the real span here keeps the assertion exact on every environment.
         const STACK: usize = 4 * 1024 * 1024;
         #[derive(Debug)]
         struct Trip {
             consumed_from_top: usize,
+            usable_span: usize,
         }
-        fn recurse(check: &mut bun_core::StackCheck, top: usize, levels: &mut usize) -> Trip {
+        fn recurse(check: &mut bun_core::StackCheck, top: usize, levels: &mut usize) -> usize {
             let probe = &levels as *const _ as usize;
             check.update();
             if !check.is_safe_to_recurse() {
-                return Trip {
-                    consumed_from_top: top - probe,
-                };
+                return top - probe;
             }
             *levels += 1;
             recurse(check, top, levels)
@@ -1348,20 +1358,41 @@ mod stack_check_tests {
                 let mut levels = 0usize;
                 // First frame's local is ~the high-water mark for this walk.
                 let top = &levels as *const _ as usize;
-                let trip = recurse(&mut check, top, &mut levels);
+                // Actual stack bounds of THIS thread (low address the stack
+                // grows toward — same query the guard itself uses).
+                let stack_low = {
+                    // SAFETY: `attr` is a fresh zeroed pthread_attr_t used
+                    // only for this query; all three libc calls take it by
+                    // pointer per their contracts.
+                    unsafe {
+                        let mut attr: libc::pthread_attr_t = core::mem::zeroed();
+                        assert_eq!(libc::pthread_getattr_np(libc::pthread_self(), &mut attr), 0);
+                        let mut addr: *mut core::ffi::c_void = core::ptr::null_mut();
+                        let mut size: libc::size_t = 0;
+                        assert_eq!(libc::pthread_attr_getstack(&attr, &mut addr, &mut size), 0);
+                        libc::pthread_attr_destroy(&mut attr);
+                        addr as usize
+                    }
+                };
+                let consumed = recurse(&mut check, top, &mut levels);
                 assert!(levels > 16, "guard tripped after only {levels} levels — spurious");
-                trip
+                Trip {
+                    consumed_from_top: consumed,
+                    usable_span: top - stack_low,
+                }
             })
             .expect("spawn")
             .join()
             .expect("join");
         assert!(
-            trip.consumed_from_top < STACK,
-            "guard must trip before the stack is exhausted"
+            trip.consumed_from_top < trip.usable_span,
+            "guard must trip before the stack is exhausted (consumed {} of {} usable)",
+            trip.consumed_from_top,
+            trip.usable_span
         );
         assert!(
-            trip.consumed_from_top > STACK / 2,
-            "guard trip at {:?} bytes consumed is too early — check compares against the wrong bound",
+            trip.consumed_from_top > trip.usable_span / 2,
+            "guard trip at {:?} is too early — check compares against the wrong bound",
             trip
         );
     }
