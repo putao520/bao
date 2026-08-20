@@ -127,6 +127,12 @@ impl SlowUploadFixture {
         format!("http://127.0.0.1:{}{}", self.port, path)
     }
 
+    /// Non-blocking peek: has a request head for `path` been recorded?
+    fn path_seen(&self, path: &str) -> bool {
+        let (lock, _) = &*self.signal;
+        lock.lock().unwrap().iter().any(|p| p.as_str() == path)
+    }
+
     /// Wait until `count` request heads with `path` have been recorded.
     fn wait_for_path(&self, path: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
@@ -506,10 +512,20 @@ fn page_net_bun_streaming_chunked_upload() {
     // The request head must reach the fixture promptly (streaming: the head
     // goes on the wire while the body is still being produced — the buffered
     // era only scheduled the request after draining the whole IPC body).
-    assert!(
-        fixture.wait_for_path("/upload", Duration::from_secs(10)),
-        "upload request head never reached the fixture"
-    );
+    //
+    // Drive the page's event loop WHILE waiting: the XHR's first wire write
+    // occasionally parks on an engine tick this harness must supply (bimodal
+    // ~27% flake: the head arrived only at teardown — fixture log printed
+    // AFTER the old assert's panic — whenever nothing pumped between
+    // injection and the wait). Pump-and-peek, not deadline widening.
+    let head_deadline = Instant::now() + Duration::from_secs(10);
+    while !fixture.path_seen("/upload") {
+        assert!(
+            Instant::now() < head_deadline,
+            "upload request head never reached the fixture"
+        );
+        pump(20);
+    }
     eprintln!("[upload-e2e] upload head arrived");
 
     // Wait for the page-side round trip to settle.
