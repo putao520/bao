@@ -57,6 +57,12 @@ fn connect() -> Result<(), ConnectError> {
 }
 ```
 
+**泵契约**——servo 域 CDP 命令(`Runtime.evaluate`、`Page.navigate`
+等)在 runtime 线程执行,需主线程驱动:循环调用
+`runtime.pump_cdp(Duration)`,或使用 `run()` 循环形态;协议域命令
+(`Browser.version`、`pages()`)免泵。无泵的 servo 域命令 2 秒诚实
+超时,绝不返回假值。
+
 ### 3. 页面内 Node/Bun API(双 Realm)
 
 `page.evaluate_js` 在 **Node Realm** 执行:DOM 与 `require` / `fs` /

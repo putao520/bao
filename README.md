@@ -78,6 +78,13 @@ fn connect() -> Result<(), ConnectError> {
 }
 ```
 
+**Pump contract** — servo-domain CDP commands (`Runtime.evaluate`,
+`Page.navigate`, …) execute on the runtime thread and need the main
+thread to drive it: call `runtime.pump_cdp(Duration)` in a loop, or use
+the `run()` loop form. Protocol-domain commands (`Browser.version`,
+`pages()`) need no pumping. An unpumped servo-domain command times out
+honestly after 2s — it never returns a fake value.
+
 ### Integration path 3 — Node/Bun APIs inside the page (dual realm)
 
 `page.evaluate_js` runs in the **Node Realm**: the same global scope has the
