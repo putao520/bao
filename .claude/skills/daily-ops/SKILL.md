@@ -1,6 +1,6 @@
 ---
 name: daily-ops
-description: 每日运维值班:上游轻量同步 + GitHub issue 分诊处理(putao520/bao)。当用户说"每日同步/daily ops/处理 issue/issue 值班/issue 分诊/日常巡检/定时同步",或 headless 定时任务(systemd timer)执行时使用。自动边界:小窗口吸收+issue 根治+波末验收+commit/push/关 issue;大窗口(>20 commits)/BCE patch 重放文件/SPEC 未定义 → 升级人工不自动。
+description: 每日运维值班:上游轻量同步 + GitHub issue 分诊处理(putao520/bao)。当用户说"每日同步/daily ops/处理 issue/issue 值班/issue 分诊/日常巡检/定时同步",或 headless 定时任务(systemd timer)执行时使用。自动边界:小窗口吸收+issue 根治+波末验收+commit/push/关 issue;超主任务范围 issue 直接 reject+close(安全门禁);大窗口(>20 commits)/BCE patch 重放文件/issue 语义不明 → 升级人工不自动。
 ---
 
 # 每日运维值班(daily-ops)
@@ -55,9 +55,10 @@ description: 每日运维值班:上游轻量同步 + GitHub issue 分诊处理(p
 | 吸收判定项 ≤ 5 | 派 1-2 个 E(共树并发 ≤ 3) |
 | 吸收判定项 > 5 | escalate |
 | issue:SPEC 有 REQ 映射 + scope ≤ 3 文件 + 非 vendor | 修复 wave |
-| issue:其余(scope 大 / 触 vendor / 无映射) | escalate |
-| SPEC 未定义 / 与 SPEC 冲突 | `needs-adjudication` label + 英文评论,**不 close** |
-| issue 已实现 / 重复 / 不适用 | reject + 证据回复 + close(仅 live) |
+| issue:scope 大 / 触 vendor(在范围内) | escalate |
+| issue:无映射(判明超范围) | **reject+close(not planned)+ 英文理由(安全门禁,仅 live)** |
+| SPEC 未定义 / 与主任务・PRD・SPEC 冲突 | **reject+close(not planned)+ 英文理由回复(安全门禁,仅 live)**;仅语义不明才 escalate |
+| issue 已实现 / 重复 / 不适用 / 超主任务范围(门禁) | reject + 证据/理由回复 + close(仅 live) |
 | 验收 PASS | 收尾(§1 阶段 6) |
 | 验收 FAIL | 不关不 push,评论进展 |
 | bao 工作树脏 / cargo 锁被持有 | 只读阶段照常,写/测阶段标 `SKIPPED_BUSY` |

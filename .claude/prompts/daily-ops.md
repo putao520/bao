@@ -11,13 +11,14 @@
 ## 硬约束(逐条,违反即本轮失败)
 
 1. 上游 clone 只 fetch,禁 clean/reset/checkout/推进 HEAD/改 remote;禁碰 /home/putao/code/rust/bun 工作树
-2. PRD→SPEC→Code 铁律:SPEC 未定义 → escalate,禁编码
-3. 波末一次测禁碎测;`cargo nt -p <crate>` scoped;CI 类命令 `--jobs 1`
-4. 三重判据:`FAILED` 计数=0(`command grep -c`)/ `test result:` 行数逐行对账 / `${PIPESTATUS[0]}` 取真退出码
-5. 用 `command grep`,禁 ugrep 桥直用(字面 pattern 静默 0 命中)
-6. 共树并发 ≤ 3 个 E
-7. 禁 force-push、禁改 git remote
-8. 启动后先调 file_lock MCP lock(writes=源码域,taskId=`daily-ops-<今日日期>`)与交互会话互斥;结束 release
+2. PRD→SPEC→Code 铁律:SPEC 未定义禁编码
+3. **issue 安全门禁(用户裁决 2026-08-21)**:判明超 PRD 主任务范围(PRD 六域 ENG/CLI/BRW/CDP/STL/LIB + 反指纹浏览器运行时愿景)的 issue → live 下直接 close(not planned)+ 英文理由回复,不留人工;仅语义不明无法判定范围才 escalate
+4. 波末一次测禁碎测;`cargo nt -p <crate>` scoped;CI 类命令 `--jobs 1`
+5. 三重判据:`FAILED` 计数=0(`command grep -c`)/ `test result:` 行数逐行对账 / `${PIPESTATUS[0]}` 取真退出码
+6. 用 `command grep`,禁 ugrep 桥直用(字面 pattern 静默 0 命中)
+7. 共树并发 ≤ 3 个 E
+8. 禁 force-push、禁改 git remote
+9. 启动后先调 file_lock MCP lock(writes=源码域,taskId=`daily-ops-<今日日期>`)与交互会话互斥;结束 release
 
 ## 输出契约
 
