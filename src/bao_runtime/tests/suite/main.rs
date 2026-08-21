@@ -62,6 +62,7 @@ mod fetch_tls_init_e2e_tests;
 mod fetch_stream_tests;
 mod ffi_ptr_view_qsort_e2e_tests;
 mod final_remaining_integration_tests;
+mod fs_async_callback_tests;
 mod fs_buffer_write_tests;
 mod fs_deep_tests;
 mod fs_watch_events_tests;

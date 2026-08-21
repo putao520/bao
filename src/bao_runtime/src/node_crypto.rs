@@ -1,6 +1,7 @@
 // @trace REQ-ENG-007 [entity:BaoRuntime]
 use ::std::cell::RefCell;
 use ::std::ptr::NonNull;
+use ::std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use bao_engine::context::RawValueRootGuard;
 use bun_core::ZBox;
 
@@ -10,6 +11,7 @@ use core::ptr;
 use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -5232,7 +5234,11 @@ unsafe fn rsa_private_decrypt_inner(
 
 // ============================================================
 // Async crypto infrastructure (callback-based)
-// Uses same pattern as fs_async: spawn thread + uws_loop_defer
+// Same ConcurrentTask carrier as fs_async (A' route, user-adjudicated
+// 2026-08-21): worker completes → complete_post enqueues the JS-thread
+// tasklet on the pump's MiniEventLoop (ConcurrentWakeup-registered). The
+// former uws_loop_defer path deferred onto the WORKER thread's private
+// uWS::Loop — a loop no pump ever ticks, so callbacks never delivered.
 // ============================================================
 
 struct CryptoAsyncCtx {
@@ -5242,30 +5248,85 @@ struct CryptoAsyncCtx {
     /// only the fallback for the rooting-failed path.
     callback: *mut JSObject,
     /// RAII heap root for the callback value, spanning the worker-thread
-    /// window. Released when this Box drops (defer callback or the
-    /// degenerate no-loop path), liveness-guarded.
+    /// window. Released when this Box drops (tasklet run or the worker-side
+    /// fail-closed release), liveness-guarded.
     cb_root: Option<RawValueRootGuard>,
     result: ::std::sync::Arc<::std::sync::Mutex<Option<::std::result::Result<Vec<u8>, String>>>>,
     #[allow(dead_code)]
     op_name: String,
+    /// JS thread's pump MiniEventLoop (timers::with_event_loop — the
+    /// ConcurrentWakeup-registered instance; NOT dispatch_sm's independent
+    /// BaoEventLoop).
+    mini_loop_ptr: *const bun_event_loop::MiniEventLoop::MiniEventLoop<'static>,
+    /// ConcurrentTask carrier embedded in this Box (address-stable).
+    concurrent_task: bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext,
+    /// Prevents duplicate tasklet scheduling.
+    has_scheduled: AtomicBool,
 }
 
-unsafe fn schedule_crypto_defer(ctx_ptr: usize) {
-    bao_uloop::force_link();
-    let loop_ = bao_uloop::uws_get_loop();
-    if loop_.is_null() {
-        let _ = Box::from_raw(ctx_ptr as *mut CryptoAsyncCtx);
-        return;
+/// Process-global count of in-flight async crypto ops (spawn-side ++,
+/// retired by `CryptoAsyncCtx::drop`) — pump-liveness view across the
+/// worker window (same wedge class as fs_async_pending).
+static CRYPTO_ASYNC_PENDING: AtomicUsize = AtomicUsize::new(0);
+
+/// In-flight async crypto ops on any thread (spawn-side view for pump
+/// liveness).
+pub fn crypto_async_pending() -> usize {
+    CRYPTO_ASYNC_PENDING.load(AtomicOrdering::Acquire)
+}
+
+impl Drop for CryptoAsyncCtx {
+    fn drop(&mut self) {
+        // Terminal event on EVERY exit path — tasklet ran, or the worker-side
+        // fail-closed release — so the pending counter can never hang.
+        CRYPTO_ASYNC_PENDING.fetch_sub(1, AtomicOrdering::AcqRel);
     }
-    bao_uloop::uws_loop_defer(
-        loop_,
-        ctx_ptr as *mut ::std::ffi::c_void,
-        crypto_async_defer_callback,
-    );
 }
 
-unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
-    let ctx = Box::from_raw(raw_ctx as *mut CryptoAsyncCtx);
+/// ConcurrentTask shim: runs `crypto_async_defer_callback` on the JS thread
+/// when the pump's MiniEventLoop tick pops the carrier.
+fn crypto_async_tasklet_shim(ctx: *mut CryptoAsyncCtx, _parent: *mut ()) {
+    // SAFETY: ctx is the Box::into_raw pointer bound to the carrier at
+    // spawn; the tasklet runs exactly once (sole consumer takes the Box).
+    unsafe { crypto_async_defer_callback(ctx) };
+}
+
+/// Worker-thread completion (mirror of node_fs::complete_post): CAS-guarded
+/// enqueue of the JS-thread tasklet on the captured pump loop; a `false`
+/// return (JS thread exited / never registered) releases the carrier Box
+/// fail-closed. The RAII root release on this foreign thread leaks the
+/// rooted slots by design (bounded — see RawValueRootGuard::drop).
+unsafe fn crypto_complete_post(ctx: *mut CryptoAsyncCtx) {
+    unsafe {
+        if (*ctx)
+            .has_scheduled
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .is_ok()
+        {
+            let loop_ptr = (*ctx).mini_loop_ptr;
+            if !loop_ptr.is_null() {
+                let carrier = ::std::ptr::addr_of_mut!((*ctx).concurrent_task);
+                // SAFETY: carrier is the embedded task in a live Box; loop_ptr
+                // was captured on the JS thread at spawn.
+                let delivered =
+                    bun_event_loop::ConcurrentWakeup::enqueue_task_concurrent_cross_thread(
+                        loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>,
+                        ::std::ptr::NonNull::new_unchecked(carrier),
+                    );
+                if !delivered {
+                    // JS thread gone: nothing will ever drain the queue.
+                    drop(Box::from_raw(ctx));
+                }
+            } else {
+                // Pump loop never captured: same fail-closed release.
+                drop(Box::from_raw(ctx));
+            }
+        }
+    }
+}
+
+unsafe fn crypto_async_defer_callback(ctx_ptr: *mut CryptoAsyncCtx) {
+    let ctx = Box::from_raw(ctx_ptr);
     let cx = ctx.cx;
     // Live callback value: prefer the RAII root's slot (updated in place by
     // a moving GC) over the raw pointer captured at spawn time.
@@ -5283,11 +5344,28 @@ unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_voi
     let cx_ref = &mut wrapped_cx;
 
     rooted!(&in(cx_ref) let cb_val = cb_value);
+    // BCE-BUG-ENG-370 (same class as fetch_async/bun_build/fs tasklets):
+    // runs from the MiniEventLoop tick OUTSIDE any JS activation — enter the
+    // callback object's realm for the dispatch window; realm-derived SM API
+    // below (JS_NewPlainObject, string creation, create_buffer_object) would
+    // otherwise NULL-deref on cx->realm_ == NULL.
+    rooted!(&in(cx_ref) let cb_obj = cb_value.to_object());
+    let mut realm = AutoRealm::new_from_handle(cx_ref, cb_obj.handle());
+    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
     let global = CurrentGlobalOrNull(cx);
-    if global.is_null() {
-        return;
-    }
-    rooted!(&in(cx_ref) let global_rooted = global);
+    // Drain-time dispatch may run outside any entered realm; fall back to
+    // the thread's persistent realm global instead of silently dropping the
+    // callback (same convention as timers::fire_js_callback_raw).
+    let global = if global.is_null() {
+        match bao_engine::context::thread_realm_global() {
+            ::std::option::Option::Some(g) if !g.is_null() => g,
+            _ => return,
+        }
+    } else {
+        global
+    };
+    rooted!(&in(realm_cx) let global_rooted = global);
 
     match result_opt {
         Some(Ok(data)) => {
@@ -5297,7 +5375,7 @@ unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_voi
             } else {
                 mozjs::jsval::ObjectValue(buf_obj)
             };
-            rooted!(&in(cx_ref) let val_rooted = val);
+            rooted!(&in(realm_cx) let val_rooted = val);
             let args_arr = [UndefinedValue(), val_rooted.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -5317,12 +5395,12 @@ unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_voi
             JS_ClearPendingException(cx);
         }
         Some(Err(msg)) => {
-            rooted!(&in(cx_ref) let err_obj = JS_NewPlainObject(cx));
+            rooted!(&in(realm_cx) let err_obj = JS_NewPlainObject(cx));
             if !err_obj.get().is_null() {
                 let c_msg = ZBox::from_bytes(msg.as_bytes());
                 let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
                 if !js_str.is_null() {
-                    rooted!(&in(cx_ref) let msg_val = mozjs::jsval::StringValue(&*js_str));
+                    rooted!(&in(realm_cx) let msg_val = mozjs::jsval::StringValue(&*js_str));
                     JS_DefineProperty(
                         cx,
                         err_obj.handle().into(),
@@ -5332,7 +5410,7 @@ unsafe extern "C" fn crypto_async_defer_callback(raw_ctx: *mut ::std::ffi::c_voi
                     );
                 }
             }
-            rooted!(&in(cx_ref) let err_val = mozjs::jsval::ObjectValue(err_obj.get()));
+            rooted!(&in(realm_cx) let err_val = mozjs::jsval::ObjectValue(err_obj.get()));
             let args_arr = [err_val.get()];
             let cb_args = HandleValueArray {
                 length_: 1,
@@ -5385,8 +5463,34 @@ where
         cb_root,
         result: result_slot,
         op_name: op_name_owned,
+        mini_loop_ptr: ::std::ptr::null(),
+        concurrent_task:
+            bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(),
+        has_scheduled: AtomicBool::new(false),
     });
-    let ctx_ptr = Box::into_raw(ctx) as usize;
+    // Increment BEFORE the Box can ever drop (Drop retires it) so the pump
+    // liveness view can never miss an in-flight op.
+    CRYPTO_ASYNC_PENDING.fetch_add(1, AtomicOrdering::Release);
+    let ctx_ptr = Box::into_raw(ctx);
+
+    // Capture the JS thread's pump MiniEventLoop — the ConcurrentWakeup-
+    // registered instance behind timers::with_event_loop (materializes +
+    // registers on first call). NOT dispatch_sm's BaoEventLoop instance.
+    // SAFETY: the closure borrows the loop for the call only; the pointer
+    // stays valid for the thread's lifetime (leaked at materialization).
+    let loop_ptr: *const bun_event_loop::MiniEventLoop::MiniEventLoop<'static> =
+        crate::timers::with_event_loop(|loop_| loop_ as *const _);
+    // SAFETY: ctx_ptr is a live heap allocation we just created; the carrier
+    // is embedded, so its address is stable for the Box's lifetime.
+    unsafe {
+        (*ctx_ptr).mini_loop_ptr = loop_ptr;
+        (*ctx_ptr).concurrent_task.from(ctx_ptr, crypto_async_tasklet_shim);
+    }
+
+    // Raw pointers are not Send — the worker takes the ctx as an integer
+    // token; off-thread it is touched solely via crypto_complete_post's
+    // atomics/queue push.
+    let ctx_token = ctx_ptr as usize;
 
     ::std::thread::spawn(move || {
         let result = work();
@@ -5394,9 +5498,9 @@ where
             let mut slot = result_clone.lock().unwrap();
             *slot = Some(result);
         }
-        unsafe {
-            schedule_crypto_defer(ctx_ptr);
-        }
+        // SAFETY: ctx_token reconstitutes the live spawn-side Box; sole
+        // completion path (CAS-guarded).
+        unsafe { crypto_complete_post(ctx_token as *mut CryptoAsyncCtx) };
     });
 }
 

@@ -1,99 +1,49 @@
 // @trace REQ-ENG-008 [entity:BaoLoopState]
-//! Wave 74-LOOP-C.1: raw epoll + eventfd implementation of the uSockets loop ABI.
+//! Rust arm of the uSockets loop ABI (BUG-353 fix, C-exclusive loops).
 //!
 //! Upstream Bun relies on the C library `libusockets` to provide `us_loop_*` /
-//! `us_poll_*` / `us_socket_*` / `uws_get_loop` etc. Bao does not link any C
-//! compiler output — every `#[no_mangle] extern "C"` symbol consumed by
-//! `bun_uws_sys::c::*` extern blocks must come from a Rust crate. This crate
-//! is that Rust crate for the **event-loop core**:
+//! `us_poll_*` / `us_socket_*` / `uws_get_loop` etc. Since the BUG-353 fix
+//! the loop entry points are `extern "C"` imports resolved from
+//! libusockets.a/libuwsockets.a at link time (the former Rust-side
+//! `us_create_loop`/epoll backend shadowed the C symbols and allocated an
+//! incompatible loop shell — see the FFI section below). This crate now
+//! provides:
 //!
-//!   - `uws_get_loop`           — thread-local singleton accessor
-//!   - `us_create_loop`         — explicit construction (with callbacks)
-//!   - `us_loop_free`           — destruction
-//!   - `us_loop_run`            — run until empty
-//!   - `us_loop_run_bun_tick`   — single iteration (Bun's `tick`)
-//!   - `us_wakeup_loop`         — cross-thread wake
-//!   - `uws_loop_defer`         — next-tick callback queue
-//!   - `uws_loop_addPreHandler` / `addPostHandler` / `remove*`
+//!   - `bao_loop_tick` — the Rust override of the C tick entry: delegates to
+//!     C `us_loop_run_bun_tick` (controlled timeout is the CALLER's timespec;
+//!     `bun_uws_sys::Loop::tick_without_idle` passes a zero timespec so the
+//!     C epoll_wait never blocks indefinitely — BCE-007-R3).
+//!   - `us_dispatch_*` — socket event kind→vtable routing for libusockets.
+//!   - `Bun__addrinfo_*` — the usockets DNS seam (shared bun_dns cache).
+//!   - `poll` — the FilePoll graft (tagged-pointer epoll dispatch).
+//!   - TLS C→Rust hooks (`BUN__warn__extra_ca_load_failed`, ...) chained
+//!     into every link scope that pulls libusockets_tls.a.
 //!
-//! ## Layout strategy
+//! ## Removed with the A' cleanup (user-adjudicated 2026-08-21)
 //!
-//! `bun_uws_sys::PosixLoop` is `#[repr(C, align(16))]` with a fixed field
-//! layout that downstream callers (FilePoll, dispatch_sm) read directly
-//! (e.g. `internal_loop_data.iteration_nr`). We allocate a `Box<PosixLoop>`
-//! per thread, zero-initialise its fields, and hand out raw pointers to it.
-//! The `Box` is intentionally leaked (`Box::into_raw`) — the loop has process
-//! lifetime, matching upstream Bun's `us_create_loop` semantics.
-//!
-//! ## Raw epoll backend (Wave 74-LOOP-C.1)
-//!
-//! Each `PosixLoop` carries a `BaoLoopState` (held in a `thread_local!`)
-//! containing:
-//!   - `epfd` — `epoll_create1(EPOLL_CLOEXEC)` fd, also stored in
-//!     `(*loop_ptr).fd` so FilePoll's `register_with_fd_impl` works
-//!   - `deferred` — `VecDeque` of next-tick callbacks pushed by `uws_loop_defer`
-//!   - `pre_handlers` / `post_handlers` — registered `addPreHandler` /
-//!     `addPostHandler` callbacks (small vec of fn pointers)
-//!
-//! Cross-thread wake uses a raw `eventfd` registered into `epfd` with
-//! `WAKEUP_TAG = 0` in the `data.u64` high bits. The eventfd fd is stored
-//! in a heap-allocated `BaoWakeupAsync` whose pointer is cast to
-//! `*mut us_internal_async` and placed in
-//! `(*loop_ptr).internal_loop_data.wakeup_async` — this makes it reachable
-//! from any thread holding `*mut Loop`, fixing the `with_matching_state`
-//! thread_local limitation.
-//!
-//! ## Tagged pointer dispatch
-//!
-//! `epoll_event.data.u64` carries a tagged pointer:
-//!   - Bits 0..49  → pointer (same as FilePoll's `TaggedPtr`)
-//!   - Bits 49..64 → tag (u15):
-//!     - 0    = WAKEUP (eventfd sentinel)
-//!     - 1024 = FilePoll (Pollable::FILE_POLL_TAG)
-//!     - 1..4 = BaoPoll (Socket/ListenSocket/Shutdown/Callback — 74-C.2)
-//!
-//! This matches `TaggedPtr::init` in `ptr/tagged_pointer.rs` and
-//! `Pollable::FILE_POLL_TAG` in `io/posix_event_loop.rs`.
+//! The BUG-353-era Rust epoll backend (`BaoLoopState` thread-local,
+//! `create_loop`, `run_epoll`, `take_deferred`, the `deferred`/handler
+//! queues and the macOS kqueue mirror) is deleted: nothing ever populated
+//! `BAO_LOOP` (zero `create_loop` callers), so the Rust-state branch of
+//! `bao_loop_tick` was unreachable and every loop in the process was — and
+//! remains — C-owned. The fs/crypto async completion path that once targeted
+//! `uws_loop_defer` now uses ConcurrentTask carriers on the pump's
+//! MiniEventLoop (bun_runtime node_fs/node_crypto, A' route).
 
 #![allow(clippy::missing_safety_doc)]
 #![allow(dead_code)]
 // BUG-353 fix: loop entry points now extern "C" from C/C++ libs.
 // Internal helpers retained for poll.rs (FilePoll graft).
-#![cfg(any(target_os = "linux", target_os = "macos"))] // 74-C.1: Linux epoll; 74-C.8 (macOS M2): kqueue arm — see src/kqueue.rs
+#![cfg(any(target_os = "linux", target_os = "macos"))] // 74-C.1: Linux; 74-C.8 (macOS M2)
 
 pub mod poll;
 
-#[cfg(target_os = "macos")]
-mod kqueue;
-
 use core::ffi::{c_char, c_int, c_uint, c_void};
-use core::ptr;
 
-use bun_uws_sys::{InternalLoopData, Loop, PosixLoop, Timespec};
-
-// ────────────────────────────── constants ──────────────────────────────
-
-/// Number of bits to shift the tag into the high position.
-/// Matches `TaggedPtr::ADDR_BITS` in `ptr/tagged_pointer.rs`.
-const ADDR_BITS: u32 = 49;
-
-/// Tag value for the wakeup eventfd: 0 (tag 0 = null-tagged pointer).
-const WAKEUP_TAG: u16 = 0;
-
-/// Encode a tagged pointer: `(ptr as u64 & ADDR_MASK) | (tag as u64 << ADDR_BITS)`.
-/// Used only for the wakeup eventfd registration. All other epoll events
-/// use untagged `data.ptr` (the CLEAR_POINTER_TAG dispatch model).
-#[inline]
-fn encode_tagged_ptr(ptr: *mut c_void, tag: u16) -> u64 {
-    let addr = ptr as usize as u64;
-    let addr_mask: u64 = (1u64 << ADDR_BITS) - 1;
-    (addr & addr_mask) | ((tag as u64) << ADDR_BITS)
-}
+use bun_uws_sys::{Loop, Timespec};
 
 // ────────────────────────────── types ──────────────────────────────
-// The following types and helpers are retained for poll.rs (FilePoll graft)
-// and future integration. The old loop entry points (us_create_loop, etc.)
-// are now extern "C" imports from libusockets.a/libuwsockets.a (BUG-353 fix).
+// Callback type aliases for the extern "C" loop ABI imports below.
 
 #[allow(dead_code)]
 pub type LoopCb = unsafe extern "C" fn(*mut Loop);
@@ -101,412 +51,6 @@ pub type LoopCb = unsafe extern "C" fn(*mut Loop);
 pub type LoopCtxCb = unsafe extern "C" fn(*mut c_void, *mut Loop);
 #[allow(dead_code)]
 pub type DeferCb = unsafe extern "C" fn(*mut c_void);
-
-/// Heap-allocated structure holding the wakeup eventfd. Stored in
-/// `InternalLoopData.wakeup_async` (cast to `*mut us_internal_async`)
-/// so it's reachable from any thread holding `*mut Loop`.
-///
-/// Upstream C uses `us_internal_callback_t` (which wraps `us_poll_t`);
-/// we only need the fd and the callback.
-#[repr(C)]
-struct BaoWakeupAsync {
-    fd: c_int,
-    cb: Option<unsafe extern "C" fn(*mut BaoWakeupAsync)>,
-}
-
-/// Per-thread state backing each `PosixLoop` returned by `uws_get_loop` /
-/// `us_create_loop`. Stored as `thread_local! { RefCell<Option<...>> }` so the
-/// first call lazily materialises both the `PosixLoop` shell and the epoll
-/// backend in lock-step.
-struct BaoLoopState {
-    /// Pointer to the `Box::into_raw`-ed `PosixLoop` we exposed to FFI.
-    loop_ptr: *mut PosixLoop,
-
-    /// epoll fd from `epoll_create1(EPOLL_CLOEXEC)`. Also stored in
-    /// `(*loop_ptr).fd` so FilePoll can `epoll_ctl(loop_.fd, ...)`.
-    epfd: c_int,
-
-    /// Saved pointer to the `Box::into_raw`-ed `BaoWakeupAsync` so `Drop` can
-    /// recover the correct Rust type. `InternalLoopData.wakeup_async` stores
-    /// this same address cast to `*mut us_internal_async` (an opaque ZST), so
-    /// we cannot reconstruct the `BaoWakeupAsync` from it — we must keep the
-    /// original typed pointer.
-    wakeup_async_ptr: *mut BaoWakeupAsync,
-
-    /// Pending wakeups counter. Mirrors `PosixLoop::pending_wakeups` but
-    /// kept on the Rust side so we can atomically swap-and-clear without
-    /// touching FFI memory.
-    pending_wakeups: core::sync::atomic::AtomicU32,
-
-    /// `uws_loop_defer` FIFO. Drained at the start of every `tick`.
-    deferred: std::collections::VecDeque<DeferredCall>,
-
-    /// Pre-tick handlers registered via `uws_loop_addPreHandler`.
-    pre_handlers: Vec<HandlerSlot>,
-
-    /// Post-tick handlers registered via `uws_loop_addPostHandler`.
-    post_handlers: Vec<HandlerSlot>,
-
-    /// User wake callback set at `us_create_loop` time.
-    wakeup_cb: Option<LoopCb>,
-
-    /// Optional pre-callback set at `us_create_loop` time.
-    pre_cb: Option<LoopCb>,
-
-    /// Optional post-callback set at `us_create_loop` time.
-    post_cb: Option<LoopCb>,
-}
-
-// SAFETY: BaoLoopState owns its raw pointers and only accesses them from the
-// thread that created them. The `wakeup_async_ptr` field is a `Box::into_raw`
-// pointer that we reconstruct in `Drop` — it is never shared across threads.
-unsafe impl Send for BaoLoopState {}
-
-impl Drop for BaoLoopState {
-    fn drop(&mut self) {
-        // Release order: child resources first, then parent struct, then fd.
-        // This mirrors C's `us_loop_free` → `us_internal_loop_data_free` → `close(fd)` → `us_free(loop)`.
-
-        // 1. Close wakeup eventfd and free BaoWakeupAsync (Box-allocated).
-        if !self.wakeup_async_ptr.is_null() {
-            let wakeup = unsafe { &*self.wakeup_async_ptr };
-            if wakeup.fd >= 0 {
-                unsafe {
-                    libc::close(wakeup.fd);
-                }
-            }
-            // Reconstruct the Box so Rust drops it.
-            unsafe {
-                drop(Box::from_raw(self.wakeup_async_ptr));
-            }
-            self.wakeup_async_ptr = ptr::null_mut();
-        }
-
-        // 2. Free recv_buf and send_buf (libc::malloc-allocated).
-        if !self.loop_ptr.is_null() {
-            let internal = unsafe { &(*self.loop_ptr).internal_loop_data };
-            if !internal.recv_buf.is_null() {
-                unsafe {
-                    libc::free(internal.recv_buf as *mut c_void);
-                }
-            }
-            if !internal.send_buf.is_null() {
-                unsafe {
-                    libc::free(internal.send_buf as *mut c_void);
-                }
-            }
-            // 3. Free PosixLoop itself (Box::into_raw-allocated).
-            unsafe {
-                drop(Box::from_raw(self.loop_ptr));
-            }
-            self.loop_ptr = ptr::null_mut();
-        }
-
-        // 4. Close epoll fd (last — child resources may reference it during teardown).
-        if self.epfd >= 0 {
-            unsafe {
-                libc::close(self.epfd);
-            }
-            self.epfd = -1;
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct DeferredCall {
-    ctx: *mut c_void,
-    cb: DeferCb,
-}
-
-#[derive(Clone, Copy)]
-struct HandlerSlot {
-    ctx: *mut c_void,
-    cb: LoopCtxCb,
-}
-
-thread_local! {
-    /// Single-thread "the loop" — Bun upstream assumes one loop per thread,
-    /// so this is the same shape.
-    static BAO_LOOP: std::cell::RefCell<Option<BaoLoopState>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-// ──────────────────────────── allocation ───────────────────────────
-
-/// Allocate a zero-initialised `PosixLoop` shell and a fresh `BaoLoopState`
-/// tied to it. Stores the state in the current thread's `BAO_LOOP`.
-///
-/// Returns the raw `*mut PosixLoop` for FFI consumption.
-///
-/// Linux-only: this constructs the Rust-owned epoll backend (epoll fd +
-/// eventfd wakeup). On macOS the loop is C-exclusive (BUG-353 fix) — C
-/// `us_create_loop` creates the kqueue fd (`loop->fd = kqueue()`) and arms
-/// the EVFILT_MACHPORT wakeup, so no Rust-side construction exists there
-/// (wakeup goes through the C mechanism, never a Rust eventfd).
-#[cfg(target_os = "linux")]
-fn create_loop(
-    wakeup_cb: Option<LoopCb>,
-    pre_cb: Option<LoopCb>,
-    post_cb: Option<LoopCb>,
-) -> *mut PosixLoop {
-    // Allocate the recv/send buffers required by `InternalLoopData::recv_slice`
-    // upstream (LIBUS_RECV_BUFFER_LENGTH = 524_288). The C side frees these
-    // via `free()` on loop teardown; we match the allocator here so the
-    // pointer remains libc-free-able.
-    const RECV_BUF_LEN: usize = 524_288;
-    let recv_buf: *mut u8 = unsafe { libc::malloc(RECV_BUF_LEN) as *mut u8 };
-    assert!(
-        !recv_buf.is_null(),
-        "bao_uloop: libc::malloc(recv_buf) failed"
-    );
-    unsafe { ptr::write_bytes(recv_buf, 0, RECV_BUF_LEN) };
-
-    let send_buf: *mut u8 = unsafe { libc::malloc(RECV_BUF_LEN) as *mut u8 };
-    assert!(
-        !send_buf.is_null(),
-        "bao_uloop: libc::malloc(send_buf) failed"
-    );
-    unsafe { ptr::write_bytes(send_buf, 0, RECV_BUF_LEN) };
-
-    // Create the epoll fd. This is the single poll set shared by FilePoll
-    // and BaoPoll — FilePoll reads `loop_.fd` directly and does raw
-    // `epoll_ctl` (see `posix_event_loop.rs:register_with_fd_impl`).
-    let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-    assert!(epfd >= 0, "bao_uloop: epoll_create1 failed");
-
-    // Create the wakeup eventfd. Registered into epfd with WAKEUP_TAG so
-    // `epoll_wait` returns it as a ready event. Stored in a heap-allocated
-    // `BaoWakeupAsync` whose pointer goes into `wakeup_async` (cross-thread
-    // reachable from `*mut Loop`).
-    let wakeup_fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-    assert!(wakeup_fd >= 0, "bao_uloop: eventfd failed");
-
-    let wakeup_async = Box::into_raw(Box::new(BaoWakeupAsync {
-        fd: wakeup_fd,
-        cb: None,
-    }));
-
-    // Register wakeup_fd into epfd with WAKEUP_TAG.
-    let mut wakeup_event: libc::epoll_event = unsafe { core::mem::zeroed() };
-    wakeup_event.events = libc::EPOLLIN as u32;
-    wakeup_event.u64 = encode_tagged_ptr(wakeup_async as *mut c_void, WAKEUP_TAG);
-    let ret = unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, wakeup_fd, &mut wakeup_event) };
-    assert!(ret == 0, "bao_uloop: epoll_ctl ADD wakeup_fd failed");
-
-    // Build a zeroed `InternalLoopData` then patch in the buffers and wakeup.
-    let internal = InternalLoopData {
-        sweep_timer: ptr::null_mut(),
-        sweep_timer_count: 0,
-        wakeup_async: wakeup_async as *mut bun_uws_sys::internal_loop_data::us_internal_async,
-        head: ptr::null_mut(),
-        quic_head: ptr::null_mut(),
-        quic_next_tick_us: 0,
-        quic_timer: ptr::null_mut(),
-        iterator: ptr::null_mut(),
-        recv_buf,
-        send_buf,
-        ssl_data: ptr::null_mut(),
-        pre_cb,
-        post_cb,
-        closed_udp_head: ptr::null_mut(),
-        closed_head: ptr::null_mut(),
-        low_prio_head: ptr::null_mut(),
-        low_prio_budget: 0,
-        dns_ready_head: ptr::null_mut(),
-        closed_connecting_head: ptr::null_mut(),
-        mutex: 0,
-        parent_ptr: ptr::null_mut(),
-        parent_tag: 0 as c_char,
-        iteration_nr: 0,
-        jsc_vm: ptr::null(), // In Bao, this holds a SpiderMonkey JSContext pointer
-        tick_depth: 0,
-    };
-
-    // Allocate the PosixLoop shell. Store the real epoll fd in `fd` — this
-    // is critical: FilePoll reads `loop_.fd` and does `epoll_ctl(loop_.fd, ...)`.
-    let boxed: Box<PosixLoop> = Box::new(PosixLoop {
-        internal_loop_data: internal,
-        num_polls: 0,
-        num_ready_polls: 0,
-        current_ready_poll: 0,
-        fd: epfd,
-        active: 0,
-        pending_wakeups: 0,
-        ready_polls: [unsafe { core::mem::zeroed() }; 1024],
-    });
-    let loop_ptr: *mut PosixLoop = Box::into_raw(boxed);
-
-    BAO_LOOP.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if slot.is_some() {
-            panic!("bao_uloop: thread already has a BaoLoopState — call us_loop_free first");
-        }
-        *slot = Some(BaoLoopState {
-            loop_ptr,
-            epfd,
-            wakeup_async_ptr: wakeup_async,
-            pending_wakeups: core::sync::atomic::AtomicU32::new(0),
-            deferred: std::collections::VecDeque::new(),
-            pre_handlers: Vec::new(),
-            post_handlers: Vec::new(),
-            wakeup_cb,
-            pre_cb,
-            post_cb,
-        });
-    });
-
-    loop_ptr
-}
-
-// ──────────────────────── BaoLoopState access ──────────────────────
-
-/// Run `f` with the BaoLoopState if it matches `loop_`. Returns `None` if no
-/// state is present or the pointer doesn't match.
-fn with_matching_state<R>(loop_: *mut Loop, f: impl FnOnce(&mut BaoLoopState) -> R) -> Option<R> {
-    BAO_LOOP.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let state = slot.as_mut()?;
-        if !ptr::eq(state.loop_ptr, loop_) {
-            return None;
-        }
-        Some(f(state))
-    })
-}
-
-/// Drain the deferred queue for `loop_` into a Vec while holding the
-/// RefCell borrow, then return it for caller-driven iteration (which
-/// must run with the borrow released so callbacks can re-enter).
-fn take_deferred(loop_: *mut Loop) -> Vec<DeferredCall> {
-    BAO_LOOP.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let Some(state) = slot.as_mut() else {
-            return Vec::new();
-        };
-        if !ptr::eq(state.loop_ptr, loop_) {
-            return Vec::new();
-        }
-        state.deferred.drain(..).collect()
-    })
-}
-
-fn snapshot_handlers(loop_: *mut Loop, which: HandlerKind) -> Vec<HandlerSlot> {
-    BAO_LOOP.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let Some(state) = slot.as_mut() else {
-            return Vec::new();
-        };
-        if !ptr::eq(state.loop_ptr, loop_) {
-            return Vec::new();
-        }
-        match which {
-            HandlerKind::Pre => state.pre_handlers.clone(),
-            HandlerKind::Post => state.post_handlers.clone(),
-        }
-    })
-}
-
-#[derive(Clone, Copy)]
-enum HandlerKind {
-    Pre,
-    Post,
-}
-
-// ──────────────────────── epoll tick ────────────────────────────────
-
-/// Single `epoll_wait` + dispatch. Replaces the old `run_mio_poll`.
-///
-/// Reads ready events into `(*loop_).ready_polls`, sets
-/// `num_ready_polls` / `current_ready_poll`, then:
-///   1. Drain the wakeup eventfd (if present in ready events)
-///   2. Delegate all other events to `poll::dispatch_ready_polls`
-///      which uses the `CLEAR_POINTER_TAG` pattern: tagged → FilePoll,
-///      untagged → `us_internal_dispatch_ready_poll`.
-///
-/// Linux arm of the Rust tick. The macOS counterpart is
-/// `kqueue::run_kqueue` (kevent64 + the same dispatch entry point; wakeup
-/// there is the C layer's EVFILT_MACHPORT, which flows through the untagged
-/// dispatch instead of a dedicated eventfd drain).
-#[cfg(target_os = "linux")]
-fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
-    let timeout_ms: c_int = if pending > 0 || timeout.is_null() {
-        0
-    } else {
-        let ts: Timespec = unsafe { *timeout };
-        if ts.sec == 0 && ts.nsec == 0 {
-            0
-        } else {
-            let ms = ts.sec * 1000 + ts.nsec / 1_000_000;
-            ms.min(i32::MAX as i64) as c_int
-        }
-    };
-
-    let epfd = BAO_LOOP.with(|cell| {
-        let slot = cell.borrow();
-        slot.as_ref()
-            .filter(|s| ptr::eq(s.loop_ptr, loop_))
-            .map(|s| s.epfd)
-    });
-    let Some(epfd) = epfd else { return };
-
-    let loop_ptr: *mut PosixLoop = loop_;
-    let nfds =
-        unsafe { libc::epoll_wait(epfd, (*loop_ptr).ready_polls.as_mut_ptr(), 1024, timeout_ms) };
-
-    if nfds <= 0 {
-        return;
-    }
-
-    unsafe {
-        (*loop_ptr).num_ready_polls = nfds;
-        (*loop_ptr).current_ready_poll = 0;
-    }
-
-    // Drain the wakeup eventfd first (if it's in the ready set).
-    // The wakeup is registered with WAKEUP_TAG in data.u64, so we identify
-    // it by checking against InternalLoopData.wakeup_async.
-    let wakeup_async_raw =
-        unsafe { (*loop_ptr).internal_loop_data.wakeup_async as *mut BaoWakeupAsync };
-
-    for i in 0..nfds {
-        let event = unsafe { (*loop_ptr).ready_polls[i as usize] };
-        if event.u64 == encode_tagged_ptr(wakeup_async_raw as *mut c_void, WAKEUP_TAG) {
-            if !wakeup_async_raw.is_null() {
-                let fd = unsafe { (*wakeup_async_raw).fd };
-                let mut buf: u64 = 0;
-                unsafe {
-                    libc::read(fd, &mut buf as *mut u64 as *mut c_void, 8);
-                }
-                if let Some(cb) = unsafe { (*wakeup_async_raw).cb } {
-                    unsafe { cb(wakeup_async_raw) };
-                }
-            }
-            // Null this event so the dispatch loop skips it
-            unsafe {
-                (*loop_ptr).ready_polls[i as usize].u64 = 0;
-            }
-        }
-    }
-
-    // Dispatch remaining events via the CLEAR_POINTER_TAG pattern.
-    unsafe {
-        poll::dispatch_ready_polls(loop_);
-    }
-}
-
-fn bump_iteration_nr(loop_: *mut Loop) {
-    BAO_LOOP.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let Some(state) = slot.as_mut() else { return };
-        if !ptr::eq(state.loop_ptr, loop_) {
-            return;
-        }
-        let p = state.loop_ptr;
-        unsafe {
-            (*p).internal_loop_data.iteration_nr =
-                (*p).internal_loop_data.iteration_nr.wrapping_add(1);
-        }
-    });
-}
 
 // ─────────────────────── FFI entry points (BUG-353 fix) ────────────────────
 //
@@ -578,20 +122,13 @@ unsafe extern "C" {
 // Instead we provide a Rust tick entry point and call it from the sites
 // that used to call the C version (Loop.rs::tick / tick_without_idle).
 //
-// The C version remains in libusockets.a but is no longer called from
-// bao's Rust code — all tick paths go through `bao_uloop_tick`.
+// Since the A' cleanup this entry point is pure delegation: the Rust
+// epoll/kqueue arms it used to dispatch to were unreachable dead code.
 
-/// Single-iteration event loop tick — Rust implementation.
-/// Does `epoll_wait` with controlled timeout (no NULL blocking) then
-/// dispatches via `dispatch_ready_polls` → C `us_internal_dispatch_ready_poll`
-/// for socket events.
-///
-/// # Safety
-/// `loop_` must be a valid `*mut Loop` created by `us_create_loop`.
-/// Single-iteration event loop tick — Rust implementation.
-/// Does `epoll_wait` with controlled timeout (no NULL blocking) then
-/// dispatches via `dispatch_ready_polls` → C `us_internal_dispatch_ready_poll`
-/// for socket events.
+/// Single-iteration event loop tick — Rust entry point over the C
+/// `us_loop_run_bun_tick`. Controlled timeout is the CALLER's timespec
+// (`bun_uws_sys::Loop::tick_without_idle` passes a zero timespec so the
+/// C epoll_wait never blocks indefinitely — BCE-007-R3).
 ///
 /// Called from `bun_uws_sys::Loop::tick/tick_without_idle` via extern "C"
 /// linkage (#[no_mangle] `bao_loop_tick`). This avoids a crate dependency
@@ -601,43 +138,16 @@ unsafe extern "C" {
 /// `loop_` must be a valid `*mut Loop` created by `us_create_loop`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bao_loop_tick(loop_: *mut Loop, timeout: *const Timespec) {
-    let loop_ptr: *mut PosixLoop = loop_;
-    let pending = unsafe { (*loop_ptr).active };
-
-    // Check if this thread has a BaoLoopState for this loop (JS thread does,
-    // HTTPThread does not). If yes → Rust epoll_wait + dispatch. If no →
-    // fall back to C us_loop_run_bun_tick which uses the loop's InternalLoopData.
-    let has_rust_state = BAO_LOOP.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .map(|s| ptr::eq(s.loop_ptr, loop_))
-            .unwrap_or(false)
-    });
-
-    if has_rust_state {
-        // Platform arm of the Rust tick — same shape on both: controlled-
-        // timeout wait + poll::dispatch_ready_polls normalisation/dispatch.
-        // Linux harvests via epoll_wait (eventfd wakeup drained inside);
-        // macOS harvests via kevent64 (wakeup is the C layer's machport
-        // kevent, dispatched as a normal untagged CALLBACK poll — 74-C.8).
-        #[cfg(target_os = "linux")]
-        {
-            run_epoll(loop_, pending, timeout);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            kqueue::run_kqueue(loop_, pending, timeout);
-        }
-    } else {
-        // HTTPThread or any thread without BaoLoopState: use C tick.
-        // The C version has its own epoll_wait + dispatch for socket events.
-        // BCE-007-R3/R3-ext: callers use tick_without_idle (zero timeout),
-        // so the C epoll_wait won't block indefinitely.
-        unsafe extern "C" {
-            fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec);
-        }
-        unsafe { us_loop_run_bun_tick(loop_, timeout) };
+    // Pure delegation to the C tick (A' cleanup): the BUG-353-era Rust
+    // epoll/kqueue arms were unreachable — no thread ever populated the
+    // BaoLoopState thread-local (zero create_loop callers), so every loop
+    // in the process has always been C-owned. BCE-007-R3/R3-ext: callers
+    // use tick_without_idle (zero timeout), so the C epoll_wait never
+    // blocks indefinitely.
+    unsafe extern "C" {
+        fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec);
     }
+    unsafe { us_loop_run_bun_tick(loop_, timeout) };
 }
 
 // ──────────────── us_dispatch_* kind→vtable routing ──────────────────
@@ -1025,6 +535,7 @@ mod hangup_tests {
     //! the mapping unit tests in poll.rs.
 
     use super::*;
+    use core::ptr;
     use bun_uws_sys::socket_group::VTable;
     use bun_uws_sys::{
         LIBUS_SOCKET_ALLOW_HALF_OPEN, ListenSocket, SocketGroup, SocketKind, us_socket_t,
@@ -1234,6 +745,7 @@ mod paused_eof_tests {
     //! (`us_loop_run_bun_tick` → C `us_internal_dispatch_ready_poll`).
 
     use super::*;
+    use core::ptr;
     use bun_uws_sys::socket_group::VTable;
     use bun_uws_sys::{ListenSocket, SocketGroup, SocketKind, us_socket_t};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1491,6 +1003,7 @@ mod write_rearm_paused_tests {
     //! asked to defer. Drives the C path end-to-end.
 
     use super::*;
+    use core::ptr;
     use bun_uws_sys::socket_group::VTable;
     use bun_uws_sys::{ListenSocket, SocketGroup, SocketKind, us_socket_t};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1738,6 +1251,7 @@ mod ipc_recvmsg_tests {
     //! discriminators here are CLOEXEC and extra-fd closing.
 
     use super::*;
+    use core::ptr;
     use bun_uws_sys::socket_group::VTable;
     use bun_uws_sys::{SocketGroup, SocketKind, us_socket_t};
     use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};

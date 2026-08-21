@@ -3,10 +3,12 @@ use ::std::cell::{Cell, RefCell};
 use ::std::collections::{HashMap, VecDeque};
 use ::std::fs;
 use ::std::path::{Path, PathBuf};
+use ::std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use ::std::sync::{Arc, Mutex};
 use bao_engine::context::RawValueRootGuard;
 use bun_core::ZBox;
 use bun_sys::fs as bun_fs;
+use mozjs::realm::AutoRealm;
 // @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 
 use mozjs::glue::NewCompileOptions;
@@ -19,7 +21,16 @@ use crate::require::cache_builtin;
 
 // --- Async I/O infrastructure ---
 // Background I/O uses std::thread::spawn + Arc<Mutex<Option<Result>>> shared slot.
-// Completion is scheduled on the JS thread via bao_uloop::uws_loop_defer (next_tick).
+// Completion crosses back to the JS thread as a ConcurrentTask on the pump's
+// MiniEventLoop (A' route, user-adjudicated 2026-08-21): the worker calls
+// complete_post → ConcurrentWakeup::enqueue_task_concurrent_cross_thread,
+// which pushes the embedded AnyTaskWithExtraContext carrier onto the loop
+// captured at spawn (timers::with_event_loop — the ConcurrentWakeup-registered
+// instance the pump ticks) and wakes it. The tasklet pops inside
+// MiniEventLoop::tick_without_idle, i.e. on the JS thread's own JSContext
+// (single-thread iron rule). The former uws_loop_defer path never delivered:
+// it deferred onto the WORKER thread's private uWS::Loop (thread-local lazy
+// init in C++ Loop.h) — a loop no pump ever ticks.
 
 /// Result of statfs() — simplified subset of fields exposed by Node.js fs.statfs().
 #[allow(dead_code)]
@@ -58,31 +69,95 @@ struct FsAsyncCtx {
     /// only the fallback for the rooting-failed path.
     callback: *mut JSObject,
     /// RAII heap root for the callback value, spanning the worker-thread
-    /// window. Released when this Box drops (defer callback or the
-    /// degenerate no-loop path), liveness-guarded.
+    /// window. Released when this Box drops (tasklet run or the worker-side
+    /// fail-closed release), liveness-guarded.
     cb_root: Option<RawValueRootGuard>,
     result: Arc<Mutex<Option<::std::result::Result<FsAsyncResult, (String, String)>>>>,
     encoding: Option<String>,
     op_name: String,
     path: String,
+    /// JS thread's pump MiniEventLoop, captured at spawn via
+    /// `crate::timers::with_event_loop` — the ConcurrentWakeup-REGISTERED
+    /// instance. NOT dispatch_sm's `BaoEventLoop` (an independent
+    /// MiniEventLoop): tasklets must land on the loop the pump actually
+    /// ticks, or they are never drained.
+    mini_loop_ptr: *const bun_event_loop::MiniEventLoop::MiniEventLoop<'static>,
+    /// ConcurrentTask carrier embedded in this Box (address-stable for the
+    /// Box's lifetime; handed to the queue by address, never moved).
+    concurrent_task: bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext,
+    /// Prevents duplicate tasklet scheduling (single completion per op; the
+    /// CAS also makes an accidental double complete_post a no-op).
+    has_scheduled: AtomicBool,
 }
 
-unsafe fn schedule_defer(ctx: *mut FsAsyncCtx) {
-    bao_uloop::force_link();
-    let loop_ = bao_uloop::uws_get_loop();
-    if loop_.is_null() {
-        let _ = Box::from_raw(ctx);
-        return;
+/// Process-global count of in-flight fs async ops (spawn-side ++, retired by
+/// `FsAsyncCtx::drop`). Keeps the pump alive across the worker window so the
+/// eval loop cannot exit between spawn and completion delivery (the
+/// former "no timer, no HTTP → loop breaks" wedge).
+static FS_ASYNC_PENDING: AtomicUsize = AtomicUsize::new(0);
+
+/// In-flight fs async ops on any thread (spawn-side view for pump liveness).
+pub fn fs_async_pending() -> usize {
+    FS_ASYNC_PENDING.load(AtomicOrdering::Acquire)
+}
+
+impl Drop for FsAsyncCtx {
+    fn drop(&mut self) {
+        // Terminal event on EVERY exit path — tasklet ran on the JS thread,
+        // or the worker-side fail-closed release — so the pending counter
+        // can never hang on a dead op (false-branch leak = fail-open hang).
+        FS_ASYNC_PENDING.fetch_sub(1, AtomicOrdering::AcqRel);
     }
-    bao_uloop::uws_loop_defer(
-        loop_,
-        ctx as *mut ::std::ffi::c_void,
-        fs_async_defer_callback,
-    );
 }
 
-unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
-    let ctx = Box::from_raw(raw_ctx as *mut FsAsyncCtx);
+/// ConcurrentTask shim: runs `fs_async_defer_callback` on the JS thread when
+/// the pump's MiniEventLoop tick pops the carrier.
+fn fs_async_tasklet_shim(ctx: *mut FsAsyncCtx, _parent: *mut ()) {
+    // SAFETY: ctx is the Box::into_raw pointer bound to the carrier at
+    // spawn; the tasklet runs exactly once (sole consumer takes the Box).
+    unsafe { fs_async_defer_callback(ctx) };
+}
+
+/// Worker-thread completion: store-then-post (the result slot write happens
+/// in the worker closure before this call; the ConcurrentTask enqueue
+/// release-orders it ahead of the JS-thread read). Enqueues the JS-thread
+/// tasklet on the captured pump loop. Fail-closed: a `false` return means
+/// the owning JS thread exited (or never registered) — release the carrier
+/// Box on the spot instead of leaking it. The RAII root release on this
+/// foreign thread leaks the rooted slots by design (bounded; better than a
+/// cross-thread unroot — see RawValueRootGuard::drop).
+unsafe fn complete_post(ctx: *mut FsAsyncCtx) {
+    unsafe {
+        if (*ctx)
+            .has_scheduled
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .is_ok()
+        {
+            let loop_ptr = (*ctx).mini_loop_ptr;
+            if !loop_ptr.is_null() {
+                let carrier = ::std::ptr::addr_of_mut!((*ctx).concurrent_task);
+                // SAFETY: carrier is the embedded task in a live Box; loop_ptr
+                // was captured on the JS thread at spawn. true = pushed + woken.
+                let delivered =
+                    bun_event_loop::ConcurrentWakeup::enqueue_task_concurrent_cross_thread(
+                        loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>,
+                        ::std::ptr::NonNull::new_unchecked(carrier),
+                    );
+                if !delivered {
+                    // JS thread gone: nothing will ever drain the queue.
+                    drop(Box::from_raw(ctx));
+                }
+            } else {
+                // Pump loop never captured (no with_event_loop on the
+                // spawning thread): same fail-closed release.
+                drop(Box::from_raw(ctx));
+            }
+        }
+    }
+}
+
+unsafe fn fs_async_defer_callback(ctx_ptr: *mut FsAsyncCtx) {
+    let ctx = Box::from_raw(ctx_ptr);
     let cx = ctx.cx;
     // Live callback value: prefer the RAII root's slot (updated in place by
     // a moving GC) over the raw pointer captured at spawn time.
@@ -102,16 +177,34 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
     let cx_ref = &mut wrapped_cx;
 
     rooted!(&in(cx_ref) let cb_val = cb_value);
+    // BCE-BUG-ENG-370 (same class as fetch_async/bun_build tasklets): this
+    // runs from the MiniEventLoop tick OUTSIDE any JS activation — cx->realm_
+    // is NULL. Enter the callback object's realm for the whole dispatch
+    // window; realm-derived SM API below (JS_NewPlainObject, string
+    // creation, create_stats_object, ...) would otherwise NULL-deref.
+    rooted!(&in(cx_ref) let cb_obj = cb_value.to_object());
+    let mut realm = AutoRealm::new_from_handle(cx_ref, cb_obj.handle());
+    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
     let global = CurrentGlobalOrNull(cx);
-    if global.is_null() {
-        return;
-    }
-    rooted!(&in(cx_ref) let global_rooted = global);
+    // Drain-time dispatch may run outside any entered realm; fall back to
+    // the thread's persistent realm global (realm-per-context model) instead
+    // of silently dropping the callback — same convention as
+    // timers::fire_js_callback_raw.
+    let global = if global.is_null() {
+        match bao_engine::context::thread_realm_global() {
+            ::std::option::Option::Some(g) if !g.is_null() => g,
+            _ => return,
+        }
+    } else {
+        global
+    };
+    rooted!(&in(realm_cx) let global_rooted = global);
 
     match result_opt {
         Some(Ok(FsAsyncResult::Ok(data))) => {
             let val = string_or_buffer(cx, &data, encoding);
-            rooted!(&in(cx_ref) let val_rooted = val);
+            rooted!(&in(realm_cx) let val_rooted = val);
             let args_arr = [UndefinedValue(), val_rooted.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -132,7 +225,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
         }
         Some(Ok(FsAsyncResult::OkStat(stat))) => {
             let stats_obj = create_stats_object(cx, &stat);
-            rooted!(&in(cx_ref) let stats_val = mozjs::jsval::ObjectValue(stats_obj));
+            rooted!(&in(realm_cx) let stats_val = mozjs::jsval::ObjectValue(stats_obj));
             let args_arr = [UndefinedValue(), stats_val.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -159,7 +252,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             } else {
                 mozjs::jsval::StringValue(&*js_str)
             };
-            rooted!(&in(cx_ref) let val_rooted = val);
+            rooted!(&in(realm_cx) let val_rooted = val);
             let args_arr = [UndefinedValue(), val_rooted.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -198,7 +291,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             JS_ClearPendingException(cx);
         }
         Some(Ok(FsAsyncResult::OkBool(b))) => {
-            rooted!(&in(cx_ref) let val = mozjs::jsval::BooleanValue(b));
+            rooted!(&in(realm_cx) let val = mozjs::jsval::BooleanValue(b));
             let args_arr = [UndefinedValue(), val.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -218,7 +311,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             JS_ClearPendingException(cx);
         }
         Some(Ok(FsAsyncResult::OkI32(v))) => {
-            rooted!(&in(cx_ref) let val = mozjs::jsval::Int32Value(v));
+            rooted!(&in(realm_cx) let val = mozjs::jsval::Int32Value(v));
             let args_arr = [UndefinedValue(), val.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -238,7 +331,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             JS_ClearPendingException(cx);
         }
         Some(Ok(FsAsyncResult::OkOpen(fd))) => {
-            rooted!(&in(cx_ref) let val = mozjs::jsval::Int32Value(fd));
+            rooted!(&in(realm_cx) let val = mozjs::jsval::Int32Value(fd));
             let args_arr = [UndefinedValue(), val.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -264,8 +357,8 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             } else {
                 mozjs::jsval::ObjectValue(buf_obj)
             };
-            rooted!(&in(cx_ref) let buf_rooted = buf_val);
-            rooted!(&in(cx_ref) let br_val = mozjs::jsval::Int32Value(bytes_read));
+            rooted!(&in(realm_cx) let buf_rooted = buf_val);
+            rooted!(&in(realm_cx) let br_val = mozjs::jsval::Int32Value(bytes_read));
             let args_arr = [UndefinedValue(), br_val.get(), buf_rooted.get()];
             let cb_args = HandleValueArray {
                 length_: 3,
@@ -285,7 +378,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             JS_ClearPendingException(cx);
         }
         Some(Ok(FsAsyncResult::OkWrite(written))) => {
-            rooted!(&in(cx_ref) let val = mozjs::jsval::Int32Value(written));
+            rooted!(&in(realm_cx) let val = mozjs::jsval::Int32Value(written));
             let args_arr = [UndefinedValue(), val.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -305,13 +398,13 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             JS_ClearPendingException(cx);
         }
         Some(Ok(FsAsyncResult::OkDirnames(names))) => {
-            rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, names.len()));
+            rooted!(&in(realm_cx) let arr = w2::NewArrayObject1(realm_cx, names.len()));
             if !arr.get().is_null() {
                 for (idx, name) in names.iter().enumerate() {
                     let c_name = ZBox::from_bytes(name.as_bytes());
                     let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
                     if !js_str.is_null() {
-                        rooted!(&in(cx_ref) let val = mozjs::jsval::StringValue(&*js_str));
+                        rooted!(&in(realm_cx) let val = mozjs::jsval::StringValue(&*js_str));
                         JS_DefineElement(
                             cx,
                             arr.handle().into(),
@@ -322,7 +415,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
                     }
                 }
             }
-            rooted!(&in(cx_ref) let arr_val = mozjs::jsval::ObjectValue(arr.get()));
+            rooted!(&in(realm_cx) let arr_val = mozjs::jsval::ObjectValue(arr.get()));
             let args_arr = [UndefinedValue(), arr_val.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -342,11 +435,11 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             JS_ClearPendingException(cx);
         }
         Some(Ok(FsAsyncResult::OkDirents(entries))) => {
-            rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, entries.len()));
+            rooted!(&in(realm_cx) let arr = w2::NewArrayObject1(realm_cx, entries.len()));
             if !arr.get().is_null() {
                 for (idx, (name, is_dir)) in entries.iter().enumerate() {
                     let dirent = create_dirent(cx, name, *is_dir);
-                    rooted!(&in(cx_ref) let val = mozjs::jsval::ObjectValue(dirent));
+                    rooted!(&in(realm_cx) let val = mozjs::jsval::ObjectValue(dirent));
                     JS_DefineElement(
                         cx,
                         arr.handle().into(),
@@ -356,7 +449,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
                     );
                 }
             }
-            rooted!(&in(cx_ref) let arr_val = mozjs::jsval::ObjectValue(arr.get()));
+            rooted!(&in(realm_cx) let arr_val = mozjs::jsval::ObjectValue(arr.get()));
             let args_arr = [UndefinedValue(), arr_val.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -377,7 +470,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
         }
         Some(Ok(FsAsyncResult::OkStatfs(sf))) => {
             let stats_obj = create_statfs_object(cx, &sf);
-            rooted!(&in(cx_ref) let stats_val = mozjs::jsval::ObjectValue(stats_obj));
+            rooted!(&in(realm_cx) let stats_val = mozjs::jsval::ObjectValue(stats_obj));
             let args_arr = [UndefinedValue(), stats_val.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
@@ -397,12 +490,12 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             JS_ClearPendingException(cx);
         }
         Some(Err((code, msg))) => {
-            rooted!(&in(cx_ref) let err_obj = JS_NewPlainObject(cx));
+            rooted!(&in(realm_cx) let err_obj = JS_NewPlainObject(cx));
             if !err_obj.get().is_null() {
                 let c_msg = ZBox::from_bytes(msg.as_bytes());
                 let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
                 if !js_str.is_null() {
-                    rooted!(&in(cx_ref) let msg_val = mozjs::jsval::StringValue(&*js_str));
+                    rooted!(&in(realm_cx) let msg_val = mozjs::jsval::StringValue(&*js_str));
                     JS_DefineProperty(
                         cx,
                         err_obj.handle().into(),
@@ -414,7 +507,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
                 let c_code = ZBox::from_bytes(code.as_bytes());
                 let code_str = JS_NewStringCopyZ(cx, c_code.as_ptr());
                 if !code_str.is_null() {
-                    rooted!(&in(cx_ref) let code_val = mozjs::jsval::StringValue(&*code_str));
+                    rooted!(&in(realm_cx) let code_val = mozjs::jsval::StringValue(&*code_str));
                     JS_DefineProperty(
                         cx,
                         err_obj.handle().into(),
@@ -426,7 +519,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
                 let c_path = ZBox::from_bytes(ctx.path.as_bytes());
                 let path_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
                 if !path_str.is_null() {
-                    rooted!(&in(cx_ref) let path_val = mozjs::jsval::StringValue(&*path_str));
+                    rooted!(&in(realm_cx) let path_val = mozjs::jsval::StringValue(&*path_str));
                     JS_DefineProperty(
                         cx,
                         err_obj.handle().into(),
@@ -436,7 +529,7 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
                     );
                 }
             }
-            rooted!(&in(cx_ref) let err_val = mozjs::jsval::ObjectValue(err_obj.get()));
+            rooted!(&in(realm_cx) let err_val = mozjs::jsval::ObjectValue(err_obj.get()));
             let args_arr = [err_val.get()];
             let cb_args = HandleValueArray {
                 length_: 1,
@@ -550,8 +643,35 @@ unsafe fn spawn_fs_async<F>(
         encoding,
         op_name: op_name.to_string(),
         path,
+        mini_loop_ptr: ::std::ptr::null(),
+        concurrent_task:
+            bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(),
+        has_scheduled: AtomicBool::new(false),
     });
-    let ctx_ptr = Box::into_raw(ctx) as usize;
+    // Increment BEFORE the Box can ever drop (Drop retires it) so the pump
+    // liveness view can never miss an in-flight op.
+    FS_ASYNC_PENDING.fetch_add(1, AtomicOrdering::Release);
+    let ctx_ptr = Box::into_raw(ctx);
+
+    // Capture the JS thread's pump MiniEventLoop — the ConcurrentWakeup-
+    // registered instance behind timers::with_event_loop (materializes +
+    // registers on first call). NOT dispatch_sm's BaoEventLoop instance.
+    // SAFETY: the closure borrows the loop for the call only; the pointer
+    // stays valid for the thread's lifetime (leaked at materialization).
+    let loop_ptr: *const bun_event_loop::MiniEventLoop::MiniEventLoop<'static> =
+        crate::timers::with_event_loop(|loop_| loop_ as *const _);
+    // SAFETY: ctx_ptr is a live heap allocation we just created; the carrier
+    // is embedded, so its address is stable for the Box's lifetime (the
+    // completion side hands the queue this exact address via addr_of_mut).
+    unsafe {
+        (*ctx_ptr).mini_loop_ptr = loop_ptr;
+        (*ctx_ptr).concurrent_task.from(ctx_ptr, fs_async_tasklet_shim);
+    }
+
+    // Raw pointers are not Send — the worker takes the ctx as an integer
+    // token and reconstitutes it only inside the closure; off-thread it is
+    // touched solely via complete_post's atomics/queue push.
+    let ctx_token = ctx_ptr as usize;
 
     ::std::thread::spawn(move || {
         let result = work();
@@ -567,7 +687,9 @@ unsafe fn spawn_fs_async<F>(
             let mut slot = result_slot_clone.lock().unwrap();
             *slot = Some(stored);
         }
-        schedule_defer(ctx_ptr as *mut FsAsyncCtx);
+        // SAFETY: ctx_token reconstitutes the live spawn-side Box; sole
+        // completion path (CAS-guarded).
+        unsafe { complete_post(ctx_token as *mut FsAsyncCtx) };
     });
 }
 
@@ -3117,13 +3239,6 @@ unsafe extern "C" fn fs_unwatch_file(cx: *mut JSContext, _argc: u32, vp: *mut JS
     true
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn fs_noop_native(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    args.rval().set(UndefinedValue());
-    true
-}
-
 // ══════════════════════════════════════════════════════════════════════════
 // fs.watch / fs.watchFile backend (BCE: silent-fake eradication)
 //
@@ -3161,8 +3276,6 @@ enum PendingFsEvent {
         prev: libc::stat,
         curr: libc::stat,
     },
-    /// Watch-level failure surfaced to the JS 'error' event.
-    WatchError { id: u64, message: String },
 }
 
 enum FswCommand {
@@ -3868,33 +3981,6 @@ unsafe fn fsw_dispatch_event(raw_cx: *mut JSContext, ev: PendingFsEvent) {
             }
             (id, "change", argv)
         }
-        PendingFsEvent::WatchError { id, message } => {
-            // Error events without an 'error' listener must throw (Node) —
-            // ee_emit's BCE-20260816-EE-ERRORTHROW semantics handle that when
-            // the Error value is a real object; build one here.
-            let c_msg = ZBox::from_bytes(message.as_bytes());
-            let err_obj = JS_NewPlainObject(raw_cx);
-            if !err_obj.is_null() {
-                let cx_ref = &mut mozjs::context::JSContext::from_ptr(
-                    ::std::ptr::NonNull::new_unchecked(raw_cx),
-                );
-                rooted!(&in(cx_ref) let err_r = err_obj);
-                let msg_str = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
-                if !msg_str.is_null() {
-                    rooted!(&in(cx_ref) let mv = mozjs::jsval::StringValue(&*msg_str));
-                    JS_DefineProperty(
-                        raw_cx,
-                        err_r.handle().into(),
-                        c"message".as_ptr(),
-                        mv.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                    let argv = vec![mozjs::jsval::ObjectValue(err_r.get())];
-                    return fsw_emit_on_entry(raw_cx, id, "error", argv);
-                }
-            }
-            return;
-        }
     };
     fsw_emit_on_entry(raw_cx, id, event_name, argv);
 }
@@ -3961,6 +4047,17 @@ unsafe extern "C" fn fs_read_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         ::std::result::Result::Ok(p) => p,
         ::std::result::Result::Err(b) => return b,
     };
+
+    // Callback form (Node async-first API): route through the ConcurrentTask
+    // carrier — the callback receives (err, data) on the JS thread.
+    if let Some((callback, encoding)) = extract_callback_and_encoding(cx, &args, 1) {
+        spawn_fs_async(cx, "readFile", path.clone(), callback, encoding, move || {
+            bun_fs::read(&path).map(FsAsyncResult::Ok)
+        });
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
     let encoding = get_encoding_opt(cx, &args, 1);
 
     match bun_fs::read(&path) {
@@ -11143,5 +11240,58 @@ mod tests {
     fn mkdtemp_empty_prefix_returns_einval() {
         let err = mkdtemp_inner("").expect_err("empty prefix must be rejected");
         assert_eq!(err.raw_os_error(), Some(libc::EINVAL));
+    }
+}
+
+#[cfg(test)]
+mod fs_async_carrier_tests {
+    //! Fail-closed completion (A' route): when the captured pump loop is NOT
+    //! registered with ConcurrentWakeup (owning thread never materialized it
+    //! through timers::with_event_loop — here: a bare MiniEventLoop that
+    //! skipped the registration handshake), `complete_post` must RELEASE the
+    //! carrier Box instead of leaking it. No JSContext is touched
+    //! (`cb_root: None`), so the test runs engine-free.
+
+    use super::*;
+
+    #[test]
+    fn complete_post_unregistered_loop_releases_carrier() {
+        let before = fs_async_pending();
+
+        // An UNREGISTERED loop: MiniEventLoop::init() without the
+        // timers::with_event_loop registration. Leaked (never freed) — the
+        // production lifetime contract for loop allocations.
+        let orphan_loop: *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static> =
+            bun_core::heap::into_raw(Box::new(
+                bun_event_loop::MiniEventLoop::MiniEventLoop::init(),
+            ));
+
+        let ctx = Box::new(FsAsyncCtx {
+            cx: ::std::ptr::null_mut(),
+            callback: ::std::ptr::null_mut(),
+            cb_root: None,
+            result: Arc::new(Mutex::new(None)),
+            encoding: None,
+            op_name: "test".to_string(),
+            path: String::new(),
+            mini_loop_ptr: orphan_loop,
+            concurrent_task:
+                bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(),
+            has_scheduled: AtomicBool::new(false),
+        });
+        let ctx_ptr = Box::into_raw(ctx);
+        // Mirror the spawn-side increment (retired by FsAsyncCtx::drop).
+        FS_ASYNC_PENDING.fetch_add(1, AtomicOrdering::Release);
+
+        // SAFETY: ctx_ptr is a live Box we just created; complete_post only
+        // touches atomics + the registry-checked enqueue, which must observe
+        // "unregistered" and return false without touching the loop.
+        unsafe { complete_post(ctx_ptr) };
+
+        assert_eq!(
+            fs_async_pending(),
+            before,
+            "fail-closed release must retire the pending count (a leak would pin the pump forever)"
+        );
     }
 }

@@ -161,10 +161,12 @@ where
             cell.set(ptr);
             // BCE-20260814-TLS-DRIVER-UAF: publish this loop as a live
             // cross-thread wakeup target. Registration happens after
-            // `MiniEventLoop::init` materialized bao_uloop's BAO_LOOP, so
-            // the registry's thread-exit guard deregisters (LIFO) before
-            // BAO_LOOP's Drop frees the uws loop — the ordering the
-            // ConcurrentWakeup lock handshake depends on.
+            // `MiniEventLoop::init` materialized the C-owned uws loop
+            // (UwsLoop::get → C++ thread-local), whose thread-exit
+            // destructor therefore registered FIRST — LIFO runs this
+            // module's deregister guard before the C/C++ library frees the
+            // loop, the ordering the ConcurrentWakeup lock handshake
+            // depends on.
             bun_event_loop::ConcurrentWakeup::register_thread_loop(ptr);
         }
         // SAFETY: `ptr` is either the previously-stored non-null pointer
@@ -338,6 +340,8 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     let has_http_before_tick = crate::node_http::has_active_servers();
     let has_pending_before_tick = bao_has_pending_timers();
     let has_pending_async_fetch = crate::fetch_async::has_pending();
+    let has_pending_async_fs_crypto = crate::node_fs::fs_async_pending() > 0
+        || crate::node_crypto::crypto_async_pending() > 0;
     if has_http_before_tick {
         // I/O is active — let uSockets drain ready fds without blocking.
         with_event_loop(|loop_| {
@@ -349,6 +353,16 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
         // earliest deadline (interruptible by ConcurrentTask wakeups) instead
         // of polling — see `wait_for_timer_deadline`.
         wait_for_timer_deadline();
+    } else if has_pending_async_fs_crypto {
+        // fs/crypto-only case (A' route): with no timers and no HTTP nothing
+        // above would tick the MiniEventLoop, so a completed worker's
+        // ConcurrentTask would sit in the queue undelivered while the loop
+        // kept spinning on the liveness verdict below. One non-blocking tick
+        // per pass pops+runs any arrived tasklet (the cross-thread enqueue
+        // already woke the uws loop's eventfd).
+        with_event_loop(|loop_| {
+            loop_.tick_without_idle(core::ptr::null_mut());
+        });
     }
     // BCE-20260619-010: fetch-only busy-poll branch removed. FetchTasklet
     // event-driven paradigm uses ConcurrentTask auto-wakeup via MiniEventLoop;
@@ -402,6 +416,11 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
         || crate::node_http::has_active_servers()
         || crate::fetch_async::has_pending()
         || crate::web_api::ws_has_pending()
+        // In-flight fs/crypto async ops keep the loop alive across the
+        // worker window (A' route): the completion ConcurrentTask arrives on
+        // the pump's MiniEventLoop and must be drained before exit.
+        || crate::node_fs::fs_async_pending() > 0
+        || crate::node_crypto::crypto_async_pending() > 0
         // Persistent fs watchers / live cluster workers keep the loop alive
         // (Node handle semantics; non-persistent entries never pin).
         || crate::node_fs::fs_watch_loop_alive()
@@ -462,6 +481,15 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
         // (interruptible by ConcurrentTask wakeups) instead of the former
         // 1ms poll — see `wait_for_timer_deadline`.
         wait_for_timer_deadline();
+    } else if crate::node_fs::fs_async_pending() > 0
+        || crate::node_crypto::crypto_async_pending() > 0
+    {
+        // fs/crypto-only case (A' route): drain any arrived completion
+        // tasklet — without this branch nothing in this pass ticks the
+        // MiniEventLoop. Mirrors `drain_and_check`'s same-named branch.
+        with_event_loop(|loop_| {
+            loop_.tick_without_idle(core::ptr::null_mut());
+        });
     }
     // BCE-20260619-010: fetch-only busy-poll branch removed.
     // FetchTasklet uses ConcurrentTask auto-wakeup; no sleep polling needed.
@@ -493,6 +521,8 @@ pub fn has_pending_work() -> bool {
     bao_has_pending_timers()
         || crate::node_http::has_active_servers()
         || crate::fetch_async::has_pending()
+        || crate::node_fs::fs_async_pending() > 0
+        || crate::node_crypto::crypto_async_pending() > 0
         || crate::node_fs::fs_watch_loop_alive()
 }
 

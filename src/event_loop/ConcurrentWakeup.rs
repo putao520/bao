@@ -6,17 +6,18 @@
 //! A `MiniEventLoop` is `Box::into_raw`-leaked per thread (timers.rs
 //! `BAO_RUNTIME_LOOP`), so a captured `*mut MiniEventLoop` stays valid
 //! memory forever. Its `loop_` field, however, points at the C-owned uws
-//! loop owned by bao_uloop's thread-local `BaoLoopState` — whose `Drop`
-//! **frees that loop when the owning thread exits** (bao_uloop
-//! `BaoLoopState::drop`). Cross-thread callers that held only the
-//! `MiniEventLoop` pointer (the `bao-tls-driver` thread's
-//! `tls_schedule_tasklet`, HTTPThread-side `resolve_tasklet` scheduling)
-//! woke the uws loop via `enqueue_task_concurrent` under the assumption
-//! "valid for the thread's lifetime" — false after the owning JS thread
-//! exits: `us_wakeup_loop` on freed loop memory → SIGSEGV in `us_poll_fd`
-//! (tls_sni_server_tests under load: ~50% crash rate). The existing
-//! `is_null()` guards only covered "loop never captured", never
-//! "captured, then thread exited" (TOCTOU).
+//! loop materialized by the C/C++ library's own thread-local (BUG-353
+//! C-exclusive loop: `UwsLoop::get` inside `MiniEventLoop::init`) — whose
+//! thread-exit destructor **frees that loop when the owning thread exits**.
+//! Cross-thread callers that held only the `MiniEventLoop` pointer (the
+//! `bao-tls-driver` thread's `tls_schedule_tasklet`, HTTPThread-side
+//! `resolve_tasklet` scheduling) woke the uws loop via
+//! `enqueue_task_concurrent` under the assumption "valid for the thread's
+//! lifetime" — false after the owning JS thread exits: `us_wakeup_loop`
+//! on freed loop memory → SIGSEGV in `us_poll_fd` (tls_sni_server_tests
+//! under load: ~50% crash rate). The existing `is_null()` guards only
+//! covered "loop never captured", never "captured, then thread exited"
+//! (TOCTOU).
 //!
 //! ## Fix: registry + lock handshake
 //!
@@ -32,14 +33,16 @@
 //!   registered" and never touches the loop.
 //!
 //! Teardown ordering (why the free really happens after deregister):
-//! Rust runs a thread's TLS destructors in reverse initialization order.
-//! `with_event_loop` materializes bao_uloop's `BAO_LOOP` first (inside
-//! `MiniEventLoop::init` → `UwsLoop::get`) and registers here second, so
-//! this module's guard drops (deregisters) *before* `BAO_LOOP`'s `Drop`
-//! frees the uws loop. Production code never frees a thread's uws loop
-//! mid-thread (`us_loop_free` is test-only), so no stale re-registration
-//! window exists. The leaked `MiniEventLoop` box's address is never
-//! reused, so the addr key has no ABA.
+//! glibc runs a thread's TLS destructors (Rust `thread_local!` guards and
+//! C++ `thread_local` objects alike) in reverse registration order.
+//! `with_event_loop` materializes the C-owned uws loop first (inside
+//! `MiniEventLoop::init` → `UwsLoop::get` — the C++ library's thread-local
+//! registers its destructor then) and registers here second, so this
+//! module's guard drops (deregisters) *before* the C/C++ library's
+//! destructor frees the uws loop. Production code never frees a thread's
+//! uws loop mid-thread (`us_loop_free` is test-only), so no stale
+//! re-registration window exists. The leaked `MiniEventLoop` box's address
+//! is never reused, so the addr key has no ABA.
 //!
 //! Keyed by address (not a generation counter) because the MiniEventLoop
 //! allocation is never freed — a stale entry can only mean "thread still
@@ -64,9 +67,9 @@ use crate::MiniEventLoop::MiniEventLoop;
 static LIVE_MINI_LOOPS: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
 
 /// Thread-exit deregistration guard. Materialized on the owning thread at
-/// registration; `Drop` runs at thread exit, *before* bao_uloop's
-/// `BAO_LOOP` destructor (TLS destructors run in reverse init order —
-/// see module docs).
+/// registration; `Drop` runs at thread exit, *before* the C/C++ library's
+/// uws-loop thread-local destructor (TLS destructors run in reverse
+/// registration order — see module docs).
 struct ThreadExitDeregister(::std::cell::Cell<usize>);
 
 impl Drop for ThreadExitDeregister {

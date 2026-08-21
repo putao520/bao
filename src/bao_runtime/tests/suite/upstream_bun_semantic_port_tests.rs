@@ -194,13 +194,13 @@ fn fs_rmdir_recursive_routes_through_rm() {
     //     remove_dir_all/remove_dir selection as the sync path, so the
     //     filesystem effect is observable from Rust once the worker
     //     finishes.
-    //     NOTE on callback DELIVERY: uws_loop_defer callbacks (all ~40 fs
-    //     async ops + node_crypto) are posted into the C++ uWS::Loop defer
-    //     queue, which the JS thread's bao_loop_tick (pure Rust epoll,
-    //     bao_uloop/src/lib.rs) never drains — a PRE-EXISTING
-    //     infrastructure gap, orthogonal to this port (which only changes
-    //     the op selection inside the worker). Hence the effect-based
-    //     assertion instead of a callback-state assertion. ---
+    //     NOTE on callback DELIVERY (A' route, 2026-08-21): completions now
+    //     cross to the JS thread as ConcurrentTask carriers on the pump's
+    //     MiniEventLoop (node_fs complete_post), delivered by
+    //     timers::drain_and_check's tick — see fs_async_callback_tests for
+    //     the callback-state assertions. This test keeps the effect-based
+    //     assertion (worker-side filesystem effect, pump-independent) as
+    //     the routing discriminator. ---
     let cb_out = eval_string(
         &mut ctx,
         &format!(
