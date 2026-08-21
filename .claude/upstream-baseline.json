@@ -1,21 +1,21 @@
 {
   "version": 1,
   "updated_at": "2026-08-21",
-  "updated_by": "manual",
+  "updated_by": "absorb-wave",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "01c4e2fd6d94adf2e9157d1e6329c328eb37dfae",
-      "baseline_date": "2026-08-20",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD"
+      "baseline": "4448a2e212ec5ca9ed0f3b41400f07a538d578fe",
+      "baseline_date": "2026-08-21",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD;窗口 01c4e2fd6..4448a2e21 40 commits:10 吸收/29 N/A/1 缓后"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "0d579bd5aab6df3764fad805427254751632a6e4",
-      "baseline_date": "2026-08-20",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);10 个 BCE patch-replay 文件清单锚点在 CLAUDE.md"
+      "baseline": "fa5af8b522d7d2069dd5931143153e51b6e346bf",
+      "baseline_date": "2026-08-21",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);10 个 BCE patch-replay 文件清单锚点在 CLAUDE.md;窗口 0d579bd5a..fa5af8b52 15 commits:7 吸收/1 N/A/7 裁决跳过;pre-baseline 追平 f2b524b91/6e3ac825d/4 webcrypto renames;结构链三波(f2b524b91/6e3ac825d/1a6db6c4e)"
     }
   }
 }
