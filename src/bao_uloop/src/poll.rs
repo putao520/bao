@@ -379,9 +379,13 @@ unsafe extern "C" {
 const LIBUS_POLL_EOF: c_int = 1;
 const LIBUS_POLL_HANGUP: c_int = 2;
 
-/// Dispatch all ready polls from the `ready_polls` array.
-/// Called from `run_epoll` (Linux) / `kqueue::run_kqueue` (macOS) after the
-/// platform wait returns.
+/// Dispatch all ready polls from the `ready_polls` array — the verbatim-Rust
+/// twin of the C `us_internal_dispatch_ready_polls` (static, libusockets.a
+/// epoll_kqueue.c:196). Since the A' cleanup every loop in the process is
+/// C-owned (`bao_loop_tick` is pure delegation into `us_loop_run_bun_tick`,
+/// which dispatches through the in-C symbol), this twin has no production
+/// caller: the C-transcription test tables below drive it as the drift
+/// oracle keeping the Rust mapping and the C implementation in lockstep.
 ///
 /// For each ready event:
 ///   1. Get the poll pointer (`epoll_event.data` on Linux,
@@ -389,9 +393,9 @@ const LIBUS_POLL_HANGUP: c_int = 2;
 ///   2. If it's a tagged pointer (high bits set) → FilePoll dispatch
 ///   3. Otherwise → `us_internal_dispatch_ready_poll(poll, error, eof, events)`
 ///
-/// This matches the upstream `us_internal_dispatch_ready_polls` function —
-/// the epoll branch verbatim on Linux, the kqueue branch (with its two-pass
-/// per-poll coalescing) on macOS.
+/// The event mapping matches the C function — the epoll branch verbatim on
+/// Linux, the kqueue branch (with its two-pass per-poll coalescing) on
+/// macOS.
 pub(crate) unsafe fn dispatch_ready_polls(loop_: *mut Loop) {
     let loop_ptr: *mut PosixLoop = loop_;
     let num_ready = unsafe { (*loop_ptr).num_ready_polls };
@@ -1230,14 +1234,15 @@ mod tests {
     // @trace REQ-ENG-008 [req:REQ-ENG-008] [level:unit]
     //
     // The ready-event normalization exists twice: the C
-    // `us_internal_dispatch_ready_polls` (libusockets.a, epoll_kqueue.c) —
-    // still live for threads without a BaoLoopState (the HTTPThread fallback
-    // in bao_loop_tick, and C++ Loop::run) — and the Rust
-    // `dispatch_ready_polls` (this file) for the JS-thread tick. The tables
-    // below transcribe the C mapping VERBATIM with file:line citations so a
-    // drift in either implementation turns CI red instead of relying on the
-    // manual side-by-side check the two sync waves (b9f509020 absorb, M2
-    // kqueue landing) each had to do by hand.
+    // `us_internal_dispatch_ready_polls` (static, libusockets.a
+    // epoll_kqueue.c) — the production path since the A' cleanup
+    // (`bao_loop_tick` delegates to `us_loop_run_bun_tick`, which calls it
+    // for every loop in the process, HTTP thread and JS thread alike) —
+    // and the Rust `dispatch_ready_polls` (this file), the test-driven
+    // oracle twin. The tables below transcribe the C mapping VERBATIM with
+    // file:line citations so a drift in either implementation turns CI red
+    // instead of relying on the manual side-by-side check the two sync
+    // waves (b9f509020 absorb, M2 kqueue landing) each had to do by hand.
 
     /// us_poll ABI constants — transcribed from C internal.h:84-99.
     #[test]

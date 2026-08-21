@@ -339,11 +339,17 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     // blocking tick path.
     let has_http_before_tick = crate::node_http::has_active_servers();
     let has_pending_before_tick = bao_has_pending_timers();
-    let has_pending_async_fetch = crate::fetch_async::has_pending();
     let has_pending_async_fs_crypto = crate::node_fs::fs_async_pending() > 0
         || crate::node_crypto::crypto_async_pending() > 0;
     if has_http_before_tick {
         // I/O is active — let uSockets drain ready fds without blocking.
+        // A pending fetch reports liveness here too: fetch_async registers
+        // `has_pending` in node_http's LIVENESS_PROBES (9c7f8b45), so a
+        // fetch-only script — no servers, no timers, no fs/crypto — takes
+        // THIS branch; each tick_without_idle drains the ConcurrentTask
+        // queue the HTTPThread's `on_http_done` completion lands in (the
+        // fetch-only CLI wedge class — guarded end-to-end by
+        // fetch_only_loop_tick_regression_tests).
         with_event_loop(|loop_| {
             loop_.tick_without_idle(core::ptr::null_mut());
         });
@@ -368,7 +374,6 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     // event-driven paradigm uses ConcurrentTask auto-wakeup via MiniEventLoop;
     // no sleep(1ms) polling is needed.
 
-    let has_http = crate::node_http::has_active_servers();
     let raw_cx = unsafe { cx.raw_cx() };
     drain_bao_timers(raw_cx);
     bao_engine::job_queue::JobQueue::drain(cx);
@@ -405,13 +410,13 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
 
     // Liveness must be evaluated with FRESH state: callbacks drained above
     // (bao timers, SM jobs, the pumps) can START work — a fetch begun inside
-    // a timer callback, a server begun inside a promise, …. The entry
-    // snapshots (`has_pending_async_fetch`) and the mid-fn `has_http` read
-    // (taken before `drain_bao_timers`) predate those registrations and made
-    // the tail all-false while a fetch was in flight → the eval loop broke,
-    // exit handlers fired, and the in-flight request was torn down (the
-    // "timer-context fetch never completes" wedge; keep-alive intervals
-    // masked it). Re-read every source here.
+    // a timer callback, a server begun inside a promise, …. The former
+    // entry snapshot (`has_pending_async_fetch`) and mid-fn `has_http` read
+    // (both removed — dead after this fix re-reads every source) predated
+    // those registrations and made the tail all-false while a fetch was in
+    // flight → the eval loop broke, exit handlers fired, and the in-flight
+    // request was torn down (the "timer-context fetch never completes"
+    // wedge; keep-alive intervals masked it). Re-read every source here.
     bao_has_pending_timers()
         || crate::node_http::has_active_servers()
         || crate::fetch_async::has_pending()
@@ -472,7 +477,10 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
         // BCE-007-R3: use the zero-timespec non-blocking tick so the test
         // runner (which has no eval-loop sleep to yield) makes progress
         // without hanging on epoll_pwait2 when no fds are ready. Mirrors
-        // `drain_and_check`'s has_http branch.
+        // `drain_and_check`'s has_http branch — including its fetch
+        // coverage: a pending fetch reports liveness via LIVENESS_PROBES
+        // (fetch_async's `has_pending`), so a fetch-only test also ticks
+        // here and its resolve_tasklet gets drained.
         with_event_loop(|loop_| {
             loop_.tick_without_idle(core::ptr::null_mut());
         });
