@@ -167,6 +167,10 @@ Bun workspace 中 ~85 个纯 Rust crate(零 JSC)是经过生产验证的高性�
 | STL | REQ-STL-001~007 | Stealth 反指纹(TLS/HTTP2/Canvas/Navigator/WebGL/Audio/Behavior) |
 | LIB | REQ-LIB-001~004 | Headless 多页面库(PagePool/PageHandle) |
 
+## 每日自动化(daily-ops)
+
+systemd timer 每日 09:37±10min 运行 `.claude/skills/daily-ops/`(上游轻量同步+issue 分诊,详见该 skill)。交互会话在此窗口派工前先查 `systemctl --user status bao-daily-ops`。上游同步基线 SSOT = `.claude/upstream-baseline.json`。
+
 ## 构建与测试
 
 ```bash

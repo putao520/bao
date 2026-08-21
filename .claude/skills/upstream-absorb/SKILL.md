@@ -15,9 +15,7 @@ Bao 是 Bun(Rust 层移植)+ servo(vendor)的下游。本 skill 固化增量吸�
 | servo | `~/code/tools/servo` | **不是** `~/code/rust/servo`(已失效,CLAUDE.md 曾错记) |
 | mozjs | `vendor/mozjs/`(本仓库 vendor) | cargo 缓存的源**可能被前人改过**,取源先 diff pristine `.crate` |
 
-**基线记忆**(auto-memory,吸收后必须更新):
-- `bun-layer-sync-baseline` — Bun 层最后全量同步点
-- `mozjs-upgrade-decisions` — mozjs/servo 升级方法论 + 陷阱
+**基线真源**:`.claude/upstream-baseline.json`(仓库内机器可读,含 bun/servo baseline hash+updated_at)。auto-memory 只保留方法论(陷阱/教训),不再存 hash;禁从 memory 读基线。波末收尾必须更新该文件并与 wave commit 同一提交。
 
 **BCE 定制文件清单**:servo 侧 10 个文件(script_thread/script_runtime/dedicatedworkerglobalscope/constellation/event_loop/lock.rs/connector.rs 等)以"upstream 基底 + Bao patch 重放"维护,**完整清单与锚点见 CLAUDE.md**。任何触及它们的同步 = patch 重放,标高成本。
 
@@ -94,7 +92,7 @@ C/Zig 文件:非 Rust 但 Bao 有对应 C 源(packages/bun-usockets 等)时仍�
 
 1. 全部 Agent 报告后统一验证:`cargo check` 相关 crate + 关键测试 binary
 2. 一个吸收 wave 一个 commit(message 列全部 hash + 判定摘要);push
-3. **更新基线 memory**(新同步点 hash + 日期)
+3. **更新 .claude/upstream-baseline.json 并入 wave commit**
 4. "需进一步判断"残留项登记任务,不静默丢弃
 
 ## 6. 历史成果参考

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "updated_at": "2026-08-21",
+  "updated_by": "manual",
+  "upstreams": {
+    "bun": {
+      "repo": "oven-sh/bun",
+      "local_path": "/home/putao/code/rust/bun",
+      "baseline": "01c4e2fd6d94adf2e9157d1e6329c328eb37dfae",
+      "baseline_date": "2026-08-20",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD"
+    },
+    "servo": {
+      "repo": "servo/servo",
+      "local_path": "/home/putao/code/tools/servo",
+      "baseline": "0d579bd5aab6df3764fad805427254751632a6e4",
+      "baseline_date": "2026-08-20",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);10 个 BCE patch-replay 文件清单锚点在 CLAUDE.md"
+    }
+  }
+}
