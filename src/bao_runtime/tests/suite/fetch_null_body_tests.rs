@@ -22,11 +22,11 @@ use bun_runtime::timers;
 /// Raw-wire server: answers by path (HEAD requests get the HEAD wire shape).
 /// Honest keep-alive — one connection may carry several sequential probes
 /// (the client pools), each answer is followed by reading the next request
-/// on the same socket until EOF/idle-timeout. A `Connection: close` answer
-/// would trip a pre-existing vendored-client trap in the buffered delivery
-/// (2xx + forced Content-Length 0 + close ⇒ ContinueStreaming ⇒ EOF is
-/// failed as ConnectionClosed), which is orthogonal to the null-body
-/// semantics under test. Serves for 60s max.
+/// on the same socket until EOF/idle-timeout. This deliberately avoids
+/// `Connection: close` answers so the probes stay independent of close
+/// framing — that interaction (2xx + forced Content-Length 0 + close ⇒
+/// ContinueStreaming ⇒ EOF) is root-cured and locked by
+/// bun_http's connection_close_guard_tests. Serves for 60s max.
 fn start_wire_server() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();

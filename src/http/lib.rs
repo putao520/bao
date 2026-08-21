@@ -2107,10 +2107,23 @@ impl<'a> HTTPClient<'a> {
                     return;
                 }
                 // here we are in the middle of a chunk so ECONNRESET is expected
-            } else if self.state.content_length.is_none()
-                && self.state.response_stage == ResponseStage::Body
+            } else if self.state.response_stage == ResponseStage::Body
+                && self
+                    .state
+                    .content_length
+                    .is_none_or(|len| self.state.total_body_received >= len)
             {
-                // no content length informed so we are done here
+                // Close-delimited end of the response: either no framing was
+                // declared (Content-Length absent — RFC 9110 §9.3 close-
+                // delimited body) or everything declared was already
+                // received. Reaching Body with nothing left to read only
+                // happens after a `Connection: close` promise (the Finished
+                // judgment streams those so the close can delimit the
+                // message): a null-body response (204/304 force
+                // Content-Length 0) or Content-Length: 0 parks in Body with
+                // zero bytes outstanding, and the EOF that follows is the
+                // message end the server promised — not a truncation, so it
+                // must not be failed as ConnectionClosed.
                 self.state.flags.received_last_chunk = true;
                 let ctx = self.get_ssl_ctx::<IS_SSL>();
                 self.progress_update::<IS_SSL>(ctx, socket);
@@ -4813,19 +4826,28 @@ impl<'a> HTTPClient<'a> {
                     location = header.value();
                 }
                 h if h == hash_header_const(b"Connection") => {
-                    if response.status_code >= 200 && response.status_code <= 299 {
-                        // HTTP headers are case-insensitive (RFC 7230)
-                        if bun_core::strings::eql_case_insensitive_ascii_check_length(
-                            header.value(),
-                            b"close",
-                        ) {
-                            self.state.flags.allow_keepalive = false;
-                        } else if bun_core::strings::eql_case_insensitive_ascii_check_length(
-                            header.value(),
-                            b"keep-alive",
-                        ) {
-                            self.state.flags.allow_keepalive = true;
-                        }
+                    // RFC 9110 §9.3: the Connection field carries
+                    // connection-level directives for THIS connection — their
+                    // disposition does not depend on the response's status
+                    // class. The former 2xx-only gate let non-2xx close
+                    // promises (304/3xx redirects, 4xx/5xx) escape: the socket
+                    // stayed pooled against the server's explicit close, and
+                    // null-body non-2xx responses took the same
+                    // wait-for-close framing path that then failed the
+                    // promised EOF as ConnectionClosed (see the
+                    // close-delimited clean-end clause in on_close).
+                    //
+                    // HTTP headers are case-insensitive (RFC 7230)
+                    if bun_core::strings::eql_case_insensitive_ascii_check_length(
+                        header.value(),
+                        b"close",
+                    ) {
+                        self.state.flags.allow_keepalive = false;
+                    } else if bun_core::strings::eql_case_insensitive_ascii_check_length(
+                        header.value(),
+                        b"keep-alive",
+                    ) {
+                        self.state.flags.allow_keepalive = true;
                     }
                 }
                 h if h == hash_header_const(b"Last-Modified") => {
