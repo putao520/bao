@@ -70,6 +70,7 @@ use xml5ever::serialize::TraversalScope::{
 };
 
 use crate::conversions::Convert;
+use crate::css::stylesheet_loader::StylesheetOwner;
 use crate::dom::activation::Activatable;
 use crate::dom::animation::Animation;
 use crate::dom::animations::keyframeeffect::KeyframeEffect;
@@ -183,7 +184,6 @@ use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollingBox};
 use crate::event_loop::script_thread::ScriptThread;
 use crate::layout_dom::ServoDangerousStyleElement;
 use crate::realms::enter_auto_realm;
-use crate::stylesheet_loader::StylesheetOwner;
 
 // TODO: Update focus state when the top-level browsing context gains or loses system focus,
 // and when the element enters or leaves a browsing context container.

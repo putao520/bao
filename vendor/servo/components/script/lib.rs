@@ -21,21 +21,20 @@ extern crate malloc_size_of_derive;
 extern crate stylo_atoms;
 
 mod animations;
-mod css;
 #[macro_use]
 mod tasks;
 // Bao embedder-callback API (vendor patch) lives on the upstream ScriptThread
 // in event_loop; re-exported here so `servo` crate / bao embedders can reach it.
 pub use event_loop::script_thread::{register_embedder_callback, register_worker_scope_callback};
-mod body;
 pub(crate) mod conversions;
+mod css;
 mod devtools;
+mod fetch;
 #[macro_use]
 mod dom;
 pub(crate) use dom::canvas_context;
 mod drag;
 mod event_loop;
-pub(crate) mod fetch;
 pub(crate) mod indexeddb;
 mod init;
 mod url;
@@ -45,16 +44,12 @@ mod links;
 pub(crate) mod messaging;
 mod microtask;
 pub(crate) mod mime;
-mod mime_multipart;
 pub(crate) mod modules;
 mod navigation;
-mod network_listener;
 mod realms;
 mod routed_promise;
 pub(crate) mod script_runtime;
 pub(crate) mod serviceworker_manager;
-mod stylesheet_loader;
-mod stylesheet_set;
 pub mod test;
 mod timers;
 mod unminify;
