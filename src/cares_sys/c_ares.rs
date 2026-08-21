@@ -1436,6 +1436,13 @@ impl struct_ares_txt_ext {
     }
 }
 
+impl AresReply for struct_ares_txt_ext {
+    unsafe fn parse(abuf: *const u8, alen: c_int, out: *mut *mut Self) -> c_int {
+        // SAFETY: caller upholds the `AresReply::parse` contract; thin FFI forward.
+        unsafe { ares_parse_txt_reply_ext(abuf, alen, out) }
+    }
+}
+
 #[repr(C)]
 pub struct struct_ares_naptr_reply {
     pub next: *mut struct_ares_naptr_reply,

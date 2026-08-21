@@ -686,7 +686,16 @@
     if (_getSlot(stream, "state") === STATE_CLOSED) {
       return Promise.resolve({ value: undefined, done: true });
     }
-    return _readableStreamAddReadRequest(stream, _getSlot(stream, "reader"));
+    var readPromise = _readableStreamAddReadRequest(stream, _getSlot(stream, "reader"));
+    // WHATWG default-controller pull steps step 6: once the read request is
+    // parked, call pull — with a `{ highWaterMark: 0 }` strategy no other
+    // trigger exists (desiredSize never goes positive), and the parked
+    // request would never be fulfilled. Must run AFTER the request is
+    // added: ShouldCallPull treats an outstanding read request as a pull
+    // reason, and the `pulling`/`pullAgain` guard coalesces this with any
+    // pull already in flight.
+    _readableStreamDefaultControllerCallPullIfNeeded(controller);
+    return readPromise;
   }
 
   function _readableStreamDefaultReaderRelease(reader) {

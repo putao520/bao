@@ -24,6 +24,7 @@ unsafe extern "C" {
     safe fn us_quic_stream_header(s: &mut Stream, i: c_uint) -> *const Header;
     safe fn us_quic_stream_ext(s: &mut Stream) -> *mut c_void;
     fn us_quic_stream_write(s: *mut Stream, data: *const u8, len: c_uint) -> c_int;
+    safe fn us_quic_stream_want_read(s: &mut Stream, want: c_int);
     safe fn us_quic_stream_want_write(s: &mut Stream, want: c_int);
     fn us_quic_stream_send_headers(
         s: *mut Stream,
@@ -83,6 +84,15 @@ impl Stream {
                 c_uint::try_from(data.len()).expect("int cast"),
             )
         }
+    }
+
+    /// Receive-side arming gate — the QUIC transport-backpressure lever.
+    /// With reads off, lsquic stops consuming the stream and grants no
+    /// further MAX_STREAM_DATA, so the server's send window exhausts and it
+    /// stalls: not reading *is* the window update withholding (the h2 twin
+    /// has to track withheld WINDOW_UPDATE per stream instead).
+    pub fn want_read(&mut self, want: bool) {
+        us_quic_stream_want_read(self, want as c_int)
     }
 
     pub fn want_write(&mut self, want: bool) {

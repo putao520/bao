@@ -25,6 +25,11 @@
 //!       resolve to ONE registry pointer → keep-alive pool hit (one
 //!       connection for two requests; the same key shape the h2 session
 //!       matchers use, so this is the coalescing proof at pool level).
+//!   12. response-body backpressure (fetch-side W1+W2 template at bridge
+//!       level): a blasting h1 origin with a consumer that stops reading —
+//!       in-flight channel bytes pin at the high-water mark (park: drain
+//!       withheld + transport paused, server TCP-backpressured), then the
+//!       drain resumes and every byte arrives with the accounting balanced.
 //!
 //! The bridge is the only page-network path (the `BAO_PAGE_NET_BUN` flag and
 //! the hyper escape hatch were removed).
@@ -46,8 +51,9 @@ use net_traits::NetworkError;
 
 use net::async_runtime::{spawn_blocking_task, spawn_task};
 use net::fetch::bun_bridge::{
-    BridgeRequestBody, BunCancelHandle, BridgeError, build_devtools_request_msg,
-    build_ssl_config, bun_tls_info_to_handshake, fetch_core, map_bun_error, to_servo_response,
+    BODY_HIGH_WATER_MARK, BridgeRequestBody, BunCancelHandle, BridgeError,
+    build_devtools_request_msg, build_ssl_config, bun_tls_info_to_handshake, fetch_core,
+    map_bun_error, to_servo_response,
 };
 use net::test_util::{make_body, make_server, make_ssl_server};
 use net_traits::request::Destination;
@@ -470,6 +476,116 @@ fn bridge_streaming_delivery_incremental() {
          of strict {:?}), lead was {head_lead:?}",
         timing_floor(DELAY * 2),
         DELAY * 2
+    );
+}
+
+/// Response-body backpressure (fetch-side W1+W2 template at bridge level):
+/// against an h1 origin blasting a body far larger than the high-water
+/// mark, a consumer that stops reading must pin the channel's in-flight
+/// bytes AT the mark (the delivery callback parks: drain round-trip
+/// withheld + transport read side paused, so the server itself is
+/// TCP-backpressured) — not swallow the whole body. Resuming the drain
+/// must then deliver every byte with the in-flight accounting balanced
+/// back to zero.
+///
+/// The bound assertion allows one delivery increment of slack past the
+/// mark (the park engages on the delivery that crosses it); the parked
+/// stability assertion (two samples while the consumer is silent) proves
+/// deliveries actually stopped, i.e. the transport pause + withheld drain
+/// hold, and rules out an unbounded channel just lagging behind.
+#[test]
+fn bridge_body_backpressure_bounded_and_resumes() {
+    link_native_seam();
+    let (_runtime_server, _runtime_url) = make_server(|_request, _response| {});
+
+    const BODY_LEN: usize = 4 * 1024 * 1024;
+    const SLICE: usize = 16 * 1024;
+    let full_body: Vec<u8> = (0..BODY_LEN).map(|i| (i % 251) as u8).collect();
+
+    // h1 origin that blasts Content-Length-framed body in 16 KiB slices,
+    // blocking in write once the parked client's TCP window closes.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let server_body = full_body.clone();
+    thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        read_request_head(&mut stream);
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {BODY_LEN}\r\n\r\n");
+        stream.write_all(head.as_bytes()).expect("write head");
+        for slice in server_body.chunks(SLICE) {
+            stream.write_all(slice).expect("write slice");
+        }
+        stream.flush().expect("flush");
+    });
+
+    let cancel = Arc::new(BunCancelHandle::new());
+    let worker_cancel = Arc::clone(&cancel);
+    let expected_body = full_body.clone();
+    let (sender, receiver) = unbounded::<(usize, usize, usize, Vec<u8>)>();
+    spawn_task(async move {
+        let mut response = fetch_core(
+            bun_http::Method::GET,
+            None,
+            format!("http://127.0.0.1:{}/", port),
+            Vec::new(),
+            BridgeRequestBody::Empty,
+            &worker_cancel,
+            None::<fn() -> bool>,
+            None,
+            false,
+            true,
+        )
+        .await
+        .expect("blasting request must deliver its head");
+        assert_eq!(response.status_code, 200);
+
+        // Park window: the consumer goes silent. The callback crosses the
+        // high-water mark and parks; in-flight bytes pin at the mark.
+        thread::sleep(Duration::from_millis(700));
+        let parked_sample_1 = response.body_in_flight();
+        thread::sleep(Duration::from_millis(250));
+        let parked_sample_2 = response.body_in_flight();
+
+        // Resume: drain the whole body through the accounting receiver.
+        let mut received = Vec::with_capacity(BODY_LEN);
+        while let Some(frame) = response.next_chunk().await {
+            received.extend_from_slice(&frame.expect("resumed frame must be Ok"));
+        }
+        assert_eq!(received, expected_body, "resumed drain must be lossless");
+        let end_in_flight = response.body_in_flight();
+        let _ = sender.send((parked_sample_1, parked_sample_2, end_in_flight, received));
+    });
+
+    let (parked_sample_1, parked_sample_2, end_in_flight, _received) = receiver
+        .recv_timeout(Duration::from_secs(20))
+        .expect("backpressure exchange must complete without deadlock");
+
+    // Bounded: parked at the mark (+ at most one delivery increment of
+    // slack for the crossing delivery), nowhere near the 4 MiB body an
+    // unbounded channel would swallow.
+    assert!(
+        parked_sample_1 >= BODY_HIGH_WATER_MARK,
+        "park must have engaged at/above the high-water mark, got {parked_sample_1}"
+    );
+    assert!(
+        parked_sample_1 < BODY_HIGH_WATER_MARK + 256 * 1024,
+        "parked in-flight bytes must stay within one increment of the mark \
+         ({} + slack), got {parked_sample_1}",
+        BODY_HIGH_WATER_MARK
+    );
+    // Parked stability: a silent consumer sees deliveries STOP — the exact
+    // same in-flight reading twice proves the transport pause + withheld
+    // drain hold (an unbounded channel would keep growing under the blast).
+    assert_eq!(
+        parked_sample_1, parked_sample_2,
+        "in-flight bytes must be stable while the consumer is silent (parked)"
+    );
+    // Balanced accounting after the lossless resume.
+    assert_eq!(
+        end_in_flight, 0,
+        "in-flight accounting must balance to zero after draining"
     );
 }
 

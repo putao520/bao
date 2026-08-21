@@ -164,8 +164,10 @@ pub fn new_abort_id() -> u32 {
 // ──────────────────────────────────────────────────────────────────────────
 // Streaming response-body state machine (FetchStreamLifecycle SM)
 //
-// `BAO_FETCH_STREAM=1` switches the WHATWG fetch() entry to streaming
-// semantics: the Promise resolves when HEADERS arrive (first
+// The WHATWG fetch() entry runs streaming semantics by default (the
+// adapter-stage `BAO_FETCH_STREAM` opt-in is deleted; the
+// `set_fetch_streaming_override` test hook can still pin buffered):
+// the Promise resolves when HEADERS arrive (first
 // metadata-carrying delivery) with a Response whose body is backed by a
 // native pull/cancel ReadableStream source; body chunks flow incrementally
 // through a bounded staging buffer instead of the terminal full-body copy.
@@ -283,8 +285,9 @@ pub(crate) struct StreamShared {
     pub fail: Option<StreamFail>,
 }
 
-/// Per-fetch streaming state. Allocated only in streaming mode
-/// (`BAO_FETCH_STREAM`); buffered fetches keep the single-outcome flow.
+/// Per-fetch streaming state. Allocated only in streaming mode (the
+/// WHATWG fetch() default); buffered fetches (Node-API entries, or the
+/// test hook pinning the legacy delivery) keep the single-outcome flow.
 pub(crate) struct StreamingState {
     /// Signals store the transport backrefs point into (BACKREF contract:
     /// lives in this heap Box, outlives the AsyncHTTP — the PendingFetch is
@@ -615,7 +618,7 @@ pub unsafe fn start_fetch(
     }
 }
 
-/// WHATWG fetch() streaming entry (`BAO_FETCH_STREAM=1`): identical inputs
+/// WHATWG fetch() streaming entry (the default): identical inputs
 /// to [`start_fetch`], but the transport runs with
 /// `response_body_streaming` + `header_progress` armed — the Promise
 /// resolves when headers arrive and the Response body streams through the
@@ -695,8 +698,9 @@ pub unsafe fn start_tls_probe(cx: *mut JSContext, promise_val: JSVal, host: Stri
 /// Kind-aware scheduler. Creates `AsyncHTTP::init`, schedules on the
 /// HTTPThread, and registers the PendingFetch for GC root protection.
 ///
-/// `streaming` selects the delivery mode (adapter stage: buffered default,
-/// `BAO_FETCH_STREAM` opt-in via [`start_fetch_streaming`]).
+/// `streaming` selects the delivery mode (WHATWG fetch() streams by
+/// default via [`start_fetch_streaming`]; Node-API entries stay buffered,
+/// and the test hook can still pin the legacy delivery).
 ///
 /// # Safety
 ///

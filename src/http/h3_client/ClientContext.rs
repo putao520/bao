@@ -213,6 +213,36 @@ impl ClientContext {
         false
     }
 
+    /// HTTP-thread wake-up from the transport-pause queue (Pause arm); the h3
+    /// twin of `h2::ClientSession::pause_stream_by_http_id`. h3 requests have
+    /// no `us_socket` in the abort tracker, so the queue drain reaches them
+    /// here — the session registry is the only index.
+    pub fn pause_stream_by_http_id(async_http_id: u32) {
+        let Some(this) = Self::get() else {
+            return;
+        };
+        // See `abort_by_http_id` — `BackRef` over the process-lifetime singleton.
+        let ctx = bun_ptr::BackRef::from(this);
+        for &s in ctx.sessions.iter() {
+            // Registry only holds live sessions — `session_mut` upgrade.
+            session_mut(s).pause_stream_by_http_id(async_http_id);
+        }
+    }
+
+    /// Resume arm of the transport-pause queue; see
+    /// [`pause_stream_by_http_id`].
+    pub fn resume_stream_by_http_id(async_http_id: u32) {
+        let Some(this) = Self::get() else {
+            return;
+        };
+        // See `abort_by_http_id` — `BackRef` over the process-lifetime singleton.
+        let ctx = bun_ptr::BackRef::from(this);
+        for &s in ctx.sessions.iter() {
+            // Registry only holds live sessions — `session_mut` upgrade.
+            session_mut(s).resume_stream_by_http_id(async_http_id);
+        }
+    }
+
     pub fn stream_body_by_http_id(async_http_id: u32, ended: bool) {
         let Some(this) = Self::get() else {
             return;

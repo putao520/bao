@@ -877,10 +877,21 @@ impl HttpThread {
                             }
                         }
                     }
+                } else {
+                    // No tracker entry: h3/QUIC requests never enter the abort
+                    // tracker (no us_socket to track — the h3 session registry
+                    // is their index), so route them there. Non-h3 ids (request
+                    // not yet connected or already terminal) miss the h3
+                    // registry too and no-op — same contract as the drain queue.
+                    match msg.kind {
+                        TransportPauseKind::Pause => {
+                            h3::ClientContext::pause_stream_by_http_id(msg.async_http_id)
+                        }
+                        TransportPauseKind::Resume => {
+                            h3::ClientContext::resume_stream_by_http_id(msg.async_http_id)
+                        }
+                    }
                 }
-                // No tracker entry (h3/QUIC has no us_socket, request not yet
-                // connected or already terminal): the message is dropped —
-                // same contract as the drain queue.
             }
             let len = queued_transport_pauses.len();
             drop(queued_transport_pauses);
@@ -1007,6 +1018,57 @@ impl HttpThread {
                 .push(DrainMessage { async_http_id });
         }
         self.wakeup();
+    }
+
+    /// Cross-thread response-body drain round-trip for one request: the
+    /// consumer-side half of the streaming park/unpark contract (a consumer
+    /// that withheld the drain while parked re-arms it on unpark, alongside
+    /// [`Self::schedule_transport_pause_from_any_thread`] with `Resume`).
+    /// Mirrors that entry point exactly: push under the drain-queue lock
+    /// (shared with the HTTP-thread drain pass) + wakeup. A message for an
+    /// id with no registered socket (h3, not yet connected, already
+    /// terminal) is dropped by the tick — the same contract as every other
+    /// cross-thread schedule.
+    pub fn schedule_response_body_drain_from_any_thread(async_http_id: u32) {
+        if async_http_id == 0 {
+            return;
+        }
+        assert!(
+            crate::HTTP_THREAD_INIT.load(Ordering::Acquire),
+            "HTTPThread::schedule_response_body_drain_from_any_thread() called before HTTPThread::init()"
+        );
+        // SAFETY: `HTTP_THREAD_INIT == true` ⇒ `HTTP_THREAD` is fully
+        // written. Raw field access (not `ParentRef`): the push is guarded
+        // by `queued_response_body_drains_lock`, which serializes access
+        // with the HTTP-thread drain pass — no aliasing is observable.
+        let this: *mut Self = unsafe {
+            (*crate::HTTP_THREAD.get_unchecked()).as_mut_ptr()
+        };
+        unsafe {
+            {
+                let _guard = (*this).queued_response_body_drains_lock.lock_guard();
+                (*this).queued_response_body_drains.push(DrainMessage { async_http_id });
+            }
+        }
+        // Same has_awoken handshake as `schedule()`.
+        // SAFETY: `this` points at the initialized HttpThread; both fields
+        // below are designed for cross-thread shared access.
+        let has_awoken = unsafe { &*::std::ptr::addr_of!((*this).has_awoken) };
+        if !has_awoken.load(Ordering::Acquire) {
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(100);
+            while !has_awoken.load(Ordering::Acquire) {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "HTTPThread::schedule_response_body_drain_from_any_thread() timed out waiting for HTTPThread::init()"
+                    );
+                }
+                ::std::hint::spin_loop();
+            }
+        }
+        // SAFETY: wakeup only touches atomics + the uws loop pointer, both
+        // valid after on_start() (guaranteed by the has_awoken check above).
+        unsafe { (&*this).wakeup() };
     }
 
     /// HTTP-thread-local enqueue of a transport pause/resume for one request

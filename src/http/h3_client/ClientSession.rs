@@ -266,6 +266,56 @@ impl ClientSession {
         // `host` drops here (was `defer bun.default_allocator.free(host)`).
     }
 
+    /// Stop reading `async_http_id`'s stream (transport backpressure, Pause
+    /// arm of the HTTP-thread pause queue). QUIC leverage: an unread stream
+    /// grants no further MAX_STREAM_DATA, so once the server exhausts its
+    /// already-granted window it stalls — the parked consumer's backlog is
+    /// bounded by that window, and sibling streams are unaffected (their
+    /// reads keep granting their own credit).
+    pub fn pause_stream_by_http_id(&mut self, async_http_id: u32) {
+        for &stream_ptr in self.pending.iter() {
+            // pending entries are live until detach(); `stream_ref` reads the
+            // Copy `client` field — no `&mut Stream` materialized.
+            let Some(cl) = stream_ref(stream_ptr).client else {
+                continue;
+            };
+            // `Stream.client` is a live backref while attached; `ParentRef`
+            // reads the Copy `async_http_id` field via shared deref.
+            if bun_ptr::ParentRef::from(cl).async_http_id != async_http_id {
+                continue;
+            }
+            let stream = stream_mut(stream_ptr);
+            stream.transport_paused = true;
+            if let Some(qs) = stream.qstream_mut() {
+                qs.want_read(false);
+            }
+            return;
+        }
+    }
+
+    /// Lift the read gate (Resume arm). Re-arming reads lets lsquic consume
+    /// the buffered DATA and grant fresh MAX_STREAM_DATA as the consumer
+    /// drains — flow-control credit is granted by reading, so unlike h2's
+    /// `resume_paused_stream` there is no withheld WINDOW_UPDATE to push and
+    /// no flush needed; the engine's tick re-drives the stream.
+    pub fn resume_stream_by_http_id(&mut self, async_http_id: u32) {
+        for &stream_ptr in self.pending.iter() {
+            // Same locate-then-act shape as `pause_stream_by_http_id`.
+            let Some(cl) = stream_ref(stream_ptr).client else {
+                continue;
+            };
+            if bun_ptr::ParentRef::from(cl).async_http_id != async_http_id {
+                continue;
+            }
+            let stream = stream_mut(stream_ptr);
+            stream.transport_paused = false;
+            if let Some(qs) = stream.qstream_mut() {
+                qs.want_read(true);
+            }
+            return;
+        }
+    }
+
     pub fn abort_by_http_id(&mut self, async_http_id: u32) -> bool {
         // PORT NOTE: Zig iterates `pending.items` and calls `this.fail` (which
         // mutates `pending`) mid-loop. Rust borrowck forbids reborrowing

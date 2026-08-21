@@ -54,10 +54,13 @@ fn main() {
     //     SOCKET is UINT_PTR and defining int would break the ABI.
     //
     // windows note: eventing/libuv.c pulls <uv.h> via internal/eventing/
-    // libuv.h; uv.h is not vendored under csrc/ — the windows build needs
-    // the libuv include path (bun_libuv_sys is already a cfg(windows)
-    // dependency of this crate). Wiring that include is deferred until a
-    // windows toolchain is actually exercised.
+    // libuv.h, and so does libuwsockets.cpp (it includes internal/internal.h
+    // directly). The libuv public include face is vendored under
+    // bun-usockets/src/deps/libuv/include (uv 1.51.0, the _WIN32 closure of
+    // uv.h; byte-identical mirror in packages/bun-usockets) and wired into
+    // both builds below — headers only, no libuv sources: every uv_* symbol
+    // is supplied at link time by bun_libuv_sys (cfg(windows) dependency of
+    // this crate), whose #[repr(C)] mirrors target the same 1.51.0.
     let target_os = env::var("CARGO_CFG_TARGET_OS")
         .expect("CARGO_CFG_TARGET_OS must be set by cargo for build scripts");
 
@@ -86,6 +89,12 @@ fn main() {
             other => panic!("unsupported target OS for bun_uws_sys: {other}"),
         };
     let non_windows_socket_shape = target_os != "windows";
+
+    // windows: <uv.h> include face consumed by eventing/libuv.c (C build) and
+    // by libuwsockets.cpp via internal/internal.h → internal/eventing/libuv.h
+    // (C++ build). See the platform-matrix note above for provenance.
+    let libuv_include = usockets_src.join("deps").join("libuv").join("include");
+    let is_windows = target_os == "windows";
 
     // ── C compilation: uSockets core ──────────────────────────────────────
     let mut c_build = cc::Build::new();
@@ -136,6 +145,9 @@ fn main() {
         .include(lsquic_dir.join("src").join("liblsquic"))  // for lsquic internal headers
         .include(&lsqpack_dir)           // for #include "lsxpack_header.h" (quic.c)
         .include(&lshpack_dir);          // for #include "lshpack.h" (quic.c → lsxpack)
+    if is_windows {
+        c_build.include(&libuv_include); // for #include <uv.h> (eventing/libuv.c)
+    }
 
     // C source files (uSockets core — platform-independent)
     let core_sources = [
@@ -251,6 +263,10 @@ fn main() {
         .include(usockets_src.join("internal/networking"))
         .include(&crate_dir)             // for #include "_libusockets.h"
         .include(crate_dir.join("src")); // for #include <wtf/Assertions.h>
+    if is_windows {
+        // internal/internal.h → internal/eventing/libuv.h → <uv.h>
+        cpp_build.include(&libuv_include);
+    }
 
     cpp_build.file(crate_dir.join("libuwsockets.cpp"));
     cpp_build.compile("uwsockets");
@@ -294,6 +310,11 @@ fn main() {
     }
     println!("cargo:rerun-if-changed={}", usockets_src.join("internal/internal.h").display());
     println!("cargo:rerun-if-changed={}", usockets_src.join("libusockets.h").display());
+    if is_windows {
+        // Vendored libuv include face (windows-only consumer: eventing/libuv.c
+        // and the C++ wrapper TU). Directory path → cargo watches recursively.
+        println!("cargo:rerun-if-changed={}", libuv_include.display());
+    }
 
     // ── Rebuild hints: C++ wrapper TU ─────────────────────────────────────
     // libuwsockets.cpp is one translation unit that #includes the uWS headers

@@ -50,7 +50,7 @@ use bun_cares_sys::c_ares_draft as cares;
 enum DnsRRData {
     Cname(::std::string::String),
     Mx(Vec<(u16, ::std::string::String)>), // (priority, exchange)
-    Txt(Vec<::std::string::String>),       // array of text entries
+    Txt(Vec<Vec<::std::string::String>>),  // one Vec per TXT record, each holding that record's chunks
     Ns(Vec<::std::string::String>),        // nameserver hostnames
     Ptr(Vec<::std::string::String>),       // reverse-resolved hostnames
     Soa {
@@ -336,28 +336,37 @@ impl cares::ReplyHandler<cares::struct_ares_mx_reply> for MxHandler {
 
 struct TxtHandler;
 
-impl cares::ReplyHandler<cares::struct_ares_txt_reply> for TxtHandler {
+impl cares::ReplyHandler<cares::struct_ares_txt_ext> for TxtHandler {
     fn on_reply(
         &mut self,
         status: Option<cares::Error>,
         _timeouts: i32,
-        results: *mut cares::struct_ares_txt_reply,
+        results: *mut cares::struct_ares_txt_ext,
     ) {
         if status.is_some() || results.is_null() {
             query_set_error(status_to_code(status).to_string());
             return;
         }
-        let mut txt_list = Vec::new();
+        // Group chunks into records: `record_start` marks the first chunk of
+        // each DNS TXT record (a record may carry multiple ≤255-byte chunks).
+        // Node.js dns.resolveTxt returns one inner array per record.
+        let mut records: Vec<Vec<::std::string::String>> = Vec::new();
         let mut cur = results;
         while !cur.is_null() {
             // SAFETY: cur is non-null, walks the linked list.
             let txt = unsafe { &*cur };
-            txt_list.push(::std::string::String::from_utf8_lossy(txt.txt_bytes()).into_owned());
+            if txt.record_start != 0 || records.is_empty() {
+                records.push(Vec::new());
+            }
+            records
+                .last_mut()
+                .expect("record group just opened")
+                .push(::std::string::String::from_utf8_lossy(txt.txt_bytes()).into_owned());
             cur = txt.next;
         }
         // SAFETY: free the linked list.
         unsafe { cares::ares_free_data(results.cast::<::std::ffi::c_void>()) };
-        query_set_result(DnsRRData::Txt(txt_list));
+        query_set_result(DnsRRData::Txt(records));
     }
 }
 
@@ -583,7 +592,7 @@ fn resolve_rr_cares(
                     name_ptr,
                     cares::NSClass::ns_c_in,
                     cares::NSType::ns_t_txt,
-                    Some(cares::ares_reply_callback::<cares::struct_ares_txt_reply, TxtHandler>),
+                    Some(cares::ares_reply_callback::<cares::struct_ares_txt_ext, TxtHandler>),
                     ::std::ptr::from_mut::<TxtHandler>(&mut handler).cast::<::std::ffi::c_void>(),
                 );
             }
@@ -2435,26 +2444,42 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
             match resolve_rr_cares(&hostname, cares::NSType::ns_t_txt) {
-                Ok(DnsRRData::Txt(txt_list)) => {
+                Ok(DnsRRData::Txt(records)) => {
                     let mut idx = 0u32;
-                    // Node.js dns.resolveTxt returns array of arrays of strings
-                    // (each outer element = one TXT record, each inner = chunk).
-                    // c-ares gives us individual txt entries; we return flat
-                    // array of strings (matching common Bun behavior).
-                    for txt in txt_list {
-                        let c_txt = ZBox::from_bytes(txt.as_bytes());
-                        let js_str = JS_NewStringCopyZ(cx, c_txt.as_ptr());
-                        if !js_str.is_null() {
-                            rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
-                            JS_DefineElement(
-                                cx,
-                                arr_root.handle().into(),
-                                idx,
-                                val.handle().into(),
-                                JSPROP_ENUMERATE as u32,
-                            );
-                            idx += 1;
+                    // Node.js dns.resolveTxt returns array of arrays of strings:
+                    // each outer element = one TXT record, each inner array
+                    // holds that record's character-string chunks.
+                    for record in records {
+                        let rec_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
+                        if rec_obj.is_null() {
+                            continue;
                         }
+                        rooted!(&in(cx_wrap) let rec_root = rec_obj);
+                        let mut chunk_idx = 0u32;
+                        for chunk in record {
+                            let c_txt = ZBox::from_bytes(chunk.as_bytes());
+                            let js_str = JS_NewStringCopyZ(cx, c_txt.as_ptr());
+                            if !js_str.is_null() {
+                                rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+                                JS_DefineElement(
+                                    cx,
+                                    rec_root.handle().into(),
+                                    chunk_idx,
+                                    val.handle().into(),
+                                    JSPROP_ENUMERATE as u32,
+                                );
+                                chunk_idx += 1;
+                            }
+                        }
+                        rooted!(&in(cx_wrap) let rec_val = ObjectValue(rec_root.get()));
+                        JS_DefineElement(
+                            cx,
+                            arr_root.handle().into(),
+                            idx,
+                            rec_val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                        idx += 1;
                     }
                 }
                 Err(code) => return throw_resolve_error(cx, "queryTxt", &code, &hostname),

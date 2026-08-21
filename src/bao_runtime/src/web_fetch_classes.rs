@@ -439,15 +439,13 @@ pub fn install_fetch_classes(
     // body getter — streaming source branch first: `_bodyStreamSource` is a
     // native holder (installed by fetch_async's streaming resolve) whose
     // pull/cancel feed a WHATWG ReadableStream. The strategy is
-    // `{ highWaterMark: 1 }` with the DEFAULT count size (one-chunk
-    // lookahead): this port's `_readableStreamDefaultControllerRead`
-    // empty-queue branch adds the read request WITHOUT invoking the
-    // controller's pull steps, so a `{ highWaterMark: 0 }` stream stalls
-    // after its first parked pull. With count-hwm 1 the invariant "a read
-    // against an empty queue always has a pull in flight" holds (every
-    // dequeue re-fills the one-chunk lookahead), and an UNREAD stream keeps
-    // at most the initial lookahead queued — no parked pulls — so the
-    // fetch-side park (unobserved staging ≥ high-water) still engages.
+    // `{ highWaterMark: 0 }` with the DEFAULT count size (strictly lazy):
+    // `_readableStreamDefaultControllerRead` parks the read request and
+    // then calls the controller's pull steps (WHATWG pull-steps step 6),
+    // so every chunk is pulled from the native source exactly when a
+    // consumer asks — zero JS-side lookahead. An UNREAD stream never
+    // pulls, and the fetch-side park (unobserved native staging ≥
+    // high-water) still engages.
     // The constructed stream is CACHED on the instance: the WHATWG body
     // getter must return the same stream object on every access (a fresh
     // stream per access would double-consume a live body).
@@ -466,7 +464,7 @@ pub fn install_fetch_classes(
               cancel: function(reason) {
                 return __baoFetchBodyCancel(src);
               }
-            }, { highWaterMark: 1 });
+            }, { highWaterMark: 0 });
           }
           return this._bodyStream;
         }

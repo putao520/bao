@@ -825,3 +825,69 @@ fn h1_pause_backpressures_server_resume_completes() {
     let total: u64 = deliveries.iter().map(|d| d.body_len).sum();
     assert_eq!(total as usize, H1_TOTAL, "body bytes after resume: got {total}, want {H1_TOTAL}");
 }
+
+/// Small plain-h1 origin: answers one GET with a fixed short body (the
+/// blast server below is 8 MiB — overkill for liveness probes).
+fn spawn_small_h1_server(body: &'static [u8]) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let mut head = Vec::new();
+        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => head.extend_from_slice(&buf[..n]),
+            }
+        }
+        let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(body);
+        let _ = stream.flush();
+    });
+    port
+}
+
+/// W2.5 h3 route regression: a transport pause/resume whose id has no
+/// abort-tracker entry (h3/QUIC requests never register a us_socket — the
+/// h3 session registry is their index) now forwards to
+/// `h3::ClientContext::{pause,resume}_stream_by_http_id` instead of being
+/// dropped. In this pure h1 test process there is no h3 registry either, so
+/// both arms run the `ClientContext::get() == None` early return — a
+/// no-op, same contract as the drain queue. What this pins down is that
+/// the miss branch neither panics nor wedges the drain loop: the two miss
+/// messages interleave with a live request's own queue traffic in the same
+/// drain pass, and that request still completes in full.
+#[test]
+fn transport_pause_miss_routes_to_h3_registry_without_wedging_drain() {
+    let port = spawn_small_h1_server(b"miss-route-alive");
+    let (_id, rx) = spawn_streaming_fetch(format!("http://127.0.0.1:{}/", port), false, false);
+
+    // Both arms of the miss branch, through the cross-thread entry whose
+    // wake-up handshake drives the HTTP-thread tick (and with it the drain
+    // pass over these messages).
+    bun_http::HTTPThread::schedule_transport_pause_from_any_thread(
+        u32::MAX - 1,
+        TransportPauseKind::Pause,
+    );
+    bun_http::HTTPThread::schedule_transport_pause_from_any_thread(
+        u32::MAX - 1,
+        TransportPauseKind::Resume,
+    );
+
+    let deliveries = collect_until_terminal(&rx, Duration::from_secs(15));
+    let Some(last) = deliveries.last() else {
+        panic!("post-miss fetch produced no delivery — drain loop wedged")
+    };
+    assert!(!last.has_more, "post-miss fetch never terminated");
+    assert!(!last.failed, "post-miss fetch failed: {:?}", last.status);
+    assert_eq!(last.status, Some(200), "post-miss fetch expected 200");
+    assert_eq!(
+        deliveries.iter().map(|d| d.body_len).sum::<u64>() as usize,
+        b"miss-route-alive".len(),
+        "post-miss fetch body bytes lost"
+    );
+}

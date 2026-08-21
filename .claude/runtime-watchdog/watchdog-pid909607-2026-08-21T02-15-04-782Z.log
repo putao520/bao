@@ -1,0 +1,10 @@
+{
+  "event": "main-loop-watchdog-dead",
+  "runtimePid": 909607,
+  "detectedAt": "2026-08-21T02:15:04.782Z",
+  "silenceMs": 60036,
+  "uptimeMs": 74123329,
+  "inflightStreams": [],
+  "rss": 7507881984,
+  "heapUsed": 7450672
+}

@@ -1,5 +1,5 @@
 // @trace TEST-ENG-STREAM [req:REQ-ENG-010] [level:system]
-// Streaming response-body semantics (`BAO_FETCH_STREAM` / W1):
+// Streaming response-body semantics (streaming default / W1):
 //
 //   1. chunked incremental delivery — per-chunk reader reads spread over
 //      the server's inter-chunk delays (not one buffered terminal copy);

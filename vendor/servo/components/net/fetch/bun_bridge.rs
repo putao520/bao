@@ -54,6 +54,22 @@
 // high-water mark + one IPC chunk in flight bound the buffered upload
 // memory — an XHR/fetch uploading a large body never holds it whole.
 //
+// Response-body backpressure (the bridge counterpart of the fetch side's
+// staging park, fetch-stream W1+W2): the body channel is byte-accounted.
+// Once [`BODY_HIGH_WATER_MARK`] bytes sit in the channel unread, the
+// delivery callback PARKS — it still hands the shared transport buffer back
+// empty (the ownership contract) but WITHHOLDS the drain round-trip (h2 flow
+// control then holds the stream window) and pauses the transport read side
+// (h1 socket pause → TCP backpressure to the server; the W2 hook). A slow or
+// absent page-side consumer therefore bounds the bridge's resident body
+// memory at the high-water mark + one delivery increment, instead of
+// buffering the whole response. The consumer's receive path unparks below
+// [`BODY_LOW_WATER_MARK`] (hysteresis): transport resume first, then the
+// withheld drain round-trip — deliveries continue. The terminal/pooling
+// safety nets live in bun_http (`pause_response_transport` gates on
+// Done/Fail/redirect-pending and every pool handoff resumes first), so a
+// parked exchange that goes terminal cannot strand a paused socket.
+//
 // Stage 3 (h2 coalescing): the per-request SSLConfig is interned through
 // bun's `ssl_config::GlobalRegistry` — content-equal configs resolve to one
 // pointer, which is what every bun_http pool key compares, so same-origin
@@ -65,7 +81,7 @@ use std::pin::pin;
 use std::ptr::NonNull;
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -99,6 +115,20 @@ use crate::http_loader::{FRAGMENT, BodyChunk, obtain_response_setup_router_callb
 /// response head is ready; this tick only exists so an in-flight request can
 /// be aborted promptly when servo cancels the fetch.
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Unobserved-body bound for the response channel (the fetch-side W1
+/// template's 256 KiB magnitude — `fetch_async.rs::
+/// UNOBSERVED_BODY_HIGH_WATER_MARK`). Once this many body bytes have been
+/// forwarded into the channel but not yet received, the delivery callback
+/// parks: drain round-trip withheld + transport read side paused (see the
+/// module header). Resident body memory for a slow/absent consumer is
+/// bounded by this + one delivery increment.
+pub const BODY_HIGH_WATER_MARK: usize = 256 * 1024;
+
+/// Consumer-side resume threshold (hysteresis against per-frame
+/// park/unpark ping-pong): the consumer unparks — transport resume + the
+/// withheld drain round-trip — once in-flight bytes drop to this.
+pub const BODY_LOW_WATER_MARK: usize = 128 * 1024;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Request counter
@@ -138,15 +168,31 @@ pub struct BunHttpResponse {
     /// (protocol/cipher/ALPN/peer-cert chain); `None` for plaintext.
     pub tls_info: Option<bun_http::BunTlsInfo>,
     body_rx: UnboundedReceiver<BodyFrame>,
+    /// Consumer-side half of the response-body backpressure (see the module
+    /// header): byte accounting + the unpark lever.
+    backpressure: StdArc<BodyBackpressure>,
     /// Carried alongside the body; consumed by [`to_servo_response`].
     abort_guard: Option<StreamAbortGuard>,
 }
 
 impl BunHttpResponse {
     /// Await the next incremental body frame: `Ok(bytes)` per delivery,
-    /// `Err` on mid-stream failure, `None` at clean stream end.
+    /// `Err` on mid-stream failure, `None` at clean stream end. Receiving a
+    /// data frame runs the consumer-side backpressure accounting (unpark
+    /// below [`BODY_LOW_WATER_MARK`]).
     pub async fn next_chunk(&mut self) -> Option<BodyFrame> {
-        self.body_rx.recv().await
+        let frame = self.body_rx.recv().await;
+        if let Some(Ok(bytes)) = &frame {
+            observe_body_received(&self.backpressure, bytes.len());
+        }
+        frame
+    }
+
+    /// Bytes currently forwarded into the channel but not yet received
+    /// (diagnostics / e2e bounded-backpressure assertions; the park check
+    /// reads the same atomic).
+    pub fn body_in_flight(&self) -> usize {
+        self.backpressure.in_flight.load(Ordering::Acquire)
     }
 
     /// Drain the body to completion (test / buffered-consumer helper).
@@ -402,6 +448,52 @@ struct BridgeHead {
     tls_info: Option<bun_http::BunTlsInfo>,
 }
 
+/// Shared response-body backpressure state — the bridge counterpart of the
+/// fetch side's staging park (`fetch_async.rs`'s `staging` /
+/// `UNOBSERVED_BODY_HIGH_WATER_MARK`, adapted to the channel shape: the
+/// channel IS the staging; this carries only the accounting). Held
+/// separately from `BridgeState` on purpose: the terminal callback's
+/// `Arc<BridgeState>` drop is what closes the body channel at clean stream
+/// end, so the consumer must not keep that Arc alive — this small
+/// allocation carries only atomics and the request id the unpark needs.
+struct BodyBackpressure {
+    /// Bytes forwarded into the channel but not yet received: the delivery
+    /// callback adds before each send, the consumer subtracts per received
+    /// frame.
+    in_flight: AtomicUsize,
+    /// Producer parked: the drain round-trip is withheld and the transport
+    /// read side paused. Cleared by the consumer below the low-water mark.
+    parked: AtomicBool,
+    /// The request's HTTPThread id (0 until `fetch_core` stashes it) — the
+    /// same shared `Arc<AtomicU32>` the cancel handle holds, so the unpark
+    /// sees the id regardless of who stashed it first.
+    async_http_id: StdArc<AtomicU32>,
+}
+
+/// Consumer-side backpressure accounting: subtract the received bytes and,
+/// below [`BODY_LOW_WATER_MARK`], unpark — transport resume first (h1
+/// un-pause re-arms reads; h2 immediate window replenish + flush), then the
+/// withheld drain round-trip. Both go through the cross-thread HTTPThread
+/// entries (this runs on the consuming thread — the tokio net thread or a
+/// test worker). Shared by [`BunHttpResponse::next_chunk`] and servo's
+/// `to_servo_response` consumption loop.
+fn observe_body_received(backpressure: &BodyBackpressure, len: usize) {
+    let in_flight = backpressure
+        .in_flight
+        .fetch_sub(len, Ordering::AcqRel)
+        .saturating_sub(len);
+    if in_flight <= BODY_LOW_WATER_MARK && backpressure.parked.swap(false, Ordering::AcqRel) {
+        let id = backpressure.async_http_id.load(Ordering::Acquire);
+        if id != 0 {
+            bun_http::HTTPThread::schedule_transport_pause_from_any_thread(
+                id,
+                bun_http::http_thread::TransportPauseKind::Resume,
+            );
+            bun_http::HTTPThread::schedule_response_body_drain_from_any_thread(id);
+        }
+    }
+}
+
 struct BridgeState {
     /// Response head (or the terminal error, when the exchange failed before
     /// headers). Written once by `on_http_done` (first delivery carrying
@@ -413,6 +505,9 @@ struct BridgeState {
     body_tx: UnboundedSender<BodyFrame>,
     /// Wakes the awaiting future after `head` is written.
     notify: Notify,
+    /// Response-body backpressure (producer half — the callback's park
+    /// lever; the consumer half lives in [`BunHttpResponse`]).
+    backpressure: StdArc<BodyBackpressure>,
     /// Keeps the `Store` that the AsyncHTTP signals point into alive for as
     /// long as either the future or the callback holds this state.
     signal_box: StdArc<SignalBox>,
@@ -429,8 +524,9 @@ struct BridgeState {
     stream_signals: Option<StdArc<StreamSignals>>,
 }
 
-// SAFETY: `head` (std Mutex), `body_tx` (tokio), `notify` (tokio) and
-// `signal_box` (atomics) are Sync. The three raw-pointer fields are set
+// SAFETY: `head` (std Mutex), `body_tx` (tokio), `notify` (tokio),
+// `backpressure` (atomics behind an Arc) and `signal_box` (atomics) are
+// Sync. The three raw-pointer fields are set
 // before the `Arc` is shared with the HTTPThread (before
 // `HTTPThread::schedule`), are never mutated afterwards, and are
 // dereferenced exactly once inside the terminal callback — which the
@@ -690,7 +786,7 @@ pub async fn fetch_core(
     // HeaderBuilder, the Signals view) is created and fully consumed inside
     // this block, so the awaiting Phase B below stays Send (servo boxes the
     // http_fetch future as `dyn Future + Send`).
-    let (state, body_rx, abort_guard) = {
+    let (state, body_rx, backpressure, abort_guard) = {
         // URL: leak to 'static for the heap AsyncHTTP to borrow.
         let (url_static, url_owned) = if url.is_empty() {
             (&[][..], None)
@@ -753,10 +849,19 @@ pub async fn fetch_core(
         let response_buffer = Box::into_raw(Box::new(bun_core::MutableString::default()));
 
         let (body_tx, body_rx) = unbounded_channel::<BodyFrame>();
+        // Response-body backpressure: shares the cancel handle's id slot
+        // (stashed below, after `AsyncHTTP::init` assigns it — the Arc makes
+        // the late write visible to both halves).
+        let backpressure = StdArc::new(BodyBackpressure {
+            in_flight: AtomicUsize::new(0),
+            parked: AtomicBool::new(false),
+            async_http_id: StdArc::clone(&cancel.async_http_id),
+        });
         let state: StdArc<BridgeState> = StdArc::new(BridgeState {
             head: StdMutex::new(None),
             body_tx,
             notify: Notify::new(),
+            backpressure: StdArc::clone(&backpressure),
             signal_box: StdArc::clone(&cancel.signal_box),
             url_owned,
             body_owned,
@@ -878,7 +983,7 @@ pub async fn fetch_core(
             StdArc::clone(&cancel.async_http_id),
         );
 
-        (state, body_rx, abort_guard)
+        (state, body_rx, backpressure, abort_guard)
     };
 
     // Phase B — await the head. `notify_one()` stores a permit when no
@@ -910,6 +1015,7 @@ pub async fn fetch_core(
             is_http2: head.is_http2,
             tls_info: head.tls_info,
             body_rx,
+            backpressure,
             abort_guard: Some(abort_guard),
         }),
         Err(error) => {
@@ -993,12 +1099,24 @@ fn on_http_done(
         }
 
         // Forward this delivery's bytes (any delivery may carry body bytes;
-        // the terminal one usually carries none in streaming mode).
+        // the terminal one usually carries none in streaming mode). The
+        // in-flight accounting runs before the send: the park check below
+        // needs the post-send channel occupancy (the fetch-side staging
+        // pattern — the channel IS the staging).
         let bytes = result
             .body
             .as_deref()
             .map(|buffer| buffer.list.as_slice().to_vec())
             .unwrap_or_default();
+        let in_flight = if bytes.is_empty() {
+            state.backpressure.in_flight.load(Ordering::Acquire)
+        } else {
+            state
+                .backpressure
+                .in_flight
+                .fetch_add(bytes.len(), Ordering::AcqRel)
+                + bytes.len()
+        };
         if !bytes.is_empty() && state.body_tx.send(Ok(bytes)).is_err() {
             // Consumer gone mid-stream (servo dropped the body future): abort
             // so the HTTPThread request terminates instead of streaming into
@@ -1011,16 +1129,39 @@ fn on_http_done(
         // Streaming drain round-trip (mirrors the 52634b89 consumer
         // contract): hand the buffer back empty and schedule the drain so the
         // HTTPThread keeps reading. Terminal deliveries need no drain — the
-        // request is complete.
+        // request is complete. PARK: once the unobserved body crosses
+        // [`BODY_HIGH_WATER_MARK`], the drain is WITHHELD (h2 flow control
+        // then holds the stream window) and the transport read side is paused
+        // (h1 socket pause → TCP backpressure to the server) — the fetch-side
+        // W1+W2 template, bounding resident body memory for a slow or absent
+        // consumer at the mark + one delivery increment. The consumer's
+        // receive path unparks below [`BODY_LOW_WATER_MARK`].
         if !result_is_terminal {
+            // The ownership contract holds regardless of parking: the bytes
+            // now live in the channel, so the shared buffer goes back empty.
             if let Some(buffer) = result.body.as_deref_mut() {
                 buffer.list.clear();
             }
+            let parked = state.backpressure.parked.load(Ordering::Acquire);
             let id = unsafe { (*async_http_box).async_http_id };
             // SAFETY/THREADING: this callback runs on the HTTPThread, which
             // owns the HTTP_THREAD cell (same-thread idiom as ProxyTunnel's
-            // schedule_proxy_deref call sites).
-            bun_http::http_thread_mut().schedule_response_body_drain(id);
+            // schedule_proxy_deref call sites; the transport-pause entry is
+            // documented for exactly this in-callback call shape — uSockets
+            // re-checks `is_paused` after the dispatch returns, and the
+            // pause itself gates on Done/Fail/redirect-pending).
+            if !parked && in_flight >= BODY_HIGH_WATER_MARK {
+                state.backpressure.parked.store(true, Ordering::Release);
+                bun_http::http_thread_mut().schedule_transport_pause(
+                    id,
+                    bun_http::http_thread::TransportPauseKind::Pause,
+                );
+                // No drain — withholding it IS the park.
+            } else if !parked {
+                bun_http::http_thread_mut().schedule_response_body_drain(id);
+            }
+            // Already parked: neither — the consumer's unpark re-arms the
+            // transport and re-issues the drain.
         }
     }
 
@@ -1267,12 +1408,20 @@ pub fn to_servo_response(
     // constructor for a `hyper::Error` carrying an `io::Error`, and the
     // hyper-era visible behaviour on a transport failure mid-body was
     // precisely "body marked Done, Data::Done" (try_fold's error arm) —
-    // ending the stream yields the same page-visible semantics.
+    // ending the stream yields the same page-visible semantics. Each data
+    // frame runs the consumer-side backpressure accounting (unpark below
+    // the low-water mark — see the module header).
     let body_stream = futures::stream::unfold(
-        (response.body_rx, response.abort_guard.take()),
-        |(mut body_rx, mut guard)| async move {
+        (response.body_rx, response.backpressure, response.abort_guard.take()),
+        |(mut body_rx, backpressure, mut guard)| async move {
             match body_rx.recv().await {
-                Some(Ok(bytes)) => Some((Ok(Frame::data(Bytes::from(bytes))), (body_rx, guard))),
+                Some(Ok(bytes)) => {
+                    observe_body_received(&backpressure, bytes.len());
+                    Some((
+                        Ok(Frame::data(Bytes::from(bytes))),
+                        (body_rx, backpressure, guard),
+                    ))
+                },
                 Some(Err(error)) => {
                     log::debug!("bun bridge: response body failed mid-stream: {error:?}");
                     if let Some(guard) = guard.as_mut() {

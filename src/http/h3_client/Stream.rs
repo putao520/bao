@@ -38,6 +38,14 @@ pub struct Stream {
     pub request_body_done: bool,
     pub is_streaming_body: bool,
     pub headers_delivered: bool,
+
+    /// Transport backpressure park (consumer withheld the drain). Set from
+    /// the HTTP-thread pause queue — possibly before `on_stream_open` hands
+    /// this Stream its lsquic handle, in which case the open callback honors
+    /// it there (see `callbacks::on_stream_open`). While set, the bound
+    /// `qstream` runs with reads off: no reads means no MAX_STREAM_DATA
+    /// grants, so the server's stream window exhausts and it stalls.
+    pub transport_paused: bool,
 }
 
 impl Stream {
@@ -57,6 +65,7 @@ impl Stream {
             request_body_done: false,
             is_streaming_body: false,
             headers_delivered: false,
+            transport_paused: false,
         }))
     }
 

@@ -197,6 +197,14 @@ extern "C" fn on_stream_open(s: *mut quic::Stream, is_client: c_int) {
     stream_mut(stream).qstream = Some(NonNull::from(&mut *s));
     *s.ext::<Stream>() = NonNull::new(stream);
     bun_core::scoped_log!(h3_client, "stream_open");
+    // Transport backpressure: the consumer may have parked this stream while
+    // it sat in `pending` (pause scheduled between enqueue and stream-open).
+    // quic.c arms wantread *before* this callback so a park set here survives
+    // — checked before `write_request` because a failed write detaches (and
+    // frees) the stream on the spot.
+    if stream_mut(stream).transport_paused {
+        s.want_read(false);
+    }
     if let Err(e) = encode::write_request(session, stream_mut(stream), s) {
         session.fail(stream, e);
     }

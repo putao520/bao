@@ -148,6 +148,32 @@ fn test_dns_net_deep() {
         resolve4_result
     );
 
+    // dns.resolveTxt returns array of arrays (Node.js oracle shape: one inner
+    // array per TXT record, each holding that record's string chunks)
+    let resolvetxt_result = eval_string(
+        &mut ctx,
+        r#"
+        try {
+            var dns = require('dns');
+            var result = dns.resolveTxt('nodejs.org');
+            if (!Array.isArray(result)) 'not_array';
+            else if (result.length === 0) 'txt_empty';
+            else if (!result.every(function(r) { return Array.isArray(r) && r.every(function(c) { return typeof c === 'string'; }); }))
+                'flat_shape:' + JSON.stringify(result).substring(0, 40);
+            else 'nested_ok:' + result.length + ' records ' + JSON.stringify(result).substring(0, 200)
+        } catch(e) {
+            'resolvetxt_err:' + (e.message || e).substring(0, 30)
+        }
+    "#,
+    );
+    assert!(
+        resolvetxt_result.contains("nested_ok")
+            || resolvetxt_result.contains("resolvetxt_err")
+            || resolvetxt_result.contains("txt_empty"),
+        "dns.resolveTxt should return array of arrays of strings (Node.js shape), got: {}",
+        resolvetxt_result
+    );
+
     // dns.promises — Promise-based namespace
     assert!(
         eval_bool(&mut ctx, "typeof require('dns').promises === 'object'"),

@@ -544,8 +544,12 @@ static lsquic_stream_ctx_t *us_quic_on_new_stream(void *if_ctx, lsquic_stream_t 
     if (!s) { lsquic_stream_close(stream); return NULL; }
     s->stream = stream;
     s->ctx = ctx;
-    if (ctx->on_stream_open) ctx->on_stream_open(s, ctx->is_client);
+    /* Arm reads *before* the open callback: the callback may park the stream
+     * (us_quic_stream_want_read(0), transport backpressure) and that decision
+     * must survive — arming after the callback would unpause it (a pause
+     * scheduled between enqueue and stream-open). */
     lsquic_stream_wantread(stream, 1);
+    if (ctx->on_stream_open) ctx->on_stream_open(s, ctx->is_client);
     return (lsquic_stream_ctx_t *) s;
 }
 
