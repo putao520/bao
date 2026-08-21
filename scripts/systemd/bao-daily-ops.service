@@ -7,7 +7,6 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/home/putao/code/rust/bao
 EnvironmentFile=-/home/putao/code/rust/bao/.claude/daily-ops/mode.conf
-Environment=MODE=dry-run
 Environment=PATH=/home/putao/.local/bin:/home/putao/.cargo/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin
 TimeoutStartSec=100min
 ExecStart=/home/putao/code/rust/bao/scripts/daily-ops.sh
