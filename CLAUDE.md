@@ -207,6 +207,7 @@ make bce-check
 2. **rlib 包含 native 代码**:`libmozjs_sys-*.rlib` 打包了 `libjs_static.a` 的全部 C++ 符号。改 `.a` 不够——必须删 rlib 重新编译
 3. **mozjs make 增量构建 bug**:make 会编译新 `.o` 但不重新打包 `libjs_static.a`。需手动 `ar -d` + `ar -q` 替换,或删整个 build output 目录
 4. **清理顺序**:删 `.fingerprint/mozjs_sys-*` + `deps/libmozjs*` + `build/mozjs_sys-*` + `incremental/mozjs*`,然后 `cargo build`
+5. **真实构建目录**:CARGO_TARGET_DIR 由环境注入为 /var/cargo-builds/3c/6184ceb77072ba(repo 内 target/ 是残迹)——清理序(.fingerprint/deps/build/incremental)应对真实目录执行
 
 #### EBUSY Patch(已应用)
 
@@ -218,7 +219,7 @@ make bce-check
 
 如果 SIGSEGV 复现,第一步 `nm libmozjs_sys-*.rlib | grep MutexImplD1` 查 rlib 是否包含旧代码。
 
-#### mozjs fork BAO patch 清单(5 项,0.21.4 全部在位)
+#### mozjs fork BAO patch 清单(5 项,0.22.0 全部在位——升级波 6b259cc2 二进制级实证)
 
 上游同步 mozjs 时必须逐项重放(参照 git 历史 `git show <old>:vendor/mozjs/...`):
 
@@ -280,7 +281,7 @@ make bce-check
 | Bun | `~/code/rust/bun/src/` | ~85 个纯 Rust crate(零修改复用);`jsc/` 是 JSC→SM 迁移目标;`runtime/` 是 Bun API 实现来源 |
 | Bun SPEC | `~/code/rust/bun/CLAUDE.md` | 构建命令、测试规范、crate 组织 |
 | Servo | `~/code/tools/servo/`(vendor 快照见 `vendor/servo/`,2026-08-13 上游 HEAD,10 个 Bao 定制文件见上文清单) | `libservo` 嵌入入口;`script/` DOM(每 ScriptThread 一个 thread-local SM JSContext);`script_bindings/` SM↔DOM 桥接 |
-| mozjs | `vendor/mozjs/`(0.21.4,vendor 进本仓库;5 项 BAO patch 见上文清单) | SM FFI 绑定源码 |
+| mozjs | `vendor/mozjs/`(0.22.0 / bao-mozjs-sys 140.14.0-0,servo/mozjs main eb36274 外科 23 文件移植;5 项 BAO patch 见上文清单) | SM FFI 绑定源码 |
 | blitz | `~/code/rust/blitz/` | DioxusLabs 模块化浏览器参考架构 |
 
 Bun / Servo SPEC 测绘成果:`.spec/02-SYSTEM.html` §2(Bun Crate DAG)+ §3(Servo 36 组件分层)。
