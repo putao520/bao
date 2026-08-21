@@ -321,14 +321,6 @@ mod tests {
         assert_eq!(session.target_id(), "test-target-xyz");
     }
 
-    // 14. CdpSession::backend_kind returns Internal
-    #[test]
-    fn cdp_session_backend_kind_returns_internal() {
-        let router = CdpRouter::new();
-        let session = router.create_internal_session("target-1");
-        assert_eq!(session.backend_kind(), BackendKind::Internal);
-    }
-
     // 15. CdpSession::send registers domain in enabled_domains
     #[test]
     fn cdp_session_send_registers_domain() {

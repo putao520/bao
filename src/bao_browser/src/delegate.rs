@@ -1482,10 +1482,47 @@ pub struct WorkerNetworkInformation {
     pub save_data: bool,
 }
 
+/// Navigator fingerprint transport shared by every worker scope config
+/// (criterion #12): dedicated, shared, and service configs all carry the
+/// parent page's navigator values, differing only in scope-specific extras.
+///
+/// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+pub trait ScopeNavigatorConfig {
+    /// The transported navigator fingerprint fields:
+    /// (user_agent, platform, hardware_concurrency, language, languages).
+    fn navigator_fields(&self) -> (&str, &str, usize, &str, &[String]);
+}
+
+/// Implement [`ScopeNavigatorConfig`] for scope configs that declare the
+/// five navigator fingerprint fields flat (all current configs do).
+macro_rules! impl_scope_navigator_config {
+    ($($config:ty),* $(,)?) => {
+        $(
+            impl ScopeNavigatorConfig for $config {
+                fn navigator_fields(&self) -> (&str, &str, usize, &str, &[String]) {
+                    (
+                        &self.user_agent,
+                        &self.platform,
+                        self.hardware_concurrency,
+                        &self.language,
+                        &self.languages,
+                    )
+                }
+            }
+        )*
+    };
+}
+
+impl_scope_navigator_config!(
+    WorkerScopeConfig,
+    SharedWorkerScopeConfig,
+    ServiceWorkerScopeConfig
+);
+
 impl WorkerNavigator {
-    /// Shared constructor core: both dedicated and Shared scope configs carry
-    /// the same navigator fingerprint fields (criterion #12), differing only
-    /// in the config type that transports them.
+    /// Shared constructor core: every scope config carries the same navigator
+    /// fingerprint fields (criterion #12), differing only in the config type
+    /// that transports them.
     ///
     /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
     fn from_scope_core(
@@ -1511,32 +1548,20 @@ impl WorkerNavigator {
         }
     }
 
-    /// Create a WorkerNavigator from a WorkerScopeConfig.
-    ///
-    /// The navigator values are populated from the config which carries
-    /// the parent page's fingerprint values (criterion #12).
-    ///
-    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
-    pub fn from_scope_config(config: &WorkerScopeConfig) -> Self {
-        Self::from_scope_core(
-            &config.user_agent,
-            &config.platform,
-            config.hardware_concurrency,
-            &config.language,
-            &config.languages,
-        )
-    }
-
-    /// Create a WorkerNavigator from a SharedWorkerScopeConfig.
+    /// Create a WorkerNavigator from any scope config (dedicated / shared /
+    /// service worker). The navigator values are populated from the config
+    /// which carries the parent page's fingerprint values (criterion #12).
     ///
     /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
-    pub fn from_shared_scope_config(config: &SharedWorkerScopeConfig) -> Self {
+    pub fn from_scope_config<C: ScopeNavigatorConfig>(config: &C) -> Self {
+        let (user_agent, platform, hardware_concurrency, language, languages) =
+            config.navigator_fields();
         Self::from_scope_core(
-            &config.user_agent,
-            &config.platform,
-            config.hardware_concurrency,
-            &config.language,
-            &config.languages,
+            user_agent,
+            platform,
+            hardware_concurrency,
+            language,
+            languages,
         )
     }
 }
@@ -1611,7 +1636,7 @@ impl WorkerGlobalScopeState {
     pub fn new_shared(worker_url: String, config: &SharedWorkerScopeConfig) -> Self {
         WorkerGlobalScopeState {
             location: WorkerLocation::from_url(&worker_url),
-            navigator: WorkerNavigator::from_shared_scope_config(config),
+            navigator: WorkerNavigator::from_scope_config(config),
             worker_url,
             closing: false,
         }
@@ -3052,21 +3077,6 @@ impl From<&bao_stealth::StealthProfile> for ServiceWorkerScopeConfig {
     }
 }
 
-impl WorkerNavigator {
-    /// Create a WorkerNavigator from a ServiceWorkerScopeConfig.
-    ///
-    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
-    pub fn from_service_scope_config(config: &ServiceWorkerScopeConfig) -> Self {
-        Self::from_scope_core(
-            &config.user_agent,
-            &config.platform,
-            config.hardware_concurrency,
-            &config.language,
-            &config.languages,
-        )
-    }
-}
-
 impl WorkerGlobalScopeState {
     /// Create a WorkerGlobalScopeState from a script URL and service scope config.
     ///
@@ -3074,7 +3084,7 @@ impl WorkerGlobalScopeState {
     pub fn new_service(worker_url: String, config: &ServiceWorkerScopeConfig) -> Self {
         WorkerGlobalScopeState {
             location: WorkerLocation::from_url(&worker_url),
-            navigator: WorkerNavigator::from_service_scope_config(config),
+            navigator: WorkerNavigator::from_scope_config(config),
             worker_url,
             closing: false,
         }
@@ -4154,7 +4164,7 @@ impl BaoWebViewState {
         config: &SharedWorkerScopeConfig,
     ) {
         if let Some(scope) = self.shared_worker_scopes.get_mut(shared_worker_id) {
-            scope.scope.navigator = WorkerNavigator::from_shared_scope_config(config);
+            scope.scope.navigator = WorkerNavigator::from_scope_config(config);
         }
     }
 
@@ -4282,7 +4292,7 @@ impl BaoWebViewState {
     /// @trace REQ-BRW-004 [entity:ServiceWorkerGlobalScope] [criterion:19] DF-WK-10
     pub fn set_service_worker_scope_config(&mut self, config: &ServiceWorkerScopeConfig) {
         if let Some(scope) = &mut self.service_worker_scope {
-            scope.scope.navigator = WorkerNavigator::from_service_scope_config(config);
+            scope.scope.navigator = WorkerNavigator::from_scope_config(config);
         }
     }
 }
@@ -6924,7 +6934,7 @@ mod tests {
             language: "ja".to_string(),
             languages: vec!["ja".to_string(), "en".to_string()],
         };
-        let nav = WorkerNavigator::from_shared_scope_config(&config);
+        let nav = WorkerNavigator::from_scope_config(&config);
         assert_eq!(nav.user_agent, "Bao/2.0");
         assert_eq!(nav.platform, "MacOS");
         assert_eq!(nav.hardware_concurrency, 4);
@@ -8869,7 +8879,7 @@ mod tests {
             languages: vec!["zh-CN".to_string(), "zh".to_string()],
             registering_page_url: "https://example.com/".to_string(),
         };
-        let nav = WorkerNavigator::from_service_scope_config(&config);
+        let nav = WorkerNavigator::from_scope_config(&config);
         assert_eq!(nav.user_agent, "Mozilla/5.0 Test");
         assert_eq!(nav.platform, "Linux x86_64");
         assert_eq!(nav.hardware_concurrency, 4);

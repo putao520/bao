@@ -169,20 +169,25 @@ impl PermissionGuard {
         Self::check_inner(&self.inner, allowed, "net", host)
     }
 
+    /// Shared core for zero-resource flag checks (env/run): an unrestricted
+    /// guard always passes; a restricted guard passes only when `predicate`
+    /// holds on the inner `Permission`, otherwise denies with the given
+    /// category (resource is always "*").
+    fn check_flag(
+        &self,
+        predicate: fn(&Permission) -> bool,
+        category: &str,
+    ) -> Result<(), PermissionDenied> {
+        let allowed = self.inner.as_ref().map_or(true, predicate);
+        Self::check_inner(&self.inner, allowed, category, "*")
+    }
+
     pub fn check_env(&self) -> Result<(), PermissionDenied> {
-        let allowed = self
-            .inner
-            .as_ref()
-            .map_or(true, |perm| perm.is_env_allowed());
-        Self::check_inner(&self.inner, allowed, "env", "*")
+        self.check_flag(Permission::is_env_allowed, "env")
     }
 
     pub fn check_run(&self) -> Result<(), PermissionDenied> {
-        let allowed = self
-            .inner
-            .as_ref()
-            .map_or(true, |perm| perm.is_run_allowed());
-        Self::check_inner(&self.inner, allowed, "run", "*")
+        self.check_flag(Permission::is_run_allowed, "run")
     }
 }
 

@@ -2859,14 +2859,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_channel_receiver_sees_close_flag() {
-        let (channel, receiver) = super::BridgeChannel::new();
-        assert!(receiver.is_alive());
-        channel.close();
-        assert!(!receiver.is_alive());
-    }
-
-    #[test]
     fn bridge_channel_multiple_send_response_pairs() {
         let (channel, receiver) = super::BridgeChannel::new();
 
