@@ -1008,6 +1008,234 @@ fn handle_network(
             }
             ok_empty()
         }
+        // ── Full-surface completion (cdp-protocol 0.3.1 oracle, 40/40) ──
+        // The remaining methods land on three honest tracks; per-method
+        // fidelity is documented on each arm:
+        //   real bridge  — existing BridgeCommand, real browser state change
+        //   truthful     — deterministic answer matching actual capability
+        //   fail-closed  — the backing servo/embedder facility does not
+        //                  exist: explicit -32000, never a shape-only stub
+        //                  that would fake the capability
+        "setCookies" => {
+            // Real bridge track: batch form of setCookie — one
+            // BridgeCommand::SetCookie per params.cookies entry. Field
+            // fidelity is identical to the single-setCookie path above
+            // (name/value/url/domain carried; path fixed "/", and secure/
+            // httpOnly/expires/sameSite are not representable in the bridge
+            // payload — the documented single-cookie limitation, inherited).
+            let cookies = params
+                .as_ref()
+                .and_then(|p| p.get("cookies"))
+                .and_then(|v| v.as_array())
+                .cloned()
+                .ok_or_else(|| CdpError {
+                    code: ERR_INVALID_PARAMS,
+                    message: "missing required parameter: cookies".into(),
+                })?;
+            for c in &cookies {
+                let name = c
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let value = c
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let url = c.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let domain = c
+                    .get("domain")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                if bridge.is_some() {
+                    bridge_send(
+                        bridge,
+                        BridgeCommand::SetCookie {
+                            target_id: tid.clone(),
+                            name,
+                            value,
+                            url,
+                            domain,
+                        },
+                    )?;
+                }
+            }
+            // SetCookiesReturnObject is the empty object.
+            ok_empty()
+        }
+        "setUserAgentOverride" => {
+            // Real bridge track — same face as Emulation.setUserAgentOverride:
+            // navigator.userAgent via the SetUserAgent bridge (real observable
+            // override), acceptLanguage/platform via the same defineProperty
+            // technique on the page. userAgentMetadata is accepted but not
+            // applied: servo has no User-Agent Client Hints surface.
+            let ua = params_str(params, "userAgent");
+            let accept_language = params
+                .as_ref()
+                .and_then(|p| p.get("acceptLanguage"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let platform = params
+                .as_ref()
+                .and_then(|p| p.get("platform"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if bridge.is_some() && !ua.is_empty() {
+                bridge_send(
+                    bridge,
+                    BridgeCommand::SetUserAgent {
+                        target_id: tid.clone(),
+                        user_agent: ua,
+                    },
+                )?;
+            }
+            if bridge.is_some() && (accept_language.is_some() || platform.is_some()) {
+                let mut js = String::from("(function(){var d=Object.defineProperty;");
+                if let Some(lang) = &accept_language {
+                    js.push_str(&format!(
+                        "d(navigator,'language',{{get:function(){{return {};}}}});",
+                        serde_json::to_string(lang).unwrap_or_default()
+                    ));
+                }
+                if let Some(p) = &platform {
+                    js.push_str(&format!(
+                        "d(navigator,'platform',{{get:function(){{return {};}}}});",
+                        serde_json::to_string(p).unwrap_or_default()
+                    ));
+                }
+                js.push_str("})();");
+                bridge_send(
+                    bridge,
+                    BridgeCommand::EvaluateJs {
+                        target_id: tid.clone(),
+                        expression: js,
+                        return_by_value: false,
+                    },
+                )?;
+            }
+            ok_empty()
+        }
+        "overrideNetworkState" => {
+            // Real bridge track for the observable surface: navigator.onLine
+            // override (the Playwright setOffline surface). latency /
+            // downloadThroughput / uploadThroughput / connectionType are
+            // accepted with no effect — servo has no NetworkInformation API
+            // (navigator.connection is undefined) and no embedder-visible
+            // throttling hook.
+            let offline = params
+                .as_ref()
+                .and_then(|p| p.get("offline"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if bridge.is_some() {
+                // offline:true → navigator.onLine reads false (spec semantics).
+                let js = format!(
+                    "(function(){{Object.defineProperty(navigator,'onLine',\
+                     {{get:function(){{return {};}}}});}})();",
+                    !offline
+                );
+                bridge_send(
+                    bridge,
+                    BridgeCommand::EvaluateJs {
+                        target_id: tid.clone(),
+                        expression: js,
+                        return_by_value: false,
+                    },
+                )?;
+            }
+            ok_empty()
+        }
+        // Truthful capability answers — these report what the Bao face can
+        // really do: clearBrowserCache/Cookies are backed by real servo
+        // NetworkManager/SiteDataManager operations behind the bridge arms
+        // above; network-condition emulation does not exist anywhere in the
+        // stack, so canEmulateNetworkConditions answers false.
+        "canClearBrowserCache" => Ok(serde_json::json!({ "result": true })),
+        "canClearBrowserCookies" => Ok(serde_json::json!({ "result": true })),
+        "canEmulateNetworkConditions" => Ok(serde_json::json!({ "result": false })),
+        // Fail-closed track: the backing facility does not exist. Each arm
+        // answers an explicit -32000 with the real reason — never a spec-shape
+        // stub that would fake the capability (query methods fabricating
+        // state, or config methods silently not delivering their promised
+        // effect). Params are tolerated: any spec-shaped params reach the
+        // capability error, not a parse rejection.
+        "getRequestPostData" => Err(not_supported(
+            "Network.getRequestPostData",
+            "servo does not store request post data for embedder access (same class as Network.getResponseBody)",
+        )),
+        "getCertificate" => Err(not_supported(
+            "Network.getCertificate",
+            "servo does not expose TLS certificates to the embedder",
+        )),
+        "getResponseBodyForInterception" => Err(not_supported(
+            "Network.getResponseBodyForInterception",
+            "request interception is not implemented — no interceptionId can exist",
+        )),
+        "takeResponseBodyForInterceptionAsStream" => Err(not_supported(
+            "Network.takeResponseBodyForInterceptionAsStream",
+            "request interception is not implemented — no stream handle can exist",
+        )),
+        "searchInResponseBody" => Err(not_supported(
+            "Network.searchInResponseBody",
+            "servo does not store response bodies for embedder access",
+        )),
+        "streamResourceContent" => Err(not_supported(
+            "Network.streamResourceContent",
+            "per-request response streaming state is not tracked by the bridge",
+        )),
+        "replayXHR" => Err(not_supported(
+            "Network.replayXHR",
+            "servo does not expose XHR replay to the embedder",
+        )),
+        "setBlockedURLs" => Err(not_supported(
+            "Network.setBlockedURLs",
+            "the servo net stack has no embedder-visible request blocklist",
+        )),
+        "setBypassServiceWorker" => Err(not_supported(
+            "Network.setBypassServiceWorker",
+            "no runtime service-worker bypass toggle on the servo embedding face",
+        )),
+        "emulateNetworkConditionsByRule" => Err(not_supported(
+            "Network.emulateNetworkConditionsByRule",
+            "no network-condition emulation facility exists (Network.canEmulateNetworkConditions answers false)",
+        )),
+        "configureDurableMessages" => Err(not_supported(
+            "Network.configureDurableMessages",
+            "response bodies are not buffered outside the renderer (Network.getResponseBody reports the same limitation)",
+        )),
+        "setAttachDebugStack" => Err(not_supported(
+            "Network.setAttachDebugStack",
+            "script stack ids are not attached to network requests",
+        )),
+        "getSecurityIsolationStatus" => Err(not_supported(
+            "Network.getSecurityIsolationStatus",
+            "COEP/COOP/CSP isolation state is not exposed by the servo embedding face",
+        )),
+        "enableReportingApi" => Err(not_supported(
+            "Network.enableReportingApi",
+            "Reporting API tracking is not implemented — no reports can be delivered",
+        )),
+        "enableDeviceBoundSessions" => Err(not_supported(
+            "Network.enableDeviceBoundSessions",
+            "device-bound session tracking is not implemented",
+        )),
+        "fetchSchemefulSite" => Err(not_supported(
+            "Network.fetchSchemefulSite",
+            "schemeful-site computation requires the public-suffix list, which is not linked into bao_cdp",
+        )),
+        "loadNetworkResource" => Err(not_supported(
+            "Network.loadNetworkResource",
+            "embedder-side network fetch is not wired to the CDP face",
+        )),
+        "setCookieControls" => Err(not_supported(
+            "Network.setCookieControls",
+            "third-party-cookie restriction is not runtime-controllable on the servo embedding face",
+        )),
+        // Spec-deprecated with no servo override face — accepted no-op (the
+        // legal deprecated implementation; Accept-Encoding is owned by the
+        // servo net stack).
+        "setAcceptedEncodings" | "clearAcceptedEncodingsOverride" => ok_empty(),
         "emulateNetworkConditions" | "setRequestInterception" | "continueInterceptedRequest" => {
             ok_empty()
         }
