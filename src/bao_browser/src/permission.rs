@@ -126,84 +126,63 @@ impl PermissionGuard {
         self.inner.is_some()
     }
 
-    pub fn check_read(&self, path: &str) -> Result<(), PermissionDenied> {
-        match &self.inner {
+    /// Shared decision core: an unrestricted guard (no `Permission`) always
+    /// passes; a restricted guard passes only when `allowed` holds, otherwise
+    /// denies with the given category/resource.
+    fn check_inner(
+        inner: &Option<Permission>,
+        allowed: bool,
+        category: &str,
+        resource: &str,
+    ) -> Result<(), PermissionDenied> {
+        match inner {
             None => Ok(()),
-            Some(perm) => {
-                if perm.is_read_allowed(path) {
-                    Ok(())
-                } else {
-                    Err(PermissionDenied {
-                        category: "read".into(),
-                        resource: path.into(),
-                    })
-                }
-            }
+            Some(_) if allowed => Ok(()),
+            Some(_) => Err(PermissionDenied {
+                category: category.into(),
+                resource: resource.into(),
+            }),
         }
+    }
+
+    pub fn check_read(&self, path: &str) -> Result<(), PermissionDenied> {
+        let allowed = self
+            .inner
+            .as_ref()
+            .map_or(true, |perm| perm.is_read_allowed(path));
+        Self::check_inner(&self.inner, allowed, "read", path)
     }
 
     pub fn check_write(&self, path: &str) -> Result<(), PermissionDenied> {
-        match &self.inner {
-            None => Ok(()),
-            Some(perm) => {
-                if perm.is_write_allowed(path) {
-                    Ok(())
-                } else {
-                    Err(PermissionDenied {
-                        category: "write".into(),
-                        resource: path.into(),
-                    })
-                }
-            }
-        }
+        let allowed = self
+            .inner
+            .as_ref()
+            .map_or(true, |perm| perm.is_write_allowed(path));
+        Self::check_inner(&self.inner, allowed, "write", path)
     }
 
     pub fn check_net(&self, host: &str) -> Result<(), PermissionDenied> {
-        match &self.inner {
-            None => Ok(()),
-            Some(perm) => {
-                if perm.is_net_allowed(host) {
-                    Ok(())
-                } else {
-                    Err(PermissionDenied {
-                        category: "net".into(),
-                        resource: host.into(),
-                    })
-                }
-            }
-        }
+        let allowed = self
+            .inner
+            .as_ref()
+            .map_or(true, |perm| perm.is_net_allowed(host));
+        Self::check_inner(&self.inner, allowed, "net", host)
     }
 
     pub fn check_env(&self) -> Result<(), PermissionDenied> {
-        match &self.inner {
-            None => Ok(()),
-            Some(perm) => {
-                if perm.is_env_allowed() {
-                    Ok(())
-                } else {
-                    Err(PermissionDenied {
-                        category: "env".into(),
-                        resource: "*".into(),
-                    })
-                }
-            }
-        }
+        let allowed = self
+            .inner
+            .as_ref()
+            .map_or(true, |perm| perm.is_env_allowed());
+        Self::check_inner(&self.inner, allowed, "env", "*")
     }
 
     pub fn check_run(&self) -> Result<(), PermissionDenied> {
-        match &self.inner {
-            None => Ok(()),
-            Some(perm) => {
-                if perm.is_run_allowed() {
-                    Ok(())
-                } else {
-                    Err(PermissionDenied {
-                        category: "run".into(),
-                        resource: "*".into(),
-                    })
-                }
-            }
-        }
+        let allowed = self
+            .inner
+            .as_ref()
+            .map_or(true, |perm| perm.is_run_allowed());
+        Self::check_inner(&self.inner, allowed, "run", "*")
     }
 }
 

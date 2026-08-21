@@ -413,11 +413,7 @@ impl WorkerChannelBridge {
     ///
     /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:6] DF-WK-5
     pub fn try_recv_from_worker(&self) -> Result<Option<WorkerStructuredMessage>, ()> {
-        match self.worker_to_page_rx.try_recv() {
-            Ok(msg) => Ok(Some(msg)),
-            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(()),
-        }
+        try_recv_worker_msg(&self.worker_to_page_rx)
     }
 
     /// Drain all pending worker→page messages (DF-WK-5).
@@ -432,22 +428,7 @@ impl WorkerChannelBridge {
     /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] DF-WK-5
     /// @trace REQ-BRW-004 [criterion:18] crash-safe teardown detection
     pub fn drain_worker_messages(&self) -> WorkerDrainResult {
-        let mut messages = Vec::new();
-        let mut disconnected = false;
-        loop {
-            match self.worker_to_page_rx.try_recv() {
-                Ok(msg) => messages.push(msg),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    disconnected = true;
-                    break;
-                }
-            }
-        }
-        WorkerDrainResult {
-            messages,
-            disconnected,
-        }
+        drain_worker_rx(&self.worker_to_page_rx)
     }
 }
 
@@ -466,6 +447,46 @@ pub struct WorkerDrainResult {
     pub messages: Vec<WorkerStructuredMessage>,
     /// True if the worker→page channel is disconnected (worker thread exited).
     pub disconnected: bool,
+}
+
+/// Try to receive one worker→page message from `rx` — the single shared
+/// core behind the DedicatedWorker (DF-WK-5) and SharedWorker port
+/// (DF-WK-7) `try_recv_from_worker` implementations.
+///
+/// @trace REQ-BRW-004 [criterion:6] DF-WK-5 / DF-WK-7
+fn try_recv_worker_msg(
+    rx: &Receiver<WorkerStructuredMessage>,
+) -> Result<Option<WorkerStructuredMessage>, ()> {
+    match rx.try_recv() {
+        Ok(msg) => Ok(Some(msg)),
+        Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(()),
+    }
+}
+
+/// Drain all pending worker→page messages from `rx` until the channel is
+/// empty or disconnected — the single shared core behind both the
+/// DedicatedWorker channel bridge (DF-WK-5) and the SharedWorker port
+/// channel (DF-WK-7) `drain_worker_messages` implementations.
+///
+/// @trace REQ-BRW-004 [criterion:18] crash-safe teardown detection
+fn drain_worker_rx(rx: &Receiver<WorkerStructuredMessage>) -> WorkerDrainResult {
+    let mut messages = Vec::new();
+    let mut disconnected = false;
+    loop {
+        match rx.try_recv() {
+            Ok(msg) => messages.push(msg),
+            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                disconnected = true;
+                break;
+            }
+        }
+    }
+    WorkerDrainResult {
+        messages,
+        disconnected,
+    }
 }
 
 // ─── Structured-Clone Channel Bridge (REQ-BRW-004 criterion #6) ────────
@@ -662,11 +683,7 @@ impl SharedWorkerPortChannel {
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope] DF-WK-7
     pub fn try_recv_from_worker(&self) -> Result<Option<WorkerStructuredMessage>, ()> {
-        match self.worker_to_page_rx.try_recv() {
-            Ok(msg) => Ok(Some(msg)),
-            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(()),
-        }
+        try_recv_worker_msg(&self.worker_to_page_rx)
     }
 
     /// Drain all pending worker→page messages from this port (DF-WK-7).
@@ -675,22 +692,7 @@ impl SharedWorkerPortChannel {
     /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope] DF-WK-7
     /// @trace REQ-BRW-004 [criterion:18] crash-safe teardown detection
     pub fn drain_worker_messages(&self) -> WorkerDrainResult {
-        let mut messages = Vec::new();
-        let mut disconnected = false;
-        loop {
-            match self.worker_to_page_rx.try_recv() {
-                Ok(msg) => messages.push(msg),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    disconnected = true;
-                    break;
-                }
-            }
-        }
-        WorkerDrainResult {
-            messages,
-            disconnected,
-        }
+        drain_worker_rx(&self.worker_to_page_rx)
     }
 }
 
@@ -1481,6 +1483,34 @@ pub struct WorkerNetworkInformation {
 }
 
 impl WorkerNavigator {
+    /// Shared constructor core: both dedicated and Shared scope configs carry
+    /// the same navigator fingerprint fields (criterion #12), differing only
+    /// in the config type that transports them.
+    ///
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    fn from_scope_core(
+        user_agent: &str,
+        platform: &str,
+        hardware_concurrency: usize,
+        language: &str,
+        languages: &[String],
+    ) -> Self {
+        WorkerNavigator {
+            user_agent: user_agent.to_string(),
+            platform: platform.to_string(),
+            hardware_concurrency,
+            language: language.to_string(),
+            languages: languages.to_vec(),
+            connection: None,
+            cookie_enabled: false,
+            max_touch_points: 0,
+            product: "Gecko".to_string(),
+            app_code_name: "Mozilla".to_string(),
+            app_name: "Netscape".to_string(),
+            app_version: user_agent.to_string(),
+        }
+    }
+
     /// Create a WorkerNavigator from a WorkerScopeConfig.
     ///
     /// The navigator values are populated from the config which carries
@@ -1488,40 +1518,26 @@ impl WorkerNavigator {
     ///
     /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
     pub fn from_scope_config(config: &WorkerScopeConfig) -> Self {
-        WorkerNavigator {
-            user_agent: config.user_agent.clone(),
-            platform: config.platform.clone(),
-            hardware_concurrency: config.hardware_concurrency,
-            language: config.language.clone(),
-            languages: config.languages.clone(),
-            connection: None,
-            cookie_enabled: false,
-            max_touch_points: 0,
-            product: "Gecko".to_string(),
-            app_code_name: "Mozilla".to_string(),
-            app_name: "Netscape".to_string(),
-            app_version: config.user_agent.clone(),
-        }
+        Self::from_scope_core(
+            &config.user_agent,
+            &config.platform,
+            config.hardware_concurrency,
+            &config.language,
+            &config.languages,
+        )
     }
 
     /// Create a WorkerNavigator from a SharedWorkerScopeConfig.
     ///
     /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
     pub fn from_shared_scope_config(config: &SharedWorkerScopeConfig) -> Self {
-        WorkerNavigator {
-            user_agent: config.user_agent.clone(),
-            platform: config.platform.clone(),
-            hardware_concurrency: config.hardware_concurrency,
-            language: config.language.clone(),
-            languages: config.languages.clone(),
-            connection: None,
-            cookie_enabled: false,
-            max_touch_points: 0,
-            product: "Gecko".to_string(),
-            app_code_name: "Mozilla".to_string(),
-            app_name: "Netscape".to_string(),
-            app_version: config.user_agent.clone(),
-        }
+        Self::from_scope_core(
+            &config.user_agent,
+            &config.platform,
+            config.hardware_concurrency,
+            &config.language,
+            &config.languages,
+        )
     }
 }
 
@@ -3041,20 +3057,13 @@ impl WorkerNavigator {
     ///
     /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
     pub fn from_service_scope_config(config: &ServiceWorkerScopeConfig) -> Self {
-        WorkerNavigator {
-            user_agent: config.user_agent.clone(),
-            platform: config.platform.clone(),
-            hardware_concurrency: config.hardware_concurrency,
-            language: config.language.clone(),
-            languages: config.languages.clone(),
-            connection: None,
-            cookie_enabled: false,
-            max_touch_points: 0,
-            product: "Gecko".to_string(),
-            app_code_name: "Mozilla".to_string(),
-            app_name: "Netscape".to_string(),
-            app_version: config.user_agent.clone(),
-        }
+        Self::from_scope_core(
+            &config.user_agent,
+            &config.platform,
+            config.hardware_concurrency,
+            &config.language,
+            &config.languages,
+        )
     }
 }
 
