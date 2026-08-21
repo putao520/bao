@@ -1033,15 +1033,6 @@ pub struct Dependency {
     pub part_index: u32, // Index.Int
 }
 
-impl Default for Dependency {
-    fn default() -> Self {
-        Self {
-            source_index: Index::INVALID,
-            part_index: 0,
-        }
-    }
-}
-
 pub type DependencyList = AstVec<Dependency>;
 
 pub type ExprList = Vec<Expr>;
@@ -1204,20 +1195,6 @@ pub struct NamedImport {
     /// It's useful to flag exported imports because if they are in a TypeScript
     /// file, we can't tell if they are a type or a value.
     pub is_exported: bool,
-}
-
-impl Default for NamedImport {
-    fn default() -> Self {
-        Self {
-            local_parts_with_uses: bun_alloc::AstAlloc::vec(),
-            alias: None,
-            alias_loc: None,
-            namespace_ref: None,
-            import_record_index: 0,
-            alias_is_star: false,
-            is_exported: false,
-        }
-    }
 }
 
 #[derive(Copy, Clone)]

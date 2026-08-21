@@ -162,9 +162,6 @@ int us_udp_packet_buffer_payload_length(struct us_udp_packet_buffer_t *buf, int 
  * 0 otherwise. Backed by MSG_TRUNC in msg_hdr.msg_flags on POSIX. */
 int us_udp_packet_buffer_truncated(struct us_udp_packet_buffer_t *buf, int index);
 
-/* Copies out local (received destination) ip (4 or 16 bytes) of received packet */
-int us_udp_packet_buffer_local_ip(struct us_udp_packet_buffer_t *buf, int index, char *ip);
-
 /* Get the bound port in host byte order */
 int us_udp_socket_bound_port(struct us_udp_socket_t *s);
 
@@ -461,9 +458,6 @@ void us_wakeup_loop(us_loop_r loop) nonnull_fn_decl;
 
 /* Hook up timers in existing loop */
 void us_loop_integrate(us_loop_r loop) nonnull_fn_decl;
-
-/* Returns the loop iteration number */
-long long us_loop_iteration_number(us_loop_r loop) nonnull_fn_decl;
 
 /* Public interfaces for polls */
 

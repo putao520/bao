@@ -66,19 +66,12 @@ pub static RUNTIME_MAP: phf::Map<&'static [u8], RuntimeDevelopmentPair> = phf::p
 /// (`Static`) borrows a `&'static [&'static [u8]]` so default+clone are a
 /// pointer copy; only an explicit override (`/** @jsx foo */`, tsconfig
 /// `jsxFactory`, …) materialises an `Owned` boxed slice.
+///
+/// Never empty: the parser reads `factory[0]` without a check.
 #[derive(Debug, Clone)]
 pub enum MemberList {
     Static(&'static [&'static [u8]]),
     Owned(Box<[Box<[u8]>]>),
-}
-
-impl Default for MemberList {
-    /// Empty static slice — used by `core::mem::take`. `Pragma::default()`
-    /// sets the real `defaults::FACTORY`/`FRAGMENT` explicitly.
-    #[inline]
-    fn default() -> Self {
-        MemberList::Static(&[])
-    }
 }
 
 impl From<Box<[Box<[u8]>]>> for MemberList {
@@ -303,59 +296,47 @@ impl Pragma {
         self.development = !is_production;
     }
 
-    // "React.createElement" => ["React", "createElement"]
-    // ...unless new is "React.createElement" and original is ["React", "createElement"]
-    // saves an allocation for the majority case
+    /// `"React.createElement"` => `["React", "createElement"]`, or a copy of
+    /// `original` (no allocation for `Static`) when `new` names the same
+    /// members. `None` when `new` has no members, for example `"."`.
+    ///
+    /// PORT NOTE: upstream `strings::tokenize(new, b".")` is `split` without
+    /// the empty fields; the local idiom is `split(...).filter(non-empty)`.
     pub fn member_list_to_components_if_different(
-        original: MemberList,
+        original: &MemberList,
         new: &[u8],
-    ) -> Result<MemberList, bun_core::Error> {
-        let count = strings::count_char(new, b'.') + 1;
+    ) -> Option<MemberList> {
+        new.split(|b| *b == b'.').filter(|s| !s.is_empty()).next()?;
 
-        let mut needs_alloc = false;
-        let mut current_i: usize = 0;
-        for str in new.split(|b| *b == b'.') {
-            if str.is_empty() {
-                continue;
-            }
-            match original.get(current_i) {
-                Some(part) if part == str => current_i += 1,
-                _ => {
-                    needs_alloc = true;
-                    break;
-                }
-            }
+        if new
+            .split(|b| *b == b'.')
+            .filter(|s| !s.is_empty())
+            .eq(original.iter())
+        {
+            return Some(original.clone());
         }
 
-        if !needs_alloc {
-            return Ok(original);
-        }
-
-        let mut out: Vec<Box<[u8]>> = Vec::with_capacity(count);
-        for str in new.split(|b| *b == b'.') {
-            if str.is_empty() {
-                continue;
-            }
-            out.push(Box::from(str));
-        }
-        Ok(MemberList::Owned(out.into_boxed_slice()))
+        Some(MemberList::Owned(
+            new.split(|b| *b == b'.')
+                .filter(|s| !s.is_empty())
+                .map(Box::from)
+                .collect(),
+        ))
     }
 
-    pub fn from_api(jsx: api::Jsx) -> Result<Pragma, bun_core::Error> {
+    pub fn from_api(jsx: api::Jsx) -> Pragma {
         let mut pragma = Pragma::default();
 
-        if !jsx.fragment.is_empty() {
-            pragma.fragment = Self::member_list_to_components_if_different(
-                core::mem::take(&mut pragma.fragment),
-                &jsx.fragment,
-            )?;
+        if let Some(fragment) =
+            Self::member_list_to_components_if_different(&pragma.fragment, &jsx.fragment)
+        {
+            pragma.fragment = fragment;
         }
 
-        if !jsx.factory.is_empty() {
-            pragma.factory = Self::member_list_to_components_if_different(
-                core::mem::take(&mut pragma.factory),
-                &jsx.factory,
-            )?;
+        if let Some(factory) =
+            Self::member_list_to_components_if_different(&pragma.factory, &jsx.factory)
+        {
+            pragma.factory = factory;
         }
 
         pragma.runtime = Runtime::from(jsx.runtime);
@@ -369,7 +350,7 @@ impl Pragma {
 
         pragma.development = jsx.development;
         pragma.parse = true;
-        Ok(pragma)
+        pragma
     }
 }
 

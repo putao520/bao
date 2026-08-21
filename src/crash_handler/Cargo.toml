@@ -15,13 +15,10 @@ path = "lib.rs"
 workspace = true
 
 [dependencies]
-strum.workspace = true
 phf.workspace = true
 bstr.workspace = true
 scopeguard.workspace = true
 const_format.workspace = true
-enum-map.workspace = true
-enumset.workspace = true
 libc.workspace = true
 bitflags.workspace = true
 bun_analytics.workspace = true
@@ -31,7 +28,6 @@ bun_core.workspace = true
 bun_dispatch.workspace = true
 bun_collections.workspace = true
 bun_io.workspace = true
-bun_options_types.workspace = true
 bun_ast.workspace = true
 bun_paths.workspace = true
 bun_ptr.workspace = true

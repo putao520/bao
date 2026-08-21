@@ -132,11 +132,6 @@ pub mod options {
         MaxPathExceeded,
     }
 
-    impl From<Error> for bun_core::Error {
-        fn from(_e: Error) -> Self {
-            bun_core::err!("MaxPathExceeded")
-        }
-    }
 
     // Zig: `pub fn ResultFn(comptime opts) fn(type) type` — returns `T` when
     // `.assume_always_less_than_max_path`, `Error!T` otherwise.

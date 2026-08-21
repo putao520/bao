@@ -112,8 +112,6 @@ pub struct Preferences {
     pub dom_webgpu_enabled: bool,
     /// List of comma-separated backends to be used by wgpu.
     pub dom_webgpu_wgpu_backend: String,
-    // feature: AbortController | #34866 | Web/API/AbortController
-    pub dom_abort_controller_enabled: bool,
     // feature: Adopted Stylesheet | #38132 | Web/API/Document/adoptedStyleSheets
     pub dom_adoptedstylesheet_enabled: bool,
     pub dom_allow_preloading_module_descendants: bool,
@@ -132,7 +130,6 @@ pub struct Preferences {
     /// - vello
     /// - vello_cpu
     pub dom_canvas_backend: String,
-    pub dom_clipboardevent_enabled: bool,
     pub dom_composition_event_enabled: bool,
     // feature: CookieStore | #37674 | Web/API/CookieStore
     pub dom_cookiestore_enabled: bool,
@@ -158,9 +155,6 @@ pub struct Preferences {
     // feature: IntersectionObserver | #35767 | Web/API/Intersection_Observer_API
     pub dom_intersection_observer_enabled: bool,
     pub dom_microdata_testing_enabled: bool,
-    pub dom_uievent_which_enabled: bool,
-    // feature: MutationObserver | #6633 | Web/API/MutationObserver
-    pub dom_mutation_observer_enabled: bool,
     // feature: Navigator.registerProtocolHandler() | #40615 | Web/API/Navigator/registerProtocolHandler
     pub dom_navigator_protocol_handlers_enabled: bool,
     // feature: Notification API | #34841 | Web/API/Notifications_API
@@ -382,7 +376,6 @@ impl Preferences {
             editing_caret_blink_time: 600,
             devtools_server_enabled: false,
             devtools_server_listen_address: String::new(),
-            dom_abort_controller_enabled: true,
             dom_adoptedstylesheet_enabled: false,
             dom_allow_preloading_module_descendants: false,
             dom_allow_scripts_to_close_windows: false,
@@ -392,7 +385,6 @@ impl Preferences {
             dom_canvas_capture_enabled: false,
             dom_canvas_text_enabled: true,
             dom_canvas_backend: String::new(),
-            dom_clipboardevent_enabled: true,
             dom_composition_event_enabled: false,
             dom_cookiestore_enabled: false,
             dom_credential_management_enabled: false,
@@ -408,8 +400,6 @@ impl Preferences {
             dom_indexeddb_enabled: false,
             dom_intersection_observer_enabled: false,
             dom_microdata_testing_enabled: false,
-            dom_uievent_which_enabled: true,
-            dom_mutation_observer_enabled: true,
             dom_navigator_protocol_handlers_enabled: false,
             dom_notification_enabled: false,
             dom_parallel_css_parsing_enabled: true,

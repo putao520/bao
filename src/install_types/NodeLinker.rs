@@ -157,15 +157,6 @@ bun_core::impl_tag_error!(FromExprError);
 
 bun_core::oom_from_alloc!(FromExprError);
 
-impl From<CreateMatcherError> for FromExprError {
-    fn from(e: CreateMatcherError) -> Self {
-        match e {
-            CreateMatcherError::OutOfMemory => Self::OutOfMemory,
-            CreateMatcherError::InvalidRegExp => Self::InvalidRegExp,
-        }
-    }
-}
-
 bun_core::named_error_set!(FromExprError);
 
 impl PnpmMatcher {

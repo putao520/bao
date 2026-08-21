@@ -454,11 +454,6 @@ pub(crate) mod kind {
                 deser: DeserOpts::DEFAULT,
             };
         }
-        impl Default for CtorOptions {
-            fn default() -> Self {
-                Self::DEFAULT
-            }
-        }
 
         /// Control how deserializing and deserialization errors are handled.
         ///
@@ -499,11 +494,6 @@ pub(crate) mod kind {
                 error_handling: ErrorHandling::DebugWarn,
                 empty_string_as: EmptyStringAs::Erroneous,
             };
-        }
-        impl Default for DeserOpts {
-            fn default() -> Self {
-                Self::DEFAULT
-            }
         }
 
         // Zig: `fn Cache(comptime ip: Input) type` — Rust: store `ip` (var_name + opts) on the

@@ -488,7 +488,14 @@ unsafe fn extract_callback_and_encoding(
     for i in start_idx..args.argc_ {
         let val = *args.get(i).ptr;
         if val.is_object() {
-            if cb_idx.is_none() {
+            // Only CALLABLE objects are callbacks. Plain option objects
+            // (e.g. fs.rmdir(path, {recursive: true}, cb) — upstream
+            // fff3b29d6) must not be captured as the callback; previously
+            // the first object won, the later real callback was dropped,
+            // and the deferred dispatch called a non-callable (swallowed
+            // by JS_ClearPendingException) so the caller's callback never
+            // fired.
+            if cb_idx.is_none() && IsCallable(val.to_object()) {
                 cb_idx = Some(i);
             } else if encoding.is_none() {
                 encoding = get_encoding_opt(cx, args, i);
@@ -2493,7 +2500,17 @@ unsafe extern "C" fn fs_rmdir_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
-    match fs::remove_dir(&path) {
+    // Upstream fff3b29d6: a truthy `options.recursive` routes rmdir through
+    // rm semantics (recursive tree removal, ENOENT for a missing path);
+    // absent/false keeps plain rmdir (ENOTEMPTY on non-empty, ENOTDIR on a
+    // file path). Same option parse + op selection as fs_rm_sync.
+    let recursive = get_bool_option(cx, &args, 1, "recursive");
+    let result = if recursive {
+        fs::remove_dir_all(&path)
+    } else {
+        fs::remove_dir(&path)
+    };
+    match result {
         ::std::result::Result::Ok(()) => {
             args.rval().set(UndefinedValue());
             true
@@ -5709,15 +5726,31 @@ unsafe extern "C" fn fs_rmdir(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         return false;
     }
 
+    // Upstream fff3b29d6: truthy `options.recursive` routes through rm
+    // semantics (same parse/selection shape as fs_rm's callback branch —
+    // get_bool_option reads arg 1 whether it is the options object or the
+    // callback function; a function has no `recursive` boolean property).
+    let recursive = get_bool_option(cx, &args, 1, "recursive");
+
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 1) {
         spawn_fs_async(cx, "rmdir", path.clone(), callback, None, move || {
-            fs::remove_dir(&path).map(|_| FsAsyncResult::OkVoid)
+            if recursive {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_dir(&path)
+            }
+            .map(|_| FsAsyncResult::OkVoid)
         });
         args.rval().set(UndefinedValue());
         return true;
     }
 
-    match fs::remove_dir(&path) {
+    let result = if recursive {
+        fs::remove_dir_all(&path)
+    } else {
+        fs::remove_dir(&path)
+    };
+    match result {
         ::std::result::Result::Ok(()) => {
             args.rval().set(UndefinedValue());
             true
@@ -6543,6 +6576,10 @@ unsafe extern "C" fn fs_promises_rmdir(cx: *mut JSContext, argc: u32, vp: *mut J
         ::std::result::Result::Ok(p) => p,
         ::std::result::Result::Err(b) => return b,
     };
+    // Upstream fff3b29d6: truthy `options.recursive` routes through rm
+    // semantics; absent/false keeps plain rmdir (same shape as
+    // fs_promises_rm).
+    let recursive = get_bool_option(cx, &args, 1, "recursive");
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -6551,7 +6588,12 @@ unsafe extern "C" fn fs_promises_rmdir(cx: *mut JSContext, argc: u32, vp: *mut J
         args.rval().set(UndefinedValue());
         return false;
     }
-    match fs::remove_dir(&path) {
+    let result = if recursive {
+        fs::remove_dir_all(&path)
+    } else {
+        fs::remove_dir(&path)
+    };
+    match result {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
             reject_with_error(cx, promise.get(), &format!("rmdir '{}': {}", path, e))

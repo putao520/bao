@@ -1,5 +1,3 @@
-use core::hash::{Hash, Hasher};
-
 use crate as css;
 use crate::css_rules::Location;
 use crate::css_values::ident::{CustomIdent, is_reserved_custom_ident};
@@ -23,32 +21,6 @@ pub enum KeyframesName {
     /// `<string>` of a `@keyframes` name.
     Custom(&'static [u8]),
 }
-
-// Zig: `pub fn HashMap(comptime V: type) type { return std.ArrayHashMapUnmanaged(...) }`
-// → a generic type alias keyed by `KeyframesName` with the custom hash/eq below.
-pub type KeyframesNameHashMap<V> = bun_collections::ArrayHashMap<KeyframesName, V>;
-
-impl Hash for KeyframesName {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // Matches Zig: hash only the underlying string bytes; variant tag does NOT
-        // participate (Zig's `hash` switches and calls `hashString` on the slice).
-        match self {
-            KeyframesName::Ident(ident) => state.write(ident.v()),
-            KeyframesName::Custom(s) => state.write(s),
-        }
-    }
-}
-
-impl PartialEq for KeyframesName {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (KeyframesName::Ident(a), KeyframesName::Ident(b)) => bun_core::eql(a.v(), b.v()),
-            (KeyframesName::Custom(a), KeyframesName::Custom(b)) => bun_core::eql(a, b),
-            _ => false,
-        }
-    }
-}
-impl Eq for KeyframesName {}
 
 impl KeyframesName {
     pub fn to_css(&self, dest: &mut Printer) -> core::result::Result<(), PrintErr> {

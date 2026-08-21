@@ -26,12 +26,6 @@ pub struct Chunk {
     pub should_ignore: bool,
 }
 
-impl Default for Chunk {
-    fn default() -> Self {
-        Self::init_empty()
-    }
-}
-
 impl Chunk {
     pub fn init_empty() -> Chunk {
         Chunk {

@@ -390,13 +390,7 @@ impl From<ForManifestError> for bun_core::Error {
             ForManifestError::InvalidURL => bun_core::err!(InvalidURL),
         }
     }
-}
-impl PartialEq<bun_core::Error> for ForManifestError {
-    fn eq(&self, other: &bun_core::Error) -> bool {
-        <&'static str>::from(self) == other.name()
-    }
-}
-impl bun_core::output::ErrName for ForManifestError {
+}impl bun_core::output::ErrName for ForManifestError {
     fn name(&self) -> &[u8] {
         <&'static str>::from(self).as_bytes()
     }

@@ -1430,16 +1430,6 @@ pub enum JsError {
 
 bun_alloc::oom_from_alloc!(JsError);
 
-impl From<crate::Error> for JsError {
-    fn from(_: crate::Error) -> Self {
-        // PORT NOTE: Zig coerces arbitrary `anyerror` into the JS error union by
-        // throwing a generic Error; the throw happens at the call site. Mapping
-        // to `Thrown` here lets `?` propagate while the actual throw is handled
-        // by the host-fn wrapper.
-        JsError::Thrown
-    }
-}
-
 impl From<JsError> for crate::Error {
     /// Widen a `bun.JSError` value back into the `anyerror` newtype. Preserves
     /// the exact Zig tag (`@errorName`) so call sites that round-trip through
@@ -1481,13 +1471,6 @@ pub fn concat_boxed<T: Copy>(parts: &[&[T]]) -> Box<[T]> {
         v.extend_from_slice(p);
     }
     v.into_boxed_slice()
-}
-
-/// Back-compat alias for the original `u8`-only buffer-concat. New code should
-/// call [`concat_into`] directly.
-#[inline]
-pub fn concat<'b>(buf: &'b mut [u8], parts: &[&[u8]]) -> &'b [u8] {
-    concat_into(buf, parts)
 }
 
 /// Zig `union(enum)` field projection — `data.file`, `chunk.content.javascript`.

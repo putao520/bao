@@ -328,25 +328,6 @@ pub mod entry {
         }
     }
 
-    impl Default for Entry {
-        fn default() -> Self {
-            Self {
-                node_id: super::node::Id::INVALID,
-                dependencies: Dependencies::EMPTY,
-                // Zig default: `.empty`
-                parents: Vec::new(),
-                // Zig default: `.init(.link_package)` — `Step::LinkPackage as u32 == 0`.
-                step: core::sync::atomic::AtomicU32::new(0),
-                hoisted: false,
-                peer_hash: PeerHash::NONE,
-                // Zig default: `0`
-                entry_hash: 0,
-                // Zig default: `null`
-                scripts: core::cell::Cell::new(None),
-            }
-        }
-    }
-
     #[repr(transparent)]
     #[derive(Copy, Clone, PartialEq, Eq, Hash)]
     pub struct PeerHash(u64);

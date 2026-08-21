@@ -425,6 +425,12 @@ pub struct PendingFetch {
     pub outcome: Arc<Mutex<Option<FetchOutcome>>>,
     /// How to materialize the result on the JS thread.
     pub kind: ResolveKind,
+    /// Request method captured at spawn (upstream bun 77afa71e9 port): the
+    /// JS-side null-body decision needs "did this fetch start as HEAD". A
+    /// redirect only ever rewrites the HTTP thread's own copy (`lib.rs`,
+    /// only to GET), so the spawn-time method is exactly "the request ended
+    /// as HEAD iff it started as HEAD".
+    pub method: bun_http::Method,
     /// Pointer to the JS thread's `MiniEventLoop<'static>`. Used by
     /// `on_http_done` to enqueue `resolve_tasklet` and wake the JS thread.
     mini_loop_ptr: *const bun_event_loop::MiniEventLoop::MiniEventLoop<'static>,
@@ -753,6 +759,7 @@ unsafe fn start_with_kind(
         promise_val: rooted_val,
         outcome: Arc::clone(&outcome),
         kind,
+        method,
         mini_loop_ptr: ::std::ptr::null(), // filled below
         concurrent_task: bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(
         ),
@@ -1723,7 +1730,9 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
         } else {
             match (outcome, kind) {
                 (Ok(resp), ResolveKind::Response) => {
-                    let resp_obj = build_response_js(cx, &resp);
+                    let null_body =
+                        response_body_is_null(resp.status_code as u16, pending.method);
+                    let resp_obj = build_response_js(cx, &resp, null_body);
                     if !resp_obj.is_null() {
                         rooted!(&in(realm_cx) let resp_val = ObjectValue(resp_obj));
                         JS::ResolvePromise(cx, promise_h, resp_val.handle().into());
@@ -1973,13 +1982,33 @@ unsafe fn process_stream_event(this: *mut PendingFetch) {
             } else if aborted {
                 reject_promise_with_abort_error(cx, promise_h);
             } else if let Some(head) = head.as_ref() {
+                // Upstream bun 77afa71e9: a response with a null body status
+                // (204/205/304) or to a HEAD request gets a BODILESS Response
+                // — no stream source is attached, so `.body` is null, text()
+                // resolves "" without disturbing the body, and clone() never
+                // throws. Content the server framed anyway (a 205) is dropped:
+                // the transport is canceled below instead of staging bytes
+                // for a reader that cannot exist.
+                let null_body =
+                    response_body_is_null(head.status_code as u16, pending.method);
                 // SAFETY: cx live, promise's realm entered; head from the
                 // HTTP-thread snapshot.
-                match unsafe { build_streaming_response_js(cx, this, head) } {
+                match unsafe { build_streaming_response_js(cx, this, head, !null_body) } {
                     ::std::option::Option::Some(resp_obj) if !resp_obj.is_null() => {
                         rooted!(&in(realm_cx) let resp_val = ObjectValue(resp_obj));
                         JS::ResolvePromise(cx, promise_h, resp_val.handle().into());
-                        set_phase(this, StreamPhase::HeadersArrived);
+                        if null_body {
+                            // Terminal for this fetch: nothing may reach the
+                            // body. The shutdown delivers the terminal event
+                            // that releases the transport reference (step 6
+                            // below / a later event); staged bytes die with
+                            // the tasklet. No-op when the transport already
+                            // reached terminal (204/304/HEAD end at the
+                            // header block on the wire).
+                            cancel_stream_core(this);
+                        } else {
+                            set_phase(this, StreamPhase::HeadersArrived);
+                        }
                     }
                     _ => {
                         // Fail closed — no silent degraded Response shape.
@@ -2609,9 +2638,13 @@ unsafe fn build_stream_source_object(cx: *mut JSContext, this: *mut PendingFetch
 
 /// Construct the streaming Response via the realm's WHATWG `Response` class
 // — `new Response(undefined, { status, statusText, headers })` — with the
-/// native stream source attached as `_bodyStreamSource`. Takes the
-/// stream-source tasklet reference (via [`build_stream_source_object`]);
-/// on failure rolls everything back and returns `None` (fail closed).
+/// native stream source attached as `_bodyStreamSource` when `attach_source`
+/// is true. Takes the stream-source tasklet reference (via
+/// [`build_stream_source_object`]); on failure rolls everything back and
+/// returns `None` (fail closed). `attach_source == false` is the null-body
+/// form (204/205/304, HEAD — upstream bun 77afa71e9): the Response is
+/// constructed bodiless (`.body` null) and NO stream-source reference is
+/// taken, so the refcount stays promise+transport.
 ///
 /// SAFETY: cx live on the JS thread with the fetch Promise's realm entered;
 /// `this` a live streaming PendingFetch; `head` the HTTP-thread snapshot.
@@ -2620,6 +2653,7 @@ unsafe fn build_streaming_response_js(
     cx: *mut JSContext,
     this: *mut PendingFetch,
     head: &StreamHead,
+    attach_source: bool,
 ) -> ::std::option::Option<*mut JSObject> {
     unsafe {
         let mut wrapped_cx =
@@ -2734,6 +2768,12 @@ unsafe fn build_streaming_response_js(
         }
         rooted!(&in(cx_ref) let resp_root = resp_val);
         rooted!(&in(cx_ref) let resp_obj_root = resp_root.get().to_object());
+
+        if !attach_source {
+            // Null-body form: no stream source, no extra tasklet reference.
+            // SAFETY: the rooted response was just constructed successfully.
+            return ::std::option::Option::Some(resp_root.get().to_object());
+        }
 
         // Stream source + registration (takes the stream reference).
         // SAFETY: cx live, realm entered, live entry.
@@ -3057,6 +3097,15 @@ unsafe fn build_tls_socket_js(cx: *mut JSContext, host: &str) -> *mut JSObject {
 /// headers, so `resp.headers.get/has/forEach` threw (`headers.get is not a
 /// function`) and json()/arrayBuffer()/blob() were absent. Constructing the
 /// real class gives the full surface with binary-safe Uint8Array body storage.
+/// <https://fetch.spec.whatwg.org/#null-body-status> minus 101: a response
+/// with a null body status (204, 205, 304), or any response to a HEAD
+/// request, has no body — whatever the server frames after the head (upstream
+/// bun 77afa71e9). Not 101: it only arrives for a requested upgrade, whose
+/// connection is then the body.
+fn response_body_is_null(status_code: u16, method: bun_http::Method) -> bool {
+    matches!(status_code, 204 | 205 | 304) || method == bun_http::Method::HEAD
+}
+
 /// Headers travel as a sequence of [name, value] pairs so repeated response
 /// headers (multiple set-cookie) survive via Headers#append semantics.
 ///
@@ -3068,7 +3117,11 @@ unsafe fn build_tls_socket_js(cx: *mut JSContext, host: &str) -> *mut JSObject {
 /// `cx` must be a live `JSContext*` on the current thread with the Promise's
 /// realm entered (the caller's AutoRealm window).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mut JSObject {
+unsafe fn build_response_js(
+    cx: *mut JSContext,
+    resp: &StealthSyncResult,
+    null_body: bool,
+) -> *mut JSObject {
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -3097,12 +3150,19 @@ unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mu
     rooted!(&in(cx_ref) let resp_fn = ObjectValue(resp_ctor.get()));
 
     // Body: Uint8Array over the wire bytes (binary-safe; the class's
-    // text()/json() decode, arrayBuffer()/blob() pass through).
-    rooted!(&in(cx_ref) let body_arr = JS_NewUint8Array(cx, resp.body.len()));
-    if body_arr.is_null() {
+    // text()/json() decode, arrayBuffer()/blob() pass through). A null-body
+    // response (204/205/304, or any response to HEAD — upstream bun
+    // 77afa71e9) constructs with body=null instead: whatever the wire
+    // carried is dropped, `.body` is null and text() resolves "".
+    rooted!(&in(cx_ref) let body_arr = if null_body {
+        ::std::ptr::null_mut::<JSObject>()
+    } else {
+        JS_NewUint8Array(cx, resp.body.len())
+    });
+    if !null_body && body_arr.is_null() {
         return ::std::ptr::null_mut();
     }
-    if !resp.body.is_empty() {
+    if !null_body && !resp.body.is_empty() {
         let mut ta_len: usize = 0;
         let mut shared = false;
         let mut data: *mut u8 = ::std::ptr::null_mut();
@@ -3196,7 +3256,11 @@ unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mu
     );
 
     let elems = [
-        ObjectValue(body_arr.get()),
+        if null_body {
+            mozjs::jsval::NullValue()
+        } else {
+            ObjectValue(body_arr.get())
+        },
         ObjectValue(init_obj.get()),
     ];
     let call_args = HandleValueArray {
@@ -3590,6 +3654,7 @@ mod tests {
             promise_val: UndefinedValue(),
             outcome: Arc::new(Mutex::new(None)),
             kind: ResolveKind::Response,
+            method: bun_http::Method::GET,
             mini_loop_ptr: ::std::ptr::null(),
             concurrent_task: Default::default(),
             has_schedule_callback: AtomicBool::new(false),

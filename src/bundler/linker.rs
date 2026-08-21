@@ -6,7 +6,6 @@ use std::io::Write as _;
 
 use bun_ast::Log;
 use bun_ast::{ImportKind, ImportRecord, ImportRecordFlags, ImportRecordTag};
-use bun_collections::HashMap;
 use bun_paths::{self, SEP};
 // PORT NOTE: two `fs` shapes are in play here. `bun_resolver::fs` (`Fs`) holds
 // the singleton `FileSystem` / `DirnameStore`; `bun_paths::fs` (`PFs`) defines
@@ -16,7 +15,7 @@ use bun_paths::{self, SEP};
 use bun_core::strings;
 use bun_paths::fs as PFs;
 use bun_resolver::fs as Fs;
-use bun_resolver::{self as resolver, Resolver};
+use bun_resolver as resolver;
 use bun_sys::Fd;
 use bun_url::URL;
 
@@ -33,14 +32,6 @@ pub enum CSSResolveError {
 }
 bun_core::named_error_set!(CSSResolveError);
 
-type HashedFileNameMap = HashMap<u64, &'static [u8]>;
-
-// PORT NOTE: `_transpiler.Transpiler.isCacheEnabled` is gated in the draft body
-// (`transpiler.rs:1111`). The Zig value is a hard `false` (`const isCacheEnabled
-// = false;`); inline it here so `get_hashed_filename` compiles without depending
-// on the gated `Transpiler` impl.
-const IS_CACHE_ENABLED: bool = false;
-
 pub struct Linker {
     // arena field dropped — global mimalloc (callers pass `bun.default_allocator`)
     // PORT NOTE: Zig stored borrowed `*BundleOptions` / `*Log` / `*Resolver` /
@@ -54,11 +45,9 @@ pub struct Linker {
     pub fs: *mut Fs::FileSystem,
     pub log: *mut Log,
     pub resolve_queue: *mut ResolveQueue,
-    pub resolver: *mut Resolver<'static>,
     pub resolve_results: *mut ResolveResults,
     pub any_needs_runtime: bool,
     pub runtime_import_record: Option<ImportRecord>,
-    pub hashed_filenames: HashedFileNameMap,
     pub import_counter: usize,
     pub tagged_resolutions: TaggedResolution,
 
@@ -267,7 +256,6 @@ impl Linker {
         log: *mut Log,
         resolve_queue: *mut ResolveQueue,
         options: *mut BundleOptions<'static>,
-        resolver: *mut Resolver<'static>,
         resolve_results: *mut ResolveResults,
         fs: *mut Fs::FileSystem,
     ) -> Self {
@@ -280,11 +268,9 @@ impl Linker {
             fs,
             log,
             resolve_queue,
-            resolver,
             resolve_results,
             any_needs_runtime: false,
             runtime_import_record: None,
-            hashed_filenames: HashedFileNameMap::default(),
             import_counter: 0,
             tagged_resolutions: TaggedResolution::default(),
             plugin_runner: None,
@@ -303,14 +289,12 @@ impl Linker {
         log: *mut Log,
         resolve_queue: *mut ResolveQueue,
         options: *mut BundleOptions<'static>,
-        resolver: *mut Resolver<'static>,
         resolve_results: *mut ResolveResults,
         fs: *mut Fs::FileSystem,
     ) {
         self.log = log;
         self.resolve_queue = resolve_queue;
         self.options = options;
-        self.resolver = resolver;
         self.resolve_results = resolve_results;
         self.fs = fs;
     }
@@ -366,24 +350,12 @@ impl Linker {
         file_path: &PFs::Path<'_>,
         fd: Option<Fd>,
     ) -> Result<&'static [u8], bun_core::Error> {
-        if IS_CACHE_ENABLED {
-            let hashed = bun_wyhash::hash(file_path.text);
-            if let Some(v) = self.hashed_filenames.get(&hashed) {
-                return Ok(*v);
-            }
-        }
-
         let modkey = self.get_mod_key(file_path, fd)?;
         // PORT NOTE: `ModKey::hash_name` writes into a 1 KiB threadlocal and
         // returns a `'static` slice into it (matches Zig's `hash_name_buf`
         // threadlocal). Spec passes `file_path.text` even though the param is
         // named `basename`; preserved verbatim.
         let hash_name = modkey.hash_name(file_path.text)?;
-
-        if IS_CACHE_ENABLED {
-            let hashed = bun_wyhash::hash(file_path.text);
-            self.hashed_filenames.insert(hashed, dupe(hash_name));
-        }
 
         Ok(hash_name)
     }

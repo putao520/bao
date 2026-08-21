@@ -374,7 +374,6 @@ impl<'a> Transpiler<'a> {
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
-                core::ptr::null_mut(),
                 from.fs,
             ),
             timer: SystemTimer::start().expect("Timer fail"),
@@ -399,17 +398,15 @@ impl<'a> Transpiler<'a> {
         self.options.log = log;
         self.resolver.log = core::ptr::NonNull::new(log).expect("wire_after_move: log is non-null");
         self.resolver.fs = self.fs;
-        // Spec ThreadPool.zig:310 `transpiler.linker.resolver = &transpiler.resolver`.
+        // Spec ThreadPool.zig:310 reseats the linker back-pointers.
         // Only reseat the back-pointers — do NOT `Linker::init` here: that
         // would clobber `import_counter` / `plugin_runner` /
         // `tagged_resolutions` / `any_needs_runtime`, which the spec
-        // preserves across the move (bundle_v2.zig:230 only assigns
-        // `linker.resolver`).
+        // preserves across the move (bundle_v2.zig:230 only reseats).
         self.linker.reseat_self_refs(
             log,
             core::ptr::addr_of_mut!(self.resolve_queue),
             core::ptr::addr_of_mut!(self.options).cast(),
-            core::ptr::addr_of_mut!(self.resolver).cast(),
             core::ptr::addr_of_mut!(*self.resolve_results),
             self.fs,
         );
@@ -494,7 +491,7 @@ impl<'a> Transpiler<'a> {
         entry_point: &[u8],
     ) -> Result<resolver::Result, bun_core::Error> {
         match self._resolve_entry_point(entry_point) {
-            Ok(r) => Ok(r),
+            Ok(r) => self.reject_disabled_entry_point(r, entry_point),
             Err(err) => {
                 let mut cache_bust_buf = bun_paths::PathBuffer::uninit();
 
@@ -505,6 +502,12 @@ impl<'a> Transpiler<'a> {
                 // disjoint mutable borrows of `cache_bust_buf` across `break`,
                 // so compute `busted` directly instead.
                 let busted: bool = 'name: {
+                    // Neither buster name below would fit `cache_bust_buf`.
+                    if self.fs().top_level_dir.len() + entry_point.len() + 4
+                        > bun_paths::MAX_PATH_BYTES
+                    {
+                        break 'name false;
+                    }
                     if bun_paths::is_absolute(entry_point) {
                         let dir = bun_paths::resolve_path::dirname::<bun_paths::platform::Auto>(
                             entry_point,
@@ -543,7 +546,7 @@ impl<'a> Transpiler<'a> {
                 // Only re-query if we previously had something cached.
                 if busted {
                     if let Ok(result) = self._resolve_entry_point(entry_point) {
-                        return Ok(result);
+                        return self.reject_disabled_entry_point(result, entry_point);
                     }
                     // ignore this error, we will print the original error
                 }
@@ -560,6 +563,39 @@ impl<'a> Transpiler<'a> {
                 Err(err)
             }
         }
+    }
+
+    /// A disabled module (no usable path) imports as `{}`, but an entry point has nothing to emit.
+    fn reject_disabled_entry_point(
+        &self,
+        resolved: resolver::Result,
+        entry_point: &[u8],
+    ) -> Result<resolver::Result, bun_core::Error> {
+        if resolved.path_const().is_some() {
+            return Ok(resolved);
+        }
+
+        // Stubbed builtins carry the "node" namespace; anything else came from a "browser" map.
+        if resolved.path_pair.primary.namespace == b"node" {
+            self.log_mut().add_error_fmt(
+                None,
+                bun_ast::Loc::EMPTY,
+                format_args!(
+                    "Cannot use Node.js builtin \"{}\" as an entry point",
+                    bstr::BStr::new(entry_point)
+                ),
+            );
+        } else {
+            self.log_mut().add_error_fmt(
+                None,
+                bun_ast::Loc::EMPTY,
+                format_args!(
+                    "\"{}\" is disabled due to \"browser\" field in package.json (entry point)",
+                    bstr::BStr::new(entry_point)
+                ),
+            );
+        }
+        Err(bun_core::err!("ResolveMessage"))
     }
 
     /// Port of `transpiler.zig:314 configureDefines`.
@@ -690,23 +726,11 @@ fn merge_tsconfig_jsx_into(tsconfig: &TSConfigJSON, out: &mut crate::options_imp
 impl<'a> Transpiler<'a> {
     /// Port of `transpiler.zig:233 configureLinkerWithAutoJSX`.
     pub fn configure_linker_with_auto_jsx(&mut self, auto_jsx: bool) {
-        // PORT NOTE: `Linker::init` dropped its `arena` arg (linker.rs:172
-        // — global mimalloc). Zig stored borrowed `*T` into the linker; the
-        // un-gated `crate::linker::Linker` mirrors that with raw pointers so
-        // `&mut self.options` etc. coerce directly. Self-reference is
-        // load-bearing — `linker.link()` reads back through these into the
-        // owning `Transpiler` — hence raw `*mut`, not `&'a mut` (would alias
-        // `&mut self` on every call).
-        // PORT NOTE: `.cast()` on the `options`/`resolver` pointers erases the
-        // `<'a>` lifetime parameter — `Linker` stores them as
-        // `*mut BundleOptions` / `*mut Resolver` with an (implicit) distinct
-        // lifetime. Raw-pointer storage is the Zig contract; the linker never
-        // outlives its owning `Transpiler<'a>`.
+        // Raw back-pointers into `self`; the linker never outlives this `Transpiler`.
         self.linker = crate::linker::Linker::init(
             self.log,
             core::ptr::addr_of_mut!(self.resolve_queue),
             core::ptr::addr_of_mut!(self.options).cast(),
-            core::ptr::addr_of_mut!(self.resolver).cast(),
             core::ptr::addr_of_mut!(*self.resolve_results),
             self.fs,
         );
@@ -1333,10 +1357,7 @@ impl<'a> Transpiler<'a> {
         // Construct directly into the caller-owned storage instead of building a
         // stack temporary and returning it. All fallible work is done; every
         // field below is written exactly once. `Linker::init` gets null
-        // back-pointers (Zig used `undefined`) — `core::mem::zeroed()` is NOT a
-        // valid analogue (`Linker.hashed_filenames: HashMap` carries a `NonNull`
-        // niche, so all-zeroes is instant UB); the value fields get their proper
-        // defaults and `configure_linker_with_auto_jsx` overwrites the
+        // back-pointers; `configure_linker_with_auto_jsx` overwrites the
         // self-referential pointers before any deref.
         let p = dst.as_mut_ptr();
         // SAFETY: `dst` is an exclusively-borrowed, currently-uninitialised
@@ -1369,7 +1390,6 @@ impl<'a> Transpiler<'a> {
             // .thread_pool = pool,
             core::ptr::addr_of_mut!((*p).linker).write(crate::linker::Linker::init(
                 log,
-                core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
@@ -1618,6 +1638,7 @@ impl<'a> Transpiler<'a> {
                 use js_ast::parser::options as p_opts;
                 let mut opts = js_ast::ParserOptions::<'_> {
                     ts: loader.is_typescript(),
+                    transform_only: self.options.transform_only,
                     jsx: to_parser_jsx_pragma(jsx),
                     keep_names: true,
                     ignore_dce_annotations: self.options.ignore_dce_annotations,
@@ -1635,8 +1656,7 @@ impl<'a> Transpiler<'a> {
                     allow_unresolved: &p_opts::AllowUnresolved::DEFAULT,
                     module_type: to_parser_module_type(this_parse.module_type),
                     output_format: p_opts::Format::Esm,
-                    transform_only: self.options.transform_only,
-                    import_meta_main_value: None,
+                        import_meta_main_value: None,
                     lower_import_meta_main_for_node_js: false,
                     framework: None,
                     repl_mode: self.options.repl_mode,
@@ -2524,7 +2544,6 @@ impl<'a> Transpiler<'a> {
                 minify_whitespace: self.options.minify_whitespace,
                 minify_syntax: self.options.minify_syntax,
                 minify_identifiers: self.options.minify_identifiers,
-                transform_only: self.options.transform_only,
                 print_dce_annotations: self.options.emit_dce_annotations,
                 runtime_transpiler_cache,
                 hmr_ref: ast.wrapper_ref,
@@ -2559,7 +2578,6 @@ impl<'a> Transpiler<'a> {
             minify_whitespace: self.options.minify_whitespace,
             minify_syntax: self.options.minify_syntax,
             minify_identifiers: self.options.minify_identifiers,
-            transform_only: self.options.transform_only,
             import_meta_ref: ast.import_meta_ref,
             print_dce_annotations: self.options.emit_dce_annotations,
             runtime_transpiler_cache,
@@ -2640,7 +2658,6 @@ impl<'a> Transpiler<'a> {
             minify_whitespace: self.options.minify_whitespace,
             minify_syntax: self.options.minify_syntax,
             minify_identifiers: self.options.minify_identifiers,
-            transform_only: self.options.transform_only,
             module_type: if IS_BUN && self.options.transform_only {
                 // this is for when using `bun build --no-bundle`
                 // it should copy what was passed for the cli

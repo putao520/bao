@@ -134,14 +134,6 @@ pub enum AddToLogError {
 }
 bun_core::impl_tag_error!(AddToLogError);
 
-impl From<AddToLogError> for bun_core::Error {
-    fn from(e: AddToLogError) -> Self {
-        match e {
-            AddToLogError::OutOfMemory => bun_core::err!("OutOfMemory"),
-            AddToLogError::StackOverflow => bun_core::err!("StackOverflow"),
-        }
-    }
-}
 
 impl Error {
     pub fn add_to_log(&self, source: &Source, log: &mut Log) -> Result<(), AddToLogError> {

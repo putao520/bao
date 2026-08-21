@@ -180,13 +180,6 @@ pub mod options {
     pub struct ReactFastRefresh {
         pub import_source: Cow<'static, [u8]>,
     }
-    impl Default for ReactFastRefresh {
-        fn default() -> Self {
-            Self {
-                import_source: Cow::Borrowed(b"react-refresh/runtime"),
-            }
-        }
-    }
 }
 pub use crate::parse::parse_entry::{Options as ParserOptions, Parser};
 pub use crate::renamer;
@@ -1399,17 +1392,6 @@ pub struct ThenCatchChain {
     pub has_multiple_args: bool,
     pub has_catch: bool,
 }
-impl Default for ThenCatchChain {
-    fn default() -> Self {
-        Self {
-            // Zig: zero-init `js_ast.Expr.Data` → `.e_missing` (tag 0).
-            next_target: js_ast::ExprData::EMissing(E::Missing {}),
-            has_multiple_args: false,
-            has_catch: false,
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub struct ParsedPath<'a> {
     pub loc: bun_ast::Loc,
@@ -1421,14 +1403,8 @@ pub struct ParsedPath<'a> {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StrictModeFeature {
-    WithStatement,
-    DeleteBareName,
-    ForInVarInit,
     EvalOrArguments,
     ReservedWord,
-    LegacyOctalLiteral,
-    LegacyOctalEscape,
-    IfElseFunctionStmt,
 }
 
 #[derive(Clone, Copy)]
@@ -1661,7 +1637,7 @@ pub struct FnOrArrowDataVisit {
 /// restored on the call stack around code that parses nested functions (but not
 /// nested arrow functions).
 #[derive(Default)]
-pub struct FnOnlyDataVisit<'a> {
+pub struct FnOnlyDataVisit {
     /// This is a reference to the magic "arguments" variable that exists inside
     /// functions in JavaScript. It will be non-nil inside functions and nil
     /// otherwise.
@@ -1673,26 +1649,6 @@ pub struct FnOnlyDataVisit<'a> {
     /// local variables to capture these values so they are preserved correctly.
     pub this_capture_ref: Option<Ref>,
     pub arguments_capture_ref: Option<Ref>,
-
-    /// This is a reference to the enclosing class name if there is one. It's used
-    /// to implement "this" and "super" references. A name is automatically generated
-    /// if one is missing so this will always be present inside a class body.
-    ///
-    /// Zig's `?*Ref` becomes `&Cell<Ref>` (not `&mut Ref`): the visit pass needs to
-    /// both share this slot into nested `fn_only_data_visit` frames *and* read/write
-    /// it from the enclosing `visit_class` frame. `Cell` gives shared interior
-    /// mutability for the `Copy` `Ref` payload with zero `unsafe`.
-    pub class_name_ref: Option<&'a core::cell::Cell<Ref>>,
-
-    /// If true, we're inside a static class context where "this" expressions
-    /// should be replaced with the class name.
-    pub should_replace_this_with_class_name_ref: bool,
-
-    /// If we're inside an async arrow function and async functions are not
-    /// supported, then we will have to convert that arrow function to a generator
-    /// function. That means references to "arguments" inside the arrow function
-    /// will have to reference a captured variable instead of the real variable.
-    pub is_inside_async_arrow_fn: bool,
 
     /// If false, disallow "new.target" expressions. We disallow all "new.target"
     /// expressions at the top-level of the file (i.e. not inside a function or

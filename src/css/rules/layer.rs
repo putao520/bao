@@ -2,7 +2,6 @@ use core::fmt;
 
 use bun_alloc::Arena;
 use bun_ast::ImportRecord;
-use bun_collections::ArrayHashMap;
 
 use crate as css;
 use crate::css_rules::{CssRuleList, Location};
@@ -18,26 +17,6 @@ pub struct LayerName {
     // other CSS slice in this crate.
     pub v: SmallList<&'static [u8], 1>,
 }
-
-// The inline hash/eql context is replaced by `Hash`/`PartialEq` impls on `LayerName` below.
-// TODO(port): ArrayHashMap must use wyhash (u32-truncated) to match Zig iteration order.
-pub type LayerNameHashMap<V> = ArrayHashMap<LayerName, V>;
-
-impl core::hash::Hash for LayerName {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        // Mirrors the Zig ArrayHashMap context: Wyhash(seed=0) over each part's bytes.
-        for part in self.v.slice() {
-            state.write(part);
-        }
-    }
-}
-
-impl PartialEq for LayerName {
-    fn eq(&self, other: &Self) -> bool {
-        self.eql(other)
-    }
-}
-impl Eq for LayerName {}
 
 // PORT NOTE: trait `Clone` (not just inherent `deep_clone`) so the bundler's
 // `Chunk::Layers::to_owned` can `deep_clone_with(|l| l.clone())`. Segments are

@@ -925,6 +925,7 @@ pub enum SetError {
 }
 bun_core::impl_tag_error!(SetError);
 bun_core::oom_from_alloc!(SetError);
+
 impl From<SetError> for bun_core::Error {
     fn from(e: SetError) -> Self {
         match e {

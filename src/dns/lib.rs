@@ -300,12 +300,6 @@ impl Backend {
     }
 }
 
-impl Default for Backend {
-    fn default() -> Self {
-        Backend::default()
-    }
-}
-
 // TODO(port): std.net.Address — std::net is banned. `bun_sys::net::Address`
 // wraps `libc::sockaddr_storage`; `.in/.in6` views go through the typed
 // `as_in4()`/`as_in6()` accessors. `.un` still casts on `as_sockaddr()`.

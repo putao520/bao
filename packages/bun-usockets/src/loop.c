@@ -328,10 +328,6 @@ void sweep_timer_cb(struct us_internal_callback_t *cb) {
     us_internal_timer_sweep(cb->loop);
 }
 
-__attribute__((always_inline)) long long us_loop_iteration_number(struct us_loop_t *loop) {
-    return loop->data.iteration_nr;
-}
-
 /* These may have somewhat different meaning depending on the underlying event library */
 void us_internal_loop_pre(struct us_loop_t *loop) {
     loop->data.iteration_nr++;

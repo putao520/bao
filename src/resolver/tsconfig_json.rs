@@ -476,18 +476,22 @@ impl TSConfigJSON {
 
             // Parse "jsxFactory"
             if let Some((jsx_prop, loc)) = jsx_factory_v {
-                if let Some(str) = jsx_prop.as_utf8_string_literal() {
-                    result.jsx.factory =
-                        Self::parse_member_expression_for_jsx(log, source, loc, str)?.into();
+                if let Some(factory) = jsx_prop
+                    .as_utf8_string_literal()
+                    .and_then(|str| Self::parse_member_expression_for_jsx(log, source, loc, str))
+                {
+                    result.jsx.factory = factory.into();
                     result.jsx_flags.insert(JsxField::Factory);
                 }
             }
 
             // Parse "jsxFragmentFactory"
             if let Some((jsx_prop, loc)) = jsx_fragment_factory_v {
-                if let Some(str) = jsx_prop.as_utf8_string_literal() {
-                    result.jsx.fragment =
-                        Self::parse_member_expression_for_jsx(log, source, loc, str)?.into();
+                if let Some(fragment) = jsx_prop
+                    .as_utf8_string_literal()
+                    .and_then(|str| Self::parse_member_expression_for_jsx(log, source, loc, str))
+                {
+                    result.jsx.fragment = fragment.into();
                     result.jsx_flags.insert(JsxField::Fragment);
                 }
             }
@@ -730,65 +734,48 @@ impl TSConfigJSON {
         true
     }
 
+    /// `"React.createElement"` => `["React", "createElement"]`. `None` (after
+    /// a warning, unless `text` is empty) when `text` is not a dotted chain
+    /// of identifiers.
     pub fn parse_member_expression_for_jsx(
         log: &mut bun_ast::Log,
         source: &bun_ast::Source,
         loc: bun_ast::Loc,
         text: &[u8],
-    ) -> Result<Box<[Box<[u8]>]>, bun_core::Error> {
-        // TODO(port): narrow error set
+    ) -> Option<Box<[Box<[u8]>]>> {
         if text.is_empty() {
-            return Ok(Box::default());
-        }
-        // foo.bar == 2
-        // foo.bar. == 2
-        // foo == 1
-        // foo.bar.baz == 3
-        // foo.bar.baz.bun == 4
-        let parts_count =
-            text.iter().filter(|&&b| b == b'.').count() + usize::from(text[text.len() - 1] != b'.');
-        let mut parts: Vec<Box<[u8]>> = Vec::with_capacity(parts_count);
-
-        if parts_count == 1 {
-            if !js_lexer::is_identifier(text) {
-                let warn = source.range_of_string(loc);
-                let _ = log.add_range_warning_fmt(
-                    Some(source),
-                    warn,
-                    format_args!(
-                        "Invalid JSX member expression: \"{}\"",
-                        bstr::BStr::new(text)
-                    ),
-                );
-                return Ok(Box::default());
-            }
-
-            // PERF(port): was appendAssumeCapacity
-            // PERF(port): Zig stored a borrowed slice into `text`; Rust clones into Box<[u8]>.
-            parts.push(Box::from(text));
-            return Ok(parts.into_boxed_slice());
+            return None;
         }
 
-        let iter = text.split(|b| *b == b'.').filter(|s| !s.is_empty());
+        // PORT NOTE: upstream `strings::tokenize(text, b".")` is `split`
+        // without the empty fields; the local idiom is the filter form.
+        let mut parts = text.split(|b| *b == b'.').filter(|s| !s.is_empty()).peekable();
+        // Text made of dots only ("." or "..") has no parts; report the whole text.
+        let invalid = if parts.peek().is_none() {
+            Some(text)
+        } else {
+            parts.find(|part| !js_lexer::is_identifier(part))
+        };
 
-        for part in iter {
-            if !js_lexer::is_identifier(part) {
-                let warn = source.range_of_string(loc);
-                let _ = log.add_range_warning_fmt(
-                    Some(source),
-                    warn,
-                    format_args!(
-                        "Invalid JSX member expression: \"{}\"",
-                        bstr::BStr::new(part)
-                    ),
-                );
-                return Ok(Box::default());
-            }
-            // PERF(port): was appendAssumeCapacity
-            parts.push(Box::from(part));
+        if let Some(invalid) = invalid {
+            let warn = source.range_of_string(loc);
+            let _ = log.add_range_warning_fmt(
+                Some(source),
+                warn,
+                format_args!(
+                    "Invalid JSX member expression: \"{}\"",
+                    bstr::BStr::new(invalid)
+                ),
+            );
+            return None;
         }
 
-        Ok(parts.into_boxed_slice())
+        Some(
+            text.split(|b| *b == b'.')
+                .filter(|s| !s.is_empty())
+                .map(Box::from)
+                .collect(),
+        )
     }
 
     pub fn is_valid_tsconfig_path_no_base_url_pattern(

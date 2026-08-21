@@ -12,12 +12,6 @@ pub struct StringMap {
     pub dupe_keys: bool,
 }
 
-impl Default for StringMap {
-    fn default() -> Self {
-        Self::init(false)
-    }
-}
-
 impl StringMap {
     /// Zig `init(allocator, dupe_keys)` — allocator dropped (global mimalloc).
     pub fn init(dupe_keys: bool) -> Self {

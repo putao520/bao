@@ -221,15 +221,6 @@ pub mod vlq_mod {
         pub len: u8,
     }
 
-    impl Default for VLQ {
-        fn default() -> Self {
-            Self {
-                bytes: [0; VLQ_MAX_IN_BYTES],
-                len: 0,
-            }
-        }
-    }
-
     pub(crate) const VLQ_MAX_IN_BYTES: usize = 7;
 
     impl VLQ {

@@ -15,7 +15,6 @@ workspace = true
 
 [dependencies]
 strum.workspace = true
-bstr.workspace = true
 thiserror.workspace = true
 
 # Mature base64 crate (1B+ downloads, SIMD-accelerated)

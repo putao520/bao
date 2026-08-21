@@ -225,6 +225,17 @@ const HTTP_OUTGOING_JS: &str = r#"
   function FakeSocket() { this.destroyed = false; this.writable = true; }
   FakeSocket.prototype.destroy = function(err) { this.destroyed = true; };
 
+  // Upstream 46a6c3927 shape (src/js/internal/http.ts emitCloseNT): 'close'
+  // fires exactly once, after destroy() has returned, with _closed already
+  // set so listeners observe closed === true.
+  function emitCloseNT(self) {
+    if (!self._closed) {
+      self.destroyed = true;
+      self._closed = true;
+      self.emit('close');
+    }
+  }
+
   function OutgoingMessage() {
     EE.call(this);
     this._headers = {};
@@ -266,7 +277,23 @@ const HTTP_OUTGOING_JS: &str = r#"
   OutgoingMessage.prototype.pipe = function() { this.emit('error', new Error('Cannot pipe. Not readable.')); };
   OutgoingMessage.prototype.cork = function() {};
   OutgoingMessage.prototype.uncork = function() {};
-  OutgoingMessage.prototype.destroy = function(err) { this.destroyed = true; this.writable = false; if (err) this.emit('error', err); this.emit('close'); return this; };
+  // Upstream 46a6c3927: destroy() must NOT emit 'close' synchronously —
+  // Node emits it from socket teardown or a nextTick emitCloseNT after
+  // destroy() returns. Bao's minimal sockets never emit the message's
+  // 'close' back, so the deferred emitCloseNT below is the single close
+  // source; a Promise microtask is this crate's nextTick shape (see
+  // node_stream.rs Writable.end, same deferral for finish/close).
+  OutgoingMessage.prototype.destroy = function(err) {
+    if (this.destroyed) return this;
+    this.destroyed = true;
+    this.writable = false;
+    if (err) this.emit('error', err);
+    var socket = this._socket; // raw slot — the `socket` getter fabricates a FakeSocket
+    if (socket && typeof socket.destroy === 'function') socket.destroy(err);
+    var self = this;
+    Promise.resolve().then(function() { emitCloseNT(self); });
+    return this;
+  };
   OutgoingMessage.prototype.end = function(chunk, encoding, cb) {
     if (typeof chunk === 'function') { cb = chunk; chunk = null; }
     if (typeof encoding === 'function') { cb = encoding; encoding = null; }
@@ -281,6 +308,10 @@ const HTTP_OUTGOING_JS: &str = r#"
 
   Object.defineProperty(OutgoingMessage.prototype, 'headers', { get: function() { return this.getHeaders(); }, set: function(v) { this._headers = v; }, configurable: true });
   Object.defineProperty(OutgoingMessage.prototype, 'connection', { get: function() { return this.socket; }, set: function(v) { this.socket = v; }, configurable: true });
+  // Node's OutgoingMessage.closed: true once 'close' is about to fire / has
+  // fired (set inside emitCloseNT before the emit, so listeners observe
+  // closed === true — upstream 46a6c3927 assertion).
+  Object.defineProperty(OutgoingMessage.prototype, 'closed', { get: function() { return this._closed; }, configurable: true });
   Object.defineProperty(OutgoingMessage.prototype, 'socket', { get: function() { if (!this._socket) this._socket = new FakeSocket(); return this._socket; }, set: function(v) { this._socket = v; }, configurable: true });
   Object.defineProperty(OutgoingMessage.prototype, 'chunkedEncoding', { get: function() { return false; }, set: function(v) {}, configurable: true });
   Object.defineProperty(OutgoingMessage.prototype, 'writableObjectMode', { get: function() { return false; }, configurable: true });
@@ -309,6 +340,17 @@ const HTTP_SERVER_JS: &str = r#"
   }
 
   var kConnectionsCheckingInterval = Symbol('kConnectionsCheckingInterval');
+
+  // Upstream 46a6c3927 shape (src/js/internal/http.ts emitCloseNT): 'close'
+  // fires exactly once, asynchronously after destroy() returned, with
+  // _closed already set.
+  function emitCloseNT(self) {
+    if (!self._closed) {
+      self.destroyed = true;
+      self._closed = true;
+      self.emit('close');
+    }
+  }
 
   function Server(opts, requestListener) {
     if (!(this instanceof Server)) return new Server(opts, requestListener);
@@ -346,8 +388,12 @@ const HTTP_SERVER_JS: &str = r#"
   };
   Server.prototype.setTimeout = function(msecs, callback) { if (callback) this.on('timeout', callback); return this; };
 
-  // ServerResponse — minimal stub extending OutgoingMessage shape.
+  // ServerResponse — minimal stub extending OutgoingMessage shape. Node's
+  // ServerResponse is an OutgoingMessage (thus an EventEmitter); the close
+  // semantics ported in destroy() below are only observable with working
+  // on/emit, so link the EE prototype like Server does above.
   function ServerResponse(req) {
+    EE.call(this);
     this.req = req;
     this.statusCode = 200;
     this.statusMessage = null;
@@ -355,12 +401,16 @@ const HTTP_SERVER_JS: &str = r#"
     this.sendDate = true;
     this._sent100 = false;
     this.finished = false;
+    this.destroyed = false;
+    this._closed = false;
     this._headers = {};
     this._headerNames = {};
     this.useChunkedEncodingByDefault = true;
     this.chunkedEncoding = false;
     this._writableState = { ended: false, highWaterMark: 65536 };
   }
+  ServerResponse.prototype = Object.create(EE.prototype);
+  ServerResponse.prototype.constructor = ServerResponse;
   ServerResponse.prototype.writeHead = function(statusCode, statusMessage, headers) {
     this.statusCode = statusCode;
     if (typeof statusMessage === 'string') { this.statusMessage = statusMessage; }
@@ -394,7 +444,23 @@ const HTTP_SERVER_JS: &str = r#"
   ServerResponse.prototype.assignSocket = function(socket) { this.socket = socket; };
   ServerResponse.prototype.detachSocket = function(socket) { this.socket = null; };
   ServerResponse.prototype._implicitHeader = function() { this.writeHead(200); };
-  ServerResponse.prototype.destroy = function(err) { this.finished = true; if (err) this.emit('error', err); };
+  // Upstream 46a6c3927: destroy() must not emit 'close' synchronously, and
+  // ServerResponse.destroy must emit 'close' at all (Node requirement). The
+  // assigned socket (if any) is destroyed synchronously; 'close' is deferred
+  // to a microtask (this crate's nextTick shape, matching
+  // _http_outgoing.destroy and node_stream.rs) and fires exactly once via
+  // the _closed guard in emitCloseNT.
+  ServerResponse.prototype.destroy = function(err) {
+    if (this.destroyed) return this;
+    this.destroyed = true;
+    this.finished = true;
+    if (err) this.emit('error', err);
+    var socket = this.socket;
+    if (socket && typeof socket.destroy === 'function') socket.destroy(err);
+    var self = this;
+    Promise.resolve().then(function() { emitCloseNT(self); });
+    return this;
+  };
   ServerResponse.prototype.setTimeout = function(msecs, callback) { if (callback) this.on('timeout', callback); return this; };
   ServerResponse.prototype.addTrailers = function(headers) {};
   Object.defineProperty(ServerResponse.prototype, 'writable', { get: function() { return !this.finished; }, configurable: true });

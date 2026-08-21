@@ -498,6 +498,17 @@ pub fn install_fetch_classes(
     return pump();
   };
 
+  // A Response with no body at all — constructed with a null/undefined body
+  // (`new Response(null)`) or fetched with a null body status / as HEAD
+  // (upstream bun 77afa71e9): the body mixin resolves empty without ever
+  // disturbing the body, so bodyUsed stays false and reads are repeatable.
+  // An EMPTY body (`new Response('')`, _bodyText='') is NOT absent — it is a
+  // real (zero-byte) body with normal used-once semantics.
+  var _bao_body_absent = function(response) {
+    return response._bodyStreamSource == null && response._bodySource == null &&
+      response._bodyText === undefined && !response._bodyBytes && !response._bodyBlob;
+  };
+
   _g.Response.prototype.text = function text() {
     if (this._bodyStreamSource) {
       if (this._bodyUsed) return Promise.reject(new TypeError('Body is unusable'));
@@ -513,6 +524,7 @@ pub fn install_fetch_classes(
         return parts.join('');
       });
     }
+    if (_bao_body_absent(this)) return Promise.resolve('');
     this._bodyUsed = true;
     if (this._bodyText !== undefined) return Promise.resolve(this._bodyText);
     if (this._bodyBytes) return Promise.resolve(new TextDecoder().decode(this._bodyBytes));
@@ -543,6 +555,7 @@ pub fn install_fetch_classes(
         return out.buffer;
       });
     }
+    if (_bao_body_absent(this)) return Promise.resolve(new ArrayBuffer(0));
     this._bodyUsed = true;
     if (this._bodyBytes) return Promise.resolve(this._bodyBytes.buffer.slice(0));
     if (this._bodyText !== undefined) return Promise.resolve(new TextEncoder().encode(this._bodyText).buffer);
@@ -557,6 +570,7 @@ pub fn install_fetch_classes(
         return new _g.Blob([new Uint8Array(buf)], { type: type });
       });
     }
+    if (_bao_body_absent(this)) return Promise.resolve(new _g.Blob());
     this._bodyUsed = true;
     if (this._bodyBlob) return Promise.resolve(this._bodyBlob);
     if (this._bodyBytes) return Promise.resolve(new _g.Blob([this._bodyBytes], { type: this.headers.get('content-type') || '' }));

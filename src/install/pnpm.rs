@@ -215,6 +215,37 @@ fn e_object_mut(expr: &mut Expr) -> &mut E::Object {
     }
 }
 
+/// The YAML parser backs quoted, block, and multi-line plain scalars with the
+/// caller's parse arena (`NodeScalar::to_expr`), so a subtree that outlives
+/// that arena dangles. Re-intern every string into the thread-local
+/// `DATA_STORE` that owns the surrounding `Expr` nodes.
+fn data_store_dupe_expr_strings(expr: &mut Expr) {
+    match &mut expr.data {
+        ExprData::EString(s) => {
+            let s = &mut **s;
+            if s.is_utf8() {
+                s.data = E::Str::new(js_ast::data_store_dupe_str(s.data.slice()));
+            }
+        }
+        ExprData::EObject(o) => {
+            for prop in (**o).properties.slice_mut() {
+                if let Some(key) = prop.key.as_mut() {
+                    data_store_dupe_expr_strings(key);
+                }
+                if let Some(value) = prop.value.as_mut() {
+                    data_store_dupe_expr_strings(value);
+                }
+            }
+        }
+        ExprData::EArray(a) => {
+            for item in (**a).items.slice_mut() {
+                data_store_dupe_expr_strings(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Shallow struct copy (Zig copies `G.Property` by value freely; the Rust
 /// `G::Property` lacks `Clone` because of its `Vec`/`NonNull` fields).
 fn shallow_clone_prop(p: &G::Property) -> G::Property {
@@ -1836,6 +1867,21 @@ fn update_package_json_after_migration(
 
             if let Some(patched_deps_expr) = ws_root.get_object(b"patchedDependencies") {
                 workspace_patched_deps_obj = Some(patched_deps_expr);
+            }
+
+            // These subtrees escape this arm (into `json` and the cached
+            // package.json tree) while `arena` drops with it, so their
+            // arena-backed strings must be re-interned first (#39785).
+            for subtree in [
+                &mut catalog_obj,
+                &mut catalogs_obj,
+                &mut workspace_overrides_obj,
+                &mut workspace_patched_deps_obj,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                data_store_dupe_expr_strings(subtree);
             }
         }
         Err(_) => {}

@@ -2106,6 +2106,19 @@ pub mod bv2_impl {
             );
         }
 
+        /// Callers require an entry point, so none after parsing means one was dropped without an error.
+        fn fail_if_no_entry_points(&self) -> Result<(), Error> {
+            if !self.graph.entry_points.is_empty() {
+                return Ok(());
+            }
+            self.transpiler.log_mut().add_error(
+                None,
+                bun_ast::Loc::EMPTY,
+                "None of the entry points could be bundled",
+            );
+            Err(bun_core::err!("BuildFailed"))
+        }
+
         /// `BUN_THREADPOOL_STATS=1` instrumentation hook — dump aggregate worker
         /// idle/busy time since the previous call. No-op when env var unset.
         #[inline]
@@ -2636,10 +2649,9 @@ pub mod bv2_impl {
             let result = &mut *resolve;
             // PORT NOTE(borrowck): clone the active path out so we don't hold a `&mut`
             // into `result` across the `&mut self` calls below.
-            let mut path: Fs::Path<'static> = match result.path() {
-                Some(p) => *p,
-                None => return Ok(None),
-            };
+            let mut path: Fs::Path<'static> = *result.path().expect(
+                "resolve_entry_point rejects disabled results and FileMap results have a path",
+            );
 
             path.assert_file_path_is_absolute();
             // PORT NOTE(borrowck): split Zig's `getOrPut` into get-then-put.
@@ -3864,10 +3876,7 @@ pub mod bv2_impl {
                 // sidestep for the `&mut self` overlap (Zig stored both as raw `*Transpiler`).
                 this.enqueue_entry_points_normal(unsafe { &*entry_points })?;
 
-                if this.transpiler.log().has_errors() {
-                    return Err(bun_core::err!("BuildFailed"));
-                }
-
+                // Like `run_from_js_in_new_thread`: drain the pool, then report entry point errors.
                 this.wait_for_parse();
                 this.dump_pool_stats("parse");
 
@@ -3879,6 +3888,7 @@ pub mod bv2_impl {
                 if this.transpiler.log().has_errors() {
                     return Err(bun_core::err!("BuildFailed"));
                 }
+                this.fail_if_no_entry_points()?;
 
                 this.scan_for_secondary_paths();
 
@@ -4041,10 +4051,7 @@ pub mod bv2_impl {
 
                 this.enqueue_entry_points_bake_production(entry_points)?;
 
-                if this.transpiler.log().has_errors() {
-                    return Err(bun_core::err!("BuildFailed"));
-                }
-
+                // Drain the pool, then report entry point errors (as `generate_from_cli` does).
                 this.wait_for_parse();
 
                 if this.transpiler.log().has_errors() {
@@ -4441,8 +4448,6 @@ pub mod bv2_impl {
                         this.free_list.push(code.source_code);
                         std::borrow::Cow::Borrowed(source_code)
                     };
-                    this.graph.input_files.items_flags_mut()[load.source_index.get() as usize]
-                        .insert(crate::Graph::InputFileFlags::IS_PLUGIN_FILE);
                     let parse_task = load.parse_task_mut();
                     parse_task.loader = Some(code.loader);
                     parse_task.contents_or_fd = parse_task::ContentsOrFd::Contents(source_code);
@@ -4786,6 +4791,20 @@ pub mod bv2_impl {
                             drop(result.path);
                         }
                     } else {
+                        if resolve.import_record.kind == ImportKind::EntryPointBuild {
+                            let log = this.log_for_resolution_failures(
+                                &resolve.import_record.source_file,
+                                resolve.import_record.original_target.bake_graph(),
+                            );
+                            log.add_error_fmt(
+                                None,
+                                bun_ast::Loc::EMPTY,
+                                format_args!(
+                                    "The entry point {} cannot be marked as external",
+                                    bun_core::fmt::quote(&resolve.import_record.specifier),
+                                ),
+                            );
+                        }
                         drop(result.namespace);
                         drop(result.path);
                     }
@@ -4973,6 +4992,7 @@ pub mod bv2_impl {
             if self.transpiler.log().errors > 0 {
                 return Err(bun_core::err!("BuildFailed"));
             }
+            self.fail_if_no_entry_points()?;
 
             self.scan_for_secondary_paths();
 
@@ -7258,7 +7278,6 @@ pub mod bv2_impl {
                             // PORT NOTE: Zig used `@tagName(err.step)`.
                             let step_name = match err.step {
                                 crate::parse_task::Step::Pending => "pending",
-                                crate::parse_task::Step::ReadFile => "read_file",
                                 crate::parse_task::Step::Parse => "parse",
                                 crate::parse_task::Step::Resolve => "resolve",
                             };

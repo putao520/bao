@@ -286,17 +286,6 @@ pub struct Alias {
     pub node_only_prefix: bool,
 }
 
-impl Default for Alias {
-    fn default() -> Self {
-        Self {
-            path: zstr!(""),
-            tag: import_record::Tag::Builtin,
-            node_builtin: false,
-            node_only_prefix: false,
-        }
-    }
-}
-
 /// Prepend `"node:"` to a literal at compile time iff it isn't already prefixed.
 /// Mirrors Zig: `if (path.len > 5 and std.mem.eql(u8, path[0..5], "node:")) path else "node:" ++ path`.
 macro_rules! ensure_node_prefix {

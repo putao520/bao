@@ -2204,13 +2204,15 @@ impl Package<u64> {
             }
         }
 
-        if let Some(patched_deps) = json.as_property(b"patchedDependencies") {
-            if let ExprData::EObject(obj) = &patched_deps.expr.data {
-                for prop in obj.properties.slice() {
-                    let key = prop.key.expect("infallible: prop has key");
-                    let value = prop.value.expect("infallible: prop has value");
-                    if key.is_string() && value.is_string() {
-                        string_builder.count(value.as_utf8(&bump).unwrap());
+        if FEATURES.patched_dependencies {
+            if let Some(patched_deps) = json.as_property(b"patchedDependencies") {
+                if let ExprData::EObject(obj) = &patched_deps.expr.data {
+                    for prop in obj.properties.slice() {
+                        let key = prop.key.expect("infallible: prop has key");
+                        let value = prop.value.expect("infallible: prop has value");
+                        if key.is_string() && value.is_string() {
+                            string_builder.count(value.as_utf8(&bump).unwrap());
+                        }
                     }
                 }
             }
@@ -2609,31 +2611,33 @@ impl Package<u64> {
             self.resolution = Resolution::<u64>::init(TaggedValue::Root);
         }
 
-        if let Some(patched_deps) = json.as_property(b"patchedDependencies") {
-            if let ExprData::EObject(obj) = &patched_deps.expr.data {
-                lockfile
-                    .patched_dependencies
-                    .ensure_total_capacity(obj.properties.len_u32() as usize)
-                    .expect("unreachable");
-                for prop in obj.properties.slice() {
-                    let key = prop.key.expect("infallible: prop has key");
-                    let value = prop.value.expect("infallible: prop has value");
-                    if key.is_string() && value.is_string() {
-                        // PERF(port): was stack-fallback
-                        let keyhash =
-                            semver::string::Builder::string_hash(key.as_utf8(&bump).unwrap());
-                        let patch_path =
-                            string_builder.append::<String>(value.as_utf8(&bump).unwrap());
-                        lockfile
-                            .patched_dependencies
-                            .put(
-                                keyhash,
-                                PatchedDep {
-                                    path: patch_path,
-                                    ..Default::default()
-                                },
-                            )
-                            .expect("unreachable");
+        if FEATURES.patched_dependencies {
+            if let Some(patched_deps) = json.as_property(b"patchedDependencies") {
+                if let ExprData::EObject(obj) = &patched_deps.expr.data {
+                    lockfile
+                        .patched_dependencies
+                        .ensure_total_capacity(obj.properties.len_u32() as usize)
+                        .expect("unreachable");
+                    for prop in obj.properties.slice() {
+                        let key = prop.key.expect("infallible: prop has key");
+                        let value = prop.value.expect("infallible: prop has value");
+                        if key.is_string() && value.is_string() {
+                            // PERF(port): was stack-fallback
+                            let keyhash =
+                                semver::string::Builder::string_hash(key.as_utf8(&bump).unwrap());
+                            let patch_path =
+                                string_builder.append::<String>(value.as_utf8(&bump).unwrap());
+                            lockfile
+                                .patched_dependencies
+                                .put(
+                                    keyhash,
+                                    PatchedDep {
+                                        path: patch_path,
+                                        ..Default::default()
+                                    },
+                                )
+                                .expect("unreachable");
+                        }
                     }
                 }
             }

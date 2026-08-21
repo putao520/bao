@@ -28,12 +28,6 @@ impl Value {
 type ManifestHashMap =
     HashMap<PackageNameHash, Value, bun_collections::IdentityContext<PackageNameHash>>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum CacheBehavior {
-    LoadFromMemory,
-    LoadFromMemoryFallbackToDisk,
-}
-
 /// By-value snapshot of the `PackageManager` fields the disk-fallback path of
 /// [`PackageManifestMap::by_name_hash_allow_expired`] reads.
 ///
@@ -57,33 +51,15 @@ pub struct DiskCacheCtx {
     pub timestamp_for_manifest_cache_control: u32,
 }
 
-impl DiskCacheCtx {
-    /// Context for the [`CacheBehavior::LoadFromMemory`] path, which never
-    /// reads any of these fields.
-    pub const MEMORY_ONLY: Self = Self {
-        enable_manifest_cache: false,
-        enable_manifest_cache_control: false,
-        cache_directory: None,
-        timestamp_for_manifest_cache_control: 0,
-    };
-}
-
 impl PackageManifestMap {
     pub fn by_name(
         &mut self,
         ctx: DiskCacheCtx,
         scope: &npm::registry::Scope,
         name: &[u8],
-        cache_behavior: CacheBehavior,
         needs_extended_manifest: bool,
     ) -> Option<&mut npm::PackageManifest> {
-        self.by_name_hash(
-            ctx,
-            scope,
-            StringBuilder::string_hash(name),
-            cache_behavior,
-            needs_extended_manifest,
-        )
+        self.by_name_hash(ctx, scope, StringBuilder::string_hash(name), needs_extended_manifest)
     }
 
     pub fn insert(
@@ -100,25 +76,16 @@ impl PackageManifestMap {
         ctx: DiskCacheCtx,
         scope: &npm::registry::Scope,
         name_hash: PackageNameHash,
-        cache_behavior: CacheBehavior,
         needs_extended_manifest: bool,
     ) -> Option<&mut npm::PackageManifest> {
-        self.by_name_hash_allow_expired(
-            ctx,
-            scope,
-            name_hash,
-            None,
-            cache_behavior,
-            needs_extended_manifest,
-        )
+        self.by_name_hash_allow_expired(ctx, scope, name_hash, None, needs_extended_manifest)
     }
 
-    /// Memory-only lookup — equivalent to Zig
+    /// Memory-only lookup — Zig
     /// `byNameHash(this, pm, scope, hash, .load_from_memory, _)` with
-    /// `is_expired = null`, but without the `ctx`/`scope` parameters: the
-    /// `.load_from_memory` arm never reads them. Exposed separately so callers
-    /// holding `&mut PackageManager` can borrow only the disjoint
-    /// `pm.manifests` field.
+    /// `is_expired = null`: no disk fallback, so no `ctx`/`scope`
+    /// parameters. Exposed separately so callers holding `&mut PackageManager`
+    /// can borrow only the disjoint `pm.manifests` field.
     pub fn by_name_hash_in_memory(
         &mut self,
         name_hash: PackageNameHash,
@@ -135,7 +102,6 @@ impl PackageManifestMap {
         scope: &npm::registry::Scope,
         name: &[u8],
         is_expired: Option<&mut bool>,
-        cache_behavior: CacheBehavior,
         needs_extended_manifest: bool,
     ) -> Option<&mut npm::PackageManifest> {
         self.by_name_hash_allow_expired(
@@ -143,7 +109,6 @@ impl PackageManifestMap {
             scope,
             StringBuilder::string_hash(name),
             is_expired,
-            cache_behavior,
             needs_extended_manifest,
         )
     }
@@ -161,25 +126,8 @@ impl PackageManifestMap {
         scope: &npm::registry::Scope,
         name_hash: PackageNameHash,
         is_expired: Option<&mut bool>,
-        cache_behavior: CacheBehavior,
         needs_extended_manifest: bool,
     ) -> Option<&mut npm::PackageManifest> {
-        if cache_behavior == CacheBehavior::LoadFromMemory {
-            let entry = self.hash_map.get_mut(&name_hash)?;
-            return match entry {
-                Value::Manifest(m) => Some(m),
-                Value::Expired(m) => {
-                    if let Some(expiry) = is_expired {
-                        *expiry = true;
-                        Some(m)
-                    } else {
-                        None
-                    }
-                }
-                Value::NotFound => None,
-            };
-        }
-
         // PORT NOTE: reshaped for borrowck — Zig's `getOrPut` returns `{ found_existing, value_ptr }`;
         // Rust splits into Occupied/Vacant arms.
         match self.hash_map.entry(name_hash) {
