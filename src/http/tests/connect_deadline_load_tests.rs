@@ -25,6 +25,12 @@
 //! in phase 2 cannot race a parallel phase 1 (libtest runs test fns on
 //! separate threads).
 
+// Mount only the shared fetch harness (not the whole `common` tree — this
+// binary has no TLS fixture, so ServerTlsIo would be dead code here). Same
+// `#[path]` pattern as the suite crates' shared helpers.
+#[path = "common/fetch_harness.rs"]
+mod fetch_harness;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -34,6 +40,7 @@ use std::time::{Duration, Instant};
 use bun_core::MutableString;
 use bun_http::{AsyncHTTP, FetchRedirect, HTTPClientResult, HTTPClientResultCallback, Method,
                async_http};
+use fetch_harness::reclaim_terminal_delivery;
 
 // Link seam: bun_io's posix event loop dispatches through
 // `__bun_run_file_poll`, owned by `bun_runtime::dispatch` in product
@@ -83,14 +90,7 @@ fn recorder_callback(
         // Terminal delivery: reclaim the caller-thread AsyncHTTP box via
         // the `real` backref plus the response buffer — sole dropper,
         // mirroring the contract in tls_info_and_streaming_tests.
-        let real = unsafe { (*async_http).real };
-        if let Some(r) = real {
-            drop(unsafe { Box::from_raw(r.as_ptr()) });
-        }
-        let buf = unsafe { (*async_http).response_buffer };
-        if !buf.is_null() {
-            drop(unsafe { Box::from_raw(buf) });
-        }
+        reclaim_terminal_delivery(async_http);
     }
 }
 

@@ -81,10 +81,11 @@ use std::pin::pin;
 use std::ptr::NonNull;
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
+use bun_core::backpressure::{BackpressureValve, ParkStep};
 use content_security_policy::percent_encoding::utf8_percent_encode;
 use devtools_traits::ChromeToDevtoolsControlMsg;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version};
@@ -190,9 +191,9 @@ impl BunHttpResponse {
 
     /// Bytes currently forwarded into the channel but not yet received
     /// (diagnostics / e2e bounded-backpressure assertions; the park check
-    /// reads the same atomic).
+    /// reads the same level).
     pub fn body_in_flight(&self) -> usize {
-        self.backpressure.in_flight.load(Ordering::Acquire)
+        self.backpressure.valve.level()
     }
 
     /// Drain the body to completion (test / buffered-consumer helper).
@@ -449,21 +450,18 @@ struct BridgeHead {
 }
 
 /// Shared response-body backpressure state — the bridge counterpart of the
-/// fetch side's staging park (`fetch_async.rs`'s `staging` /
+/// fetch side's staging park (`fetch_async.rs`'s valve /
 /// `UNOBSERVED_BODY_HIGH_WATER_MARK`, adapted to the channel shape: the
 /// channel IS the staging; this carries only the accounting). Held
 /// separately from `BridgeState` on purpose: the terminal callback's
 /// `Arc<BridgeState>` drop is what closes the body channel at clean stream
 /// end, so the consumer must not keep that Arc alive — this small
-/// allocation carries only atomics and the request id the unpark needs.
+/// allocation carries only the valve and the request id the unpark needs.
 struct BodyBackpressure {
-    /// Bytes forwarded into the channel but not yet received: the delivery
-    /// callback adds before each send, the consumer subtracts per received
-    /// frame.
-    in_flight: AtomicUsize,
-    /// Producer parked: the drain round-trip is withheld and the transport
-    /// read side paused. Cleared by the consumer below the low-water mark.
-    parked: AtomicBool,
+    /// In-flight byte metering + the park latch (hysteresis shape: park at
+    /// [`BODY_HIGH_WATER_MARK`], resume at/below [`BODY_LOW_WATER_MARK`] —
+    /// the shared `bun_core::backpressure` decision core).
+    valve: BackpressureValve,
     /// The request's HTTPThread id (0 until `fetch_core` stashes it) — the
     /// same shared `Arc<AtomicU32>` the cancel handle holds, so the unpark
     /// sees the id regardless of who stashed it first.
@@ -478,11 +476,8 @@ struct BodyBackpressure {
 /// test worker). Shared by [`BunHttpResponse::next_chunk`] and servo's
 /// `to_servo_response` consumption loop.
 fn observe_body_received(backpressure: &BodyBackpressure, len: usize) {
-    let in_flight = backpressure
-        .in_flight
-        .fetch_sub(len, Ordering::AcqRel)
-        .saturating_sub(len);
-    if in_flight <= BODY_LOW_WATER_MARK && backpressure.parked.swap(false, Ordering::AcqRel) {
+    let level = backpressure.valve.note_consumed(len);
+    if backpressure.valve.resume_below_low(level) {
         let id = backpressure.async_http_id.load(Ordering::Acquire);
         if id != 0 {
             bun_http::HTTPThread::schedule_transport_pause_from_any_thread(
@@ -853,8 +848,7 @@ pub async fn fetch_core(
         // (stashed below, after `AsyncHTTP::init` assigns it — the Arc makes
         // the late write visible to both halves).
         let backpressure = StdArc::new(BodyBackpressure {
-            in_flight: AtomicUsize::new(0),
-            parked: AtomicBool::new(false),
+            valve: BackpressureValve::with_hysteresis(BODY_HIGH_WATER_MARK, BODY_LOW_WATER_MARK),
             async_http_id: StdArc::clone(&cancel.async_http_id),
         });
         let state: StdArc<BridgeState> = StdArc::new(BridgeState {
@@ -1108,15 +1102,7 @@ fn on_http_done(
             .as_deref()
             .map(|buffer| buffer.list.as_slice().to_vec())
             .unwrap_or_default();
-        let in_flight = if bytes.is_empty() {
-            state.backpressure.in_flight.load(Ordering::Acquire)
-        } else {
-            state
-                .backpressure
-                .in_flight
-                .fetch_add(bytes.len(), Ordering::AcqRel)
-                + bytes.len()
-        };
+        let in_flight = state.backpressure.valve.note_produced(bytes.len());
         if !bytes.is_empty() && state.body_tx.send(Ok(bytes)).is_err() {
             // Consumer gone mid-stream (servo dropped the body future): abort
             // so the HTTPThread request terminates instead of streaming into
@@ -1142,7 +1128,6 @@ fn on_http_done(
             if let Some(buffer) = result.body.as_deref_mut() {
                 buffer.list.clear();
             }
-            let parked = state.backpressure.parked.load(Ordering::Acquire);
             let id = unsafe { (*async_http_box).async_http_id };
             // SAFETY/THREADING: this callback runs on the HTTPThread, which
             // owns the HTTP_THREAD cell (same-thread idiom as ProxyTunnel's
@@ -1150,18 +1135,21 @@ fn on_http_done(
             // documented for exactly this in-callback call shape — uSockets
             // re-checks `is_paused` after the dispatch returns, and the
             // pause itself gates on Done/Fail/redirect-pending).
-            if !parked && in_flight >= BODY_HIGH_WATER_MARK {
-                state.backpressure.parked.store(true, Ordering::Release);
-                bun_http::http_thread_mut().schedule_transport_pause(
-                    id,
-                    bun_http::http_thread::TransportPauseKind::Pause,
-                );
-                // No drain — withholding it IS the park.
-            } else if !parked {
-                bun_http::http_thread_mut().schedule_response_body_drain(id);
+            match state.backpressure.valve.producer_park_step(in_flight) {
+                ParkStep::Parked => {
+                    bun_http::http_thread_mut().schedule_transport_pause(
+                        id,
+                        bun_http::http_thread::TransportPauseKind::Pause,
+                    );
+                    // No drain — withholding it IS the park.
+                },
+                ParkStep::Flowing => {
+                    bun_http::http_thread_mut().schedule_response_body_drain(id);
+                },
+                // Already parked: neither — the consumer's unpark re-arms
+                // the transport and re-issues the drain.
+                ParkStep::Held => {},
             }
-            // Already parked: neither — the consumer's unpark re-arms the
-            // transport and re-issues the drain.
         }
     }
 

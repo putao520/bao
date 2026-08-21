@@ -19,16 +19,17 @@
 //!      `HTTP2CompressionError` when nothing was advertised (the peer
 //!      exceeding the advertised bound is a real protocol violation).
 
+mod common;
+
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc;
+use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
-use bao_boringssl_bridge::{TlsConnection, TlsServer, TlsState, generate_self_signed_pem};
-use bun_core::MutableString;
-use bun_http::signals::Store;
-use bun_http::{AsyncHTTP, HTTPClientResult, HTTPClientResultCallback, Method, FetchRedirect,
-               async_http};
+use bao_boringssl_bridge::{TlsServer, generate_self_signed_pem};
+use common::fetch_harness::Delivery;
+use common::h2_framing::{FLAG_ACK, FLAG_END_HEADERS, FLAG_END_STREAM, FT_GOAWAY, FT_HEADERS,
+                         FT_SETTINGS, frame, read_exact_deadline};
+use common::{ServerTlsIo, install_alpn_h2};
 
 // Link seam: bun_io's posix event loop dispatches through
 // `__bun_run_file_poll`, owned by bun_runtime::dispatch in product binaries.
@@ -131,168 +132,6 @@ fn decoder_still_rejects_update_above_advertised_capacity() {
 
 // ─── Wire-level e2e fixture ─────────────────────────────────────────────────
 
-/// Minimal HTTP/2 framing (RFC 9113): header + payload.
-fn frame(frame_type: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(9 + payload.len());
-    out.push((payload.len() >> 16) as u8);
-    out.push((payload.len() >> 8) as u8);
-    out.push(payload.len() as u8);
-    out.push(frame_type);
-    out.push(flags);
-    out.extend_from_slice(&stream.to_be_bytes());
-    out.extend_from_slice(payload);
-    out
-}
-
-const FT_HEADERS: u8 = 0x1;
-const FT_SETTINGS: u8 = 0x4;
-const FT_GOAWAY: u8 = 0x7;
-const FLAG_ACK: u8 = 0x1;
-const FLAG_END_STREAM: u8 = 0x1;
-const FLAG_END_HEADERS: u8 = 0x4;
-
-// Length-prefixed ALPN wire entry for "h2".
-const ALPN_H2: &[u8] = b"\x02h2";
-
-unsafe extern "C" fn alpn_select_h2(
-    _ssl: *mut bun_boringssl_sys::SSL,
-    out: *mut *const u8,
-    out_len: *mut u8,
-    in_: *const u8,
-    in_len: core::ffi::c_uint,
-    _arg: *mut core::ffi::c_void,
-) -> core::ffi::c_int {
-    let list = unsafe { std::slice::from_raw_parts(in_, in_len as usize) };
-    let mut offset = 0usize;
-    while offset < list.len() {
-        let len = list[offset] as usize;
-        offset += 1;
-        if offset + len > list.len() {
-            break;
-        }
-        if &list[offset..offset + len] == b"h2" {
-            unsafe {
-                *out = ALPN_H2.as_ptr().add(1); // past the length byte
-                *out_len = 2;
-            }
-            return bun_boringssl_sys::SSL_TLSEXT_ERR_OK;
-        }
-        offset += len;
-    }
-    bun_boringssl_sys::SSL_TLSEXT_ERR_NOACK
-}
-
-/// TLS stream adapter driving the server-side BoringSSL state machine over
-/// the raw TCP socket (mirror of h2_continuation_cap_tests' ServerTlsIo).
-struct ServerTlsIo {
-    tcp: TcpStream,
-    tls: TlsConnection,
-    pending_plain: Vec<u8>,
-    pending_off: usize,
-}
-
-impl ServerTlsIo {
-    fn handshake(tcp: &mut TcpStream, tls: &mut TlsConnection) -> std::io::Result<Vec<u8>> {
-        loop {
-            let res = tls
-                .process()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-            loop {
-                let outgoing = tls.take_outgoing();
-                if outgoing.is_empty() {
-                    break;
-                }
-                tcp.write_all(&outgoing)?;
-            }
-            if res.state == TlsState::Active || res.state == TlsState::PeerClosed {
-                // The handshake-completing process() may have decrypted
-                // application data that piggybacked on the final handshake
-                // record (e.g. the client's Finished + first h2 record read
-                // as one segment). It must be delivered, not discarded, or
-                // the server waits forever for bytes it already consumed.
-                let mut piggybacked = Vec::new();
-                for chunk in res.plaintext {
-                    piggybacked.extend_from_slice(&chunk);
-                }
-                return Ok(piggybacked);
-            }
-            let mut buf = [0u8; 16_384];
-            match tcp.read(&mut buf) {
-                Ok(0) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "peer closed during tls handshake",
-                    ))
-                }
-                Ok(n) => tls.feed(&buf[..n]),
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    fn read_plaintext(&mut self) -> std::io::Result<Vec<u8>> {
-        loop {
-            let outgoing = self.tls.take_outgoing();
-            if !outgoing.is_empty() {
-                self.tcp.write_all(&outgoing)?;
-            }
-            let res = self
-                .tls
-                .process()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-            if !res.plaintext.is_empty() {
-                let mut joined = Vec::new();
-                for chunk in res.plaintext {
-                    joined.extend_from_slice(&chunk);
-                }
-                return Ok(joined);
-            }
-            let mut buf = [0u8; 16_384];
-            match self.tcp.read(&mut buf) {
-                Ok(0) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "tls peer closed",
-                    ))
-                }
-                Ok(n) => self.tls.feed(&buf[..n]),
-                Err(e) => return Err(e),
-            }
-        }
-    }
-}
-
-impl Read for ServerTlsIo {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.pending_off >= self.pending_plain.len() {
-            self.pending_plain = self.read_plaintext()?;
-            self.pending_off = 0;
-        }
-        let avail = &self.pending_plain[self.pending_off..];
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
-        self.pending_off += n;
-        Ok(n)
-    }
-}
-
-impl Write for ServerTlsIo {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = self
-            .tls
-            .write(buf)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        let outgoing = self.tls.take_outgoing();
-        if !outgoing.is_empty() {
-            self.tcp.write_all(&outgoing)?;
-        }
-        Ok(n)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.tcp.flush()
-    }
-}
-
 /// The response header block the scripted origin answers with.
 #[derive(Clone, Copy, PartialEq)]
 enum BlockShape {
@@ -315,15 +154,7 @@ fn spawn_tsu_h2_server(shape: BlockShape) -> u16 {
     let (cert, key) =
         generate_self_signed_pem("127.0.0.1", 365).expect("self-signed cert");
     let server = std::sync::Arc::new(TlsServer::new(&cert, &key).expect("TlsServer"));
-    // SAFETY: TlsServer::ctx returns its live SSL_CTX; installing the ALPN
-    // select callback before any accept is thread-free.
-    unsafe {
-        bun_boringssl_sys::SSL_CTX_set_alpn_select_cb(
-            server.ctx(),
-            Some(alpn_select_h2),
-            core::ptr::null_mut(),
-        );
-    }
+    install_alpn_h2(&server);
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -340,12 +171,7 @@ fn spawn_tsu_h2_server(shape: BlockShape) -> u16 {
         if tls.alpn_protocol() != Some(&b"h2"[..]) {
             return;
         }
-        let mut io = ServerTlsIo {
-            tcp,
-            tls,
-            pending_plain: piggybacked,
-            pending_off: 0,
-        };
+        let mut io = ServerTlsIo::new(tcp, tls, piggybacked);
         serve_tsu_h2(&mut io, shape);
     });
     port
@@ -435,142 +261,19 @@ fn serve_tsu_h2(io: &mut ServerTlsIo, shape: BlockShape) {
     }
 }
 
-fn read_exact_deadline(io: &mut ServerTlsIo, buf: &mut [u8], deadline: Instant) -> std::io::Result<()> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        if Instant::now() > deadline {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "h2 preface timeout",
-            ));
-        }
-        match io.read(&mut buf[filled..]) {
-            Ok(0) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "eof during preface",
-                ))
-            },
-            Ok(n) => filled += n,
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {},
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
-// ─── Client harness (mirror of h2_continuation_cap_tests) ──────────────────
-
-#[derive(Debug)]
-struct Delivery {
-    status: Option<u32>,
-    fail: Option<bun_core::Error>,
-    has_more: bool,
-}
-
-struct Recorder {
-    tx: mpsc::Sender<Delivery>,
-}
-
-/// The `HTTPClientResultCallback`; runs on the HTTP thread.
-fn recorder_callback(
-    this: *mut Recorder,
-    async_http: *mut AsyncHTTP<'static>,
-    result: HTTPClientResult<'_>,
-) {
-    let rec: &Recorder = unsafe { &*this };
-    let status = result.metadata.as_ref().map(|m| m.response.status_code);
-    let fail = result.fail.clone();
-    let has_more = result.has_more;
-
-    if !has_more {
-        // Terminal delivery: reclaim the caller-thread `AsyncHTTP` box via
-        // the `real` backref plus the response buffer — sole dropper,
-        // mirroring `on_http_done` in fetch_async.rs.
-        let real = unsafe { (*async_http).real };
-        if let Some(r) = real {
-            drop(unsafe { Box::from_raw(r.as_ptr()) });
-        }
-        let buf = unsafe { (*async_http).response_buffer };
-        if !buf.is_null() {
-            drop(unsafe { Box::from_raw(buf) });
-        }
-    }
-
-    let _ = rec.tx.send(Delivery {
-        status,
-        fail,
-        has_more,
-    });
-}
-
 /// Drive one GET through the real HTTPThread over ALPN-negotiated h2 and
 /// collect deliveries until the terminal (`has_more == false`) one.
 /// `advertised_table_size` installs a stealth-style SETTINGS payload with
 /// SETTINGS_HEADER_TABLE_SIZE set to that value (the exact channel
 /// `stealth_profile_to_ssl_config` → `write_preface` uses in production).
 fn run_h2_fetch(port: u16, advertised_table_size: Option<u32>) -> Vec<Delivery> {
-    bao_native_stubs::force_link();
-    bun_core::Output::init_test();
-    bun_http::http_thread::init(&Default::default());
-
-    let (tx, rx) = mpsc::channel();
-    // Leaked on purpose: the Signals NonNulls point into this store for the
-    // whole request lifetime; a stable heap address avoids any relocation.
-    let store: &'static mut Store = Box::leak(Box::new(Store::default()));
-    let recorder = Box::into_raw(Box::new(Recorder { tx }));
-
-    let url = format!("https://127.0.0.1:{}/", port);
-    let url_bytes: &'static [u8] = Box::leak(url.into_bytes().into_boxed_slice());
-    let parsed_url = bun_url::URL::parse(url_bytes);
-
-    let response_buffer = Box::into_raw(Box::new(MutableString::default()));
-    let mut options = async_http::Options::default();
-    options.signals = Some(store.to());
-    // Self-signed fixture cert.
-    options.reject_unauthorized = Some(false);
-    if let Some(table_size) = advertised_table_size {
-        let mut cfg = bun_http::ssl_config::SSLConfig::default();
-        cfg.h2_settings_payload = Some(setting(0x0001, table_size).to_vec().into_boxed_slice());
-        options.tls_props = Some(bun_http::ssl_config::SharedPtr::new(cfg));
-    }
-
-    let ah = AsyncHTTP::init(
-        Method::GET,
-        parsed_url,
-        Default::default(),
-        b"",
-        response_buffer,
-        b"",
-        HTTPClientResultCallback::new(recorder, recorder_callback),
-        FetchRedirect::Follow,
-        options,
-    );
-
-    let ah_ptr = bun_core::heap::into_raw(Box::new(ah));
-    let batch = bun_threading::thread_pool::Batch::from(unsafe {
-        core::ptr::addr_of_mut!((*ah_ptr).task)
-    });
-    bun_http::HTTPThread::schedule(batch);
-
-    let mut out = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            break;
-        };
-        let Ok(d) = rx.recv_timeout(remaining) else {
-            break;
-        };
-        let terminal = !d.has_more;
-        out.push(d);
-        if terminal {
-            break;
+    common::fetch_harness::run_h2_fetch(port, |options| {
+        if let Some(table_size) = advertised_table_size {
+            let mut cfg = bun_http::ssl_config::SSLConfig::default();
+            cfg.h2_settings_payload = Some(setting(0x0001, table_size).to_vec().into_boxed_slice());
+            options.tls_props = Some(bun_http::ssl_config::SharedPtr::new(cfg));
         }
-    }
-    out
+    })
 }
 
 fn assert_ok_200(deliveries: &[Delivery], ctx: &str) {

@@ -1,18 +1,19 @@
 // @trace REQ-ENG-007 [entity:DNS] [code:bun_dns]
-// Hostname → IP resolution goes through `bun_dns` (Backend::Libc): we build a
-// `GetAddrInfo` request with `Backend::Libc`, call libc::getaddrinfo directly,
-// and walk the result chain via `GetAddrInfoResult::from_addr_info`. This
-// replaces the previous `std::net::ToSocketAddrs` path (which also called libc
-// getaddrinfo but bypassed `bun_dns`'s typed addrinfo model) so the runtime
-// shares one DNS surface with bun_http / bun_install. `std::net::Ipv6Addr` is
-// used only for canonical IPv6 text rendering in render_address.
+// Hostname → IP resolution for the dns.lookup family goes through `bun_dns`
+// (Backend::Libc): we build a `GetAddrInfo` request with `Backend::Libc`, call
+// libc::getaddrinfo directly, and walk the result chain via
+// `GetAddrInfoResult::from_addr_info`. This replaces the previous
+// `std::net::ToSocketAddrs` path (which also called libc getaddrinfo but
+// bypassed `bun_dns`'s typed addrinfo model) so the runtime shares one DNS
+// surface with bun_http / bun_install. `std::net::Ipv6Addr` is used only for
+// canonical IPv6 text rendering in render_address.
 //
 // Reverse DNS uses libc::getnameinfo (NI_NAMEREQD) for dns.reverse().
 // lookupService uses libc::getnameinfo (NI_NAMEREQD | NI_NUMERICSERV) for
 // hostname + service name resolution.
-// Per-RR-type resolve methods (CNAME/MX/NAPTR/NS/PTR/SOA/SRV/TXT) use
-// c-ares (bun_cares_sys) synchronous integration: Channel::init +
-// Channel::resolve via ares_reply_callback, driven synchronously with
+// Per-RR-type resolve methods (A/AAAA/CNAME/MX/NAPTR/NS/PTR/SOA/SRV/TXT) use
+// c-ares (bun_cares_sys) synchronous integration: Channel::init + ares_query
+// per RR type with the matching parse thunk, driven synchronously with
 // ares_getsock + poll + ares_process_fd until the callback fires.
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
@@ -48,6 +49,8 @@ use bun_cares_sys::c_ares_draft as cares;
 /// Per-RR-type resolved record data. Each variant holds the parsed fields
 /// matching Node.js dns.resolve* return shapes.
 enum DnsRRData {
+    A(Vec<::std::string::String>),         // IPv4 dotted-quads
+    Aaaa(Vec<::std::string::String>),      // IPv6 canonical text
     Cname(::std::string::String),
     Mx(Vec<(u16, ::std::string::String)>), // (priority, exchange)
     Txt(Vec<Vec<::std::string::String>>),  // one Vec per TXT record, each holding that record's chunks
@@ -180,6 +183,126 @@ unsafe fn c_ares_str_to_string(ptr: *mut u8) -> ::std::string::String {
     ::std::ffi::CStr::from_ptr(ptr.cast::<::std::ffi::c_char>())
         .to_string_lossy()
         .into_owned()
+}
+
+// ── A/AAAA: hostent-with-ttls handlers (dns.resolve4/resolve6) ────────
+//
+// A/AAAA ride the same c-ares stack as every other RR type (ares_query + the
+// per-type parse thunk); the former libc getaddrinfo arm was a second
+// resolver inside one resolve family. ares_parse_a_reply/ares_parse_aaaa_reply
+// allocate the hostent for the caller; the Box<hostent_with_ttls> Drop runs
+// ares_free_hostent when the handler returns — the same caller-owned lease as
+// the NS path (callback_wrapper_ns + ares_parse_ns_reply).
+
+struct AHostentWithTtlsHandler;
+
+impl cares::HostentWithTtlsHandler for AHostentWithTtlsHandler {
+    const PARSE: fn(&[u8]) -> ::std::result::Result<Box<cares::hostent_with_ttls>, cares::Error> =
+        cares::hostent_with_ttls::parse_a;
+
+    fn on_hostent_with_ttls(
+        &mut self,
+        status: Option<cares::Error>,
+        _timeouts: i32,
+        results: Option<Box<cares::hostent_with_ttls>>,
+    ) {
+        if status.is_some() {
+            query_set_error(status_to_code(status).to_string());
+            return;
+        }
+        let Some(with_ttls) = results else {
+            // Query completed but parse produced nothing — Node's ENODATA.
+            query_set_error(status_to_code(None).to_string());
+            return;
+        };
+        // SAFETY: with_ttls.hostent was allocated by PARSE (ares_parse_a_reply).
+        let addrs = unsafe { hostent_inet_addrs(with_ttls.hostent) };
+        // The Box drop below ends the hostent lease (ares_free_hostent); the
+        // addresses are owned Strings copied out before that.
+        if addrs.is_empty() {
+            // Resolved fine but no address records (e.g. CNAME-only answer):
+            // Node reports ENODATA, not [].
+            query_set_error("ENODATA".to_string());
+            return;
+        }
+        query_set_result(DnsRRData::A(addrs));
+    }
+}
+
+struct AaaaHostentWithTtlsHandler;
+
+impl cares::HostentWithTtlsHandler for AaaaHostentWithTtlsHandler {
+    const PARSE: fn(&[u8]) -> ::std::result::Result<Box<cares::hostent_with_ttls>, cares::Error> =
+        cares::hostent_with_ttls::parse_aaaa;
+
+    fn on_hostent_with_ttls(
+        &mut self,
+        status: Option<cares::Error>,
+        _timeouts: i32,
+        results: Option<Box<cares::hostent_with_ttls>>,
+    ) {
+        if status.is_some() {
+            query_set_error(status_to_code(status).to_string());
+            return;
+        }
+        let Some(with_ttls) = results else {
+            query_set_error(status_to_code(None).to_string());
+            return;
+        };
+        // SAFETY: with_ttls.hostent was allocated by PARSE (ares_parse_aaaa_reply).
+        let addrs = unsafe { hostent_inet_addrs(with_ttls.hostent) };
+        if addrs.is_empty() {
+            query_set_error("ENODATA".to_string());
+            return;
+        }
+        query_set_result(DnsRRData::Aaaa(addrs));
+    }
+}
+
+/// Walk a c-ares hostent's `h_addr_list` and render each address to canonical
+/// text (4-byte entries as dotted-quad IPv4, 16-byte as compressed IPv6) —
+/// the same shapes as `render_address`/`render_cache_ip`. Read-only: the
+/// hostent lease belongs to the caller (parse_*_reply allocation).
+///
+/// # Safety
+/// `hostent` must be null or a live hostent allocated by ares_parse_*_reply.
+unsafe fn hostent_inet_addrs(hostent: *mut cares::struct_hostent) -> Vec<::std::string::String> {
+    let mut addrs = Vec::new();
+    if hostent.is_null() {
+        return addrs;
+    }
+    // SAFETY: caller contract — live parse_*_reply hostent.
+    let h = unsafe { &*hostent };
+    if h.h_addr_list.is_null() {
+        return addrs;
+    }
+    let mut entry_ptr = h.h_addr_list;
+    // SAFETY: h_addr_list is a NUL-terminated array of pointers, each to
+    // h_length address bytes owned by the hostent (ares_parse_*_reply contract).
+    while !unsafe { *entry_ptr }.is_null() {
+        let entry: *mut u8 = unsafe { *entry_ptr }.cast();
+        match h.h_length as usize {
+            4 => {
+                // SAFETY: entry points at h_length == 4 address bytes.
+                let octets: [u8; 4] = unsafe { *entry.cast::<[u8; 4]>() };
+                addrs.push(format!(
+                    "{}.{}.{}.{}",
+                    octets[0], octets[1], octets[2], octets[3]
+                ));
+            }
+            16 => {
+                // SAFETY: entry points at h_length == 16 address bytes.
+                let bytes: [u8; 16] = unsafe { *entry.cast::<[u8; 16]>() };
+                addrs.push(::std::net::Ipv6Addr::from(bytes).to_string());
+            }
+            // parse_a/parse_aaaa hostents only ever carry 4- or 16-byte
+            // addresses; anything else is a foreign hostent — skip rather
+            // than render garbage.
+            _ => {}
+        }
+        entry_ptr = unsafe { entry_ptr.add(1) };
+    }
+    addrs
 }
 
 // ── CNAME: hostent handler (stores h_name as Cname) ──────────────────
@@ -511,13 +634,54 @@ fn resolve_rr_cares(
     // a ZST (!Freeze) so &mut from raw is sound (no data to conflict).
     let channel_ref = unsafe { &mut *channel_ptr };
 
-    // Submit the query based on RR type. CNAME uses ares_gethostbyname (which
-    // returns a c-ares-owned struct_hostent); MX/TXT/SOA/SRV/NAPTR use
-    // ares_query with the generic ares_reply_callback<R, Handler> thunk; NS
-    // uses ares_query + callback_wrapper_ns (ares_parse_ns_reply hostent,
-    // caller-owned); PTR uses Channel::get_host_by_addr
-    // (ares_gethostbyaddr, c-ares-owned hostent).
+    // Submit the query based on RR type. A/AAAA use ares_query +
+    // hostent_with_ttls::callback_wrapper (ares_parse_a_reply/
+    // ares_parse_aaaa_reply hostent, caller-owned via Box Drop); CNAME uses
+    // ares_gethostbyname (which returns a c-ares-owned struct_hostent);
+    // MX/TXT/SOA/SRV/NAPTR use ares_query with the generic
+    // ares_reply_callback<R, Handler> thunk; NS uses ares_query +
+    // callback_wrapper_ns (ares_parse_ns_reply hostent, caller-owned); PTR
+    // uses Channel::get_host_by_addr (ares_gethostbyaddr, c-ares-owned
+    // hostent).
     match ns_type {
+        cares::NSType::ns_t_a => {
+            let mut handler = AHostentWithTtlsHandler;
+            let mut name_buf = [0u8; 1024];
+            let name_ptr = nul_terminate(&mut name_buf, hostname.as_bytes());
+            // SAFETY: ares_query FFI; name_ptr NUL-terminated; handler outlives query.
+            unsafe {
+                cares::ares_query(
+                    channel_ptr,
+                    name_ptr,
+                    cares::NSClass::ns_c_in,
+                    cares::NSType::ns_t_a,
+                    Some(
+                        cares::hostent_with_ttls::callback_wrapper::<AHostentWithTtlsHandler>,
+                    ),
+                    ::std::ptr::from_mut::<AHostentWithTtlsHandler>(&mut handler)
+                        .cast::<::std::ffi::c_void>(),
+                );
+            }
+        }
+        cares::NSType::ns_t_aaaa => {
+            let mut handler = AaaaHostentWithTtlsHandler;
+            let mut name_buf = [0u8; 1024];
+            let name_ptr = nul_terminate(&mut name_buf, hostname.as_bytes());
+            // SAFETY: ares_query FFI; name_ptr NUL-terminated; handler outlives query.
+            unsafe {
+                cares::ares_query(
+                    channel_ptr,
+                    name_ptr,
+                    cares::NSClass::ns_c_in,
+                    cares::NSType::ns_t_aaaa,
+                    Some(
+                        cares::hostent_with_ttls::callback_wrapper::<AaaaHostentWithTtlsHandler>,
+                    ),
+                    ::std::ptr::from_mut::<AaaaHostentWithTtlsHandler>(&mut handler)
+                        .cast::<::std::ffi::c_void>(),
+                );
+            }
+        }
         cares::NSType::ns_t_cname => {
             let mut handler = CnameHostentHandler;
             let mut name_buf = [0u8; 1024];
@@ -774,12 +938,13 @@ thread_local! {
 /// return each address's display string alongside its family (4 = IPv4,
 /// 6 = IPv6). The returned Vec mirrors getaddrinfo's result-chain order.
 ///
-/// Failure is `Err(raw_gai_rc)` — the getaddrinfo EAI_* return code, so the
-/// dns.resolve* arms can surface Node-style errors instead of a silent `[]`
-/// (lookup callers collapse it back to an empty result via `unwrap_or_default`,
-/// preserving dns.lookup's behavior).
+/// Failure is `Err(raw_gai_rc)` — the getaddrinfo EAI_* return code, a
+/// truthful failure signal for the libc stack (the RR resolve family no
+/// longer consumes it; its A/AAAA arms ride c-ares like every other RR
+/// type). Lookup callers collapse it back to an empty result via
+/// `unwrap_or_default`, preserving dns.lookup's behavior.
 ///
-/// @trace REQ-ENG-007 [api:dns.lookup/resolve] [code:bun_dns]
+/// @trace REQ-ENG-007 [api:dns.lookup] [code:bun_dns]
 fn resolve_hostname_libc(
     hostname: &str,
 ) -> ::std::result::Result<Vec<(::std::string::String, i32)>, i32> {
@@ -2239,9 +2404,10 @@ unsafe fn throw_resolve_error(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    // Generic per-RR-type resolve. A/AAAA use libc::getaddrinfo via
-    // resolve_hostname_libc; all other RR types (CNAME, MX, NAPTR, NS, PTR,
-    // SOA, SRV, TXT) use c-ares synchronous resolution via resolve_rr_cares.
+    // Generic per-RR-type resolve. Every RR type — including A/AAAA — goes
+    // through c-ares synchronous resolution (resolve_rr_cares), so one
+    // resolve family rides one resolver stack; the libc path
+    // (resolve_hostname_libc) serves only the lookup family (NSS contract).
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         JS_ReportErrorUTF8(cx, c"dns.resolve requires a hostname argument".as_ptr());
@@ -2271,86 +2437,74 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 
     match rrtype.to_uppercase().as_str() {
         "A" => {
-            // Resolve IPv4 only via libc::getaddrinfo. Failure surfaces as
-            // Node's "queryA <code> <host>" error (EAI_NONAME → ENOTFOUND);
-            // a domain that resolves but yields no IPv4 records is ENODATA —
-            // both byte-match Node's resolve4 oracle (queryA / queryAaaa
-            // spellings: nodejs/node cares_wrap.cc QueryWrap dispatch).
+            // Real A query on the c-ares stack (same resolver as every other
+            // RR type). Error plumbing keeps Node's resolve4 oracle shape: the
+            // c-ares statuses surface as-is in "queryA <code> <host>"
+            // (ENOTFOUND for NXDOMAIN, ENODATA for a NOERROR answer without
+            // A records) — the exact codes Node's c-ares-based resolve4
+            // reports, since Node issues the same query. The former libc arm
+            // had to bridge gai EAI_* codes onto these spellings.
             let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
             if arr_obj.is_null() {
                 args.rval().set(UndefinedValue());
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            let resolved = match resolve_hostname_libc(&hostname) {
-                Ok(r) => r,
-                Err(rc) => {
-                    let code = gai_error_to_dns_code(rc);
-                    return throw_resolve_error(cx, "queryA", &code, &hostname);
-                }
-            };
-            let mut idx = 0u32;
-            for (ip, family) in resolved {
-                if family == 4 {
-                    let c_ip = ZBox::from_bytes(ip.as_bytes());
-                    let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
-                    if !js_str.is_null() {
-                        rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
-                        JS_DefineElement(
-                            cx,
-                            arr_root.handle().into(),
-                            idx,
-                            val.handle().into(),
-                            JSPROP_ENUMERATE as u32,
-                        );
-                        idx += 1;
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_a) {
+                Ok(DnsRRData::A(addrs)) => {
+                    let mut idx = 0u32;
+                    for ip in addrs {
+                        let c_ip = ZBox::from_bytes(ip.as_bytes());
+                        let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
+                        if !js_str.is_null() {
+                            rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+                            JS_DefineElement(
+                                cx,
+                                arr_root.handle().into(),
+                                idx,
+                                val.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                            idx += 1;
+                        }
                     }
                 }
-            }
-            // Resolved fine but no IPv4 records: Node reports ENODATA, not [].
-            if idx == 0 {
-                return throw_resolve_error(cx, "queryA", "ENODATA", &hostname);
+                Err(code) => return throw_resolve_error(cx, "queryA", &code, &hostname),
+                Ok(_) => {}
             }
             args.rval().set(ObjectValue(arr_root.get()));
         }
         "AAAA" => {
-            // Resolve IPv6 only via libc::getaddrinfo — same error plumbing
-            // as the A arm; the syscall is "queryAaaa" (Node's exact casing,
-            // not "queryAAAA").
+            // Real AAAA query on the c-ares stack — same error plumbing as
+            // the A arm; the syscall is "queryAaaa" (Node's exact casing, not
+            // "queryAAAA").
             let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
             if arr_obj.is_null() {
                 args.rval().set(UndefinedValue());
                 return true;
             }
             rooted!(&in(cx_wrap) let arr_root = arr_obj);
-            let resolved = match resolve_hostname_libc(&hostname) {
-                Ok(r) => r,
-                Err(rc) => {
-                    let code = gai_error_to_dns_code(rc);
-                    return throw_resolve_error(cx, "queryAaaa", &code, &hostname);
-                }
-            };
-            let mut idx = 0u32;
-            for (ip, family) in resolved {
-                if family == 6 {
-                    let c_ip = ZBox::from_bytes(ip.as_bytes());
-                    let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
-                    if !js_str.is_null() {
-                        rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
-                        JS_DefineElement(
-                            cx,
-                            arr_root.handle().into(),
-                            idx,
-                            val.handle().into(),
-                            JSPROP_ENUMERATE as u32,
-                        );
-                        idx += 1;
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_aaaa) {
+                Ok(DnsRRData::Aaaa(addrs)) => {
+                    let mut idx = 0u32;
+                    for ip in addrs {
+                        let c_ip = ZBox::from_bytes(ip.as_bytes());
+                        let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
+                        if !js_str.is_null() {
+                            rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+                            JS_DefineElement(
+                                cx,
+                                arr_root.handle().into(),
+                                idx,
+                                val.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                            idx += 1;
+                        }
                     }
                 }
-            }
-            // Resolved fine but no IPv6 records: Node reports ENODATA, not [].
-            if idx == 0 {
-                return throw_resolve_error(cx, "queryAaaa", "ENODATA", &hostname);
+                Err(code) => return throw_resolve_error(cx, "queryAaaa", &code, &hostname),
+                Ok(_) => {}
             }
             args.rval().set(ObjectValue(arr_root.get()));
         }

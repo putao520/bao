@@ -45,6 +45,7 @@ use ::std::sync::{Arc, Mutex};
 
 use bao_engine::context::RawValueRootGuard;
 use bun_core::ZBox;
+use bun_core::backpressure::BackpressureValve;
 use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
 use mozjs::jsval::{DoubleValue, JSVal, ObjectValue, StringValue, UndefinedValue};
@@ -211,8 +212,9 @@ pub fn new_abort_id() -> u32 {
 // buffers, the RAII promise_root Drop, deallocation).
 //
 // Threading: the HTTP thread touches ONLY `signals_store`, `async_http_id`,
-// `shared` (Mutex), `phase` and `parked` (atomics). `pending_pull`,
-// `promise_settled` and `keepalive_held` are JS-thread exclusive.
+// `shared` (Mutex), `phase` and the backpressure valve's parked latch
+// (atomics). `pending_pull`, `promise_settled` and `keepalive_held` are
+// JS-thread exclusive.
 // ──────────────────────────────────────────────────────────────────────────
 
 /// Staging high-water mark: once this many body bytes sit staged without a
@@ -277,8 +279,6 @@ pub(crate) struct StreamShared {
     /// Staged body chunks in delivery order. HTTP thread pushes; the JS
     /// thread pops one per pull.
     pub staging: VecDeque<Vec<u8>>,
-    /// Total staged bytes (park check under the same lock).
-    pub staged_bytes: usize,
     /// Terminal delivery observed on the transport side.
     pub closed: bool,
     /// Transport failure (mid- or terminal). Aborted ⇒ AbortError.
@@ -300,9 +300,14 @@ pub(crate) struct StreamingState {
     pub shared: Mutex<StreamShared>,
     /// Phase transitions (JS thread writes; atomics for observation).
     pub phase: AtomicU8,
-    /// Park flag: `on_http_done` (HTTP thread) reads it to decide whether
-    /// to round-trip the response-body drain. Set/cleared on the JS thread.
-    pub parked: AtomicBool,
+    /// Backpressure valve: staged-byte metering (level — every update while
+    /// holding `shared`'s lock, keeping the level and the staging deque it
+    /// measures in one critical section) + the park latch, which
+    /// `on_http_done` (HTTP thread) reads lock-free to decide whether to
+    /// round-trip the response-body drain. Set/cleared on the JS thread.
+    /// Single-mark shape (`park_at`): the resume arm is interest-driven
+    /// (a JS pull takes the latch — no byte test).
+    pub valve: BackpressureValve,
     /// The JS stream source was collected while the stream was unfinished:
     /// set by the source finalizer (GC context — no SM API allowed there);
     /// the next ConcurrentTask run performs the cancel + stream-ref deref
@@ -346,12 +351,11 @@ impl StreamingState {
             shared: Mutex::new(StreamShared {
                 head: None,
                 staging: VecDeque::new(),
-                staged_bytes: 0,
                 closed: false,
                 fail: None,
             }),
             phase: AtomicU8::new(StreamPhase::Pending as u8),
-            parked: AtomicBool::new(false),
+            valve: BackpressureValve::park_at(UNOBSERVED_BODY_HIGH_WATER_MARK),
             finalize_pending: AtomicBool::new(false),
             promise_settled: false,
             transport_released: false,
@@ -1541,7 +1545,9 @@ fn on_http_done_streaming(
                 let bytes = body.list.as_slice();
                 if !bytes.is_empty() {
                     staged_bytes = bytes.len();
-                    g.staged_bytes += bytes.len();
+                    // Under `shared`'s lock — the valve level and the staging
+                    // deque it measures stay in one critical section.
+                    state.valve.note_produced(bytes.len());
                     g.staging.push_back(bytes.to_vec());
                 }
             }
@@ -1556,7 +1562,7 @@ fn on_http_done_streaming(
         }
         // Drain round-trip (skipped while parked — the park lever; h2-real
         // flow control, h1 needs the W2 read-pause hook).
-        if !terminal && staged_bytes > 0 && !state.parked.load(AtomicOrdering::Acquire) {
+        if !terminal && staged_bytes > 0 && !state.valve.is_parked() {
             let id = state.async_http_id.load(AtomicOrdering::Acquire);
             if id != 0 {
                 // SAFETY/THREADING: same-thread idiom — this callback runs
@@ -2051,7 +2057,7 @@ unsafe fn process_stream_event(this: *mut PendingFetch) {
             let mut g = state.shared.lock().unwrap();
             match g.staging.pop_front() {
                 ::std::option::Option::Some(c) => {
-                    g.staged_bytes -= c.len();
+                    state.valve.note_consumed(c.len());
                     ::std::option::Option::Some(c)
                 }
                 ::std::option::Option::None => ::std::option::Option::None,
@@ -2072,7 +2078,7 @@ unsafe fn process_stream_event(this: *mut PendingFetch) {
     let (closed, staged_bytes) = unsafe {
         let state = (*this).streaming.as_ref().unwrap();
         let g = state.shared.lock().unwrap();
-        (g.closed, g.staged_bytes)
+        (g.closed, state.valve.level())
     };
     if closed {
         if staged_bytes == 0 {
@@ -2093,10 +2099,11 @@ unsafe fn process_stream_event(this: *mut PendingFetch) {
     //    no reader interest. Only in a live (non-terminal, non-canceled)
     //    stream.
     if !closed
-        && staged_bytes >= UNOBSERVED_BODY_HIGH_WATER_MARK
         && unsafe {
             let state = (*this).streaming.as_ref().unwrap();
-            state.pending_pull.is_none() && !state.parked.load(AtomicOrdering::Acquire)
+            state.valve.above_high(staged_bytes)
+                && state.pending_pull.is_none()
+                && !state.valve.is_parked()
         }
         && matches!(
             current_phase(this),
@@ -2148,7 +2155,7 @@ fn park_stream(this: *mut PendingFetch) {
     let Some(state) = (unsafe { &*this }).streaming.as_ref() else {
         return;
     };
-    state.parked.store(true, AtomicOrdering::Release);
+    state.valve.latch_park();
     set_phase(this, StreamPhase::Parked);
     PENDING.with(|p| {
         let mut guard = p.borrow_mut();
@@ -2824,7 +2831,7 @@ unsafe extern "C" fn fetch_body_pull_native(
 
         // Reader interest arrived: unpark (PENDING re-add + re-ref + drain
         // resume) BEFORE consulting the staging.
-        if state.parked.swap(false, AtomicOrdering::AcqRel) {
+        if state.valve.take_parked() {
             unpark_stream(this);
         }
 
@@ -2839,7 +2846,7 @@ unsafe extern "C" fn fetch_body_pull_native(
             if let ::std::option::Option::Some(fail) = g.fail.clone() {
                 PullAction::Fail(fail)
             } else if let ::std::option::Option::Some(front) = g.staging.pop_front() {
-                g.staged_bytes -= front.len();
+                state.valve.note_consumed(front.len());
                 PullAction::Chunk(front)
             } else if g.closed {
                 PullAction::Done

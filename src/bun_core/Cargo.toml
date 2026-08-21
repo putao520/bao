@@ -9,7 +9,10 @@ name = "bun_core"
 # migration companion, 71afadb4).
 # 0.1.4 (2026-08-19): +pub chan_vec_to_std zero-copy reverse adopter
 # (ChanVec → std Vec handoff; bun_runtime 0.1.2 consumes it).
-version = "0.1.4"
+# 0.1.5 (2026-08-21): +pub backpressure::BackpressureValve — the shared
+# watermark/park-latch core of the fetch staging + servo bridge response-body
+# backpressure templates (transport levers stay at the integration sites).
+version = "0.1.5"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

@@ -24,6 +24,9 @@
 
 pub mod Global;
 pub mod atomic_cell;
+/// Byte-count backpressure valve — the shared park/resume decision core of
+/// the response-body watermark template (fetch staging + servo bridge).
+pub mod backpressure;
 pub mod hint;
 /// C-seam `#[no_mangle]` RealImpl symbols owned by this crate (the lowest
 /// crate on the dep graph that touches them). See `native_seam.rs` header.

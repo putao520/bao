@@ -20,16 +20,20 @@
 //! No JS runtime is involved — this exercises the HTTP thread's real
 //! socket/data path end to end.
 
+mod common;
+
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use bao_boringssl_bridge::{TlsConnection, TlsServer, TlsState, generate_self_signed_pem};
+use bao_boringssl_bridge::{TlsServer, generate_self_signed_pem};
 use bun_core::MutableString;
 use bun_http::signals::Store;
 use bun_http::{AsyncHTTP, BunTlsInfo, FetchRedirect, HTTPClientResult, HTTPClientResultCallback,
                Method, async_http};
+use common::ServerTlsIo;
+use common::fetch_harness::reclaim_terminal_delivery;
 
 // Link seam: bun_io's posix event loop dispatches through
 // `__bun_run_file_poll`, owned by `bun_runtime::dispatch` in product
@@ -128,14 +132,7 @@ fn recorder_callback(
         // the `real` backref plus the response buffer — sole dropper,
         // mirroring `on_http_done` step 5 in fetch_async.rs. The HTTP-thread
         // clone is raw-deallocated by `on_async_http_callback_raw`.
-        let real = unsafe { (*async_http).real };
-        if let Some(r) = real {
-            drop(unsafe { Box::from_raw(r.as_ptr()) });
-        }
-        let buf = unsafe { (*async_http).response_buffer };
-        if !buf.is_null() {
-            drop(unsafe { Box::from_raw(buf) });
-        }
+        reclaim_terminal_delivery(async_http);
     }
 }
 
@@ -243,118 +240,6 @@ fn spawn_slow_chunked_server(chunks: &[&str], delay: Duration) -> u16 {
     port
 }
 
-/// TLS stream adapter for the test server (mirror of the runtime test
-/// helper in web_socket_async_tests.rs): drives the server-side BoringSSL
-/// state machine over the raw TCP socket.
-struct ServerTlsIo {
-    tcp: TcpStream,
-    tls: TlsConnection,
-    pending_plain: Vec<u8>,
-    pending_off: usize,
-}
-
-impl ServerTlsIo {
-    fn handshake(tcp: &mut TcpStream, tls: &mut TlsConnection) -> std::io::Result<Vec<u8>> {
-        loop {
-            let res = tls
-                .process()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-            loop {
-                let outgoing = tls.take_outgoing();
-                if outgoing.is_empty() {
-                    break;
-                }
-                tcp.write_all(&outgoing)?;
-            }
-            if res.state == TlsState::Active || res.state == TlsState::PeerClosed {
-                // The handshake-completing process() may have decrypted
-                // application data that piggybacked on the final handshake
-                // record (e.g. the client's Finished + first h2 record read
-                // as one segment). It must be delivered, not discarded, or
-                // the server waits forever for bytes it already consumed.
-                let mut piggybacked = Vec::new();
-                for chunk in res.plaintext {
-                    piggybacked.extend_from_slice(&chunk);
-                }
-                return Ok(piggybacked);
-            }
-            let mut buf = [0u8; 16_384];
-            match tcp.read(&mut buf) {
-                Ok(0) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "peer closed during tls handshake",
-                    ))
-                }
-                Ok(n) => tls.feed(&buf[..n]),
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    fn read_plaintext(&mut self) -> std::io::Result<Vec<u8>> {
-        loop {
-            let outgoing = self.tls.take_outgoing();
-            if !outgoing.is_empty() {
-                self.tcp.write_all(&outgoing)?;
-            }
-            let res = self
-                .tls
-                .process()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-            if !res.plaintext.is_empty() {
-                let mut joined = Vec::new();
-                for chunk in res.plaintext {
-                    joined.extend_from_slice(&chunk);
-                }
-                return Ok(joined);
-            }
-            let mut buf = [0u8; 16_384];
-            match self.tcp.read(&mut buf) {
-                Ok(0) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "tls peer closed",
-                    ))
-                }
-                Ok(n) => self.tls.feed(&buf[..n]),
-                Err(e) => return Err(e),
-            }
-        }
-    }
-}
-
-impl Read for ServerTlsIo {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.pending_off >= self.pending_plain.len() {
-            self.pending_plain = self.read_plaintext()?;
-            self.pending_off = 0;
-        }
-        let avail = &self.pending_plain[self.pending_off..];
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
-        self.pending_off += n;
-        Ok(n)
-    }
-}
-
-impl Write for ServerTlsIo {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = self
-            .tls
-            .write(buf)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        let outgoing = self.tls.take_outgoing();
-        if !outgoing.is_empty() {
-            self.tcp.write_all(&outgoing)?;
-        }
-        Ok(n)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.tcp.flush()
-    }
-}
-
 /// One-shot HTTPS server: self-signed cert (CN=localhost), serves a fixed
 /// Content-Length response. Returns (port, leaf cert DER) so the test can
 /// byte-compare what the client snapshotted against what the server holds.
@@ -383,12 +268,7 @@ fn spawn_tls_http_server(body: &'static str) -> (u16, Vec<u8>) {
             Ok(p) => p,
             Err(_) => return,
         };
-        let mut io = ServerTlsIo {
-            tcp,
-            tls,
-            pending_plain: piggybacked,
-            pending_off: 0,
-        };
+        let mut io = ServerTlsIo::new(tcp, tls, piggybacked);
         read_request_head(&mut io);
         let _ = io.write_all(response.as_bytes());
         let _ = io.flush();

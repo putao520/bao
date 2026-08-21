@@ -20,19 +20,25 @@
 //! (pause on first chunk from the HTTP thread; resume from the main thread
 //! through the cross-thread entry, exercising both hook surfaces).
 
+mod common;
+
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bao_boringssl_bridge::{TlsConnection, TlsServer, TlsState, generate_self_signed_pem};
+use bao_boringssl_bridge::{TlsServer, generate_self_signed_pem};
 use bun_core::MutableString;
 use bun_http::http_thread::TransportPauseKind;
 use bun_http::signals::Store;
 use bun_http::{AsyncHTTP, FetchRedirect, HTTPClientResult, HTTPClientResultCallback, Method,
                async_http};
+use common::fetch_harness::reclaim_terminal_delivery;
+use common::h2_framing::{FLAG_ACK, FLAG_END_HEADERS, FLAG_END_STREAM, FT_DATA, FT_GOAWAY,
+                         FT_HEADERS, FT_SETTINGS, FT_WINDOW_UPDATE, frame, read_exact_deadline};
+use common::{ServerTlsIo, install_alpn_h2};
 
 // Link seam: bun_io's posix event loop dispatches through
 // `__bun_run_file_poll`, owned by `bun_runtime::dispatch` in product
@@ -90,14 +96,7 @@ fn recorder_callback(
         // Terminal delivery: reclaim the caller-thread `AsyncHTTP` box via
         // the `real` backref plus the response buffer — sole dropper,
         // mirroring `on_http_done` in fetch_async.rs.
-        let real = unsafe { (*async_http).real };
-        if let Some(r) = real {
-            drop(unsafe { Box::from_raw(r.as_ptr()) });
-        }
-        let buf = unsafe { (*async_http).response_buffer };
-        if !buf.is_null() {
-            drop(unsafe { Box::from_raw(buf) });
-        }
+        reclaim_terminal_delivery(async_http);
     } else if !failed {
         // Streaming consumer contract: drain the shared body buffer so the
         // next delivery contains only newly arrived bytes.
@@ -212,172 +211,8 @@ fn wait_for_first_delivery(rx: &mpsc::Receiver<Delivery>, deadline: Duration) ->
 
 // ─── Test 1: h2 multiplex — one paused, one reading ────────────────────────
 
-/// Minimal HTTP/2 framing helpers (mirror of h2_continuation_cap_tests).
-fn frame(frame_type: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(9 + payload.len());
-    out.push((payload.len() >> 16) as u8);
-    out.push((payload.len() >> 8) as u8);
-    out.push(payload.len() as u8);
-    out.push(frame_type);
-    out.push(flags);
-    out.extend_from_slice(&stream.to_be_bytes());
-    out.extend_from_slice(payload);
-    out
-}
-
-const FT_DATA: u8 = 0x0;
-const FT_HEADERS: u8 = 0x1;
-const FT_SETTINGS: u8 = 0x4;
-const FT_GOAWAY: u8 = 0x7;
-const FT_WINDOW_UPDATE: u8 = 0x8;
-const FLAG_ACK: u8 = 0x1;
-const FLAG_END_STREAM: u8 = 0x1;
-const FLAG_END_HEADERS: u8 = 0x4;
-
 /// HPACK `:status: 200` — fully indexed (static index 8).
 const HPACK_200: &[u8] = &[0x88];
-
-/// Length-prefixed ALPN wire entry for "h2".
-const ALPN_H2: &[u8] = b"\x02h2";
-
-unsafe extern "C" fn alpn_select_h2(
-    _ssl: *mut bun_boringssl_sys::SSL,
-    out: *mut *const u8,
-    out_len: *mut u8,
-    in_: *const u8,
-    in_len: core::ffi::c_uint,
-    _arg: *mut core::ffi::c_void,
-) -> core::ffi::c_int {
-    let list = unsafe { std::slice::from_raw_parts(in_, in_len as usize) };
-    let mut offset = 0usize;
-    while offset < list.len() {
-        let len = list[offset] as usize;
-        offset += 1;
-        if offset + len > list.len() {
-            break;
-        }
-        if &list[offset..offset + len] == b"h2" {
-            unsafe {
-                *out = ALPN_H2.as_ptr().add(1); // past the length byte
-                *out_len = 2;
-            }
-            return bun_boringssl_sys::SSL_TLSEXT_ERR_OK;
-        }
-        offset += len;
-    }
-    bun_boringssl_sys::SSL_TLSEXT_ERR_NOACK
-}
-
-/// TLS stream adapter driving the server-side BoringSSL state machine over
-/// the raw TCP socket (mirror of the sibling h2 test files).
-struct ServerTlsIo {
-    tcp: TcpStream,
-    tls: TlsConnection,
-    pending_plain: Vec<u8>,
-    pending_off: usize,
-}
-
-impl ServerTlsIo {
-    fn handshake(tcp: &mut TcpStream, tls: &mut TlsConnection) -> std::io::Result<Vec<u8>> {
-        loop {
-            let res = tls
-                .process()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-            loop {
-                let outgoing = tls.take_outgoing();
-                if outgoing.is_empty() {
-                    break;
-                }
-                tcp.write_all(&outgoing)?;
-            }
-            if res.state == TlsState::Active || res.state == TlsState::PeerClosed {
-                // The handshake-completing process() may have decrypted
-                // application data that piggybacked on the final handshake
-                // record (e.g. the client's Finished + first h2 record read
-                // as one segment). It must be delivered, not discarded, or
-                // the server waits forever for bytes it already consumed.
-                let mut piggybacked = Vec::new();
-                for chunk in res.plaintext {
-                    piggybacked.extend_from_slice(&chunk);
-                }
-                return Ok(piggybacked);
-            }
-            let mut buf = [0u8; 16_384];
-            match tcp.read(&mut buf) {
-                Ok(0) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "peer closed during tls handshake",
-                    ))
-                }
-                Ok(n) => tls.feed(&buf[..n]),
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    fn read_plaintext(&mut self) -> std::io::Result<Vec<u8>> {
-        loop {
-            let outgoing = self.tls.take_outgoing();
-            if !outgoing.is_empty() {
-                self.tcp.write_all(&outgoing)?;
-            }
-            let res = self
-                .tls
-                .process()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-            if !res.plaintext.is_empty() {
-                let mut joined = Vec::new();
-                for chunk in res.plaintext {
-                    joined.extend_from_slice(&chunk);
-                }
-                return Ok(joined);
-            }
-            let mut buf = [0u8; 16_384];
-            match self.tcp.read(&mut buf) {
-                Ok(0) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "tls peer closed",
-                    ))
-                }
-                Ok(n) => self.tls.feed(&buf[..n]),
-                Err(e) => return Err(e),
-            }
-        }
-    }
-}
-
-impl Read for ServerTlsIo {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.pending_off >= self.pending_plain.len() {
-            self.pending_plain = self.read_plaintext()?;
-            self.pending_off = 0;
-        }
-        let avail = &self.pending_plain[self.pending_off..];
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
-        self.pending_off += n;
-        Ok(n)
-    }
-}
-
-impl Write for ServerTlsIo {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = self
-            .tls
-            .write(buf)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        let outgoing = self.tls.take_outgoing();
-        if !outgoing.is_empty() {
-            self.tcp.write_all(&outgoing)?;
-        }
-        Ok(n)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.tcp.flush()
-    }
-}
 
 /// Server-side observability shared with the test main thread.
 struct H2Evidence {
@@ -399,15 +234,7 @@ const H2_A_FRAME: usize = 16 * 1024;
 fn spawn_multiplex_h2_server() -> (u16, Arc<H2Evidence>) {
     let (cert, key) = generate_self_signed_pem("127.0.0.1", 365).expect("self-signed cert");
     let server = std::sync::Arc::new(TlsServer::new(&cert, &key).expect("TlsServer"));
-    // SAFETY: TlsServer::ctx returns its live SSL_CTX; installing the ALPN
-    // select callback before any accept is thread-free.
-    unsafe {
-        bun_boringssl_sys::SSL_CTX_set_alpn_select_cb(
-            server.ctx(),
-            Some(alpn_select_h2),
-            core::ptr::null_mut(),
-        );
-    }
+    install_alpn_h2(&server);
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
     let evidence = Arc::new(H2Evidence {
@@ -433,12 +260,7 @@ fn spawn_multiplex_h2_server() -> (u16, Arc<H2Evidence>) {
         if tls.alpn_protocol() != Some(&b"h2"[..]) {
             return;
         }
-        let mut io = ServerTlsIo {
-            tcp,
-            tls,
-            pending_plain: piggybacked,
-            pending_off: 0,
-        };
+        let mut io = ServerTlsIo::new(tcp, tls, piggybacked);
         serve_multiplex_h2(&mut io, &ev);
     });
     (port, evidence)
@@ -593,36 +415,6 @@ fn serve_multiplex_h2(io: &mut ServerTlsIo, ev: &H2Evidence) {
             _ => {},
         }
     }
-}
-
-fn read_exact_deadline(
-    io: &mut ServerTlsIo,
-    buf: &mut [u8],
-    deadline: Instant,
-) -> std::io::Result<()> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        if Instant::now() > deadline {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "h2 preface timeout",
-            ));
-        }
-        match io.read(&mut buf[filled..]) {
-            Ok(0) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "eof during preface",
-                ))
-            },
-            Ok(n) => filled += n,
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {},
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
 }
 
 /// Same-session multiplexing under backpressure: pausing stream A's

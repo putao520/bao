@@ -1120,10 +1120,10 @@ mod tests {
 
     // ──── epoll → libus dispatch mapping (upstream e5a3fe6dc alignment) ────
 
-    /// Build a minimal PosixLoop whose ready_polls[0] carries `raw_events`
-    /// for `poll`, run `dispatch_ready_polls`, and return the
-    /// (error, eof, events) triple the C dispatch entry received.
-    fn dispatch_once(raw_events: u32, poll: &mut BaoPoll) -> (c_int, c_int, c_int) {
+    /// Run `dispatch_ready_polls` over a synthetic PosixLoop whose ready_polls
+    /// carry exactly `entries` = (data pointer, raw epoll events), and return
+    /// every (error, eof, events) triple the dispatch probe recorded.
+    fn dispatch_entries(entries: &[(usize, u32)]) -> Vec<(c_int, c_int, c_int)> {
         let _probe_guard = DISPATCH_PROBE_LOCK.lock().unwrap();
         let mut calls = DISPATCH_CALLS.lock().unwrap();
         calls.clear();
@@ -1132,17 +1132,26 @@ mod tests {
         let boxed: *mut PosixLoop =
             Box::into_raw(unsafe { Box::new(core::mem::zeroed::<PosixLoop>()) });
         unsafe {
-            (*boxed).num_ready_polls = 1;
+            (*boxed).num_ready_polls = entries.len() as i32;
             (*boxed).current_ready_poll = 0;
-            (*boxed).ready_polls[0].events = raw_events;
-            (*boxed).ready_polls[0].u64 = poll as *mut BaoPoll as usize as u64;
+            for (i, &(entry_ptr, raw)) in entries.iter().enumerate() {
+                (*boxed).ready_polls[i].events = raw;
+                (*boxed).ready_polls[i].u64 = entry_ptr as u64;
+            }
         }
         unsafe {
             dispatch_ready_polls(boxed as *mut Loop);
         }
         drop(unsafe { Box::from_raw(boxed) });
 
-        let calls = DISPATCH_CALLS.lock().unwrap();
+        DISPATCH_CALLS.lock().unwrap().clone()
+    }
+
+    /// Build a minimal PosixLoop whose ready_polls[0] carries `raw_events`
+    /// for `poll`, run `dispatch_ready_polls`, and return the
+    /// (error, eof, events) triple the C dispatch entry received.
+    fn dispatch_once(raw_events: u32, poll: &mut BaoPoll) -> (c_int, c_int, c_int) {
+        let calls = dispatch_entries(&[(poll as *mut BaoPoll as usize, raw_events)]);
         assert_eq!(calls.len(), 1, "exactly one dispatch expected");
         calls[0]
     }
@@ -1215,5 +1224,246 @@ mod tests {
         // Masking only removes bits: EPOLLOUT was not in the kernel event,
         // so the armed writable interest does not fabricate one.
         assert_eq!(events, libc::EPOLLIN);
+    }
+
+    // ──── C-transcribed dual-implementation anchors ────
+    // @trace REQ-ENG-008 [req:REQ-ENG-008] [level:unit]
+    //
+    // The ready-event normalization exists twice: the C
+    // `us_internal_dispatch_ready_polls` (libusockets.a, epoll_kqueue.c) —
+    // still live for threads without a BaoLoopState (the HTTPThread fallback
+    // in bao_loop_tick, and C++ Loop::run) — and the Rust
+    // `dispatch_ready_polls` (this file) for the JS-thread tick. The tables
+    // below transcribe the C mapping VERBATIM with file:line citations so a
+    // drift in either implementation turns CI red instead of relying on the
+    // manual side-by-side check the two sync waves (b9f509020 absorb, M2
+    // kqueue landing) each had to do by hand.
+
+    /// us_poll ABI constants — transcribed from C internal.h:84-99.
+    #[test]
+    fn poll_abi_constants_match_c_internal_h() {
+        // enum POLL_TYPE_* (internal.h:86-94)
+        assert_eq!(POLL_TYPE_SOCKET, 0);
+        assert_eq!(POLL_TYPE_SOCKET_SHUT_DOWN, 1);
+        assert_eq!(POLL_TYPE_SEMI_SOCKET, 2);
+        assert_eq!(POLL_TYPE_CALLBACK, 3);
+        assert_eq!(POLL_TYPE_UDP, 4);
+        assert_eq!(POLL_TYPE_POLLING_OUT, 8);
+        assert_eq!(POLL_TYPE_POLLING_IN, 16);
+        // masks (internal.h:98-99)
+        assert_eq!(POLL_TYPE_KIND_MASK, 0b111);
+        assert_eq!(POLL_TYPE_POLLING_MASK, 0b11000);
+    }
+
+    /// eof marker values of the dispatch contract — internal.h:144-145.
+    /// `LIBUS_POLL_HANGUP` (2) must never leak the raw `EPOLLHUP` (16).
+    #[test]
+    fn libus_dispatch_markers_match_c_internal_h() {
+        assert_eq!(LIBUS_POLL_EOF, 1); // internal.h:144
+        assert_eq!(LIBUS_POLL_HANGUP, 2); // internal.h:145
+    }
+
+    /// libus interest units diverge per platform (epoll_kqueue.h:27-34):
+    /// Linux defines them AS the epoll flags, kqueue platforms use libus' own
+    /// 1/2 bitfield. Both arms of the dual implementation must keep speaking
+    /// their own units — unifying the constants across arms is exactly the
+    /// drift class this anchor forbids.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn libus_interest_units_match_c_epoll_kqueue_h() {
+        // LIBUS_USE_EPOLL arm (epoll_kqueue.h:27-28)
+        assert_eq!(LIBUS_SOCKET_READABLE, libc::EPOLLIN);
+        assert_eq!(LIBUS_SOCKET_WRITABLE, libc::EPOLLOUT);
+        // kqueue arm (epoll_kqueue.h:33-34) uses READABLE=1 / WRITABLE=2.
+        // On Linux READABLE numerically coincides (EPOLLIN==1) but WRITABLE
+        // does not (EPOLLOUT==4) — the values are NOT interchangeable.
+        assert_ne!(LIBUS_SOCKET_WRITABLE, 2);
+    }
+
+    /// Rust `BaoPoll::events()`/`kind()` vs the REAL C `us_poll_events()`/
+    /// `us_internal_poll_type` (linked from libusockets.a, epoll_kqueue.c:86-97)
+    /// over every possible 5-bit poll_type. The interest mask applied inside
+    /// `dispatch_ready_polls` is computed by the C function — this pins the
+    /// Rust bitfield decode it must stay identical to.
+    #[test]
+    fn rust_poll_decode_parity_with_c_us_poll_functions() {
+        let loop_ = super::super::uws_get_loop();
+        // fallthrough=1: no num_polls churn; us_poll_free below re-decrements
+        // (same accounting shape as us_create_poll_fallthrough_skips_increment).
+        let poll = unsafe { us_create_poll(loop_, 1, 0) };
+        let mut mirror: BaoPoll = unsafe { core::mem::zeroed() };
+        for pt in 0..32 {
+            unsafe { us_poll_init(poll, -1, pt) };
+            mirror.set_poll_type(pt);
+            assert_eq!(
+                mirror.events(),
+                unsafe { us_poll_events(poll) },
+                "poll_type={pt}: Rust events decode drifted from C us_poll_events (epoll_kqueue.c:86-88)"
+            );
+            assert_eq!(
+                mirror.kind(),
+                unsafe { us_internal_poll_type(poll) },
+                "poll_type={pt}: Rust kind mask drifted from C us_internal_poll_type (epoll_kqueue.c:95-97)"
+            );
+        }
+        unsafe { us_poll_free(poll, loop_) };
+    }
+
+    /// The epoll-arm normalization table, transcribed from the C
+    /// `us_internal_dispatch_ready_polls` epoll branch
+    /// (epoll_kqueue.c:205-215):
+    /// ```c
+    /// int events = loop->ready_polls[i].events;              // :205
+    /// const int error = !!(events & EPOLLERR);               // :209
+    /// const int eof = (events & EPOLLHUP) ? LIBUS_POLL_HANGUP : 0; // :212
+    /// events &= us_poll_events(poll);                        // :213
+    /// if (events || error || eof)                            // :214
+    ///     us_internal_dispatch_ready_poll(poll, error, eof, events);
+    /// ```
+    /// Expected triples are literals hand-derived from those five lines —
+    /// error is always 0/1 (:209), eof is 2 or 0 (:212, never raw 16), and
+    /// events are the armed interest bits surviving the :213 mask. A change
+    /// in either implementation turns this red on Linux.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn epoll_normalization_table_matches_c_epoll_kqueue_c() {
+        // Armed interest as poll_type POLLING_* bits, not raw epoll flags.
+        const NONE: c_int = 0;
+        const IN: c_int = POLL_TYPE_POLLING_IN;
+        const OUT: c_int = POLL_TYPE_POLLING_OUT;
+        const IN_OUT: c_int = IN | OUT;
+
+        // (raw kernel events, armed interest, expected (error, eof, events);
+        //  None = the :214 guard rejects — no dispatch at all)
+        let cases: &[(c_int, c_int, Option<(c_int, c_int, c_int)>)] = &[
+            // interest honored / un-armed direction stripped by :213
+            (libc::EPOLLIN, IN, Some((0, 0, libc::EPOLLIN))),
+            (libc::EPOLLIN, OUT, None),
+            (libc::EPOLLIN, NONE, None),
+            (libc::EPOLLOUT, OUT, Some((0, 0, libc::EPOLLOUT))),
+            (libc::EPOLLOUT, IN, None),
+            (libc::EPOLLOUT, IN_OUT, Some((0, 0, libc::EPOLLOUT))),
+            (
+                libc::EPOLLIN | libc::EPOLLOUT,
+                IN_OUT,
+                Some((0, 0, libc::EPOLLIN | libc::EPOLLOUT)),
+            ),
+            (libc::EPOLLIN | libc::EPOLLOUT, IN, Some((0, 0, libc::EPOLLIN))),
+            // EPOLLERR normalized to 0/1 (:209); each :214 disjunct alone
+            // must still dispatch
+            (libc::EPOLLERR, NONE, Some((1, 0, 0))),
+            (libc::EPOLLERR, IN, Some((1, 0, 0))),
+            (libc::EPOLLERR | libc::EPOLLIN, IN, Some((1, 0, libc::EPOLLIN))),
+            // EPOLLHUP tagged LIBUS_POLL_HANGUP=2, not raw 16 (:212)
+            (libc::EPOLLHUP, NONE, Some((0, 2, 0))),
+            (libc::EPOLLHUP | libc::EPOLLIN, IN, Some((0, 2, libc::EPOLLIN))),
+            (libc::EPOLLHUP | libc::EPOLLOUT, OUT, Some((0, 2, libc::EPOLLOUT))),
+            // full storm: ERR+HUP+RDHUP+both directions, masked to armed IN
+            (
+                libc::EPOLLERR
+                    | libc::EPOLLHUP
+                    | libc::EPOLLRDHUP
+                    | libc::EPOLLIN
+                    | libc::EPOLLOUT,
+                IN,
+                Some((1, 2, libc::EPOLLIN)),
+            ),
+            // invisible bits: RDHUP/PRI set no marker (:209/:212 read only
+            // ERR/HUP) and survive no interest mask
+            (libc::EPOLLRDHUP, IN_OUT, None),
+            (
+                libc::EPOLLRDHUP | libc::EPOLLIN,
+                IN_OUT,
+                Some((0, 0, libc::EPOLLIN)),
+            ),
+            (libc::EPOLLPRI, IN_OUT, None),
+            (
+                libc::EPOLLPRI | libc::EPOLLIN,
+                IN_OUT,
+                Some((0, 0, libc::EPOLLIN)),
+            ),
+            // spurious empty event
+            (0, IN_OUT, None),
+        ];
+
+        for &(raw, armed, expected) in cases {
+            let mut poll: BaoPoll = unsafe { core::mem::zeroed() };
+            poll.set_fd(21);
+            poll.set_poll_type(POLL_TYPE_UDP | armed);
+            let calls =
+                dispatch_entries(&[((&mut poll as *mut BaoPoll) as usize, raw as u32)]);
+            match expected {
+                Some(want) => {
+                    assert_eq!(
+                        calls.len(),
+                        1,
+                        "raw={raw:#x} armed={armed:#x}: exactly one dispatch"
+                    );
+                    assert_eq!(calls[0], want, "raw={raw:#x} armed={armed:#x}");
+                }
+                None => assert!(
+                    calls.is_empty(),
+                    "raw={raw:#x} armed={armed:#x}: :214 guard must reject, got {calls:?}"
+                ),
+            }
+        }
+    }
+
+    /// Null and tagged ready entries never reach the untagged dispatch —
+    /// epoll arm :200-204: `if (LIKELY(poll))` skips nulls, the
+    /// CLEAR_POINTER_TAG mismatch routes tagged FilePoll pointers to
+    /// `Bun__internal_dispatch_ready_poll` instead.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn null_and_tagged_ready_entries_bypass_untagged_dispatch() {
+        let mut poll: BaoPoll = unsafe { core::mem::zeroed() };
+        poll.set_fd(23);
+        poll.set_poll_type(POLL_TYPE_UDP | POLL_TYPE_POLLING_IN);
+        let untagged = (&mut poll as *mut BaoPoll) as usize;
+        let tagged = untagged | (1usize << 49);
+
+        // Null entry skipped entirely (:200)
+        assert!(dispatch_entries(&[(0, libc::EPOLLIN as u32)]).is_empty());
+        // Tagged entry routes to the Bun dispatch stub (:201-203); the probe
+        // records nothing and the poll memory is never read as a us_poll_t.
+        assert!(dispatch_entries(&[(tagged, libc::EPOLLIN as u32)]).is_empty());
+        // Mixed batch: null + tagged + one real entry — exactly the real one
+        // dispatches, in slot order.
+        let calls = dispatch_entries(&[
+            (0, libc::EPOLLIN as u32),
+            (tagged, libc::EPOLLOUT as u32),
+            (untagged, libc::EPOLLIN as u32),
+        ]);
+        assert_eq!(calls, vec![(0, 0, libc::EPOLLIN)]);
+    }
+
+    /// Kqueue-arm normalization table — transcribed verbatim from the C
+    /// kqueue branch (epoll_kqueue.c:219-298) that the macos arm of
+    /// `dispatch_ready_polls` (poll.rs, `#[cfg(target_os = "macos")]` block)
+    /// mirrors:
+    ///
+    /// first pass decode (:246-255, `__APPLE__` arm):
+    ///   EVFILT_READ | EVFILT_TIMER | EVFILT_MACHPORT → readable
+    ///   (FreeBSD arm :250 substitutes EVFILT_USER for EVFILT_MACHPORT)
+    ///   EVFILT_WRITE → writable
+    ///   EV_ERROR     → error (0/1, :253)
+    ///   EV_EOF       → eof    (0/1, :254)
+    ///
+    /// coalesce: backward scan merges same-poll kevent entries (:259-270)
+    ///
+    /// second pass (:287-296):
+    ///   events = (readable ? LIBUS_SOCKET_READABLE : 0)
+    ///          | (writable ? LIBUS_SOCKET_WRITABLE : 0)   // kqueue units 1/2
+    ///   events &= us_poll_events(poll)                    // :293
+    ///   dispatch iff events || error || eof               // :294
+    ///
+    /// The behavioral mirror is macos-gated and is not compiled on Linux, so
+    /// this anchors the one constant both arms share plus the raw-passthrough
+    /// identity the C relies on: the kqueue branch passes `bits.eof` (a 0/1
+    /// bitfield, :295) straight through, which the consumer only reads as an
+    /// EOF hint because LIBUS_POLL_EOF == 1 (internal.h:144).
+    #[test]
+    fn kqueue_normalization_table_anchor() {
+        assert_eq!(LIBUS_POLL_EOF, 1); // :254/:295 passthrough identity
     }
 }
