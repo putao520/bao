@@ -111,7 +111,7 @@ SUMMARY: clean|acted|failed|timeout escalated=<N>
 
 ## §6 cron 契约
 
-- 执行链:`bao-daily-ops.timer`(每日 09:37 ± 10m,Persistent 补跑)→ `bao-daily-ops.service` → `scripts/daily-ops.sh`(flock 单飞 / 预检注标志 / `timeout 5400s` / dry-run 违规护栏)→ `claude -p "$(cat .claude/prompts/daily-ops.md)"` → 载入本 skill
+- 执行链:`bao-daily-ops.timer`(每日 06:07 ± 10m,Persistent 补跑)→ `bao-daily-ops.service` → `scripts/daily-ops.sh`(flock 单飞 / 预检注标志 / `timeout 5400s` / dry-run 违规护栏)→ `claude -p "$(cat .claude/prompts/daily-ops.md)"` → 载入本 skill
 - MODE 切换:`.claude/daily-ops/mode.conf` 写 `MODE=live`(gitignore 本地文件,不进 git)
 - 同日重跑:报告文件名加 `.HHMM` 后缀,不覆盖已有报告
 - 切 live 门槛:**连续 ≥ 5 天 dry-run 零违规 + 用户逐份审阅报告**

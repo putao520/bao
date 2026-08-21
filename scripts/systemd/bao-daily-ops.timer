@@ -2,7 +2,7 @@
 Description=bao daily-ops daily trigger
 
 [Timer]
-OnCalendar=*-*-* 09:37:00
+OnCalendar=*-*-* 06:07:00
 RandomizedDelaySec=10m
 Persistent=true
 
