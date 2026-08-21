@@ -1425,7 +1425,7 @@ unsafe extern "C" fn res_write_head(
                     if !uws_res.is_null() {
                         let res_mut = Response::<false>::cast_res(uws_res);
                         // Iterate ALL properties of the headers object via IdVector + GetPropertyKeys.
-                        let mut ids = mozjs::rust::IdVector::new(cx);
+                        let mut ids = mozjs::rust::IdVector::new(cx_ref);
                         if w2::GetPropertyKeys(
                             cx_ref,
                             hdrs_obj.handle().into(),

@@ -751,7 +751,7 @@ fn collect_sandbox_properties(
 
     let raw_cx = unsafe { cx.raw_cx() };
     rooted!(&in(cx) let sandbox_root = sandbox);
-    let mut ids = unsafe { IdVector::new(raw_cx) };
+    let mut ids = IdVector::new(cx);
     let ok = unsafe {
         GetPropertyKeys(
             raw_cx,
@@ -858,7 +858,7 @@ unsafe fn capture_global_baseline(
     }
     let raw_cx = unsafe { realm_cx.raw_cx() };
     rooted!(&in(realm_cx) let global_root = global);
-    let mut ids = unsafe { IdVector::new(raw_cx) };
+    let mut ids = IdVector::new(realm_cx);
     let ok = unsafe {
         GetPropertyKeys(
             raw_cx,
@@ -933,7 +933,7 @@ unsafe fn copy_global_writes_to_sandbox(
     rooted!(&in(realm_cx) let global_root = global);
     rooted!(&in(realm_cx) let sandbox_root = sandbox);
 
-    let mut ids = unsafe { IdVector::new(raw_cx) };
+    let mut ids = IdVector::new(realm_cx);
     let ok = unsafe {
         GetPropertyKeys(
             raw_cx,

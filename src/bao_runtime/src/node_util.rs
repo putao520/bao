@@ -1103,7 +1103,7 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
             return format!("'{}'", crate::js_to_rust_string(cx, val));
         }
         if val.is_object() {
-            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(wrapped_cx) let obj = val.to_object());
 
             // Arrays → [ a, b, c ]
@@ -1176,10 +1176,11 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
 
             // Enumerate own enumerable string keys via the established IdVector +
             // GetPropertyKeys pattern used elsewhere in bao_runtime. Note: IdVector
-            // takes the raw *mut JSContext, and we fetch each value via JS_GetProperty
-            // with the C-string key (the same approach node_url.rs uses) to avoid the
-            // Handle<PropertyKey> wrapping that JS_GetPropertyById would require.
-            let mut ids = mozjs::rust::IdVector::new(cx);
+            // takes the wrapped JSContext (mozjs 0.22 safe API), and we fetch each
+            // value via JS_GetProperty with the C-string key (the same approach
+            // node_url.rs uses) to avoid the Handle<PropertyKey> wrapping that
+            // JS_GetPropertyById would require.
+            let mut ids = mozjs::rust::IdVector::new(&mut wrapped_cx);
             let ok = GetPropertyKeys(cx, obj.handle().into(), JSITER_OWNONLY, ids.handle_mut());
             let mut parts: Vec<String> = Vec::new();
             if ok {

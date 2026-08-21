@@ -1694,7 +1694,7 @@ unsafe fn parse_headers_init(cx: *mut JSContext, headers_val: JSVal) -> Vec<(Str
         if !headers_val.is_object() {
             return out;
         }
-        let wrapped_cx =
+        let mut wrapped_cx =
             mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         // BCE-012: root to_object() result — the JS calls below can trigger GC
         rooted!(&in(wrapped_cx) let obj = headers_val.to_object());
@@ -1821,7 +1821,7 @@ unsafe fn parse_headers_init(cx: *mut JSContext, headers_val: JSVal) -> Vec<(Str
         // Form 3: record / this module's Headers class — own enumerable
         // string-keyed props with string values. The string-value filter
         // skips the class's get/set/has method props (they are functions).
-        let mut ids = mozjs::rust::IdVector::new(cx);
+        let mut ids = mozjs::rust::IdVector::new(&mut wrapped_cx);
         if GetPropertyKeys(cx, obj.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
             for jsid in &*ids {
                 if !jsid.is_string() {

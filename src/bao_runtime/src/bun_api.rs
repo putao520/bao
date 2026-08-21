@@ -4879,7 +4879,7 @@ unsafe fn serve_write_response_object(
             // (mozjs Rust wrapper) + `IdVector` — the canonical pattern used in
             // node_url.rs / node_util.rs for iterating JS object keys without
             // raw AutoIdArray struct layout assumptions.
-            let mut ids = mozjs::rust::IdVector::new(raw_cx);
+            let mut ids = mozjs::rust::IdVector::new(cx_ref_resp);
             let ok = GetPropertyKeys(
                 raw_cx,
                 headers_obj.handle().into(),
@@ -5351,7 +5351,7 @@ unsafe extern "C" fn bun_build(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         if def_val.get().is_object() {
             rooted!(&in(cx_ref) let def_obj = def_val.get().to_object());
             // Own enumerable string keys (Headers record parsing pattern).
-            let mut ids = mozjs::rust::IdVector::new(cx);
+            let mut ids = mozjs::rust::IdVector::new(cx_ref);
             if GetPropertyKeys(cx, def_obj.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
                 for jsid in &*ids {
                     if !jsid.is_string() {

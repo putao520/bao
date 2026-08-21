@@ -6,7 +6,7 @@
 # virtual topsrcdir in OUT_DIR. moz.build layout unchanged.
 [package]
 name = "bao-mozjs-src-python"
-version = "140.13.0-4"
+version = "140.14.0-0"
 edition = "2021"
 license = "MPL-2.0"
 description = "SpiderMonkey source slice (python) for bao-mozjs-sys"

@@ -1562,7 +1562,7 @@ unsafe extern "C" fn ffi_dlopen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     // name C symbols and are skipped).
     let mut names: Vec<String> = Vec::new();
     {
-        let mut ids = mozjs::rust::IdVector::new(cx);
+        let mut ids = mozjs::rust::IdVector::new(cx_ref);
         if !GetPropertyKeys(cx, lib_obj.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
             let msg = ZBox::from_bytes("dlopen: failed to enumerate symbols".as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());

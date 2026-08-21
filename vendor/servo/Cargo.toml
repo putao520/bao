@@ -164,7 +164,7 @@ ipc-channel = { version = "0.22.0", path = "../ipc-channel", package = "bao-ipc-
 itertools = "0.15"
 jni = "0.22"
 # BAO PATCH (W0b): mozjs fork published as bao-mozjs (lib name `mozjs`).
-js = { package = "bao-mozjs", version = "^0.21.5", path = "../mozjs/mozjs", default-features = false, features = ["intl", "libz-sys"] }
+js = { package = "bao-mozjs", version = "^0.22", path = "../mozjs/mozjs", default-features = false, features = ["intl", "libz-sys"] }
 keyboard-types = { version = "0.8.3", features = ["serde", "webdriver"] }
 kurbo = { version = "0.13.1", features = ["euclid"] }
 libc = "0.2"

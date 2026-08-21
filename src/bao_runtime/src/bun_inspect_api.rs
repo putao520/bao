@@ -585,7 +585,7 @@ unsafe fn plain_object_or_array(
 
     // Plain object: own enumerable string keys.
     seen.push(obj_ptr);
-    let mut ids = mozjs::rust::IdVector::new(cx);
+    let mut ids = mozjs::rust::IdVector::new(cx_ref);
     let ok = GetPropertyKeys(cx, obj.handle().into(), JSITER_OWNONLY, ids.handle_mut());
     let mut parts: Vec<String> = Vec::new();
     if ok {

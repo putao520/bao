@@ -847,7 +847,7 @@ unsafe extern "C" fn cluster_fork(
     if argc > 0 && (*args.get(0).ptr).is_object() {
         let env_obj = (*args.get(0).ptr).to_object();
         rooted!(&in(cx_ref) let env_r = env_obj);
-        let mut ids = mozjs::rust::IdVector::new(cx);
+        let mut ids = mozjs::rust::IdVector::new(cx_ref);
         if GetPropertyKeys(cx, env_r.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
             for jsid in &*ids {
                 if !jsid.is_string() {

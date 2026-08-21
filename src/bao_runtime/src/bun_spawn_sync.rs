@@ -187,7 +187,7 @@ unsafe fn read_opts_into(cx: *mut JSContext, oh: Handle<*mut JSObject>, cfg: &mu
         let mut wrapped = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped;
         rooted!(&in(cx_ref) let eo = env_v.to_object());
-        let mut ids = mozjs::rust::IdVector::new(cx);
+        let mut ids = mozjs::rust::IdVector::new(cx_ref);
         if GetPropertyKeys(cx, eo.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
             let mut pairs = Vec::new();
             for jsid in &*ids {

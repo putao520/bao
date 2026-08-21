@@ -1607,7 +1607,7 @@ unsafe extern "C" fn url_search_params_constructor(
                 }
                 out
             } else {
-                let mut ids = IdVector::new(cx);
+                let mut ids = IdVector::new(cx_ref);
                 let ok = GetPropertyKeys(
                     cx,
                     init_obj.handle().into(),
@@ -3093,7 +3093,7 @@ unsafe fn qs_stringify_query_object(cx: *mut JSContext, obj: *mut JSObject) -> S
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_root = obj);
     let mut parts: Vec<String> = Vec::new();
-    let mut ids = IdVector::new(cx);
+    let mut ids = IdVector::new(cx_ref);
     if !GetPropertyKeys(cx, obj_root.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
         return String::new();
     }

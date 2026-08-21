@@ -853,7 +853,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // Copy all named exports from the IIFE result onto the module object.
         // We enumerate the object's own properties to avoid hardcoding every
         // constant name.
-        let mut ids = mozjs::rust::IdVector::new(cx_raw);
+        let mut ids = mozjs::rust::IdVector::new(cx);
         let got = mozjs::jsapi::GetPropertyKeys(
             cx_raw,
             exports_rooted.handle().into(),

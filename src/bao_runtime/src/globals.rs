@@ -3707,7 +3707,7 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         return create_buffer_from_bytes(cx, &args, &[]);
     }
 
-    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(cx_ref) let list_root = list_val.to_object());
     let mut len_val = UndefinedValue();
     JS_GetProperty(
@@ -3756,7 +3756,7 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     }
     // GC-trace the element objects so they survive across loop iterations
     // (JS_GetElement triggers user-defined getters which can trigger GC).
-    let rooted_vec = mozjs::rust::RootedObjectVectorWrapper::new(cx);
+    let rooted_vec = mozjs::rust::RootedObjectVectorWrapper::new(&mut cx_ref);
     let mut entries: Vec<ConcatEntry> = Vec::with_capacity(list_len);
     for i in 0..list_len {
         let mut elem = UndefinedValue();

@@ -8,7 +8,10 @@ repository.workspace = true
 # 140.13.0-5 (2026-08-20): DWARF line-tables downgrade ships in-package
 # (15a4a699): build.rs now pins MOZ_DEBUG_FLAGS="-gdwarf-4 -g1" so the
 # mozjs C++ builds with DWARF4 line-tables without any user env/makefile.
-version = "140.13.0-6"
+# 140.14.0-0 (2026-08-22): upstream SM 140.14.0 security bump (changeset
+# ee9f2b2aedc3c58347d66ca8d7b9f92ef1df3f53, servo/mozjs#798) + rust-side
+# #797/#800 absorbed.
+version = "140.14.0-0"
 authors = ["Mozilla", "The Servo Project Developers"]
 links = "mozjs"
 license.workspace = true
@@ -54,10 +57,10 @@ encoding_c_mem = "0.2.6"
 # DEP_BAO_MOZJS_SRC_{JS,INTL,PYTHON}_ROOT; the build script synthesizes the
 # virtual mozjs topsrcdir from the three roots + this crate's skeleton
 # (mozjs/{build,config*,mozglue,mfbt,nsprpub,...}). Version-pinned lockstep
-# with this crate (140.13.0-4 lineage) so `cargo package` rewrites cleanly.
-bao-mozjs-src-js = { path = "../src-js", version = "=140.13.0-4" }
-bao-mozjs-src-intl = { path = "../src-intl", version = "=140.13.0-4" }
-bao-mozjs-src-python = { path = "../src-python", version = "=140.13.0-4" }
+# with this crate (140.14.0-0 lineage) so `cargo package` rewrites cleanly.
+bao-mozjs-src-js = { path = "../src-js", version = "=140.14.0-0" }
+bao-mozjs-src-intl = { path = "../src-intl", version = "=140.14.0-0" }
+bao-mozjs-src-python = { path = "../src-python", version = "=140.14.0-0" }
 # unicode-bidi-ffi = { path = "./mozjs/intl/bidi/rust/unicode-bidi-ffi" }
 # keep in sync with intl/icu_capi/Cargo.toml
 icu_capi = { version = "=1.5.0", default-features = false, features = [

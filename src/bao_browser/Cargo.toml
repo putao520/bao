@@ -38,7 +38,7 @@ bun_http.workspace = true
 cdp-server = { path = "../cdp-server", version = "0.1.0" }
 bun_core.workspace = true
 bun_sys.workspace = true
-mozjs = { path = "../../vendor/mozjs/mozjs", package = "bao-mozjs", version = "^0.21.5" }
+mozjs = { path = "../../vendor/mozjs/mozjs", package = "bao-mozjs", version = "^0.22" }
 serde = "1"
 cookie = { package = "cookie", version = "0.18" }
 log = "0.4"

@@ -1606,7 +1606,7 @@ unsafe fn h2_write_headers_obj(
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let hdrs_obj = hdrs);
-    let mut ids = mozjs::rust::IdVector::new(cx);
+    let mut ids = mozjs::rust::IdVector::new(cx_ref);
     if !w2::GetPropertyKeys(
         cx_ref,
         hdrs_obj.handle().into(),
@@ -2606,7 +2606,7 @@ unsafe extern "C" fn h2_res_write_head(cx: *mut JSContext, argc: u32, vp: *mut J
             // header twice).
             let mut arg_keys: Vec<String> = Vec::new();
             {
-                let mut ids = mozjs::rust::IdVector::new(cx);
+                let mut ids = mozjs::rust::IdVector::new(cx_ref);
                 if w2::GetPropertyKeys(
                     cx_ref,
                     hdrs_obj.handle().into(),
@@ -2633,7 +2633,7 @@ unsafe extern "C" fn h2_res_write_head(cx: *mut JSContext, argc: u32, vp: *mut J
                 // setHeader store first, minus overridden keys.
                 if let Some(headers_store) = h2_get_headers_obj(cx, obj.get()) {
                     rooted!(&in(cx_ref) let store_root = headers_store);
-                    let mut store_ids = mozjs::rust::IdVector::new(cx);
+                    let mut store_ids = mozjs::rust::IdVector::new(cx_ref);
                     if w2::GetPropertyKeys(
                         cx_ref,
                         store_root.handle().into(),
@@ -2826,7 +2826,7 @@ unsafe extern "C" fn h2_res_get_headers(cx: *mut JSContext, _argc: u32, vp: *mut
     args.rval().set(ObjectValue(out.get()));
     if let Some(headers_store) = h2_get_headers_obj(cx, obj.get()) {
         rooted!(&in(cx_ref) let store_root = headers_store);
-        let mut ids = mozjs::rust::IdVector::new(cx);
+        let mut ids = mozjs::rust::IdVector::new(cx_ref);
         if w2::GetPropertyKeys(
             cx_ref,
             store_root.handle().into(),

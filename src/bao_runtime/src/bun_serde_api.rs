@@ -389,7 +389,8 @@ unsafe fn js_own_keys(
     obj: mozjs::rust::Handle<*mut JSObject>,
 ) -> Vec<(String, JSVal)> {
     let mut out = Vec::new();
-    let mut ids = mozjs::rust::IdVector::new(cx);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut ids = mozjs::rust::IdVector::new(&mut wrapped_cx);
     if !GetPropertyKeys(cx, obj.into(), JSITER_OWNONLY, ids.handle_mut()) {
         JS_ClearPendingException(cx);
         return out;
