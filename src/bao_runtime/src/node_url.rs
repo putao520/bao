@@ -35,7 +35,15 @@ struct UrlState {
 fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
     let input = input.trim();
     if input.is_empty() {
-        return None;
+        // DEV-3: WHATWG — an empty reference resolves to the base URL
+        // (`new URL('', 'http://x/p?a=1')` → 'http://x/p?a=1'). Without a
+        // base it is still an error. The recursive base parse returns None
+        // for a non-absolute base, so the constructor throws there too —
+        // matching Node's TypeError for `new URL('', 'relative')`.
+        return match base {
+            Some(b) => parse_url(b, None),
+            None => None,
+        };
     }
 
     // Handle special URLs (data:, blob:) that bun_url may not fully support
@@ -79,8 +87,19 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
                 core::str::from_utf8(base_url.host).unwrap_or(""),
                 input
             )
-        } else if input.starts_with("?") || input.starts_with("#") {
-            // Query or fragment only — use base path with query/hash stripped
+        } else if input.starts_with('#') {
+            // DEV-2: fragment-only reference — WHATWG inherits the base's
+            // path AND query, replacing only the fragment (base minus its
+            // own fragment, plus the new one). The old path stripped the
+            // query, dropping `new URL('#f', '.../p?a=1').search`.
+            let base_no_frag = match base_str.find('#') {
+                Some(pos) => &base_str[..pos],
+                None => base_str,
+            };
+            format!("{}{}", base_no_frag, input)
+        } else if input.starts_with("?") {
+            // Query-only reference — base path (query/fragment stripped)
+            // with the new query; the base fragment is dropped (WHATWG).
             let base_path_raw = core::str::from_utf8(base_url.pathname).unwrap_or("/");
             let base_path = base_path_raw
                 .split(['?', '#'])
@@ -1238,6 +1257,7 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
                     (c"keys", Some(sp_keys), 0),
                     (c"values", Some(sp_values), 0),
                     (c"entries", Some(sp_entries), 0),
+                    (c"sort", Some(sp_sort), 0),
                     (c"toString", Some(sp_to_string), 0),
                 ],
                 &[(c"size", Some(sp_size_getter))],
@@ -1664,6 +1684,91 @@ unsafe fn sp_this_pairs(
     }
 }
 
+/// Throw a real TypeError (global constructor) and return the native
+/// `false` that propagates it. Used for Node ERR_MISSING_ARGS semantics
+/// (URLSearchParams methods validate required arguments).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_throw_type_error(cx: *mut JSContext, msg: &str) -> bool {
+    unsafe {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        let global = mozjs_sys::jsapi::JS::CurrentGlobalOrNull(cx);
+        if !global.is_null() {
+            rooted!(&in(cx_ref) let global_root = global);
+            let mut te_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                global_root.handle().into(),
+                c"TypeError".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut te_val,
+                },
+            );
+            if te_val.is_object() {
+                rooted!(&in(cx_ref) let te_fn = ObjectValue(te_val.to_object()));
+                let msg_js = qs_js_string_utf8(cx, msg);
+                if !msg_js.is_null() {
+                    rooted!(&in(cx_ref) let msg_root = StringValue(&*msg_js));
+                    let elems = [msg_root.get()];
+                    let call_args = HandleValueArray {
+                        length_: 1,
+                        elements_: elems.as_ptr(),
+                    };
+                    rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
+                    let mut err_val = UndefinedValue();
+                    let called = JS_CallFunctionValue(
+                        cx,
+                        undef_this.handle().into(),
+                        te_fn.handle().into(),
+                        &call_args,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut err_val,
+                        },
+                    );
+                    if called && err_val.is_object() {
+                        rooted!(&in(cx_ref) let err_root = err_val);
+                        // Node's ERR_MISSING_ARGS errors carry a `code` own
+                        // property — pin it for message-level parity.
+                        let code_js = JS_NewStringCopyZ(cx, c"ERR_MISSING_ARGS".as_ptr());
+                        if !code_js.is_null() {
+                            rooted!(&in(cx_ref) let code_root = StringValue(&*code_js));
+                            rooted!(&in(cx_ref) let err_obj = err_val.to_object());
+                            JS_DefineProperty(
+                                cx,
+                                err_obj.handle().into(),
+                                c"code".as_ptr(),
+                                code_root.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                        }
+                        JS_SetPendingException(
+                            cx,
+                            err_root.handle().into(),
+                            ExceptionStackBehavior::DoNotCapture,
+                        );
+                        return false;
+                    }
+                }
+            }
+        }
+        // Fallback when the global is unavailable: plain error.
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        false
+    }
+}
+
+/// WHATWG USVString argument conversion for URLSearchParams methods
+/// (DEV-4): strings pass through, scalars coerce via ES ToString
+/// (`get(1)` finds the '1' pair), and Symbol leaves the engine's pending
+/// TypeError — callers propagate it by returning `false`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_arg_to_string(cx: *mut JSContext, val: JSVal) -> ::std::option::Option<String> {
+    unsafe { qs_value_to_string(cx, val) }
+}
+
 /// get(name) — the FIRST matching pair's value, or null when absent
 /// (WHATWG; the old bridge returned undefined).
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1676,11 +1781,13 @@ unsafe extern "C" fn sp_get(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
             return true;
         }
     };
-    if argc == 0 || !(*args.get(0).ptr).is_string() {
-        args.rval().set(mozjs::jsval::NullValue());
-        return true;
+    if argc == 0 {
+        return sp_throw_type_error(cx, "The \"name\" argument must be specified");
     }
-    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    let key = match unsafe { sp_arg_to_string(cx, *args.get(0).ptr) } {
+        ::std::option::Option::Some(k) => k,
+        ::std::option::Option::None => return false,
+    };
     match pairs.iter().find(|(k, _)| *k == key) {
         Some((_, v)) => {
             let js = qs_js_string_utf8(cx, v);
@@ -1707,16 +1814,13 @@ unsafe extern "C" fn sp_get_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
             return true;
         }
     };
-    if argc == 0 || !(*args.get(0).ptr).is_string() {
-        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
-        args.rval().set(if arr.is_null() {
-            UndefinedValue()
-        } else {
-            ObjectValue(arr)
-        });
-        return true;
+    if argc == 0 {
+        return sp_throw_type_error(cx, "The \"name\" argument must be specified");
     }
-    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    let key = match unsafe { sp_arg_to_string(cx, *args.get(0).ptr) } {
+        ::std::option::Option::Some(k) => k,
+        ::std::option::Option::None => return false,
+    };
     let vals: Vec<&String> = pairs
         .iter()
         .filter(|(k, _)| *k == key)
@@ -1759,13 +1863,20 @@ unsafe extern "C" fn sp_has(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
             return true;
         }
     };
-    if argc == 0 || !(*args.get(0).ptr).is_string() {
-        args.rval().set(BooleanValue(false));
-        return true;
+    if argc == 0 {
+        return sp_throw_type_error(cx, "The \"name\" argument must be specified");
     }
-    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
-    if argc >= 2 && (*args.get(1).ptr).is_string() {
-        let val = crate::js_to_rust_string(cx, *args.get(1).ptr);
+    let key = match unsafe { sp_arg_to_string(cx, *args.get(0).ptr) } {
+        ::std::option::Option::Some(k) => k,
+        ::std::option::Option::None => return false,
+    };
+    // Node truth (probed): an undefined second argument is SKIPPED
+    // (name-only presence); any other value is coerced and qualifies.
+    if argc >= 2 && !(*args.get(1).ptr).is_undefined() {
+        let val = match unsafe { sp_arg_to_string(cx, *args.get(1).ptr) } {
+            ::std::option::Option::Some(v) => v,
+            ::std::option::Option::None => return false,
+        };
         let found = pairs.iter().any(|(k, v)| *k == key && *v == val);
         args.rval().set(BooleanValue(found));
         return true;
@@ -1786,15 +1897,16 @@ unsafe extern "C" fn sp_set(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
             return true;
         }
     };
-    if argc < 2 || !(*args.get(0).ptr).is_string() {
-        args.rval().set(UndefinedValue());
-        return true;
+    if argc < 2 {
+        return sp_throw_type_error(cx, "The \"name\" and \"value\" arguments must be specified");
     }
-    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
-    let value = if (*args.get(1).ptr).is_string() {
-        crate::js_to_rust_string(cx, *args.get(1).ptr)
-    } else {
-        String::new()
+    let key = match unsafe { sp_arg_to_string(cx, *args.get(0).ptr) } {
+        ::std::option::Option::Some(k) => k,
+        ::std::option::Option::None => return false,
+    };
+    let value = match unsafe { sp_arg_to_string(cx, *args.get(1).ptr) } {
+        ::std::option::Option::Some(v) => v,
+        ::std::option::Option::None => return false,
     };
     let mut replaced = false;
     let mut i = 0;
@@ -1828,17 +1940,42 @@ unsafe extern "C" fn sp_append(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             return true;
         }
     };
-    if argc < 2 || !(*args.get(0).ptr).is_string() {
-        args.rval().set(UndefinedValue());
-        return true;
+    if argc < 2 {
+        return sp_throw_type_error(cx, "The \"name\" and \"value\" arguments must be specified");
     }
-    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
-    let value = if (*args.get(1).ptr).is_string() {
-        crate::js_to_rust_string(cx, *args.get(1).ptr)
-    } else {
-        String::new()
+    let key = match unsafe { sp_arg_to_string(cx, *args.get(0).ptr) } {
+        ::std::option::Option::Some(k) => k,
+        ::std::option::Option::None => return false,
+    };
+    let value = match unsafe { sp_arg_to_string(cx, *args.get(1).ptr) } {
+        ::std::option::Option::Some(v) => v,
+        ::std::option::Option::None => return false,
     };
     pairs.push((key, value));
+    unsafe { sp_commit(cx, obj, pairs) };
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// sort() — in-place stable sort by NAME only, UTF-16 code-unit order
+/// (Node truth, probed: values keep insertion order for equal names, and
+/// an astral key sorts before U+FFFF — code-UNIT order, which differs from
+/// Rust's default String/UTF-8 byte order). Returns undefined.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_sort(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let (obj, mut pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    pairs.sort_by(|a, b| {
+        let ka: ::std::vec::Vec<u16> = a.0.encode_utf16().collect();
+        let kb: ::std::vec::Vec<u16> = b.0.encode_utf16().collect();
+        ka.cmp(&kb)
+    });
     unsafe { sp_commit(cx, obj, pairs) };
     args.rval().set(UndefinedValue());
     true
@@ -1856,13 +1993,21 @@ unsafe extern "C" fn sp_delete(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             return true;
         }
     };
-    if argc == 0 || !(*args.get(0).ptr).is_string() {
-        args.rval().set(UndefinedValue());
-        return true;
+    if argc == 0 {
+        return sp_throw_type_error(cx, "The \"name\" argument must be specified");
     }
-    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
-    if argc >= 2 && (*args.get(1).ptr).is_string() {
-        let val = crate::js_to_rust_string(cx, *args.get(1).ptr);
+    let key = match unsafe { sp_arg_to_string(cx, *args.get(0).ptr) } {
+        ::std::option::Option::Some(k) => k,
+        ::std::option::Option::None => return false,
+    };
+    // Node truth (probed): an undefined second argument is SKIPPED (deletes
+    // every pair with the name); any other value is coerced and only the
+    // (name, value) matches are removed.
+    if argc >= 2 && !(*args.get(1).ptr).is_undefined() {
+        let val = match unsafe { sp_arg_to_string(cx, *args.get(1).ptr) } {
+            ::std::option::Option::Some(v) => v,
+            ::std::option::Option::None => return false,
+        };
         pairs.retain(|(k, v)| !(k == &key && v == &val));
     } else {
         pairs.retain(|(k, _)| k != &key);
@@ -2392,7 +2537,10 @@ unsafe fn build_query_object(cx: *mut JSContext, search: &str) -> *mut JSObject 
     let cx_ref = &mut wrapped;
     rooted!(&in(cx_ref) let obj_r = obj);
     for (k, v) in qs_parse_pairs(search) {
-        let c_key = ZBox::from_bytes(k.as_bytes());
+        // DEV-1: property keys must be defined as UTF-16 — a C-string name is
+        // atomized Latin-1, mangling multibyte keys (q['包'] came back
+        // undefined). JS_DefineUCProperty2 takes char16 units directly.
+        let key16: ::std::vec::Vec<u16> = k.encode_utf16().collect();
         let prop_val: Value = match v {
             QueryVal::One(s) => {
                 let js = qs_js_string_utf8(cx, &s);
@@ -2426,10 +2574,11 @@ unsafe fn build_query_object(cx: *mut JSContext, search: &str) -> *mut JSObject 
             }
         };
         rooted!(&in(cx_ref) let pv_root = prop_val);
-        JS_DefineProperty(
+        JS_DefineUCProperty2(
             cx,
             obj_r.handle().into(),
-            c_key.as_ptr(),
+            key16.as_ptr(),
+            key16.len(),
             pv_root.handle().into(),
             JSPROP_ENUMERATE as u32,
         );

@@ -16,8 +16,11 @@
 
 ## 当前状态
 
-**Bench harness:TBD(尚未实现)**。本目录目前只有方法论 + 维度规划,
-不包含可运行的 bench 代码。这是后续的工程项。
+**首个 harness 已落地:evaluate() 往返延迟**(#2),位于
+`src/bao_engine/benches/evaluate_roundtrip.rs`(cargo bench 标准 `[[bench]]` target,
+仓库 bench 先例 `src/js_parser/benches/`)。首跑数据见 §3.1。
+
+其余维度仍 TBD(本目录仍只有方法论 + 维度规划)。
 
 ## 测量维度(规划)
 
@@ -46,10 +49,40 @@
 | 维度 | 指标 | 目标 |
 |------|------|------|
 | Navigation throughput | `nav/s` 连续 navigate | CDP + 引擎协同 |
-| Evaluate throughput | `evaluate/s` 连续 eval | JS 执行 + CDP 往返 |
+| Evaluate throughput | `evaluate/s` 连续 eval | **已测**(首跑 ~417k/s,见 §3.1) |
 | CDP roundtrip | single command roundtrip latency | WS / memory transport 延迟 |
 | Screenshot latency | `Page.screenshot` end-to-end | 截图管线 |
 | Multi-page parallel | 10 并发 page 各自 navigate | 并行调度 |
+
+### 3.1 Evaluate throughput — 首跑数据(2026-08-21)
+
+Harness:`src/bao_engine/benches/evaluate_roundtrip.rs` — 引擎直驱
+`JsContext::eval` 往返(compile + execute + RunJobs + 值转 native)。CDP
+`Runtime.evaluate` / `Runtime.callFunctionOn` 经 servo bridge 落到同一
+SpiderMonkey 求值面;本数字覆盖 **JS↔native 环路**,不含 WS/CDP 传输跳
+(那是独立的 "CDP roundtrip" 维度)。测量方法见 `METHODLOGY.md` §4
+in-process 延迟:per-op `Instant` delta,p50/p95/p99,warmup 2000 次剔除,
+每 iteration 结果校验(fail-closed)。
+
+- **硬件**:Intel i9-10900KF(20c,3.70GHz)/ 125GB RAM / Linux 7.0.0-28-generic x86_64
+- **Bao**:commit `87b1e5eb`,rustc 1.99.0-nightly(2026-07-19)
+- **Profile**:`test-ci`(opt-level 2,无 LTO)→ **数字为下界**;正式基线待 fat-LTO release 跑
+- **环境备注**:共享开发机,非独占空闲
+- **跑法**:`cargo bench -p bao_engine --bench evaluate_roundtrip --profile test-ci`(全保真:`cargo bench -p bao_engine --bench evaluate_roundtrip`)
+- **日期**:2026-08-21
+
+| case | n | min | p50 | p95 | p99 | max | mean | cv | ops/s(p50) |
+|------|---|-----|-----|-----|-----|-----|------|-----|-----------|
+| warm_simple_1p1(`1+1`) | 20000 | 2.27µs | 2.40µs | 4.46µs | 6.13µs | 24.9µs | 2.70µs | 32.1% | ~417k |
+| warm_fn_call(预定义函数,callFunctionOn 形态) | 20000 | 3.11µs | 3.36µs | 5.89µs | 7.99µs | 34.9µs | 3.79µs | 29.4% | ~298k |
+| warm_json_stringify(中等:alloc + 序列化 + 字符串回传) | 20000 | 11.8µs | 12.2µs | 17.2µs | 24.0µs | 55.8µs | 13.3µs | 21.4% | ~82k |
+| cold_first_eval(进程首个 eval) | 1 | 236µs | — | — | — | — | — | — | — |
+| fresh_realm_first_eval(新 realm 首 eval,≈新 CDP page 首次 evaluate) | 1 | 155µs | — | — | — | — | — | — | — |
+| engine_init(`JsContext::for_test`) | 1 | 16.7ms | — | — | — | — | — | — | — |
+
+解读:evaluate(`1+1`)热态往返 ≈ **2.4µs 中位(~417k calls/s)**。cv
+21–33% 为逐调用延迟分布的尾部形态(SM GC 停顿落在 p95+/max),非跑间
+抖动(`METHODLOGY.md` 的 cv>5% 规则针对跑间 median)。
 
 ### 4. Node / Bun API(I/O 层)
 

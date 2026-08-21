@@ -641,6 +641,9 @@
       if (_isDefaultController(controller)) {
         return _readableStreamDefaultControllerRead(controller);
       }
+      if (_isByteController(controller)) {
+        return _readableByteStreamControllerRead(controller);
+      }
       return _readableStreamAddReadRequest(stream, this);
     };
 
@@ -695,6 +698,45 @@
     // reason, and the `pulling`/`pullAgain` guard coalesces this with any
     // pull already in flight.
     _readableStreamDefaultControllerCallPullIfNeeded(controller);
+    return readPromise;
+  }
+
+  function _readableByteStreamControllerRead(controller) {
+    // WHATWG ReadableByteStreamController [[PullSteps]] for a default-reader
+    // read request. Step 3: a non-empty queue settles the request directly
+    // (ReadableByteStreamControllerFillReadRequestFromQueue) — bytes
+    // enqueued before the reader attached must reach the first read in FIFO
+    // order, and the deferred close (closeRequested while the queue was
+    // non-empty) re-evaluates via HandleQueueDrain once the queue drains.
+    // The old port parked the request instead, so pre-queued bytes never
+    // reached a default reader and the read hung forever.
+    var stream = _getSlot(controller, "stream");
+    var queue = _getSlot(controller, "queue");
+    if (queue && queue.chunks.length > 0) {
+      var chunk = _dequeueValue(queue);
+      if (_getSlot(controller, "closeRequested") && queue.chunks.length === 0) {
+        _readableStreamClose(stream);
+      } else {
+        _readableByteStreamControllerCallPullIfNeeded(controller);
+      }
+      return Promise.resolve({ value: chunk, done: false });
+    }
+    if (_getSlot(stream, "state") === STATE_CLOSED) {
+      return Promise.resolve({ value: undefined, done: true });
+    }
+    var readPromise = _readableStreamAddReadRequest(stream, _getSlot(stream, "reader"));
+    // WHATWG byte-controller pull steps final step: once the read request
+    // is parked, call pull — byte streams default to highWaterMark 0, so
+    // desiredSize never goes positive and the parked request would never be
+    // fulfilled. (Spec steps 4-5 — autoAllocateChunkSize creating a
+    // default-reader pull-into descriptor + byobRequest — are minimally
+    // modeled in _readableByteStreamControllerCallPullIfNeeded: the
+    // byobRequest is created there once the request is parked, and
+    // respond() settles it. The full [[pendingPullIntos]] descriptor queue
+    // — minimumFill/elementSize/viewConstructor fields,
+    // FillHeadDescriptorFromQueue banking a buffer across pulls — remains
+    // unmodeled.)
+    _readableByteStreamControllerCallPullIfNeeded(controller);
     return readPromise;
   }
 
@@ -1065,6 +1107,39 @@
       _setSlot(controller, "pullAgain", true);
       return;
     }
+    // WHATWG callPullIfNeeded autoAllocateChunkSize arm, minimally modeled:
+    // the spec appends a "default"-reader pull-into descriptor to
+    // [[pendingPullIntos]] and exposes it as the byobRequest so a default
+    // reader's pull source can write into the auto-allocated buffer; this
+    // port models only the observable surface (create the byobRequest right
+    // before the pull runs; respond() settles the parked read request).
+    // Gate: only for a parked DEFAULT read request — BYOB reads create
+    // theirs in readInto, and a desiredSize-driven pull with no parked
+    // request must NOT leave an unfulfillable byobRequest dangling (the
+    // full descriptor queue that spec uses to bank such a buffer is
+    // unmodeled here).
+    if (_getSlot(controller, "byobRequest") === null) {
+      var autoAllocateChunkSize = _getSlot(controller, "autoAllocateChunkSize");
+      var pullStream = _getSlot(controller, "stream");
+      if (autoAllocateChunkSize !== undefined &&
+          _isReadableStreamLocked(pullStream) &&
+          _isDefaultReader(_getSlot(pullStream, "reader")) &&
+          _readableStreamHasReadRequests(pullStream)) {
+        try {
+          var autoBuffer = new ArrayBuffer(autoAllocateChunkSize);
+          _setSlot(controller, "byobRequest", _createBYOBRequest(controller, autoBuffer, 0, autoAllocateChunkSize));
+        } catch (e) {
+          // Spec pull steps step 5.2: buffer construction failure runs the
+          // read request's error steps (reject the parked request); the
+          // stream itself stays readable.
+          var pullReader = _getSlot(pullStream, "reader");
+          var parked = _getSlot(pullReader, "readRequests");
+          var req = parked && parked.shift();
+          if (req) req.reject(e);
+          return;
+        }
+      }
+    }
     _setSlot(controller, "pulling", true);
     _promiseInvokeOrNoop(_getSlot(controller, "underlyingSource"), "pull", [controller]).then(function() {
       _setSlot(controller, "pulling", false);
@@ -1120,9 +1195,28 @@
       throw _typeError("chunk must be an ArrayBufferView or ArrayBuffer");
     }
 
-    if (_isReadableStreamLocked(stream) && _isDefaultReader(_getSlot(stream, "reader"))) {
+    // Hand the chunk to a PENDING read request only; a locked reader with
+    // no waiting read must queue the chunk (mirror of the default-
+    // controller enqueue guard). The unconditional fulfill was a silent
+    // DROP for every chunk pushed while no request was parked — the bytes
+    // vanished before any later read() could see them, breaking the
+    // "queue non-empty ⇒ zero parked read requests" invariant WHATWG's
+    // pull steps rely on.
+    var enqueueReader = _getSlot(stream, "reader");
+    if (_isReadableStreamLocked(stream) && _isDefaultReader(enqueueReader) && _readableStreamHasReadRequests(stream)) {
       _readableStreamFulfillReadRequest(stream, bytes, false);
-    } else if (_isReadableStreamLocked(stream) && _isBYOBReader(_getSlot(stream, "reader"))) {
+      // The parked request this enqueue settles may have had an
+      // auto-allocated byobRequest outstanding for the same pull; that
+      // request is gone, so invalidate the byobRequest (spec drops the
+      // pull-into descriptor's claim via InvalidateBYOBRequest) — a late
+      // respond() on the stale object must throw "invalidated", not
+      // double-settle a future parked request.
+      var staleByob = _getSlot(controller, "byobRequest");
+      if (staleByob) {
+        _setSlot(staleByob, "controller", undefined);
+        _setSlot(controller, "byobRequest", null);
+      }
+    } else if (_isReadableStreamLocked(stream) && _isBYOBReader(enqueueReader) && _readableStreamHasReadIntoRequests(stream)) {
       _readableStreamFulfillReadIntoRequest(stream, bytes, false);
     } else {
       var queue = _getSlot(controller, "queue");
@@ -1152,12 +1246,20 @@
       var viewBytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
       var copied = Math.min(chunk.length, viewBytes.length);
       viewBytes.set(chunk.subarray(0, copied));
-      _readableByteStreamControllerCallPullIfNeeded(controller);
       if (copied < chunk.length) {
         // Put remainder back
         var remainder = chunk.subarray(copied);
         queue.chunks.unshift({ value: remainder, size: remainder.byteLength });
         queue.totalSize += remainder.byteLength;
+      }
+      // WHATWG HandleQueueDrain: a closeRequested controller whose queue
+      // just drained CLOSES the stream (deferred close behind queued
+      // bytes); otherwise pull re-evaluates. Evaluated AFTER the remainder
+      // goes back so a partial view does not fire the deferred close early.
+      if (_getSlot(controller, "closeRequested") && queue.chunks.length === 0) {
+        _readableStreamClose(stream);
+      } else {
+        _readableByteStreamControllerCallPullIfNeeded(controller);
       }
       return Promise.resolve({ value: new view.constructor(view.buffer, view.byteOffset, copied), done: false });
     }
@@ -1170,7 +1272,13 @@
       _setSlot(controller, "byobRequest", byobReq);
     }
 
-    return _readableStreamAddReadIntoRequest(stream, _getSlot(stream, "reader"));
+    var readIntoPromise = _readableStreamAddReadIntoRequest(stream, _getSlot(stream, "reader"));
+    // WHATWG pull steps final step applies to BYOB reads as well: once the
+    // readInto request is parked, call pull — byte streams default to
+    // highWaterMark 0, so desiredSize never goes positive and ShouldCallPull
+    // treats an outstanding readInto request as the only pull reason.
+    _readableByteStreamControllerCallPullIfNeeded(controller);
+    return readIntoPromise;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1225,8 +1333,15 @@
 
   function _readableByteStreamControllerRespond(controller, bytesWritten) {
     var stream = _getSlot(controller, "stream");
+    var byobRequest = _getSlot(controller, "byobRequest");
     if (_isReadableStreamLocked(stream) && _isBYOBReader(_getSlot(stream, "reader"))) {
-      _readableStreamFulfillReadIntoRequest(stream, new Uint8Array(_getSlot(controller, "byobRequest") ? _getSlot(_getSlot(controller, "byobRequest"), "buffer") : new ArrayBuffer(0), 0, bytesWritten), false);
+      _readableStreamFulfillReadIntoRequest(stream, new Uint8Array(byobRequest ? _getSlot(byobRequest, "buffer") : new ArrayBuffer(0), 0, bytesWritten), false);
+    } else if (_isReadableStreamLocked(stream) && _isDefaultReader(_getSlot(stream, "reader"))) {
+      // WHATWG RespondInternal "default"-reader arm: the parked read request
+      // settles with the filled prefix of the auto-allocated buffer. The
+      // Uint8Array constructor itself enforces spec's bytesWritten bound
+      // (a length beyond the buffer throws RangeError).
+      _readableStreamFulfillReadRequest(stream, new Uint8Array(byobRequest ? _getSlot(byobRequest, "buffer") : new ArrayBuffer(0), 0, bytesWritten), false);
     }
     _setSlot(controller, "byobRequest", null);
     _readableByteStreamControllerCallPullIfNeeded(controller);
@@ -1236,6 +1351,8 @@
     var stream = _getSlot(controller, "stream");
     if (_isReadableStreamLocked(stream) && _isBYOBReader(_getSlot(stream, "reader"))) {
       _readableStreamFulfillReadIntoRequest(stream, view, false);
+    } else if (_isReadableStreamLocked(stream) && _isDefaultReader(_getSlot(stream, "reader"))) {
+      _readableStreamFulfillReadRequest(stream, view, false);
     }
     _setSlot(controller, "byobRequest", null);
     _readableByteStreamControllerCallPullIfNeeded(controller);

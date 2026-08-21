@@ -143,6 +143,10 @@ let _ = json;
   `[profile.dev] debug = "line-tables-only"`。
 - **环境变量**:`BUN_*` 生效,`BAO_<SUFFIX>` 启动时别名到
   `BUN_<SUFFIX>`(如 `BUN_BUNFIG` ≡ `BAO_BUNFIG`)。
+- **macOS 尚未实机验证。** 编译面已就绪(kqueue 事件循环 + 按目标的 C
+  构建矩阵已落地;现状矩阵、交叉编译断点与实机验证 checklist 见
+  [docs/build-macos.md](./docs/build-macos.md))——但尚无任何在 Apple
+  硬件上的构建、链接或测试记录。Linux x86_64 是唯一已验证平台。
 
 ## 能力矩阵
 

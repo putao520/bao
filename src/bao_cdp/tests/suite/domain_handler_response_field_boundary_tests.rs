@@ -481,12 +481,14 @@ fn test_network_delete_cookies_response_empty() {
 }
 
 #[test]
-fn test_network_set_cookie_response_empty() {
+fn test_network_set_cookie_response_success_true() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
+    // CDP spec SetCookieReturnObject — no-bridge stub face keeps the spec
+    // shape, same as the browser-side bridge path.
     assert_eq!(
         session.send(&router, "Network.setCookie", None).unwrap(),
-        json!({})
+        json!({"success": true})
     );
 }
 

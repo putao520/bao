@@ -34,3 +34,10 @@ serde_json = "1"
 
 [features]
 live_uws_loop = []
+
+# evaluate() JS↔native round-trip latency bench (issue #2).
+# Fast run:  cargo bench -p bao_engine --bench evaluate_roundtrip --profile test-ci
+# Full LTO:  cargo bench -p bao_engine --bench evaluate_roundtrip
+[[bench]]
+name = "evaluate_roundtrip"
+harness = false

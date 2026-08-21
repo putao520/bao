@@ -607,7 +607,8 @@ fn test_network_set_cache_disabled() {
 #[test]
 fn test_network_misc_ok_empty() {
     // emulateNetworkConditions, setRequestInterception, continueInterceptedRequest,
-    // deleteCookies, setCookie ⇒ ok_empty (genuinely bridge-independent).
+    // deleteCookies ⇒ ok_empty (genuinely bridge-independent).
+    // setCookie ⇒ spec shape {"success":true} (SetCookieReturnObject).
     // setExtraHTTPHeaders moved out: servo has no per-target extra-headers
     // API and headers are never silently dropped — explicit -32603.
     for m in &[
@@ -615,11 +616,12 @@ fn test_network_misc_ok_empty() {
         "setRequestInterception",
         "continueInterceptedRequest",
         "deleteCookies",
-        "setCookie",
     ] {
         let resp = dispatch(&format!(r#"{{"id":1,"method":"Network.{}"}}"#, m));
         assert!(resp.result.unwrap().is_object(), "Network.{} ok_empty", m);
     }
+    let resp = dispatch(r#"{"id":1,"method":"Network.setCookie"}"#);
+    assert_eq!(resp.result.unwrap(), json!({ "success": true }));
     let resp = dispatch(r#"{"id":1,"method":"Network.setExtraHTTPHeaders"}"#);
     let err = resp.error.expect("headers must not be silently dropped");
     assert_eq!(err.code, ERR_INTERNAL_ERROR);

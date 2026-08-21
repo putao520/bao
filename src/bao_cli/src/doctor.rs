@@ -1,10 +1,17 @@
 // `bao doctor` — environment diagnostics for the Bao native stack.
 //
 // A programmable browser runtime built on Servo + SpiderMonkey has a heavy
-// native toolchain (nightly Rust, clang/C++, mozjs compiled from source).
-// `bao doctor` walks the environment and reports what's present/missing so a
-// new contributor can see at a glance why their build fails — without having
-// to understand the whole monorepo.
+// native toolchain (nightly Rust, clang/C++, mozjs compiled from source) plus
+// a system-library link surface: the Bao-layer *_sys build scripts link
+// libc-ares/zlib/libarchive/libdeflate, and the Servo stack links
+// fontconfig/freetype/glib/GStreamer. `bao doctor` walks the environment and
+// reports what's present/missing so a new contributor can see at a glance why
+// their build fails — without having to understand the whole monorepo.
+//
+// Note on TLS: Bao vendors BoringSSL and compiles it from source — the system
+// OpenSSL/libssl-dev is NOT a build dependency. The lib checks below mirror
+// the direct DT_NEEDED entries of the built `bao` binary (readelf ground
+// truth), each probed via its pkg-config module.
 
 use std::process::Command;
 use std::time::Duration;
@@ -25,7 +32,25 @@ pub fn run() -> Result<(), i32> {
         rustc_check(),
         cargo_check(),
         clang_check(),
+        clang_toolchain_check(),
         pkg_config_check(),
+        system_lib_check("libc-ares", "libcares", "cares_sys", "libc-ares-dev"),
+        system_lib_check("zlib", "zlib", "lsquic_sys/uws_sys", "zlib1g-dev"),
+        system_lib_check("libarchive", "libarchive", "libarchive", "libarchive-dev"),
+        system_lib_check("libdeflate", "libdeflate", "uws_sys", "libdeflate-dev"),
+        system_lib_check("fontconfig", "fontconfig", "servo font stack", "libfontconfig-dev"),
+        system_lib_check("freetype", "freetype2", "servo font stack", "libfreetype-dev"),
+        system_lib_check("glib-2.0", "glib-2.0", "servo (glib)", "libglib2.0-dev"),
+        system_lib_check("GStreamer core", "gstreamer-1.0", "servo media stack", "libgstreamer1.0-dev"),
+        system_lib_check(
+            "GStreamer plugins-base",
+            "gstreamer-plugins-base-1.0",
+            "servo media stack",
+            "libgstreamer-plugins-base1.0-dev",
+        ),
+        system_lib_check("GStreamer GL", "gstreamer-gl-1.0", "servo media stack", "libgstreamer-plugins-base1.0-dev"),
+        system_lib_check("GStreamer webrtc", "gstreamer-webrtc-1.0", "servo media stack", "libgstreamer-plugins-bad1.0-dev"),
+        system_lib_check("GStreamer play", "gstreamer-play-1.0", "servo media stack", "libgstreamer-plugins-bad1.0-dev"),
         display_check(),
         mozjs_artifact_check(),
         cdp_port_check(),
@@ -140,6 +165,80 @@ fn pkg_config_check() -> Check {
             detail: "not found — install pkg-config (apt: pkg-config)".into(),
         },
     }
+}
+
+/// Check one system library on the native link surface. The Bao layer emits
+/// `cargo:rustc-link-lib=<lib>` from the *_sys build scripts (cares/z/
+/// archive/deflate); the Servo stack links its system deps (fontconfig/
+/// freetype/glib/GStreamer) via pkg-config in its own build. Either way the
+/// -dev package (headers + unversioned .so + .pc) must be installed for the
+/// final binary to link. `pkg-config --modversion` resolves exactly when that
+/// is true — the same probe a fresh build would rely on.
+fn system_lib_check(label: &'static str, pc_name: &str, linked_by: &str, apt_pkg: &str) -> Check {
+    match version_line("pkg-config", &["--modversion", pc_name]) {
+        Some(v) => Check {
+            label,
+            ok: true,
+            detail: v,
+        },
+        None if version_line("pkg-config", &["--version"]).is_none() => Check {
+            // The probe itself is gone — report unverifiable instead of
+            // guessing "missing" (the pkg-config check above is the fix).
+            label,
+            ok: false,
+            detail: "unverifiable — install pkg-config first".into(),
+        },
+        None => Check {
+            label,
+            ok: false,
+            detail: format!("not found — linked by {linked_by} (apt: {apt_pkg})"),
+        },
+    }
+}
+
+fn clang_toolchain_check() -> Check {
+    // The vendored C/C++ builds hardcode the compiler: boringssl_sys and
+    // uws_sys use `clang++`, lsquic_sys and uws_sys use `clang`. gcc cannot
+    // substitute (the generic C/C++ check above only covers mozjs).
+    let c = version_line("clang", &["--version"]);
+    let cpp = version_line("clang++", &["--version"]);
+    let label = "Clang (vendored builds)";
+    match (&c, &cpp) {
+        (Some(cv), Some(_)) => Check {
+            label,
+            ok: true,
+            detail: format!("clang {} + clang++", version_token(cv)),
+        },
+        (Some(cv), None) => Check {
+            label,
+            ok: false,
+            detail: format!(
+                "clang {} present, clang++ missing — boringssl/uws need both (apt: clang)",
+                version_token(cv)
+            ),
+        },
+        (None, _) => Check {
+            label,
+            ok: false,
+            detail: "clang not found — boringssl/lsquic/uws build scripts require it (apt: clang)"
+                .into(),
+        },
+    }
+}
+
+/// Version token from a `clang --version` line ("Ubuntu clang version
+/// 14.0.0-1ubuntu1" → "14.0.0-1ubuntu1"); falls back to the first token.
+fn version_token(line: &str) -> String {
+    line.split_once("version")
+        .map(|(_, rest)| {
+            rest.trim()
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| first_token(line))
 }
 
 fn display_check() -> Check {

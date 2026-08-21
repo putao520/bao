@@ -16,6 +16,7 @@ mod bridge_command_exhaustive_tests;
 mod cdp_types_deep_tests;
 mod domain_handler_response_field_boundary_tests;
 mod domain_stress_tests;
+mod network_schema_conformance_tests;
 mod perf_refactor_integration_tests;
 mod protocol_all_domains_internal_backend_tests;
 mod protocol_domain_handler_deep_tests;

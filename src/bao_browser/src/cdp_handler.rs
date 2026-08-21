@@ -1631,6 +1631,20 @@ fn json_type_string(s: &str) -> &'static str {
 
 /// Convert a servo `Cookie<'static>` to CDP Cookie JSON object.
 /// CDP Cookie spec: https://chromedevtools.github.io/devtools-protocol/tot/Network/#type-Cookie
+///
+/// servo's cookie crate (0.18, RFC 6265bis) has no Chrome cookie priority /
+/// source scheme / source port concepts, so the three spec-required fields are
+/// filled with Chromium's documented defaults (cookie_to_cdp is the only
+/// source of these values — there is no servo-side mapping to lose):
+/// - priority "Medium": Chromium COOKIE_PRIORITY_DEFAULT = COOKIE_PRIORITY_MEDIUM
+///   (net/cookies/cookie_constants.h)
+/// - sourceScheme "Unset": Chromium source_scheme_ defaults to
+///   CookieSourceScheme::kUnset, serialized as CDP "Unset"
+///   (net/cookies/cookie_base.h, network_handler.cc BuildCookieSourceScheme)
+/// - sourcePort 0: Chromium's valid source-port set is [0,65535] ∪
+///   PORT_UNSPECIFIED (net/cookies/cookie_base.h); the CDP doc's "-1
+///   unspecified" marker is not representable in the protocol type (u32), and
+///   0 is the u32 serde default for the field.
 fn cookie_to_cdp(c: &cookie::Cookie) -> Value {
     let same_site = match c.same_site() {
         Some(cookie::SameSite::Strict) => "Strict",
@@ -1653,6 +1667,9 @@ fn cookie_to_cdp(c: &cookie::Cookie) -> Value {
         "secure": c.secure().unwrap_or(false),
         "sameSite": same_site,
         "session": expires == -1.0,
+        "priority": "Medium",
+        "sourceScheme": "Unset",
+        "sourcePort": 0,
     })
 }
 

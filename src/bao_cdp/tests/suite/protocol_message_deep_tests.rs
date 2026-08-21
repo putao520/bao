@@ -670,7 +670,9 @@ fn test_network_delete_cookies() {
 
 #[test]
 fn test_network_set_cookie() {
-    assert_eq!(ok_result("Network.setCookie", None), json!({}));
+    // CDP spec SetCookieReturnObject: {"success":true} — also on the
+    // no-bridge stub face (matches the browser-side bridge path).
+    assert_eq!(ok_result("Network.setCookie", None), json!({"success": true}));
 }
 
 #[test]

@@ -14,13 +14,16 @@
 //! From the slice you can call `.items_named::<FieldType>("field_name")` to obtain
 //! a slice of field values.
 //!
-//! Implementation note: this port uses nightly `core::mem::type_info`
-//! reflection to discover `T`'s fields at compile time, replacing an earlier
-//! `MultiArrayElement` trait + derive macro. Field metadata (name,
-//! size, alignment, in-struct offset) is computed in `const` context; column
-//! accessors take a `const NAME: &'static str` generic and verify both the
-//! name and the requested column type against the reflected field's `TypeId`
-//! at compile time, so the column API is fully type-safe with no derive.
+//! Implementation note: this port discovers `T`'s fields through the
+//! `SoaRow` field-table registry (`#[derive(SoaRow)]`, see
+//! `bun_collections_macros`), which stamps per-field `name`/`size`/`offset`
+//! straight from the struct definition. This replaced an earlier
+//! `MultiArrayElement` trait + derive macro, and then a nightly
+//! `core::mem::type_info` reflection path (retired wholesale — it relied on
+//! comptime calls that newer nightlies reject; see issue #7). Column
+//! accessors (`items_named::<F>("name")`) look the field up in the stamped
+//! table at runtime and assert the column type's size matches, so a typo or
+//! size mismatch is an immediate panic, not UB.
 //!
 //! ## Unsafe budget
 //!
@@ -276,10 +279,11 @@ pub(crate) const fn field_count<T: SoaRow>() -> usize {
 /// Column-layout sort key for a field of `size` bytes within a struct of
 /// alignment `struct_align`.
 ///
-/// The reflection API does not expose `align`, and recursing through nested
-/// `TypeId::info()` to reconstruct it ICEs on types containing
-/// const-expression array lengths (rustc `type_info` MVP limitation). Instead
-/// we compute a key with these properties:
+/// The `SoaRow` registry stamps only `name`/`size`/`offset` (matching Zig's
+/// `@sizeOf`/`@offsetOf` surface — the retired `type_info` reflection path
+/// could not expose `align` either, and reconstructing it by recursion ICEd
+/// on const-expression array lengths). Instead we compute a key with these
+/// properties:
 ///
 ///   * `key` is a power of two,
 ///   * `key` divides `size` (since size is a multiple of true alignment, the
@@ -310,7 +314,7 @@ struct FieldMeta {
     size: usize,
     /// In-struct byte offset (for scatter/gather).
     offset: usize,
-    /// Effective alignment (sort key); ZST → 1, otherwise see `align_of_tyid`.
+    /// Effective alignment (sort key); ZST → 1, otherwise see `align_sort_key`.
     align: usize,
 }
 
@@ -422,9 +426,7 @@ impl<T: SoaRow> Reflected<T> {
         out
     };
 
-    /// Field index for `NAME`; const-panics if no such field.
-    #[cfg(test)]
-/// Field index for `name`; panics if no such field (runtime lookup — the
+    /// Field index for `name`; panics if no such field (runtime lookup — the
     /// registry is a table, and both channels share this path).
     #[cfg(test)]
     fn index_of(name: &str) -> usize {

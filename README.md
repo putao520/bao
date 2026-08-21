@@ -158,6 +158,12 @@ thumb, straight from `src/bao/src/lib.rs`:
   `[profile.dev] debug = "line-tables-only"`.
 - **Environment variables**: `BUN_*` is honoured, and `BAO_<SUFFIX>` is
   aliased onto `BUN_<SUFFIX>` at startup (e.g. `BUN_BUNFIG` ≡ `BAO_BUNFIG`).
+- **macOS is not yet proven on hardware.** The compile surface is mac-ready
+  (kqueue event loop + per-target C build matrix landed; see
+  [docs/build-macos.md](./docs/build-macos.md) for the exact status matrix,
+  where a cross-build stops today, and the real-machine verification
+  checklist) — but no build, link, or test run has happened on Apple
+  hardware yet. Linux x86_64 is the only verified platform.
 
 ## Capability matrix
 

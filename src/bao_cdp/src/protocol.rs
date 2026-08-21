@@ -916,7 +916,11 @@ fn handle_network(
                     },
                 )
             } else {
-                ok_empty()
+                // CDP spec Network.setCookie returns {"success":true}
+                // (SetCookieReturnObject). The no-bridge stub face keeps the
+                // spec shape — same as the browser-side bridge path
+                // (cmd_set_cookie in bao_browser returns {"success":true}).
+                Ok(serde_json::json!({ "success": true }))
             }
         }
         "deleteCookies" => {
@@ -3581,7 +3585,7 @@ mod tests {
         assert!(resp.error.is_none());
     }
 
-    // 121. handle_command Network.setCookie → ok empty
+    // 121. handle_command Network.setCookie → spec shape {"success":true}
     #[test]
     fn handle_command_network_set_cookie() {
         let msg = CdpMessage {
@@ -3593,6 +3597,9 @@ mod tests {
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
+        // CDP spec SetCookieReturnObject — no-bridge stub face keeps the
+        // spec shape, same as the browser-side bridge path.
+        assert_eq!(resp.result, Some(json!({ "success": true })));
     }
 
     // 122. handle_command Network.setRequestInterception → ok empty
