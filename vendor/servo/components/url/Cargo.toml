@@ -5,7 +5,7 @@
 # carries version 0.5.0 and publish=false; a publishable fork crate must
 # override publish).
 name = "bao-servo-url"
-version = "0.5.1"
+version = "0.5.3"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

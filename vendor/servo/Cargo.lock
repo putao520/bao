@@ -832,7 +832,7 @@ dependencies = [
 
 [[package]]
 name = "bao-mozjs"
-version = "0.21.6"
+version = "0.22.0"
 dependencies = [
  "bao-mozjs-sys",
  "bindgen",
@@ -845,19 +845,19 @@ dependencies = [
 
 [[package]]
 name = "bao-mozjs-src-intl"
-version = "140.13.0-4"
+version = "140.14.0-0"
 
 [[package]]
 name = "bao-mozjs-src-js"
-version = "140.13.0-4"
+version = "140.14.0-0"
 
 [[package]]
 name = "bao-mozjs-src-python"
-version = "140.13.0-4"
+version = "140.14.0-0"
 
 [[package]]
 name = "bao-mozjs-sys"
-version = "140.13.0-6"
+version = "140.14.0-0"
 dependencies = [
  "bao-mozjs-src-intl",
  "bao-mozjs-src-js",
@@ -876,13 +876,12 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
  "arboard",
  "bao-ipc-channel",
- "bao-servo",
  "bao-servo-background-hang-monitor",
  "bao-servo-base",
  "bao-servo-bluetooth",
@@ -957,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-allocator"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "backtrace",
  "libc",
@@ -970,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-background-hang-monitor"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "backtrace",
  "bao-servo-background-hang-monitor-api",
@@ -987,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-background-hang-monitor-api"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "serde",
@@ -995,7 +994,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-base"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -1019,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-bluetooth"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-bluetooth-traits",
@@ -1037,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-bluetooth-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -1047,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-canvas-traits",
@@ -1076,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-fonts-traits",
@@ -1098,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-config"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "bao-servo-config-macro",
  "num_enum",
@@ -1110,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-config-macro"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1120,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -1167,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1203,14 +1202,14 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-default-resources"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-embedder-traits",
 ]
 
 [[package]]
 name = "bao-servo-deny-public-fields"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "proc-macro2",
  "syn",
@@ -1219,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1248,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -1264,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-dom-struct"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -1274,7 +1273,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-embedder-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -1307,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1366,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1390,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-geometry"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "app_units",
  "bao-servo-malloc-size-of",
@@ -1402,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-hyper-serde"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "bao-ipc-channel",
  "cookie 0.18.1",
@@ -1419,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-jstraceable-derive"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "proc-macro2",
  "syn",
@@ -1428,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1489,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout-api"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1522,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-malloc-size-of"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1565,7 +1564,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media-audio",
@@ -1577,7 +1576,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-audio"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1600,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-auto"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-media-dummy",
  "bao-servo-media-gstreamer",
@@ -1608,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-derive"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1617,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-dummy"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1630,7 +1629,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1661,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-media-player",
  "gstreamer",
@@ -1669,7 +1668,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render-android"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-media-gstreamer-render",
  "bao-servo-media-player",
@@ -1682,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render-unix"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-media-gstreamer-render",
  "bao-servo-media-player",
@@ -1697,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-ohos"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1719,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-player"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1731,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-streams"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-malloc-size-of",
  "malloc_size_of_derive",
@@ -1740,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-thread"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1758,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-malloc-size-of",
  "malloc_size_of_derive",
@@ -1766,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-webrtc"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-media-streams",
  "log",
@@ -1775,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-metrics"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -1789,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -1877,7 +1876,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1919,7 +1918,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-allocator",
  "bao-servo-base",
@@ -1958,7 +1957,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint-api"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1993,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-pixels"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -2008,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-profile"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-allocator",
  "bao-servo-base",
@@ -2025,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-profile-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-allocator",
@@ -2041,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2190,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-bindings"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",
@@ -2233,7 +2232,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -2270,7 +2269,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-webgpu"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-mozjs",
  "bao-servo-base",
@@ -2290,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-storage"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -2317,7 +2316,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-storage-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -2330,7 +2329,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-timers"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-malloc-size-of",
  "crossbeam-channel",
@@ -2339,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-tracing"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -2349,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-url"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-malloc-size-of",
  "encoding_rs",
@@ -2362,7 +2361,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-wakelock"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-embedder-traits",
  "serde",
@@ -2370,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webdriver-server"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -2401,7 +2400,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webgl"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-canvas-traits",
@@ -2426,7 +2425,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webgpu"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "arrayvec",
  "bao-servo-base",
@@ -2444,7 +2443,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webgpu-traits"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "arrayvec",
  "bao-servo-base",
@@ -2459,7 +2458,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webvtt"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "bao-servo-webvtt",
  "html5ever",
@@ -2469,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webxr"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-base",
  "bao-servo-profile-traits",
@@ -2487,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webxr-api"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -2502,7 +2501,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-xpath"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "bao-servo-malloc-size-of",
  "log",
@@ -2512,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "bao-stylo"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "app_units",
  "arrayvec",
@@ -2590,7 +2589,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2634,7 +2633,7 @@ dependencies = [
 
 [[package]]
 name = "bao_stealth"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2648,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "bao_uloop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bun_dns",
  "bun_sys",
@@ -2988,23 +2987,17 @@ dependencies = [
 
 [[package]]
 name = "bun_alloc"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "allocator-api2",
- "bitflags 2.11.1",
  "bstr",
  "bumpalo",
  "bun_mimalloc_sys",
  "bun_opaque",
  "bun_wyhash",
- "const_format",
- "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
  "scopeguard",
- "strum 0.26.3",
- "typed-arena",
 ]
 
 [[package]]
@@ -3027,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ast"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -3045,19 +3038,15 @@ dependencies = [
  "const_format",
  "enum-map",
  "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
- "typed-arena",
 ]
 
 [[package]]
 name = "bun_base64"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
- "bstr",
  "bun_alloc",
  "bun_core",
  "bun_simdutf_sys",
@@ -3069,45 +3058,30 @@ dependencies = [
 
 [[package]]
 name = "bun_boringssl"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_alloc",
  "bun_boringssl_sys",
  "bun_cares_sys",
  "bun_core",
  "bun_sys",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
  "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_boringssl_sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_core",
  "bun_opaque",
  "cc",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_brotli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "brotli",
  "bun_core",
@@ -3116,7 +3090,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bundler"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3131,7 +3105,6 @@ dependencies = [
  "bun_dispatch",
  "bun_dotenv",
  "bun_event_loop",
- "bun_glob",
  "bun_hash",
  "bun_http_types",
  "bun_io",
@@ -3157,38 +3130,28 @@ dependencies = [
  "bytemuck",
  "const_format",
  "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
  "scopeguard",
  "strum 0.26.3",
  "thiserror 2.0.18",
- "typed-arena",
 ]
 
 [[package]]
 name = "bun_cares_sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_alloc",
  "bun_core",
  "bun_libuv_sys",
  "bun_opaque",
- "const_format",
- "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
- "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "bun_collections"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
@@ -3251,7 +3214,7 @@ dependencies = [
 
 [[package]]
 name = "bun_crash_handler"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3263,7 +3226,6 @@ dependencies = [
  "bun_core",
  "bun_dispatch",
  "bun_io",
- "bun_options_types",
  "bun_paths",
  "bun_ptr",
  "bun_sys",
@@ -3271,17 +3233,14 @@ dependencies = [
  "bun_which",
  "bun_zlib",
  "const_format",
- "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
  "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_css"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -3327,75 +3286,53 @@ dependencies = [
 
 [[package]]
 name = "bun_dns"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_alloc",
  "bun_cares_sys",
  "bun_core",
  "bun_sys",
  "bun_windows_sys",
  "bun_wyhash",
- "const_format",
- "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_dotenv"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
- "bitflags 2.11.1",
  "bstr",
  "bun_alloc",
  "bun_ast",
  "bun_collections",
  "bun_core",
- "bun_dispatch",
  "bun_paths",
  "bun_sys",
  "bun_url",
  "bun_which",
- "bun_wyhash",
- "const_format",
- "enum-map",
  "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_errno"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_core",
  "bun_libuv_sys",
  "bun_windows_sys",
- "const_format",
  "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
- "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "bun_event_loop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_collections",
  "bun_core",
  "bun_dispatch",
@@ -3406,12 +3343,7 @@ dependencies = [
  "bun_sys",
  "bun_threading",
  "bun_uws",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
 ]
 
@@ -3452,10 +3384,9 @@ dependencies = [
 
 [[package]]
 name = "bun_http"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bao_boringssl_bridge",
- "bitflags 2.11.1",
  "bstr",
  "bun_alloc",
  "bun_analytics",
@@ -3466,7 +3397,6 @@ dependencies = [
  "bun_brotli",
  "bun_collections",
  "bun_core",
- "bun_dispatch",
  "bun_dns",
  "bun_dotenv",
  "bun_event_loop",
@@ -3482,10 +3412,6 @@ dependencies = [
  "bun_wyhash",
  "bun_zlib",
  "bun_zstd",
- "bytemuck",
- "const_format",
- "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
  "scopeguard",
@@ -3496,48 +3422,38 @@ dependencies = [
 
 [[package]]
 name = "bun_http_types"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
- "bitflags 2.11.1",
  "bstr",
  "bun_alloc",
  "bun_collections",
  "bun_core",
  "bun_url",
  "bytemuck",
- "const_format",
- "enum-map",
  "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_install_types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
  "bun_alloc",
  "bun_ast",
- "bun_collections",
  "bun_core",
  "bun_semver",
  "bun_wyhash",
- "const_format",
- "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_io"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3563,7 +3479,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_parser"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3574,7 +3490,6 @@ dependencies = [
  "bun_collections",
  "bun_core",
  "bun_crash_handler",
- "bun_dispatch",
  "bun_highway",
  "bun_io",
  "bun_options_types",
@@ -3583,22 +3498,18 @@ dependencies = [
  "bun_url",
  "bun_wyhash",
  "bytemuck",
- "const_format",
- "enum-map",
  "enumset",
  "libc",
  "phf 0.11.3",
  "scopeguard",
  "smallvec",
  "strum 0.26.3",
- "typed-arena",
 ]
 
 [[package]]
 name = "bun_js_printer"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
- "bitflags 2.11.1",
  "bstr",
  "bumpalo",
  "bun_alloc",
@@ -3617,11 +3528,9 @@ dependencies = [
  "const_format",
  "enum-map",
  "enumset",
- "libc",
  "phf 0.11.3",
  "scopeguard",
  "strum 0.26.3",
- "typed-arena",
 ]
 
 [[package]]
@@ -3634,43 +3543,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_libarchive"
+name = "bun_libuv_sys"
 version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_alloc",
- "bun_collections",
- "bun_core",
- "bun_opaque",
- "bun_paths",
- "bun_sys",
- "bun_wyhash",
- "bytemuck",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
-]
-
-[[package]]
-name = "bun_libuv_sys"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_core",
  "bun_windows_sys",
  "bun_wyhash",
- "const_format",
- "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
 ]
 
@@ -3685,7 +3565,7 @@ dependencies = [
 
 [[package]]
 name = "bun_lsquic_sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bun_boringssl_sys",
  "cc",
@@ -3693,7 +3573,7 @@ dependencies = [
 
 [[package]]
 name = "bun_md"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bun_alloc",
  "bun_collections",
@@ -3707,19 +3587,11 @@ dependencies = [
 
 [[package]]
 name = "bun_mimalloc_sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_opaque",
  "cc",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
@@ -3728,28 +3600,23 @@ version = "0.1.0"
 
 [[package]]
 name = "bun_options_types"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
- "bitflags 2.11.1",
  "bstr",
  "bun_ast",
  "bun_collections",
  "bun_core",
  "bun_dotenv",
  "bun_install_types",
- "bun_libarchive",
  "bun_paths",
  "bun_semver",
  "bun_sys",
  "bun_url",
  "bun_wyhash",
- "bun_zlib",
  "const_format",
  "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
  "thiserror 2.0.18",
 ]
@@ -3767,9 +3634,8 @@ version = "0.1.0"
 
 [[package]]
 name = "bun_parsers"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
  "bstr",
  "bumpalo",
  "bun_alloc",
@@ -3778,10 +3644,6 @@ dependencies = [
  "bun_core",
  "bun_highway",
  "bytemuck",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
  "scopeguard",
  "strum 0.26.3",
@@ -3791,7 +3653,7 @@ dependencies = [
 
 [[package]]
 name = "bun_paths"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3810,7 +3672,7 @@ dependencies = [
 
 [[package]]
 name = "bun_perf"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3820,7 +3682,6 @@ dependencies = [
  "const_format",
  "enum-map",
  "enumset",
- "libc",
  "phf 0.11.3",
  "scopeguard",
  "strum 0.26.3",
@@ -3828,61 +3689,41 @@ dependencies = [
 
 [[package]]
 name = "bun_picohttp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
  "bstr",
  "bun_core",
- "const_format",
- "enum-map",
- "enumset",
  "httparse",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_ptr"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "allocator-api2",
- "bitflags 2.11.1",
  "bstr",
  "bun_alloc",
  "bun_core",
  "bun_core_macros",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
  "scopeguard",
- "strum 0.26.3",
- "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "bun_resolve_builtins"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_ast",
  "bun_core",
- "bun_options_types",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_resolver"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3914,7 +3755,6 @@ dependencies = [
  "bun_wyhash",
  "bun_zstd",
  "const_format",
- "enum-map",
  "enumset",
  "libc",
  "phf 0.11.3",
@@ -3925,7 +3765,7 @@ dependencies = [
 
 [[package]]
 name = "bun_router"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3987,41 +3827,24 @@ dependencies = [
 
 [[package]]
 name = "bun_sha_hmac"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_boringssl",
  "bun_boringssl_sys",
  "bun_core",
- "bun_opaque",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_simdutf_sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_sm"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -4039,10 +3862,9 @@ dependencies = [
 
 [[package]]
 name = "bun_sourcemap"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "allocator-api2",
- "bitflags 2.11.1",
  "bstr",
  "bumpalo",
  "bun_alloc",
@@ -4059,20 +3881,14 @@ dependencies = [
  "bun_sys",
  "bun_url",
  "bun_zstd",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
  "smallvec",
  "strum 0.26.3",
- "typed-arena",
 ]
 
 [[package]]
 name = "bun_spawn"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -4094,7 +3910,7 @@ dependencies = [
 
 [[package]]
 name = "bun_spawn_sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -4104,13 +3920,12 @@ dependencies = [
  "bun_windows_sys",
  "enumset",
  "libc",
- "scopeguard",
  "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4123,9 +3938,7 @@ dependencies = [
  "bun_windows_sys",
  "bun_wyhash",
  "bytemuck",
- "const_format",
  "enum-map",
- "enumset",
  "libc",
  "memchr",
  "phf 0.11.3",
@@ -4137,7 +3950,7 @@ dependencies = [
 
 [[package]]
 name = "bun_threading"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4173,42 +3986,29 @@ dependencies = [
 
 [[package]]
 name = "bun_url"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_alloc",
  "bun_collections",
  "bun_core",
  "bun_paths",
  "bun_wyhash",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
+ "url",
 ]
 
 [[package]]
 name = "bun_uws"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
- "bitflags 2.11.1",
  "bstr",
  "bun_base64",
  "bun_boringssl",
  "bun_boringssl_sys",
  "bun_core",
  "bun_jsc_macros",
- "bun_opaque",
  "bun_ptr",
  "bun_uws_sys",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
  "scopeguard",
  "strum 0.26.3",
@@ -4216,7 +4016,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws_sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4230,19 +4030,15 @@ dependencies = [
  "bun_paths",
  "bun_windows_sys",
  "cc",
- "const_format",
- "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "bun_watcher"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4253,9 +4049,6 @@ dependencies = [
  "bun_sys",
  "bun_threading",
  "bun_wyhash",
- "const_format",
- "enum-map",
- "enumset",
  "libc",
  "phf 0.11.3",
  "scopeguard",
@@ -4264,20 +4057,13 @@ dependencies = [
 
 [[package]]
 name = "bun_which"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "bitflags 2.11.1",
  "bstr",
  "bun_core",
  "bun_paths",
  "bun_sys",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
@@ -4286,44 +4072,30 @@ version = "0.1.0"
 
 [[package]]
 name = "bun_wyhash"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
- "bitflags 2.11.1",
  "bstr",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
  "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_zlib"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "allocator-api2",
- "bitflags 2.11.1",
- "bstr",
  "bun_alloc",
  "bun_collections",
  "bun_core",
  "bun_io",
- "const_format",
  "crc32fast",
- "enum-map",
- "enumset",
  "flate2",
- "libc",
  "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
 ]
 
 [[package]]
 name = "bun_zstd"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bun_core",
  "strum 0.26.3",
@@ -11140,7 +10912,7 @@ dependencies = [
 
 [[package]]
 name = "servo-media-examples"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "bao-servo",
  "bao-servo-media",
@@ -11163,7 +10935,7 @@ dependencies = [
 
 [[package]]
 name = "servoshell"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "accesskit",
  "android_logger",

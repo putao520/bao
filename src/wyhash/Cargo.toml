@@ -2,7 +2,7 @@
 name = "bun_wyhash"
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. W4 stable dual-mode (hasher_prefixfree_extras under bao_nightly cfg).
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

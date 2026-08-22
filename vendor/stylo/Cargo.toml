@@ -25,7 +25,7 @@
 [package]
 edition = "2021"
 name = "bao-stylo"
-version = "0.20.0"
+version = "0.20.1"
 authors = ["The Servo Project Developers"]
 build = "build.rs"
 links = "servo_style_crate"

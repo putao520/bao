@@ -3,7 +3,7 @@ name = "bun_ast"
 # 0.1.1 (2026-08-19): W1 dual-mode — 13 TLS stations accessor-dualized,
 # AstVec/ArenaVec/ArenaBox onto core_alloc facade, SoaRow derives; builds
 # against bun_core 0.1.2 + bun_alloc 0.1.1.
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

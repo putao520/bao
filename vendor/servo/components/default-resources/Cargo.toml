@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-default-resources"
-version.workspace = true
+version = "0.5.3"
 authors.workspace = true
 repository.workspace = true
 description.workspace = true
