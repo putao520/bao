@@ -13,3 +13,9 @@
 
 ## 同日活体复现(2026-08-22 午后)
 本报告落地数小时后,同一 E(impl-daily-ops)对任务 #34 再次 TaskUpdate(completed)——违流程层条款;主会话随后 TaskUpdate(#34)返回 "Task not found",E 回滚尝试同返 "Task not found"(面板不可恢复)——工具层歧义与终态回收完整复现。第三形态暴露:补救性回滚本身亦属越权操作(未遂)。两次独立发生+一次面板不可恢复实证,工具行为证据链对维护方已充分。
+
+## 官方文档佐证(2026-08-22,bce-domain-guard 升级第 4 轮)
+- **teammate 明确保留任务工具**:官方原文「Teammates in agent teams additionally keep the task tools and cron tools: TaskCreate, TaskGet, TaskList, TaskUpdate...」(code.claude.com/docs/en/sub-agents,WebFetch 直取)→ 流程层定性修正:非工具不可用,系我方合同纪律(clause-5)约束范畴;clause-5 与官方规定通信方式(SendMessage)完全一致
+- **共享语义未文档化**:任务列表主/子代理共享与否官方「未提及」→ 本仓实证的共享+回收行为属未文档化行为
+- **终态生命周期未文档化**:条目 completed 后回收/prune 官方「未提及」→ 工具层「not found vs terminal-pruned 不可辨」定性为上游未文档化缺口,随维护方建议一并升 Anthropic
+- **kb 路线记录**:kb_build(claude-code-agent-tasks)因 Context7 库索引空 blocked×2(fail-closed 属工具正确行为);外部事实经 WebFetch 官方文档直取补齐
