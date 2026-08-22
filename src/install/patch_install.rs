@@ -364,8 +364,10 @@ impl PatchTask {
                         .behavior
                         .is_required();
                     let pkg_again: Package = *manager.lockfile.packages.get(pkg_id as usize);
+                    // upstream bbf3f4af32: match-wrapped so an --offline miss
+                    // (already reported / skipped) ends the patch task quietly
                     let network_task: *mut crate::NetworkTask =
-                        package_manager::generate_network_task_for_tarball(
+                        match package_manager::generate_network_task_for_tarball(
                             manager,
                             // TODO: not just npm package
                             task_id,
@@ -380,8 +382,10 @@ impl PatchTask {
                                 }
                                 _ => Authorization::NoAuthorization,
                             },
-                        )?
-                        .unwrap_or_else(|| unreachable!());
+                        ) {
+                            Err(crate::network_task::ForTarballError::Offline) => return Ok(()),
+                            other => other?.unwrap_or_else(|| unreachable!()),
+                        };
                     if manager.get_preinstall_state(pkg_meta_id) == PreinstallState::Extract {
                         manager.set_preinstall_state(pkg_meta_id, PreinstallState::Extracting);
                         package_manager::enqueue_network_task(manager, network_task);

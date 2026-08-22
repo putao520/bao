@@ -87,6 +87,12 @@ const SHARED_PARAMS: &[ParamType] = &[
         "--no-verify                           Skip verifying integrity of newly downloaded packages"
     ),
     clap::param!(
+        "--offline                             Never touch the network: resolve and install only from the local cache"
+    ),
+    clap::param!(
+        "--prefer-offline                      Use cached package metadata regardless of age; only fetch what is missing"
+    ),
+    clap::param!(
         "--ignore-scripts                      Skip lifecycle scripts in the project's package.json (dependency scripts are never run)"
     ),
     clap::param!(
@@ -381,6 +387,8 @@ pub struct CommandLineArguments {
     pub verbose: bool,
     pub no_progress: bool,
     pub no_verify: bool,
+    pub(crate) offline: bool,
+    pub(crate) prefer_offline: bool,
     pub ignore_scripts: bool,
     pub trusted: bool,
     pub no_summary: bool,
@@ -468,6 +476,8 @@ impl Default for CommandLineArguments {
             verbose: false,
             no_progress: false,
             no_verify: false,
+            offline: false,
+            prefer_offline: false,
             ignore_scripts: false,
             trusted: false,
             no_summary: false,
@@ -1041,6 +1051,8 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/pm#scan<r>.
         cli.global = args.flag(b"--global");
         cli.force = args.flag(b"--force");
         cli.no_verify = args.flag(b"--no-verify");
+        cli.offline = args.flag(b"--offline");
+        cli.prefer_offline = args.flag(b"--prefer-offline");
         cli.no_cache = args.flag(b"--no-cache");
         cli.silent = args.flag(b"--silent");
         cli.quiet = args.flag(b"--quiet");

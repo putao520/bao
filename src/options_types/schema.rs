@@ -326,6 +326,8 @@ pub mod api {
         pub minimum_release_age_excludes: Option<Vec<Box<[u8]>>>,
         pub public_hoist_pattern: Option<PnpmMatcher>,
         pub hoist_pattern: Option<PnpmMatcher>,
+        /// `offline = true`: `bun install` never touches the network. upstream bbf3f4af32
+        pub offline: Option<bool>,
     }
 
     /// schema.zig:1967 — `enum(u8)` (open). Generated body emits `_` open

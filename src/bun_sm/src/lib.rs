@@ -123,6 +123,7 @@ pub use event_loop::EventLoop as SmEventLoop;
 pub use event_loop::EventLoopHandle;
 pub use global_object::JSGlobalObject;
 pub use global_object::RangeErrorOptions;
+pub use global_object::node_realm_options;
 pub use js_cell::JsCell;
 pub use js_class::JsClass;
 pub use js_promise::js_promise as js_promise_mod;

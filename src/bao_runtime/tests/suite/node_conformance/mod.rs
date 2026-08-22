@@ -1,6 +1,7 @@
 //! Node.js conformance suite (formerly explicit `[[test]]` targets under
 //! tests/node_conformance/, now a submodule of the single-harness suite).
 
+mod argon2_conformance;
 mod assert_conformance;
 mod buffer_conformance;
 mod crypto_conformance;

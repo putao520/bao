@@ -35,7 +35,7 @@ use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 use mozjs::rust::wrappers2::JS_NewGlobalObject;
-use mozjs::rust::{CompileOptionsWrapper, IdVector, RealmOptions, SIMPLE_GLOBAL_CLASS};
+use mozjs::rust::{CompileOptionsWrapper, IdVector, SIMPLE_GLOBAL_CLASS};
 
 use crate::require::cache_builtin;
 
@@ -650,8 +650,9 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
         return true;
     }
 
-    // Create a new independent SM Realm/Compartment.
-    let options = RealmOptions::default();
+    // Create a new independent SM Realm/Compartment. Node semantics: vm
+    // contexts expose SharedArrayBuffer/Atomics like any Node realm.
+    let options = bao_engine::node_realm_options();
 
     rooted!(&in(cx_ref) let sandbox_global = JS_NewGlobalObject(
         cx_ref,

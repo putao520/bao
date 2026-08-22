@@ -96,6 +96,11 @@ pub struct PackageInstaller<'a> {
     pub successfully_installed: Bitset,
     pub command_ctx: Command::Context<'a>,
     pub current_tree_id: lockfile::tree::Id,
+    /// Trees that live under a self-contained workspace: packages there are copied
+    /// (real files) rather than hardlinked/cloned/symlinked from the cache, so tools
+    /// that walk, prune or rewrite that node_modules cannot reach the shared cache.
+    /// upstream 57b61eb8f3
+    pub(crate) copy_trees: Bitset,
 
     // fields used for running lifecycle scripts when it's safe
     //
@@ -1522,14 +1527,23 @@ impl<'a> PackageInstaller<'a> {
                     });
                 match resolution.tag {
                     resolution::Tag::Git => {
-                        package_manager::enqueue_git_for_checkout(
+                        // upstream bbf3f4af32: an --offline miss queues nothing;
+                        // count the package as done so the install phase advances
+                        if package_manager::enqueue_git_for_checkout(
                             self.manager_mut(),
                             dependency_id,
                             alias.slice(string_buf!()),
                             resolution,
                             context,
                             patch_name_and_version_hash,
-                        );
+                        ) == package_manager::GitEnqueueResult::OfflineMiss
+                        {
+                            self.increment_tree_install_count(
+                                !IS_PENDING_PACKAGE_INSTALL,
+                                self.current_tree_id,
+                                log_level,
+                            );
+                        }
                     }
                     resolution::Tag::Github => {
                         let url = self.manager_mut().alloc_github_url(resolution.github());
@@ -1544,6 +1558,12 @@ impl<'a> PackageInstaller<'a> {
                         ) {
                             Ok(()) => {}
                             Err(ForTarballError::OutOfMemory) => bun_core::out_of_memory(),
+                            // upstream bbf3f4af32: already reported/skipped inside
+                            Err(ForTarballError::Offline) => self.increment_tree_install_count(
+                                !IS_PENDING_PACKAGE_INSTALL,
+                                self.current_tree_id,
+                                log_level,
+                            ),
                             Err(ForTarballError::InvalidURL) => {
                                 self.fail_with_invalid_url::<IS_PENDING_PACKAGE_INSTALL>(log_level)
                             }
@@ -1570,6 +1590,12 @@ impl<'a> PackageInstaller<'a> {
                         ) {
                             Ok(()) => {}
                             Err(ForTarballError::OutOfMemory) => bun_core::out_of_memory(),
+                            // upstream bbf3f4af32: already reported/skipped inside
+                            Err(ForTarballError::Offline) => self.increment_tree_install_count(
+                                !IS_PENDING_PACKAGE_INSTALL,
+                                self.current_tree_id,
+                                log_level,
+                            ),
                             Err(ForTarballError::InvalidURL) => {
                                 self.fail_with_invalid_url::<IS_PENDING_PACKAGE_INSTALL>(log_level)
                             }
@@ -1602,6 +1628,12 @@ impl<'a> PackageInstaller<'a> {
                         ) {
                             Ok(()) => {}
                             Err(ForTarballError::OutOfMemory) => bun_core::out_of_memory(),
+                            // upstream bbf3f4af32: already reported/skipped inside
+                            Err(ForTarballError::Offline) => self.increment_tree_install_count(
+                                !IS_PENDING_PACKAGE_INSTALL,
+                                self.current_tree_id,
+                                log_level,
+                            ),
                             Err(ForTarballError::InvalidURL) => {
                                 self.fail_with_invalid_url::<IS_PENDING_PACKAGE_INSTALL>(log_level)
                             }
@@ -1761,10 +1793,20 @@ impl<'a> PackageInstaller<'a> {
                         break 'result result;
                     }
 
+                    // upstream 57b61eb8f3: trees owned by a self-contained workspace
+                    // get real files (copyfile), not hardlinks into the shared cache
+                    let method =
+                        if (self.current_tree_id as usize) < self.copy_trees.unmanaged.bit_length
+                            && self.copy_trees.is_set(self.current_tree_id as usize)
+                    {
+                        package_install::Method::Copyfile
+                    } else {
+                        installer.get_install_method()
+                    };
                     break 'result installer.install(
                         self.skip_delete,
                         &destination_dir,
-                        installer.get_install_method(),
+                        method,
                         resolution.tag,
                     );
                 }

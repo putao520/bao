@@ -1576,6 +1576,11 @@ impl<'a> Parser<'a> {
             );
         }
 
+        // upstream bbf3f4af32: `install.offline = true`
+        if let Some(v) = install_obj.get(b"offline").and_then(|e| e.as_bool()) {
+            install.offline = Some(v);
+        }
+
         Ok(())
     }
 

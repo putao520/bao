@@ -207,6 +207,25 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             6,
             JSPROP_ENUMERATE as u32,
         );
+        // @trace REQ-ENG-007 [api:node:crypto argon2/argon2Sync] — PORT
+        // upstream 31e447983b. nargs match node's arity (3 and 2), so
+        // `crypto.argon2.length` / `crypto.argon2Sync.length` parity holds.
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"argon2".as_ptr(),
+            Some(crypto_argon2),
+            3,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            crypto_obj.handle(),
+            c"argon2Sync".as_ptr(),
+            Some(crypto_argon2_sync),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
 
         // --- Cipher ---
         w2::JS_DefineFunction(
@@ -5376,7 +5395,11 @@ unsafe fn crypto_async_defer_callback(ctx_ptr: *mut CryptoAsyncCtx) {
                 mozjs::jsval::ObjectValue(buf_obj)
             };
             rooted!(&in(realm_cx) let val_rooted = val);
-            let args_arr = [UndefinedValue(), val_rooted.get()];
+            // Node callback convention: success is (null, result) — the
+            // error slot is null, never undefined (shared by every
+            // spawn_crypto_async user: pbkdf2/scrypt/generateKeyPair/
+            // generateKey/hkdf/checkPrime/randomFill/generatePrime/argon2).
+            let args_arr = [mozjs::jsval::NullValue(), val_rooted.get()];
             let cb_args = HandleValueArray {
                 length_: 2,
                 elements_: args_arr.as_ptr(),
@@ -5714,6 +5737,642 @@ unsafe extern "C" fn crypto_scrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal
                 JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                 false
             }
+        }
+    }
+}
+
+// ============================================================
+// Argon2 (crypto.argon2 / crypto.argon2Sync)
+// PORT(upstream 31e447983b): node:crypto argon2/argon2Sync wired to the
+// pure-Rust `rust-argon2` crate — the same workspace primitive
+// `Bun.password` uses (bun_password.rs); no second algorithm
+// implementation. Validation mirrors `check()` in Node's
+// lib/internal/crypto/argon2.js: same validators, property names, and
+// error message shapes (ERR_OUT_OF_RANGE / ERR_INVALID_ARG_TYPE /
+// ERR_INVALID_ARG_VALUE). Inputs are copied out of JS at call time
+// (node's async-job ToCopy semantics; the worker thread never touches JS
+// memory). Hashing runs single-threaded (ThreadMode::Sequential, like
+// Bun.password): lanes determine the output, not the thread count.
+// ============================================================
+
+/// One argon2 derivation request, fully owned (Send + 'static) so the
+/// sync path and the spawn_crypto_async worker share one derivation fn.
+struct Argon2Params {
+    message: Vec<u8>,
+    nonce: Vec<u8>,
+    secret: Vec<u8>,
+    associated_data: Vec<u8>,
+    parallelism: u32,
+    tag_length: u32,
+    memory: u32,
+    passes: u32,
+    variant: argon2::Variant,
+    /// Set when a value passes validation but exceeds the allocation
+    /// bound: rust-argon2's block/output Vec allocations are infallible,
+    /// so the job must pre-fail catchably instead of aborting.
+    alloc_failed: bool,
+}
+
+/// Node's catchable job-failure message (same on sync and async paths).
+const ARGON2_DERIVATION_FAILED: &str = "Argon2 derivation failed";
+
+/// Default allocation bound for one derivation (4 GiB — the same bound
+/// scrypt's output uses upstream; mirrors the default
+/// synthetic-allocation-limit behaviour without the test-only flag).
+const ARGON2_ALLOCATION_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Node inspect-style number rendering: integral values print without a
+/// decimal point; NaN/±Infinity by name (Rust would print "inf").
+fn argon2_number_string(n: f64) -> String {
+    if n.is_nan() {
+        return "NaN".to_string();
+    }
+    if n == f64::INFINITY {
+        return "Infinity".to_string();
+    }
+    if n == f64::NEG_INFINITY {
+        return "-Infinity".to_string();
+    }
+    if n.fract() == 0.0 && n.abs() <= 9007199254740992.0 {
+        return format!("{}", n as i64);
+    }
+    format!("{}", n)
+}
+
+/// ESClass → constructor-name fragment for "an instance of X" errors.
+fn argon2_es_class_name(cls: mozjs_sys::jsapi::js::ESClass) -> &'static str {
+    use mozjs_sys::jsapi::js::ESClass;
+    match cls {
+        ESClass::Object | ESClass::Arguments | ESClass::Other => "Object",
+        ESClass::Array => "Array",
+        ESClass::Number => "Number",
+        ESClass::String => "String",
+        ESClass::Boolean => "Boolean",
+        ESClass::RegExp => "RegExp",
+        ESClass::ArrayBuffer => "ArrayBuffer",
+        ESClass::SharedArrayBuffer => "SharedArrayBuffer",
+        ESClass::Date => "Date",
+        ESClass::Set => "Set",
+        ESClass::Map => "Map",
+        ESClass::Promise => "Promise",
+        ESClass::MapIterator => "Map Iterator",
+        ESClass::SetIterator => "Set Iterator",
+        ESClass::Error => "Error",
+        ESClass::BigInt => "BigInt",
+        ESClass::Function => "Function",
+    }
+}
+
+/// Node `determineSpecificType`-shaped "Received …" fragment for
+/// ERR_INVALID_ARG_TYPE messages.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_received(cx: *mut JSContext, val: JSVal) -> String {
+    if val.is_undefined() {
+        return "undefined".to_string();
+    }
+    if val.is_null() {
+        return "null".to_string();
+    }
+    if val.is_string() {
+        let s = crate::jsstr_to_rust_string(cx, val.to_string());
+        return format!("type string ('{}')", s);
+    }
+    if val.is_number() {
+        return format!("type number ({})", argon2_number_string(val.to_number()));
+    }
+    if val.is_boolean() {
+        return format!("type boolean ({})", val.to_boolean());
+    }
+    if val.is_symbol() {
+        return "type symbol".to_string();
+    }
+    if val.is_bigint() {
+        return "type bigint".to_string();
+    }
+    if val.is_object() {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj_root = val.to_object());
+        if JS_ObjectIsFunction(obj_root.get()) {
+            return "type function".to_string();
+        }
+        let mut cls = mozjs_sys::jsapi::js::ESClass::Other;
+        if mozjs_sys::jsapi::JS::GetBuiltinClass(cx, obj_root.handle().into(), &mut cls) {
+            return format!("an instance of {}", argon2_es_class_name(cls));
+        }
+        return "an instance of Object".to_string();
+    }
+    "undefined".to_string()
+}
+
+/// Construct a TypeError/RangeError, attach a Node `.code` property, set it
+/// as the pending exception and return false for the extern "C" hooks
+/// (module-local variant of globals.rs `throw_error_with_code`; same
+/// node_fs.rs pending-exception pattern).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_throw_with_code(cx: *mut JSContext, range: bool, code: &str, msg: &str) -> bool {
+    let c_msg = ::std::ffi::CString::new(msg)
+        .unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
+    {
+        let mut cx_s = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        if range {
+            mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+        } else {
+            mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+        }
+    }
+    if JS_IsExceptionPending(cx) {
+        rooted!(in(cx) let mut exn = UndefinedValue());
+        JS_GetPendingException(cx, exn.handle_mut().into());
+        let exn_val = exn.get();
+        if !exn_val.is_undefined() && exn_val.is_object() {
+            let cx_ref_err =
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            rooted!(&in(cx_ref_err) let exn_root = exn_val.to_object());
+            let code_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(code.as_bytes()).as_ptr());
+            if !code_str.is_null() {
+                let code_val = mozjs::jsval::StringValue(&*code_str);
+                rooted!(&in(cx_ref_err) let code_r = code_val);
+                JS_DefineProperty(
+                    cx,
+                    exn_root.handle().into(),
+                    c"code".as_ptr(),
+                    code_r.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+                JS_SetPendingException(
+                    cx,
+                    exn.handle().into(),
+                    ExceptionStackBehavior::DoNotCapture,
+                );
+            }
+        }
+    }
+    false
+}
+
+/// TypeError with `code: "ERR_INVALID_ARG_TYPE"`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_throw_invalid_arg_type(cx: *mut JSContext, msg: &str) -> bool {
+    argon2_throw_with_code(cx, false, "ERR_INVALID_ARG_TYPE", msg)
+}
+
+/// RangeError with `code: "ERR_OUT_OF_RANGE"`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_throw_out_of_range(cx: *mut JSContext, msg: &str) -> bool {
+    argon2_throw_with_code(cx, true, "ERR_OUT_OF_RANGE", msg)
+}
+
+/// TypeError with `code: "ERR_INVALID_ARG_VALUE"` (validateOneOf form).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_throw_invalid_arg_value(cx: *mut JSContext, msg: &str) -> bool {
+    argon2_throw_with_code(cx, false, "ERR_INVALID_ARG_VALUE", msg)
+}
+
+/// Non-throwing shape check: object that is neither an array nor a
+/// function (Node's validateObject with default flags). `IsArrayObject1`
+/// pierces proxies like `Array.isArray` (same as node_vm.rs
+/// `is_plain_options_object`).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_is_plain_object(cx: *mut JSContext, val: JSVal) -> bool {
+    if !val.is_object() {
+        return false;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = val.to_object());
+    let mut is_arr = false;
+    if IsArrayObject1(cx, obj.handle().into(), &mut is_arr) && is_arr {
+        return false;
+    }
+    !JS_ObjectIsFunction(obj.get())
+}
+
+/// Read one property off the parameters object (UndefinedValue on failure).
+/// `name` takes a C-string literal (`&CStr`); the raw pointer is taken at
+/// the SM API boundary inside.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_get_prop(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: &::std::ffi::CStr,
+) -> JSVal {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+    let mut out = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        name.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut out,
+        },
+    );
+    out
+}
+
+/// Upstream `getArgon2BufferSource`: string (utf8, like
+/// `Buffer.from(s, "utf8")`) / ArrayBuffer (incl. SharedArrayBuffer) /
+/// ArrayBufferView (Buffer/TypedArray/DataView, view range only); anything
+/// else throws ERR_INVALID_ARG_TYPE naming the property. Bytes are copied
+/// out at call time. Detached buffers yield empty (byteLength 0), which
+/// the nonce ≥ 8 check then rejects — same as node.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_buffer_source(
+    cx: *mut JSContext,
+    val: JSVal,
+    prop: &str,
+) -> ::std::result::Result<Vec<u8>, bool> {
+    if val.is_string() {
+        return Ok(crate::jsstr_to_rust_string(cx, val.to_string()).into_bytes());
+    }
+    if val.is_object() {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj_root = val.to_object());
+        // Uint8Array/Buffer fast path (respects byteOffset, shared backing).
+        let mut length: usize = 0;
+        let mut is_shared = false;
+        let mut data_ptr: *mut u8 = ptr::null_mut();
+        let u8_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+            obj_root.get(),
+            &mut length,
+            &mut is_shared,
+            &mut data_ptr,
+        );
+        if !u8_unwrapped.is_null() {
+            if !data_ptr.is_null() && length > 0 {
+                return Ok(::std::slice::from_raw_parts(data_ptr, length).to_vec());
+            }
+            return Ok(Vec::new());
+        }
+        // Other TypedArrays / DataView (respects byteOffset).
+        let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+            obj_root.get(),
+            &mut length,
+            &mut is_shared,
+            &mut data_ptr,
+        );
+        if !view_unwrapped.is_null() {
+            if !data_ptr.is_null() && length > 0 {
+                return Ok(::std::slice::from_raw_parts(data_ptr, length).to_vec());
+            }
+            return Ok(Vec::new());
+        }
+        // Plain ArrayBuffer or SharedArrayBuffer (detached → length 0).
+        if mozjs_sys::jsapi::JS::IsArrayBufferObjectMaybeShared(obj_root.get()) {
+            mozjs_sys::jsapi::JS::GetArrayBufferMaybeSharedLengthAndData(
+                obj_root.get(),
+                &mut length,
+                &mut is_shared,
+                &mut data_ptr,
+            );
+            if !data_ptr.is_null() && length > 0 {
+                return Ok(::std::slice::from_raw_parts(data_ptr, length).to_vec());
+            }
+            return Ok(Vec::new());
+        }
+    }
+    Err(argon2_throw_invalid_arg_type(
+        cx,
+        &format!(
+            "The \"parameters.{}\" property must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received {}",
+            prop,
+            argon2_received(cx, val)
+        ),
+    ))
+}
+
+/// validateInteger(len, "parameters.<prop>.byteLength", min, 2^32-1): only
+/// the range arm is reachable (byteLength is always a number).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_check_byte_length(
+    cx: *mut JSContext,
+    len: usize,
+    prop: &str,
+    min: u64,
+) -> Option<()> {
+    let len = len as u64;
+    if len >= min && len <= 4294967295 {
+        return Some(());
+    }
+    let _ = argon2_throw_out_of_range(
+        cx,
+        &format!(
+            "The value of \"parameters.{}.byteLength\" is out of range. It must be >= {} && <= 4294967295. Received {}",
+            prop, min, len
+        ),
+    );
+    None
+}
+
+/// A parameters scalar, converted to a GC-safe form at read time so the
+/// raw JSVal never outlives its property get: numbers keep their value,
+/// non-numbers keep their pre-rendered "Received …" fragment.
+enum Argon2Scalar {
+    Num(f64),
+    BadType(String),
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_read_scalar(cx: *mut JSContext, val: JSVal) -> Argon2Scalar {
+    if val.is_number() {
+        Argon2Scalar::Num(val.to_number())
+    } else {
+        Argon2Scalar::BadType(argon2_received(cx, val))
+    }
+}
+
+/// Node validateInteger(value, "parameters.<prop>", min, max) — and
+/// validateUint32(passes, …, true), which has the identical shape with
+/// min 1: non-number → ERR_INVALID_ARG_TYPE (property form); non-integer
+/// → ERR_OUT_OF_RANGE ("an integer"); out of [min, max] →
+/// ERR_OUT_OF_RANGE (range form). All bounds here are whole numbers.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_validate_scalar(
+    cx: *mut JSContext,
+    scalar: &Argon2Scalar,
+    prop: &str,
+    min: f64,
+    max: f64,
+) -> Option<u32> {
+    let n = match scalar {
+        Argon2Scalar::Num(n) => *n,
+        Argon2Scalar::BadType(received) => {
+            let _ = argon2_throw_invalid_arg_type(
+                cx,
+                &format!(
+                    "The \"parameters.{}\" property must be of type number. Received {}",
+                    prop, received
+                ),
+            );
+            return None;
+        }
+    };
+    if n.is_nan() || n.is_infinite() || n.fract() != 0.0 {
+        let _ = argon2_throw_out_of_range(
+            cx,
+            &format!(
+                "The value of \"parameters.{}\" is out of range. It must be an integer. Received {}",
+                prop,
+                argon2_number_string(n)
+            ),
+        );
+        return None;
+    }
+    if n < min || n > max {
+        let _ = argon2_throw_out_of_range(
+            cx,
+            &format!(
+                "The value of \"parameters.{}\" is out of range. It must be >= {} && <= {}. Received {}",
+                prop,
+                min as i64,
+                max as i64,
+                argon2_number_string(n)
+            ),
+        );
+        return None;
+    }
+    Some(n as u32)
+}
+
+/// Parse + validate `argon2Sync(algorithm, parameters)` /
+/// `argon2(algorithm, parameters, callback)` arguments, mirroring
+/// `checkArgon2()` in upstream src/js/node/crypto.ts (Node's argon2.js
+/// check()): same read order (scalars destructured first) and the same
+/// validation order (message, nonce, parallelism, tagLength, memory,
+/// passes, secret, associatedData). Returns None with the Node-formatted
+/// error already pending.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn argon2_parse_params(
+    cx: *mut JSContext,
+    algorithm_val: JSVal,
+    parameters_val: JSVal,
+) -> Option<Argon2Params> {
+    // validateString(algorithm, "algorithm")
+    if !algorithm_val.is_string() {
+        let _ = argon2_throw_invalid_arg_type(
+            cx,
+            &format!(
+                "The \"algorithm\" argument must be of type string. Received {}",
+                argon2_received(cx, algorithm_val)
+            ),
+        );
+        return None;
+    }
+    let algorithm = crate::jsstr_to_rust_string(cx, algorithm_val.to_string());
+    // validateOneOf(algorithm, "algorithm", ["argon2d", "argon2i", "argon2id"])
+    let variant = match algorithm.as_str() {
+        "argon2d" => argon2::Variant::Argon2d,
+        "argon2i" => argon2::Variant::Argon2i,
+        "argon2id" => argon2::Variant::Argon2id,
+        other => {
+            let _ = argon2_throw_invalid_arg_value(
+                cx,
+                &format!(
+                    "The argument 'algorithm' must be one of: 'argon2d', 'argon2i', 'argon2id'. Received '{}'",
+                    other
+                ),
+            );
+            return None;
+        }
+    };
+    // validateObject(parameters, "parameters")
+    if !argon2_is_plain_object(cx, parameters_val) {
+        let _ = argon2_throw_invalid_arg_type(
+            cx,
+            &format!(
+                "The \"parameters\" argument must be of type object. Received {}",
+                argon2_received(cx, parameters_val)
+            ),
+        );
+        return None;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let params_obj = parameters_val.to_object());
+    let params = params_obj.get();
+
+    // Scalar property reads first (upstream destructures before
+    // validating), each converted to a GC-safe form immediately.
+    let parallelism_raw = argon2_read_scalar(cx, argon2_get_prop(cx, params, c"parallelism"));
+    let tag_length_raw = argon2_read_scalar(cx, argon2_get_prop(cx, params, c"tagLength"));
+    let memory_raw = argon2_read_scalar(cx, argon2_get_prop(cx, params, c"memory"));
+    let passes_raw = argon2_read_scalar(cx, argon2_get_prop(cx, params, c"passes"));
+
+    // message: buffer source + byteLength ∈ [0, 2^32-1]
+    let message =
+        match argon2_buffer_source(cx, argon2_get_prop(cx, params, c"message"), "message") {
+            Ok(v) => v,
+            // Err carries the throw helper's `false`; the Node-formatted
+            // error is already pending.
+            Err(_) => return None,
+        };
+    argon2_check_byte_length(cx, message.len(), "message", 0)?;
+
+    // nonce: buffer source + byteLength ∈ [8, 2^32-1]
+    let nonce = match argon2_buffer_source(cx, argon2_get_prop(cx, params, c"nonce"), "nonce") {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    argon2_check_byte_length(cx, nonce.len(), "nonce", 8)?;
+
+    // In-order scalar validation (memory's min depends on parallelism).
+    let parallelism = argon2_validate_scalar(cx, &parallelism_raw, "parallelism", 1.0, 16777215.0)?;
+    let tag_length = argon2_validate_scalar(cx, &tag_length_raw, "tagLength", 4.0, 4294967295.0)?;
+    let memory = argon2_validate_scalar(
+        cx,
+        &memory_raw,
+        "memory",
+        8.0 * parallelism as f64,
+        4294967295.0,
+    )?;
+    let passes = argon2_validate_scalar(cx, &passes_raw, "passes", 1.0, 4294967295.0)?;
+
+    // secret: undefined → empty (omitted equals explicit empty).
+    let secret_val = argon2_get_prop(cx, params, c"secret");
+    let secret = if secret_val.is_undefined() {
+        Vec::new()
+    } else {
+        match argon2_buffer_source(cx, secret_val, "secret") {
+            Ok(v) => v,
+            Err(_) => return None,
+        }
+    };
+    argon2_check_byte_length(cx, secret.len(), "secret", 0)?;
+
+    // associatedData: undefined → empty.
+    let ad_val = argon2_get_prop(cx, params, c"associatedData");
+    let associated_data = if ad_val.is_undefined() {
+        Vec::new()
+    } else {
+        match argon2_buffer_source(cx, ad_val, "associatedData") {
+            Ok(v) => v,
+            Err(_) => return None,
+        }
+    };
+    argon2_check_byte_length(cx, associated_data.len(), "associatedData", 0)?;
+
+    // Pre-fail over-limit jobs catchably (rust-argon2 allocates
+    // infallibly). memory is KiB; the same 4 GiB bound bounds tag_length.
+    let alloc_failed = (memory as u64).saturating_mul(1024) > ARGON2_ALLOCATION_LIMIT
+        || tag_length as u64 > ARGON2_ALLOCATION_LIMIT;
+
+    Some(Argon2Params {
+        message,
+        nonce,
+        secret,
+        associated_data,
+        parallelism,
+        tag_length,
+        memory,
+        passes,
+        variant,
+        alloc_failed,
+    })
+}
+
+/// One derivation, shared by the sync path and the async worker closure.
+/// Config field mapping is upstream's: lanes=parallelism, mem_cost=memory
+/// (KiB), time_cost=passes, hash_length=tagLength, Version13. Every
+/// hash_raw error (including the over-limit pre-fail) surfaces as node's
+/// catchable "Argon2 derivation failed".
+fn argon2_derive(p: Argon2Params) -> ::std::result::Result<Vec<u8>, String> {
+    if p.alloc_failed {
+        return Err(ARGON2_DERIVATION_FAILED.to_string());
+    }
+    let config = argon2::Config {
+        ad: &p.associated_data,
+        hash_length: p.tag_length,
+        lanes: p.parallelism,
+        mem_cost: p.memory,
+        secret: &p.secret,
+        // Sequential like Bun.password: lanes determine the output, not
+        // the thread count, so results match node.
+        thread_mode: argon2::ThreadMode::Sequential,
+        time_cost: p.passes,
+        variant: p.variant,
+        version: argon2::Version::Version13,
+    };
+    // Unreachable with in-range parameters: checkArgon2 bounds are a
+    // superset of rust-argon2's constraints — but never abort, fail like
+    // node does when its argon2 allocation errors.
+    argon2::hash_raw(&p.message, &p.nonce, &config)
+        .map_err(|_| ARGON2_DERIVATION_FAILED.to_string())
+}
+
+// Async argon2 — callback variant.
+// @trace REQ-ENG-007 [api:node:crypto argon2] — crypto.argon2(algorithm,
+// parameters, callback): validation order mirrors node (parameters are
+// fully validated before the callback), the job runs on the
+// spawn_crypto_async worker, and the callback receives (err) or
+// (undefined, Buffer).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_argon2(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let algorithm_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let parameters_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let callback_val = if argc > 2 { *args.get(2).ptr } else { UndefinedValue() };
+
+    let params = match argon2_parse_params(cx, algorithm_val, parameters_val) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // validateFunction(callback, "callback") — after parameters, like node.
+    let mut callback: *mut JSObject = ptr::null_mut();
+    if callback_val.is_object() {
+        let obj = callback_val.to_object();
+        if JS_ObjectIsFunction(obj) {
+            callback = obj;
+        }
+    }
+    if callback.is_null() {
+        return argon2_throw_invalid_arg_type(
+            cx,
+            &format!(
+                "The \"callback\" argument must be of type function. Received {}",
+                argon2_received(cx, callback_val)
+            ),
+        );
+    }
+
+    spawn_crypto_async(cx, "argon2", callback, move || argon2_derive(params));
+    args.rval().set(UndefinedValue());
+    true
+}
+
+// Sync argon2.
+// @trace REQ-ENG-007 [api:node:crypto argon2Sync] — crypto.argon2Sync(
+// algorithm, parameters) → Buffer of tagLength bytes; job failures throw
+// node's catchable "Argon2 derivation failed".
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_argon2_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let algorithm_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let parameters_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+
+    let params = match argon2_parse_params(cx, algorithm_val, parameters_val) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    match argon2_derive(params) {
+        Ok(out) => {
+            let buf_obj = crate::globals::create_buffer_object(cx, &out);
+            if !buf_obj.is_null() {
+                args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+            } else {
+                args.rval().set(UndefinedValue());
+            }
+            true
+        }
+        Err(msg) => {
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            false
         }
     }
 }

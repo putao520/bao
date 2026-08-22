@@ -487,6 +487,9 @@ pub struct Builder<'a, const METHOD: u8> {
     pub workspace_filters: &'a [WorkspaceFilter],
     pub install_root_dependencies: bool,
     pub packages_to_install: Option<&'a [PackageID]>,
+    /// Workspace package ids that are hoisting barriers (self-contained node_modules).
+    /// upstream 57b61eb8f3
+    pub(crate) self_contained: Vec<PackageID>,
 }
 
 #[derive(bun_collections::SoaRowDerive)]
@@ -762,6 +765,18 @@ impl Tree {
         // alongside &mut builder. Reshaped to re-borrow per use to satisfy borrowck.
         // PORT NOTE: reshaped for borrowck.
         let next_id = (builder.list.len() - 1) as Id;
+        // A self-contained workspace is a hoisting barrier: nothing below it may be
+        // placed above its own node_modules. upstream 57b61eb8f3
+        let hoist_root_id = if dependency_id != ROOT_DEP_ID
+            && builder.dependencies[dependency_id as usize]
+                .behavior
+                .is_workspace()
+            && builder.self_contained.contains(&parent_pkg_id)
+        {
+            next_id
+        } else {
+            hoist_root_id
+        };
 
         // Copy the `ParentRef` out (it's `Copy`) so the resulting `&Lockfile`
         // is borrowed from a local, not `&builder` — subsequent `&mut builder`

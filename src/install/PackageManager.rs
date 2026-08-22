@@ -256,12 +256,12 @@ pub use directories::{
 
 pub use self::package_manager_enqueue as enqueue;
 pub use enqueue::{
-    create_extract_task_for_streaming, enqueue_dependency_list, enqueue_dependency_to_root,
-    enqueue_dependency_with_main, enqueue_dependency_with_main_and_success_fn,
-    enqueue_extract_npm_package, enqueue_git_checkout, enqueue_git_for_checkout,
-    enqueue_network_task, enqueue_package_for_download, enqueue_parse_npm_package,
-    enqueue_patch_task, enqueue_patch_task_pre, enqueue_tarball_for_download,
-    enqueue_tarball_for_reading,
+    GitEnqueueResult, create_extract_task_for_streaming, enqueue_dependency_list,
+    enqueue_dependency_to_root, enqueue_dependency_with_main,
+    enqueue_dependency_with_main_and_success_fn, enqueue_extract_npm_package,
+    enqueue_git_checkout, enqueue_git_for_checkout, enqueue_network_task,
+    enqueue_package_for_download, enqueue_parse_npm_package, enqueue_patch_task,
+    enqueue_patch_task_pre, enqueue_tarball_for_download, enqueue_tarball_for_reading,
 };
 
 use self::package_manager_lifecycle as lifecycle;
@@ -2207,6 +2207,21 @@ pub fn init(
             ctx.install.as_deref(),
             subcommand,
         )?;
+
+        // `install.prefer = "offline"` in bunfig (also what `bun --prefer-offline` sets
+        // for the runtime's auto-install) means prefer-offline for `bun install` too,
+        // unless a flag already asked for more. upstream bbf3f4af32
+        if manager.options.offline == options::OfflineMode::Online
+            && ctx.debug.offline_mode_setting
+                == Some(bun_options_types::offline_mode::OfflineMode::Offline)
+        {
+            manager.options.offline = options::OfflineMode::PreferOffline;
+            // the manifest cache is the data source in this mode (see Options::load)
+            manager
+                .options
+                .enable
+                .set(options::Enable::MANIFEST_CACHE, true);
+        }
 
         if let Some(config) = ctx.install.as_deref_mut() {
             if let Some(p) = config.public_hoist_pattern.take() {

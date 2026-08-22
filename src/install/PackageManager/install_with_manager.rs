@@ -55,8 +55,10 @@ pub fn install_with_manager(
     let log_level = manager.options.log_level;
 
     // Start resolving DNS for the default registry immediately.
-    // Unless you're behind a proxy.
-    if !manager.env().has_http_proxy() {
+    // Unless you're behind a proxy. Or entirely offline. upstream bbf3f4af32
+    if !manager.env().has_http_proxy()
+        && manager.options.offline != crate::package_manager_real::options::OfflineMode::Offline
+    {
         // And don't try to resolve DNS if it's an IP address.
         let scope_url = manager.options.scope.url.url();
         if !scope_url.hostname.is_empty() && !scope_url.is_ip_address() {
@@ -256,6 +258,18 @@ pub fn install_with_manager(
                 };
 
                 had_any_diffs = manager.summary.has_diffs();
+
+                // Which workspaces asked for a self-contained node_modules is a property
+                // of their manifests, not of the dependency graph: mirror the freshly
+                // parsed manifests whether or not anything else changed, so the copy
+                // loaded from bun.lock never goes stale. upstream 57b61eb8f3
+                manager
+                    .lockfile
+                    .self_contained_workspaces
+                    .clear_retaining_capacity();
+                for key in lockfile.self_contained_workspaces.keys() {
+                    manager.lockfile.self_contained_workspaces.put(*key, ())?;
+                }
 
                 // Split-borrow `manager.lockfile` so the `StringBuilder`
                 // (which owns `buffers.string_bytes` + `string_pool`) and the

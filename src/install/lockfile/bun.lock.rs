@@ -286,6 +286,8 @@ impl Stringifier {
                     extern_strings,
                     deps_buf,
                     &lockfile.workspace_versions,
+                    // upstream 57b61eb8f3
+                    &lockfile.self_contained_workspaces,
                     &mut optional_peers_buf,
                     &pkg_map,
                     b"",
@@ -330,6 +332,8 @@ impl Stringifier {
                         extern_strings,
                         deps_buf,
                         &lockfile.workspace_versions,
+                        // upstream 57b61eb8f3
+                        &lockfile.self_contained_workspaces,
                         &mut optional_peers_buf,
                         &pkg_map,
                         pkg_names[workspace_pkg_id as usize].slice(buf),
@@ -1134,6 +1138,12 @@ impl Stringifier {
         extern_strings: &[ExternalString],
         deps_buf: &[Dependency],
         workspace_versions: &VersionHashMap,
+        // upstream 57b61eb8f3 (plain comment: doc comments are not allowed on fn params)
+        self_contained_workspaces: &bun_collections::ArrayHashMap<
+            PackageNameHash,
+            (),
+            bun_collections::ArrayIdentityContextU64,
+        >,
         optional_peers_buf: &mut Vec<String>,
         pkg_map: &PkgMap<()>,
         relative_path: &[u8],
@@ -1185,6 +1195,14 @@ impl Stringifier {
                 writer.write_all(b",\n")?;
                 Self::write_indent(writer, *indent)?;
                 write!(writer, "\"version\": \"{}\"", version.fmt(buf))?;
+            }
+
+            // upstream 57b61eb8f3: recorded per workspace so a tree rebuilt from
+            // this lockfile is hoisted the same way
+            if self_contained_workspaces.contains(&pkg_name_hashes[pkg_id as usize]) {
+                writer.write_all(b",\n")?;
+                Self::write_indent(writer, *indent)?;
+                writer.write_all(b"\"hoistingLimits\": \"workspaces\"")?;
             }
 
             if pkg_bins[pkg_id as usize].tag != BinTag::None {
@@ -2006,6 +2024,24 @@ pub fn parse_into_binary_lockfile(
             lockfile
                 .workspace_versions
                 .insert(name_hash, parsed.version.min());
+        }
+
+        // `installConfig.hoistingLimits` mirrored from the workspace manifest, so the
+        // tree is hoisted the same way when it is rebuilt from this lockfile.
+        // upstream 57b61eb8f3
+        if let Some(h) = value.get(b"hoistingLimits") {
+            if h.as_utf8_string_literal() == Some(b"workspaces".as_slice()) {
+                lockfile.self_contained_workspaces.insert(name_hash, ());
+            } else {
+                // PORT NOTE: upstream derives the value loc from the key via
+                // `value_loc_of`; the value expr is in hand here, so use its loc.
+                log.add_error(
+                    Some(source),
+                    h.loc,
+                    b"Expected \"workspaces\" for hoistingLimits",
+                );
+                return Err(ParseError::InvalidWorkspaceObject);
+            }
         }
     }
 

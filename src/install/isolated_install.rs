@@ -2451,6 +2451,15 @@ pub(crate) fn install_isolated_packages(
                                 Err(e) if e == bun_core::err!(OutOfMemory) => {
                                     return Err(AllocError);
                                 }
+                                // upstream bbf3f4af32: --offline miss already
+                                // reported/skipped inside; advance silently
+                                Err(crate::network_task::ForTarballError::Offline) => {
+                                    entry_steps[entry_id.get() as usize]
+                                        .store(installer::Step::Done as u32, Ordering::Relaxed);
+                                    installer
+                                        .on_task_complete(entry_id, installer::CompleteState::Fail);
+                                    continue;
+                                }
                                 Err(err) => {
                                     // error.InvalidURL
                                     Output::err(
@@ -2476,13 +2485,22 @@ pub(crate) fn install_isolated_packages(
                             }
                         }
                         ResolutionTag::Git => {
-                            installer.manager_mut().enqueue_git_for_checkout(
+                            // upstream bbf3f4af32: --offline and not cached: nothing was
+                            // queued; count the entry as done so the install advances
+                            if installer.manager_mut().enqueue_git_for_checkout(
                                 dep_id,
                                 dep.name.slice(string_buf),
                                 &pkg_res,
                                 ctx,
                                 patch_info.name_and_version_hash(),
-                            );
+                            ) == package_manager::GitEnqueueResult::OfflineMiss
+                            {
+                                entry_steps[entry_id.get() as usize]
+                                    .store(installer::Step::Done as u32, Ordering::Relaxed);
+                                installer
+                                    .on_task_complete(entry_id, installer::CompleteState::Fail);
+                                continue;
+                            }
                         }
                         ResolutionTag::Github => {
                             // Zig (isolated_install.zig:1759) reads `pkg_res.value.git` here as
@@ -2501,6 +2519,15 @@ pub(crate) fn install_isolated_packages(
                                 Ok(()) => {}
                                 Err(e) if e == bun_core::err!(OutOfMemory) => {
                                     bun_core::out_of_memory()
+                                }
+                                // upstream bbf3f4af32: --offline miss already
+                                // reported/skipped inside; advance silently
+                                Err(crate::network_task::ForTarballError::Offline) => {
+                                    entry_steps[entry_id.get() as usize]
+                                        .store(installer::Step::Done as u32, Ordering::Relaxed);
+                                    installer
+                                        .on_task_complete(entry_id, installer::CompleteState::Fail);
+                                    continue;
                                 }
                                 Err(err) => {
                                     Output::err(
@@ -2545,6 +2572,15 @@ pub(crate) fn install_isolated_packages(
                                 Ok(()) => {}
                                 Err(e) if e == bun_core::err!(OutOfMemory) => {
                                     bun_core::out_of_memory()
+                                }
+                                // upstream bbf3f4af32: --offline miss already
+                                // reported/skipped inside; advance silently
+                                Err(crate::network_task::ForTarballError::Offline) => {
+                                    entry_steps[entry_id.get() as usize]
+                                        .store(installer::Step::Done as u32, Ordering::Relaxed);
+                                    installer
+                                        .on_task_complete(entry_id, installer::CompleteState::Fail);
+                                    continue;
                                 }
                                 Err(err) => {
                                     Output::err(

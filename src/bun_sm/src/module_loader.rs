@@ -16,7 +16,7 @@ use mozjs::rust::wrappers2::{
     ThrowOnModuleEvaluationFailure,
 };
 use mozjs::rust::{
-    CompileOptionsWrapper, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS, transform_str_to_source_text,
+    CompileOptionsWrapper, Runtime, SIMPLE_GLOBAL_CLASS, transform_str_to_source_text,
 };
 
 use crate::error::JsError;
@@ -354,7 +354,7 @@ impl ModuleLoader {
         // set import.meta.main = true on this module (Bun semantics).
         ENTRY_MODULE.with(|e| *e.borrow_mut() = Some(abs_filename.clone()));
 
-        let options = RealmOptions::default();
+        let options = crate::node_realm_options();
 
         rooted!(&in(cx) let global = unsafe {
             mozjs::rust::wrappers2::JS_NewGlobalObject(
@@ -497,7 +497,7 @@ impl ModuleLoader {
         // set import.meta.main = true on this module (Bun semantics).
         ENTRY_MODULE.with(|e| *e.borrow_mut() = Some(abs_filename.clone()));
 
-        let options = RealmOptions::default();
+        let options = crate::node_realm_options();
 
         rooted!(&in(cx) let global = unsafe {
             mozjs::rust::wrappers2::JS_NewGlobalObject(

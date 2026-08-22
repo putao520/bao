@@ -495,7 +495,7 @@ unsafe fn create_node_realm_native(
     };
     use mozjs::realm::AutoRealm;
     use mozjs::rust::wrappers2::{JS_NewGlobalObject, JS_SetProperty, JS_WrapObject};
-    use mozjs::rust::{Handle, MutableHandle, RealmOptions, SIMPLE_GLOBAL_CLASS};
+    use mozjs::rust::{Handle, MutableHandle, SIMPLE_GLOBAL_CLASS};
 
     let raw_cx = cx_ptr as *mut RawJSContext;
     let page_global = page_global_ptr as *mut JSObject;
@@ -506,7 +506,10 @@ unsafe fn create_node_realm_native(
 
     let mut cx = JSContext::from_ptr(cx_nn);
 
-    let mut options = RealmOptions::default();
+    // Node-semantics realm (bun_runtime globals installed below):
+    // SharedArrayBuffer/Atomics standard classes on, unlike servo's web page
+    // realms which keep the shared-memory flag off (cross-site-isolated gating).
+    let mut options = bao_engine::node_realm_options();
     options.creationOptions_.compSpec_ =
         mozjs::jsapi::JS::CompartmentSpecifier::NewCompartmentAndZone;
 

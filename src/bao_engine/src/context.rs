@@ -29,7 +29,7 @@ use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::JS_NewGlobalObject;
-use mozjs::rust::{RealmOptions, SIMPLE_GLOBAL_CLASS};
+use mozjs::rust::SIMPLE_GLOBAL_CLASS;
 
 use crate::error::JsError;
 use crate::host_fn;
@@ -811,7 +811,9 @@ impl JsContext {
         if let Some(ref pg) = self.realm_global {
             return Ok(pg.global_ptr());
         }
-        let options = RealmOptions::default();
+        // Node-semantics realm: SharedArrayBuffer/Atomics standard classes on
+        // (see bun_sm::global_object::node_realm_options).
+        let options = bun_sm::node_realm_options();
         rooted!(&in(cx) let global = unsafe {
             JS_NewGlobalObject(
                 cx,

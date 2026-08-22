@@ -53,6 +53,9 @@ impl PackageManager {
             enable_manifest_cache_control: self.options.enable.manifest_cache_control(),
             cache_directory: enable_manifest_cache.then(|| get_cache_directory(self)),
             timestamp_for_manifest_cache_control: self.timestamp_for_manifest_cache_control,
+            // upstream bbf3f4af32: --prefer-offline / --offline waive manifest age
+            accept_expired: self.options.offline
+                != super::package_manager_options::OfflineMode::Online,
         }
     }
 

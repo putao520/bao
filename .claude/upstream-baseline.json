@@ -8,7 +8,7 @@
       "local_path": "/home/putao/code/rust/bun",
       "baseline": "abe2ad4f0064334ebe83427ee689eb3e8d713a2e",
       "baseline_date": "2026-08-23",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD;窗口 4448a2e21..abe2ad4f00 75 commits:14 吸收/1 已含/57 N-A/3 feature 裁决缓后(install --offline / selfContained workspaces / node:crypto argon2)"
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD;窗口 4448a2e21..abe2ad4f00 75 commits:15 吸收(含缓后转吸收的 install --offline/selfContained/argon2 三 feature,2026-08-23 用户裁决既有面 parity 全收)/1 已含/59 N-A"
     },
     "servo": {
       "repo": "servo/servo",

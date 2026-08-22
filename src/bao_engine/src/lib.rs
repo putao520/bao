@@ -59,6 +59,7 @@ pub use bun_sm::gc;
 pub use bun_sm::generated;
 pub use bun_sm::host_fn;
 pub use bun_sm::ipc;
+pub use bun_sm::node_realm_options;
 pub use bun_sm::rare_data;
 pub use bun_sm::value;
 pub use bun_sm::webcore_types;

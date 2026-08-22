@@ -132,6 +132,11 @@ pub enum Callback {
 #[derive(Default, Clone, Copy)]
 pub struct DedupeMapEntry {
     pub is_required: bool,
+    /// Set once the download/extract for this task id has terminally failed so a
+    /// later edge to the same package is quiet instead of re-reporting. In Bao this
+    /// is only set on `--offline` cache misses (upstream bbf3f4af32 also uses it for
+    /// the `AlreadyFailed` download path, which Bao's tree predates).
+    pub failed: bool,
 }
 // Zig: `std.HashMap(Task.Id, DedupeMapEntry, IdentityContext(Task.Id), 80)`
 // TODO(port): IdentityContext (hash = value bits) + 80% load factor — verify
@@ -699,6 +704,10 @@ pub enum ForTarballError {
     OutOfMemory,
     #[error("InvalidURL")]
     InvalidURL,
+    /// `--offline` and the tarball is not in the cache. Already reported (once per
+    /// package); callers treat it like a failed download. upstream bbf3f4af32
+    #[error("TarballFailedToDownload")]
+    Offline,
 }
 bun_core::oom_from_alloc!(ForTarballError);
 impl From<ForTarballError> for bun_core::Error {
@@ -706,6 +715,7 @@ impl From<ForTarballError> for bun_core::Error {
         match e {
             ForTarballError::OutOfMemory => bun_core::err!(OutOfMemory),
             ForTarballError::InvalidURL => bun_core::err!(InvalidURL),
+            ForTarballError::Offline => bun_core::err!("TarballFailedToDownload"),
         }
     }
 }

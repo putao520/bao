@@ -36,7 +36,7 @@ use bun_install::package_manager_task as Task;
 // import the *module* under the `Options` name so `Options::LogLevel` resolves as a path
 // (matches the `Task` module-alias pattern above and `CommandLineArguments.rs`).
 use super::package_manager_options as Options;
-use super::package_manager_options::{Do, Enable};
+use super::package_manager_options::{Do, Enable, OfflineMode};
 use crate::isolated_install::store as Store;
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -1786,6 +1786,21 @@ pub fn is_network_task_required(this: &PackageManager, task_id: Task::Id) -> boo
     }
 }
 
+/// upstream bbf3f4af32: mark a task id as terminally failed in the dedupe map so
+/// later edges to the same package take the quiet already-failed path.
+pub(crate) fn mark_network_task_failed(this: &mut PackageManager, task_id: Task::Id) {
+    if let Some(entry) = this.network_dedupe_map.get_mut(&task_id) {
+        entry.failed = true;
+    }
+}
+
+/// upstream bbf3f4af32
+pub(crate) fn network_task_has_failed(this: &PackageManager, task_id: Task::Id) -> bool {
+    this.network_dedupe_map
+        .get(&task_id)
+        .is_some_and(|e| e.failed)
+}
+
 pub fn generate_network_task_for_tarball<'a>(
     this: &'a mut PackageManager,
     task_id: Task::Id,
@@ -1798,6 +1813,30 @@ pub fn generate_network_task_for_tarball<'a>(
 ) -> Result<Option<&'a mut NetworkTask>, ForTarballError> {
     if has_created_network_task(this, task_id, is_required) {
         return Ok(None);
+    }
+    // Only reached when the tarball is not already extracted in the cache. Under
+    // --offline nothing can be fetched: report it once (the dedupe entry above stays,
+    // so later edges to the same package are quiet) — as an error only if some edge
+    // requires it — and let the caller treat it like an already-failed download.
+    // upstream bbf3f4af32
+    if this.options.offline == OfflineMode::Offline {
+        if is_required {
+            // reported once; later dependents see the failed dedupe entry
+            mark_network_task_failed(this, task_id);
+            let name = this.lockfile.str(&package.name).to_vec();
+            this.log_mut().add_error_fmt(
+                None,
+                bun_ast::Loc::EMPTY,
+                format_args!(
+                    "--offline: \"{}\" is not in the cache",
+                    bstr::BStr::new(&name)
+                ),
+            );
+        } else {
+            // let a later required edge on the same package report it
+            let _ = this.network_dedupe_map.remove(&task_id);
+        }
+        return Err(ForTarballError::Offline);
     }
 
     // PORT NOTE: reshaped for borrowck — Zig writes the whole struct via `.* = .{}`.

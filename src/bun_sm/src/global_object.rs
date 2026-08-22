@@ -37,6 +37,24 @@ use crate::virtual_machine::VirtualMachine;
 #[repr(transparent)]
 pub struct JSGlobalObject(pub(crate) *mut RawJSContext);
 
+/// Realm options for Node/Bun-semantics runtime realms (CLI eval, module
+/// loader, `vm.createContext` sandboxes, browser Node Realm).
+///
+/// SpiderMonkey gates the `SharedArrayBuffer` and `Atomics` standard classes
+/// behind the realm creation flag `sharedMemoryAndAtomics_`, which defaults to
+/// `false`: on the web these globals are only exposed to cross-site-isolated
+/// pages, and servo's page realms keep the default off (see servo
+/// `interface.rs::create_global_object`). Node and Bun expose both
+/// unconditionally, so every Bao runtime realm flips the flag on — the two
+/// constructors then resolve lazily through `SIMPLE_GLOBAL_CLASS`'s
+/// `JS_ResolveStandardClass` hook exactly like every other standard class
+/// (no manual global registration involved).
+pub fn node_realm_options() -> mozjs::rust::RealmOptions {
+    let mut options = mozjs::rust::RealmOptions::default();
+    options.creationOptions_.sharedMemoryAndAtomics_ = true;
+    options
+}
+
 impl JSGlobalObject {
     /// Create from a raw `*mut JSContext`.
     ///
@@ -86,7 +104,7 @@ impl JSGlobalObject {
     /// `cx` must be a valid JSContext.
     #[allow(unsafe_op_in_unsafe_fn)]
     pub unsafe fn create(cx: *mut RawJSContext) -> ::std::result::Result<Self, JsError> {
-        let options = mozjs::rust::RealmOptions::default();
+        let options = node_realm_options();
         let cx_ref =
             &mut mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let global = unsafe {

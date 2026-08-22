@@ -786,19 +786,40 @@ impl RepositoryExt for Repository {
                     &[folder_name.as_bytes()],
                 );
 
-                if let Err(err) = exec(env, &[b"git", b"-C", path, b"fetch", b"--quiet"]) {
-                    log.add_error_fmt(
-                        None,
-                        bun_ast::Loc::EMPTY,
-                        format_args!("\"git fetch\" for \"{}\" failed", BStr::new(name)),
-                    );
-                    return Err(err);
+                // --offline: use the cached clone as is (--prefer-offline still fetches:
+                // git dependencies pin exact commits, so a stale clone would fail to find a
+                // newly referenced one rather than "resolve older"). upstream bbf3f4af32
+                if PackageManager::get().options.offline
+                    != crate::package_manager_real::options::OfflineMode::Offline
+                {
+                    if let Err(err) = exec(env, &[b"git", b"-C", path, b"fetch", b"--quiet"]) {
+                        log.add_error_fmt(
+                            None,
+                            bun_ast::Loc::EMPTY,
+                            format_args!("\"git fetch\" for \"{}\" failed", BStr::new(name)),
+                        );
+                        return Err(err);
+                    }
                 }
                 Ok(dir)
             }
             Err(not_found) => {
                 if not_found != err!("ENOENT") {
                     return Err(not_found);
+                }
+                // upstream bbf3f4af32
+                if PackageManager::get().options.offline
+                    == crate::package_manager_real::options::OfflineMode::Offline
+                {
+                    log.add_error_fmt(
+                        None,
+                        bun_ast::Loc::EMPTY,
+                        format_args!(
+                            "--offline: git repository for \"{}\" is not in the cache",
+                            BStr::new(name)
+                        ),
+                    );
+                    return Err(err!("InstallFailed"));
                 }
 
                 let staging = CacheStaging::new(cache_dir)?;
