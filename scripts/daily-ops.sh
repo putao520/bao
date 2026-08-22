@@ -17,6 +17,7 @@ gh auth status >/dev/null 2>&1 || export DAILY_OPS_GH=failed
 git -C "$REPO" diff --quiet >/dev/null 2>&1 || export DAILY_OPS_DIRTY=1
 jq -e '.upstreams.bun.baseline and .upstreams.servo.baseline' "$REPO/.claude/upstream-baseline.json" >/dev/null 2>&1 || export DAILY_OPS_BASELINE=invalid
 pgrep -x cargo >/dev/null 2>&1 && export DAILY_OPS_CARGO_BUSY=1
+[ -n "${CARGO_REGISTRY_TOKEN:-}" ] || export DAILY_OPS_PUBLISH=failed
 GIT_PRE="$(git -C "$REPO" rev-parse HEAD)"
 set +e
 timeout --signal=TERM --kill-after=60 "$MAX_SECONDS" \

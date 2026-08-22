@@ -5,7 +5,7 @@ description: 每日运维值班:上游轻量同步 + GitHub issue 分诊处理(p
 
 # 每日运维值班(daily-ops)
 
-无头定时执行(systemd timer)或手动触发的两条值班线:**上游轻量同步**(细则:`references/upstream-daily.md`)+ **GitHub issue 分诊处理**(细则:`references/issue-rules.md`)。本文件是编排契约与硬边界;两份 reference 是各自域的操作细则,执行对应阶段前必读。
+无头定时执行(systemd timer)或手动触发的三条值班线:**上游轻量同步**(细则:`references/upstream-daily.md`)+ **GitHub issue 分诊处理**(细则:`references/issue-rules.md`)+ **发布收尾**(细则:`references/publish.md`)。本文件是编排契约与硬边界;三份 reference 是各自域的操作细则,执行对应阶段前必读。
 
 ## §0 运行契约
 
@@ -28,13 +28,14 @@ description: 每日运维值班:上游轻量同步 + GitHub issue 分诊处理(p
 | `$DAILY_OPS_DIRTY=1` | bao 工作树脏 | 只读阶段照常;写阶段标 `SKIPPED_BUSY` |
 | `$DAILY_OPS_BASELINE=invalid` | 基线文件缺失/字段缺失 | 全程 `BASELINE_FILE_INVALID` fail-closed 升级 |
 | `$DAILY_OPS_CARGO_BUSY=1` | 有 cargo 进程运行(锁可能被持有) | 测试阶段标 `SKIPPED_BUSY`,禁等锁 |
+| `$DAILY_OPS_PUBLISH=failed` | `CARGO_REGISTRY_TOKEN` 缺失 | 发布收尾标 `SKIP_PUBLISH_TOKEN` |
 
 ### 上游 clone 铁律
 
 - `~/code/rust/bun` 与 `~/code/tools/servo` **只允许 `git fetch origin`**;禁 clean/reset/checkout/推进 HEAD/改 remote/碰工作树
 - bun clone 工作树脏是**已知正常态**,不是异常信号,禁"修复"它
 
-## §1 每日循环(7 阶段)
+## §1 每日循环(8 阶段)
 
 1. **预检消费**:读 §0 环境变量确定各阶段可用性;`BASELINE_FILE_INVALID` 直接走升级报告
 2. **上游窗口扫描**:两 clone 各自 `git fetch origin`(单侧失败独立重试 1 次);baseline 从 `.claude/upstream-baseline.json` 读;`git rev-list --count <baseline>..origin/main` 得窗口数
@@ -43,6 +44,7 @@ description: 每日运维值班:上游轻量同步 + GitHub issue 分诊处理(p
 5. **波末验收**:§3 三重判据,任一不过 → `VERIFICATION_FAILED`
 6. **收尾**:**live 才** commit + push + 关 issue + 英文回复;dry-run 只在报告写「将会做什么」
 7. **报告+state**:报告写 `$DAILY_OPS_REPORT`(§5 模板);更新 `state.json`(`last_run` + `issue_cursor`)
+8. **发布收尾**:前置四条件(缺一即 `SKIP_PUBLISH` 并记原因:① MODE=live ② 本日有 wave commit ③ §3 三重判据 PASS ④ push 成功);满足 → 按 `references/publish.md` 发 cargo 变更闭包 + GitHub daily release;结果回写报告「发布」段
 
 ## §2 auto / escalate 边界表(硬门,逐行)
 
@@ -62,6 +64,7 @@ description: 每日运维值班:上游轻量同步 + GitHub issue 分诊处理(p
 | 验收 PASS | 收尾(§1 阶段 6) |
 | 验收 FAIL | 不关不 push,评论进展 |
 | bao 工作树脏 / cargo 锁被持有 | 只读阶段照常,写/测阶段标 `SKIPPED_BUSY` |
+| 发布收尾 | 四条件满足 → 按 `references/publish.md` 发 cargo 变更闭包 + GitHub release | 任一不满足 / 限流外失败 → `SKIP_PUBLISH` 登记 pending 次日重试 |
 
 ## §3 波末验收三重判据(硬编码,任一不过 = `VERIFICATION_FAILED`)
 
@@ -85,8 +88,8 @@ description: 每日运维值班:上游轻量同步 + GitHub issue 分诊处理(p
 # daily-ops report <YYYY-MM-DD>
 MODE: <dry-run|live>
 
-## 7 阶段 outcome
-预检/扫描/分诊/执行/验收/收尾/报告:各一行结论(OK|SKIPPED_*|FAILED_*)
+## 8 阶段 outcome
+预检/扫描/分诊/执行/验收/收尾/报告/发布:各一行结论(OK|SKIPPED_*|FAILED_*)
 
 ## 上游窗口
 - bun: <N> commits(吸收 <a> / 已含 <b> / 不适用 <c> / 需进一步判断 <d>)
@@ -101,6 +104,9 @@ MODE: <dry-run|live>
 
 ## commit
 <hash + 一句话>(如有)
+
+## 发布
+- crate 清单 + 版本 + tag + release URL;或 SKIP_PUBLISH + 原因
 
 ## 升级项
 - <逐项:原因 + 建议去向>
