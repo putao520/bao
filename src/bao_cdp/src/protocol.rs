@@ -2273,20 +2273,241 @@ mod tests {
         assert!(err.message.contains("no servo bridge connected"));
     }
 
-    // 12. handle_command Target.setAutoAttach → ok empty
+    // ─── handle_command table-driven protocol matrix ──────────────────
+    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+    //
+    // Convergence of the per-command protocol-coverage suites whose
+    // members differ only in (dispatch id, method, params) — one table
+    // per assertion shape (α ok+empty-result / β ok-only / γ
+    // unknown-command→-32601). Row comments preserve the original
+    // inventory numbering and dispatch ids of the pre-table tests;
+    // assertion parity per row is identical to the replaced tests
+    // (α: 2 asserts, β: 1, γ: 2).
+
+    /// α form: command succeeds and the result is exactly `{}`.
     #[test]
-    fn handle_command_target_set_auto_attach() {
-        let resp = dispatch_no_bridge(5, "Target.setAutoAttach", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
+    fn handle_command_ok_empty_result_matrix() {
+        let cases: Vec<(i64, &str, Option<Value>)> = vec![
+            // 12. Target.setAutoAttach → ok empty
+            (5, "Target.setAutoAttach", None),
+            // 13. Page.enable → ok empty
+            (6, "Page.enable", None),
+            // 15. Runtime.enable → ok empty (Chrome semantics: no
+            //     executionContextId in the response)
+            (8, "Runtime.enable", None),
+            // 19. Network.enable → ok empty
+            (12, "Network.enable", None),
+            // 21. CSS.enable → ok empty
+            (14, "CSS.enable", None),
+            // 23. Emulation.setDeviceMetricsOverride (no bridge) → ok empty
+            (
+                16,
+                "Emulation.setDeviceMetricsOverride",
+                Some(json!({"width": 800, "height": 600, "deviceScaleFactor": 2})),
+            ),
+            // 24. Input.dispatchMouseEvent (no bridge) → ok empty
+            (
+                17,
+                "Input.dispatchMouseEvent",
+                Some(
+                    json!({"type": "mousePressed", "x": 100, "y": 200, "button": 0, "clickCount": 1}),
+                ),
+            ),
+            // 25. Overlay.enable → ok empty
+            (18, "Overlay.enable", None),
+            // 26. Debugger.enable → ok empty
+            (19, "Debugger.enable", None),
+            // 28. Log.enable → ok empty
+            (21, "Log.enable", None),
+            // 78. Target.setDiscoverTargets → ok empty
+            (7, "Target.setDiscoverTargets", None),
+            // 188. ServiceWorker.enable → ok empty  @trace REQ-BRW-004 [criterion:19]
+            (1, "ServiceWorker.enable", None),
+            // 189. ServiceWorker.disable → ok empty  @trace REQ-BRW-004 [criterion:19]
+            (2, "ServiceWorker.disable", None),
+        ];
+        for (id, method, params) in cases {
+            let resp = dispatch_no_bridge(id, method, params);
+            assert!(resp.error.is_none(), "{method} (id {id}): unexpected error");
+            assert_eq!(
+                resp.result.unwrap(),
+                json!({}),
+                "{method} (id {id}): expected empty result"
+            );
+        }
     }
 
-    // 13. handle_command Page.enable → ok empty
+    /// β form: command succeeds (the replaced suites asserted
+    /// error-none only, without pinning the result payload).
     #[test]
-    fn handle_command_page_enable() {
-        let resp = dispatch_no_bridge(6, "Page.enable", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
+    fn handle_command_ok_only_matrix() {
+        let cases: Vec<(i64, &str, Option<Value>)> = vec![
+            // 91. Page.disable → ok empty
+            (20, "Page.disable", None),
+            // 92. Runtime.disable → ok empty
+            (21, "Runtime.disable", None),
+            // 95. Runtime.evaluateAsync → ok
+            (24, "Runtime.evaluateAsync", None),
+            // 96. Runtime.runScript → ok
+            (25, "Runtime.runScript", None),
+            // 97. Runtime.releaseObject → ok empty
+            (26, "Runtime.releaseObject", None),
+            // 98. Runtime.releaseObjectGroup → ok empty
+            (27, "Runtime.releaseObjectGroup", None),
+            // 99. Runtime.compileScript → ok empty
+            (28, "Runtime.compileScript", None),
+            // 101. DOM.enable → ok empty
+            (30, "DOM.enable", None),
+            // 102. DOM.disable → ok empty
+            (31, "DOM.disable", None),
+            // 105. DOM.setAttributeValue (no bridge) → ok empty
+            (
+                34,
+                "DOM.setAttributeValue",
+                Some(json!({"nodeId": 1, "name": "class", "value": "active"})),
+            ),
+            // 106. DOM.removeAttribute → ok empty
+            (35, "DOM.removeAttribute", None),
+            // 107. DOM.setOuterHTML → ok empty
+            (36, "DOM.setOuterHTML", None),
+            // 108. DOM.insertBefore → ok empty
+            (37, "DOM.insertBefore", None),
+            // 109. DOM.removeNode → ok empty
+            (38, "DOM.removeNode", None),
+            // 114. Network.disable → ok empty
+            (43, "Network.disable", None),
+            // 116. Network.setCacheDisabled → ok empty
+            (45, "Network.setCacheDisabled", None),
+            // 118. Network.emulateNetworkConditions → ok empty
+            (47, "Network.emulateNetworkConditions", None),
+            // 120. Network.deleteCookies → ok empty
+            (49, "Network.deleteCookies", None),
+            // 122. Network.setRequestInterception → ok empty
+            (51, "Network.setRequestInterception", None),
+            // 123. Network.continueInterceptedRequest → ok empty
+            (52, "Network.continueInterceptedRequest", None),
+            // 125. CSS.disable → ok empty
+            (54, "CSS.disable", None),
+            // 130. Emulation.clearDeviceMetricsOverride → ok empty
+            (59, "Emulation.clearDeviceMetricsOverride", None),
+            // 131. Emulation.setUserAgentOverride (no bridge, empty ua) → ok empty
+            (60, "Emulation.setUserAgentOverride", None),
+            // 132. Emulation.setTouchEmulationEnabled → ok empty
+            (61, "Emulation.setTouchEmulationEnabled", None),
+            // 133. Emulation.setScriptExecutionDisabled → ok empty
+            (62, "Emulation.setScriptExecutionDisabled", None),
+            // 134. Emulation.setFocusEmulationEnabled → ok empty
+            (63, "Emulation.setFocusEmulationEnabled", None),
+            // 135. Emulation.setCPUThrottlingRate → ok empty
+            (64, "Emulation.setCPUThrottlingRate", None),
+            // 136. Emulation.setDefaultBackgroundColorOverride → ok empty
+            (65, "Emulation.setDefaultBackgroundColorOverride", None),
+            // 138. Input.dispatchKeyEvent (no bridge) → ok empty
+            (67, "Input.dispatchKeyEvent", None),
+            // 139. Input.dispatchTouchEvent → ok empty
+            (68, "Input.dispatchTouchEvent", None),
+            // 140. Input.insertText (no bridge, empty text) → ok empty
+            (69, "Input.insertText", None),
+            // 141. Input.setIgnoreInputEvents → ok empty
+            (70, "Input.setIgnoreInputEvents", None),
+            // 142. Input.setInterceptDrags → ok empty
+            (71, "Input.setInterceptDrags", None),
+            // 144. Overlay.highlightNode → ok empty
+            (73, "Overlay.highlightNode", None),
+            // 145. Overlay.hideHighlight → ok empty
+            (74, "Overlay.hideHighlight", None),
+            // 146. Overlay.setInspectMode → ok empty
+            (75, "Overlay.setInspectMode", None),
+            // 147. Overlay.setPausedInDebuggerMessage → ok empty
+            (76, "Overlay.setPausedInDebuggerMessage", None),
+            // 149. Debugger.disable → ok empty
+            (78, "Debugger.disable", None),
+            // 150. Debugger.removeBreakpoint → ok empty
+            (79, "Debugger.removeBreakpoint", None),
+            // 151. Debugger.pause → ok empty
+            (80, "Debugger.pause", None),
+            // 152. Debugger.resume → ok empty
+            (81, "Debugger.resume", None),
+            // 153. Debugger.stepOver → ok empty
+            (82, "Debugger.stepOver", None),
+            // 154. Debugger.stepInto → ok empty
+            (83, "Debugger.stepInto", None),
+            // 155. Debugger.stepOut → ok empty
+            (84, "Debugger.stepOut", None),
+            // 156. Debugger.setSkipAllPauses → ok empty
+            (85, "Debugger.setSkipAllPauses", None),
+            // 157. Debugger.setBreakpointsActive → ok empty
+            (86, "Debugger.setBreakpointsActive", None),
+            // 161. Debugger.setPauseOnExceptions → ok empty
+            (90, "Debugger.setPauseOnExceptions", None),
+            // 163. Log.disable → ok empty
+            (92, "Log.disable", None),
+            // 164. Log.clear → ok empty
+            (93, "Log.clear", None),
+            // 165. Log.startViolationsReport → ok empty
+            (94, "Log.startViolationsReport", None),
+            // 166. Log.stopViolationsReport → ok empty
+            (95, "Log.stopViolationsReport", None),
+            // 168. Fetch.disable → ok empty
+            (97, "Fetch.disable", None),
+            // 192. ServiceWorker.stopWorker (no bridge) → ok empty  @trace REQ-BRW-004 [criterion:19]
+            (
+                5,
+                "ServiceWorker.stopWorker",
+                Some(json!({"registrationId": "sw-reg-1"})),
+            ),
+            // 193. ServiceWorker.unregister (no bridge) → ok empty  @trace REQ-BRW-004 [criterion:19]
+            (
+                6,
+                "ServiceWorker.unregister",
+                Some(json!({"registrationId": "sw-reg-1"})),
+            ),
+            // 195. ServiceWorker.dispatchPeriodicSyncEvent → ok empty  @trace REQ-BRW-004 [criterion:19]
+            (8, "ServiceWorker.dispatchPeriodicSyncEvent", None),
+        ];
+        for (id, method, params) in cases {
+            let resp = dispatch_no_bridge(id, method, params);
+            assert!(resp.error.is_none(), "{method} (id {id}): unexpected error");
+        }
+    }
+
+    /// γ form: known domain, unknown command → error -32601.
+    #[test]
+    fn handle_command_unknown_command_matrix() {
+        let cases: &[(i64, &str)] = &[
+            // 113. DOM.unknown → error -32601
+            (42, "DOM.nonExistent"),
+            // 124. Network.unknown → error -32601
+            (53, "Network.bogus"),
+            // 129. CSS.unknown → error -32601
+            (58, "CSS.bogus"),
+            // 137. Emulation.unknown → error -32601
+            (66, "Emulation.bogus"),
+            // 143. Input.unknown → error -32601
+            (72, "Input.bogus"),
+            // 148. Overlay.unknown → error -32601
+            (77, "Overlay.bogus"),
+            // 162. Debugger.unknown → error -32601
+            (91, "Debugger.bogus"),
+            // 167. Log.unknown → error -32601
+            (96, "Log.bogus"),
+            // 177. Fetch.unknown → error -32601
+            (106, "Fetch.bogus"),
+            // 196. ServiceWorker unknown command → error -32601  @trace REQ-BRW-004 [criterion:19]
+            (9, "ServiceWorker.nonExistent"),
+        ];
+        for (id, method) in cases {
+            let resp = dispatch_no_bridge(*id, method, None);
+            assert!(
+                resp.result.is_none(),
+                "{method} (id {id}): expected no result"
+            );
+            assert_eq!(
+                resp.error.unwrap().code,
+                -32601,
+                "{method} (id {id}): expected method-not-found"
+            );
+        }
     }
 
     // 14. handle_command Page.getLayoutMetrics (no bridge) → explicit error
@@ -2297,15 +2518,6 @@ mod tests {
         let err = resp.error.expect("no bridge must yield an error");
         assert_eq!(err.code, -32603);
         assert!(err.message.contains("no servo bridge"));
-    }
-
-    // 15. handle_command Runtime.enable → ok empty (Chrome semantics: no
-    //     executionContextId in the response)
-    #[test]
-    fn handle_command_runtime_enable() {
-        let resp = dispatch_no_bridge(8, "Runtime.enable", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
     }
 
     // 16. handle_command Runtime.evaluate (no bridge, empty expr) → undefined result
@@ -2338,14 +2550,6 @@ mod tests {
         assert_eq!(result["nodeId"], 0);
     }
 
-    // 19. handle_command Network.enable → ok empty
-    #[test]
-    fn handle_command_network_enable() {
-        let resp = dispatch_no_bridge(12, "Network.enable", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
-    }
-
     // 20. handle_command Network.getCookies → ok with empty cookies
     #[test]
     fn handle_command_network_get_cookies() {
@@ -2353,14 +2557,6 @@ mod tests {
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["cookies"], json!([]));
-    }
-
-    // 21. handle_command CSS.enable → ok empty
-    #[test]
-    fn handle_command_css_enable() {
-        let resp = dispatch_no_bridge(14, "CSS.enable", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
     }
 
     // 22. handle_command CSS.getComputedStyleForNode → ok empty computedStyle
@@ -2372,46 +2568,6 @@ mod tests {
         assert_eq!(result["computedStyle"], json!([]));
     }
 
-    // 23. handle_command Emulation.setDeviceMetricsOverride (no bridge) → ok empty
-    #[test]
-    fn handle_command_emulation_set_device_metrics() {
-        let resp = dispatch_no_bridge(
-            16,
-            "Emulation.setDeviceMetricsOverride",
-            Some(json!({"width": 800, "height": 600, "deviceScaleFactor": 2})),
-        );
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
-    }
-
-    // 24. handle_command Input.dispatchMouseEvent (no bridge) → ok empty
-    #[test]
-    fn handle_command_input_dispatch_mouse() {
-        let resp = dispatch_no_bridge(
-            17,
-            "Input.dispatchMouseEvent",
-            Some(json!({"type": "mousePressed", "x": 100, "y": 200, "button": 0, "clickCount": 1})),
-        );
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
-    }
-
-    // 25. handle_command Overlay.enable → ok empty
-    #[test]
-    fn handle_command_overlay_enable() {
-        let resp = dispatch_no_bridge(18, "Overlay.enable", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
-    }
-
-    // 26. handle_command Debugger.enable → ok empty
-    #[test]
-    fn handle_command_debugger_enable() {
-        let resp = dispatch_no_bridge(19, "Debugger.enable", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
-    }
-
     // 27. handle_command Debugger.setBreakpointByUrl → ok with breakpointId
     #[test]
     fn handle_command_debugger_set_breakpoint_by_url() {
@@ -2419,14 +2575,6 @@ mod tests {
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["breakpointId"], "1");
-    }
-
-    // 28. handle_command Log.enable → ok empty
-    #[test]
-    fn handle_command_log_enable() {
-        let resp = dispatch_no_bridge(21, "Log.enable", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
     }
 
     // 29. handle_command Fetch.enable → explicit error (no interception
@@ -2990,14 +3138,6 @@ mod tests {
         assert!(err.message.contains("WS session registry"));
     }
 
-    // 78. handle_command Target.setDiscoverTargets → ok empty
-    #[test]
-    fn handle_command_target_set_discover_targets() {
-        let resp = dispatch_no_bridge(7, "Target.setDiscoverTargets", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
-    }
-
     // 79. handle_command Target.getTargetTargets → ok (alias for getTargets)
     #[test]
     fn handle_command_target_get_target_targets() {
@@ -3120,20 +3260,6 @@ mod tests {
         assert_eq!(err.code, -32603);
     }
 
-    // 91. handle_command Page.disable → ok empty
-    #[test]
-    fn handle_command_page_disable() {
-        let resp = dispatch_no_bridge(20, "Page.disable", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 92. handle_command Runtime.disable → ok empty
-    #[test]
-    fn handle_command_runtime_disable() {
-        let resp = dispatch_no_bridge(21, "Runtime.disable", None);
-        assert!(resp.error.is_none());
-    }
-
     // 93. handle_command Runtime.callFunctionOn → ok
     #[test]
     fn handle_command_runtime_call_function_on() {
@@ -3152,41 +3278,6 @@ mod tests {
         assert_eq!(result["result"], json!([]));
     }
 
-    // 95. handle_command Runtime.evaluateAsync → ok
-    #[test]
-    fn handle_command_runtime_evaluate_async() {
-        let resp = dispatch_no_bridge(24, "Runtime.evaluateAsync", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 96. handle_command Runtime.runScript → ok
-    #[test]
-    fn handle_command_runtime_run_script() {
-        let resp = dispatch_no_bridge(25, "Runtime.runScript", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 97. handle_command Runtime.releaseObject → ok empty
-    #[test]
-    fn handle_command_runtime_release_object() {
-        let resp = dispatch_no_bridge(26, "Runtime.releaseObject", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 98. handle_command Runtime.releaseObjectGroup → ok empty
-    #[test]
-    fn handle_command_runtime_release_object_group() {
-        let resp = dispatch_no_bridge(27, "Runtime.releaseObjectGroup", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 99. handle_command Runtime.compileScript → ok empty
-    #[test]
-    fn handle_command_runtime_compile_script() {
-        let resp = dispatch_no_bridge(28, "Runtime.compileScript", None);
-        assert!(resp.error.is_none());
-    }
-
     // 100. handle_command Runtime.unknown → error -32601
     #[test]
     fn handle_command_runtime_unknown_command() {
@@ -3195,20 +3286,6 @@ mod tests {
         let err = resp.error.unwrap();
         assert_eq!(err.code, -32601);
         assert!(err.message.contains("Runtime.unknownMethod"));
-    }
-
-    // 101. handle_command DOM.enable → ok empty
-    #[test]
-    fn handle_command_dom_enable() {
-        let resp = dispatch_no_bridge(30, "DOM.enable", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 102. handle_command DOM.disable → ok empty
-    #[test]
-    fn handle_command_dom_disable() {
-        let resp = dispatch_no_bridge(31, "DOM.disable", None);
-        assert!(resp.error.is_none());
     }
 
     // 103. handle_command DOM.describeNode → ok
@@ -3229,45 +3306,6 @@ mod tests {
         assert!(result.get("model").is_some());
         assert_eq!(result["model"]["width"], 1920);
         assert_eq!(result["model"]["height"], 1080);
-    }
-
-    // 105. handle_command DOM.setAttributeValue (no bridge) → ok empty
-    #[test]
-    fn handle_command_dom_set_attribute_value_no_bridge() {
-        let resp = dispatch_no_bridge(
-            34,
-            "DOM.setAttributeValue",
-            Some(json!({"nodeId": 1, "name": "class", "value": "active"})),
-        );
-        assert!(resp.error.is_none());
-    }
-
-    // 106. handle_command DOM.removeAttribute → ok empty
-    #[test]
-    fn handle_command_dom_remove_attribute() {
-        let resp = dispatch_no_bridge(35, "DOM.removeAttribute", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 107. handle_command DOM.setOuterHTML → ok empty
-    #[test]
-    fn handle_command_dom_set_outer_html() {
-        let resp = dispatch_no_bridge(36, "DOM.setOuterHTML", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 108. handle_command DOM.insertBefore → ok empty
-    #[test]
-    fn handle_command_dom_insert_before() {
-        let resp = dispatch_no_bridge(37, "DOM.insertBefore", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 109. handle_command DOM.removeNode → ok empty
-    #[test]
-    fn handle_command_dom_remove_node() {
-        let resp = dispatch_no_bridge(38, "DOM.removeNode", None);
-        assert!(resp.error.is_none());
     }
 
     // 110. handle_command DOM.getOuterHTML (no bridge) → explicit error
@@ -3297,21 +3335,6 @@ mod tests {
         assert_eq!(result["nodeIds"], json!([]));
     }
 
-    // 113. handle_command DOM.unknown → error -32601
-    #[test]
-    fn handle_command_dom_unknown_command() {
-        let resp = dispatch_no_bridge(42, "DOM.nonExistent", None);
-        assert!(resp.result.is_none());
-        assert_eq!(resp.error.unwrap().code, -32601);
-    }
-
-    // 114. handle_command Network.disable → ok empty
-    #[test]
-    fn handle_command_network_disable() {
-        let resp = dispatch_no_bridge(43, "Network.disable", None);
-        assert!(resp.error.is_none());
-    }
-
     // 115. handle_command Network.getResponseBody (no bridge) → explicit error
     //      (servo does not expose stored response bodies — fail loudly, never
     //      return an empty-body fake success)
@@ -3320,13 +3343,6 @@ mod tests {
         let resp = dispatch_no_bridge(44, "Network.getResponseBody", None);
         let err = resp.error.expect("no bridge must yield an error");
         assert_eq!(err.code, -32603);
-    }
-
-    // 116. handle_command Network.setCacheDisabled → ok empty
-    #[test]
-    fn handle_command_network_set_cache_disabled() {
-        let resp = dispatch_no_bridge(45, "Network.setCacheDisabled", None);
-        assert!(resp.error.is_none());
     }
 
     // 117. handle_command Network.setExtraHTTPHeaders (no bridge) → explicit error
@@ -3339,13 +3355,6 @@ mod tests {
         assert_eq!(err.code, -32603);
     }
 
-    // 118. handle_command Network.emulateNetworkConditions → ok empty
-    #[test]
-    fn handle_command_network_emulate_conditions() {
-        let resp = dispatch_no_bridge(47, "Network.emulateNetworkConditions", None);
-        assert!(resp.error.is_none());
-    }
-
     // 119. handle_command Network.getAllCookies → ok with empty cookies
     #[test]
     fn handle_command_network_get_all_cookies() {
@@ -3353,13 +3362,6 @@ mod tests {
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["cookies"], json!([]));
-    }
-
-    // 120. handle_command Network.deleteCookies → ok empty
-    #[test]
-    fn handle_command_network_delete_cookies() {
-        let resp = dispatch_no_bridge(49, "Network.deleteCookies", None);
-        assert!(resp.error.is_none());
     }
 
     // 121. handle_command Network.setCookie → spec shape {"success":true}
@@ -3370,35 +3372,6 @@ mod tests {
         // CDP spec SetCookieReturnObject — no-bridge stub face keeps the
         // spec shape, same as the browser-side bridge path.
         assert_eq!(resp.result, Some(json!({ "success": true })));
-    }
-
-    // 122. handle_command Network.setRequestInterception → ok empty
-    #[test]
-    fn handle_command_network_set_request_interception() {
-        let resp = dispatch_no_bridge(51, "Network.setRequestInterception", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 123. handle_command Network.continueInterceptedRequest → ok empty
-    #[test]
-    fn handle_command_network_continue_intercepted_request() {
-        let resp = dispatch_no_bridge(52, "Network.continueInterceptedRequest", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 124. handle_command Network.unknown → error -32601
-    #[test]
-    fn handle_command_network_unknown() {
-        let resp = dispatch_no_bridge(53, "Network.bogus", None);
-        assert!(resp.result.is_none());
-        assert_eq!(resp.error.unwrap().code, -32601);
-    }
-
-    // 125. handle_command CSS.disable → ok empty
-    #[test]
-    fn handle_command_css_disable() {
-        let resp = dispatch_no_bridge(54, "CSS.disable", None);
-        assert!(resp.error.is_none());
     }
 
     // 126. handle_command CSS.getMatchedStylesForNode → ok
@@ -3429,213 +3402,6 @@ mod tests {
         assert_eq!(result["styles"], json!([]));
     }
 
-    // 129. handle_command CSS.unknown → error -32601
-    #[test]
-    fn handle_command_css_unknown() {
-        let resp = dispatch_no_bridge(58, "CSS.bogus", None);
-        assert!(resp.result.is_none());
-        assert_eq!(resp.error.unwrap().code, -32601);
-    }
-
-    // 130. handle_command Emulation.clearDeviceMetricsOverride → ok empty
-    #[test]
-    fn handle_command_emulation_clear_device_metrics() {
-        let resp = dispatch_no_bridge(59, "Emulation.clearDeviceMetricsOverride", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 131. handle_command Emulation.setUserAgentOverride (no bridge, empty ua) → ok empty
-    #[test]
-    fn handle_command_emulation_set_user_agent_no_bridge() {
-        let resp = dispatch_no_bridge(60, "Emulation.setUserAgentOverride", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 132. handle_command Emulation.setTouchEmulationEnabled → ok empty
-    #[test]
-    fn handle_command_emulation_set_touch_emulation() {
-        let resp = dispatch_no_bridge(61, "Emulation.setTouchEmulationEnabled", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 133. handle_command Emulation.setScriptExecutionDisabled → ok empty
-    #[test]
-    fn handle_command_emulation_set_script_execution_disabled() {
-        let resp = dispatch_no_bridge(62, "Emulation.setScriptExecutionDisabled", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 134. handle_command Emulation.setFocusEmulationEnabled → ok empty
-    #[test]
-    fn handle_command_emulation_set_focus_emulation() {
-        let resp = dispatch_no_bridge(63, "Emulation.setFocusEmulationEnabled", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 135. handle_command Emulation.setCPUThrottlingRate → ok empty
-    #[test]
-    fn handle_command_emulation_set_cpu_throttling() {
-        let resp = dispatch_no_bridge(64, "Emulation.setCPUThrottlingRate", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 136. handle_command Emulation.setDefaultBackgroundColorOverride → ok empty
-    #[test]
-    fn handle_command_emulation_set_default_bg_color() {
-        let resp = dispatch_no_bridge(65, "Emulation.setDefaultBackgroundColorOverride", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 137. handle_command Emulation.unknown → error -32601
-    #[test]
-    fn handle_command_emulation_unknown() {
-        let resp = dispatch_no_bridge(66, "Emulation.bogus", None);
-        assert!(resp.result.is_none());
-        assert_eq!(resp.error.unwrap().code, -32601);
-    }
-
-    // 138. handle_command Input.dispatchKeyEvent (no bridge) → ok empty
-    #[test]
-    fn handle_command_input_dispatch_key_no_bridge() {
-        let resp = dispatch_no_bridge(67, "Input.dispatchKeyEvent", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 139. handle_command Input.dispatchTouchEvent → ok empty
-    #[test]
-    fn handle_command_input_dispatch_touch() {
-        let resp = dispatch_no_bridge(68, "Input.dispatchTouchEvent", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 140. handle_command Input.insertText (no bridge, empty text) → ok empty
-    #[test]
-    fn handle_command_input_insert_text_no_bridge() {
-        let resp = dispatch_no_bridge(69, "Input.insertText", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 141. handle_command Input.setIgnoreInputEvents → ok empty
-    #[test]
-    fn handle_command_input_set_ignore_input_events() {
-        let resp = dispatch_no_bridge(70, "Input.setIgnoreInputEvents", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 142. handle_command Input.setInterceptDrags → ok empty
-    #[test]
-    fn handle_command_input_set_intercept_drags() {
-        let resp = dispatch_no_bridge(71, "Input.setInterceptDrags", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 143. handle_command Input.unknown → error -32601
-    #[test]
-    fn handle_command_input_unknown() {
-        let resp = dispatch_no_bridge(72, "Input.bogus", None);
-        assert!(resp.result.is_none());
-        assert_eq!(resp.error.unwrap().code, -32601);
-    }
-
-    // 144. handle_command Overlay.highlightNode → ok empty
-    #[test]
-    fn handle_command_overlay_highlight_node() {
-        let resp = dispatch_no_bridge(73, "Overlay.highlightNode", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 145. handle_command Overlay.hideHighlight → ok empty
-    #[test]
-    fn handle_command_overlay_hide_highlight() {
-        let resp = dispatch_no_bridge(74, "Overlay.hideHighlight", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 146. handle_command Overlay.setInspectMode → ok empty
-    #[test]
-    fn handle_command_overlay_set_inspect_mode() {
-        let resp = dispatch_no_bridge(75, "Overlay.setInspectMode", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 147. handle_command Overlay.setPausedInDebuggerMessage → ok empty
-    #[test]
-    fn handle_command_overlay_set_paused_in_debugger() {
-        let resp = dispatch_no_bridge(76, "Overlay.setPausedInDebuggerMessage", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 148. handle_command Overlay.unknown → error -32601
-    #[test]
-    fn handle_command_overlay_unknown() {
-        let resp = dispatch_no_bridge(77, "Overlay.bogus", None);
-        assert!(resp.result.is_none());
-        assert_eq!(resp.error.unwrap().code, -32601);
-    }
-
-    // 149. handle_command Debugger.disable → ok empty
-    #[test]
-    fn handle_command_debugger_disable() {
-        let resp = dispatch_no_bridge(78, "Debugger.disable", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 150. handle_command Debugger.removeBreakpoint → ok empty
-    #[test]
-    fn handle_command_debugger_remove_breakpoint() {
-        let resp = dispatch_no_bridge(79, "Debugger.removeBreakpoint", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 151. handle_command Debugger.pause → ok empty
-    #[test]
-    fn handle_command_debugger_pause() {
-        let resp = dispatch_no_bridge(80, "Debugger.pause", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 152. handle_command Debugger.resume → ok empty
-    #[test]
-    fn handle_command_debugger_resume() {
-        let resp = dispatch_no_bridge(81, "Debugger.resume", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 153. handle_command Debugger.stepOver → ok empty
-    #[test]
-    fn handle_command_debugger_step_over() {
-        let resp = dispatch_no_bridge(82, "Debugger.stepOver", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 154. handle_command Debugger.stepInto → ok empty
-    #[test]
-    fn handle_command_debugger_step_into() {
-        let resp = dispatch_no_bridge(83, "Debugger.stepInto", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 155. handle_command Debugger.stepOut → ok empty
-    #[test]
-    fn handle_command_debugger_step_out() {
-        let resp = dispatch_no_bridge(84, "Debugger.stepOut", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 156. handle_command Debugger.setSkipAllPauses → ok empty
-    #[test]
-    fn handle_command_debugger_set_skip_all_pauses() {
-        let resp = dispatch_no_bridge(85, "Debugger.setSkipAllPauses", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 157. handle_command Debugger.setBreakpointsActive → ok empty
-    #[test]
-    fn handle_command_debugger_set_breakpoints_active() {
-        let resp = dispatch_no_bridge(86, "Debugger.setBreakpointsActive", None);
-        assert!(resp.error.is_none());
-    }
-
     // 158. handle_command Debugger.evaluateOnCallFrame → ok
     #[test]
     fn handle_command_debugger_evaluate_on_call_frame() {
@@ -3661,64 +3427,6 @@ mod tests {
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["scriptSource"], "");
-    }
-
-    // 161. handle_command Debugger.setPauseOnExceptions → ok empty
-    #[test]
-    fn handle_command_debugger_set_pause_on_exceptions() {
-        let resp = dispatch_no_bridge(90, "Debugger.setPauseOnExceptions", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 162. handle_command Debugger.unknown → error -32601
-    #[test]
-    fn handle_command_debugger_unknown() {
-        let resp = dispatch_no_bridge(91, "Debugger.bogus", None);
-        assert!(resp.result.is_none());
-        assert_eq!(resp.error.unwrap().code, -32601);
-    }
-
-    // 163. handle_command Log.disable → ok empty
-    #[test]
-    fn handle_command_log_disable() {
-        let resp = dispatch_no_bridge(92, "Log.disable", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 164. handle_command Log.clear → ok empty
-    #[test]
-    fn handle_command_log_clear() {
-        let resp = dispatch_no_bridge(93, "Log.clear", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 165. handle_command Log.startViolationsReport → ok empty
-    #[test]
-    fn handle_command_log_start_violations_report() {
-        let resp = dispatch_no_bridge(94, "Log.startViolationsReport", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 166. handle_command Log.stopViolationsReport → ok empty
-    #[test]
-    fn handle_command_log_stop_violations_report() {
-        let resp = dispatch_no_bridge(95, "Log.stopViolationsReport", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 167. handle_command Log.unknown → error -32601
-    #[test]
-    fn handle_command_log_unknown() {
-        let resp = dispatch_no_bridge(96, "Log.bogus", None);
-        assert!(resp.result.is_none());
-        assert_eq!(resp.error.unwrap().code, -32601);
-    }
-
-    // 168. handle_command Fetch.disable → ok empty
-    #[test]
-    fn handle_command_fetch_disable() {
-        let resp = dispatch_no_bridge(97, "Fetch.disable", None);
-        assert!(resp.error.is_none());
     }
 
     // 169. handle_command Fetch.continueWithResponse → explicit error
@@ -3836,14 +3544,6 @@ mod tests {
         assert!(err.message.contains("no request interception facility"));
     }
 
-    // 177. handle_command Fetch.unknown → error -32601
-    #[test]
-    fn handle_command_fetch_unknown() {
-        let resp = dispatch_no_bridge(106, "Fetch.bogus", None);
-        assert!(resp.result.is_none());
-        assert_eq!(resp.error.unwrap().code, -32601);
-    }
-
     // ─── params_str edge cases ─────────────────────────────────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
@@ -3957,22 +3657,6 @@ mod tests {
     // ─── ServiceWorker domain (REQ-BRW-004 criterion #19) ──────────────
     // @trace REQ-BRW-004 [req:REQ-BRW-004] [level:unit] [criterion:19]
 
-    // 188. ServiceWorker.enable → ok empty
-    #[test]
-    fn service_worker_enable() {
-        let resp = dispatch_no_bridge(1, "ServiceWorker.enable", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
-    }
-
-    // 189. ServiceWorker.disable → ok empty
-    #[test]
-    fn service_worker_disable() {
-        let resp = dispatch_no_bridge(2, "ServiceWorker.disable", None);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap(), json!({}));
-    }
-
     // 190. ServiceWorker.getAllRegistrations (no bridge) → empty registrations
     #[test]
     fn service_worker_get_all_registrations_no_bridge() {
@@ -3995,28 +3679,6 @@ mod tests {
         assert_eq!(result["registration"], Value::Null);
     }
 
-    // 192. ServiceWorker.stopWorker (no bridge) → ok empty
-    #[test]
-    fn service_worker_stop_worker_no_bridge() {
-        let resp = dispatch_no_bridge(
-            5,
-            "ServiceWorker.stopWorker",
-            Some(json!({"registrationId": "sw-reg-1"})),
-        );
-        assert!(resp.error.is_none());
-    }
-
-    // 193. ServiceWorker.unregister (no bridge) → ok empty
-    #[test]
-    fn service_worker_unregister_no_bridge() {
-        let resp = dispatch_no_bridge(
-            6,
-            "ServiceWorker.unregister",
-            Some(json!({"registrationId": "sw-reg-1"})),
-        );
-        assert!(resp.error.is_none());
-    }
-
     // 194. ServiceWorker.deliverPushMessage → ok with delivered flag
     #[test]
     fn service_worker_deliver_push_message() {
@@ -4029,22 +3691,6 @@ mod tests {
         let result = resp.result.unwrap();
         assert_eq!(result["origin"], "https://example.com");
         assert_eq!(result["delivered"], true);
-    }
-
-    // 195. ServiceWorker.dispatchPeriodicSyncEvent → ok empty
-    #[test]
-    fn service_worker_dispatch_periodic_sync_event() {
-        let resp = dispatch_no_bridge(8, "ServiceWorker.dispatchPeriodicSyncEvent", None);
-        assert!(resp.error.is_none());
-    }
-
-    // 196. ServiceWorker unknown command → error -32601
-    #[test]
-    fn service_worker_unknown_command() {
-        let resp = dispatch_no_bridge(9, "ServiceWorker.nonExistent", None);
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32601);
     }
 
     // 197. Target.getTargets (no bridge) still returns page target (Worker sub-targets are empty)
