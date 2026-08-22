@@ -38,6 +38,7 @@ Thumbs.db
 /.claude/teams/
 /.claude/daily-ops/
 /.claude/runtime-watchdog/
+/.claude/kb-cache/
 
 # Plans (local working docs)
 /.plans/
