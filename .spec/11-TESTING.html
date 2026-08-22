@@ -8246,6 +8246,6 @@ COVERAGE 缺口：
       <section id="test-cds-concurrency" data-test="TEST-CDS-CONCURRENCY" data-req-ref="REQ-CDS-007" data-test-categories="unit">
         <h3>TEST-CDS-CONCURRENCY REQ-CDS-007 单元：concurrency_tests</h3>
         <p>代码侧 @trace 建档：来源 cdp-server/t/suite/concurrency_tests.rs</p>
-      </section></main>
+      </section><section data-bug-resolved="2026-08-13" data-bug-fix-commit="a6686fad" data-bug-severity="critical" data-bug-status="resolved" data-bug="BUG-ENG-370" id="bug-eng-370"><h3>BUG-ENG-370: BCE-007-R5 fetch_async 栈悬垂模式缺陷(栈局部 task + mem::forget 三联签名触发 stack-use-after-free)— 已根治(Box 堆分配所有权范式)</h3><p>BCE-007-R5 静态模式签名层登记(与 BUG-ENG-369 端到端层互补:369=R5 端到端 stack-use-after-free 根治 e2e 锁,本条=R5 模式签名静态回归 unit 锁;上游主体缺陷见 BUG-ENG-367,367 描述明证 R2 与 R5 正交、R5 闭环另立)。缺陷形态:fetch_async.rs schedule 路径存在栈局部模式「let mut &lt;id&gt; = AsyncHTTP::init(...) 紧跟 Batch::from(addr_of_mut!(&lt;id&gt;.task)) + mem::forget(&lt;id&gt;)」三联签名——栈上 task 地址被推入 HTTPThread 后栈帧回收,触发 stack-use-after-free(connect 前 UAF,与 R2 connect 后 dispatch 断链正交)。根治:FetchTasklet.http 改 Box 堆分配所有权(bun_core::heap::into_raw(Box::new(...)),schedule 取 addr_of_mut!((*box).task) 堆内地址,dealloc 责任在 on_http_done 完成路径 Box::from_raw),对齐上游 src/http/AsyncHTTP.rs:442 Preconnect 堆分配模式。回归锁:TEST-BUG-ENG-370(unit)三联签名静态扫描,命中数必须=0。</p></section></main>
   </body>
 </html>
