@@ -14,8 +14,9 @@ type PlainVec2<T> = _PVec<T, _PG>;
 
 bun_core::declare_scope!(CSS_SELECTORS, visible);
 
-pub use css::PrintErr as _PrintErr;
-pub use css::Printer as _Printer; // re-export alias parity
+// upstream 475b885d6e: the `pub use css::PrintErr as _PrintErr;` /
+// `pub use css::Printer as _Printer;` re-export alias parity lines had no
+// reader — deleted.
 
 pub use parser::Component;
 pub use parser::PseudoClass;

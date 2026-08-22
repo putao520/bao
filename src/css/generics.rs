@@ -337,7 +337,8 @@ macro_rules! css_eql_partialeq {
         }
     )+};
 }
-pub use css_eql_partialeq;
+// upstream 475b885d6e: `pub use css_eql_partialeq;` had no reader (every use
+// is textual `crate::css_eql_partialeq!`) — deleted.
 
 impl CssEql for [u8] {
     #[inline]

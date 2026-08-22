@@ -500,7 +500,20 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                 }
             }
 
-            if (events & LIBUS_SOCKET_READABLE) {
+            /* PORT NOTE(upstream f8b3cf06b0): An error event (EPOLLERR, EV_EOF with the
+             * socket error in fflags, an AFD abort) is the connection's death and this
+             * dispatch closes the socket with it below. The kernel keeps the receive
+             * queue on a reset, so the tail of the peer's stream may still be queued
+             * ahead of the error, and closing without reading would discard it (a
+             * streamed response cut short although every byte arrived, #39846). So the
+             * read loop runs for an error even when this event carried no READABLE bit
+             * or the socket is paused: a pause is flow control, and there is no later
+             * for a dead connection to flow into. recv() then returns the data and
+             * after it the error, which is what libuv reports to node as well. A
+             * socket parked in the low-priority queue is not linked where on_data
+             * expects it and takes the plain error close. */
+            const int drain_for_error = error && !s->read_eof && s->flags.low_prio_state != 1;
+            if ((events & LIBUS_SOCKET_READABLE) || drain_for_error) {
                 /* Contexts may prioritize down sockets that are currently readable, e.g. when SSL handshake has to be done.
                  * SSL handshakes are CPU intensive, so we limit the number of handshakes per loop iteration, and move the rest
                  * to the low-priority queue */
@@ -509,7 +522,7 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                  * non-SSL arm dispatched a full vtable lookup just to read
                  * NULL — no Zig handler defines isLowPrio and every C++ vtable
                  * sets is_low_prio = nullptr — so it's been dropped. */
-                if (s->ssl && us_internal_ssl_is_low_prio(s)) {
+                if (!error && s->ssl && us_internal_ssl_is_low_prio(s)) {
                     if (flags->low_prio_state == 2) {
                         flags->low_prio_state = 0; /* Socket has been delayed and now it's time to process incoming data for one iteration */
                     } else if (loop->data.low_prio_budget > 0) {
@@ -634,8 +647,10 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                          * EAGAIN ends the loop, so this is bounded by the receive
                          * buffer. This is what the comment above always described; it
                          * was keyed on the error flag, which kqueue does not set for
-                         * a peer FIN. */
-                        if (s && !us_socket_is_closed(s) && !s->flags.is_paused && (eof || error)) {
+                         * a peer FIN. PORT NOTE(upstream f8b3cf06b0): the error flag
+                         * now bypasses the pause — a paused socket still drains when
+                         * the connection is dead. */
+                        if (s && !us_socket_is_closed(s) && (error || (!s->flags.is_paused && eof))) {
                             continue;
                         }
                         /* Stop if on_data paused us (us_socket_pause from the data
@@ -736,14 +751,12 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                 eof = 0;
             }
             if (eof && error && !read_fin) {
-                /* An error event whose read loop did not reach a FIN (the socket is
-                 * paused, or on_data paused it mid-drain): the eof hint next to the
-                 * error flag is the reset taking both directions down (EPOLLHUP beside
-                 * EPOLLERR; EV_EOF with the error in fflags), not an end of stream, so
-                 * it must not take the end path below. That path dispatched on_end for
-                 * a reset, and a TLS socket's on_end closes with a clean code itself,
-                 * so the error close never ran. A FIN this dispatch did read still
-                 * delivers its end first; the error close follows either way. */
+                /* The eof hint next to an error flag is the reset taking both directions
+                 * down (EPOLLHUP beside EPOLLERR; EV_EOF with the error in fflags), not an
+                 * end of stream, so it must not take the end path below (a TLS socket's
+                 * on_end closes with a clean code itself, and the error would be lost). A
+                 * FIN this dispatch did read still delivers its end first; the error
+                 * close follows either way. */
                 eof = 0;
             }
             if(eof && s) {

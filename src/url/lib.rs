@@ -382,6 +382,14 @@ impl OwnedURL {
     }
 }
 
+/// What `S3Credentials` keeps of an endpoint. See `URL::parse_s3_endpoint`
+/// (upstream d95bc353ee).
+pub struct S3Endpoint {
+    /// `host[:port][/prefix]`, the form `URL::host_with_path` returns.
+    pub host_with_path: Box<[u8]>,
+    pub is_http: bool,
+}
+
 impl<'a> URL<'a> {
     /// Detach the borrow-checker lifetime from a `URL`.
     ///
@@ -518,6 +526,67 @@ impl<'a> URL<'a> {
     #[inline]
     pub fn is_http(&self) -> bool {
         self.protocol == b"http"
+    }
+
+    /// PORT NOTE(upstream d95bc353ee): `input` is
+    /// `[scheme://]host[:port][/prefix]`, `https` by default. `None` when it
+    /// has no host — the accepted set does not change (the `URL::parse` host
+    /// check stays in front). The endpoint is then read the way `new URL()`
+    /// reads it: the authority ends at `#`, `\` and the last `@`, dot
+    /// segments resolve, the host canonicalizes and never carries
+    /// credentials, a default port is elided. Upstream normalizes through
+    /// WTF::URL; Bao's `whatwg` module is a facade over the same
+    /// `URL::parse` slicer this fix works around, so the WHATWG read is the
+    /// crates.io `url` parser instead (same WHATWG semantics). When the
+    /// WHATWG parser rejects the input (non-UTF-8 bytes, a `:99999` port)
+    /// what `parse` reads is stored, as today.
+    pub fn parse_s3_endpoint(input: &[u8]) -> Option<S3Endpoint> {
+        let as_written = URL::parse(input);
+        if as_written.host_with_path().is_empty() {
+            return None;
+        }
+        // WHATWG treats `host:port` as `scheme:host`, so the default scheme
+        // goes in front of a scheme-less endpoint before parsing.
+        let prefixed = if as_written.protocol.is_empty() {
+            let mut v = Vec::with_capacity(b"https://".len() + input.len());
+            v.extend_from_slice(b"https://");
+            v.extend_from_slice(input);
+            v
+        } else {
+            input.to_vec()
+        };
+        let normalized = std::str::from_utf8(&prefixed)
+            .ok()
+            .and_then(|text| url::Url::parse(text).ok());
+        let Some(url) = normalized else {
+            return Some(S3Endpoint {
+                host_with_path: Box::from(as_written.host_with_path()),
+                is_http: as_written.is_http(),
+            });
+        };
+        let is_http = url.scheme() == "http";
+        // `host_str` is the host without the port and never contains
+        // credentials; `Url::port` is `None` for the scheme's default port —
+        // together they reproduce the WHATWG `host` serialization upstream
+        // reads (`hostname()` in Bun naming: host WITH port).
+        let mut host_with_path: Vec<u8> = Vec::new();
+        if let Some(host) = url.host_str() {
+            host_with_path.extend_from_slice(host.as_bytes());
+        }
+        if let Some(port) = url.port() {
+            host_with_path.push(b':');
+            host_with_path.extend_from_slice(port.to_string().as_bytes());
+        }
+        // The WHATWG pathname starts with `/` and has dot segments resolved;
+        // drop one trailing `/` like `host_with_path` does (upstream:
+        // `without_suffix_comptime(path, b"/")`).
+        let path = url.path();
+        let path = path.strip_suffix('/').unwrap_or(path);
+        host_with_path.extend_from_slice(path.as_bytes());
+        Some(S3Endpoint {
+            host_with_path: host_with_path.into_boxed_slice(),
+            is_http,
+        })
     }
 
     pub fn display_hostname(&self) -> &[u8] {

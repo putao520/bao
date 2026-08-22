@@ -1714,12 +1714,14 @@ mod draft {
         let act_ptr: *const libc::sigaction = act
             .map(|a| std::ptr::from_ref(a))
             .unwrap_or(core::ptr::null());
-        // SAFETY: valid sigaction pointer or null; null oldact is permitted.
-        unsafe {
-            libc::sigaction(libc::SIGSEGV, act_ptr, core::ptr::null_mut());
-            libc::sigaction(libc::SIGILL, act_ptr, core::ptr::null_mut());
-            libc::sigaction(libc::SIGBUS, act_ptr, core::ptr::null_mut());
-            libc::sigaction(libc::SIGFPE, act_ptr, core::ptr::null_mut());
+        // PORT NOTE(upstream c6461038): the installed set is shared from
+        // `bun_core::CRASH_HANDLER_SIGNALS` so the `process.kill` self-target
+        // check resets exactly what this loop installs.
+        for signal in bun_core::CRASH_HANDLER_SIGNALS {
+            // SAFETY: valid sigaction pointer or null; null oldact is permitted.
+            unsafe {
+                libc::sigaction(signal, act_ptr, core::ptr::null_mut());
+            }
         }
         Ok(())
     }

@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "updated_at": "2026-08-21",
+  "updated_at": "2026-08-23",
   "updated_by": "absorb-wave",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "4448a2e212ec5ca9ed0f3b41400f07a538d578fe",
-      "baseline_date": "2026-08-21",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD;窗口 01c4e2fd6..4448a2e21 40 commits:10 吸收/29 N/A/1 缓后"
+      "baseline": "abe2ad4f0064334ebe83427ee689eb3e8d713a2e",
+      "baseline_date": "2026-08-23",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD;窗口 4448a2e21..abe2ad4f00 75 commits:14 吸收/1 已含/57 N-A/3 feature 裁决缓后(install --offline / selfContained workspaces / node:crypto argon2)"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "fa5af8b522d7d2069dd5931143153e51b6e346bf",
-      "baseline_date": "2026-08-21",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);10 个 BCE patch-replay 文件清单锚点在 CLAUDE.md;窗口 0d579bd5a..fa5af8b52 15 commits:7 吸收/1 N/A/7 裁决跳过;pre-baseline 追平 f2b524b91/6e3ac825d/4 webcrypto renames;结构链三波(f2b524b91/6e3ac825d/1a6db6c4e)"
+      "baseline": "bd220a152bc059627531b386c9fcc86951eba856",
+      "baseline_date": "2026-08-23",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md,2026-08-23 起 JSEngineSetup 补丁新家=script/engine/handle.rs,b54baa327 移动);窗口 fa5af8b52..bd220a152 13 commits 全吸收(唯一 BCE-replay=b54baa327);含 _and_cx 尾批改名/active_range cx 传参/@font-face CSSOM/webcrypto 10 组改名"
     }
   }
 }

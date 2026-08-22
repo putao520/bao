@@ -7347,6 +7347,29 @@ unsafe extern "C" fn process_kill(_cx: *mut JSContext, _argc: u32, vp: *mut JSVa
     } else {
         15
     };
+    // PORT NOTE(upstream c6461038): a crash signal sent to this process
+    // itself must die by the signal's default action, not enter the crash
+    // handler — POSIX delivers a self-sent signal before kill(2) returns, so
+    // the disposition has to change before the call. Upstream skips the reset
+    // when a JS listener owns the signal (`forwardSignal`); Bao installs no
+    // JS-listener disposition for the crash signals (spawn forwarding covers
+    // INT/TERM/HUP/QUIT only), so list membership + self-target is the whole
+    // predicate. kill(-1) never reaches the caller, hence `pid < -1` for the
+    // process-group case.
+    #[cfg(unix)]
+    {
+        let reaches_self = pid == libc::getpid()
+            || pid == 0
+            || (pid < -1 && pid == -(libc::getpgrp() as i32));
+        if reaches_self && bun_core::CRASH_HANDLER_SIGNALS.contains(&sig_num) {
+            let mut sa: libc::sigaction = unsafe { ::std::mem::zeroed() };
+            sa.sa_sigaction = libc::SIG_DFL;
+            unsafe {
+                libc::sigemptyset(&mut sa.sa_mask);
+                libc::sigaction(sig_num, &sa, core::ptr::null_mut());
+            }
+        }
+    }
     let _ = libc::kill(pid, sig_num);
     args.rval().set(BooleanValue(true));
     true

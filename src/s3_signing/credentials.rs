@@ -831,7 +831,6 @@ impl S3Credentials {
         // errdefer free(authorization) — Box<[u8]> drops on `?`.
 
         if sign_query {
-            // defer free(host); defer free(amz_date); — drop at scope exit.
             // PORT NOTE: SignResult implements Drop, so struct-update `..default()`
             // is forbidden; mutate a default in place instead.
             let mut r = SignResult::default();

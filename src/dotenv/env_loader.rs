@@ -288,13 +288,18 @@ impl<'a> Loader<'a> {
 
             let mut endpoint: Box<[u8]> = Box::default();
             let mut insecure_http = false;
-            if let Some(endpoint_) = self
+            // PORT NOTE(upstream d95bc353ee): read the endpoint the way
+            // `new URL()` reads it — the raw `URL::parse` slices stored the
+            // bytes past `#`/`\`/`@` as the host, so a credential-looking
+            // endpoint could redirect signed requests to a host `new URL()`
+            // never reports.
+            if let Some(parsed) = self
                 .get(b"S3_ENDPOINT")
                 .or_else(|| self.get(b"AWS_ENDPOINT"))
+                .and_then(URL::parse_s3_endpoint)
             {
-                let url = URL::parse(endpoint_);
-                endpoint = Box::from(url.host_with_path());
-                insecure_http = url.is_http();
+                endpoint = parsed.host_with_path;
+                insecure_http = parsed.is_http;
             }
 
             let bucket: Box<[u8]> = self

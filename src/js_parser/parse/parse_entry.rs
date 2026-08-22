@@ -780,14 +780,6 @@ impl<'a> Parser<'a> {
 
         // (Zig asserted the stack-fallback arena owns the buffer; not applicable here.)
 
-        // defer {
-        //     if (p.allocated_names_pool) |pool| {
-        //         pool.data = p.allocated_names;
-        //         pool.release();
-        //         p.allocated_names_pool = null;
-        //     }
-        // }
-
         // Consume a leading hashbang comment
         let mut hashbang: &[u8] = b"";
         if p.lexer.token == js_lexer::T::THashbang {

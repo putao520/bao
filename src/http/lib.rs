@@ -316,11 +316,9 @@ pub static OVERRIDDEN_DEFAULT_USER_AGENT: std::sync::OnceLock<&'static [u8]> =
 /// `on_open` (so it covers the TLS handshake) and re-armed on every read/write;
 /// if no bytes move in either direction for this long the request fails with
 /// `error.Timeout`. 0 disables the timer (matching `disable_timeout = true`).
-/// Overridable via `BUN_CONFIG_HTTP_IDLE_TIMEOUT`. Default is 5 minutes — the
-/// previous hard-coded value — so unchanged environments see identical
-/// behaviour except that the handshake phase is now also covered. Values
-/// above 240s are served by uSockets' minute-granularity long timer (see
-/// [`SocketTimeout::set_timeout`]), so they round up to the next whole minute.
+/// Overridable via `BUN_CONFIG_HTTP_IDLE_TIMEOUT`. Default is 5 minutes.
+/// `HTTPThread::on_start` stores it padded for the timer-wheel sweep phase
+/// (upstream 24944aad41; see the normalisation constants at the store site).
 pub static IDLE_TIMEOUT_SECONDS: AtomicU32 = AtomicU32::new(300);
 
 /// Safe accessor for [`IDLE_TIMEOUT_SECONDS`].

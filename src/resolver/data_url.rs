@@ -140,7 +140,6 @@ impl<'a> DataURL<'a> {
     pub fn decode_data(&self) -> Result<Vec<u8>, bun_core::Error> {
         // TODO(port): narrow error set
         let percent_decoded_owned: Option<Vec<u8>> = PercentEncoding::decode_unstrict(self.data)?;
-        // defer: `percent_decoded_owned` drops at scope exit
         let percent_decoded: &[u8] = percent_decoded_owned.as_deref().unwrap_or(self.data);
 
         if self.is_base64 {

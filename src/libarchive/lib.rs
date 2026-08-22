@@ -1643,7 +1643,6 @@ impl Archiver {
                         else {
                             continue 'loop_;
                         };
-                        // PORT NOTE: defer opened.close()
                         let _close_guard = scopeguard::guard(opened, |fd| fd.close());
                         // PORT NOTE: Zig `opened.getEndPos()` → bun_sys::get_file_size.
                         let stat_size = bun_sys::get_file_size(opened)?;

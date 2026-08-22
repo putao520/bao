@@ -286,10 +286,12 @@ pub use progress_mod::{
     start_progress_bar_if_none,
 };
 
-pub use self::patch_package::{PatchCommitResult, do_patch_commit, prepare_patch};
+// upstream 475b885d6e: `do_patch_commit`/`prepare_patch` (callers use the
+// `patch_package::` module path) and `GitResolver` had no reader — deleted.
+pub use self::patch_package::PatchCommitResult;
 
 pub use self::process_dependency_list::{
-    GitResolver, process_dependency_list, process_dependency_list_item,
+    process_dependency_list, process_dependency_list_item,
     process_extracted_tarball_package, process_peer_dependency_list,
 };
 

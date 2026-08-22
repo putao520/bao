@@ -2106,12 +2106,22 @@ fn update_package_json_after_migration(
     }
 
     if needs_update {
+        // PORT NOTE(upstream c8b763a2d4): print into the cache entry, then
+        // re-parse. The edits above spliced `Store`-allocated nodes into the
+        // cached tree and replace `source.contents`; without the re-parse the
+        // tree points into freed contents and its nodes die at the next
+        // `initialize_store()` reset (lockfile/Package.rs) before the
+        // write-back prints it — `bun add` after a pnpm migration crashed or
+        // wrote garbage into package.json. Upstream factors the print into
+        // `print_package_json_into_cache_entry` (updatePackageJSONAndInstall);
+        // inlined here. A print failure now crashes like the other editors do
+        // (before, it silently returned and left the dangling tree cached).
         let mut buffer_writer = bun_js_printer::BufferWriter::init();
         buffer_writer.append_newline = !root_pkg_json.source.contents().is_empty()
             && root_pkg_json.source.contents()[root_pkg_json.source.contents().len() - 1] == b'\n';
         let mut package_json_writer = bun_js_printer::BufferPrinter::init(buffer_writer);
 
-        if bun_js_printer::print_json(
+        if let Err(e) = bun_js_printer::print_json(
             &mut package_json_writer,
             json,
             &root_pkg_json.source,
@@ -2120,22 +2130,35 @@ fn update_package_json_after_migration(
                 mangled_props: None,
                 ..Default::default()
             },
-        )
-        .is_err()
-        {
-            return Ok(());
+        ) {
+            bun_core::pretty_errorln!("package.json failed to write due to error {}", e.name());
+            bun_core::Global::crash();
         }
 
         if package_json_writer.flush().is_err() {
             return Err(AllocError);
         }
 
-        root_pkg_json.source.contents = std::borrow::Cow::Owned(
-            package_json_writer
-                .ctx
-                .written_without_trailing_zero()
-                .to_vec(),
+        // Pin the superseded contents so `root` slices inside them stay valid
+        // until `reparse_root` below replaces the tree.
+        let old = core::mem::replace(
+            &mut root_pkg_json.source.contents,
+            std::borrow::Cow::Owned(
+                package_json_writer
+                    .ctx
+                    .written_without_trailing_zero()
+                    .to_vec(),
+            ),
         );
+        root_pkg_json.stale_contents.push(old);
+
+        if let Err(err) = root_pkg_json.reparse_root(log) {
+            bun_core::pretty_errorln!(
+                "package.json failed to parse due to error {}",
+                err.name()
+            );
+            bun_core::Global::crash();
+        }
 
         // Write the updated package.json
         let _ = sys::File::write_file(

@@ -273,7 +273,6 @@ fn read_package_json_from_disk<R: FolderResolverImpl>(
     resolver: &mut R,
 ) -> Result<LockfilePackage, bun_core::Error> {
     let mut body = npm::Registry::BodyPool::get();
-    // defer Npm.Registry.BodyPool.release(body) — handled by PoolGuard Drop
 
     let mut package: LockfilePackage = Default::default();
 
@@ -328,7 +327,6 @@ fn read_package_json_from_disk<R: FolderResolverImpl>(
 
         let source = {
             let file = File::openat(Fd::cwd(), abs.as_bytes(), O::RDONLY, 0)?;
-            // defer file.close()
             body.reset();
             // PORT NOTE: toManaged/moveToUnmanaged dance is a no-op in Rust
             // (Vec owns its allocator). `read_to_end_with_array_list` takes a

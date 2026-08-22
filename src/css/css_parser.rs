@@ -68,7 +68,8 @@ pub use crate::properties::{
     css_modules::Composes,
     custom::{TokenList, TokenListFns},
 };
-pub use crate::rules::custom_media::CustomMediaRule as CustomMedia;
+// upstream 475b885d6e: the `CustomMediaRule as CustomMedia` alias and `IdentFns`
+// in the group below had no reader — deleted.
 pub use crate::rules::{
     self as css_rules, CssRule, CssRuleList, Location, MinifyContext, StyleContext,
     import::{ImportConditions, ImportRule},
@@ -83,7 +84,7 @@ pub use crate::selectors::{
     parser::{Component, PseudoClass, PseudoElement, Selector, SelectorList},
     selector,
 };
-pub use crate::values::ident::{CustomIdentFns, DashedIdentFns, IdentFns};
+pub use crate::values::ident::{CustomIdentFns, DashedIdentFns};
 
 pub use crate::values::{
     color::ColorFallbackKind,

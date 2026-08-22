@@ -233,14 +233,16 @@ make bce-check
 
 另:`mozjs-sys/build.rs` 有 2 个 BAO patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)。
 
-#### servo 定制文件清单(10 个,上游同步时逐个重放)
+#### servo 定制文件清单(11 个,上游同步时逐个重放)
 
 上游同步 servo 时,先 `grep -rln "BCE-\|BAO " vendor/servo/components/` 重建清单,再按"upstream 基底 + patch 精确重放"迁移(patch 锚点与完整记录见 git log 各 stage commit message):
 
 | 文件 | Patch 概要 |
 |------|-----------|
 | `script/event_loop/script_thread.rs` | embedder 脚本/Worker-scope 回调注册(drain 于 handle_evaluate_javascript / run_worker_scope)、router_proxy 安装(BCE-20260627-009)、disable_script_debugger 门控(BCE-20260621-002) |
-| `script/script_runtime.rs` | JSEngineSetup 幂等 init + engine leak(多 BaoRuntime 生命周期) |
+| `script/engine/handle.rs`(2026-08-23 上游 b54baa327 移动后新家)| **Bao 补丁版 JSEngineSetup**:`JSEngineSetup(Option<JSEngine>)` 幂等 init(Ok→存 handle;AlreadyInitialized→`JSEngine::process_handle()` 优先 + JS_ENGINE spin 回退 50×1ms;AlreadyShutDown→None;其他 Err→panic)+ Drop engine-leak(`mem::forget`,不清 JS_ENGINE,多 BaoRuntime 生命周期)。上游版 handle.rs 是裸 `JSEngineSetup(JSEngine)`,重放禁用上游版 |
+| `script/lib.rs` | 26-28 行:`pub use event_loop::script_thread::{register_embedder_callback, register_worker_scope_callback};`(Bao embedder 回调 re-export,上游同步合并时必保) |
+| `script/dom/workers/dedicatedworkerglobalscope.rs` | worker-scope 回调 drain + clear_js_runtime 前 realm flush(UAF 防护) |
 | `script/dom/workers/dedicatedworkerglobalscope.rs` | worker-scope 回调 drain + clear_js_runtime 前 realm flush(UAF 防护) |
 | `script_bindings/lock.rs` | ThreadUnsafeOnceLock 等(Bao 扩展) |
 | `shared/base/id.rs` | Bao ID 类型(+ AtomicOptionScrollTreeNodeId 从上游增补) |

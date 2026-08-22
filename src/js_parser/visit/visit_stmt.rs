@@ -1047,7 +1047,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             }
 
             if p.current_scope == p.module_scope {
-                // PORT NOTE: defer-vs-drop-scope — restore hook_ctx_storage/is_control_flow_dead
+                // PORT NOTE(upstream 1423031523): restore hook_ctx_storage/is_control_flow_dead
                 // before propagating Err so the stack-local `react_hook_data` ptr is never left in
                 // p.react_refresh on the OOM path (Zig defer covers all exits).
                 rr = p.handle_react_refresh_register(

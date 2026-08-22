@@ -46,7 +46,8 @@ impl ContainerName {
     }
 }
 
-pub use ContainerName as ContainerNameFns;
+// upstream 475b885d6e: `pub use ContainerName as ContainerNameFns;` had no
+// reader — deleted.
 pub(crate) type ContainerSizeFeature = QueryFeature<ContainerSizeFeatureId>;
 
 #[derive(Clone, Copy, PartialEq, Eq, css::DefineEnumProperty)]

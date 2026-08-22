@@ -545,7 +545,9 @@ pub mod array_list;
 pub use array_list::ArrayList; // any `std.mem.Allocator`
 pub use array_list::ArrayListAligned;
 pub use array_list::ArrayListAlignedDefault;
-pub use array_list::ArrayListAlignedIn;
+// upstream 475b885d6e: `pub use array_list::ArrayListAlignedIn;` had no reader
+// outside the crate (the sibling aliases in array_list.rs use the local name) —
+// deleted.
 pub use array_list::ArrayListDefault; // always default allocator (no overhead)
 pub use array_list::ArrayListIn; // specific type of generic allocator
 

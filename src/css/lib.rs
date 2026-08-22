@@ -130,7 +130,10 @@ pub use compat::Feature;
 pub use error::ParserErrorKind as ParseErrorKind;
 pub use error::ParserErrorKind as ErrorKind;
 pub use properties::custom::{TokenList, TokenListFns};
-pub use values::ident::{CustomIdentFns, DashedIdentFns, IdentFns};
+// upstream 475b885d6e: crate-root `CustomIdentFns`/`DashedIdentFns` had no
+// reader (users import from `values::ident`/`css_values::ident`) — deleted;
+// root `IdentFns` stays.
+pub use values::ident::IdentFns;
 pub use values::string::{CssString as CSSString, CssStringFns as CSSStringFns};
 
 // `css::generic::*` is the Zig-spelled namespace for the protocol traits +

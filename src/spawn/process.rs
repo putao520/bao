@@ -1876,11 +1876,6 @@ mod spawn_process_body {
 
         let mut uv_files_to_close: Vec<uv::uv_file> = Vec::new();
 
-        // defer: close uv_files_to_close — handled at each return site below.
-        // PORT NOTE: Zig's `errdefer failed = true` + `defer { if (failed) ... }`
-        // pair is flattened to explicit cleanup calls at each error return; no
-        // `failed` flag is needed.
-
         if let Some(hpcon) = options.pseudoconsole {
             uv_process_options.pseudoconsole = hpcon;
         }
@@ -2122,8 +2117,6 @@ mod spawn_process_body {
             sync: false,
         }));
 
-        // defer if failed: process.close(); process.deref(); — handled at error sites
-
         // SAFETY: process is freshly allocated
         unsafe {
             // SAFETY: all-zero is valid uv::Process
@@ -2137,7 +2130,6 @@ mod spawn_process_body {
             uv_proc.data = process.cast::<c_void>();
         }
 
-        // defer dup_fds cleanup — handled below at each exit
         let cleanup_dup = |failed: bool| {
             if dup_src.is_some() {
                 if cfg!(debug_assertions) {
@@ -3228,7 +3220,6 @@ mod spawn_process_body {
                 process.stderr.unwrap_or(Fd::INVALID),
             ];
             let mut success = false;
-            // defer cleanup — handled at end / via guards below
             // TODO(port): errdefer — manual cleanup at each error return below
 
             let mut out_fds_to_wait_for: [Fd; 2] = [

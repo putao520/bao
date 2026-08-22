@@ -101,7 +101,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                             value: Some(value),
                             ..Default::default()
                         });
-                        i += 1; // defer i += 1
+                        i += 1;
                     }
                     T::TOpenBrace => {
                         // PORT NOTE: `defer i += 1` inlined at end of this arm.
@@ -208,7 +208,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                         }
 
                         p.lexer.next_inside_jsx_element()?;
-                        i += 1; // defer i += 1
+                        i += 1;
                     }
                     _ => {
                         break 'parse_attributes;

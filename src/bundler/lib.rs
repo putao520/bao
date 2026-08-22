@@ -254,7 +254,8 @@ pub(crate) use bun_ast::{Index, IndexInt};
 pub mod options {
     pub use super::OutputFile;
     pub use super::options_impl::*;
-    pub use super::output_file::BakeExtra;
+    // upstream 475b885d6e: `pub use super::output_file::BakeExtra;` had no
+    // reader (consumers import it from `crate::output_file`) — deleted.
     pub use super::output_file::IndexOptional;
     /// `OutputFile.init` argument struct (`options.zig:OutputFile.Options`).
     pub use super::output_file::Options as OutputFileInit;

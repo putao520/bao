@@ -20,3 +20,6 @@ bun_core.workspace = true
 bun_collections.workspace = true
 bun_paths.workspace = true
 bun_wyhash.workspace = true
+# upstream d95bc353ee: WHATWG read for S3 endpoints (`URL::parse_s3_endpoint`)
+# — same declaration style as bao_browser (url 2.x, already in Cargo.lock).
+url = "2"

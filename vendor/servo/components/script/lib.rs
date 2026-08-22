@@ -20,7 +20,6 @@ extern crate malloc_size_of_derive;
 #[macro_use]
 extern crate stylo_atoms;
 
-mod animations;
 #[macro_use]
 mod tasks;
 // Bao embedder-callback API (vendor patch) lives on the upstream ScriptThread
@@ -34,9 +33,8 @@ mod fetch;
 mod dom;
 pub(crate) use dom::canvas_context;
 mod drag;
+mod engine;
 mod event_loop;
-pub(crate) mod indexeddb;
-mod init;
 mod url;
 
 pub mod layout_dom;
@@ -49,7 +47,6 @@ mod navigation;
 mod realms;
 mod routed_promise;
 pub(crate) mod script_runtime;
-pub(crate) mod serviceworker_manager;
 pub mod test;
 mod timers;
 mod unminify;
@@ -58,11 +55,8 @@ mod window_named_properties;
 mod xpath;
 
 pub use event_loop::script_thread::ScriptThread;
-pub use init::init;
 pub(crate) use script_bindings::DomTypes;
 pub(crate) use script_bindings::reflector::{AssociatedMemory, DomObject, MutDomObject, Reflector};
-pub use script_runtime::JSEngineSetup;
-pub use serviceworker_manager::ServiceWorkerManager;
 
 pub(crate) use crate::dom::bindings::codegen::DomTypeHolder::DomTypeHolder;
 // These trait exports are public, because they are used in the DOM bindings.
@@ -70,3 +64,6 @@ pub(crate) use crate::dom::bindings::codegen::DomTypeHolder::DomTypeHolder;
 // it is useful that they are accessible at the root of the crate.
 pub(crate) use crate::dom::bindings::inheritance::HasParent;
 pub(crate) use crate::dom::bindings::trace::{CustomTraceable, JSTraceable};
+pub use crate::dom::serviceworker::serviceworker_manager::ServiceWorkerManager;
+pub use crate::engine::handle::JSEngineSetup;
+pub use crate::engine::init::init;

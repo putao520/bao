@@ -801,13 +801,32 @@ unsafe extern "C" fn set_interval(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     register_timer(cx, argc, vp, true)
 }
 
+/// The id a JS number names, whether SpiderMonkey holds it as an int32 or as
+/// a double (upstream 6fb710252). `setTimeout`/`setInterval` return `id as
+/// i32`, so the value round-trips through i32; the saturating `as` cast maps
+/// NaN to 0 and the round trip rejects those, fractions and out-of-range
+/// values — anything else names no timer.
+fn timer_id_from_number(value: JSVal) -> ::std::option::Option<i32> {
+    let number = value.to_number();
+    let id = number as i32;
+    (f64::from(id) == number).then_some(id)
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn clear_timeout(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_int32() {
-            let id = v.to_int32() as u32;
+        // Node.js looks the id up by value (`knownTimersById[id]`): a double
+        // holding an integer (a Float64Array read, `Math.sqrt()`, `-0`) names
+        // the same timer as the int32 form. Deciding by representation made
+        // `clearTimeout` a silent no-op for those (upstream 6fb710252).
+        if v.is_number() {
+            let Some(id_i32) = timer_id_from_number(v) else {
+                args.rval().set(UndefinedValue());
+                return true;
+            };
+            let id = id_i32 as u32;
             let removed = BAO_REGISTRY.with(|r| {
                 r.borrow_mut().remove(id).map(|obj| {
                     obj.cleanup_callback(cx);

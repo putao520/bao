@@ -131,14 +131,15 @@ pub use crate::linker_context::find_imported_css_files_in_js_order::find_importe
 pub use crate::linker_context::find_imported_files_in_css_order::find_imported_files_in_css_order;
 pub use crate::linker_context::generate_code_for_lazy_export::generate_code_for_lazy_export;
 pub use crate::linker_context::metafile_builder as MetafileBuilder;
-pub use crate::linker_context::output_file_list_builder as OutputFileListBuilder;
-pub use crate::linker_context::static_route_visitor as StaticRouteVisitor;
+// upstream 475b885d6e: the `OutputFileListBuilder`/`StaticRouteVisitor` module
+// re-exports and the `do_step5` module re-export had no reader (callers use
+// full `crate::linker_context::*` module paths; `LinkerContext::do_step5`
+// resolves to the inherent method) — deleted.
 // do_step5 / create_exports_for_file are inherent methods on LinkerContext (see
 // `linker_context/doStep5.rs`), not free functions — no item re-export.
 pub use crate::linker_context::compute_cross_chunk_dependencies::compute_cross_chunk_dependencies;
 pub use crate::linker_context::convert_stmts_for_chunk::convert_stmts_for_chunk;
 pub use crate::linker_context::convert_stmts_for_chunk_for_dev_server::convert_stmts_for_chunk_for_dev_server;
-pub use crate::linker_context::do_step5;
 pub use crate::linker_context::generate_chunks_in_parallel::generate_chunks_in_parallel;
 pub use crate::linker_context::generate_code_for_file_in_chunk_js::generate_code_for_file_in_chunk_js;
 pub use crate::linker_context::generate_compile_result_for_css_chunk::generate_compile_result_for_css_chunk;

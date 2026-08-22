@@ -5538,9 +5538,30 @@ unsafe extern "C" fn crypto_pbkdf2(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         "sha256".to_string()
     };
 
-    let has_callback = argc > 5 && (*args.get(5).ptr).is_object();
-    if has_callback {
-        let callback = (*args.get(5).ptr).to_object();
+    // PORT NOTE(upstream 614d19fe9): pbkdf2(password, salt, iterations,
+    // keylen, callback) — digest omitted, the callback sits in the 5th
+    // position. Upstream shuffles `arg4.is_function()` into the callback
+    // slot inside `PBKDF2::from_js`; the digest keeps its default then (the
+    // `digest_name` reader above already skips a function value).
+    let digest_slot_fn = if argc > 4 && (*args.get(4).ptr).is_object() {
+        let obj = (*args.get(4).ptr).to_object();
+        if JS_ObjectIsFunction(obj) {
+            Some(obj)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let callback = match digest_slot_fn {
+        Some(cb) => Some(cb),
+        None if argc > 5 && (*args.get(5).ptr).is_object() => {
+            Some((*args.get(5).ptr).to_object())
+        }
+        None => None,
+    };
+    if let Some(callback) = callback {
         spawn_crypto_async(cx, "pbkdf2", callback, move || {
             let hash = bao_crypto::kdf::parse_pbkdf2_hash(&digest_name)
                 .map_err(|e| format!("pbkdf2: {}", e))?;

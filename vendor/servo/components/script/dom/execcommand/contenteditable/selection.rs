@@ -172,7 +172,7 @@ impl Selection {
         direction: SelectionDeleteDirection,
     ) {
         // Step 1. If the active range is null, abort these steps and do nothing.
-        let Some(active_range) = self.active_range() else {
+        let Some(active_range) = self.active_range(cx) else {
             return;
         };
 
@@ -365,10 +365,7 @@ impl Selection {
         // Step 24. For each node contained in the active range, append node to node list if the
         // last member of node list (if any) is not an ancestor of node; node is editable;
         // and node is not a thead, tbody, tfoot, tr, th, or td.
-        let Ok(contained_children) = active_range.contained_children() else {
-            unreachable!("Must always have contained children");
-        };
-        for node in contained_children.contained_children {
+        for node in active_range.contained_nodes() {
             // This type is only used to tell the compiler how to handle the type of `node_list.last()`.
             // It is not allowed to add a `& DomRoot<Node>` annotation, as test-tidy disallows that.
             // However, if we omit the type, the compiler doesn't know what it is, since we also
@@ -780,7 +777,7 @@ impl Selection {
         context_object: &Document,
     ) {
         let active_range = self
-            .active_range()
+            .active_range(cx)
             .expect("Must always have an active range");
 
         // Step 1. Let command be the current command.

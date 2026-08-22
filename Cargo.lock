@@ -3805,6 +3805,7 @@ dependencies = [
  "bun_paths",
  "bun_wyhash",
  "phf 0.11.3",
+ "url",
 ]
 
 [[package]]

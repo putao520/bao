@@ -48,6 +48,20 @@ pub fn top_level_dir() -> &'static [u8] {
 /// the crash signals need resetting to `SIG_DFL` before re-raising.
 pub static CRASH_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
+/// What `bun_crash_handler` catches (upstream c6461038): shared between the
+/// install loop, the `raise_ignoring_panic_handler_raw` reset and the
+/// `process.kill` self-target check so the three never drift apart.
+/// PORT NOTE(upstream c6461038): upstream also lists SIGABRT/SIGTRAP (#34771);
+/// Bao's handler baseline predates that — `handle_segfault_posix` maps only
+/// these four, so the list mirrors what is actually installed.
+#[cfg(unix)]
+pub const CRASH_HANDLER_SIGNALS: [c_int; 4] = [
+    libc::SIGSEGV,
+    libc::SIGILL,
+    libc::SIGBUS,
+    libc::SIGFPE,
+];
+
 /// VEH handle returned by `AddVectoredExceptionHandler`, written by
 /// `bun_crash_handler::init()` on Windows. `raise_ignoring_panic_handler`
 /// removes it before re-raising so the signal goes to the OS default.
@@ -709,7 +723,7 @@ pub fn raise_ignoring_panic_handler_raw(sig: c_int) -> ! {
             let mut act: libc::sigaction = crate::ffi::zeroed();
             act.sa_sigaction = libc::SIG_DFL;
             libc::sigemptyset(&raw mut act.sa_mask);
-            for &s in &[libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE] {
+            for s in CRASH_HANDLER_SIGNALS {
                 let _ = libc::sigaction(s, &raw const act, core::ptr::null_mut());
             }
         }

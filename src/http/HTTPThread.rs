@@ -1702,25 +1702,39 @@ mod _event_loop_draft {
         Output::Source::ensure_thread_source();
         // PERF(port): was MimallocArena bulk-free for bun.http.default_allocator.
 
-        // uSockets' long-timeout counter is `% 240` minutes (see
-        // `us_socket_long_timeout` in packages/bun-usockets/src/socket.c), so
-        // values above 239 min wrap around and fire early. Clamp here — it's the
-        // only assignment — so the underlying timer can't wrap, and round values
-        // above 240s up to a whole minute so `socket.set_timeout`'s floor-to-
-        // minute long-timer path never yields a timeout *shorter* than requested.
-        // Normalising once here keeps the h1 (`HTTPClient::set_timeout`) and h2
-        // (`ClientSession::rearm_timeout`) paths identical without duplicating the
-        // math at each call site.
+        // upstream 24944aad41: normalise an idle timeout for uSockets' timer
+        // wheels. The sweep phase is unrelated to when a socket arms its timer,
+        // so a timer armed for N ticks can fire up to one period (4s short
+        // wheel, 60s long wheel) BEFORE the requested duration and abort an
+        // in-flight request (#39952). Pad by one period so it never fires
+        // early, and clamp so the padded value stays below the long wheel's
+        // `% 240` minutes wrap (see `us_socket_long_timeout` in
+        // packages/bun-usockets/src/socket.c). 0 = disabled. Normalising once
+        // here keeps the h1 (`HTTPClient::set_timeout`) and h2
+        // (`ClientSession::rearm_timeout`) paths identical without duplicating
+        // the math at each call site.
+        /// `LIBUS_TIMEOUT_GRANULARITY` (packages/bun-usockets/src/libusockets.h).
+        const SHORT_WHEEL_PERIOD_SECONDS: u64 = 4;
+        const LONG_WHEEL_PERIOD_SECONDS: u64 = 60;
+        /// `SocketTimeout::set_timeout` routes values above this to the long wheel.
+        const SHORT_WHEEL_MAX_SECONDS: u64 = 240;
+        /// The long counter wraps `% 240` minutes; one minute of pad stays below.
+        const MAX_RAW_SECONDS: u64 = 238 * LONG_WHEEL_PERIOD_SECONDS;
         let raw: u64 = bun_core::env_var::BUN_CONFIG_HTTP_IDLE_TIMEOUT
             .get()
-            .unwrap_or(300)
-            .min(239 * 60);
-        crate::IDLE_TIMEOUT_SECONDS.store(
-            (if raw > 240 {
-                raw.div_ceil(60) * 60
+            .unwrap_or(300);
+        let normalized = if raw == 0 {
+            0
+        } else {
+            let raw = raw.min(MAX_RAW_SECONDS);
+            if raw + SHORT_WHEEL_PERIOD_SECONDS > SHORT_WHEEL_MAX_SECONDS {
+                (raw.div_ceil(LONG_WHEEL_PERIOD_SECONDS) + 1) * LONG_WHEEL_PERIOD_SECONDS
             } else {
-                raw
-            }) as core::ffi::c_uint,
+                raw + SHORT_WHEEL_PERIOD_SECONDS
+            }
+        };
+        crate::IDLE_TIMEOUT_SECONDS.store(
+            normalized as core::ffi::c_uint,
             core::sync::atomic::Ordering::Relaxed,
         );
 
