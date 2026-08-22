@@ -94,6 +94,7 @@ C/Zig 文件:非 Rust 但 Bao 有对应 C 源(packages/bun-usockets 等)时仍�
 2. 一个吸收 wave 一个 commit(message 列全部 hash + 判定摘要);push
 3. **更新 .claude/upstream-baseline.json 并入 wave commit**
 4. "需进一步判断"残留项登记任务,不静默丢弃
+5. **发布闭包(用户裁决 2026-08-23:测试过的波必须发布,与 daily-ops 波同轨)**:wave push 后立即执行 crates.io 变更闭包发布(变更闭包 patch bump → dry-run → publish → curl 200 验证)+ `git tag daily-<YYYYMMDD>` + `gh release create`(notes 取 wave commit message)。完整协议:`../daily-ops/references/publish.md`(版本策略/发布序/限流/失败语义/CLI 永不发布)。禁只 commit 不发布——发布是波末收口的组成部分,不是可选项。
 
 ## 6. 历史成果参考
 
