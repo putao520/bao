@@ -19,14 +19,24 @@ jq -e '.upstreams.bun.baseline and .upstreams.servo.baseline' "$REPO/.claude/ups
 pgrep -x cargo >/dev/null 2>&1 && export DAILY_OPS_CARGO_BUSY=1
 [ -n "${CARGO_REGISTRY_TOKEN:-}" ] || export DAILY_OPS_PUBLISH=failed
 GIT_PRE="$(git -C "$REPO" rev-parse HEAD)"
+LOG_FILE="$RUNDIR/logs-$(date +%F).log"
 set +e
 timeout --signal=TERM --kill-after=60 "$MAX_SECONDS" \
   claude -p "$(cat "$REPO/.claude/prompts/daily-ops.md")" \
-  --dangerously-skip-permissions 2>&1 | tee -a "$RUNDIR/logs-$(date +%F).log"
+  --dangerously-skip-permissions 2>&1 | tee -a "$LOG_FILE"
 RC=${PIPESTATUS[0]}
 set -e
-[ "$RC" -eq 124 ] && echo "SUMMARY: timeout" >> "$REPORT" || true
-if [ "$MODE" = "dry-run" ] && [ "$(git -C "$REPO" rev-parse HEAD)" != "$GIT_PRE" ]; then
-  echo "VIOLATION: dry-run made commits ($(git -C "$REPO" rev-parse --short HEAD))" >> "$REPORT"
+if [ "$RC" -eq 0 ]; then
+  if [ "$MODE" = "dry-run" ] && [ "$(git -C "$REPO" rev-parse HEAD)" != "$GIT_PRE" ]; then
+    echo "VIOLATION: dry-run made commits ($(git -C "$REPO" rev-parse --short HEAD))" >> "$REPORT"
+    exit 1
+  fi
+  exit 0
+elif [ "$RC" -eq 124 ]; then
+  echo "SUMMARY: timeout" >> "$REPORT"
+  exit 124
+else
+  echo "SUMMARY: failed rc=$RC" >> "$REPORT"
+  echo "claude log: $LOG_FILE" >> "$REPORT"
+  exit "$RC"
 fi
-exit 0
