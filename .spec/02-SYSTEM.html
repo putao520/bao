@@ -5681,7 +5681,7 @@ Permission 配置:
             "description": "页面级用户 API,涵盖 A/B/D 三类共 162 method(E 类 31 在 Internal 返回 -32601)。"
           }
         </script>
-      <p data-xref-type="interface" data-xref-id="Page">关联需求: <span data-xref-type="req" data-xref-id="REQ-LIB-002">REQ-LIB-002</span></p></section>
+      <p data-xref-type="interface" data-xref-id="Page">关联需求: <span data-xref-type="req" data-xref-id="REQ-BAO-API-001">REQ-BAO-API-001</span></p></section>
       <section id="dec-cdp-001" data-decision="DEC-CDP-001" data-decision-dimension="technical">
         <script type="application/ld+json">
           {
@@ -5771,7 +5771,7 @@ Permission 配置:
             <li>ws:// / wss:// scheme 路由到 WebSocketTransport 测试通过</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-BAO-API-001">关联实体: <a data-xref-type="entity" data-xref-id="BaoCdpBrowser" href="04-DATA-MODEL#BaoCdpBrowser">BaoCdpBrowser</a></p><p>关联接口: <a data-xref-type="interface" data-xref-id="Browser" href="02-SYSTEM#browser">Browser</a></p></section>
+      <p data-xref-type="req" data-xref-id="REQ-BAO-API-001">关联实体: <a data-xref-type="entity" data-xref-id="BaoCdpBrowser" href="04-DATA-MODEL#BaoCdpBrowser">BaoCdpBrowser</a></p><p>关联接口: <a data-xref-type="interface" data-xref-id="Browser" href="02-SYSTEM#browser">Browser</a>, <a data-xref-type="interface" data-xref-id="Page" href="02-SYSTEM#page">Page</a></p></section>
       <section id="req-bao-api-002" data-req="REQ-BAO-API-002" data-req-status="implemented" data-req-domain="bao-api" data-req-category="architecture" data-req-entity="CdpTransport" data-req-api="POST /cdp-client/transport">
         <h3>REQ-BAO-API-002 undefined</h3>
         <p>Transport trait + 双实现</p>
@@ -7469,7 +7469,7 @@ Permission 配置:
           "name": "bao-cdp"
         }
       </script>
-    </div>
+    <p data-xref-type="module" data-xref-id="bao-cdp">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</span></p></div>
     <div id="bao-stealth" data-module="bao-stealth" data-module-kind="module" data-module-layer="L2" data-module-deps="bao_cdp,bun_http,rustls" data-delivery="D40">
       <h3>bao-stealth — 反指纹模块</h3>
       <table>
@@ -7608,7 +7608,7 @@ Permission 配置:
           "name": "IF-CDP-BROWSER"
         }
       </script>
-    <p data-xref-type="interface" data-xref-id="IF-CDP-BROWSER">关联需求: <span data-xref-type="req" data-xref-id="REQ-LIB-003">REQ-LIB-003</span></p></div>
+    <p data-xref-type="interface" data-xref-id="IF-CDP-BROWSER">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</span></p></div>
 
     <!-- ============================================================ -->
     <h2 data-delivery="D42">§12 架构决策</h2>
