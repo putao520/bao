@@ -4289,7 +4289,7 @@ Permission 配置:
         </table>
       </section>
       <section data-groundedin="PRD-REQ-STEALTH-NET" id="req-pure-001" data-req="REQ-PURE-001" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="TlsProfile,TlsConnection" data-req-api="POST /stealth/tls">
-        <h3>REQ-PURE-001 REQ-PURE-001: boringssl → rustls 纯 Rust TLS</h3>
+        <h3>REQ-PURE-001 REQ-PURE-001: rustls → BoringSSL 统一 TLS 栈</h3>
         <p data-req-description="">
           Phase 5 已完成 TLS 栈统一：删除 bao_tls (rustls)，新建 bao_boringssl_bridge (BoringSSL)。BoringSSL 成为唯一
           TLS 栈，提供 TLS 1.2/1.3 支持、JA3/JA4 指纹模拟、cipher suite 配置。bao_boringssl_bridge 封装 BoringSSL 的
@@ -4392,7 +4392,7 @@ Permission 配置:
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       <p data-xref-type="req" data-xref-id="REQ-PURE-004">关联实体: <a data-xref-type="entity" data-xref-id="ZlibEngine" href="04-DATA-MODEL#ZlibEngine">ZlibEngine</a>, <a data-xref-type="entity" data-xref-id="ZlibCompressConfig" href="04-DATA-MODEL#ZlibCompressConfig">ZlibCompressConfig</a></p></section>
       <section id="req-pure-005" data-req="REQ-PURE-005" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="AllocatorConfig, AllocatorProfile" data-req-api="GET /config/allocator">
-        <h3>REQ-PURE-005 REQ-PURE-005: mimalloc → jemallocator/Rust 默认 allocator</h3>
+        <h3>REQ-PURE-005 REQ-PURE-005: mimalloc 保留（per-heap isolation C 依赖，jemallocator 方案已推翻）</h3>
         <p data-req-description="">
           [已推翻 SPEC] mimalloc 保留:per-heap isolation API(mi_heap_t)被 AST/bundler/shell_parser/safety 共 387
           处调用,jemallocator/tikv-jemallocator 不提供 per-heap isolation API。设计决策保留 C 依赖。原 SPEC 目标(切换到
@@ -4419,7 +4419,7 @@ Permission 配置:
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       <p data-xref-type="req" data-xref-id="REQ-PURE-005">关联实体: <a data-xref-type="entity" data-xref-id="AllocatorConfig" href="04-DATA-MODEL#AllocatorConfig">AllocatorConfig</a>, <a data-xref-type="entity" data-xref-id="AllocatorProfile" href="04-DATA-MODEL#AllocatorProfile">AllocatorProfile</a></p></section>
-      <section id="req-pure-006" data-req="REQ-PURE-006" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="SimdHash, SimdHashConfig" data-req-api="POST /hash/simd">
+      <section data-groundedin="PRD-REQ-BUN-COMPAT" id="req-pure-006" data-req="REQ-PURE-006" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="SimdHash, SimdHashConfig" data-req-api="POST /hash/simd">
         <h3>REQ-PURE-006 REQ-PURE-006: highway → wide/std::simd 纯 Rust SIMD</h3>
         <p data-req-description="">
           已实现：bun_highway (src/highway/) 完全重写为纯 Rust。删除 vendor/highway/（270 files）+ src/highway/build.rs
@@ -4471,7 +4471,7 @@ Permission 配置:
         <div id="h3-crate-提供-http/3-层" data-criterion="h3 crate 提供 HTTP/3 层">h3 crate 提供 HTTP/3 层</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section id="req-pure-008" data-req="REQ-PURE-008" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="HtmlRewriter, HtmlRewriterConfig" data-req-api="POST /transform/html">
+      <section data-groundedin="PRD-REQ-BUN-COMPAT" id="req-pure-008" data-req="REQ-PURE-008" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="HtmlRewriter, HtmlRewriterConfig" data-req-api="POST /transform/html">
         <h3>REQ-PURE-008 REQ-PURE-008: lolhtml → html5ever (servo 内置) 纯 Rust HTML 重写</h3>
         <p data-req-description="">
           已实现（SPEC 描述订正）：Cloudflare 的 lol-html 本身就是 pure Rust 项目（不是 C 库），crates.io 上的 lol_html
@@ -4499,7 +4499,7 @@ Permission 配置:
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       <p data-xref-type="req" data-xref-id="REQ-PURE-008">关联实体: <a data-xref-type="entity" data-xref-id="HtmlRewriter" href="04-DATA-MODEL#HtmlRewriter">HtmlRewriter</a>, <a data-xref-type="entity" data-xref-id="HtmlRewriterConfig" href="04-DATA-MODEL#HtmlRewriterConfig">HtmlRewriterConfig</a></p></section>
       <section id="req-pure-009" data-req="REQ-PURE-009" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="HttpServer, HttpServerConfig" data-req-api="POST /http/serve">
-        <h3>REQ-PURE-009 REQ-PURE-009: uWS C++ → hyper 纯 Rust HTTP server/client</h3>
+        <h3>REQ-PURE-009 REQ-PURE-009: uWS C++ 保留（hyper 方案已推翻，Tokio 与 uloop event loop 冲突）</h3>
         <p data-req-description="">
           [已推翻 SPEC] uWS 保留:bun_uws(C++ uSockets)深度集成于 bao_runtime 5 个文件(bun_api.rs Bun.serve() 1300+
           LOC、node_http.rs node:http 600+ LOC、node_net.rs socket_group vtable、phase_c_exports.rs)。hyper 需 Tokio
@@ -5906,7 +5906,7 @@ Permission 配置:
           </ol>
         </div>
       <p data-xref-type="req" data-xref-id="REQ-BAO-API-008">关联实体: <a data-xref-type="entity" data-xref-id="BaoCdpPublicAPI" href="04-DATA-MODEL#BaoCdpPublicAPI">BaoCdpPublicAPI</a></p></section>
-      <section id="req-h3-001" data-req="REQ-H3-001" data-req-status="implemented" data-req-domain="h3" data-req-category="api" data-req-entity="H3FetchClient" data-req-api="POST /fetch/h3">
+      <section data-groundedin="PRD-REQ-BUN-COMPAT" id="req-h3-001" data-req="REQ-H3-001" data-req-status="implemented" data-req-domain="h3" data-req-category="api" data-req-entity="H3FetchClient" data-req-api="POST /fetch/h3">
         <h3>REQ-H3-001 undefined</h3>
         <p>
           BAO 作为正常 BUN(BUN 用了 BAO 就应该有 h3 能力),必须暴露 h3/HTTP3 fetch 能力。当前 bun_http crate 已有

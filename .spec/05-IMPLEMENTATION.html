@@ -65,7 +65,7 @@
       <h2>§2 Phase 1: SpiderMonkey 替换 JSC</h2>
       <!-- ============================================================ -->
 
-      <div id="req-impl-01" data-req="REQ-IMPL-01" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-api="GET /impl/phase1-status">
+      <div data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT" id="req-impl-01" data-req="REQ-IMPL-01" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-api="GET /impl/phase1-status">
         <h3>Phase 1 详细任务（已完成）</h3>
 
         <h4>1.1 集成 mozjs crate</h4>
@@ -349,7 +349,7 @@
       <h2>§3 Phase 2: servo 引擎集成 + 渲染</h2>
       <!-- ============================================================ -->
 
-      <div id="req-impl-02" data-req="REQ-IMPL-02" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-api="GET /impl/phase2-status">
+      <div data-groundedin="PRD-REQ-HEADLESS-BROWSER,PRD-REQ-UNIFIED-RUNTIME" id="req-impl-02" data-req="REQ-IMPL-02" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-api="GET /impl/phase2-status">
         <h3>Phase 2 详细任务</h3>
 
         <h4>2.1 servo path 依赖集成</h4>
@@ -528,7 +528,7 @@
       <h2>§4 Phase 3: CDP Server</h2>
       <!-- ============================================================ -->
 
-      <div id="req-impl-03" data-req="REQ-IMPL-03" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="CdpRouter,CdpSession,CdpServer" data-req-api="GET /impl/phase3-status">
+      <div data-groundedin="PRD-REQ-CDP-CONNECT" id="req-impl-03" data-req="REQ-IMPL-03" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="CdpRouter,CdpSession,CdpServer" data-req-api="GET /impl/phase3-status">
         <h3>Phase 3 详细任务</h3>
         <table>
           <tr>
@@ -641,7 +641,7 @@
       <h2>§5 Phase 4: Stealth 反指纹</h2>
       <!-- ============================================================ -->
 
-      <div id="req-impl-04" data-req="REQ-IMPL-04" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="TlsProfile,StealthProfile,NavigatorProfile" data-req-api="GET /impl/phase4-status">
+      <div data-groundedin="PRD-REQ-STEALTH-NET,PRD-REQ-STEALTH-PAGE,PRD-REQ-STEALTH-AUTO,PRD-REQ-STEALTH-BEHAVIOR" id="req-impl-04" data-req="REQ-IMPL-04" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="TlsProfile,StealthProfile,NavigatorProfile" data-req-api="GET /impl/phase4-status">
         <h3>Phase 4 详细任务</h3>
         <table>
           <tr>
@@ -761,7 +761,7 @@
       <h2>§6 Phase 5: 集成测试与发布</h2>
       <!-- ============================================================ -->
 
-      <div id="req-impl-05" data-req="REQ-IMPL-05" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="PagePool,CdpRouter,Permission" data-req-api="GET /impl/phase5-status">
+      <div data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT,PRD-REQ-CDP-CONNECT" id="req-impl-05" data-req="REQ-IMPL-05" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="PagePool,CdpRouter,Permission" data-req-api="GET /impl/phase5-status">
         <h3>Phase 5 详细任务</h3>
         <table>
           <tr>

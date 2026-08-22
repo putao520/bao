@@ -506,218 +506,21 @@
       <h2>§7 需求清单</h2>
       <!-- ============================================================ -->
 
-      <div id="req-REQ-CDS-001" data-req-ref="REQ-CDP-001">
-        <h3>REQ-CDS-001: CDP 传输层</h3>
-        <p>实现 HTTP 发现端点和 WebSocket 连接，支持 Playwright/Puppeteer 标准连接流程。</p>
-        <h4>验收标准</h4>
-        <ul>
-          <li data-criterion="" data-criterion-id="REQ-CDS-001-C1">
-            GET /json/version 返回包含 Browser/Protocol-Version/webSocketDebuggerUrl 的 JSON
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-001-C2">GET /json/list 返回 TargetInfo 数组</li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-001-C3">
-            WebSocket 连接 /devtools/page/{targetId} 握手成功
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-001-C4">WebSocket 连接 /devtools/browser 握手成功</li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-001-C5">
-            JSON-RPC 2.0 请求解析正确（id/method/params/sessionId）
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-001-C6">
-            JSON-RPC 2.0 响应构造正确（id/result 或 id/error）
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-001-C7">无效 JSON 请求返回 -32600 Invalid Request 错误</li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-001-C8">
-            未知 Domain.Method 返回 -32601 Method not found 错误
-          </li>
-        </ul>
-        <p data-xref-type="req" data-xref-id="REQ-CDS-001">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpServer">CdpServer</span>
-          <span data-xref-type="entity" data-xref-id="ServerConfig">ServerConfig</span>
-        </p>
-        <p>
-          关联测试: <span data-xref-type="test" data-xref-id="TEST-CDS-001">TEST-CDS-001</span>
-          <span data-xref-type="test" data-xref-id="TEST-CDS-002">TEST-CDS-002</span>
-        </p>
-      </div>
+      
 
-      <div id="req-REQ-CDS-002" data-req-ref="REQ-CDP-008">
-        <h3>REQ-CDS-002: Target 管理</h3>
-        <p>通过 TargetProvider trait 实现浏览器 Target 的发现、创建、关闭和激活。</p>
-        <h4>验收标准</h4>
-        <ul>
-          <li data-criterion="" data-criterion-id="REQ-CDS-002-C1">
-            GET /json/new?{url} 调用 TargetProvider::create_target 并返回 TargetInfo
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-002-C2">
-            GET /json/close/{targetId} 调用 TargetProvider::close_target
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-002-C3">
-            GET /json/activate/{targetId} 调用 TargetProvider::activate_target
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-002-C4">
-            Target.getTargets 命令委托 TargetProvider::list_targets
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-002-C5">
-            Target.createTarget 命令委托 TargetProvider::create_target
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-002-C6">
-            Target.closeTarget 命令委托 TargetProvider::close_target 并广播 Target.destroyedTarget 事件
-          </li>
-        </ul>
-        <p data-xref-type="req" data-xref-id="REQ-CDS-002">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpTarget">CdpTarget</span>
-          <span data-xref-type="entity" data-xref-id="TargetProvider">TargetProvider</span>
-        </p>
-        <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDS-008">TEST-CDS-008</span></p>
-      </div>
+      
 
-      <div id="req-REQ-CDS-003" data-req-ref="REQ-CDP-001">
-        <h3>REQ-CDS-003: 会话生命周期</h3>
-        <p>管理 CDP Session 的完整生命周期：创建、域启用、命令处理、事件监听、关闭、资源释放。</p>
-        <h4>验收标准</h4>
-        <ul>
-          <li data-criterion="" data-criterion-id="REQ-CDS-003-C1">
-            WebSocket 连接建立时自动创建 Session，分配唯一 session_id
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-003-C2">
-            Domain.enable 命令将 domain 加入 Session 的 enabled_domains
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-003-C3">
-            Domain.disable 命令将 domain 移出 enabled_domains
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-003-C4">
-            Target.attachToTarget 返回 session_id，支持后续 flat session 通信
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-003-C5">
-            Target.detachFromTarget 销毁指定 session，释放资源
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-003-C6">
-            WebSocket 断开时 Session 自动进入 Closing → Closed 状态
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-003-C7">
-            Session 销毁时通知所有 DomainHandler (on_session_destroyed)
-          </li>
-        </ul>
-        <p data-xref-type="req" data-xref-id="REQ-CDS-003">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span>
-        </p>
-        <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDS-004">TEST-CDS-004</span></p>
-      </div>
+      
 
-      <div id="req-REQ-CDS-004" data-req-ref="REQ-CDP-002">
-        <h3>REQ-CDS-004: 消息路由</h3>
-        <p>实现 JSON-RPC 2.0 消息编解码和 Domain.Method → DomainHandler 分发。</p>
-        <h4>验收标准</h4>
-        <ul>
-          <li data-criterion="" data-criterion-id="REQ-CDS-004-C1">
-            正确解析 JSON-RPC 2.0 请求（id/method/params/sessionId 字段）
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-004-C2">从 method 字段提取 domain 部分（"." 分割首段）</li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-004-C3">
-            在 DomainRegistry 中查找 domain 对应的 DomainHandler
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-004-C4">
-            调用 DomainHandler::handle_command 并返回 result 或 error
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-004-C5">
-            内置命令（Target.*）由 cdp-server 直接处理，不经过 DomainHandler
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-004-C6">
-            sessionId 参数支持 flat session 模式（多 session 共享同一 WebSocket）
-          </li>
-        </ul>
-        <p data-xref-type="req" data-xref-id="REQ-CDS-004">
-          关联实体: <span data-xref-type="entity" data-xref-id="DomainRegistry">DomainRegistry</span>
-        </p>
-        <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDS-003">TEST-CDS-003</span></p>
-      </div>
+      
 
-      <div id="req-REQ-CDS-005" data-req-ref="REQ-CDP-006">
-        <h3>REQ-CDS-005: 事件系统</h3>
-        <p>实现 CDP 事件的订阅、广播和过滤机制。</p>
-        <h4>验收标准</h4>
-        <ul>
-          <li data-criterion="" data-criterion-id="REQ-CDS-005-C1">
-            DomainHandler 通过 EventSender::send_event 广播事件
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-005-C2">仅已启用该 domain 的 Session 收到事件</li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-005-C3">Browser-level Session 接收所有 domain 事件</li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-005-C4">
-            事件消息不含 id 字段，method 格式为 Domain.eventName
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-005-C5">Session 销毁后不再收到任何事件</li>
-        </ul>
-        <p data-xref-type="req" data-xref-id="REQ-CDS-005">
-          关联实体: <span data-xref-type="entity" data-xref-id="EventSubscription">EventSubscription</span>
-        </p>
-        <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDS-005">TEST-CDS-005</span></p>
-      </div>
+      
 
-      <div id="req-REQ-CDS-006" data-req-ref="REQ-CDP-006">
-        <h3>REQ-CDS-006: DomainHandler trait 系统</h3>
-        <p>提供 DomainHandler trait 的注册、查找和生命周期回调机制。</p>
-        <h4>验收标准</h4>
-        <ul>
-          <li data-criterion="" data-criterion-id="REQ-CDS-006-C1">
-            register_domain(handler) 注册 DomainHandler 到 DomainRegistry
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-006-C2">
-            通过 domain_name 查找对应的 DomainHandler（O(1) HashMap）
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-006-C3">
-            Session 首次 enable 某个 domain 时触发 on_session_created 回调
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-006-C4">
-            Session 销毁时触发所有已启用 domain 的 on_session_destroyed 回调
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-006-C5">重复注册同名 domain 返回错误（不允许覆盖）</li>
-        </ul>
-        <p data-xref-type="req" data-xref-id="REQ-CDS-006">
-          关联实体: <span data-xref-type="entity" data-xref-id="DomainRegistry">DomainRegistry</span>
-        </p>
-        <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDS-003">TEST-CDS-003</span></p>
-      </div>
+      
 
-      <div id="req-REQ-CDS-007" data-req-ref="REQ-CDP-008">
-        <h3>REQ-CDS-007: 并发安全</h3>
-        <p>支持多 Session 并发命令处理和非阻塞 I/O。</p>
-        <h4>验收标准</h4>
-        <ul>
-          <li data-criterion="" data-criterion-id="REQ-CDS-007-C1">多个 WebSocket Session 可同时连接并独立处理命令</li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-007-C2">一个 Session 的阻塞不影响其他 Session 的命令处理</li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-007-C3">
-            EventSender.send_event 线程安全（多 DomainHandler 可并发广播）
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-007-C4">DomainRegistry 的注册和查找线程安全</li>
-        </ul>
-        <p data-xref-type="req" data-xref-id="REQ-CDS-007">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpServer">CdpServer</span>
-        </p>
-        <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDS-007">TEST-CDS-007</span></p>
-      </div>
+      
 
-      <div id="req-REQ-CDS-008" data-req-ref="REQ-CDP-001">
-        <h3>REQ-CDS-008: 可配置性</h3>
-        <p>提供 ServerConfig 配置服务器端口、超时、日志级别和并发限制。</p>
-        <h4>验收标准</h4>
-        <ul>
-          <li data-criterion="" data-criterion-id="REQ-CDS-008-C1">
-            ServerConfig 可配置监听地址和端口（默认 127.0.0.1:9222）
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-008-C2">ServerConfig 可配置 HTTP 请求超时（默认 30s）</li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-008-C3">
-            ServerConfig 可配置最大并发 Session 数（默认 100）
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-008-C4">
-            ServerConfig 可配置 Browser/Protocol-Version 等版本信息（由 TargetProvider 填充）
-          </li>
-          <li data-criterion="" data-criterion-id="REQ-CDS-008-C5">ServerConfig 支持构建器模式（Builder pattern）</li>
-        </ul>
-        <p data-xref-type="req" data-xref-id="REQ-CDS-008">
-          关联实体: <span data-xref-type="entity" data-xref-id="ServerConfig">ServerConfig</span>
-        </p>
-        <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDS-001">TEST-CDS-001</span></p>
-      </div>
+      
 
       <!-- ============================================================ -->
       <h2>§8 数据模型</h2>
@@ -1565,6 +1368,6 @@ bao_cdp/
           <li>关闭 Target 时关联 Session 自动销毁</li>
         </ul>
       </section>
-    <section id="req-cds-002" data-req="REQ-CDS-002" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-002 Target 管理</h3><p>通过 TargetProvider trait 实现浏览器 Target 的发现、创建、关闭和激活。（内容源自 06-CDP-SERVER §7 REQ-CDS-002 详情块，父契约 REQ-CDP-008）</p><div data-criterion="GET /json/new?{url} 调用 TargetProvider::create_target 并返回 TargetInfo">GET /json/new?{url} 调用 TargetProvider::create_target 并返回 TargetInfo</div><div data-criterion="GET /json/close/{targetId} 调用 TargetProvider::close_target">GET /json/close/{targetId} 调用 TargetProvider::close_target</div><div data-criterion="GET /json/activate/{targetId} 调用 TargetProvider::activate_target">GET /json/activate/{targetId} 调用 TargetProvider::activate_target</div><div data-criterion="Target.getTargets 命令委托 TargetProvider::list_targets">Target.getTargets 命令委托 TargetProvider::list_targets</div><div data-criterion="Target.createTarget 命令委托 TargetProvider::create_target">Target.createTarget 命令委托 TargetProvider::create_target</div><div data-criterion="Target.closeTarget 命令委托 TargetProvider::close_target 并广播 Target.destroyedTarget 事件">Target.closeTarget 命令委托 TargetProvider::close_target 并广播 Target.destroyedTarget 事件</div></section><section id="req-cds-003" data-req="REQ-CDS-003" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-003 会话生命周期</h3><p>管理 CDP Session 的完整生命周期：创建、域启用、命令处理、事件监听、关闭、资源释放。（内容源自 06-CDP-SERVER §7 REQ-CDS-003 详情块，父契约 REQ-CDP-001）</p><div data-criterion="WebSocket 连接建立时自动创建 Session，分配唯一 session_id">WebSocket 连接建立时自动创建 Session，分配唯一 session_id</div><div data-criterion="Domain.enable 命令将 domain 加入 Session 的 enabled_domains">Domain.enable 命令将 domain 加入 Session 的 enabled_domains</div><div data-criterion="Domain.disable 命令将 domain 移出 enabled_domains">Domain.disable 命令将 domain 移出 enabled_domains</div><div data-criterion="Target.attachToTarget 返回 session_id，支持后续 flat session 通信">Target.attachToTarget 返回 session_id，支持后续 flat session 通信</div><div data-criterion="Target.detachFromTarget 销毁指定 session，释放资源">Target.detachFromTarget 销毁指定 session，释放资源</div><div data-criterion="WebSocket 断开时 Session 自动进入 Closing → Closed 状态">WebSocket 断开时 Session 自动进入 Closing → Closed 状态</div><div data-criterion="Session 销毁时通知所有 DomainHandler (on_session_destroyed)">Session 销毁时通知所有 DomainHandler (on_session_destroyed)</div></section><section id="req-cds-004" data-req="REQ-CDS-004" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-004 消息路由</h3><p>实现 JSON-RPC 2.0 消息编解码和 Domain.Method → DomainHandler 分发。（内容源自 06-CDP-SERVER §7 REQ-CDS-004 详情块，父契约 REQ-CDP-002）</p><div data-criterion="正确解析 JSON-RPC 2.0 请求（id/method/params/sessionId 字段）">正确解析 JSON-RPC 2.0 请求（id/method/params/sessionId 字段）</div><div data-criterion="从 method 字段提取 domain 部分（&quot;.&quot; 分割首段）">从 method 字段提取 domain 部分（"." 分割首段）</div><div data-criterion="在 DomainRegistry 中查找 domain 对应的 DomainHandler">在 DomainRegistry 中查找 domain 对应的 DomainHandler</div><div data-criterion="调用 DomainHandler::handle_command 并返回 result 或 error">调用 DomainHandler::handle_command 并返回 result 或 error</div><div data-criterion="内置命令（Target.*）由 cdp-server 直接处理，不经过 DomainHandler">内置命令（Target.*）由 cdp-server 直接处理，不经过 DomainHandler</div><div data-criterion="sessionId 参数支持 flat session 模式（多 session 共享同一 WebSocket）">sessionId 参数支持 flat session 模式（多 session 共享同一 WebSocket）</div></section><section id="req-cds-005" data-req="REQ-CDS-005" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-005 事件系统</h3><p>实现 CDP 事件的订阅、广播和过滤机制。（内容源自 06-CDP-SERVER §7 REQ-CDS-005 详情块，父契约 REQ-CDP-006）</p><div data-criterion="DomainHandler 通过 EventSender::send_event 广播事件">DomainHandler 通过 EventSender::send_event 广播事件</div><div data-criterion="仅已启用该 domain 的 Session 收到事件">仅已启用该 domain 的 Session 收到事件</div><div data-criterion="Browser-level Session 接收所有 domain 事件">Browser-level Session 接收所有 domain 事件</div><div data-criterion="事件消息不含 id 字段，method 格式为 Domain.eventName">事件消息不含 id 字段，method 格式为 Domain.eventName</div><div data-criterion="Session 销毁后不再收到任何事件">Session 销毁后不再收到任何事件</div></section><section id="req-cds-006" data-req="REQ-CDS-006" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-006 DomainHandler trait 系统</h3><p>提供 DomainHandler trait 的注册、查找和生命周期回调机制。（内容源自 06-CDP-SERVER §7 REQ-CDS-006 详情块，父契约 REQ-CDP-006）</p><div data-criterion="register_domain(handler) 注册 DomainHandler 到 DomainRegistry">register_domain(handler) 注册 DomainHandler 到 DomainRegistry</div><div data-criterion="通过 domain_name 查找对应的 DomainHandler（O(1) HashMap）">通过 domain_name 查找对应的 DomainHandler（O(1) HashMap）</div><div data-criterion="Session 首次 enable 某个 domain 时触发 on_session_created 回调">Session 首次 enable 某个 domain 时触发 on_session_created 回调</div><div data-criterion="Session 销毁时触发所有已启用 domain 的 on_session_destroyed 回调">Session 销毁时触发所有已启用 domain 的 on_session_destroyed 回调</div><div data-criterion="重复注册同名 domain 返回错误（不允许覆盖）">重复注册同名 domain 返回错误（不允许覆盖）</div></section><section id="req-cds-007" data-req="REQ-CDS-007" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-007 并发安全</h3><p>支持多 Session 并发命令处理和非阻塞 I/O。（内容源自 06-CDP-SERVER §7 REQ-CDS-007 详情块，父契约 REQ-CDP-008）</p><div data-criterion="多个 WebSocket Session 可同时连接并独立处理命令">多个 WebSocket Session 可同时连接并独立处理命令</div><div data-criterion="一个 Session 的阻塞不影响其他 Session 的命令处理">一个 Session 的阻塞不影响其他 Session 的命令处理</div><div data-criterion="EventSender.send_event 线程安全（多 DomainHandler 可并发广播）">EventSender.send_event 线程安全（多 DomainHandler 可并发广播）</div><div data-criterion="DomainRegistry 的注册和查找线程安全">DomainRegistry 的注册和查找线程安全</div></section><section id="req-cds-008" data-req="REQ-CDS-008" data-req-status="implemented" data-req-domain="cds" data-req-category="tools" data-req-entity="ServerConfig"><h3>REQ-CDS-008 可配置性</h3><p>提供 ServerConfig 配置服务器端口、超时、日志级别和并发限制。（内容源自 06-CDP-SERVER §7 REQ-CDS-008 详情块，父契约 REQ-CDP-001）</p><div data-criterion="ServerConfig 可配置监听地址和端口（默认 127.0.0.1:9222）">ServerConfig 可配置监听地址和端口（默认 127.0.0.1:9222）</div><div data-criterion="ServerConfig 可配置 HTTP 请求超时（默认 30s）">ServerConfig 可配置 HTTP 请求超时（默认 30s）</div><div data-criterion="ServerConfig 可配置最大并发 Session 数（默认 100）">ServerConfig 可配置最大并发 Session 数（默认 100）</div><div data-criterion="ServerConfig 可配置 Browser/Protocol-Version 等版本信息（由 TargetProvider 填充）">ServerConfig 可配置 Browser/Protocol-Version 等版本信息（由 TargetProvider 填充）</div><div data-criterion="ServerConfig 支持构建器模式（Builder pattern）">ServerConfig 支持构建器模式（Builder pattern）</div><p data-xref-type="req" data-xref-id="REQ-CDS-008">关联实体: <a data-xref-type="entity" data-xref-id="ServerConfig" href="06-CDP-SERVER#ServerConfig">ServerConfig</a></p></section><section id="req-cds-001" data-req="REQ-CDS-001" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-001 CDP 传输层（cdp-server 组件）</h3><p>cdp-server crate 传输组件契约：HTTP 发现端点、WebSocket 升级握手与 JSON-RPC 2.0 帧编解码的组件级验收标准，源自 06 文件 §7 需求清单详情块转正；父级业务契约为 CDP 域 WebSocket 服务端需求（data-req-ref 指向）。</p><div data-criterion="GET /json/version 返回包含 Browser/Protocol-Version/webSocketDebuggerUrl 的 JSON">GET /json/version 返回包含 Browser/Protocol-Version/webSocketDebuggerUrl 的 JSON</div><div data-criterion="GET /json/list 返回 TargetInfo 数组">GET /json/list 返回 TargetInfo 数组</div><div data-criterion="WebSocket 连接 /devtools/page/{targetId} 握手成功">WebSocket 连接 /devtools/page/{targetId} 握手成功</div><div data-criterion="WebSocket 连接 /devtools/browser 握手成功">WebSocket 连接 /devtools/browser 握手成功</div><div data-criterion="JSON-RPC 2.0 请求解析正确（id/method/params/sessionId）">JSON-RPC 2.0 请求解析正确（id/method/params/sessionId）</div><div data-criterion="JSON-RPC 2.0 响应构造正确（id/result 或 id/error）">JSON-RPC 2.0 响应构造正确（id/result 或 id/error）</div><div data-criterion="无效 JSON 请求返回 -32600 Invalid Request 错误">无效 JSON 请求返回 -32600 Invalid Request 错误</div><div data-criterion="未知 Domain.Method 返回 -32601 Method not found 错误">未知 Domain.Method 返回 -32601 Method not found 错误</div></section></main>
+    <section data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cds-002" data-req="REQ-CDS-002" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-002 Target 管理</h3><p>通过 TargetProvider trait 实现浏览器 Target 的发现、创建、关闭和激活。（内容源自 06-CDP-SERVER §7 REQ-CDS-002 详情块，父契约 REQ-CDP-008）</p><div data-criterion="GET /json/new?{url} 调用 TargetProvider::create_target 并返回 TargetInfo">GET /json/new?{url} 调用 TargetProvider::create_target 并返回 TargetInfo</div><div data-criterion="GET /json/close/{targetId} 调用 TargetProvider::close_target">GET /json/close/{targetId} 调用 TargetProvider::close_target</div><div data-criterion="GET /json/activate/{targetId} 调用 TargetProvider::activate_target">GET /json/activate/{targetId} 调用 TargetProvider::activate_target</div><div data-criterion="Target.getTargets 命令委托 TargetProvider::list_targets">Target.getTargets 命令委托 TargetProvider::list_targets</div><div data-criterion="Target.createTarget 命令委托 TargetProvider::create_target">Target.createTarget 命令委托 TargetProvider::create_target</div><div data-criterion="Target.closeTarget 命令委托 TargetProvider::close_target 并广播 Target.destroyedTarget 事件">Target.closeTarget 命令委托 TargetProvider::close_target 并广播 Target.destroyedTarget 事件</div></section><section data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cds-003" data-req="REQ-CDS-003" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-003 会话生命周期</h3><p>管理 CDP Session 的完整生命周期：创建、域启用、命令处理、事件监听、关闭、资源释放。（内容源自 06-CDP-SERVER §7 REQ-CDS-003 详情块，父契约 REQ-CDP-001）</p><div data-criterion="WebSocket 连接建立时自动创建 Session，分配唯一 session_id">WebSocket 连接建立时自动创建 Session，分配唯一 session_id</div><div data-criterion="Domain.enable 命令将 domain 加入 Session 的 enabled_domains">Domain.enable 命令将 domain 加入 Session 的 enabled_domains</div><div data-criterion="Domain.disable 命令将 domain 移出 enabled_domains">Domain.disable 命令将 domain 移出 enabled_domains</div><div data-criterion="Target.attachToTarget 返回 session_id，支持后续 flat session 通信">Target.attachToTarget 返回 session_id，支持后续 flat session 通信</div><div data-criterion="Target.detachFromTarget 销毁指定 session，释放资源">Target.detachFromTarget 销毁指定 session，释放资源</div><div data-criterion="WebSocket 断开时 Session 自动进入 Closing → Closed 状态">WebSocket 断开时 Session 自动进入 Closing → Closed 状态</div><div data-criterion="Session 销毁时通知所有 DomainHandler (on_session_destroyed)">Session 销毁时通知所有 DomainHandler (on_session_destroyed)</div></section><section data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cds-004" data-req="REQ-CDS-004" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-004 消息路由</h3><p>实现 JSON-RPC 2.0 消息编解码和 Domain.Method → DomainHandler 分发。（内容源自 06-CDP-SERVER §7 REQ-CDS-004 详情块，父契约 REQ-CDP-002）</p><div data-criterion="正确解析 JSON-RPC 2.0 请求（id/method/params/sessionId 字段）">正确解析 JSON-RPC 2.0 请求（id/method/params/sessionId 字段）</div><div data-criterion="从 method 字段提取 domain 部分（&quot;.&quot; 分割首段）">从 method 字段提取 domain 部分（"." 分割首段）</div><div data-criterion="在 DomainRegistry 中查找 domain 对应的 DomainHandler">在 DomainRegistry 中查找 domain 对应的 DomainHandler</div><div data-criterion="调用 DomainHandler::handle_command 并返回 result 或 error">调用 DomainHandler::handle_command 并返回 result 或 error</div><div data-criterion="内置命令（Target.*）由 cdp-server 直接处理，不经过 DomainHandler">内置命令（Target.*）由 cdp-server 直接处理，不经过 DomainHandler</div><div data-criterion="sessionId 参数支持 flat session 模式（多 session 共享同一 WebSocket）">sessionId 参数支持 flat session 模式（多 session 共享同一 WebSocket）</div></section><section data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cds-005" data-req="REQ-CDS-005" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-005 事件系统</h3><p>实现 CDP 事件的订阅、广播和过滤机制。（内容源自 06-CDP-SERVER §7 REQ-CDS-005 详情块，父契约 REQ-CDP-006）</p><div data-criterion="DomainHandler 通过 EventSender::send_event 广播事件">DomainHandler 通过 EventSender::send_event 广播事件</div><div data-criterion="仅已启用该 domain 的 Session 收到事件">仅已启用该 domain 的 Session 收到事件</div><div data-criterion="Browser-level Session 接收所有 domain 事件">Browser-level Session 接收所有 domain 事件</div><div data-criterion="事件消息不含 id 字段，method 格式为 Domain.eventName">事件消息不含 id 字段，method 格式为 Domain.eventName</div><div data-criterion="Session 销毁后不再收到任何事件">Session 销毁后不再收到任何事件</div></section><section data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cds-006" data-req="REQ-CDS-006" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-006 DomainHandler trait 系统</h3><p>提供 DomainHandler trait 的注册、查找和生命周期回调机制。（内容源自 06-CDP-SERVER §7 REQ-CDS-006 详情块，父契约 REQ-CDP-006）</p><div data-criterion="register_domain(handler) 注册 DomainHandler 到 DomainRegistry">register_domain(handler) 注册 DomainHandler 到 DomainRegistry</div><div data-criterion="通过 domain_name 查找对应的 DomainHandler（O(1) HashMap）">通过 domain_name 查找对应的 DomainHandler（O(1) HashMap）</div><div data-criterion="Session 首次 enable 某个 domain 时触发 on_session_created 回调">Session 首次 enable 某个 domain 时触发 on_session_created 回调</div><div data-criterion="Session 销毁时触发所有已启用 domain 的 on_session_destroyed 回调">Session 销毁时触发所有已启用 domain 的 on_session_destroyed 回调</div><div data-criterion="重复注册同名 domain 返回错误（不允许覆盖）">重复注册同名 domain 返回错误（不允许覆盖）</div></section><section data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cds-007" data-req="REQ-CDS-007" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-007 并发安全</h3><p>支持多 Session 并发命令处理和非阻塞 I/O。（内容源自 06-CDP-SERVER §7 REQ-CDS-007 详情块，父契约 REQ-CDP-008）</p><div data-criterion="多个 WebSocket Session 可同时连接并独立处理命令">多个 WebSocket Session 可同时连接并独立处理命令</div><div data-criterion="一个 Session 的阻塞不影响其他 Session 的命令处理">一个 Session 的阻塞不影响其他 Session 的命令处理</div><div data-criterion="EventSender.send_event 线程安全（多 DomainHandler 可并发广播）">EventSender.send_event 线程安全（多 DomainHandler 可并发广播）</div><div data-criterion="DomainRegistry 的注册和查找线程安全">DomainRegistry 的注册和查找线程安全</div></section><section data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cds-008" data-req="REQ-CDS-008" data-req-status="implemented" data-req-domain="cds" data-req-category="tools" data-req-entity="ServerConfig"><h3>REQ-CDS-008 可配置性</h3><p>提供 ServerConfig 配置服务器端口、超时、日志级别和并发限制。（内容源自 06-CDP-SERVER §7 REQ-CDS-008 详情块，父契约 REQ-CDP-001）</p><div data-criterion="ServerConfig 可配置监听地址和端口（默认 127.0.0.1:9222）">ServerConfig 可配置监听地址和端口（默认 127.0.0.1:9222）</div><div data-criterion="ServerConfig 可配置 HTTP 请求超时（默认 30s）">ServerConfig 可配置 HTTP 请求超时（默认 30s）</div><div data-criterion="ServerConfig 可配置最大并发 Session 数（默认 100）">ServerConfig 可配置最大并发 Session 数（默认 100）</div><div data-criterion="ServerConfig 可配置 Browser/Protocol-Version 等版本信息（由 TargetProvider 填充）">ServerConfig 可配置 Browser/Protocol-Version 等版本信息（由 TargetProvider 填充）</div><div data-criterion="ServerConfig 支持构建器模式（Builder pattern）">ServerConfig 支持构建器模式（Builder pattern）</div><p data-xref-type="req" data-xref-id="REQ-CDS-008">关联实体: <a data-xref-type="entity" data-xref-id="ServerConfig" href="06-CDP-SERVER#ServerConfig">ServerConfig</a></p></section><section data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cds-001" data-req="REQ-CDS-001" data-req-status="implemented" data-req-domain="cds" data-req-category="tools"><h3>REQ-CDS-001 CDP 传输层（cdp-server 组件）</h3><p>cdp-server crate 传输组件契约：HTTP 发现端点、WebSocket 升级握手与 JSON-RPC 2.0 帧编解码的组件级验收标准，源自 06 文件 §7 需求清单详情块转正；父级业务契约为 CDP 域 WebSocket 服务端需求（data-req-ref 指向）。</p><div data-criterion="GET /json/version 返回包含 Browser/Protocol-Version/webSocketDebuggerUrl 的 JSON">GET /json/version 返回包含 Browser/Protocol-Version/webSocketDebuggerUrl 的 JSON</div><div data-criterion="GET /json/list 返回 TargetInfo 数组">GET /json/list 返回 TargetInfo 数组</div><div data-criterion="WebSocket 连接 /devtools/page/{targetId} 握手成功">WebSocket 连接 /devtools/page/{targetId} 握手成功</div><div data-criterion="WebSocket 连接 /devtools/browser 握手成功">WebSocket 连接 /devtools/browser 握手成功</div><div data-criterion="JSON-RPC 2.0 请求解析正确（id/method/params/sessionId）">JSON-RPC 2.0 请求解析正确（id/method/params/sessionId）</div><div data-criterion="JSON-RPC 2.0 响应构造正确（id/result 或 id/error）">JSON-RPC 2.0 响应构造正确（id/result 或 id/error）</div><div data-criterion="无效 JSON 请求返回 -32600 Invalid Request 错误">无效 JSON 请求返回 -32600 Invalid Request 错误</div><div data-criterion="未知 Domain.Method 返回 -32601 Method not found 错误">未知 Domain.Method 返回 -32601 Method not found 错误</div></section></main>
   </body>
 </html>
