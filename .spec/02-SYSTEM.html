@@ -7161,7 +7161,7 @@ Permission 配置:
           }
         </script>
       </section>
-    <section id="req-brw-4" data-req="REQ-BRW-4" data-req-status="approved" data-req-domain="BRW" data-req-category="api"><h3>REQ-BRW-4 Web Worker (DedicatedWorker/SharedWorker/ServiceWorker)</h3><p data-req-description="">桥接 servo DedicatedWorkerGlobalScope/SharedWorkerGlobalScope/ServiceWorkerGlobalScope 实现，暴露 Worker/SharedWorker/ServiceWorker 构造函数到 JS 全局对象。支持 postMessage/onmessage 通信、structured clone、Worker 生命周期管理。servo 实现路径：vendor/servo/components/script/dom/workers/
+    <section id="req-brw-wk-family" data-req="REQ-BRW-4" data-req-status="approved" data-req-domain="BRW" data-req-category="api"><h3>Web Worker 族范围注记(SharedWorker/ServiceWorker)——原误编为 REQ-BRW-4,正式立法待 PRD 裁定</h3><p data-req-description="">桥接 servo DedicatedWorkerGlobalScope/SharedWorkerGlobalScope/ServiceWorkerGlobalScope 实现，暴露 Worker/SharedWorker/ServiceWorker 构造函数到 JS 全局对象。支持 postMessage/onmessage 通信、structured clone、Worker 生命周期管理。servo 实现路径：vendor/servo/components/script/dom/workers/
 
 源码核验 (2026-06-26 architect consult):
 - DedicatedWorker/SharedWorker: 纯 servo 原生路径可达 (DEC-WK-001)。
