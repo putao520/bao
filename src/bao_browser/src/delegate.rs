@@ -1618,10 +1618,15 @@ pub struct WorkerGlobalScopeState {
 }
 
 impl WorkerGlobalScopeState {
-    /// Create a WorkerGlobalScopeState from a script URL and scope config.
+    /// Shared constructor core: every scope config builds the same
+    /// WorkerGlobalScopeState (dedicated / shared / service differ only in
+    /// the config type that transports the navigator fingerprint, criterion #12).
     ///
     /// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
-    pub fn new(worker_url: String, config: &WorkerScopeConfig) -> Self {
+    pub fn from_scope_config<C: ScopeNavigatorConfig>(
+        worker_url: String,
+        config: &C,
+    ) -> Self {
         WorkerGlobalScopeState {
             location: WorkerLocation::from_url(&worker_url),
             navigator: WorkerNavigator::from_scope_config(config),
@@ -1630,16 +1635,18 @@ impl WorkerGlobalScopeState {
         }
     }
 
+    /// Create a WorkerGlobalScopeState from a script URL and scope config.
+    ///
+    /// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
+    pub fn new(worker_url: String, config: &WorkerScopeConfig) -> Self {
+        Self::from_scope_config(worker_url, config)
+    }
+
     /// Create a WorkerGlobalScopeState from a script URL and shared scope config.
     ///
     /// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
     pub fn new_shared(worker_url: String, config: &SharedWorkerScopeConfig) -> Self {
-        WorkerGlobalScopeState {
-            location: WorkerLocation::from_url(&worker_url),
-            navigator: WorkerNavigator::from_scope_config(config),
-            worker_url,
-            closing: false,
-        }
+        Self::from_scope_config(worker_url, config)
     }
 }
 
@@ -3082,12 +3089,7 @@ impl WorkerGlobalScopeState {
     ///
     /// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
     pub fn new_service(worker_url: String, config: &ServiceWorkerScopeConfig) -> Self {
-        WorkerGlobalScopeState {
-            location: WorkerLocation::from_url(&worker_url),
-            navigator: WorkerNavigator::from_scope_config(config),
-            worker_url,
-            closing: false,
-        }
+        Self::from_scope_config(worker_url, config)
     }
 }
 
