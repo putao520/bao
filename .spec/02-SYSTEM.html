@@ -1538,7 +1538,7 @@ Permission 配置:
             <li>XMLHttpRequest 跨域返回完整响应 (非 opaque) 测试通过</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-SEC-001">关联实体: <a data-xref-type="entity" data-xref-id="FetchResponse" href="04-DATA-MODEL#FetchResponse">FetchResponse</a></p></section>
       <section id="req-sec-002" data-req="REQ-SEC-002" data-req-status="implemented" data-req-domain="sec" data-req-category="security" data-req-entity="BaoRuntime, EvaluateResult, NodeRealm" data-req-api="POST /evaluate-js,POST /evaluate-js-web" data-req-priority="P0">
         <h3>REQ-SEC-002 双层 JS 执行模型 — 双 Realm 架构级隔离</h3>
         <p data-req-description="">
@@ -1609,7 +1609,7 @@ Permission 配置:
             <li>XMLHttpRequest 跨域返回完整响应 (非 opaque) 测试通过</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-SEC-002">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="EvaluateResult" href="04-DATA-MODEL#EvaluateResult">EvaluateResult</a>, <a data-xref-type="entity" data-xref-id="NodeRealm" href="04-DATA-MODEL#NodeRealm">NodeRealm</a></p></section>
       <section id="req-sec-003" data-req="REQ-SEC-003" data-req-status="implemented" data-req-domain="sec" data-req-category="security" data-req-entity="PageHandle" data-req-api="GET /sandbox-status" data-req-priority="P0">
         <h3>REQ-SEC-003 Node API 沙箱隔离 — 移除页面全局注入</h3>
         <p data-req-description="">
@@ -1671,7 +1671,7 @@ Permission 配置:
             <li>Page Realm 无法枚举/发现 Node Realm 任何对象测试通过</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-SEC-003">关联实体: <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a></p></section>
       <section id="API-ENG-1" data-api="POST /evaluate-js" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}">
         <h4>POST /evaluate-js — 可信脚本执行 — Node Realm (全权限)</h4>
         <table data-api-params="">
@@ -4312,7 +4312,7 @@ Permission 配置:
           JA3/JA4 指纹模拟通过 BoringSSL 原生 cipher suite 配置实现
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PURE-001">关联实体: <a data-xref-type="entity" data-xref-id="TlsProfile" href="04-DATA-MODEL#TlsProfile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="TlsConnection" href="04-DATA-MODEL#TlsConnection">TlsConnection</a></p></section>
       <section id="req-pure-002" data-req="REQ-PURE-002" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="BrotliEngine, BrotliCompressConfig" data-req-api="POST /compress/brotli">
         <h3>REQ-PURE-002 REQ-PURE-002: brotli → rust-brotli 纯 Rust 压缩</h3>
         <p data-req-description="">
@@ -4339,7 +4339,7 @@ Permission 配置:
           Bun.compress API brotli 模式正常
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PURE-002">关联实体: <a data-xref-type="entity" data-xref-id="BrotliEngine" href="04-DATA-MODEL#BrotliEngine">BrotliEngine</a>, <a data-xref-type="entity" data-xref-id="BrotliCompressConfig" href="04-DATA-MODEL#BrotliCompressConfig">BrotliCompressConfig</a></p></section>
       <section id="req-pure-003" data-req="REQ-PURE-003" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="ZstdEngine, ZstdCompressConfig" data-req-api="POST /compress/zstd">
         <h3>REQ-PURE-003 REQ-PURE-003: zstd → zstd-rs 纯 Rust Zstandard</h3>
         <p data-req-description="">
@@ -4365,7 +4365,7 @@ Permission 配置:
           Node.js zlib 模块 zstd 压缩正常
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PURE-003">关联实体: <a data-xref-type="entity" data-xref-id="ZstdEngine" href="04-DATA-MODEL#ZstdEngine">ZstdEngine</a>, <a data-xref-type="entity" data-xref-id="ZstdCompressConfig" href="04-DATA-MODEL#ZstdCompressConfig">ZstdCompressConfig</a></p></section>
       <section id="req-pure-004" data-req="REQ-PURE-004" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="ZlibEngine, ZlibCompressConfig" data-req-api="POST /compress/zlib">
         <h3>REQ-PURE-004 REQ-PURE-004: zlib/libdeflate → miniz_oxide/flate2 纯 Rust</h3>
         <p data-req-description="">
@@ -4390,7 +4390,7 @@ Permission 配置:
         <div id="bun.compress('gzip')-正常" data-criterion="Bun.compress('gzip') 正常">Bun.compress('gzip') 正常</div>
         <div id="node.js-zlib-模块正常" data-criterion="Node.js zlib 模块正常">Node.js zlib 模块正常</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PURE-004">关联实体: <a data-xref-type="entity" data-xref-id="ZlibEngine" href="04-DATA-MODEL#ZlibEngine">ZlibEngine</a>, <a data-xref-type="entity" data-xref-id="ZlibCompressConfig" href="04-DATA-MODEL#ZlibCompressConfig">ZlibCompressConfig</a></p></section>
       <section id="req-pure-005" data-req="REQ-PURE-005" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="AllocatorConfig, AllocatorProfile" data-req-api="GET /config/allocator">
         <h3>REQ-PURE-005 REQ-PURE-005: mimalloc → jemallocator/Rust 默认 allocator</h3>
         <p data-req-description="">
@@ -4418,7 +4418,7 @@ Permission 配置:
           Cargo.toml [profile] 配置正确
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PURE-005">关联实体: <a data-xref-type="entity" data-xref-id="AllocatorConfig" href="04-DATA-MODEL#AllocatorConfig">AllocatorConfig</a>, <a data-xref-type="entity" data-xref-id="AllocatorProfile" href="04-DATA-MODEL#AllocatorProfile">AllocatorProfile</a></p></section>
       <section id="req-pure-006" data-req="REQ-PURE-006" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="SimdHash, SimdHashConfig" data-req-api="POST /hash/simd">
         <h3>REQ-PURE-006 REQ-PURE-006: highway → wide/std::simd 纯 Rust SIMD</h3>
         <p data-req-description="">
@@ -4446,8 +4446,8 @@ Permission 配置:
         </div>
         <div id="哈希/校验和-simd-加速正常" data-criterion="哈希/校验和 SIMD 加速正常">哈希/校验和 SIMD 加速正常</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
-      <section id="req-pure-007" data-req="REQ-PURE-007" data-req-status="deprecated" data-req-domain="pure" data-req-category="architecture" data-req-entity="QuicConnection, QuicSessionConfig" data-req-api="POST /network/quic">
+      <p data-xref-type="req" data-xref-id="REQ-PURE-006">关联实体: <a data-xref-type="entity" data-xref-id="SimdHash" href="04-DATA-MODEL#SimdHash">SimdHash</a>, <a data-xref-type="entity" data-xref-id="SimdHashConfig" href="04-DATA-MODEL#SimdHashConfig">SimdHashConfig</a></p></section>
+      <section id="req-pure-007" data-req="REQ-PURE-007" data-req-status="deprecated" data-req-domain="pure" data-req-category="architecture" data-req-api="POST /network/quic">
         <h3>REQ-PURE-007 REQ-PURE-007: lsquic → quinn 纯 Rust QUIC/HTTP3</h3>
         <p data-req-description="">
           [已推翻 SPEC] lsquic 保留:bun_http h3_client(callback 驱动架构,8 文件 ~3k LOC)深度绑定 lsquic C
@@ -4497,7 +4497,7 @@ Permission 配置:
         </div>
         <div id="html5-解析-+-序列化正常" data-criterion="HTML5 解析 + 序列化正常">HTML5 解析 + 序列化正常</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PURE-008">关联实体: <a data-xref-type="entity" data-xref-id="HtmlRewriter" href="04-DATA-MODEL#HtmlRewriter">HtmlRewriter</a>, <a data-xref-type="entity" data-xref-id="HtmlRewriterConfig" href="04-DATA-MODEL#HtmlRewriterConfig">HtmlRewriterConfig</a></p></section>
       <section id="req-pure-009" data-req="REQ-PURE-009" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="HttpServer, HttpServerConfig" data-req-api="POST /http/serve">
         <h3>REQ-PURE-009 REQ-PURE-009: uWS C++ → hyper 纯 Rust HTTP server/client</h3>
         <p data-req-description="">
@@ -4527,7 +4527,7 @@ Permission 配置:
         </div>
         <div id="零-c++-编译依赖" data-criterion="零 C++ 编译依赖">零 C++ 编译依赖</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PURE-009">关联实体: <a data-xref-type="entity" data-xref-id="HttpServer" href="04-DATA-MODEL#HttpServer">HttpServer</a>, <a data-xref-type="entity" data-xref-id="HttpServerConfig" href="04-DATA-MODEL#HttpServerConfig">HttpServerConfig</a></p></section>
       <section id="req-pure-010" data-req="REQ-PURE-010" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="BaoRuntime" data-req-api="GET /api/bun-compat">
         <h3>REQ-PURE-010 REQ-PURE-010: 删除 bun_runtime — 零 Zig/零 JSC</h3>
         <p data-req-description="">
@@ -4557,7 +4557,7 @@ Permission 配置:
         <div id="零-zig-依赖" data-criterion="零 Zig 依赖">零 Zig 依赖</div>
         <div id="零-jsc-引用" data-criterion="零 JSC 引用">零 JSC 引用</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PURE-010">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p></section>
       <section id="纯rust依赖合规性" data-nfr="纯Rust依赖合规性" data-nfr-category="compliance">
         <h3>纯 Rust 依赖合规性</h3>
         <p>
@@ -4622,7 +4622,7 @@ Permission 配置:
           HTTP 响应路径零 MB 级内存拷贝
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PERF-001">关联实体: <a data-xref-type="entity" data-xref-id="HttpResponse" href="04-DATA-MODEL#HttpResponse">HttpResponse</a></p></section>
       <section id="req-perf-002" data-req="REQ-PERF-002" data-req-status="implemented" data-req-domain="ENG" data-req-category="architecture" data-req-entity="DomainHandler" data-req-api="GET /perf/cdp-handler" data-req-priority="P0">
         <h3>REQ-PERF-002 CDP Domain Handler 去锁化 — Mutex&lt;bool&gt;/Mutex&lt;f64&gt; → Cell</h3>
         <p>
@@ -4664,7 +4664,7 @@ Permission 配置:
         <div id="cargo-test--p-bao-cdp-全部通过" data-criterion="cargo test -p bao_cdp 全部通过">
           cargo test -p bao_cdp 全部通过
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PERF-002">关联实体: <a data-xref-type="entity" data-xref-id="DomainHandler" href="04-DATA-MODEL#DomainHandler">DomainHandler</a></p></section>
       <section id="req-perf-003" data-req="REQ-PERF-003" data-req-status="implemented" data-req-domain="ENG" data-req-category="architecture" data-req-entity="BufferManager, BufferConfig" data-req-api="GET /perf/buffer" data-req-priority="P1">
         <h3>REQ-PERF-003 引入 bytes/compact_str/smallvec/dashmap 成熟库</h3>
         <p>
@@ -4702,7 +4702,7 @@ Permission 配置:
           dashmap: runtime_bridge NODE_REALMS/PAGE_GLOBALS 改为 DashMap
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PERF-003">关联实体: <a data-xref-type="entity" data-xref-id="BufferManager" href="04-DATA-MODEL#BufferManager">BufferManager</a>, <a data-xref-type="entity" data-xref-id="BufferConfig" href="04-DATA-MODEL#BufferConfig">BufferConfig</a></p></section>
       <section id="req-perf-004" data-req="REQ-PERF-004" data-req-status="implemented" data-req-domain="ENG" data-req-category="architecture" data-req-entity="DomainDispatch" data-req-api="GET /perf/cdp-dispatch" data-req-priority="P1">
         <h3>REQ-PERF-004 CDP enum dispatch + OnceLock 替代 Arc&lt;Mutex&lt;&gt;&gt;</h3>
         <p>
@@ -4735,7 +4735,7 @@ Permission 配置:
         <div id="cargo-test--p-bao-cdp-通过" data-criterion="cargo test -p bao_cdp 通过">
           cargo test -p bao_cdp 通过
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PERF-004">关联实体: <a data-xref-type="entity" data-xref-id="DomainDispatch" href="04-DATA-MODEL#DomainDispatch">DomainDispatch</a></p></section>
       <section id="req-perf-005" data-req="REQ-PERF-005" data-req-status="implemented" data-req-domain="ENG" data-req-category="architecture" data-req-entity="CodePattern" data-req-api="GET /perf/code-pattern" data-req-priority="P2">
         <h3>REQ-PERF-005 消除 Bun 翻译残留反模式</h3>
         <p>
@@ -4775,7 +4775,7 @@ Permission 配置:
           module_loader CURRENT_DIR clone → 就地带引用
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-PERF-005">关联实体: <a data-xref-type="entity" data-xref-id="CodePattern" href="04-DATA-MODEL#CodePattern">CodePattern</a></p></section>
       <section id="artifact-runtime-state" data-type="document" data-artifact-type="runtime-state">
         <h3>运行时状态图</h3>
         <div>
@@ -5241,12 +5241,7 @@ Permission 配置:
             <td>是</td>
             <td></td>
           </tr>
-          <tr data-type="string" data-required="false" data-param="protocol">
-            <td>protocol</td>
-            <td>string</td>
-            <td>否</td>
-            <td></td>
-          </tr>
+          
         </table>
         <script type="application/ld+json">
           {
@@ -5599,7 +5594,7 @@ Permission 配置:
             "description": "CDP 命令传输抽象层,屏蔽 memory:// / ws:// / http:// 底层差异。"
           }
         </script>
-      </section>
+      <p data-xref-type="interface" data-xref-id="Transport">关联需求: <span data-xref-type="req" data-xref-id="REQ-BAO-API-002">REQ-BAO-API-002</span></p></section>
       <section id="cdprdpbridge" data-interface="CDPRdpBridge" data-interface-kind="contract">
         <script type="application/ld+json">
           {
@@ -5657,7 +5652,7 @@ Permission 配置:
             "description": "顶层用户 API,类 Playwright Browser。通过 URL scheme 自动路由 transport。"
           }
         </script>
-      </section>
+      <p data-xref-type="interface" data-xref-id="Browser">关联需求: <span data-xref-type="req" data-xref-id="REQ-BAO-API-001">REQ-BAO-API-001</span></p></section>
       <section id="page" data-interface="Page" data-interface-kind="contract">
         <script type="application/ld+json">
           {
@@ -5686,7 +5681,7 @@ Permission 配置:
             "description": "页面级用户 API,涵盖 A/B/D 三类共 162 method(E 类 31 在 Internal 返回 -32601)。"
           }
         </script>
-      </section>
+      <p data-xref-type="interface" data-xref-id="Page">关联需求: <span data-xref-type="req" data-xref-id="REQ-LIB-002">REQ-LIB-002</span></p></section>
       <section id="dec-cdp-001" data-decision="DEC-CDP-001" data-decision-dimension="technical">
         <script type="application/ld+json">
           {
@@ -5776,7 +5771,7 @@ Permission 配置:
             <li>ws:// / wss:// scheme 路由到 WebSocketTransport 测试通过</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-BAO-API-001">关联实体: <a data-xref-type="entity" data-xref-id="BaoCdpBrowser" href="04-DATA-MODEL#BaoCdpBrowser">BaoCdpBrowser</a></p><p>关联接口: <a data-xref-type="interface" data-xref-id="Browser" href="02-SYSTEM#browser">Browser</a></p></section>
       <section id="req-bao-api-002" data-req="REQ-BAO-API-002" data-req-status="implemented" data-req-domain="bao-api" data-req-category="architecture" data-req-entity="CdpTransport" data-req-api="POST /cdp-client/transport">
         <h3>REQ-BAO-API-002 undefined</h3>
         <p>Transport trait + 双实现</p>
@@ -5800,7 +5795,7 @@ Permission 配置:
             <li>cargo test -p bao_cdp_client --test transport_ws_handshake 通过 (WebSocketTransport 实现)</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-BAO-API-002">关联实体: <a data-xref-type="entity" data-xref-id="CdpTransport" href="04-DATA-MODEL#CdpTransport">CdpTransport</a></p><p>关联接口: <a data-xref-type="interface" data-xref-id="Transport" href="02-SYSTEM#transport">Transport</a></p></section>
       <section id="req-bao-api-004" data-req="REQ-BAO-API-004" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api" data-req-entity="AClassDispatcher" data-req-api="POST /cdp-client/a-class">
         <h3>REQ-BAO-API-004 undefined</h3>
         <p>A 类机械映射 48 method 实现</p>
@@ -5817,7 +5812,7 @@ Permission 配置:
             <li>grep -rn "a_class\|AClass" src/bao_cdp_client/src/ 命中 A 类映射实现</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-BAO-API-004">关联实体: <a data-xref-type="entity" data-xref-id="AClassDispatcher" href="04-DATA-MODEL#AClassDispatcher">AClassDispatcher</a></p></section>
       <section id="req-bao-api-005" data-req="REQ-BAO-API-005" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api" data-req-entity="BClassSynthesizer" data-req-api="POST /cdp-client/b-class">
         <h3>REQ-BAO-API-005 undefined</h3>
         <p>B 类 Eval 合成 52 method 实现(IIFE 安全封装)</p>
@@ -5840,7 +5835,7 @@ Permission 配置:
             <li>cargo test -p bao_cdp_client --test b_class_injection_defense 通过 (IIFE 安全封装)</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-BAO-API-005">关联实体: <a data-xref-type="entity" data-xref-id="BClassSynthesizer" href="04-DATA-MODEL#BClassSynthesizer">BClassSynthesizer</a></p></section>
       <section id="req-bao-api-006" data-req="REQ-BAO-API-006" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api" data-req-entity="DClassState" data-req-api="POST /cdp-client/d-class">
         <h3>REQ-BAO-API-006 undefined</h3>
         <p>D 类纯状态管理 62 method 实现</p>
@@ -5860,7 +5855,7 @@ Permission 配置:
             <li>grep -rn "DClass\|d_class" src/bao_cdp_client/src/ 命中 D 类实现</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-BAO-API-006">关联实体: <a data-xref-type="entity" data-xref-id="DClassState" href="04-DATA-MODEL#DClassState">DClassState</a></p></section>
       <section id="req-bao-api-007" data-req="REQ-BAO-API-007" data-req-status="implemented" data-req-domain="bao-api" data-req-category="operations" data-req-entity="EClassNotSupported" data-req-api="POST /cdp-client/e-class">
         <h3>REQ-BAO-API-007 undefined</h3>
         <p>E 类 servo 不支持 31 method 兼容处理(-32601 错误码)</p>
@@ -5883,7 +5878,7 @@ Permission 配置:
             <li>grep -rn "32601\|MethodNotFound" src/bao_cdp_client/src/ 命中错误码处理</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-BAO-API-007">关联实体: <a data-xref-type="entity" data-xref-id="EClassNotSupported" href="04-DATA-MODEL#EClassNotSupported">EClassNotSupported</a></p></section>
       <section id="req-bao-api-008" data-req="REQ-BAO-API-008" data-req-status="implemented" data-req-domain="bao-api" data-req-category="deployment" data-req-entity="BaoCdpPublicAPI" data-req-api="GET /cdp-client/public-api">
         <h3>REQ-BAO-API-008 undefined</h3>
         <p>其他 Rust 程序通过 bao = '0.1' 当库使用,完整公共 API + 文档</p>
@@ -5910,7 +5905,7 @@ Permission 配置:
             <li>find src/bao_cdp_client -name "*.md" 命中文档文件 (API 文档)</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-BAO-API-008">关联实体: <a data-xref-type="entity" data-xref-id="BaoCdpPublicAPI" href="04-DATA-MODEL#BaoCdpPublicAPI">BaoCdpPublicAPI</a></p></section>
       <section id="req-h3-001" data-req="REQ-H3-001" data-req-status="implemented" data-req-domain="h3" data-req-category="api" data-req-entity="H3FetchClient" data-req-api="POST /fetch/h3">
         <h3>REQ-H3-001 undefined</h3>
         <p>
@@ -5949,7 +5944,7 @@ Permission 配置:
             <li>h3 能力通过 REQ-H3-001 暴露给 fetch (BAO 作为正常 BUN 必须有 h3)</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-H3-001">关联实体: <a data-xref-type="entity" data-xref-id="H3FetchClient" href="04-DATA-MODEL#H3FetchClient">H3FetchClient</a></p></section>
       <section id="req-cdp-uws-001" data-req="REQ-CDP-UWS-001" data-req-status="implemented" data-req-domain="cdp-uws" data-req-category="architecture" data-req-entity="BaoCdpWebSocket" data-req-api="POST /cdp/ws">
         <h3>REQ-CDP-UWS-001 undefined</h3>
         <p>
@@ -5988,7 +5983,7 @@ Permission 配置:
             <li>grep -rn "bun_uws::App\|uws_App" src/bao_runtime/src/ 命中 (链接复用 C++ 二进制)</li>
           </ol>
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-CDP-UWS-001">关联实体: <a data-xref-type="entity" data-xref-id="BaoCdpWebSocket" href="04-DATA-MODEL#BaoCdpWebSocket">BaoCdpWebSocket</a></p></section>
       <section id="API-CLI-3" data-api="POST /cdp-client/connect">
         <h4>POST /cdp-client/connect — bao_cdp_client Browser::connect — 统一连接入口</h4>
         <table data-api-params="">
@@ -7554,7 +7549,7 @@ Permission 配置:
           "name": "IF-ENGINE-SM"
         }
       </script>
-    </div>
+    <p data-xref-type="interface" data-xref-id="IF-ENGINE-SM">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-001">REQ-ENG-001</span></p></div>
     <div id="if-browser-servo" data-interface="IF-BROWSER-SERVO" data-interface-kind="component" data-interface-protocol="Rust trait impl" data-interface-direction="bao-browser → servo" data-delivery="D41">
       <h3>IF-BROWSER-SERVO: bao-browser ↔ servo</h3>
       <table>
@@ -7586,7 +7581,7 @@ Permission 配置:
           "name": "IF-BROWSER-SERVO"
         }
       </script>
-    </div>
+    <p data-xref-type="interface" data-xref-id="IF-BROWSER-SERVO">关联需求: <span data-xref-type="req" data-xref-id="REQ-BRW-001">REQ-BRW-001</span></p></div>
     <div id="if-cdp-browser" data-interface="IF-CDP-BROWSER" data-interface-kind="component" data-interface-protocol="mpsc channel" data-interface-direction="bao-cdp → bao-browser" data-delivery="D41">
       <h3>IF-CDP-BROWSER: bao-cdp ↔ bao-browser</h3>
       <table>
@@ -7613,7 +7608,7 @@ Permission 配置:
           "name": "IF-CDP-BROWSER"
         }
       </script>
-    </div>
+    <p data-xref-type="interface" data-xref-id="IF-CDP-BROWSER">关联需求: <span data-xref-type="req" data-xref-id="REQ-LIB-003">REQ-LIB-003</span></p></div>
 
     <!-- ============================================================ -->
     <h2 data-delivery="D42">§12 架构决策</h2>

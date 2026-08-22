@@ -39,10 +39,7 @@
           Loop 桥接)
         </p>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-001">
-          关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>
-          <span data-xref-type="entity" data-xref-id="ModuleSource">ModuleSource</span>,<span data-xref-type="entity" data-xref-id="JsCallback">JsCallback</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-001">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="ModuleSource" href="04-DATA-MODEL#ModuleSource">ModuleSource</a>, <a data-xref-type="entity" data-xref-id="JsCallback" href="04-DATA-MODEL#JsCallback">JsCallback</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-001"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -54,7 +51,7 @@
             <li>bao -e "WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0]))" 返回 true</li>
           </ol>
         </div>
-      </div>
+      <p>关联接口: <a data-xref-type="interface" data-xref-id="IF-ENGINE-SM" href="02-SYSTEM">IF-ENGINE-SM</a></p></div>
 
       <div id="req-eng-002" data-req="REQ-ENG-002" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="POST /codegen/generate">
         <h3>REQ-ENG-002: 代码生成后端重写</h3>
@@ -78,9 +75,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-002">
-          关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-002">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-002"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -118,10 +113,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-003">
-          关联实体: <span data-xref-type="entity" data-xref-id="JsCallback">JsCallback</span>
-          <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-003">关联实体: <a data-xref-type="entity" data-xref-id="JsCallback" href="04-DATA-MODEL#JsCallback">JsCallback</a>, <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-003"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -153,9 +145,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-004">
-          关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-004">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-004"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -193,9 +183,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-005">
-          关联实体: <span data-xref-type="entity" data-xref-id="ModuleSource">ModuleSource</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-005">关联实体: <a data-xref-type="entity" data-xref-id="ModuleSource" href="04-DATA-MODEL#ModuleSource">ModuleSource</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-005"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -233,9 +221,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-006">
-          关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-006">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-006"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -264,10 +250,7 @@
           <li>Buffer 全局对象正常工作</li>
           <li>process 全局对象正常工作</li>
         </ul>
-        <p data-xref-type="req" data-xref-id="REQ-ENG-007">
-          关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>
-          <span data-xref-type="entity" data-xref-id="TlsProfile">TlsProfile</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-007">关联实体: <a data-xref-type="entity" data-xref-id="TlsProfile" href="04-DATA-MODEL#TlsProfile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="TlsConnection" href="04-DATA-MODEL#TlsConnection">TlsConnection</a></p>
         <p>关联 API: <span data-xref-type="api" data-xref-id="GET /api/node-compat">GET /api/node-compat</span></p>
         <div data-criteria="">
           <strong>验收标准：</strong>
@@ -295,9 +278,7 @@
           <li>事务/查询/迭代器正常</li>
           <li>cargo test 通过</li>
         </ul>
-        <p data-xref-type="req" data-xref-id="REQ-ENG-008">
-          关联实体: <span data-xref-type="entity" data-xref-id="SqliteDatabase">SqliteDatabase</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-008">关联实体: <a data-xref-type="entity" data-xref-id="SqliteDatabase" href="04-DATA-MODEL#SqliteDatabase">SqliteDatabase</a></p>
         <div data-criteria="">
           <strong>验收标准：</strong>
           <ol>
@@ -326,9 +307,7 @@
           <li>C 类型转换（指针/结构体/枚举）正常</li>
           <li>cargo test 通过</li>
         </ul>
-        <p data-xref-type="req" data-xref-id="REQ-ENG-009">
-          关联实体: <span data-xref-type="entity" data-xref-id="FfiBinding">FfiBinding</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-009">关联实体: <a data-xref-type="entity" data-xref-id="FfiLibrary" href="04-DATA-MODEL#FfiLibrary">FfiLibrary</a></p>
         <div data-criteria="">
           <strong>验收标准：</strong>
           <ol>
@@ -367,9 +346,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CLI-001">
-          关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-CLI-001">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CLI-001"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -407,10 +384,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CLI-002">
-          关联实体: <span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span>
-          <span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>,<span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-CLI-002">关联实体: <a data-xref-type="entity" data-xref-id="BrowserContext" href="04-DATA-MODEL#BrowserContext">BrowserContext</a>, <a data-xref-type="entity" data-xref-id="Viewport" href="04-DATA-MODEL#Viewport">Viewport</a>, <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="PixelBuffer" href="04-DATA-MODEL#PixelBuffer">PixelBuffer</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CLI-002"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -466,10 +440,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §3 (Servo 组件架构) · 05-IMPLEMENTATION.html §3 (Phase 2 任务)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-BRW-001">
-          关联实体: <span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span>
-          <span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>,<span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-BRW-001">关联实体: <a data-xref-type="entity" data-xref-id="BrowserContext" href="04-DATA-MODEL#BrowserContext">BrowserContext</a>, <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="Viewport" href="04-DATA-MODEL#Viewport">Viewport</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-001"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -481,7 +452,7 @@
             <li>cargo test -p bao_browser --test servo_render_pipeline_tests 通过 (CSS 样式 + 导航)</li>
           </ol>
         </div>
-      </div>
+      <p>关联接口: <a data-xref-type="interface" data-xref-id="IF-BROWSER-SERVO" href="02-SYSTEM">IF-BROWSER-SERVO</a></p></div>
 
       <div id="req-brw-002" data-req="REQ-BRW-002" data-req-status="implemented" data-req-domain="BRW" data-req-category="business" data-req-entity="PixelBuffer,Viewport" data-req-api="POST /browser/screenshot">
         <h3>REQ-BRW-002: 内存渲染</h3>
@@ -526,10 +497,7 @@
           无头场景使用 SoftwareRenderingContext，有 GPU 时使用 servo 原有 GL 后端。
         </p>
 
-        <p data-xref-type="req" data-xref-id="REQ-BRW-002">
-          关联实体: <span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>
-          <span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-BRW-002">关联实体: <a data-xref-type="entity" data-xref-id="PixelBuffer" href="04-DATA-MODEL#PixelBuffer">PixelBuffer</a>, <a data-xref-type="entity" data-xref-id="Viewport" href="04-DATA-MODEL#Viewport">Viewport</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-002"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -561,9 +529,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §3 (Servo 组件架构) · 05-IMPLEMENTATION.html §3 (Phase 2 任务)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-BRW-003">
-          关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-BRW-003">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpSession" href="04-DATA-MODEL#CdpSession">CdpSession</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-003"></span></p>
         
         
@@ -624,11 +590,7 @@
         <p>
           参见 02-SYSTEM.html §3 (Servo 组件分层) · vendor/servo/components/script/dom/workers/ (Servo DOM Worker 实现)
         </p>
-        <p data-xref-type="req" data-xref-id="REQ-BRW-004">
-          关联实体: <span data-xref-type="entity" data-xref-id="Worker">Worker</span>
-          <span data-xref-type="entity" data-xref-id="DedicatedWorkerGlobalScope">DedicatedWorkerGlobalScope</span>
-          <span data-xref-type="entity" data-xref-id="WorkerGlobalScope">WorkerGlobalScope</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-BRW-004">关联实体: <a data-xref-type="entity" data-xref-id="Worker" href="04-DATA-MODEL#Worker">Worker</a>, <a data-xref-type="entity" data-xref-id="DedicatedWorkerGlobalScope" href="04-DATA-MODEL#DedicatedWorkerGlobalScope">DedicatedWorkerGlobalScope</a>, <a data-xref-type="entity" data-xref-id="WorkerGlobalScope" href="04-DATA-MODEL#WorkerGlobalScope">WorkerGlobalScope</a>, <a data-xref-type="entity" data-xref-id="WorkerLocation" href="04-DATA-MODEL#WorkerLocation">WorkerLocation</a>, <a data-xref-type="entity" data-xref-id="WorkerNavigator" href="04-DATA-MODEL#WorkerNavigator">WorkerNavigator</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-004"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -675,10 +637,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-001">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-          <span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-001">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpSession" href="04-DATA-MODEL#CdpSession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="CdpServer" href="06-CDP-SERVER#CdpServer">CdpServer</a>, <a data-xref-type="entity" data-xref-id="ServerConfig" href="06-CDP-SERVER#ServerConfig">ServerConfig</a>, <a data-xref-type="entity" data-xref-id="DomainRegistry" href="06-CDP-SERVER#DomainRegistry">DomainRegistry</a>, <a data-xref-type="entity" data-xref-id="CdpSessionGeneric" href="06-CDP-SERVER#CdpSessionGeneric">CdpSessionGeneric</a>, <a data-xref-type="entity" data-xref-id="CdpTarget" href="06-CDP-SERVER#CdpTarget">CdpTarget</a>, <a data-xref-type="entity" data-xref-id="EventSubscription" href="06-CDP-SERVER#EventSubscription">EventSubscription</a>, <a data-xref-type="entity" data-xref-id="CdpError" href="04-DATA-MODEL#CdpError">CdpError</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-001"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -718,10 +677,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-002">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-          <span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span>,<span data-xref-type="entity" data-xref-id="CdpResponse">CdpResponse</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-002">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpCommand" href="04-DATA-MODEL#CdpCommand">CdpCommand</a>, <a data-xref-type="entity" data-xref-id="CdpResponse" href="04-DATA-MODEL#CdpResponse">CdpResponse</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-002"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -760,10 +716,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-003">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-          <span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-003">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpCommand" href="04-DATA-MODEL#CdpCommand">CdpCommand</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-003"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -804,10 +757,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-004">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-          <span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>,<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-004">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="PixelBuffer" href="04-DATA-MODEL#PixelBuffer">PixelBuffer</a>, <a data-xref-type="entity" data-xref-id="Viewport" href="04-DATA-MODEL#Viewport">Viewport</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-004"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -846,10 +796,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-005">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-          <span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-005">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpCommand" href="04-DATA-MODEL#CdpCommand">CdpCommand</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-005"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -888,10 +835,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-006">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-          <span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-006">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpCommand" href="04-DATA-MODEL#CdpCommand">CdpCommand</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-006"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -930,10 +874,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-007">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-          <span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-007">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpCommand" href="04-DATA-MODEL#CdpCommand">CdpCommand</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-007"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -968,10 +909,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-008">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-          <span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-008">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpSession" href="04-DATA-MODEL#CdpSession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="TlsProfile" href="04-DATA-MODEL#TlsProfile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="CdpTarget" href="06-CDP-SERVER#CdpTarget">CdpTarget</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-008"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1011,10 +949,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-001">
-          关联实体: <span data-xref-type="entity" data-xref-id="TlsProfile">TlsProfile</span>
-          <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-001">关联实体: <a data-xref-type="entity" data-xref-id="TlsProfile" href="04-DATA-MODEL#TlsProfile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-001"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1046,9 +981,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-002">
-          关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-002">关联实体: <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-002"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1084,10 +1017,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-003">
-          关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span>
-          <span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-003">关联实体: <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="PixelBuffer" href="04-DATA-MODEL#PixelBuffer">PixelBuffer</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-003"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1132,10 +1062,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-004">
-          关联实体: <span data-xref-type="entity" data-xref-id="NavigatorProfile">NavigatorProfile</span>
-          <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-004">关联实体: <a data-xref-type="entity" data-xref-id="NavigatorProfile" href="04-DATA-MODEL#NavigatorProfile">NavigatorProfile</a>, <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-004"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1169,9 +1096,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-005">
-          关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-005">关联实体: <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-005"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1203,9 +1128,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-006">
-          关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-006">关联实体: <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-006"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1242,9 +1165,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-007">
-          关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-007">关联实体: <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="PagePool" href="04-DATA-MODEL#PagePool">PagePool</a>, <a data-xref-type="entity" data-xref-id="BrowserContext" href="04-DATA-MODEL#BrowserContext">BrowserContext</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-007"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1291,10 +1212,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §4.5 (多页面管理架构) · 04-DATA-MODEL.html (PageHandle, PagePool 实体)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-LIB-001">
-          关联实体: <span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span>
-          <span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>,<span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-LIB-001">关联实体: <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="PagePool" href="04-DATA-MODEL#PagePool">PagePool</a>, <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
         <p>
           关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-001"></span>
           <span data-xref-type="test" data-xref-id="TEST-LIB-002"></span>
@@ -1340,10 +1258,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §4.5 (Page 生命周期状态机) · 04-DATA-MODEL.html (PagePool 实体)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-LIB-002">
-          关联实体: <span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>
-          <span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-LIB-002">关联实体: <a data-xref-type="entity" data-xref-id="PagePool" href="04-DATA-MODEL#PagePool">PagePool</a>, <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a></p>
         <p>
           关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-003"></span>
           <span data-xref-type="test" data-xref-id="TEST-LIB-004"></span>
@@ -1358,7 +1273,7 @@
             <li>active/total_created/total_destroyed 统计可查询测试通过</li>
           </ol>
         </div>
-      </div>
+      <p>关联接口: <a data-xref-type="interface" data-xref-id="Page" href="02-SYSTEM#page">Page</a></p></div>
 
       <div id="req-lib-003" data-req="REQ-LIB-003" data-req-status="implemented" data-req-domain="LIB" data-req-category="business" data-req-entity="CdpRouter,CdpBackendInternal,CdpBackendExternal,CdpSession" data-req-api="GET /api/bao-runtime, GET /api/bao-runtime-js, GET /api/bao-library-mode">
         <h3>REQ-LIB-003: CDP 双层抽象 API</h3>
@@ -1389,12 +1304,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §4.6 (CDP 双层抽象架构) · 04-DATA-MODEL.html (CdpRouter, CdpBackend 实体)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-LIB-003">
-          关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-          <span data-xref-type="entity" data-xref-id="CdpBackendInternal">CdpBackendInternal</span>,
-          <span data-xref-type="entity" data-xref-id="CdpBackendExternal">CdpBackendExternal</span>
-          <span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-LIB-003">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpBackendInternal" href="04-DATA-MODEL#CdpBackendInternal">CdpBackendInternal</a>, <a data-xref-type="entity" data-xref-id="CdpBackendExternal" href="04-DATA-MODEL#CdpBackendExternal">CdpBackendExternal</a>, <a data-xref-type="entity" data-xref-id="CdpSession" href="04-DATA-MODEL#CdpSession">CdpSession</a></p>
         <p>
           关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-005"></span>
           <span data-xref-type="test" data-xref-id="TEST-LIB-006"></span>
@@ -1410,7 +1320,7 @@
             <li>page.createCDPSession() 返回 CDPSession 支持 send/on 测试通过</li>
           </ol>
         </div>
-      </div>
+      <p>关联接口: <a data-xref-type="interface" data-xref-id="IF-CDP-BROWSER" href="02-SYSTEM">IF-CDP-BROWSER</a></p></div>
 
       <div id="req-lib-004" data-req="REQ-LIB-004" data-req-status="implemented" data-req-domain="LIB" data-req-category="business" data-req-entity="Permission,PageHandle" data-req-api="POST /permission/set">
         <h3>REQ-LIB-004: Permission 可选沙箱</h3>
@@ -1441,10 +1351,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §4.7 (Permission 沙箱架构) · 04-DATA-MODEL.html (Permission 实体)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-LIB-004">
-          关联实体: <span data-xref-type="entity" data-xref-id="Permission">Permission</span>
-          <span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-LIB-004">关联实体: <a data-xref-type="entity" data-xref-id="Permission" href="04-DATA-MODEL#Permission">Permission</a>, <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a></p>
         <p>
           关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-008"></span>
           <span data-xref-type="test" data-xref-id="TEST-LIB-009"></span>
@@ -2131,7 +2038,7 @@
           而非 metrics。enforcement: verify(verifyMode=spec, dir=.spec) 必须完成全部 3 阶段不崩溃；grep '"metrics": *{'
           .spec/*.html 必须返回 0 行。归因: BCE-20260621-001。
         </div>
-      </section>
+      <p data-xref-type="req" data-xref-id="REQ-ENG-010">关联实体: <a data-xref-type="entity" data-xref-id="FetchTasklet" href="04-DATA-MODEL#FetchTasklet">FetchTasklet</a>, <a data-xref-type="entity" data-xref-id="FetchResolveTask" href="04-DATA-MODEL#FetchResolveTask">FetchResolveTask</a>, <a data-xref-type="entity" data-xref-id="FetchOutcome" href="04-DATA-MODEL#FetchOutcome">FetchOutcome</a></p><p>关联状态机: <a data-xref-type="sm" data-xref-id="FetchTaskletLifecycle" href="03-PROCESS#artifact-state-machine">FetchTaskletLifecycle</a></p></section>
       <div id="req-eng-011" data-req="REQ-ENG-011" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="VmSandboxContext" data-req-api="">
         <h3>REQ-ENG-011: node:vm Sandbox 语义实现</h3>
         <p data-req-description="">
@@ -2167,9 +2074,7 @@
             codeGeneration 选项可禁用 eval/function 编译
           </li>
         </ul>
-        <p data-xref-type="req" data-xref-id="REQ-ENG-011">
-          关联实体: <span data-xref-type="entity" data-xref-id="VmSandboxContext">VmSandboxContext</span>
-        </p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-011">关联实体: <a data-xref-type="entity" data-xref-id="VmSandboxContext" href="04-DATA-MODEL#VmSandboxContext">VmSandboxContext</a></p>
         <p>关联 API: <span data-xref-type="api" data-xref-id="API-ENG-010">POST /vm/sandbox</span></p>
         <div data-criteria="">
           <strong>验收标准：</strong>
