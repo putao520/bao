@@ -1500,7 +1500,7 @@ Permission 配置:
         </ul>
       </div>
 
-      <section id="req-sec-001" data-req="REQ-SEC-001" data-req-status="implemented" data-req-domain="sec" data-req-category="security" data-req-entity="FetchResponse" data-req-api="POST /fetch" data-req-priority="P0">
+      <section data-groundedin="PRD-REQ-MULTIPAGE" id="req-sec-001" data-req="REQ-SEC-001" data-req-status="implemented" data-req-domain="sec" data-req-category="security" data-req-entity="FetchResponse" data-req-api="POST /fetch" data-req-priority="P0">
         <h3>REQ-SEC-001 CORS 安全策略禁用</h3>
         <p>
           bao 内置浏览器的所有 HTTP 请求不受 CORS（跨域资源共享）限制。修改 servo net 模块的 CORS 检查逻辑，使其在 bao
@@ -4391,34 +4391,7 @@ Permission 配置:
         <div id="node.js-zlib-模块正常" data-criterion="Node.js zlib 模块正常">Node.js zlib 模块正常</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       <p data-xref-type="req" data-xref-id="REQ-PURE-004">关联实体: <a data-xref-type="entity" data-xref-id="ZlibEngine" href="04-DATA-MODEL#ZlibEngine">ZlibEngine</a>, <a data-xref-type="entity" data-xref-id="ZlibCompressConfig" href="04-DATA-MODEL#ZlibCompressConfig">ZlibCompressConfig</a></p></section>
-      <section id="req-pure-005" data-req="REQ-PURE-005" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="AllocatorConfig, AllocatorProfile" data-req-api="GET /config/allocator">
-        <h3>REQ-PURE-005 REQ-PURE-005: mimalloc 保留（per-heap isolation C 依赖，jemallocator 方案已推翻）</h3>
-        <p data-req-description="">
-          [已推翻 SPEC] mimalloc 保留:per-heap isolation API(mi_heap_t)被 AST/bundler/shell_parser/safety 共 387
-          处调用,jemallocator/tikv-jemallocator 不提供 per-heap isolation API。设计决策保留 C 依赖。原 SPEC 目标(切换到
-          jemallocator/Rust 默认 allocator)在技术上不可行,会破坏 AST 内存模型。Commander 用户决策:推翻 SPEC,接受
-          mimalloc 作为设计决策的 C 依赖。
-        </p>
-        <div data-criteria="">
-          <strong>验收标准（客观可验证）：</strong>
-          <ol>
-            <li>SPEC 已推翻: mimalloc 保留 (per-heap isolation API 被 387 处调用)</li>
-            <li>grep -rn "mi_heap_t\|mi_heap_new" src/ 命中 ≥ 100 处 (per-heap API 在使用)</li>
-            <li>Commander 用户决策记录: jemallocator 不提供 per-heap API,推翻 SPEC 不可行</li>
-            <li>cargo build 全 workspace 通过 (mimalloc 作为设计决策 C 依赖)</li>
-          </ol>
-        </div>
-        <div id="删除-vendor/mimalloc/-及-bun-mimalloc-sys" data-criterion="删除 vendor/mimalloc/ 及 bun_mimalloc_sys">
-          删除 vendor/mimalloc/ 及 bun_mimalloc_sys
-        </div>
-        <div id="切换到-tikv-jemallocator-或-rust-默认-allocator" data-criterion="切换到 tikv-jemallocator 或 Rust 默认 allocator">
-          切换到 tikv-jemallocator 或 Rust 默认 allocator
-        </div>
-        <div id="cargo.toml-[profile]-配置正确" data-criterion="Cargo.toml [profile] 配置正确">
-          Cargo.toml [profile] 配置正确
-        </div>
-        <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      <p data-xref-type="req" data-xref-id="REQ-PURE-005">关联实体: <a data-xref-type="entity" data-xref-id="AllocatorConfig" href="04-DATA-MODEL#AllocatorConfig">AllocatorConfig</a>, <a data-xref-type="entity" data-xref-id="AllocatorProfile" href="04-DATA-MODEL#AllocatorProfile">AllocatorProfile</a></p></section>
+      
       <section data-groundedin="PRD-REQ-BUN-COMPAT" id="req-pure-006" data-req="REQ-PURE-006" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="SimdHash, SimdHashConfig" data-req-api="POST /hash/simd">
         <h3>REQ-PURE-006 REQ-PURE-006: highway → wide/std::simd 纯 Rust SIMD</h3>
         <p data-req-description="">
@@ -4447,7 +4420,7 @@ Permission 配置:
         <div id="哈希/校验和-simd-加速正常" data-criterion="哈希/校验和 SIMD 加速正常">哈希/校验和 SIMD 加速正常</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       <p data-xref-type="req" data-xref-id="REQ-PURE-006">关联实体: <a data-xref-type="entity" data-xref-id="SimdHash" href="04-DATA-MODEL#SimdHash">SimdHash</a>, <a data-xref-type="entity" data-xref-id="SimdHashConfig" href="04-DATA-MODEL#SimdHashConfig">SimdHashConfig</a></p></section>
-      <section id="req-pure-007" data-req="REQ-PURE-007" data-req-status="deprecated" data-req-domain="pure" data-req-category="architecture" data-req-api="POST /network/quic">
+      <section id="req-pure-007" data-req="REQ-PURE-007" data-req-status="deprecated" data-req-domain="pure" data-req-category="tools" data-req-api="POST /network/quic">
         <h3>REQ-PURE-007 REQ-PURE-007: lsquic → quinn 纯 Rust QUIC/HTTP3</h3>
         <p data-req-description="">
           [已推翻 SPEC] lsquic 保留:bun_http h3_client(callback 驱动架构,8 文件 ~3k LOC)深度绑定 lsquic C
@@ -4498,36 +4471,7 @@ Permission 配置:
         <div id="html5-解析-+-序列化正常" data-criterion="HTML5 解析 + 序列化正常">HTML5 解析 + 序列化正常</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       <p data-xref-type="req" data-xref-id="REQ-PURE-008">关联实体: <a data-xref-type="entity" data-xref-id="HtmlRewriter" href="04-DATA-MODEL#HtmlRewriter">HtmlRewriter</a>, <a data-xref-type="entity" data-xref-id="HtmlRewriterConfig" href="04-DATA-MODEL#HtmlRewriterConfig">HtmlRewriterConfig</a></p></section>
-      <section id="req-pure-009" data-req="REQ-PURE-009" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="HttpServer, HttpServerConfig" data-req-api="POST /http/serve">
-        <h3>REQ-PURE-009 REQ-PURE-009: uWS C++ 保留（hyper 方案已推翻，Tokio 与 uloop event loop 冲突）</h3>
-        <p data-req-description="">
-          [已推翻 SPEC] uWS 保留:bun_uws(C++ uSockets)深度集成于 bao_runtime 5 个文件(bun_api.rs Bun.serve() 1300+
-          LOC、node_http.rs node:http 600+ LOC、node_net.rs socket_group vtable、phase_c_exports.rs)。hyper 需 Tokio
-          runtime,与 bao 的 FilePoll/uloop event loop 冲突。原 SPEC 目标(uWS → hyper 纯 Rust)在技术上与 event loop
-          架构根本冲突,且违反 CLAUDE.md 铁律「uWS 链接复用 C++ 二进制」。Commander 用户决策:推翻 SPEC,uWS 保留,符合 Bun
-          链接复用铁律。bao_cdp 用 bun_uws 替换自写 ws_codec 转为 REQ-CDP-UWS-001 跟踪。
-        </p>
-        <div data-criteria="">
-          <strong>验收标准（客观可验证）：</strong>
-          <ol>
-            <li>SPEC 已推翻: uWS 保留 (深度集成 bao_runtime 5 文件 ~2k LOC)</li>
-            <li>Commander 用户决策记录: hyper 需 Tokio runtime,与 FilePoll/uloop event loop 根本冲突,推翻 SPEC</li>
-            <li>cargo build -p bao_runtime 通过 (uWS C++ 作为设计决策依赖)</li>
-            <li>grep -rn "bun_uws::App\|uws_App" src/bao_runtime/src/ 命中 (链接复用 C++ 二进制)</li>
-          </ol>
-        </div>
-        <div id="hyper-替代-src/uws/-c++-usockets/uws-二进制" data-criterion="hyper 替代 src/uws/ C++ uSockets/uWS 二进制">
-          hyper 替代 src/uws/ C++ uSockets/uWS 二进制
-        </div>
-        <div id="bun.serve()-api-用-hyper-实现-http-server" data-criterion="Bun.serve() API 用 hyper 实现 HTTP server">
-          Bun.serve() API 用 hyper 实现 HTTP server
-        </div>
-        <div id="http-client-已用-hyper-实现" data-criterion="HTTP client 已用 hyper 实现">
-          HTTP client 已用 hyper 实现
-        </div>
-        <div id="零-c++-编译依赖" data-criterion="零 C++ 编译依赖">零 C++ 编译依赖</div>
-        <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
-      <p data-xref-type="req" data-xref-id="REQ-PURE-009">关联实体: <a data-xref-type="entity" data-xref-id="HttpServer" href="04-DATA-MODEL#HttpServer">HttpServer</a>, <a data-xref-type="entity" data-xref-id="HttpServerConfig" href="04-DATA-MODEL#HttpServerConfig">HttpServerConfig</a></p></section>
+      
       <section data-groundedin="PRD-REQ-UNIFIED-RUNTIME" id="req-pure-010" data-req="REQ-PURE-010" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="BaoRuntime" data-req-api="GET /api/bun-compat">
         <h3>REQ-PURE-010 REQ-PURE-010: 删除 bun_runtime — 零 Zig/零 JSC</h3>
         <p data-req-description="">
@@ -7053,7 +6997,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="req-spec-001" data-req="REQ-SPEC-001" data-req-status="approved" data-req-domain="SPEC" data-req-category="architecture">
+      <section id="req-spec-001" data-req="REQ-SPEC-001" data-req-status="approved" data-req-domain="SPEC" data-req-category="tools">
         <h3>REQ-SPEC-001 API 元素 id 必须用 API-{DOMAIN}-{N} 格式(禁 method-path)</h3><p data-req-description="">SPEC 中所有 API 元素(&lt;section data-api=...&gt;)的 id 属性必须严格遵守 API-{DOMAIN}-{N} 格式(N 为
           id-registry 分配的顺序整数),禁止使用 method-path 形式(即 id 属性值以 HTTP 方法 + 路径开头,如
           post-xxx、get-xxx、纯路径 /vm/xxx)。method-path 形式违反 SPEC ID 规范,导致 validate 失败、id-registry
@@ -7091,7 +7035,7 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section id="req-spec-002" data-req="REQ-SPEC-002" data-req-status="approved" data-req-domain="SPEC" data-req-category="operations">
+      <section id="req-spec-002" data-req="REQ-SPEC-002" data-req-status="approved" data-req-domain="SPEC" data-req-category="tools">
         <h3>REQ-SPEC-002 确定性批量任务(如 id 迁移)禁用 six-node-dev 多 epoch loop,用 dom_modify batch 一次性完成</h3>
         <p>
           对于确定性批量任务(如 SPEC id 迁移、属性重排、xref 修复等纯机械化、无架构决策的工作),禁止动用 six-node-dev.js
@@ -7205,6 +7149,66 @@ Permission 配置:
   "id": "DEC-WK-008",
   "title": "ServiceWorker fetch 拦截需 vendor patch (servo 上游 SW fetch 未实装, 2 proposal 待人类审计)",
   "rationale": "决策点: ServiceWorker fetch 拦截 (C19/DF-WK-8) 因 servo 上游 SW fetch 未实装, 如何实现 REQ-BRW-4 C6 + C19 交付。\n\n背景 (C19 硬现实, 源码核验 2026-06-26):\n- servo 上游 ServiceWorker fetch 拦截是 `TODO XXXcreativcoder` 占位 (serviceworkerglobalscope.rs:558)。\n- 无 FetchEvent DOM 实装, 无 ServiceWorkerContainer::register 完整实装。\n- 用户决策“全部经 servo 原生路径”(DEC-WK-001) 在 SW fetch 这一处与 servo 现实冲突 — DedicatedWorker(C1-C11,C12-C17,C18) + SharedWorker(DF-WK-7/9) 全部纯 servo 原生可达, 无偏离; 唯独 SW fetch 需 vendor patch。\n\n结论: needHumanAudit=true — 提交 2 个 proposal 供人类审计, 倾向 proposal-A (最小化 servo SW patch, 保留 servo 原生路径主权)。\n\nproposal-A (★推荐): vendor patch 实装 SW register + FetchEvent DOM + fetch 拦截点, 范围 = constellation/serviceworker.rs + serviceworkerglobalscope.rs FetchEvent 派发, 不动 bao 层架构。优点: 保留 servo 原生路径主权 (DEC-WK-001 一致); SW 持久生命周期/stealth 继承/CDP 边界全部复用 servo 原生机制 (DF-WK-8/10)。代价: servo vendor patch 维护成本 (上游同步时需 rebase)。\n\nproposal-B: bao 层桥接拦截点 — bao_browser 在 servo resource_threads 注入 SW fetch 拦截 hook, SW 脚本仍走 servo 原生但 fetch 拦截在 bao 层完成。优点: 不动 servo SW 代码。代价: 偏离 DEC-WK-001 (全部经 servo 原生路径) 主权; bao 层重复实装 SW fetch 路由逻辑; SW 持久生命周期管理复杂。\n\n偏离依据: architect consult (2026-06-26) 源码核验 serviceworkerglobalscope.rs:558/406 + dedicatedworkerglobalscope.rs:502 + sharedworkerglobalscope.rs:404 三处注入窗口同构性确认。\n\n约束: needHumanAudit=true — 用户须在 proposal-A/B 之间决策; 决策前 C19 交付状态 = blocked-on-human-decision (非 SPEC 缺口, 是 servo 现实约束)。无论选 A/B, C19 必须满足 stealth 边界一致 (SW 拦截的 fetch 仍走主页同一 stealth profile) + CDP 可观测 (Network 域可见 SW 请求) + SW 持久生命周期 profile 继承注册页 + terminate 注销。\n\n关联: REQ-BRW-4 C6/C19/DF-WK-8(SW 注册拦截)/DF-WK-10(SW stealth)/DEC-WK-001(servo 原生路径)/DEC-WK-006(交付边界)"
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-PURE-001" id="dec-pure-001"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-PURE-001",
+  "title": "DEC-PURE-001 mimalloc 保留(per-heap isolation C 依赖;jemallocator 方案已推翻)",
+  "context": "per-heap isolation API(mi_heap_t)被 AST/bundler/shell_parser/safety 共 387 处调用,bun_mimalloc_sys 深度绑定 Bao 各子系统。原 SPEC 目标为切换 jemallocator/tikv-jemallocator 或 Rust 默认 allocator。",
+  "options": [
+    {
+      "name": "mimalloc 保留(C 依赖)",
+      "pros": [
+        "per-heap isolation API(mi_heap_t)完整",
+        "387 处调用零迁移成本"
+      ],
+      "cons": [
+        "保留 C 编译依赖"
+      ]
+    },
+    {
+      "name": "切换 jemallocator/tikv-jemallocator",
+      "pros": [
+        "纯 Rust allocator 依赖面"
+      ],
+      "cons": [
+        "不提供 per-heap isolation API",
+        "破坏 AST/bundler/shell_parser/safety 内存模型"
+      ]
+    }
+  ],
+  "chosen": "mimalloc 保留(C 依赖)",
+  "rationale": "jemallocator/tikv-jemallocator 不提供 per-heap isolation API,原 SPEC 目标(切换 allocator)在技术上不可行,会破坏 AST 内存模型。Commander 用户决策:推翻原 SPEC,接受 mimalloc 作为设计决策的 C 依赖。本 DEC 由 REQ-PURE-005 转档归档(2026-08-22 grounding 终波:REQ 元素形态删除,决策语义与推翻记录全量保留)。",
+  "dimension": "technical"
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-PURE-002" id="dec-pure-002"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-PURE-002",
+  "title": "DEC-PURE-002 uWS C++ 保留(hyper 方案已推翻;Tokio 与 uloop event loop 冲突)",
+  "context": "bun_uws(C++ uSockets)深度集成 bao_runtime 5 个文件(bun_api.rs Bun.serve() 1300+ LOC、node_http.rs node:http 600+ LOC、node_net.rs socket_group vtable、phase_c_exports.rs)。原 SPEC 目标为 uWS → hyper 纯 Rust。",
+  "options": [
+    {
+      "name": "uWS C++ 保留(链接复用 C++ 二进制)",
+      "pros": [
+        "Bun.serve/node:http/socket_group 零重写",
+        "符合 CLAUDE.md「uWS 链接复用 C++ 二进制」铁律"
+      ],
+      "cons": [
+        "保留 C++ 编译依赖"
+      ]
+    },
+    {
+      "name": "hyper 纯 Rust 替换",
+      "pros": [
+        "零 C++ 编译依赖"
+      ],
+      "cons": [
+        "需 Tokio runtime,与 FilePoll/uloop event loop 根本冲突",
+        "bao_runtime 约 2k LOC 重写"
+      ]
+    }
+  ],
+  "chosen": "uWS C++ 保留(链接复用 C++ 二进制)",
+  "rationale": "hyper 需 Tokio runtime,与 bao 的 FilePoll/uloop event loop 架构根本冲突,且违反 CLAUDE.md 铁律「uWS 链接复用 C++ 二进制」。Commander 用户决策:推翻原 SPEC,uWS 保留。衍生需求(bao_cdp 用 bun_uws 替换自写 ws_codec)已转 REQ-CDP-UWS-001 跟踪。本 DEC 由 REQ-PURE-009 转档归档(2026-08-22 grounding 终波:REQ 元素形态删除,决策语义与推翻记录全量保留)。",
+  "dimension": "technical"
 }</script></section></main>
     <section id="testing" data-tests-section="">
       <h2>测试用例</h2>
@@ -7236,13 +7240,7 @@ Permission 配置:
           已替换)
         </p>
       </div>
-      <div id="test-pure-005" data-test="TEST-PURE-005" data-req-ref="REQ-PURE-005" data-test-categories="unit">
-        <h4>TEST-PURE-005: REQ-PURE-005 单元测试</h4>
-        <p>
-          关联真实测试: SPEC 已推翻 — 无对应代码测试。Commander 决策保留 mimalloc (per-heap isolation API 被 387
-          处调用,jemallocator 不提供该 API)。grep -rn "mi_heap_t" src/ ≥ 100 处确认仍在使用
-        </p>
-      </div>
+      
       <div id="test-pure-006" data-test="TEST-PURE-006" data-req-ref="REQ-PURE-006" data-test-categories="unit">
         <h4>TEST-PURE-006: REQ-PURE-006 单元测试</h4>
         <p>
@@ -7264,13 +7262,7 @@ Permission 配置:
           兼容层。vendor/lolhtml/c-api stub 已删除。find src/lolhtml_sys/vendor -type d = 0
         </p>
       </div>
-      <div id="test-pure-009" data-test="TEST-PURE-009" data-req-ref="REQ-PURE-009" data-test-categories="unit">
-        <h4>TEST-PURE-009: REQ-PURE-009 单元测试</h4>
-        <p>
-          关联真实测试: SPEC 已推翻 — 无对应代码测试。Commander 决策保留 uWS (hyper 需 Tokio runtime,与 FilePoll/uloop
-          event loop 根本冲突)。src/bao_runtime/tests/uws_link_verification_tests.rs 验证 bun_uws 链接复用
-        </p>
-      </div>
+      
       <div id="test-pure-010" data-test="TEST-PURE-010" data-req-ref="REQ-PURE-010" data-test-categories="unit">
         <h4>TEST-PURE-010: REQ-PURE-010 单元测试</h4>
         <p>
