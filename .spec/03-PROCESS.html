@@ -328,7 +328,7 @@ WebSocket Client (Playwright)
       <h2>§7 时序约束</h2>
       <!-- ============================================================ -->
 
-      <div id="cdpresponsetime" data-req="REQ-CDP-001" data-req-status="approved" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter" data-req-api="GET /json/version" data-test="TEST-CDP-TIMING-001" data-req-ref="REQ-CDP-001" data-api-ref="CDP.*" data-test-categories="unit" data-timing="CDPResponseTime" data-timing-constraint="max_latency_ms" data-delivery="D34">
+      <div id="cdpresponsetime" data-timing="CDPResponseTime" data-timing-constraint="max_latency_ms" data-delivery="D34">
         <h3>TMG-CDP-001: CDP 命令响应时序</h3>
         <script type="application/ld+json">
           {
@@ -387,7 +387,7 @@ WebSocket Client (Playwright)
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-001@PROCESS"></span></p>
       </div>
 
-      <div id="eventlooptick" data-req="REQ-ENG-004" data-req-status="approved" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="POST /event-loop/drain" data-test="TEST-ENG-LOOP-TIMING-001" data-req-ref="REQ-ENG-004" data-api-ref="POST /event-loop/drain" data-test-categories="unit" data-timing="EventLoopTick" data-timing-constraint="max_interval_ms">
+      <div id="eventlooptick" data-timing="EventLoopTick" data-timing-constraint="max_interval_ms">
         <h3>TMG-LOOP-001: Event Loop Tick 时序</h3>
         <script type="application/ld+json">
           {

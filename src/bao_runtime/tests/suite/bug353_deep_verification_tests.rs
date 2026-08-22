@@ -1,4 +1,4 @@
-// @trace TEST-BUG-353-DEEP [req:REQ-ENG-006] [level:integration]
+// @trace TEST-BUG-353 [req:REQ-ENG-006] [level:integration]
 // Deep verification of BUG-353 fix: Bun.serve malloc corruption.
 // Also verifies BUG-354 fix: server.stop() PrivateValue pointer preservation.
 //

@@ -2378,8 +2378,8 @@ tagged template literal 执行 shell 命令。
           src/bao_runtime/src/bun_ffi.rs
         </p>
       </div>
-      <div id="test-h3-2" data-test="TEST-H3-2" data-req-ref="REQ-H3-001" data-test-categories="unit">
-        <h4>TEST-H3-2: REQ-H3-001 h3 fetch 单元 + 真网络测试</h4>
+      <div id="test-h3-002" data-test="TEST-H3-002" data-req-ref="REQ-H3-001" data-test-categories="unit">
+        <h4>TEST-H3-002: REQ-H3-001 h3 fetch 单元 + 真网络测试</h4>
         <p>
           h3 默认启用 / Alt-Svc parse / force_http3 / HTTP/1.1 fallback（真网络测试 #[ignore] + BAO_TEST_NETWORK=1）
         </p>
@@ -2625,6 +2625,6 @@ tagged template literal 执行 shell 命令。
           src/bao_runtime/tests/vm_codegen_tests.rs
         </p>
       </div>
-    <div id="test-brw-004" data-test="TEST-BRW-004" data-req-ref="REQ-BRW-004" data-test-categories="unit"><h4>TEST-BRW-004: REQ-BRW-004 单元测试</h4><p>TODO: 为 REQ-BRW-004 编写测试用例</p></div></section>
+    <div id="test-brw-004" data-test="TEST-BRW-004" data-req-ref="REQ-BRW-004" data-test-categories="unit,integration"><h4>TEST-BRW-004: REQ-BRW-004 Worker 生命周期与并发测试</h4><p>Worker onerror 集成(criterion 9)、Worker 生命周期单元+集成、servo Worker 并发(criterion 18)、Task 10 全链集成/acceptance。</p><p>关联真实测试: src/bao_browser/tests/suite/worker_onerror_integration_tests.rs + worker_tests.rs + worker_concurrent_servo_tests.rs + task_10_integration.rs</p></div></section>
   </body>
 </html>

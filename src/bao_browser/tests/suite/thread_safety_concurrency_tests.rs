@@ -1,4 +1,4 @@
-// @trace TEST-BRW-THREAD-01 [req:REQ-BRW-003] [level:integration] [nfr:TMG-BRW-01]
+// @trace TEST-BRW-THREAD-001 [req:REQ-BRW-003] [level:integration] [nfr:TMG-BRW-01]
 
 //! Thread-safety and concurrency tests for `BridgeChannel` / `BridgeReceiver`.
 //!
