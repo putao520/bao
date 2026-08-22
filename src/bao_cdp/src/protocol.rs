@@ -2246,43 +2246,16 @@ mod tests {
         assert_eq!(result["targetInfos"][0]["targetId"], "t1");
     }
 
-    // 10. handle_command Target.createTarget (no bridge) → explicit error
-    //     (page creation requires the servo bridge; never an echo of the
-    //     current target id)
-    #[test]
-    fn handle_command_target_create_target() {
-        let resp = dispatch_no_bridge(
-            3,
-            "Target.createTarget",
-            Some(json!({"url": "https://example.com"})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32603);
-        assert!(err.message.contains("no servo bridge connected"));
-    }
-
-    // 11. handle_command Target.closeTarget (no bridge) → explicit error
-    //     (closing a page requires the servo bridge — no fire-and-forget ok)
-    #[test]
-    fn handle_command_target_close_target() {
-        let resp = dispatch_no_bridge(4, "Target.closeTarget", None);
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32603);
-        assert!(err.message.contains("no servo bridge connected"));
-    }
-
     // ─── handle_command table-driven protocol matrix ──────────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
     //
     // Convergence of the per-command protocol-coverage suites whose
     // members differ only in (dispatch id, method, params) — one table
     // per assertion shape (α ok+empty-result / β ok-only / γ
-    // unknown-command→-32601). Row comments preserve the original
-    // inventory numbering and dispatch ids of the pre-table tests;
-    // assertion parity per row is identical to the replaced tests
-    // (α: 2 asserts, β: 1, γ: 2).
+    // unknown-command→-32601 / δ explicit-error). Row comments preserve
+    // the original inventory numbering and dispatch ids of the pre-table
+    // tests; assertion parity per row is identical to the replaced tests
+    // (α: 2 asserts, β: 1, γ: 2, δ1: 3, δ2: 2, δ3: 1).
 
     /// α form: command succeeds and the result is exactly `{}`.
     #[test]
@@ -2510,14 +2483,239 @@ mod tests {
         }
     }
 
-    // 14. handle_command Page.getLayoutMetrics (no bridge) → explicit error
-    //     (real layout data requires the servo bridge; never canned 1920×1080)
+    /// δ1 form: explicit error — no result, error code, and message
+    /// fragment all pinned (the "fail loudly, never fake success" face;
+    /// the reason fragment is per-row data because each failure carries
+    /// its own reason).
     #[test]
-    fn handle_command_page_get_layout_metrics() {
-        let resp = dispatch_no_bridge(7, "Page.getLayoutMetrics", None);
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
-        assert!(err.message.contains("no servo bridge"));
+    fn handle_command_explicit_error_full_matrix() {
+        let cases: Vec<(i64, &str, Option<Value>, i64, &str)> = vec![
+            // 10. Target.createTarget (no bridge) → -32603 (page creation
+            //     requires the servo bridge; never an echo of the target id)
+            (
+                3,
+                "Target.createTarget",
+                Some(json!({"url": "https://example.com"})),
+                -32603,
+                "no servo bridge connected",
+            ),
+            // 11. Target.closeTarget (no bridge) → -32603 (closing a page
+            //     requires the bridge — no fire-and-forget ok)
+            (
+                4,
+                "Target.closeTarget",
+                None,
+                -32603,
+                "no servo bridge connected",
+            ),
+            // 29. Fetch.enable (one pattern) → -32000 (the servo embedder
+            //     exposes no request pausing — never a canned "enabled")
+            (
+                22,
+                "Fetch.enable",
+                Some(json!({"patterns": [{"urlPattern": "*"}]})),
+                -32000,
+                "no request interception facility",
+            ),
+            // 30. Fetch.continueRequest → -32000 (an interception that can
+            //     never be enabled can never be continued)
+            (
+                23,
+                "Fetch.continueRequest",
+                Some(json!({"requestId": "req-001"})),
+                -32000,
+                "no request interception facility",
+            ),
+            // 76. Target.attachToTarget (stateless face) → -32000 (session
+            //     minting lives in bao_browser::ws_registry::BaoWsRegistry;
+            //     the stateless backend has no session table — never a
+            //     fabricated sessionId)
+            (
+                5,
+                "Target.attachToTarget",
+                Some(json!({"targetId": "t1", "flatten": true})),
+                -32000,
+                "WS session registry",
+            ),
+            // 77. Target.detachFromTarget (stateless face) → -32000 (same
+            //     session-table reasoning as attachToTarget)
+            (
+                6,
+                "Target.detachFromTarget",
+                None,
+                -32000,
+                "WS session registry",
+            ),
+            // 169. Fetch.continueWithResponse → -32000 (never a canned
+            //      "continued" flag)
+            (
+                98,
+                "Fetch.continueWithResponse",
+                Some(json!({"requestId": "r1"})),
+                -32000,
+                "no request interception facility",
+            ),
+            // 170. Fetch.failRequest → -32000 (an interception that can
+            //      never be enabled can never be failed)
+            (
+                99,
+                "Fetch.failRequest",
+                Some(json!({"requestId": "r2", "reason": "Aborted"})),
+                -32000,
+                "no request interception facility",
+            ),
+            // 171. Fetch.fulfillRequest → -32000 (never a canned
+            //      "fulfilled" flag)
+            (
+                100,
+                "Fetch.fulfillRequest",
+                Some(json!({"requestId": "r3", "responseCode": 404, "body": "dGVzdA=="})),
+                -32000,
+                "no request interception facility",
+            ),
+            // 172. Fetch.getRequestPostData → -32000 (servo does not store
+            //      request bodies for embedder access — never empty-body ok)
+            (
+                101,
+                "Fetch.getRequestPostData",
+                Some(json!({"requestId": "r4"})),
+                -32000,
+                "no request interception facility",
+            ),
+            // 173. Fetch.continueWithAuth → -32000
+            (
+                102,
+                "Fetch.continueWithAuth",
+                Some(json!({"requestId": "r5"})),
+                -32000,
+                "no request interception facility",
+            ),
+            // 174. Fetch.takeResponseBodyAsStream → -32000 (never a
+            //      fabricated stream handle)
+            (
+                103,
+                "Fetch.takeResponseBodyAsStream",
+                Some(json!({"requestId": "r6"})),
+                -32000,
+                "no request interception facility",
+            ),
+            // 175. Fetch.enable without patterns → -32000
+            (
+                104,
+                "Fetch.enable",
+                None,
+                -32000,
+                "no request interception facility",
+            ),
+            // 176. Fetch.enable with multiple patterns → -32000 (pattern
+            //      count is irrelevant without an interception facility)
+            (
+                105,
+                "Fetch.enable",
+                Some(json!({"patterns": [{"urlPattern": "*"}, {"urlPattern": "https://*"}]})),
+                -32000,
+                "no request interception facility",
+            ),
+        ];
+        for (id, method, params, code, msg) in cases {
+            let resp = dispatch_no_bridge(id, method, params);
+            assert!(
+                resp.result.is_none(),
+                "{method} (id {id}): expected no result"
+            );
+            let err = resp.error.unwrap();
+            assert_eq!(err.code, code, "{method} (id {id}): wrong error code");
+            assert!(
+                err.message.contains(msg),
+                "{method} (id {id}): message lacks {msg:?}: {err:?}"
+            );
+        }
+    }
+
+    /// δ2 form: explicit error — code and message fragment pinned (the
+    /// replaced suites expected the error without asserting result-none;
+    /// parity keeps exactly that shape).
+    #[test]
+    fn handle_command_explicit_error_message_matrix() {
+        let cases: Vec<(i64, &str, Option<Value>, i64, &str)> = vec![
+            // 14. Page.getLayoutMetrics (no bridge) → -32603 (real layout
+            //     data requires the bridge; never canned 1920×1080)
+            (7, "Page.getLayoutMetrics", None, -32603, "no servo bridge"),
+            // 80. Page.navigate (no bridge, default url) → -32603 (the
+            //     bridge response carries the real frameId/loaderId —
+            //     never fabricated here)
+            (9, "Page.navigate", None, -32603, "no servo bridge"),
+            // 81. Page.navigate (no bridge, explicit url) → -32603
+            (
+                10,
+                "Page.navigate",
+                Some(json!({"url": "https://example.com"})),
+                -32603,
+                "no servo bridge",
+            ),
+            // 82. Page.reload (no bridge) → -32603
+            (11, "Page.reload", None, -32603, "no servo bridge"),
+            // 83. Page.getFrameTree (no bridge) → -32603 (frame data is
+            //     read from the live document via the bridge)
+            (12, "Page.getFrameTree", None, -32603, "no servo bridge"),
+            // 84. Page.getNavigationHistory → -32000 (servo WebView exposes
+            //     no session-history enumeration)
+            (13, "Page.getNavigationHistory", None, -32000, "not supported"),
+            // 85. Page.captureScreenshot (no bridge) → -32603 (no renderer
+            //     without the bridge — never empty image data)
+            (14, "Page.captureScreenshot", None, -32603, "no servo bridge"),
+            // 87. Page.removeScriptToEvaluateOnNewDocument → -32000 (no
+            //     removable script registry exists)
+            (
+                16,
+                "Page.removeScriptToEvaluateOnNewDocument",
+                Some(json!({"identifier": "script-1"})),
+                -32000,
+                "not supported",
+            ),
+            // 88. Page.setContent (no html param) → -32602 invalid params
+            (17, "Page.setContent", None, -32602, "html"),
+        ];
+        for (id, method, params, code, msg) in cases {
+            let resp = dispatch_no_bridge(id, method, params);
+            let err = resp
+                .error
+                .unwrap_or_else(|| panic!("{method} (id {id}): explicit error required"));
+            assert_eq!(err.code, code, "{method} (id {id}): wrong error code");
+            assert!(
+                err.message.contains(msg),
+                "{method} (id {id}): message lacks {msg:?}: {err:?}"
+            );
+        }
+    }
+
+    /// δ3 form: explicit error — code only (the replaced suites pinned
+    /// nothing beyond the -32603 no-bridge error code).
+    #[test]
+    fn handle_command_explicit_error_code_only_matrix() {
+        let cases: Vec<(i64, &str, Option<Value>)> = vec![
+            // 89. Page.close (no bridge) → -32603
+            (18, "Page.close", None),
+            // 90. Page.bringToFront (no bridge) → -32603
+            (19, "Page.bringToFront", None),
+            // 110. DOM.getOuterHTML (no bridge) → -32603 (outerHTML is read
+            //      from the live document — never canned html)
+            (39, "DOM.getOuterHTML", None),
+            // 115. Network.getResponseBody (no bridge) → -32603 (servo does
+            //      not expose stored response bodies — never empty-body ok)
+            (44, "Network.getResponseBody", None),
+            // 117. Network.setExtraHTTPHeaders (no bridge) → -32603 (servo
+            //      has no extra-headers injection API — headers never
+            //      silently dropped)
+            (46, "Network.setExtraHTTPHeaders", None),
+        ];
+        for (id, method, params) in cases {
+            let resp = dispatch_no_bridge(id, method, params);
+            let err = resp
+                .error
+                .unwrap_or_else(|| panic!("{method} (id {id}): explicit error required"));
+            assert_eq!(err.code, -32603, "{method} (id {id}): wrong error code");
+        }
     }
 
     // 16. handle_command Runtime.evaluate (no bridge, empty expr) → undefined result
@@ -2575,37 +2773,6 @@ mod tests {
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["breakpointId"], "1");
-    }
-
-    // 29. handle_command Fetch.enable → explicit error (no interception
-    //     facility exists: the servo embedder does not expose request
-    //     pausing — never a canned "enabled"/patternCount success)
-    #[test]
-    fn handle_command_fetch_enable_with_patterns() {
-        let resp = dispatch_no_bridge(
-            22,
-            "Fetch.enable",
-            Some(json!({"patterns": [{"urlPattern": "*"}]})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
-    }
-
-    // 30. handle_command Fetch.continueRequest → explicit error (an
-    //     interception that can never be enabled can never be continued)
-    #[test]
-    fn handle_command_fetch_continue_request() {
-        let resp = dispatch_no_bridge(
-            23,
-            "Fetch.continueRequest",
-            Some(json!({"requestId": "req-001"})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
     }
 
     // 31. CdpError clone + debug format
@@ -3110,34 +3277,6 @@ mod tests {
         assert_eq!(info["attached"], true);
     }
 
-    // 76. handle_command Target.attachToTarget (stateless face) → explicit
-    //     error: session minting lives in the WS session registry
-    //     (bao_browser::ws_registry::BaoWsRegistry); the stateless internal
-    //     backend has no session table — never a fabricated sessionId.
-    #[test]
-    fn handle_command_target_attach_to_target() {
-        let resp = dispatch_no_bridge(
-            5,
-            "Target.attachToTarget",
-            Some(json!({"targetId": "t1", "flatten": true})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("WS session registry"));
-    }
-
-    // 77. handle_command Target.detachFromTarget (stateless face) → explicit
-    //     error (same session-table reasoning as attachToTarget)
-    #[test]
-    fn handle_command_target_detach_from_target() {
-        let resp = dispatch_no_bridge(6, "Target.detachFromTarget", None);
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("WS session registry"));
-    }
-
     // 79. handle_command Target.getTargetTargets → ok (alias for getTargets)
     #[test]
     fn handle_command_target_get_target_targets() {
@@ -3145,69 +3284,6 @@ mod tests {
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert!(result.get("targetInfos").unwrap().as_array().unwrap().len() > 0);
-    }
-
-    // 80. handle_command Page.navigate (no bridge) → explicit error
-    //     (navigation requires the servo bridge; the bridge response carries
-    //     the real frameId/loaderId — never fabricated here)
-    #[test]
-    fn handle_command_page_navigate_no_bridge_default_url() {
-        let resp = dispatch_no_bridge(9, "Page.navigate", None);
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
-        assert!(err.message.contains("no servo bridge"));
-    }
-
-    // 81. handle_command Page.navigate (no bridge) with url param → explicit error
-    #[test]
-    fn handle_command_page_navigate_with_url() {
-        let resp = dispatch_no_bridge(
-            10,
-            "Page.navigate",
-            Some(json!({"url": "https://example.com"})),
-        );
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
-        assert!(err.message.contains("no servo bridge"));
-    }
-
-    // 82. handle_command Page.reload (no bridge) → explicit error
-    #[test]
-    fn handle_command_page_reload_no_bridge() {
-        let resp = dispatch_no_bridge(11, "Page.reload", None);
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
-        assert!(err.message.contains("no servo bridge"));
-    }
-
-    // 83. handle_command Page.getFrameTree (no bridge) → explicit error
-    //     (frame data is read from the live document via the bridge)
-    #[test]
-    fn handle_command_page_get_frame_tree() {
-        let resp = dispatch_no_bridge(12, "Page.getFrameTree", None);
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
-        assert!(err.message.contains("no servo bridge"));
-    }
-
-    // 84. handle_command Page.getNavigationHistory → explicit not-supported error
-    //     (servo WebView exposes no session-history enumeration)
-    #[test]
-    fn handle_command_page_get_navigation_history() {
-        let resp = dispatch_no_bridge(13, "Page.getNavigationHistory", None);
-        let err = resp.error.expect("history enumeration must fail loudly");
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("not supported"));
-    }
-
-    // 85. handle_command Page.captureScreenshot (no bridge) → explicit error
-    //     (no renderer without the bridge — never empty image data)
-    #[test]
-    fn handle_command_page_capture_screenshot_no_bridge() {
-        let resp = dispatch_no_bridge(14, "Page.captureScreenshot", None);
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
-        assert!(err.message.contains("no servo bridge"));
     }
 
     // 86. handle_command Page.addScriptToEvaluateOnNewDocument (empty source)
@@ -3219,45 +3295,6 @@ mod tests {
         // registration) is a no-op success with a fresh identifier.
         let result = resp.result.expect("empty source registers as a no-op");
         assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
-    }
-
-    // 87. handle_command Page.removeScriptToEvaluateOnNewDocument → explicit
-    //     not-supported error (no removable script registry exists)
-    #[test]
-    fn handle_command_page_remove_script() {
-        let resp = dispatch_no_bridge(
-            16,
-            "Page.removeScriptToEvaluateOnNewDocument",
-            Some(json!({"identifier": "script-1"})),
-        );
-        let err = resp.error.expect("removal must fail loudly");
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("not supported"));
-    }
-
-    // 88. handle_command Page.setContent (no html param) → invalid-params error
-    #[test]
-    fn handle_command_page_set_content() {
-        let resp = dispatch_no_bridge(17, "Page.setContent", None);
-        let err = resp.error.expect("missing html must be rejected");
-        assert_eq!(err.code, -32602);
-        assert!(err.message.contains("html"));
-    }
-
-    // 89. handle_command Page.close (no bridge) → explicit error
-    #[test]
-    fn handle_command_page_close() {
-        let resp = dispatch_no_bridge(18, "Page.close", None);
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
-    }
-
-    // 90. handle_command Page.bringToFront (no bridge) → explicit error
-    #[test]
-    fn handle_command_page_bring_to_front() {
-        let resp = dispatch_no_bridge(19, "Page.bringToFront", None);
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
     }
 
     // 93. handle_command Runtime.callFunctionOn → ok
@@ -3308,15 +3345,6 @@ mod tests {
         assert_eq!(result["model"]["height"], 1080);
     }
 
-    // 110. handle_command DOM.getOuterHTML (no bridge) → explicit error
-    //      (outerHTML is read from the live document — never canned html)
-    #[test]
-    fn handle_command_dom_get_outer_html_no_bridge() {
-        let resp = dispatch_no_bridge(39, "DOM.getOuterHTML", None);
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
-    }
-
     // 111. handle_command DOM.resolveNode → ok
     #[test]
     fn handle_command_dom_resolve_node() {
@@ -3333,26 +3361,6 @@ mod tests {
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["nodeIds"], json!([]));
-    }
-
-    // 115. handle_command Network.getResponseBody (no bridge) → explicit error
-    //      (servo does not expose stored response bodies — fail loudly, never
-    //      return an empty-body fake success)
-    #[test]
-    fn handle_command_network_get_response_body() {
-        let resp = dispatch_no_bridge(44, "Network.getResponseBody", None);
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
-    }
-
-    // 117. handle_command Network.setExtraHTTPHeaders (no bridge) → explicit error
-    //      (servo has no extra-headers injection API — the headers are never
-    //      silently dropped)
-    #[test]
-    fn handle_command_network_set_extra_http_headers() {
-        let resp = dispatch_no_bridge(46, "Network.setExtraHTTPHeaders", None);
-        let err = resp.error.expect("no bridge must yield an error");
-        assert_eq!(err.code, -32603);
     }
 
     // 119. handle_command Network.getAllCookies → ok with empty cookies
@@ -3427,121 +3435,6 @@ mod tests {
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["scriptSource"], "");
-    }
-
-    // 169. handle_command Fetch.continueWithResponse → explicit error
-    //     (no request interception facility — never a canned "continued" flag)
-    #[test]
-    fn handle_command_fetch_continue_with_response() {
-        let resp = dispatch_no_bridge(
-            98,
-            "Fetch.continueWithResponse",
-            Some(json!({"requestId": "r1"})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
-    }
-
-    // 170. handle_command Fetch.failRequest → explicit error (an
-    //     interception that can never be enabled can never be failed)
-    #[test]
-    fn handle_command_fetch_fail_request() {
-        let resp = dispatch_no_bridge(
-            99,
-            "Fetch.failRequest",
-            Some(json!({"requestId": "r2", "reason": "Aborted"})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
-    }
-
-    // 171. handle_command Fetch.fulfillRequest → explicit error (never a
-    //     canned "fulfilled" flag)
-    #[test]
-    fn handle_command_fetch_fulfill_request() {
-        let resp = dispatch_no_bridge(
-            100,
-            "Fetch.fulfillRequest",
-            Some(json!({"requestId": "r3", "responseCode": 404, "body": "dGVzdA=="})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
-    }
-
-    // 172. handle_command Fetch.getRequestPostData → explicit error (servo
-    //     does not store request bodies for embedder access — never an
-    //     empty-body fake success)
-    #[test]
-    fn handle_command_fetch_get_request_post_data() {
-        let resp = dispatch_no_bridge(
-            101,
-            "Fetch.getRequestPostData",
-            Some(json!({"requestId": "r4"})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
-    }
-
-    // 173. handle_command Fetch.continueWithAuth → explicit error
-    #[test]
-    fn handle_command_fetch_continue_with_auth() {
-        let resp = dispatch_no_bridge(
-            102,
-            "Fetch.continueWithAuth",
-            Some(json!({"requestId": "r5"})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
-    }
-
-    // 174. handle_command Fetch.takeResponseBodyAsStream → explicit error
-    //      (never a fabricated stream handle)
-    #[test]
-    fn handle_command_fetch_take_response_body_as_stream() {
-        let resp = dispatch_no_bridge(
-            103,
-            "Fetch.takeResponseBodyAsStream",
-            Some(json!({"requestId": "r6"})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
-    }
-
-    // 175. handle_command Fetch.enable without patterns → explicit error
-    #[test]
-    fn handle_command_fetch_enable_without_patterns() {
-        let resp = dispatch_no_bridge(104, "Fetch.enable", None);
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
-    }
-
-    // 176. handle_command Fetch.enable with multiple patterns → explicit
-    //      error (pattern count is irrelevant without an interception facility)
-    #[test]
-    fn handle_command_fetch_enable_with_multiple_patterns() {
-        let resp = dispatch_no_bridge(
-            105,
-            "Fetch.enable",
-            Some(json!({"patterns": [{"urlPattern": "*"}, {"urlPattern": "https://*"}]})),
-        );
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
     }
 
     // ─── params_str edge cases ─────────────────────────────────────────
