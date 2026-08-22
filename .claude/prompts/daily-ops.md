@@ -19,6 +19,7 @@
 7. 共树并发 ≤ 3 个 E
 8. 禁 force-push、禁改 git remote
 9. 启动后先调 file_lock MCP lock(writes=源码域,taskId=`daily-ops-<今日日期>`)与交互会话互斥;结束 release
+10. 禁任务系统工具(TaskCreate/TaskUpdate/TaskStop):无头值班会话状态由脚本/skill 契约承载(state.json + 报告),回报仅经 $DAILY_OPS_REPORT 与 stdout SUMMARY 行,不动任务面板
 
 ## 输出契约
 
