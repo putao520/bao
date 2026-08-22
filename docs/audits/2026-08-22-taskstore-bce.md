@@ -10,3 +10,6 @@
 - 防复发(本 commit 落地):CLAUDE.md 硬门②第 5 要素 + daily-ops prompt 第 10 条
 - 上游建议(不在本仓 hack):TaskUpdate 区分性错误码;TaskList 保留终态条目
 - spec_write 工具缺陷记录(2026-08-22 本会话实证):bug create 两形态失败("Bug requires id" → 补 id 后 ok=true 但本体未写入,仅 registry/00-INDEX 副作用)——建议 gsc-spec 维护方排查 bug 元素写入路由(疑似非法宿主静默丢弃)
+
+## 同日活体复现(2026-08-22 午后)
+本报告落地数小时后,同一 E(impl-daily-ops)对任务 #34 再次 TaskUpdate(completed)——违流程层条款;主会话随后 TaskUpdate(#34)返回 "Task not found",E 回滚尝试同返 "Task not found"(面板不可恢复)——工具层歧义与终态回收完整复现。第三形态暴露:补救性回滚本身亦属越权操作(未遂)。两次独立发生+一次面板不可恢复实证,工具行为证据链对维护方已充分。
