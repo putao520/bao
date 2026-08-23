@@ -1819,11 +1819,37 @@ unsafe fn parse_headers_init(cx: *mut JSContext, headers_val: JSVal) -> Vec<(Str
         }
 
         // Form 3: record / this module's Headers class — own enumerable
-        // string-keyed props with string values. The string-value filter
-        // skips the class's get/set/has method props (they are functions).
+        // props with string values. Integer-index keys (PropertyKey::Int)
+        // are record keys too: ToString(0) === "0", so a record
+        // `{ 0: "text/plain" }` must carry a header named "0" (engine
+        // enumeration yields ints ascending first, then string keys in
+        // insertion order — the WHATWG record-fill iteration order). The
+        // string-value filter skips the class's get/set/has method props
+        // (they are functions).
+        // domain-check 06d0ae8ac1 (own-idiom fix, upstream oracle)
         let mut ids = mozjs::rust::IdVector::new(&mut wrapped_cx);
         if GetPropertyKeys(cx, obj.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
             for jsid in &*ids {
+                if jsid.is_int() {
+                    let idx = jsid.to_int() as u32;
+                    let mut v_val = UndefinedValue();
+                    if !JS_GetElement(
+                        cx,
+                        obj.handle().into(),
+                        idx,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut v_val,
+                        },
+                    ) {
+                        JS_ClearPendingException(cx);
+                        continue;
+                    }
+                    if v_val.is_string() {
+                        out.push((idx.to_string(), crate::js_to_rust_string(cx, v_val)));
+                    }
+                    continue;
+                }
                 if !jsid.is_string() {
                     continue;
                 }

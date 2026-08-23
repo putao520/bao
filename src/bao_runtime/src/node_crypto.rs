@@ -1767,6 +1767,19 @@ unsafe fn extract_key_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
 
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
+    // domain-check e661130391 wave / pbkdf2 async-vs-sync divergence (BCE:
+    // silent-fake delivery, own code since ec8b3d17 phase1 — NOT the
+    // 614d19fe9 upstream absorption): Node's crypto password/salt/secret
+    // parameters accept string inputs, UTF-8 encoded (crypto.pbkdf2 docs).
+    // The object-only gate below silently replaced every STRING with EMPTY
+    // bytes, so async pbkdf2('secret','salt',...) derived pbkdf2("","")
+    // while pbkdf2Sync('secret','salt') derived the real key — same inputs,
+    // different digests. Strings now take the same UTF-8 path the sync faces
+    // use (arg_to_string → String::into_bytes), restoring async/sync parity
+    // for every spawn_crypto_async caller (pbkdf2/scrypt/hkdf/...).
+    if val.is_string() {
+        return crate::jsstr_to_rust_string(cx, val.to_string()).into_bytes();
+    }
     if !val.is_object() {
         return Vec::new();
     }

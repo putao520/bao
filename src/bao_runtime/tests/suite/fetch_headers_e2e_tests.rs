@@ -180,6 +180,10 @@ fn test_fetch_init_headers_reach_wire_all_forms() {
             var u8 = new Uint8Array([104, 105, 45, 117, 56]); // "hi-u8"
             Promise.all([
                 go("/h-obj",    {{ headers: {{ "X-Obj": "objv" }} }}),
+                // Numeric-key record entries must reach the wire too
+                // (integer-index keys were dropped by the old
+                // string-only Form 3 enumeration).
+                go("/h-num",    {{ headers: {{ 0: "numv", "x-a": "av" }} }}),
                 go("/h-arr",    {{ headers: [["X-Arr", "arrv"]] }}),
                 go("/h-arrrec", {{ headers: [{{ name: "X-Arrrec", value: "arrrecv" }}] }}),
                 go("/h-iter",   {{ headers: hIter }}),
@@ -230,7 +234,7 @@ fn test_fetch_init_headers_reach_wire_all_forms() {
         r#"globalThis.__all_done ? ("DONE:" + globalThis.__done_count()) : ("PENDING:" + globalThis.__done_count())"#,
     );
     assert!(
-        final_status.starts_with("DONE:7"),
+        final_status.starts_with("DONE:8"),
         "fetch promises did not all settle: {}",
         final_status
     );
@@ -246,6 +250,13 @@ fn test_fetch_init_headers_reach_wire_all_forms() {
     let req = request_for(&captured, "/h-obj");
     assert!(!req.is_empty(), "no captured request for /h-obj");
     assert_contains(&req, "x-obj: objv", "/h-obj record-form header lost");
+
+    // record form with a numeric key — the header named "0" must reach the
+    // wire (ToString(0) === "0"; the old string-only enumeration dropped it).
+    let req = request_for(&captured, "/h-num");
+    assert!(!req.is_empty(), "no captured request for /h-num");
+    assert_contains(&req, "0: numv", "/h-num numeric-key header lost");
+    assert_contains(&req, "x-a: av", "/h-num string-key header lost");
 
     // sequence-of-pairs form
     let req = request_for(&captured, "/h-arr");
@@ -291,7 +302,7 @@ fn test_fetch_init_headers_reach_wire_all_forms() {
     assert_contains(&req, "hi-u8", "/h-bodyu Uint8Array body lost");
 
     eprintln!(
-        "[PASS] BCE-20260814-FETCH-H e2e: all 5 headers forms + 2 POST body forms reached the wire"
+        "[PASS] BCE-20260814-FETCH-H e2e: all headers forms (record plain + numeric-key) + 2 POST body forms reached the wire"
     );
 
     // Mirror fetch_api_tests exit strategy: park HTTPThread, force-exit.

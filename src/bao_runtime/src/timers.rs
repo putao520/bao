@@ -359,6 +359,26 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
         // earliest deadline (interruptible by ConcurrentTask wakeups) instead
         // of polling — see `wait_for_timer_deadline`.
         wait_for_timer_deadline();
+        // domain-check e661130391 (own-idiom fix): pump starvation. The raw
+        // `tick_with_timeout` inside `wait_for_timer_deadline` only drains the
+        // uWS loop (the ConcurrentTask wakeup eventfd included) — it never
+        // POPS `MiniEventLoop.concurrent_tasks` (the pop lives in
+        // `tick_once`/`tick_without_idle` only). With a timer registered AND
+        // an fs/crypto async op in flight, the branch order above selects the
+        // timer branch every pass, so a completed worker's tasklet (e.g.
+        // crypto_complete_post's carrier) parks in the queue forever while
+        // `crypto_async_pending() > 0` keeps the loop alive —
+        // `await util.promisify(crypto.pbkdf2)(...)` hangs with the interval
+        // firing alongside. Supplement one non-blocking tick when fs/crypto
+        // work is in flight: the same primitive the http branch above and the
+        // fs/crypto-only branch below already use; a cheap no-op when nothing
+        // has arrived yet (pop finds an empty queue).
+        if crate::node_fs::fs_async_pending() > 0 || crate::node_crypto::crypto_async_pending() > 0
+        {
+            with_event_loop(|loop_| {
+                loop_.tick_without_idle(core::ptr::null_mut());
+            });
+        }
     } else if has_pending_async_fs_crypto {
         // fs/crypto-only case (A' route): with no timers and no HTTP nothing
         // above would tick the MiniEventLoop, so a completed worker's
@@ -489,6 +509,17 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
         // (interruptible by ConcurrentTask wakeups) instead of the former
         // 1ms poll — see `wait_for_timer_deadline`.
         wait_for_timer_deadline();
+        // domain-check e661130391 (own-idiom fix): same starvation guard as
+        // `drain_and_check`'s timer branch — a registered timer selects this
+        // branch, and the raw tick never pops `concurrent_tasks`, so an
+        // arrived fs/crypto completion tasklet needs this supplementary
+        // non-blocking tick to be delivered to the JS thread.
+        if crate::node_fs::fs_async_pending() > 0 || crate::node_crypto::crypto_async_pending() > 0
+        {
+            with_event_loop(|loop_| {
+                loop_.tick_without_idle(core::ptr::null_mut());
+            });
+        }
     } else if crate::node_fs::fs_async_pending() > 0
         || crate::node_crypto::crypto_async_pending() > 0
     {

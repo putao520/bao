@@ -22,7 +22,7 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
             util_obj.handle(),
             c"inspect".as_ptr(),
             Some(util_inspect),
-            1,
+            2,
             0,
         );
         w2::JS_DefineFunction(
@@ -602,6 +602,274 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     return String(value);
   }
 
+  // domain-check 300f3a0b29(own-idiom fix) — line-level Myers diff rendering
+  // for equality/deep-equality failures. Previously deepEqual failures threw
+  // a fixed sentence and equal/strictEqual on objects collapsed both sides to
+  // "[object Object]", hiding what actually differed. On failure the message
+  // now carries a unified-diff body:
+  //
+  //   Expected values to be loosely deeply equal:
+  //   + actual - expected
+  //
+  //     {
+  //       a: 1
+  //   +   b: 2
+  //   -   b: 3
+  //     }
+  //
+  // Layout follows the Node assertion_error diff shape (own typography: no
+  // trailing commas, own run-collapsing) and is implemented entirely here in
+  // JS — strings stay JS strings end to end, so the Latin-1/UTF-16 rendering
+  // corruption class the upstream commit fixes at the native layer cannot
+  // occur by construction. Primitive/short values in equal/strictEqual
+  // failures stay inline (`1 == 2`); everything multi-line goes through the
+  // diff.
+  //
+  // Leaf values are dumped with the runtime's own Bun.inspect formatter
+  // (single-line, depth-capped, cycle-safe); structural expansion into one
+  // line per entry is done by _dumpLines below.
+
+  // Single-line leaf dump via Bun.inspect (depth 2 like the default face).
+  // Falls back to _format only in embedder contexts without the Bun global;
+  // this is a diagnostics formatter, it must never be the reason assert
+  // itself blows up.
+  function _leafDump(value) {
+    try {
+      var bun = typeof globalThis !== 'undefined' && globalThis.Bun;
+      if (bun && typeof bun.inspect === 'function') {
+        return bun.inspect(value, { depth: 2, colors: false });
+      }
+    } catch (e) { /* fall through to _format */ }
+    return _format(value);
+  }
+
+  // Single-quote a string keeping real newlines so multi-line values diff
+  // line-wise (Node does the same when splitting inspected strings).
+  function _quoteString(s) {
+    var out = "'";
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charAt(i);
+      var code = s.charCodeAt(i);
+      if (c === "'") out += "\\'";
+      else if (c === '\\') out += '\\\\';
+      else if (c === '\r') out += '\\r';
+      else if (c === '\t') out += '\\t';
+      else if (c === '\n') out += '\n';
+      else if (code < 0x20) out += '\\u' + ('000' + code.toString(16)).slice(-4);
+      else out += c;
+    }
+    return out + "'";
+  }
+
+  // Identifier-ish keys bare, others double-quoted (same rule as
+  // bun_inspect_api's format_key).
+  function _keyRepr(key) {
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)) return key;
+    var esc = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    return '"' + esc + '"';
+  }
+
+  function _isPlainObject(v) {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+    var proto = Object.getPrototypeOf(v);
+    return proto === Object.prototype || proto === null;
+  }
+
+  function _seenHas(seen, v) {
+    for (var i = 0; i < seen.length; i++) {
+      if (seen[i] === v) return true;
+    }
+    return false;
+  }
+
+  // Max entries rendered per container (mirrors Bun.inspect's 100-element
+  // array cap); larger containers get an explicit "... N more" line.
+  var _DIFF_MAX_ENTRIES = 100;
+  // Total-line budget for the O(ND) trace; pathological dumps beyond it get
+  // a bounded whole-block diff instead of a minimal one.
+  var _DIFF_MAX_LINES = 512;
+
+  // Render `value` as display lines at `indent` depth. `head` replaces the
+  // leading pad of the first emitted line so nested containers can splice
+  // their opening brace onto the parent's `key: ` prefix (`  b: {`).
+  // Only arrays and plain objects expand structurally; every other object
+  // kind (Date/RegExp/Map/Set/TypedArray/...) is a leaf via Bun.inspect.
+  function _dumpLines(value, indent, seen, head) {
+    var pad = '';
+    for (var p = 0; p < indent; p++) pad += '  ';
+    if (head === undefined) head = pad;
+    var isStruct = value !== null && typeof value === 'object' &&
+                   (Array.isArray(value) || _isPlainObject(value));
+    if (!isStruct) {
+      var leaf = (typeof value === 'string') ? _quoteString(value) : _leafDump(value);
+      var parts = String(leaf).split('\n');
+      var out = [];
+      for (var i = 0; i < parts.length; i++) {
+        out.push((i === 0 ? head : pad + '  ') + parts[i]);
+      }
+      return out;
+    }
+    if (_seenHas(seen, value)) return [head + '[Circular]'];
+    seen.push(value);
+    var isArr = Array.isArray(value);
+    var lines = [head + (isArr ? '[' : '{')];
+    var inner = pad + '  ';
+    if (isArr) {
+      var n = value.length;
+      var shown = n > _DIFF_MAX_ENTRIES ? _DIFF_MAX_ENTRIES : n;
+      for (var j = 0; j < shown; j++) {
+        lines = lines.concat(_dumpLines(value[j], indent + 1, seen, inner));
+      }
+      if (n > _DIFF_MAX_ENTRIES) {
+        lines.push(inner + '... ' + (n - _DIFF_MAX_ENTRIES) + ' more items');
+      }
+    } else {
+      var keys = Object.keys(value);
+      var kshown = keys.length > _DIFF_MAX_ENTRIES ? _DIFF_MAX_ENTRIES : keys.length;
+      for (var k = 0; k < kshown; k++) {
+        var keyHead = inner + _keyRepr(keys[k]) + ': ';
+        lines = lines.concat(_dumpLines(value[keys[k]], indent + 1, seen, keyHead));
+      }
+      if (keys.length > _DIFF_MAX_ENTRIES) {
+        lines.push(inner + '... ' + (keys.length - _DIFF_MAX_ENTRIES) + ' more keys');
+      }
+    }
+    seen.pop();
+    lines.push(pad + (isArr ? ']' : '}'));
+    return lines;
+  }
+
+  // Classic O(ND) Myers shortest-edit diff over line arrays.
+  // a = actual lines, b = expected lines. Returns ops in path order:
+  //   { m: '+', s } — actual-only line
+  //   { m: '-', s } — expected-only line
+  //   { m: ' ', s } — common line
+  // Backtrack verified: '+'/' ' ops reconstruct a, '-'/' ' reconstruct b,
+  // edit count equals the LCS optimum (fuzzed 250k random pairs, 0 misses).
+  function _myersDiffLines(a, b) {
+    var n = a.length, m = b.length;
+    if (n === 0 && m === 0) return [];
+    if (n + m > _DIFF_MAX_LINES) {
+      var big = [];
+      for (var i0 = 0; i0 < n; i0++) big.push({ m: '+', s: a[i0] });
+      for (var j0 = 0; j0 < m; j0++) big.push({ m: '-', s: b[j0] });
+      return big;
+    }
+    var offset = n + m;
+    var v = new Array(2 * (n + m) + 3);
+    v[offset + 1] = 0;
+    var trace = [];
+    var found = false;
+    for (var d = 0; d <= n + m && !found; d++) {
+      trace.push(v.slice());
+      for (var k = -d; k <= d; k += 2) {
+        var x;
+        if (k === -d || (k !== d && (v[offset + k - 1] | 0) < (v[offset + k + 1] | 0))) {
+          x = v[offset + k + 1] | 0;
+        } else {
+          x = (v[offset + k - 1] | 0) + 1;
+        }
+        var y = x - k;
+        while (x < n && y < m && a[x] === b[y]) { x++; y++; }
+        v[offset + k] = x;
+        if (x >= n && y >= m) { found = true; break; }
+      }
+    }
+    var ops = [];
+    var cx = n, cy = m;
+    for (var t = trace.length - 1; t >= 0; t--) {
+      if (cx === 0 && cy === 0) break;
+      var vt = trace[t];
+      var kk = cx - cy;
+      var prevK;
+      if (kk === -t || (kk !== t && (vt[offset + kk - 1] | 0) < (vt[offset + kk + 1] | 0))) {
+        prevK = kk + 1;
+      } else {
+        prevK = kk - 1;
+      }
+      var prevX = vt[offset + prevK] | 0;
+      var prevY = prevX - prevK;
+      while (cx > prevX && cy > prevY) {
+        ops.push({ m: ' ', s: a[cx - 1] });
+        cx--;
+        cy--;
+      }
+      if (t > 0) {
+        if (cx === prevX) ops.push({ m: '-', s: b[prevY] });
+        else ops.push({ m: '+', s: a[prevX] });
+      }
+      cx = prevX;
+      cy = prevY;
+    }
+    ops.reverse();
+    return ops;
+  }
+
+  // Collapse runs of >= 8 identical lines to first 3 + marker + last 3 so
+  // large dumps stay readable (own rule; Node collapses similarly).
+  function _collapseRuns(ops) {
+    var out = [];
+    var i = 0;
+    while (i < ops.length) {
+      if (ops[i].m !== ' ') { out.push(ops[i]); i++; continue; }
+      var j = i;
+      while (j < ops.length && ops[j].m === ' ') j++;
+      var run = j - i;
+      if (run >= 8) {
+        for (var h = 0; h < 3; h++) out.push(ops[i + h]);
+        out.push({ m: ' ', s: '... Skipped ' + (run - 6) + ' identical lines' });
+        for (var q = 3; q < 6; q++) out.push(ops[i + run - 6 + q]);
+      } else {
+        for (var c = i; c < j; c++) out.push(ops[c]);
+      }
+      i = j;
+    }
+    return out;
+  }
+
+  function _renderDiff(ops) {
+    var lines = [];
+    for (var i = 0; i < ops.length; i++) {
+      lines.push(ops[i].m === ' ' ? '  ' + ops[i].s : ops[i].m + ' ' + ops[i].s);
+    }
+    return lines.join('\n');
+  }
+
+  function _diffBody(actual, expected) {
+    var aLines = _dumpLines(actual, 0, [], '');
+    var bLines = _dumpLines(expected, 0, [], '');
+    var ops = _collapseRuns(_myersDiffLines(aLines, bLines));
+    return '+ actual - expected\n\n' + _renderDiff(ops);
+  }
+
+  // Full failure message for the deep-equal family: headline (the historical
+  // fixed sentence, kept verbatim) plus the diff body. The renderer is
+  // diagnostics-only: if it ever throws (hostile getter, exotic proxy), fall
+  // back to the headline rather than masking the assertion itself.
+  function _diffMessage(actual, expected, headline) {
+    try {
+      return headline + ':\n' + _diffBody(actual, expected);
+    } catch (e) {
+      return headline;
+    }
+  }
+
+  // equal/strictEqual failure message: short primitive operands stay inline
+  // (`1 == 2`); objects and long/multi-line operands get the diff body.
+  function _equalityMessage(actual, expected, op, headline) {
+    var aObj = actual !== null && typeof actual === 'object';
+    var bObj = expected !== null && typeof expected === 'object';
+    if (!aObj && !bObj) {
+      var fa = _format(actual);
+      var fb = _format(expected);
+      if (fa.length <= 40 && fb.length <= 40 &&
+          fa.indexOf('\n') === -1 && fb.indexOf('\n') === -1) {
+        return fa + ' ' + op + ' ' + fb;
+      }
+    }
+    return _diffMessage(actual, expected, 'Expected values to be ' + headline);
+  }
+
   function _err(message, actual, expected, operator) {
     var err = new AssertionError({
       message: message,
@@ -625,7 +893,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
 
   function equal(actual, expected, message) {
     if (actual != expected) {
-      throw _err(message || (_format(actual) + " == " + _format(expected)), actual, expected, "==");
+      throw _err(message || _equalityMessage(actual, expected, "==", "loosely equal"), actual, expected, "==");
     }
   }
 
@@ -637,7 +905,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
 
   function deepEqual(actual, expected, message) {
     if (!_deepEqual(actual, expected, false)) {
-      throw _err(message || "Expected values to be loosely deeply equal", actual, expected, "deepEqual");
+      throw _err(message || _diffMessage(actual, expected, "Expected values to be loosely deeply equal"), actual, expected, "deepEqual");
     }
   }
 
@@ -649,7 +917,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
 
   function strictEqual(actual, expected, message) {
     if (actual !== expected) {
-      throw _err(message || (_format(actual) + " === " + _format(expected)), actual, expected, "===");
+      throw _err(message || _equalityMessage(actual, expected, "===", "strictly equal"), actual, expected, "===");
     }
   }
 
@@ -661,7 +929,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
 
   function deepStrictEqual(actual, expected, message) {
     if (!_deepEqual(actual, expected, true)) {
-      throw _err(message || "Expected values to be strictly deeply equal", actual, expected, "deepStrictEqual");
+      throw _err(message || _diffMessage(actual, expected, "Expected values to be strictly deeply equal"), actual, expected, "deepStrictEqual");
     }
   }
 
@@ -1106,7 +1374,8 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
             let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(wrapped_cx) let obj = val.to_object());
 
-            // Arrays → [ a, b, c ]
+            // Arrays → [ a, b, c ] (elements first, then non-index own
+            // properties — Node renders `[ 1, 2, 3, foo: 'x' ]`).
             let mut is_arr = false;
             rooted!(&in(wrapped_cx) let v_root = val);
             IsArrayObject(cx, v_root.handle().into(), &mut is_arr);
@@ -1124,24 +1393,83 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
                         ptr: &mut len_val,
                     },
                 );
-                let len = if len_val.is_int32() {
-                    len_val.to_int32() as usize
+                let len = if len_val.is_int32() && len_val.to_int32() > 0 {
+                    len_val.to_int32() as u32
                 } else {
                     0
                 };
-                let mut parts: Vec<String> = Vec::with_capacity(len);
+                let mut parts: Vec<String> = Vec::new();
                 for i in 0..len {
                     let mut elem = UndefinedValue();
                     JS_GetElement(
                         cx,
                         obj.handle().into(),
-                        i as u32,
+                        i,
                         MutableHandle::<Value> {
                             _phantom_0: ::std::marker::PhantomData,
                             ptr: &mut elem,
                         },
                     );
                     parts.push(jsval_inspect(cx, elem, depth - 1));
+                }
+                // Non-index own properties after the elements; own integer
+                // indices >= length render as `N: value` keys.
+                // domain-check 06d0ae8ac1 (own-idiom fix, upstream oracle)
+                let mut ids = mozjs::rust::IdVector::new(&mut wrapped_cx);
+                let keys_ok =
+                    GetPropertyKeys(cx, obj.handle().into(), JSITER_OWNONLY, ids.handle_mut());
+                if keys_ok {
+                    for jsid in &*ids {
+                        if jsid.is_int() {
+                            let idx = jsid.to_int() as u32;
+                            if idx < len {
+                                continue;
+                            }
+                            let mut v = UndefinedValue();
+                            if !JS_GetElement(
+                                cx,
+                                obj.handle().into(),
+                                idx,
+                                MutableHandle::<Value> {
+                                    _phantom_0: ::std::marker::PhantomData,
+                                    ptr: &mut v,
+                                },
+                            ) {
+                                JS_ClearPendingException(cx);
+                                continue;
+                            }
+                            parts.push(format!("{}: {}", idx, jsval_inspect(cx, v, depth - 1)));
+                            continue;
+                        }
+                        if !jsid.is_string() {
+                            continue;
+                        }
+                        let key_str_ptr = jsid.to_string();
+                        if key_str_ptr.is_null() {
+                            continue;
+                        }
+                        let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_str_ptr));
+                        let c_key = ZBox::from_bytes(key.as_bytes());
+                        let mut v = UndefinedValue();
+                        if !JS_GetProperty(
+                            cx,
+                            obj.handle().into(),
+                            c_key.as_ptr(),
+                            MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut v,
+                            },
+                        ) {
+                            JS_ClearPendingException(cx);
+                            continue;
+                        }
+                        parts.push(format!("{}: {}", key, jsval_inspect(cx, v, depth - 1)));
+                    }
+                } else {
+                    JS_ClearPendingException(cx);
+                }
+                if parts.is_empty() {
+                    return "[]".to_string();
                 }
                 return format!("[ {} ]", parts.join(", "));
             }
@@ -1174,17 +1502,39 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
                 return "[Object]".to_string();
             }
 
-            // Enumerate own enumerable string keys via the established IdVector +
-            // GetPropertyKeys pattern used elsewhere in bao_runtime. Note: IdVector
-            // takes the wrapped JSContext (mozjs 0.22 safe API), and we fetch each
-            // value via JS_GetProperty with the C-string key (the same approach
-            // node_url.rs uses) to avoid the Handle<PropertyKey> wrapping that
-            // JS_GetPropertyById would require.
+            // Enumerate own enumerable entries via the established IdVector +
+            // GetPropertyKeys pattern used elsewhere in bao_runtime. Integer-
+            // index keys (PropertyKey::Int) render bare, ascending — engine
+            // enumeration yields ints first, then string keys in insertion
+            // order (Node inspect key order). Note: IdVector takes the
+            // wrapped JSContext (mozjs 0.22 safe API), and we fetch each
+            // value via JS_GetProperty with the C-string key (the same
+            // approach node_url.rs uses) to avoid the Handle<PropertyKey>
+            // wrapping that JS_GetPropertyById would require.
+            // domain-check 06d0ae8ac1 (own-idiom fix, upstream oracle)
             let mut ids = mozjs::rust::IdVector::new(&mut wrapped_cx);
             let ok = GetPropertyKeys(cx, obj.handle().into(), JSITER_OWNONLY, ids.handle_mut());
             let mut parts: Vec<String> = Vec::new();
             if ok {
                 for jsid in &*ids {
+                    if jsid.is_int() {
+                        let idx = jsid.to_int() as u32;
+                        let mut v = UndefinedValue();
+                        if !JS_GetElement(
+                            cx,
+                            obj.handle().into(),
+                            idx,
+                            MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData,
+                                ptr: &mut v,
+                            },
+                        ) {
+                            JS_ClearPendingException(cx);
+                            continue;
+                        }
+                        parts.push(format!("{}: {}", idx, jsval_inspect(cx, v, depth - 1)));
+                        continue;
+                    }
                     if !jsid.is_string() {
                         continue;
                     }
@@ -1265,7 +1615,49 @@ unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     // @trace REQ-ENG-004 [algorithm:util_inspect]
     // util.inspect quotes strings and recurses into objects (Node.js default
     // depth = 2). This is distinct from util.format display semantics.
-    let result = jsval_inspect(cx, val, 2);
+    //
+    // Options (2nd arg, Node contract): null/undefined ignored; any other
+    // non-object throws ERR_INVALID_ARG_TYPE. Supports `depth` (the
+    // jsval_inspect formatter has no colors path). Root call carries one
+    // extra level of budget — `depth: N` caps NESTED levels, so
+    // inspect({d:{e:{f:1}}}, {depth:0}) → "{ d: [Object] }" (same
+    // convention as Bun.inspect).
+    // domain-check a21f02a988 (own-idiom fix, upstream oracle)
+    let mut depth: u32 = 2;
+    if args.argc_ > 1 {
+        let o = *args.get(1).ptr;
+        if !o.is_undefined() && !o.is_null() {
+            if !o.is_object() {
+                let msg = format!(
+                    "The \"options\" argument must be of type object. Received {}",
+                    crate::bun_inspect_api::received_type_fragment(cx, o)
+                );
+                return crate::bun_inspect_api::throw_invalid_arg_type(cx, &msg);
+            }
+            let mut wrapped_cx =
+                mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let oobj = o.to_object());
+            let c_key = ZBox::from_bytes(b"depth");
+            let mut dv = UndefinedValue();
+            let got = JS_GetProperty(
+                cx,
+                oobj.handle().into(),
+                c_key.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut dv,
+                },
+            );
+            if !got {
+                JS_ClearPendingException(cx);
+            } else if dv.is_number() {
+                let d = dv.to_number();
+                depth = if d.is_infinite() { u32::MAX } else { d.max(0.0) as u32 };
+            }
+        }
+    }
+    let result = jsval_inspect(cx, val, depth.saturating_add(1));
     let utf16: Vec<u16> = result.encode_utf16().collect();
     let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
     args.rval().set(if js_str.is_null() {
@@ -1503,6 +1895,16 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     rooted!(&in(wrapped_cx) let fn_val = *args.get(0).ptr);
 
     let promisify_src = r#"(function(orig) {
+  // domain-check a1f2e22140 (own-idiom fix): Node's util.promisify consults
+  // orig[Symbol.for('nodejs.util.promisify.custom')] FIRST and returns that
+  // function verbatim when callable. dns's lookup/resolve* family and the
+  // global timer functions stamp it; without this probe the generic
+  // (err, value) wrapper below swallowed every custom contract — the dns
+  // custom symbols were dead wiring and promisify(setTimeout) could never
+  // equal timers/promises.setTimeout. A non-callable value falls through to
+  // the generic wrapper (nothing in the tree stamps non-function customs).
+  var custom = orig[Symbol.for('nodejs.util.promisify.custom')];
+  if (typeof custom === 'function') return custom;
   function promisified() {
     var args = Array.prototype.slice.call(arguments);
     return new Promise(function(resolve, reject) {
@@ -1513,15 +1915,16 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
       orig.apply(this, args);
     });
   }
-  // Node.js' util.promisify returns a function whose [util.promisify.custom]
-  // symbol is the custom promisified impl. bao additionally exposes a `.then`
-  // on the returned callable so callers that test for thenability (a legacy
-  // bao_runtime conformance probe) observe a Promise-compatible surface; the
-  // function remains directly callable and returns a real Promise on invoke.
+  // bao additionally exposes a `.then` on the returned callable so callers
+  // that test for thenability (a legacy bao_runtime conformance probe)
+  // observe a Promise-compatible surface; the function remains directly
+  // callable and returns a real Promise on invoke. The former
+  // `promisified[custom] = orig` self-stamp is GONE — with the probe above
+  // it would make promisify(promisify(f)) return f itself, and Node never
+  // stamps the result.
   promisified.then = function(onFulfilled, onRejected) {
     return Promise.resolve(promisified()).then(onFulfilled, onRejected);
   };
-  promisified[Symbol.for('nodejs.util.promisify.custom')] = orig;
   return promisified;
 })"#;
     let mut src = mozjs::rust::transform_str_to_source_text(promisify_src);

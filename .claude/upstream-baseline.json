@@ -15,7 +15,7 @@
       "local_path": "/home/putao/code/tools/servo",
       "baseline": "bd220a152bc059627531b386c9fcc86951eba856",
       "baseline_date": "2026-08-23",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md,2026-08-23 起 JSEngineSetup 补丁新家=script/engine/handle.rs,b54baa327 移动);窗口 fa5af8b52..bd220a152 13 commits 全吸收(唯一 BCE-replay=b54baa327);含 _and_cx 尾批改名/active_range cx 传参/@font-face CSSOM/webcrypto 10 组改名"
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md,2026-08-23 起 JSEngineSetup 补丁新家=script/engine/handle.rs,b54baa327 移动);窗口 fa5af8b52..bd220a152 13 commits 全吸收(唯一 BCE-replay=b54baa327);含 _and_cx 尾批改名/active_range cx 传参/@font-face CSSOM/webcrypto 10 组改名;monitor:readablestream.rs 仍 14 裸 borrow_mut(f7cd7d880 仅覆 controller,下轮 servo 窗口观察上游是否补齐)+ body.rs Err(_)→Done 折叠(实践不可达,观察)"
     }
   }
 }

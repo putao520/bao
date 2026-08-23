@@ -320,6 +320,23 @@ function _wrapTimerConstructor(original, type, oneShot) {
       value: true, writable: false, enumerable: false, configurable: false
     });
   } catch (e) { /* non-configurable re-run — leave as is */ }
+  // domain-check a1f2e22140 (own-idiom fix): this wrapper REPLACES the
+  // global timer functions, so anything stamped on the original — the
+  // util.promisify.custom wiring installed by node_timers_module — sank
+  // with the replaced object and promisify(setTimeout) fell back to its
+  // generic wrapper (the `=== timers/promises.setTimeout` identity red in
+  // BOTH the -e realm and the test realm; setTimeout.name === "wrapper"
+  // was the smoking gun). Forward the custom symbol through a LIVE getter:
+  // order-independent (correct whether the stamp ran before or after this
+  // wrap) and it preserves the promisify contract for every function this
+  // wrapping class touches (global host timers + the `timers` module face).
+  try {
+    var _pCustom = Symbol.for('nodejs.util.promisify.custom');
+    Object.defineProperty(wrapper, _pCustom, {
+      get: function() { return original[_pCustom]; },
+      configurable: true
+    });
+  } catch (e) { /* non-configurable re-run — leave as is */ }
   return wrapper;
 }
 

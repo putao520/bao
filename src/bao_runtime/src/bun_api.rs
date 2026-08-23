@@ -8,7 +8,7 @@ use bun_core::ZBox;
 use bun_sys::fs as bun_fs;
 // @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 use ::std::ptr::NonNull;
-use ::std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use ::std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
 use mozjs::conversions::unsafe_jsstr_to_string;
 use mozjs::jsapi::*;
@@ -1785,6 +1785,15 @@ unsafe fn read_string_array_from_obj(
 /// Global counter for generating unique GcStore keys for Bun.serve callbacks.
 static SERVE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// domain-check a4ed5948b8(own-idiom fix): aborted-mid-dispatch serve requests.
+// Incremented in `bun_serve_route_handler`'s abort branch — i.e. only when a
+// connection died while the fetch handler's promise spin was in flight AND the
+// dispatch took the abandon path (early exit, response never written). This is
+// the observable surface for regression tests: the on_aborted latch firing
+// alone proves uWS delivered the close, but this counter proves the spin
+// actually honored it.
+pub static SERVE_ABORT_COUNT: AtomicU64 = AtomicU64::new(0);
+
 struct TestCase {
     name: String,
     callback_key: String,
@@ -2989,6 +2998,27 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             return;
         }
 
+        // domain-check a4ed5948b8(own-idiom fix): abort surface. Bun.serve had
+        // NO on_aborted registration — once a connection closed mid-dispatch,
+        // the handler's promise spin kept burning the JS thread to the
+        // iteration cap and then wrote 404 to a dead socket. Register the
+        // abort latch before dispatch: uWS fires on_aborted exactly once per
+        // request when the connection dies before the response ends (same
+        // registration shape as node_http2's h2 path, node_http2.rs:2046; the
+        // ZST closure carries no captures, all state flows through the
+        // heap-allocated AtomicBool pointer). Lifetime discipline:
+        // clear_aborted() BEFORE Box::from_raw on every write path (an ended
+        // response never fires the latch, so the late-close window is closed);
+        // on the abort path the latch has already fired (it is what set the
+        // flag) and the res is dead — do NOT touch it, just free.
+        let abort_flag: *mut AtomicBool = Box::into_raw(Box::new(AtomicBool::new(false)));
+        (*res_mut).on_aborted(
+            |st: *mut AtomicBool, _res: &mut Response<false>| {
+                (*st).store(true, Ordering::Release);
+            },
+            abort_flag,
+        );
+
         // Call the JS fetch handler: `fetch_handler(request)`.
         rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
         rooted!(&in(cx_ref) let req_val_elem = ObjectValue(req_obj.get()));
@@ -3015,6 +3045,8 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             (*res_mut).write_status(b"500 Internal Server Error");
             (*res_mut).write_header(b"Content-Type", b"text/plain");
             (*res_mut).end(b"fetch handler threw", true);
+            (*res_mut).clear_aborted();
+            drop(Box::from_raw(abort_flag));
             return;
         }
 
@@ -3022,9 +3054,21 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         //   (a) a Response object synchronously, or
         //   (b) a Promise<Response> (async handler).
         // Resolve (b) to a Response by draining microtasks + pending fetches
-        // in a bounded spin-loop (the route handler runs on the JS thread,
-        // so no other thread can settle the promise — we must run jobs here).
-        let resp_obj = serve_resolve_response_value(cx_ref, rval);
+        // + due timers in a bounded spin-loop (the route handler runs on the
+        // JS thread, so no other thread can settle the promise — we must run
+        // jobs here). The spin polls the abort latch every iteration and
+        // bails out the moment the connection dies.
+        let resp_obj = serve_resolve_response_value(cx_ref, rval, abort_flag);
+        if (*abort_flag).load(Ordering::Acquire) {
+            // Connection aborted mid-dispatch: the latch already fired (it is
+            // what set the flag, once per request). Abandon the response —
+            // never write to a dead socket, never touch the dead res (same
+            // discipline as h2_on_aborted). Record the abandon for the
+            // regression tests, free the latch, done.
+            SERVE_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
+            drop(Box::from_raw(abort_flag));
+            return;
+        }
         if resp_obj.is_null() {
             // Handler returned a non-Response value (undefined/null/etc.) or
             // the promise rejected. Default to 404 (Bun semantics: returning
@@ -3032,10 +3076,16 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             (*res_mut).write_status(b"404 Not Found");
             (*res_mut).write_header(b"Content-Type", b"text/plain");
             (*res_mut).end(b"Not Found", true);
+            (*res_mut).clear_aborted();
+            drop(Box::from_raw(abort_flag));
             return;
         }
 
+        // Liveness re-check passed above (the flag read precedes this write)
+        // — the socket is still alive; write the handler's response.
         serve_write_response_object(cx, &mut *res_mut, resp_obj);
+        (*res_mut).clear_aborted();
+        drop(Box::from_raw(abort_flag));
     }
 
     let safe_handler: Option<
@@ -4524,18 +4574,23 @@ unsafe fn serve_build_request_object(
 ///
 /// If `rval` is already a Response object → return it.
 /// If `rval` is a Promise → spin a bounded loop running microtasks + pending
-/// fetches until the promise settles, then return its fulfilled value (if a
-/// Response object) or null (if rejected / non-Response).
+/// fetches + due timers until the promise settles (returning its fulfilled
+/// value if a Response object, null otherwise), bailing out early when the
+/// connection aborts (the caller distinguishes the abort via `abort_flag`).
 /// Otherwise → return null (caller writes 404).
 ///
 /// # Safety
 /// - `cx_ref` must be a live `&mut mozjs::JSContext` on the current thread.
+/// - `abort_flag` must be null or a live `*mut AtomicBool` owned by the
+///   caller for the duration of this call (the route handler's on_aborted
+///   latch).
 /// - Must be called with no other JS-thread code mutating runtime state
 ///   (the route handler is the sole mutator during dispatch).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn serve_resolve_response_value(
     cx_ref: &mut mozjs::context::JSContext,
     rval: JSVal,
+    abort_flag: *mut AtomicBool,
 ) -> *mut JSObject {
     if !rval.is_object() {
         return ::std::ptr::null_mut();
@@ -4552,12 +4607,21 @@ unsafe fn serve_resolve_response_value(
     }
 
     // Slow path: Promise<Response>. Drain microtasks + tick MiniEventLoop
-    // (non-blocking) until the promise settles (or we hit the iteration cap).
+    // (non-blocking) + fire due timers until the promise settles, the
+    // connection aborts, or we hit the iteration cap.
     // SAFETY: route handler runs on JS thread; all JS that could settle this
     // promise also runs on this thread, so RunJobs here is sufficient.
     let raw_cx = cx_ref.raw_cx();
     let mut iters = 0u32;
     loop {
+        // domain-check a4ed5948b8(own-idiom fix): the connection died
+        // mid-dispatch — nothing can consume this response anymore. Exit NOW
+        // instead of burning the JS thread to the cap; the caller sees the
+        // aborted latch and abandons the write (never write to a dead socket).
+        if !abort_flag.is_null() && (*abort_flag).load(Ordering::Acquire) {
+            return ::std::ptr::null_mut();
+        }
+
         // Snapshot promise state.
         if !JS::IsPromiseObject(obj.handle().into()) {
             // Defensive: object lost its promise-ness (shouldn't happen).
@@ -4594,22 +4658,40 @@ unsafe fn serve_resolve_response_value(
             _ => {}
         }
 
-        // Still pending — drain microtasks (RunJobs) and tick the MiniEventLoop
-        // (non-blocking) so ConcurrentTask callbacks from HTTPThread can fire.
-        // Do NOT call `drain_one_pass`/`drain_and_check` here: the route handler
-        // is already running inside `drain_and_check`'s `tick_without_idle`, and
-        // re-entering the uWS Loop tick would re-enter the C++ epoll dispatcher
-        // mid-dispatch → undefined behavior. The non-blocking tick_without_idle
-        // here dispatches any pending ConcurrentTask enqueues (from HTTPThread
-        // fetch completions) without re-entering the uWS Loop.
-        // For promises that genuinely need a setTimeout round-trip (the "delayed"
-        // async fetch handler pattern), the bounded iteration cap returns null
-        // after SERVE_PROMISE_POLL_MAX_ITERS and the caller writes 404 — this is
-        // a known limitation of the synchronous route handler model.
-        mozjs_sys::jsapi::js::RunJobs(raw_cx);
-        crate::timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(core::ptr::null_mut());
-        });
+        // Still pending — drive one full event-loop pass. Reuse
+        // `timers::drain_one_pass` (the pub one-pass driver the bun:test
+        // runner uses) instead of the former bare RunJobs + tick_without_idle
+        // pair.
+        // domain-check a4ed5948b8(own-idiom fix): the former body never
+        // drained BAO_REGISTRY, so `await new Promise(r => setTimeout(r, 50))`
+        // inside a handler could NEVER settle inside the spin — it hit
+        // SERVE_PROMISE_POLL_MAX_ITERS and the caller wrote 404 (the "known
+        // limitation" this replaces). drain_one_pass performs the identical
+        // non-blocking `tick_without_idle` (which pops ConcurrentTask
+        // completions from HTTPThread fetches) AND fires due wall-clock
+        // timers via drain_bao_timers, then runs microtasks and the pumps.
+        // The tick nesting depth is unchanged — the former body already
+        // called tick_without_idle from inside the dispatching tick, and
+        // drain_one_pass's has_http branch makes the exact same call.
+        // timers.rs owns this pump domain (the parallel pump fix lands inside
+        // drain_one_pass); this spin inherits it automatically — nothing
+        // re-implemented here.
+        let prev_cx = crate::timers::current_cx();
+        let fired = crate::timers::drain_one_pass(raw_cx);
+        // drain_one_pass's CxGuard cleared the thread CURRENT_CX on exit —
+        // restore the pre-call value exactly: when nested inside
+        // drain_and_check's dispatch that re-arms the outer pass's
+        // post-dispatch timer/pump work; when the dispatch came from a bare
+        // tick (test harness), it restores the null it found.
+        crate::timers::register_current_cx(prev_cx);
+        if !fired && crate::timers::has_pending_timers() {
+            // A bao wall-clock timer is pending but was not due this pass:
+            // pace the spin at 1ms so its deadline actually arrives instead
+            // of burning the iteration cap against a frozen wall clock.
+            // (Fetch-only handlers have no bao timers — no sleep, unchanged
+            // busy-poll behavior for them.)
+            ::std::thread::sleep(::std::time::Duration::from_millis(1));
+        }
 
         iters += 1;
         if iters >= SERVE_PROMISE_POLL_MAX_ITERS {
