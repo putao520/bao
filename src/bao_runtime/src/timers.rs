@@ -242,6 +242,22 @@ pub fn install_timer_globals(
             JSPROP_ENUMERATE as u32,
         );
     }
+    // domain-check a1f2e22140 (own-idiom fix, stamp point 2 of 2): this is
+    // the per-realm web-phase timer install — pull the module-cache promises
+    // singleton (populated by the first realm's node segment,
+    // node_timers_module::install) and value-stamp THIS realm's just-defined
+    // timer functions with it, so util.promisify(setTimeout) ===
+    // require('timers/promises').setTimeout holds in LATER realms whose web
+    // segment runs after the module cache exists. Cache miss (the first
+    // realm before its node segment) skips silently — the node-segment
+    // stamp point covers it. Idempotent: re-stamping is a plain value
+    // overwrite. The async_hooks wrapper forwards the symbol onward.
+    // SAFETY: raw_cx is the live install-time JSContext; get_builtin is a
+    // read-only cache lookup.
+    let promises_singleton = unsafe { crate::require::get_builtin(cx.raw_cx(), "timers/promises") };
+    if let ::std::option::Option::Some(p) = promises_singleton {
+        crate::node_timers_module::stamp_promisify_customs(cx, p);
+    }
 }
 
 /// Deadline-aware wait for the timer-only branches of `drain_and_check` /
