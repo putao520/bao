@@ -4,7 +4,7 @@ name = "bun_standalone_graph"
 # so this patch release ships alone. SoA items_named migration sweep.
 # 0.1.2 (2026-08-19): stable-channel fix — ChanVec<u8> initializer was
 # std Vec::new() (nightly-only coincidence); now Default::default().
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "bao_boringssl_bridge"
-version.workspace = true
+version = "0.1.1"
 description = "BoringSSL-backed TLS for Bao runtime (replaces bao_tls/rustls)"
 edition.workspace = true
 repository.workspace = true
