@@ -53,11 +53,14 @@ cd ~/code/tools/servo && git fetch origin && git log --oneline <BASELINE>..origi
 
 ## 2. 分类判定(每项必须落到其一)
 
+**吸收律(用户裁决 2026-08-23 精化)**:消费面按指纹吸收;未消费面按**问题域迁移**审计——上游 commit 修的问题,Bao 自有实现是否有同款?禁为吸收破坏自有实现,禁制造无意义双实现。
+
 | 判定 | 判据 |
 |---|---|
-| **吸收** | Bao 有对应代码且同 bug 确认(grep 到 pre-fix 形状) |
+| **吸收** | Bao **消费**的上游代码(bun_*/vendor servo 承载面)且同 bug 确认(grep 到 pre-fix 形状)——修进承载代码 |
 | **已含** | 代码级特征串在 Bao 命中 post-fix 形状 |
-| **不适用** | Bao 无对应结构(如无 `src/runtime/`、无某 API),注明 Bao 的对应实现是什么 |
+| **不适用(纯)** | Bao 无对应结构**且无问题域重叠**(windows/darwin/test/ci/docs、上游独有 API 面)——注明理由 |
+| **域审计** | Bao 未消费上游该部分,但**自有实现处于同一问题域** → 禁移植上游代码、禁双实现;以自有 idiom 检查自有实现是否有同类 bug/缺口——有则立项修自有实现(引用上游 hash 作 oracle,不搬代码),无则记证据关闭;**na 判定凡注明"Bao 自有实现"者必须落到本类并产出审计结论**,不得只标 na 就走 |
 | **需进一步判断** | 证据不足时**不猜**,标出来交主会话 |
 
 C/Zig 文件:非 Rust 但 Bao 有对应 C 源(packages/bun-usockets 等)时仍可吸收;servo 的 .ini/WPT 测试期望默认跳过。
