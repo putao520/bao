@@ -21,7 +21,6 @@
 
 #include "HttpParser.h"
 #include "AsyncSocketData.h"
-#include "ProxyParser.h"
 #include "HttpContext.h"
 
 #include "MoveOnlyFunction.h"
@@ -110,10 +109,6 @@ struct HttpResponseData : AsyncSocketData<SSL>, HttpParser {
     uint8_t idleTimeout = 10; // default HTTP_TIMEOUT 10 seconds
     bool fromAncientRequest = false;
     bool isConnectRequest = false;
-
-#ifdef UWS_WITH_PROXY
-    ProxyParser proxyParser;
-#endif
 };
 
 }

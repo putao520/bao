@@ -1698,7 +1698,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
     /// dispatched to `Binding.init(t, loc)` (wrap-existing-allocation) instead of
     /// `Binding.alloc`. That arm is intentionally dropped here: every Zig caller
     /// passes `t` by value, so only the alloc path was ever exercised. If a future
-    /// caller needs to wrap an already-stored payload, call `Binding::init` directly.
+    /// caller needs to wrap an already-stored payload, construct
+    /// `Binding { loc, data }` directly.
     #[inline]
     pub fn b<T>(&mut self, t: T, loc: bun_ast::Loc) -> Binding
     where

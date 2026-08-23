@@ -44,7 +44,8 @@ use crate::package_manager_real::PackageManager;
 // materialise a `&'static` borrow of the inner `Request` lifetime.
 type Task = crate::package_manager_task::Task<'static>;
 
-bun_output::declare_scope!(TarballStream, hidden);
+// (`declare_scope!` removed with the scoped_log call sites — upstream 469a7b4ff4
+// keeps libarchive's complaint in `fail_detail` instead of logging it.)
 
 // Zig: `[:0]const bun.OSPathChar` / `[:0]bun.OSPathChar` / `bun.OSPathSliceZ`.
 type OSPathZ<'a> = &'a OSPathSliceZ;
@@ -81,8 +82,11 @@ pub struct TarballStream {
     /// True once the HTTP thread has delivered the final chunk (or an error).
     closed: bool,
 
-    /// Non-null if the HTTP request failed mid-stream; surfaced to the user
-    /// instead of whatever libarchive would otherwise report.
+    /// Set if the HTTP request failed mid-stream. Unless libarchive still
+    /// reached end-of-archive and the digest verifies, this — not
+    /// libarchive's truncation error — is the failure, and `finish()` hands
+    /// the NetworkTask back to be retried as a failed download.
+    // upstream 469a7b4ff4
     http_err: Option<bun_core::Error>,
 
     /// Cached response status (metadata only arrives on the first callback).
@@ -152,8 +156,17 @@ pub struct TarballStream {
     created_symlinks: Vec<Vec<u8>>,
 
     bytes_received: usize,
+    /// Compressed bytes handed to libarchive by the read callback so far.
+    // upstream 469a7b4ff4
+    bytes_consumed: usize,
+    /// `Content-Length` of the response, when the server sent one.
+    // upstream 469a7b4ff4
+    pub(crate) content_length: Option<usize>,
     entry_count: u32,
     fail: Option<bun_core::Error>,
+    /// libarchive's error string for `fail == Some(Fail)`.
+    // upstream 469a7b4ff4
+    fail_detail: Vec<u8>,
     invalid_name: bool,
 
     /// Thread-pool task that runs `drain`. Re-enqueued whenever new data
@@ -248,8 +261,11 @@ impl TarballStream {
             #[cfg(unix)]
             created_symlinks: Vec::new(),
             bytes_received: 0,
+            bytes_consumed: 0,
+            content_length: None,
             entry_count: 0,
             fail: None,
+            fail_detail: Vec::new(),
             invalid_name: false,
             drain_task: thread_pool::Task {
                 node: thread_pool::Node::default(),
@@ -351,7 +367,19 @@ impl TarballStream {
                     let more = Self::take_pending(this);
 
                     if let Err(err) = Self::step(this) {
-                        (*this).fail = Some(err);
+                        // upstream 469a7b4ff4: If the body was cut short by a
+                        // transport error, that is the failure; libarchive's
+                        // complaint about the truncated input is just its
+                        // symptom. (`Error` is a flat interned code here, so
+                        // "is the libarchive `Fail` sentinel" is a code
+                        // compare rather than upstream's enum match.)
+                        (*this).mutex.lock();
+                        let http_err = (*this).http_err;
+                        (*this).mutex.unlock();
+                        (*this).fail = Some(match http_err {
+                            Some(http_err) if err == bun_core::err!("Fail") => http_err,
+                            _ => err,
+                        });
                         (*this).close_output_file();
                     }
 
@@ -399,18 +427,7 @@ impl TarballStream {
                 // next `notify` dereference a dead pointer.
                 (*this).pending.clear();
                 let closed = (*this).closed;
-                let http_err = (*this).http_err;
                 (*this).mutex.unlock();
-                // A transport error that arrives *after* libarchive reached
-                // EOF (e.g. the server RSTs the connection once the last
-                // byte is on the wire) must not override a successful
-                // extraction; the integrity check in `populate_result()` is
-                // the sole arbiter of correctness once `Done` is reached.
-                if let Some(e) = http_err {
-                    if (*this).fail.is_none() && (*this).phase != Phase::Done {
-                        (*this).fail = Some(e);
-                    }
-                }
                 if closed {
                     Self::finish(this);
                     // `this` is freed; nothing below may touch it.
@@ -536,14 +553,11 @@ impl TarballStream {
                                 (*this).begin_entry(&mut *entry)?;
                             }
                             lib::Result::Failed | lib::Result::Fatal => {
-                                // SAFETY: `(*this).archive` is the live `read_new()` handle
-                                // opened in `init` and held until `finish` frees it.
-                                let msg = (*(*this).archive.unwrap()).error_string();
-                                bun_output::scoped_log!(
-                                    TarballStream,
-                                    "readNextHeader: {}",
-                                    bstr::BStr::new(msg)
-                                );
+                                // upstream 469a7b4ff4: keep libarchive's
+                                // complaint for the error message instead of
+                                // logging it (SAFETY: `archive` is the live
+                                // `read_new()` handle for this step call).
+                                (*this).fail_detail = archive.error_string().to_vec();
                                 return Err(bun_core::err!("Fail"));
                             }
                         }
@@ -564,14 +578,9 @@ impl TarballStream {
                                 }
                             }
                             _ => {
-                                // SAFETY: `(*this).archive` is the live `read_new()` handle
-                                // opened in `init` and held until `finish` frees it.
-                                let msg = (*(*this).archive.unwrap()).error_string();
-                                bun_output::scoped_log!(
-                                    TarballStream,
-                                    "read_data_block: {}",
-                                    bstr::BStr::new(msg)
-                                );
+                                // upstream 469a7b4ff4 (see the readNextHeader
+                                // arm above).
+                                (*this).fail_detail = archive.error_string().to_vec();
                                 return Err(bun_core::err!("Fail"));
                             }
                         }
@@ -645,12 +654,10 @@ impl TarballStream {
                 return Ok(());
             }
             _ => {
-                bun_output::scoped_log!(
-                    TarballStream,
-                    "archive_read_open: {}",
-                    // SAFETY: archive is a valid handle (guard not yet dropped).
-                    bstr::BStr::new(unsafe { (*archive).error_string() })
-                );
+                // upstream 469a7b4ff4 (see the readNextHeader arm in `step`).
+                // SAFETY: archive is a valid handle (guard not yet dropped);
+                // raw-ptr field write — see fn-level # Safety.
+                unsafe { (*this).fail_detail = (*archive).error_string().to_vec() };
                 return Err(bun_core::err!("Fail"));
             }
         }
@@ -985,11 +992,16 @@ impl TarballStream {
             // SAFETY: see comment above; network_task is live until published below.
             (*network).response_buffer = Default::default();
 
+            // The HTTP thread delivered its final chunk before `closed` was
+            // set, so `http_err` is stable without the lock.
+            // upstream 469a7b4ff4
+            let http_err = (*this).http_err;
+
             // SAFETY: `task` is live until pushed onto `resolve_tasks` below.
             // `(*this).extract_task` is a raw `*mut Task` (not `&mut`), so this
             // is the only writer — no aliasing with a stored reference.
             // `populate_result` does not touch `(*this).extract_task`.
-            (*this).populate_result(task);
+            (*this).populate_result(task, http_err);
 
             // Temp-dir cleanup must happen before we release the stream or
             // publish the task: both `(*this).tmpname` and
@@ -1009,6 +1021,30 @@ impl TarballStream {
                 // `ManuallyDrop` → `ExtractRequest` deref.
                 let _ = Dir::borrow(&(&(*task).request.extract).tarball.temp_dir)
                     .delete_tree((*this).tmpname.as_bytes());
+            }
+
+            // upstream 469a7b4ff4: `Error` here is a flat interned code (no
+            // `Http` variant), so "the recorded failure is the transport
+            // error we captured" is an equality check on the captured
+            // `http_err` (the only way a transport error enters `task.err`
+            // is via `populate_result` above).
+            if (*task).status != TaskStatus::Success
+                && (*task).err.is_some()
+                && (*task).err == http_err
+            {
+                // The connection died before the body was complete: a failed
+                // download, not a failed extraction. Hand the NetworkTask back
+                // to `run_tasks` the way `notify()` does for one that failed
+                // before the body started, so it is retried/reported there. The
+                // extract Task stays with the NetworkTask for the next attempt.
+                (*network).response.fail = (*task).err;
+                (*network).streaming_committed = false;
+                drop((*network).tarball_stream.take());
+                (*manager)
+                    .async_network_task_queue
+                    .push(core::ptr::NonNull::new_unchecked(network));
+                PackageManager::wake_raw(manager);
+                return;
             }
 
             // The `Box<TarballStream>` lives in `(*network).tarball_stream`
@@ -1051,7 +1087,7 @@ impl TarballStream {
     // The `&(&(*task).request.extract)` wrapper below sidesteps
     // `dangerous_implicit_autorefs`; `needless_borrow` is wrong here.
     #[allow(clippy::needless_borrow)]
-    unsafe fn populate_result(&mut self, task: *mut Task) {
+    unsafe fn populate_result(&mut self, task: *mut Task, http_err: Option<bun_core::Error>) {
         // SAFETY: see fn-level # Safety — `task` is live and exclusively
         // owned by this drain; union field `extract` is the active variant
         // for streaming tarballs (set by `enqueueExtractNPMPackage`).
@@ -1060,9 +1096,15 @@ impl TarballStream {
             (*task).data = TaskData {
                 extract: ManuallyDrop::new(Default::default()),
             };
+            (*task).err = None;
 
             if let Some(err) = self.fail {
-                if self.invalid_name {
+                // upstream 469a7b4ff4: a transport failure is reported (or
+                // retried) by `run_tasks`; see `finish()`. Bao's `Error` is a
+                // flat interned code, so "is the transport error" is an
+                // equality check against the captured `http_err`.
+                if http_err == Some(err) {
+                } else if self.invalid_name {
                     (*task).log.add_error_fmt(
                         None,
                         bun_ast::Loc::EMPTY,
@@ -1076,9 +1118,19 @@ impl TarballStream {
                         None,
                         bun_ast::Loc::EMPTY,
                         format_args!(
-                            "{} extracting tarball for \"{}\"",
+                            "{} extracting tarball for \"{}\"{}{} (at byte {} of {})",
                             err.name(),
                             bstr::BStr::new(tarball.name.slice()),
+                            if self.fail_detail.is_empty() {
+                                ""
+                            } else {
+                                ": "
+                            },
+                            bstr::BStr::new(&self.fail_detail),
+                            self.bytes_consumed,
+                            self.content_length
+                                .as_ref()
+                                .map_or(&"unknown" as &dyn core::fmt::Display, |n| n),
                         ),
                     );
                 }
@@ -1089,6 +1141,14 @@ impl TarballStream {
 
             if !tarball.skip_verify && tarball.integrity.tag.is_supported() {
                 if !self.hasher.verify() {
+                    // upstream 469a7b4ff4: libarchive found the end-of-archive
+                    // marker but the body still ended early (gzip trailer, tar
+                    // padding): the same failed download as above.
+                    if let Some(http_err) = http_err {
+                        (*task).err = Some(http_err);
+                        (*task).status = TaskStatus::Fail;
+                        return;
+                    }
                     (*task).log.add_error_fmt(
                         None,
                         bun_ast::Loc::EMPTY,
@@ -1186,6 +1246,7 @@ impl TarballStream {
         self.http_err = None;
         self.status_code = 0;
         self.bytes_received = 0;
+        self.content_length = None;
         self.mutex.unlock();
     }
 }
@@ -1262,6 +1323,7 @@ extern "C" fn archive_read_callback(
         if !remaining.is_empty() {
             *out_buffer = remaining.as_ptr().cast();
             (*this).read_pos = (*this).reading.len();
+            (*this).bytes_consumed += remaining.len();
             return lib::la_ssize_t::try_from(remaining.len()).expect("int cast");
         }
     }
@@ -1295,6 +1357,7 @@ extern "C" fn archive_read_callback(
             if !again.is_empty() {
                 *out_buffer = again.as_ptr().cast();
                 (*this).read_pos = (*this).reading.len();
+                (*this).bytes_consumed += again.len();
                 return lib::la_ssize_t::try_from(again.len()).expect("int cast");
             }
         }

@@ -209,6 +209,11 @@ impl NetworkTask {
             // main thread and later chunk callbacks can see it.
             if let Some(m) = result.metadata.take() {
                 stream.status_code = m.response.status_code;
+                // upstream 469a7b4ff4: remember Content-Length so the drain
+                // side can reconcile bytes consumed vs promised mid-body cuts.
+                if let http::BodySize::ContentLength(len) = result.body_size {
+                    stream.content_length = Some(len);
+                }
                 this.response.metadata = Some(m);
             }
 
@@ -236,11 +241,12 @@ impl NetworkTask {
                         // runs at most once at a time, releases the
                         // worker on ARCHIVE_RETRY, and is re-enqueued by
                         // the next chunk. Pending-task accounting stays
-                        // balanced: this NetworkTask is never pushed to
-                        // `async_network_task_queue` once committed, so
-                        // its `incrementPendingTasks()` is satisfied by
-                        // the extract Task that `TarballStream.finish()`
-                        // publishes to `resolve_tasks`.
+                        // balanced: `TarballStream.finish()` publishes
+                        // exactly one of the extract Task (to
+                        // `resolve_tasks`) or, when the connection failed
+                        // mid-body, this NetworkTask (to
+                        // `async_network_task_queue`).
+                        // upstream 469a7b4ff4
                         this.streaming_committed = true;
                         // SAFETY: `stream` is the live heap-allocated
                         // `TarballStream` owned by this task. `on_chunk`
@@ -917,13 +923,25 @@ impl NetworkTask {
         }
     }
 
-    /// Prepare this task for another HTTP attempt (used by retry logic when
-    /// streaming extraction never started). Keeps the stream allocation so the
-    /// retry can still benefit from streaming.
+    /// Prepare this task for another HTTP attempt. A stream that never ran is
+    /// reused; one consumed by a download that failed mid-body (released in
+    /// `TarballStream::finish`) is replaced, keeping the same extract Task.
+    // upstream 469a7b4ff4
     pub fn reset_streaming_for_retry(&mut self) {
         debug_assert!(!self.streaming_committed);
         if let Some(stream) = self.tarball_stream.as_deref_mut() {
             stream.reset_for_retry();
+        } else if !self.streaming_extract_task.is_null() {
+            let manager = self.package_manager.as_mut_ptr();
+            let this: *mut NetworkTask = self;
+            // SAFETY: `init` returns a fresh heap allocation owned here.
+            self.tarball_stream = Some(unsafe {
+                bun_core::heap::take(TarballStream::init(
+                    self.streaming_extract_task,
+                    this,
+                    manager,
+                ))
+            });
         }
         self.response = HTTPClientResult::default();
     }

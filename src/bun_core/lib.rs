@@ -89,9 +89,7 @@ pub use string::{StringPointer, Tag, slice_to_nul, slice_to_nul_mut};
 // merge would otherwise cycle). The original crates re-export these.
 // ──────────────────────────────────────────────────────────────────────────
 pub mod external_shared;
-pub use external_shared::{
-    ExternalShared, ExternalSharedDescriptor, ExternalSharedOptional, WTFString,
-};
+pub use external_shared::{ExternalShared, ExternalSharedDescriptor, WTFString};
 pub mod bounded_array;
 pub use bounded_array::{BoundedArray, BoundedArrayAligned};
 
@@ -1539,12 +1537,12 @@ macro_rules! enum_unwrap {
     };
 }
 
-/// Zig: `bun.handleOom(expr)` — unwrap a `Result`, calling `outOfMemory()` on
-/// `Err`. The full multi-arm version (which narrows mixed error sets) lives in
-/// `bun_crash_handler::handle_oom`; that crate sits *above* `bun_core` in the
-/// dep graph, so this tier-0 alias is the OOM-only arm — sufficient for the
-/// `Result<T, AllocError>` / `Result<T, Error>` callers in `js_parser`,
-/// `bake/DevServer`, etc. that spell it `bun_core::handle_oom`.
+// upstream 066ae19465 — doc updated: the multi-arm `HandleOom` trait is gone;
+// only the `AllocError`-only narrowing version remains in
+// `bun_crash_handler::handle_oom`.
+/// Unwrap a `Result`, calling `outOfMemory()` on **any** `Err`. The
+/// `AllocError`-only version lives in `bun_crash_handler::handle_oom` (that
+/// crate sits *above* `bun_core` in the dep graph).
 #[inline]
 #[track_caller]
 pub fn handle_oom<T, E>(r: core::result::Result<T, E>) -> T {
@@ -1555,16 +1553,8 @@ pub fn handle_oom<T, E>(r: core::result::Result<T, E>) -> T {
 }
 
 /// Extension-method form of [`handle_oom`]: `.unwrap_or_oom()` on any
-/// `Result<T, E>`. Zig: `expr catch bun.outOfMemory()` — the *loose* idiom
-/// that panics on **any** `Err`, not just OOM-only error sets. For the
-/// Zig-faithful narrowing version (`bun.handleOom` with comptime error-set
-/// reflection) see `bun_crash_handler::HandleOom`.
-///
-/// PORT NOTE: this is intentionally a blanket `impl<T, E>` — it matches the
-/// existing `bun_core::handle_oom` free fn and the two pre-existing local
-/// blanket impls in `run_command.rs` / `valkey.rs`. Callers that want a strict
-/// `error{OutOfMemory}`-only whitelist should use `bun_crash_handler::HandleOom`
-/// instead.
+/// `Result<T, E>`, treating **any** `Err` as OOM. For the `AllocError`-only
+/// version see `bun_crash_handler::handle_oom`.
 pub trait UnwrapOrOom {
     type Output;
     fn unwrap_or_oom(self) -> Self::Output;

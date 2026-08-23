@@ -32,7 +32,6 @@ struct HttpFlags {
     bool rejectUnauthorized: 1 = false;
     bool usingCustomExpectHandler: 1 = false;
     bool requireHostHeader: 1 = true;
-    bool isAuthorized: 1 = false;
     bool useStrictMethodValidation: 1 = false;
     /* Bun upstream routes Bun.serve and node:http through distinct
      * HttpContext<SSL, IsNodeHttp> template instantiations; Bao shares one

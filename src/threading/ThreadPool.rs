@@ -450,6 +450,12 @@ impl Batch {
     /// Create a batch from a single task.
     pub fn from(task: *mut Task) -> Batch {
         let task = NonNull::new(task);
+        // upstream 469a7b4ff4: a rescheduled task may still carry the link
+        // from its last batch.
+        if let Some(task) = task {
+            // SAFETY: caller passes a live Task that is not currently queued.
+            unsafe { (*Task::node_of(task).as_ptr()).next = ptr::null_mut() };
+        }
         Batch {
             len: 1,
             head: task,

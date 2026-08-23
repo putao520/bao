@@ -1,4 +1,3 @@
-use core::ffi::c_char;
 use core::mem::size_of;
 use core::ptr::NonNull;
 
@@ -534,14 +533,10 @@ impl ModuleInfoExt for ModuleInfo {
 // zig__renderDiff, zig__ModuleInfoDeserialized__toJSModuleRecord, and the
 // JSModuleRecord/IdentifierArray opaques: see bun_bundler_jsc::analyze_jsc
 // (Zig `comptime { _ = @import }` force-reference dropped per porting guide.)
-
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn zig__ModuleInfo__destroy(info: *mut ModuleInfo) {
-    // SAFETY: C++ caller passes a non-null pointer obtained from `ModuleInfo::create`.
-    let info = unsafe { NonNull::new(info).unwrap_unchecked() };
-    // SAFETY: `info` came from `bun_core::heap::into_raw` and ownership is transferred back here.
-    drop(unsafe { bun_core::heap::take(info.as_ptr()) });
-}
+//
+// upstream a25c009062 — zig__ModuleInfo__destroy and zig_log removed:
+// `extern "C"` exports that no C++ declares or calls (the C++ side frees
+// through zig__ModuleInfoDeserialized__deinit).
 
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn zig__ModuleInfoDeserialized__deinit(info: *mut ModuleInfoDeserialized) {
@@ -550,16 +545,6 @@ pub(crate) extern "C" fn zig__ModuleInfoDeserialized__deinit(info: *mut ModuleIn
     let info = unsafe { NonNull::new(info).unwrap_unchecked() };
     // SAFETY: `info` is a valid, exclusively-owned pointer; `deinit` is its only destructor.
     unsafe { ModuleInfoDeserialized::deinit(info.as_ptr()) }
-}
-
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn zig_log(msg: *const c_char) {
-    // SAFETY: C++ caller passes a non-null, NUL-terminated C string.
-    let msg = unsafe { NonNull::new(msg.cast_mut()).unwrap_unchecked() };
-    // SAFETY: `msg` is non-null and points to a NUL-terminated C string per the contract above.
-    let bytes = unsafe { bun_core::ffi::cstr(msg.as_ptr()) }.to_bytes();
-    // Zig: `Output.errorWriter().print("{s}\n", .{bytes}) catch {}`.
-    bun_core::Output::print_error(format_args!("{}\n", bstr::BStr::new(bytes)));
 }
 
 // ported from: src/bundler/analyze_transpiled_module.zig

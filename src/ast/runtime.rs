@@ -159,8 +159,6 @@ pub struct Imports {
     pub __reExport: Option<Ref>,
     pub __exportValue: Option<Ref>,
     pub __exportDefault: Option<Ref>,
-    // __refreshRuntime: ?GeneratedSymbol = null,
-    // __refreshSig: ?GeneratedSymbol = null, // $RefreshSig$
     pub __merge: Option<Ref>,
     pub __legacyDecorateClassTS: Option<Ref>,
     pub __legacyDecorateParamTS: Option<Ref>,
@@ -414,9 +412,9 @@ pub struct ImportsIterator<'a> {
 }
 
 #[derive(Clone, Copy)]
+// upstream fb4227f7ee: dropped write-only `value` field.
 pub struct ImportsIteratorEntry {
     pub key: u16,
-    pub value: Ref,
 }
 
 impl ImportsIterator<'_> {
@@ -424,10 +422,9 @@ impl ImportsIterator<'_> {
         while self.i < Imports::ALL.len() {
             let t = self.i;
             self.i += 1; // Zig: `defer this.i += 1;`
-            if let Some(val) = self.runtime_imports.field(t) {
+            if self.runtime_imports.field(t).is_some() {
                 return Some(ImportsIteratorEntry {
                     key: u16::try_from(t).expect("int cast"),
-                    value: val,
                 });
             }
         }

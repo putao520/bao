@@ -441,9 +441,14 @@ impl<const IS_SSL: bool> NewSocketHandler<IS_SSL> {
 
     // ── flow control / sockopts ─────────────────────────────────────────────
 
+    /// A connect that has not completed yet is left alone (like the
+    /// `connecting` arm): the open re-arms reads, so latching a pause here
+    /// would only make the next real `pause()` a no-op.
+    // upstream d9dae746f3 — early-unref'd/paused socket keeps the process
+    // alive while still connecting (#39856)
     pub fn pause_stream(&self) -> bool {
         on_socket!(self.socket;
-            connected s => { s.pause(); true },
+            connected s => if s.is_established() { s.pause(); true } else { false },
             connecting _c => false,
             detached => true,
             duplex _d => false, // TODO: pause/resume upgraded duplex
@@ -451,9 +456,11 @@ impl<const IS_SSL: bool> NewSocketHandler<IS_SSL> {
         )
     }
 
+    // upstream d9dae746f3 — see pause_stream; a resume mid-connect is applied
+    // by `on_open` instead
     pub fn resume_stream(&self) -> bool {
         on_socket!(self.socket;
-            connected s => { s.resume(); true },
+            connected s => if s.is_established() { s.resume(); true } else { false },
             connecting _c => false,
             detached => true,
             duplex _d => false, // TODO: pause/resume upgraded duplex
@@ -624,13 +631,6 @@ impl<const IS_SSL: bool> NewSocketHandler<IS_SSL> {
     pub fn from_duplex(d: *mut UpgradedDuplex) -> Self {
         Self {
             socket: InternalSocket::UpgradedDuplex(d),
-        }
-    }
-    #[cfg(windows)]
-    #[inline]
-    pub fn from_named_pipe(p: *mut WindowsNamedPipe) -> Self {
-        Self {
-            socket: InternalSocket::Pipe(p),
         }
     }
 

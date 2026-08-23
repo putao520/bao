@@ -117,10 +117,8 @@ extern "C" bool io_darwin_schedule_wakeup(mach_port_t waker)
     }
 }
 
-extern "C" void io_darwin_close_machport(mach_port_t port)
-{
-    mach_port_deallocate(mach_task_self(), port);
-}
+// upstream fb4227f7ee — io_darwin_close_machport removed (both cfg arms):
+// no Rust-side declaration and no caller anywhere.
 
 #else
 
@@ -134,7 +132,5 @@ extern "C" int io_darwin_create_machport(int fd,
 
 // stub out these symbols
 extern "C" bool io_darwin_schedule_wakeup(void* waker) { return false; }
-
-extern "C" void io_darwin_close_machport(unsigned port) {}
 
 #endif

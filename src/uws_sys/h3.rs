@@ -205,9 +205,6 @@ impl Response {
     pub fn get_write_offset(&mut self) -> u64 {
         c::uws_h3_res_get_write_offset(self)
     }
-    pub fn override_write_offset(&mut self, off: u64) {
-        c::uws_h3_res_override_write_offset(self, off)
-    }
     pub fn get_buffered_amount(&mut self) -> u64 {
         c::uws_h3_res_get_buffered_amount(self)
     }
@@ -715,7 +712,6 @@ mod c {
         pub(super) safe fn uws_h3_res_flush_headers(res: &mut Response, immediate: bool);
         pub(super) fn uws_h3_res_write(res: *mut Response, p: *const u8, len: *mut usize) -> bool;
         pub(super) safe fn uws_h3_res_get_write_offset(res: &mut Response) -> u64;
-        pub(super) safe fn uws_h3_res_override_write_offset(res: &mut Response, off: u64);
         pub(super) safe fn uws_h3_res_has_responded(res: &mut Response) -> bool;
         pub(super) safe fn uws_h3_res_get_buffered_amount(res: &mut Response) -> u64;
         pub(super) safe fn uws_h3_res_reset_timeout(res: &mut Response);

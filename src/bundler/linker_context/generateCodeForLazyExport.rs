@@ -436,12 +436,10 @@ pub fn generate_code_for_lazy_export(
             if let ExprData::EObject(e_object) = &expr.data {
                 for property in e_object.properties.slice() {
                     let _: &G::Property = property;
-                    // PORT NOTE: `Expr`/`ExprData`/`StoreRef<_>` are `Copy`. Copy `key` out so
-                    // `key_str: StoreRef<E::EString>` is a mutable local — `slice()` resolves
-                    // the rope in-place via `DerefMut` into the arena slot (matches Zig's
-                    // `property.key.?.data.e_string.slice(...)` which takes `*String`).
+                    // upstream 11e0f96b65: flatten into a local copy — never resolve the
+                    // rope in place through `DerefMut` into the shared arena slot.
                     let Some(key) = property.key else { continue };
-                    let ExprData::EString(mut key_str) = key.data else {
+                    let ExprData::EString(key_str) = key.data else {
                         continue;
                     };
                     let Some(value) = property.value else {
@@ -456,7 +454,9 @@ pub fn generate_code_for_lazy_export(
                     // across the `&mut self` call to `generate_named_export_in_file` below.
                     let alloc: &bun_alloc::Arena =
                         unsafe { bun_ptr::detach_lifetime_ref::<bun_alloc::Arena>(this.arena()) };
-                    let name = key_str.slice(alloc);
+                    // upstream 11e0f96b65: read-only flatten (`string()` instead of the
+                    // in-place `slice()`).
+                    let name: &[u8] = bun_core::handle_oom(key_str.flattened(alloc).string(alloc));
 
                     // TODO: support non-identifier names
                     if !js_lexer::is_identifier(name) {

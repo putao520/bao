@@ -1372,6 +1372,24 @@ pub struct EString {
 // Export under the Zig name `String` as well; `EString` avoids colliding with bun_core::String.
 pub use EString as String;
 
+/// [`EString::flattened`] result: the node itself, or an owned copy when a rope was flattened.
+// upstream 11e0f96b65
+pub enum Flattened<'a> {
+    Borrowed(&'a EString),
+    Owned(EString),
+}
+
+impl core::ops::Deref for Flattened<'_> {
+    type Target = EString;
+    #[inline]
+    fn deref(&self) -> &EString {
+        match self {
+            Flattened::Borrowed(s) => s,
+            Flattened::Owned(s) => s,
+        }
+    }
+}
+
 impl Default for EString {
     fn default() -> Self {
         Self {
@@ -1555,10 +1573,32 @@ impl EString {
         true
     }
 
+    /// Flatten in place. Parser only; shared-AST readers use [`Self::flattened`].
+    // upstream 11e0f96b65: split into `flattened` (read-only copy) so printer/linker
+    // threads never write into a shared AST node (concurrent rope tear, BUN-4Q7C).
     pub fn resolve_rope_if_needed(&mut self, bump: &Bump) {
         if self.next.is_none() || !self.is_utf8() {
             return;
         }
+        self.data = Str::new(self.flatten_rope(bump));
+        self.next = None;
+    }
+
+    /// `self` if not a rope, else a copy flattened into `bump`. Never writes to `self`.
+    // upstream 11e0f96b65
+    pub fn flattened(&self, bump: &Bump) -> Flattened<'_> {
+        if self.next.is_none() || !self.is_utf8() {
+            return Flattened::Borrowed(self);
+        }
+        let mut copy = self.shallow_clone();
+        copy.data = Str::new(self.flatten_rope(bump));
+        copy.next = None;
+        Flattened::Owned(copy)
+    }
+
+    /// The rope's bytes, concatenated into a fresh `bump` slice.
+    // upstream 11e0f96b65
+    fn flatten_rope<'b>(&self, bump: &'b Bump) -> &'b [u8] {
         let mut bytes = bun_alloc::ArenaVec::<u8>::with_capacity_in(self.rope_len as usize, bump);
         bytes.extend_from_slice(&self.data);
         let mut str_ = self.next;
@@ -1566,8 +1606,7 @@ impl EString {
             bytes.extend_from_slice(&part.get().data);
             str_ = part.get().next;
         }
-        self.data = Str::new(bytes.into_bump_slice());
-        self.next = None;
+        bytes.into_bump_slice()
     }
 
     /// Zig `string(arena)` — return UTF-8 bytes, transcoding if UTF-16.

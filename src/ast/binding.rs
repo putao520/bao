@@ -44,39 +44,13 @@ pub enum Tag {
 pub(crate) static ICOUNT: AtomicUsize = AtomicUsize::new(0);
 
 // ──────────────────────────────────────────────────────────────────────────
-// `init` / `alloc` — Zig switched on `@TypeOf(t)` to pick the `B` variant.
-// In Rust the comptime type-switch is a pair of small traits implemented for
-// each payload type; `Binding::init` / `Binding::alloc` stay monomorphic
-// per call-site like the Zig original.
+// `alloc` — Zig switched on `@TypeOf(t)` to pick the `B` variant.
+// In Rust the comptime type-switch is a small trait implemented for
+// each payload type; `Binding::alloc` stays monomorphic per call-site
+// like the Zig original.
+// (upstream fb4227f7ee: `BindingInit` / `Binding::init` removed — all
+// construction goes through `Binding::alloc` or literal struct init.)
 // ──────────────────────────────────────────────────────────────────────────
-
-pub trait BindingInit {
-    fn into_b(self) -> B;
-}
-impl BindingInit for StoreRef<crate::b::Identifier> {
-    #[inline]
-    fn into_b(self) -> B {
-        B::BIdentifier(self)
-    }
-}
-impl BindingInit for StoreRef<crate::b::Array> {
-    #[inline]
-    fn into_b(self) -> B {
-        B::BArray(self)
-    }
-}
-impl BindingInit for StoreRef<crate::b::Object> {
-    #[inline]
-    fn into_b(self) -> B {
-        B::BObject(self)
-    }
-}
-impl BindingInit for crate::b::Missing {
-    #[inline]
-    fn into_b(self) -> B {
-        B::BMissing(self)
-    }
-}
 
 pub trait BindingAlloc: Sized {
     fn alloc_into_b(self, bump: &Arena) -> B;
@@ -107,15 +81,6 @@ impl BindingAlloc for crate::b::Missing {
 }
 
 impl Binding {
-    #[inline]
-    pub fn init(t: impl BindingInit, loc: crate::Loc) -> Binding {
-        #[cfg(debug_assertions)]
-        ICOUNT.fetch_add(1, Ordering::Relaxed);
-        Binding {
-            loc,
-            data: t.into_b(),
-        }
-    }
     #[inline]
     pub fn alloc(bump: &Arena, t: impl BindingAlloc, loc: crate::Loc) -> Binding {
         #[cfg(debug_assertions)]
