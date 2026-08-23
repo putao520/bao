@@ -1,14 +1,14 @@
 {
   "version": 1,
-  "updated_at": "2026-08-23",
-  "updated_by": "absorb-wave",
+  "updated_at": "2026-08-24",
+  "updated_by": "daily-ops-baseline-repair",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "fb4227f7ee4d0a8e7d754e57e57bb5a8d0e57bb5",
+      "baseline": "fb4227f7ee3ee34a68faff57bf7393c1ca7a1091",
       "baseline_date": "2026-08-23",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD;窗口 abe2ad4f00..fb4227f7ee 24 commits:8 吸收/1 已含/9 N-A/6 域核查(listen next-tick 违约候选/module_loader 异常专项/_resolveFilename stub 缺口挂账);1.4.0 全 Rust 化遗产清扫期"
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD;窗口 abe2ad4f00..fb4227f7ee 24 commits:8 吸收/1 已含/9 N-A/6 域核查(listen next-tick 违约候选/module_loader 异常专项/_resolveFilename stub 缺口挂账);1.4.0 全 Rust 化遗产清扫期;2026-08-24 daily-ops 修复损坏 hash 串(原 40 字符尾部 e57bb5 复制重复、非有效对象;真 tip 四重锚定:10 字符前缀+fetch 前 origin/main+baseline_date+24-window 计数对账),cursor 未动非 bump"
     },
     "servo": {
       "repo": "servo/servo",
