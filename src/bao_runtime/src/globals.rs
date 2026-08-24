@@ -3003,6 +3003,25 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 let elem_type =
                     unsafe { mozjs_sys::jsapi::JS_GetArrayBufferViewType(obj_root.get()) };
                 use mozjs_sys::jsapi::JS::Scalar::Type as ST;
+                // @trace REQ-ENG-005 [api:Buffer.from] — BigInt elements are
+                // not number-coercible: the element-wise copy is ToNumber per
+                // element (same as `new Uint8Array(1).set(new BigInt64Array(1))`),
+                // so Node throws TypeError and upstream bun aeb1905d0a made
+                // Buffer.from/new Buffer match instead of returning a bogus
+                // zero-filled or low-byte-truncated buffer. A zero-length view
+                // has nothing to copy and still yields an empty Buffer
+                // (upstream buffer.test.js pins `Buffer.from(new
+                // BigInt64Array(0)).length === 0`).
+                if matches!(elem_type, ST::BigInt64 | ST::BigUint64) && view_len > 0 {
+                    {
+                        let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+                        mozjs::error::throw_type_error_safe(
+                            &mut cx_s,
+                            c"Cannot convert a BigInt value to a number".as_ref(),
+                        );
+                    }
+                    return false;
+                }
                 let (elem_size, count, is_float): (usize, usize, bool) = match elem_type {
                     ST::Int8 | ST::Uint8 | ST::Uint8Clamped => (1, view_len, false),
                     ST::Int16 | ST::Uint16 => (2, view_len / 2, false),

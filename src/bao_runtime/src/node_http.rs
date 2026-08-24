@@ -1216,13 +1216,23 @@ unsafe extern "C" fn uws_route_handler(
                             };
                             let emit_fn_val = ObjectValue(emit_fn.get());
                             rooted!(&in(cx_ref) let emit_fn_root = emit_fn_val);
-                            JS_CallFunctionValue(
+                            let emit_ok = JS_CallFunctionValue(
                                 raw_cx,
                                 server_root.handle().into(),
                                 emit_fn_root.handle().into(),
                                 &call_args,
                                 rval_h,
                             );
+                            if !emit_ok {
+                                // The emit surface itself threw (server.emit
+                                // overridden by JS). Listener throws are
+                                // already routed inside ee_emit (node_events);
+                                // this covers everything else — route the
+                                // captured throw instead of bare-swallowing it
+                                // (upstream bun aeb1905d0a problem-domain
+                                // port: a swallowed throw must be observable).
+                                route_pending_exception(raw_cx, cx_ref);
+                            }
                             JS_ClearPendingException(raw_cx);
                             // ee_emit returns Node's "had listeners" boolean.
                             had_upgrade_listener = rval.is_boolean() && rval.to_boolean();
@@ -2149,6 +2159,31 @@ unsafe extern "C" fn server_listen(
     true
 }
 
+/// Capture-clear-route contract for native HTTP-server lifecycle JS calls
+/// (close callbacks, emit surfaces). A JS callback invoked from these paths
+/// must not leave its exception pending across the next JS re-entry (the
+/// 'close' emit fires right after the close callback) nor let the native
+/// entry return `true` with the exception still set. The captured value is
+/// routed through process 'uncaughtException' — Node semantics for an async
+/// callback throw. Upstream bun aeb1905d0a problem-domain port; same
+/// contract as the ws dispatch in bun_api.rs and timers.rs fire_callback.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn route_pending_exception(cx: *mut JSContext, cx_ref: &mut mozjs::context::JSContext) {
+    let mut exn = UndefinedValue();
+    JS_GetPendingException(
+        cx,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut exn,
+        },
+    );
+    JS_ClearPendingException(cx);
+    rooted!(&in(cx_ref) let reason_root = exn);
+    if !exn.is_undefined() {
+        crate::uncaught::route_uncaught_exception(cx, exn);
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn server_close(
     cx: *mut JSContext,
@@ -2285,7 +2320,7 @@ unsafe extern "C" fn server_close(
                 elements_: no_args.as_ptr(),
             };
             let mut rval = UndefinedValue();
-            let _ = JS_CallFunctionValue(
+            let cb_ok = JS_CallFunctionValue(
                 cx,
                 undef_this.handle().into(),
                 cb_fn.handle().into(),
@@ -2295,6 +2330,13 @@ unsafe extern "C" fn server_close(
                     ptr: &mut rval,
                 },
             );
+            if !cb_ok {
+                // The close callback threw. Capture-clear-route BEFORE the
+                // 'close' emit below re-enters JS — a pending exception
+                // surviving the boundary is the upstream bun aeb1905d0a bug
+                // class (next callback re-entered with it pending).
+                route_pending_exception(cx, cx_ref);
+            }
         } else {
             // Node ERR_SERVER_NOT_RUNNING: cb(Error) — build via the realm's
             // Error constructor so instanceof works; fall back to undefined
@@ -2355,7 +2397,7 @@ unsafe extern "C" fn server_close(
                 elements_: elems.as_ptr(),
             };
             let mut rval = UndefinedValue();
-            let _ = JS_CallFunctionValue(
+            let cb_ok = JS_CallFunctionValue(
                 cx,
                 undef_this.handle().into(),
                 cb_fn.handle().into(),
@@ -2365,6 +2407,12 @@ unsafe extern "C" fn server_close(
                     ptr: &mut rval,
                 },
             );
+            if !cb_ok {
+                // Re-close callback threw — same capture-clear-route contract
+                // as the live-app close callback above (upstream bun
+                // aeb1905d0a problem-domain port).
+                route_pending_exception(cx, cx_ref);
+            }
         }
     }
     if had_live_app {
@@ -2392,7 +2440,7 @@ unsafe extern "C" fn server_close(
                     elements_: elems.as_ptr(),
                 };
                 let mut rval = UndefinedValue();
-                let _ = JS_CallFunctionValue(
+                let emit_ok = JS_CallFunctionValue(
                     cx,
                     server_obj.handle().into(),
                     emit_val_fn.handle().into(),
@@ -2402,6 +2450,14 @@ unsafe extern "C" fn server_close(
                         ptr: &mut rval,
                     },
                 );
+                if !emit_ok {
+                    // The 'close' emit surface itself threw (emit overridden
+                    // by JS — listener throws are already routed inside
+                    // ee_emit). Route instead of returning `true` with the
+                    // exception pending (upstream bun aeb1905d0a
+                    // problem-domain port).
+                    route_pending_exception(cx, cx_ref);
+                }
             }
         }
     }
