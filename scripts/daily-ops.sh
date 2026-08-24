@@ -19,13 +19,21 @@ export DAILY_OPS_MODE="$MODE" DAILY_OPS_REPORT="$REPORT"
 gh auth status >/dev/null 2>&1 || export DAILY_OPS_GH=failed
 git -C "$REPO" diff --quiet >/dev/null 2>&1 || export DAILY_OPS_DIRTY=1
 jq -e '.upstreams.bun.baseline and .upstreams.servo.baseline' "$REPO/.claude/upstream-baseline.json" >/dev/null 2>&1 || export DAILY_OPS_BASELINE=invalid
-# CARGO_BUSY 有限等待:最多 6 轮 × 5min(2026-08-24 教训:06:11 busy 06:24 清零,差 13min)
+# CARGO_BUSY 收窄为 bao 进程(2026-08-24 裁定:机器级 pgrep 误伤他项目 cargo;bao 独立 target dir 零锁竞争)
+bao_cargo_busy() {
+  local pid
+  for pid in $(pgrep -x cargo 2>/dev/null); do
+    [ "$(readlink "/proc/$pid/cwd" 2>/dev/null || true)" = "$REPO" ] && return 0
+  done
+  return 1
+}
+# 有限等待:最多 6 轮 × 5min(2026-08-24 教训:06:11 busy 06:24 清零,差 13min)
 BUSY_ROUNDS=0
-while pgrep -x cargo >/dev/null 2>&1 && [ "$BUSY_ROUNDS" -lt 6 ]; do
+while bao_cargo_busy && [ "$BUSY_ROUNDS" -lt 6 ]; do
   sleep 300
   BUSY_ROUNDS=$((BUSY_ROUNDS + 1))
 done
-pgrep -x cargo >/dev/null 2>&1 && export DAILY_OPS_CARGO_BUSY=1
+bao_cargo_busy && export DAILY_OPS_CARGO_BUSY=1
 [ -n "${CARGO_REGISTRY_TOKEN:-}" ] || export DAILY_OPS_PUBLISH=failed
 GIT_PRE="$(git -C "$REPO" rev-parse HEAD)"
 LOG_FILE="$RUNDIR/logs-$(date +%F).log"

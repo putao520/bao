@@ -27,7 +27,7 @@ description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao52
 | `$DAILY_OPS_GH=failed` | gh auth 预检失败 | issue 段标 `GH_AUTH_FAILED` 跳过 |
 | `$DAILY_OPS_DIRTY=1` | bao 工作树脏 | 只读阶段照常;写阶段标 `SKIPPED_BUSY` |
 | `$DAILY_OPS_BASELINE=invalid` | 基线文件缺失/字段缺失 | 全程 `BASELINE_FILE_INVALID` fail-closed 升级 |
-| `$DAILY_OPS_CARGO_BUSY=1` | 有 cargo 进程运行(锁可能被持有;脚本侧已有限等待 ≤30min,注入标志时已等待耗尽) | 测试阶段标 `SKIPPED_BUSY`,禁等锁 |
+| `$DAILY_OPS_CARGO_BUSY=1` | 有 **bao 仓库内** cargo 进程运行(cwd 判定;他项目 cargo 与 bao 独立 target dir 零锁竞争,不算 busy,2026-08-24 收窄;脚本侧已有限等待 ≤30min,注入标志时已等待耗尽) | 测试阶段标 `SKIPPED_BUSY`,禁等锁 |
 | `$DAILY_OPS_PUBLISH=failed` | `CARGO_REGISTRY_TOKEN` 缺失 | 发布收尾标 `SKIP_PUBLISH_TOKEN` |
 
 ### 上游 clone 铁律
