@@ -235,7 +235,35 @@ pub fn stamp_promisify_customs(cx: &mut mozjs::context::JSContext, promises_obj:
                 },
             );
             JS_ClearPendingException(cx.raw_cx());
-            eprintln!("[node_timers_module] promisify-custom wiring call failed");
+            // Surface the drained exception's message — "must stay
+            // observable" means identifiable, not just counted (this log is
+            // the perfect-correlation signal for the cdp_ws load-race
+            // diagnosis, 2026-08-24).
+            let exn_msg = if exn.is_object() {
+                let mut msg_val = UndefinedValue();
+                let wr = &mut *cx;
+                rooted!(&in(wr) let exn_obj = exn.to_object());
+                let got = JS_GetProperty(
+                    cx.raw_cx(),
+                    exn_obj.handle().into(),
+                    c"message".as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut msg_val,
+                    },
+                );
+                if got && msg_val.is_string() {
+                    crate::js_to_rust_string(cx.raw_cx(), msg_val)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+            eprintln!(
+                "[node_timers_module] promisify-custom wiring call failed: {}",
+                if exn_msg.is_empty() { "<no message>" } else { &exn_msg }
+            );
         }
     }
 }

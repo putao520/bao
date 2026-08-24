@@ -1897,9 +1897,17 @@ unsafe fn tls_dispatch_sni_callback(
     rooted!(&in(cx_ref) let server_root = server_obj);
     rooted!(&in(cx_ref) let sni_root = sni_fn_val);
 
+    // BCE-20260824-SNI-ARGV-DANGLE: the argument vector must outlive the
+    // `HandleValueArray` — an inline `[a, b].as_ptr()` creates a temporary
+    // that dies at the end of this `let` statement, leaving `elements_`
+    // dangling by the time `JS_CallFunctionValue` reads it (the user
+    // SNICallback then observes garbage for `cb` — "cb is not a function"
+    // — and the swallowed exception parks the handshake until the client
+    // times out). Named binding, same shape as `tls_emit_js` below/above.
+    let call_vals = [name_val.get(), ObjectValue(cb_obj)];
     let call_args = HandleValueArray {
         length_: 2,
-        elements_: [name_val.get(), ObjectValue(cb_obj)].as_ptr(),
+        elements_: call_vals.as_ptr(),
     };
     let mut rval = UndefinedValue();
     JS_CallFunctionValue(

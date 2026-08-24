@@ -2275,9 +2275,14 @@ unsafe extern "C" fn server_close(
         rooted!(&in(cx_ref) let cb_fn = ObjectValue(cb_root.get()));
         rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
         if had_live_app {
+            // BCE-20260824-SNI-ARGV-DANGLE (same-class hardening): named
+            // binding instead of an inline `[].as_ptr()` temporary — the
+            // zero length means SM never dereferences it, but the class is
+            // eradicated, not tolerated.
+            let no_args: [JSVal; 0] = [];
             let empty_args = HandleValueArray {
                 length_: 0,
-                elements_: [].as_ptr(),
+                elements_: no_args.as_ptr(),
             };
             let mut rval = UndefinedValue();
             let _ = JS_CallFunctionValue(

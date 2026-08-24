@@ -34,7 +34,24 @@ struct WsCdp {
 
 impl WsCdp {
     fn connect(url: &str) -> Self {
-        let mut client = WebSocketClient::connect(url).expect("ws connect");
+        // Bounded connect retry: under full-suite CPU load the CdpServer
+        // thread can lag its bind behind the client's first connect, and
+        // the reserve-and-release ephemeral port in pick_free_port() can be
+        // momentarily taken by a concurrently-starting test process — a
+        // one-shot connect loses that race (observed as ConnectionRefused,
+        // BCE-20260824-CDPWS-CONNECT).
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut client = None;
+        while std::time::Instant::now() < deadline {
+            match WebSocketClient::connect(url) {
+                Ok(c) => {
+                    client = Some(c);
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+        let mut client = client.expect("ws connect (bounded 10s retry exhausted)");
         client.set_read_timeout(Duration::from_secs(5));
         WsCdp {
             client,
@@ -213,12 +230,19 @@ fn object_protocol_phase(ws_url: String, done: Arc<AtomicBool>) {
     let resp = cdp.send("Page.navigate", json!({ "url": url }));
     assert!(resp.get("error").is_none(), "navigate must succeed: {resp}");
 
-    // Wait for the document to exist (mid-navigation evaluates are flaky).
+    // Wait for the NAVIGATED document to exist — gate on content only the
+    // data: document can have (`#d`). `!!document.body` is a weak gate: the
+    // initial about:blank placeholder also has a body, so under load the
+    // gate passes on the placeholder and the navigation commit then swaps
+    // the document mid-protocol — the marker/object registry dies with it
+    // and callFunctionOn resolves `this` to the fresh global (BCE-20260824-
+    // CDPWS-PLACEHOLDER-GATE; objectIds surviving navigation is not a CDP
+    // promise, executionContextsCleared/…Created announce the swap).
     let mut ready = false;
     for _ in 0..200 {
         let r = cdp.send(
             "Runtime.evaluate",
-            json!({ "expression": "!!document.body", "returnByValue": true }),
+            json!({ "expression": "!!document.getElementById('d')", "returnByValue": true }),
         );
         if r["result"]["result"]["value"] == json!(true) {
             ready = true;
@@ -253,7 +277,7 @@ fn object_protocol_phase(ws_url: String, done: Arc<AtomicBool>) {
         }),
     );
     assert!(resp.get("error").is_none(), "callFunctionOn value arg: {resp}");
-    assert_eq!(resp["result"]["result"]["value"], 52);
+    assert_eq!(resp["result"]["result"]["value"], 52, "full resp: {resp}");
     assert!(resp["result"]["exceptionDetails"].is_null());
 
     // 3. {objectId} argument roundtrip: a second handle passed as an arg.
