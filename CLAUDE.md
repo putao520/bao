@@ -169,7 +169,7 @@ Bun workspace 中 ~85 个纯 Rust crate(零 JSC)是经过生产验证的高性�
 
 ## 每日自动化(daily-ops)
 
-systemd timer 每日 06:07±10min 运行 `.claude/skills/daily-ops/`(全自主:上游任意窗口吸收含 BCE patch 重放 + issue 根治 + 波末验收 + 发布闭包,含 mozjs 跨版本升级(7 天长任务协议);2026-08-24 用户裁决扩权,详见该 skill)。交互会话在此窗口派工前先查 `systemctl --user status bao-daily-ops`。上游同步基线 SSOT = `.claude/upstream-baseline.json`。
+systemd timer 每日 06:07±10min 运行 `.claude/skills/daily-ops/`(全自主:上游任意窗口吸收含 BCE patch 重放 + issue 根治 + 波末验收 + 发布闭包,含 mozjs 跨版本升级(单轮 7 天预算长任务协议);2026-08-24 用户裁决扩权,详见该 skill)。交互会话在此窗口派工前先查 `systemctl --user status bao-daily-ops`。上游同步基线 SSOT = `.claude/upstream-baseline.json`。
 
 ## 构建与测试
 

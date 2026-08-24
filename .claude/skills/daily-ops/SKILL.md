@@ -1,6 +1,6 @@
 ---
 name: daily-ops
-description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao520/bao)。当用户说"每日同步/daily ops/处理 issue/issue 值班/issue 分诊/日常巡检/定时同步",或 headless 定时任务(systemd timer)执行时使用。自动边界:全自主:任意窗口吸收(含 >20 与 BCE patch 重放)+ mozjs 跨版本升级(§9 长任务协议)+ issue 根治(任意 scope)+ 波末验收 + commit/push/关 issue + 发布闭包;超范围 issue 直接 reject+close(安全门禁);语义不明/PRD-SPEC 冲突/重试耗尽/长任务 7 天预算耗尽 → 升级人工。
+description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao520/bao)。当用户说"每日同步/daily ops/处理 issue/issue 值班/issue 分诊/日常巡检/定时同步",或 headless 定时任务(systemd timer)执行时使用。自动边界:全自主:任意窗口吸收(含 >20 与 BCE patch 重放)+ mozjs 跨版本升级(§9 长任务协议)+ issue 根治(任意 scope)+ 波末验收 + commit/push/关 issue + 发布闭包;超范围 issue 直接 reject+close(安全门禁);语义不明/PRD-SPEC 冲突/重试耗尽/长任务单轮 7 天预算耗尽 → 升级人工。
 ---
 
 # 每日运维值班(daily-ops)
@@ -56,7 +56,7 @@ description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao52
 | 吸收判定项 ≤ 5 | 派 1-2 个 E(共树并发 ≤ 3) |
 | 吸收判定项 > 5 | 自主分批:每批 ≤ 5,上一批波内验收过再派下一批 |
 | issue:SPEC 有 REQ 映射 + 范围内 | 修复 wave(C-E-W-V;scope 任意,触 vendor 按 upstream-daily.md §3 安全协议) |
-| issue/吸收:mozjs 跨版本升级 | **自主(长任务协议 SKILL.md §9)**:跨日结转,7 天 wall-clock 预算,耗尽 escalate |
+| issue/吸收:mozjs 跨版本升级 | **自主(长任务协议 SKILL.md §9)**:单轮 7 天预算,耗尽 escalate |
 | issue:无映射(判明超范围) | **reject+close(not planned)+ 英文理由(安全门禁,仅 live)** |
 | SPEC 未定义 / 与主任务・PRD・SPEC 冲突 | **reject+close(not planned)+ 英文理由回复(安全门禁,仅 live)**;仅语义不明才 escalate |
 | issue 已实现 / 重复 / 不适用 / 超主任务范围(门禁) | reject + 证据/理由回复 + close(仅 live) |
@@ -118,7 +118,7 @@ SUMMARY: clean|acted|failed|timeout escalated=<N>
 
 ## §6 cron 契约
 
-- 执行链:`bao-daily-ops.timer`(每日 06:07 ± 10m,Persistent 补跑)→ `bao-daily-ops.service` → `scripts/daily-ops.sh`(flock 单飞 / 预检注标志 / `timeout 14400s` / dry-run 违规护栏)→ `claude -p "$(cat .claude/prompts/daily-ops.md)"` → 载入本 skill
+- 执行链:`bao-daily-ops.timer`(每日 06:07 ± 10m,Persistent 补跑)→ `bao-daily-ops.service` → `scripts/daily-ops.sh`(flock 单飞 / 预检注标志 / `timeout 604800s(7 天,用户裁决 2026-08-24)` / dry-run 违规护栏)→ `claude -p "$(cat .claude/prompts/daily-ops.md)"` → 载入本 skill
 - MODE 切换:`.claude/daily-ops/mode.conf` 写 `MODE=live`(gitignore 本地文件,不进 git)
 - 同日重跑:报告文件名加 `.HHMM` 后缀,不覆盖已有报告
 - 切 live 门槛:**连续 ≥ 5 天 dry-run 零违规 + 用户逐份审阅报告**
@@ -141,8 +141,8 @@ SUMMARY: clean|acted|failed|timeout escalated=<N>
 
 ## §9 长任务协议(用户裁决 2026-08-24)
 
-- **适用**:mozjs 跨版本升级等 wall-clock 超 4h 单窗口的任务
-- **state.json 新增 `long_running` 字段**(schema:`{task, started, deadline, phase, notes}`);每日会话起手检查:有 long_running → **优先继续**(内嵌当日 4h 预算),无才走常规 8 阶段
-- **跨日结转 = §4 失败语义自然延伸**:中途态保留禁自动 reset、次日继续;**7 天预算(deadline = started+7d)耗尽 → escalate 留人工**,报告登记当前 phase 与已完成证据
+- **适用**:mozjs 跨版本升级等单轮 7 天预算内持续推进的长任务
+- **state.json 新增 `long_running` 字段**(schema:`{task, started, deadline, phase, notes}`);会话起手检查:有 long_running → **优先继续**(单轮 7 天预算内连续推进,不分日分片),无才走常规 8 阶段
+- **单轮 7 天预算(MAX_SECONDS=604800)耗尽 → timeout 中止,中途态保留,escalate 留人工**,报告登记当前 phase 与已完成证据;轮间中断(超时/失败)→ long_running 字段记录 phase,下轮优先续跑
 - **完成** = 基线 bump 同 commit + §3 三重判据 + 发布闭包,清空 long_running 字段
 - **失败语义**:完全继承 §4 / pending 重试契约(用户裁决 2026-08-24 确认)

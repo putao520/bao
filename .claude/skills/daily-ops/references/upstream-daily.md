@@ -7,7 +7,7 @@ daily-ops §1 阶段 2(窗口扫描)与阶段 4(吸收波)的上游操作细则�
 | 条件 | 路线 |
 |---|---|
 | 任意窗口、含触 BCE patch-replay 文件 | 本协议(daily-ops 内自动,2026-08-24 用户裁决扩权) |
-| mozjs 跨版本升级 | 本协议(长任务,SKILL.md §9;7 天预算跨日结转,用户裁决 2026-08-24) |
+| mozjs 跨版本升级 | 本协议(长任务,SKILL.md §9;单轮 7 天预算,用户裁决 2026-08-24) |
 
 BCE 清单锚点 = 项目 CLAUDE.md「servo 定制文件清单(11 个)」。**触其一 → 按 §5 重放协议自主执行。**
 
@@ -48,5 +48,5 @@ BCE 清单锚点 = 项目 CLAUDE.md「servo 定制文件清单(11 个)」。**�
 
 - **重放锚点** = 项目 CLAUDE.md「mozjs fork BAO patch 清单(5 项)」(EBUSY 激进版 / JSEngine init race / set_hide_script_from_debugger / BaselineFrame NULL guard / JS_NewEmulatesUndefinedFunction——注意第 5 项 `jsapi.h` 声明必须在 `namespace JS` 外(全局作用域),否则 bindgen 生成 `JS::` 前缀 mangled link_name 与 cpp 全局定义不匹配 → 链接失败)+ `mozjs-sys/build.rs` 2 patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)
 - **构建经验锚点** = CLAUDE.md「mozjs 构建经验」:rlib 打包 native code(改 `.a` 不够,必须删 rlib 重新编译)、make 增量 bug(手动 `ar -d` + `ar -q` 替换或删整个 build output 目录)、清理序(`.fingerprint` / `deps` / `build` / `incremental` 对真实 CARGO_TARGET_DIR 执行)、EBUSY patch 复现排查(`nm libmozjs_sys-*.rlib | grep MutexImplD1` 查 rlib 是否含旧代码)
-- **阶段化推进(跨日)**:① 外科移植上游 mozjs(参照 git 历史先例:servo/mozjs main 定点移植)→ ② 5+2 patch 重放 → ③ 构建清理序 → ④ scoped 测试三重判据 → ⑤ 发布闭包;每阶段完成度记 `long_running.phase`
-- **中断安全**:任何一日中断 → 中途态保留禁 reset,次日从 phase 继续
+- **阶段化推进(单轮 7 天内连续)**:① 外科移植上游 mozjs(参照 git 历史先例:servo/mozjs main 定点移植)→ ② 5+2 patch 重放 → ③ 构建清理序 → ④ scoped 测试三重判据 → ⑤ 发布闭包;阶段完成度记 `long_running.phase`
+- **中断安全**:超时/失败中断 → 中途态保留禁 reset,下轮从 phase 继续

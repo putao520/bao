@@ -4,7 +4,7 @@ set -euo pipefail
 REPO="/home/putao/code/rust/bao"
 RUNDIR="$REPO/.claude/daily-ops"
 MODE="${MODE:-dry-run}"
-MAX_SECONDS="${MAX_SECONDS:-14400}"
+MAX_SECONDS="${MAX_SECONDS:-604800}"
 # node 绝对路径双通道解析(2026-08-24 根因:systemd 服务 PATH 无 nvm,MCP spawn "node" 失败)
 NODE_BIN="$(command -v node || ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1 || true)"
 NODE_DIR="$(dirname "${NODE_BIN:-$(ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1 || echo /usr/bin/node)}")"
