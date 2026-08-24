@@ -1,6 +1,6 @@
 [package]
 name = "bao_uloop"
-version = "0.1.3"
+version = "0.1.4"
 description = "Raw epoll + eventfd implementation of the uSockets loop ABI for Bao"
 edition = "2024"
 repository.workspace = true

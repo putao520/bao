@@ -1,6 +1,6 @@
 [package]
 name = "bao_native_stubs"
-version = "0.1.2"
+version = "0.1.3"
 description = "Rust implementations of symbols originally provided by Zig-compiled C/Zig code in upstream Bun. Eliminates Zig dependency for test linking."
 edition.workspace = true
 repository.workspace = true

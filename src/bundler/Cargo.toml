@@ -1,7 +1,7 @@
 [package]
 name = "bun_bundler"
 # 0.1.1 (2026-08-19): adt cleanup + AstBox migration + SoaRow sweep; TLS dual-mode (4fef6feb).
-version = "0.1.4"
+version = "0.1.5"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
