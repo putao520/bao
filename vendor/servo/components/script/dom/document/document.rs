@@ -213,6 +213,7 @@ use crate::dom::xpathevaluator::XPathEvaluator;
 use crate::dom::xpathexpression::XPathExpression;
 use crate::event_loop::document_loader::{DocumentLoader, LoadType};
 use crate::event_loop::script_thread::{ScriptThread, SharedRwLocks};
+use crate::event_loop::timers::{OneshotTimerCallback, OneshotTimers};
 use crate::fetch::fetch::{DeferredFetchRecordInvokeState, FetchCanceller};
 use crate::fetch::network_listener::{FetchResponseListener, NetworkListener};
 use crate::mime::{APPLICATION, CHARSET};
@@ -220,7 +221,6 @@ use crate::navigation::navigate;
 use crate::tasks::task::NonSendTaskBox;
 use crate::tasks::task_manager::TaskManager;
 use crate::tasks::task_source::TaskSourceName;
-use crate::timers::{OneshotTimerCallback, OneshotTimers};
 use crate::xpath::parse_expression;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1092,6 +1092,7 @@ impl Document {
     /// TODO: Remove this when we create documents after processing headers
     pub(crate) fn mark_as_internal(&self) {
         *self.origin.borrow_mut() = MutableOrigin::new(ImmutableOrigin::new_opaque());
+        self.window().update_jsprincipals_from_document(self);
     }
 
     pub(crate) fn set_protocol_handler_automation_mode(&self, mode: CustomHandlersAutomationMode) {
@@ -1425,35 +1426,58 @@ impl Document {
             .map(|element| DomRoot::from_ref(&**element))
     }
 
-    // https://html.spec.whatwg.org/multipage/#current-document-readiness
-    pub(crate) fn set_ready_state(&self, cx: &mut JSContext, state: DocumentReadyState) {
+    pub(crate) fn notify_embedder_of_load_completion(&self) {
+        if self.window().is_top_level() {
+            self.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
+                self.webview_id(),
+                LoadStatus::Complete,
+            ));
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#update-the-current-document-readiness>
+    pub(crate) fn update_the_current_document_readiness(
+        &self,
+        cx: &mut JSContext,
+        state: DocumentReadyState,
+    ) {
+        // Step 1. If document's current document readiness equals readinessValue, then return.
+        if self.ready_state.get() == state {
+            return;
+        }
+
+        // Step 2. Set document's current document readiness to readinessValue.
+        self.ready_state.set(state);
+
+        // Step 3. If document is associated with an HTML parser:
+        // Step 3.1: Let now be the current high resolution time given document's relevant
+        // global object.
+        // Note: Handled implicitly by update_with_current_instant.
         match state {
             DocumentReadyState::Loading => {
-                if self.window().is_top_level() {
-                    self.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
-                        self.webview_id(),
-                        LoadStatus::Started,
-                    ));
-                    self.send_to_embedder(EmbedderMsg::Status(self.webview_id(), None));
-                    update_with_current_instant(&self.navigation_timing.dom_loading);
-                }
+                unreachable!("Loading is an initial state, so we never transition to it.")
             },
             DocumentReadyState::Complete => {
-                if self.window().is_top_level() {
-                    self.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
-                        self.webview_id(),
-                        LoadStatus::Complete,
-                    ));
-                }
+                // This isn't part of the specification, but it's useful to have it here to
+                // avoid code duplication.
+                self.notify_embedder_of_load_completion();
+
+                // Step 3.2: If readinessValue is "complete", and document's load timing info's
+                // DOM complete time is 0, then set document's load timing info's DOM complete
+                // time to now.
+                // Note: "check for zero" is handled by `.update_with_current_instant`.
                 update_with_current_instant(&self.navigation_timing.dom_complete);
             },
             DocumentReadyState::Interactive => {
+                // Step 3.3: Otherwise, if readinessValue is "interactive", and document's load timing
+                // info's DOM interactive time is 0, then set document's load timing info's DOM
+                // interactive time to now.
+                // Note: "check for zero" is handled by `.update_with_current_instant`.
                 update_with_current_instant(&self.navigation_timing.dom_interactive)
             },
         };
 
-        self.ready_state.set(state);
-
+        // Step 4. Fire an event named readystatechange at document.
         self.upcast::<EventTarget>()
             .fire_event(cx, atom!("readystatechange"));
     }
@@ -2409,7 +2433,7 @@ impl Document {
                 }
 
                 // Step 9.1. Update the current document readiness to "complete".
-                document.set_ready_state(cx,DocumentReadyState::Complete);
+                document.update_the_current_document_readiness(cx,DocumentReadyState::Complete);
 
                 // Step 9.2. If the Document object's browsing context is null, then abort these steps.
                 if document.browsing_context().is_none() {
@@ -3862,6 +3886,14 @@ impl Document {
             QuirksMode::NoQuirks
         };
 
+        // From <https://w3c.github.io/navigation-timing/#dom-performancetiming-domloading>:
+        // > This attribute must return the time immediately before the user agent sets the
+        // > current document readiness to "loading".
+        let navigation_timing = Rc::new(NavigationTiming::default());
+        if ready_state == DocumentReadyState::Loading {
+            update_with_current_instant(&navigation_timing.dom_loading);
+        }
+
         Document {
             node: Node::new_document_node(),
             document_or_shadow_root: DocumentOrShadowRoot::new(window),
@@ -3935,7 +3967,7 @@ impl Document {
             active_parser_was_aborted: Cell::new(false),
             fired_unload: Cell::new(false),
             responsive_images: Default::default(),
-            navigation_timing: Default::default(),
+            navigation_timing,
             resource_fetch_timing: RefCell::new(None),
             completely_loaded: Cell::new(false),
             script_and_layout_blockers: Cell::new(0),
@@ -5252,7 +5284,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         sanitizer.sanitize(cx, document.upcast(), false)?;
 
         // Step 7. Return document.
-        document.set_ready_state(cx, DocumentReadyState::Complete);
+        document.update_the_current_document_readiness(cx, DocumentReadyState::Complete);
         Ok(document)
     }
 

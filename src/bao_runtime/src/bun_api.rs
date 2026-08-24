@@ -4016,7 +4016,25 @@ unsafe extern "C" fn ws_on_open(raw_ws: *mut RawWebSocket) {
         rval_h,
     );
     if !_ok {
+        // The open handler threw — propagate the thrown value to the error
+        // route instead of silently clearing it (upstream bun d43ddf309a
+        // problem-domain fix: the thrown value reaches the error path, it is
+        // never swallowed). Capture-clear-route contract, same as the client
+        // ws event dispatch in web_api.rs and the serve body-factory path
+        // below.
+        let mut exn = UndefinedValue();
+        JS_GetPendingException(
+            cx,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut exn,
+            },
+        );
         JS_ClearPendingException(cx);
+        rooted!(&in(cx_ref) let reason_root = exn);
+        if !exn.is_undefined() {
+            crate::uncaught::route_uncaught_exception(cx, exn);
+        }
     }
 }
 
@@ -4127,7 +4145,24 @@ unsafe extern "C" fn ws_on_message(
         rval_h,
     );
     if !_ok {
+        // The message handler threw — propagate the thrown value to the
+        // error route instead of silently clearing it (upstream bun
+        // d43ddf309a problem-domain fix). Capture-clear-route contract, same
+        // as the client ws event dispatch in web_api.rs and the serve
+        // body-factory path above.
+        let mut exn = UndefinedValue();
+        JS_GetPendingException(
+            cx,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut exn,
+            },
+        );
         JS_ClearPendingException(cx);
+        rooted!(&in(cx_ref) let reason_root = exn);
+        if !exn.is_undefined() {
+            crate::uncaught::route_uncaught_exception(cx, exn);
+        }
     }
 }
 
@@ -4263,7 +4298,26 @@ unsafe extern "C" fn ws_on_close(
                     rval_h,
                 );
                 if !_ok {
+                    // The close handler threw — propagate the thrown value to
+                    // the error route instead of silently clearing it (upstream
+                    // bun d43ddf309a problem-domain fix). Capture-clear-route
+                    // contract, same as the client ws event dispatch in
+                    // web_api.rs and the serve body-factory path above.
+                    // request_exit only latches thread-local flags, so the
+                    // GcStore/user-data cleanup below still runs.
+                    let mut exn = UndefinedValue();
+                    JS_GetPendingException(
+                        cx,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut exn,
+                        },
+                    );
                     JS_ClearPendingException(cx);
+                    rooted!(&in(cx_ref) let reason_root = exn);
+                    if !exn.is_undefined() {
+                        crate::uncaught::route_uncaught_exception(cx, exn);
+                    }
                 }
             }
         }

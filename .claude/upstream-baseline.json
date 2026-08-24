@@ -1,21 +1,21 @@
 {
   "version": 1,
   "updated_at": "2026-08-24",
-  "updated_by": "daily-ops-baseline-repair",
+  "updated_by": "daily-ops-2026-08-24-wave1",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "fb4227f7ee3ee34a68faff57bf7393c1ca7a1091",
-      "baseline_date": "2026-08-23",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD;窗口 abe2ad4f00..fb4227f7ee 24 commits:8 吸收/1 已含/9 N-A/6 域核查(listen next-tick 违约候选/module_loader 异常专项/_resolveFilename stub 缺口挂账);1.4.0 全 Rust 化遗产清扫期;2026-08-24 daily-ops 修复损坏 hash 串(原 40 字符尾部 e57bb5 复制重复、非有效对象;真 tip 四重锚定:10 字符前缀+fetch 前 origin/main+baseline_date+24-window 计数对账),cursor 未动非 bump"
+      "baseline": "7a5d837b86630682d0e482b061c68083f38d9e81",
+      "baseline_date": "2026-08-24",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。窗口 fb4227f7ee..7a5d837b86 10 commits:吸收 2(7f5a7a3a20 standalone payload 区域布局→src/standalone_graph/StandaloneModuleGraph.rs;d43ddf309a ws-handler 抛错值传播→src/bao_runtime/src/bun_api.rs ws_on_open/message/close)+不适用 6(2082869555/acd342244f/31665f3d80/3e347b3e39/a03a0ec4ba/7a5d837b86 纯 JSC 层)+升级交互裁定 2(009107248b、9dd73746c7——升级台账 state.json,勿从窗口重 triage)。7a5d837b86 后 4 新 commit 本轮已预分类:aff756f8e7 N/A(bao 无 REPL 面)、865130f652 N/A(bao structuredClone 走 SM 原生 JS_Read/WriteStructuredClone,无自持常量池)、bc713f9543 吸收候选(指纹命中:bao fork 保留 Copy+caller-must-deref 形状)、aeb1905d0a 吸收候选(五路径 bao 均有对应面)——留 batch-2"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "bd220a152bc059627531b386c9fcc86951eba856",
-      "baseline_date": "2026-08-23",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md,2026-08-23 起 JSEngineSetup 补丁新家=script/engine/handle.rs,b54baa327 移动);窗口 fa5af8b52..bd220a152 13 commits 全吸收(唯一 BCE-replay=b54baa327);含 _and_cx 尾批改名/active_range cx 传参/@font-face CSSOM/webcrypto 10 组改名;monitor:readablestream.rs 仍 14 裸 borrow_mut(f7cd7d880 仅覆 controller,下轮 servo 窗口观察上游是否补齐)+ body.rs Err(_)→Done 折叠(实践不可达,观察)"
+      "baseline": "ad012d550e2c97b8dbdcf414d9c6bc0464cdf5cc",
+      "baseline_date": "2026-08-24",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md)。窗口 bd220a152..ad012d550 14 commits:BCE 重放吸收 3(a1c26a418 runtime 文件移入 script/runtime + patch 锚点迁移;e8d3a4d1b HTML elements 子目录移动;19b9d2164 set_ready_state spec 合规)+不适用 3(683eab21c WPT sync、602e3bf51/ad012d550 依赖 bump)+升级交互裁定 8(dfaaf332a JSContextify、e78ec33cd JSPrincipals、f9b4d1e60 insertLineBreak、89da31fa4 ElementInternals 移动、85852ad27 RsaKeyGenParams、ac1b09ea4 EnforceRange、b542580b completed_body、b70f159f6 revert-a11y——台账 state.json,勿从窗口重 triage)。19b9d2164 语义(initial about:blank readyState 立即 Complete)暴露 cdp_ws 测试弱门竞态已修(BCE-20260824-CDPWS-PLACEHOLDER-GATE);readablestream borrow_mut 监控维持"
     }
   }
 }

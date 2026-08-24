@@ -36,7 +36,10 @@ use fonts::{
 use js::context::{JSContext, NoGC};
 use js::conversions::ToJSValConvertible;
 use js::glue::DumpJSStack;
-use js::jsapi::{GCReason, Heap, JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE};
+use js::jsapi::{
+    GCReason, GetObjectRealmOrNull, Heap, JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE,
+    SetRealmPrincipals,
+};
 use js::jsval::{NullValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
 use js::rust::wrappers2::{JS_DefineProperty, JS_GC};
@@ -71,6 +74,7 @@ use script_bindings::codegen::GenericBindings::WindowBinding::ScrollToOptions;
 use script_bindings::dom::UnrootedDom;
 use script_bindings::interfaces::{HasOrigin, WindowHelpers};
 use script_bindings::like::Setlike;
+use script_bindings::principals::ServoJSPrincipals;
 use script_bindings::reflector::DomObject;
 use script_bindings::root::Root;
 use script_traits::{ConstellationInputEvent, ScriptThreadMessage};
@@ -197,17 +201,19 @@ use crate::dom::worklet::Worklet;
 use crate::dom::workletglobalscope::WorkletGlobalScopeType;
 use crate::event_loop::script_thread::ScriptThread;
 use crate::event_loop::script_window_proxies::ScriptWindowProxies;
+use crate::event_loop::timers::{IsInterval, OneshotTimers, TimerCallback};
+use crate::event_loop::webdriver_handlers::{
+    find_node_by_unique_id_in_document, jsval_to_webdriver,
+};
 use crate::fetch::fetch;
 use crate::fetch::network_listener::{ResourceTimingListener, submit_timing};
 use crate::messaging::{MainThreadScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
-use crate::microtask::UserMicrotask;
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::Runtime;
+use crate::runtime::microtask::UserMicrotask;
+use crate::runtime::script_runtime::Runtime;
 use crate::tasks::task_manager::TaskManager;
 use crate::tasks::task_source::SendableTaskSource;
-use crate::timers::{IsInterval, OneshotTimers, TimerCallback};
 use crate::unminify::unminified_path;
-use crate::webdriver_handlers::{find_node_by_unique_id_in_document, jsval_to_webdriver};
 use crate::window_named_properties;
 
 /// A callback to call when a response comes back from the `ImageCache`.
@@ -3305,6 +3311,20 @@ impl Window {
         );
         assert!(document.window() == self);
         self.document.set(Some(document));
+        self.update_jsprincipals_from_document(document);
+    }
+
+    /// The `JSPrincipals` object inside a [`Window`] stores a mutable origin used for
+    /// same-origin checks within SpiderMonkey. When the entire origin of a [`Window`]'s
+    /// [`Document`] object is replaced or the [`Document`] object itself is replaced with a
+    /// [`Document`] with a different origin, the `JSPrincipals` stored inside the [`Window`]
+    /// also needs to change. This ensures that same origin checks are done against the correct
+    /// origin.
+    #[expect(unsafe_code)]
+    pub(crate) fn update_jsprincipals_from_document(&self, document: &Document) {
+        let realm = unsafe { GetObjectRealmOrNull(self.reflector().get_jsobject().get()) };
+        let new_principals = ServoJSPrincipals::new::<crate::DomTypeHolder>(&document.origin());
+        unsafe { SetRealmPrincipals(realm, new_principals.as_raw()) };
     }
 
     pub(crate) fn load_data_for_document(
@@ -4132,7 +4152,7 @@ impl Window {
                     this.upcast(),
                     this.upcast(),
                     message_clone.handle(),
-                    Some(&source_origin.ascii_serialization()),
+                    Some(source_origin.ascii_serialization().as_ref()),
                     Some(&*source),
                     ports,
                 );

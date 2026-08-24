@@ -69,8 +69,8 @@ use crate::dom::workerglobalscope::{ScriptFetchContext, WorkerGlobalScope};
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
 use crate::modules::script_module::fetch_a_module_script_graph;
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::ScriptThreadEventCategory::WorkerEvent;
-use crate::script_runtime::{IntroductionType, Runtime, ThreadSafeJSContext};
+use crate::runtime::script_runtime::ScriptThreadEventCategory::WorkerEvent;
+use crate::runtime::script_runtime::{IntroductionType, Runtime, ThreadSafeJSContext};
 use crate::tasks::task_queue::{QueuedTask, QueuedTaskConversion, TaskQueue};
 use crate::tasks::task_source::TaskSourceName;
 
@@ -584,7 +584,6 @@ impl DedicatedWorkerGlobalScope {
                 }
                 let scope = global.upcast::<WorkerGlobalScope>();
                 let global_scope = global.upcast::<GlobalScope>();
-
                 // Bao vendor patch (DEC-WK-001 / TASK-1): drain embedder Worker scope
                 // callbacks so Bao can inject stealth profile + lifecycle hooks on the
                 // Worker thread (per BCE-20260621-001: DOM-Node interop must happen on
@@ -972,7 +971,7 @@ impl DedicatedWorkerGlobalScope {
                 target,
                 scope.upcast(),
                 message.handle(),
-                Some(&msg.origin.ascii_serialization()),
+                Some(msg.origin.ascii_serialization().as_ref()),
                 None,
                 ports,
             );

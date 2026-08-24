@@ -145,22 +145,22 @@ use crate::dom::window::Window;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::dom::workletglobalscope::WorkletGlobalScope;
 use crate::event_loop::script_thread::{ScriptThread, with_script_thread};
+use crate::event_loop::timers::{
+    IsInterval, OneshotTimerCallback, OneshotTimerHandle, OneshotTimers, TimerCallback,
+    TimerEventId, TimerSource,
+};
 use crate::fetch::fetch::{DeferredFetchRecordId, FetchGroup, QueuedDeferredFetchRecord};
 use crate::fetch::network_listener::{FetchResponseListener, NetworkListener};
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
-use crate::microtask::MicrotaskRunnable;
 use crate::modules::import_map::ImportMap;
 use crate::modules::script_module::{
     ModuleRequest, ModuleStatus, ModuleTree, ResolvedModule, ScriptFetchOptions,
 };
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::ThreadSafeJSContext;
+use crate::runtime::microtask::MicrotaskRunnable;
+use crate::runtime::script_runtime::ThreadSafeJSContext;
 use crate::tasks::task_manager::TaskManager;
 use crate::tasks::task_source::SendableTaskSource;
-use crate::timers::{
-    IsInterval, OneshotTimerCallback, OneshotTimerHandle, OneshotTimers, TimerCallback,
-    TimerEventId, TimerSource,
-};
 use crate::unminify::unminified_path;
 
 #[derive(JSTraceable, MallocSizeOf)]
@@ -1396,7 +1396,7 @@ impl GlobalScope {
                                 destination.upcast(),
                                 &global,
                                 message.handle(),
-                                Some(&origin.ascii_serialization()),
+                                Some(origin.ascii_serialization().as_ref()),
                                 None,
                                 ports,
                             );
@@ -1566,7 +1566,7 @@ impl GlobalScope {
                             message_event_target,
                             self,
                             message_clone.handle(),
-                            Some(&origin.ascii_serialization()),
+                            Some(origin.ascii_serialization().as_ref()),
                             None,
                             ports,
                         );
@@ -3572,7 +3572,7 @@ impl GlobalScope {
 
             // Step 4. Run the following steps in parallel:
             //   (We schedule a oneshot that will enforce the sub-steps when it fires.)
-            let callback = crate::timers::OneshotTimerCallback::RunStepsAfterTimeout {
+            let callback = OneshotTimerCallback::RunStepsAfterTimeout {
                 // Step 1. timerKey
                 timer_key,
                 // Step 4. orderingIdentifier
