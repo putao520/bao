@@ -22,6 +22,7 @@
 10. 禁任务系统工具(TaskCreate/TaskUpdate/TaskStop):无头值班会话状态由脚本/skill 契约承载(state.json + 报告),回报仅经 $DAILY_OPS_REPORT 与 stdout SUMMARY 行,不动任务面板
 11. 发布收尾按 SKILL.md 阶段⑧ + references/publish.md:四条件(MODE=live / 本日有 wave commit / 三重判据 PASS / push 成功)任一不满足禁发布;限流按报文精确解除时刻锚定等待勿盲退避;发布验证以 curl registry 200 为准,非命令退出码独断
 12. 吸收与 issue 自主域按 SKILL.md §2 边界表(2026-08-24 用户裁决扩权):任意窗口规模含 >20、含 11 个 servo BCE 文件 patch 重放、issue 任意 scope 含 vendor,均自主执行;mozjs 跨版本升级走 SKILL.md §9 长任务协议(单轮 7 天预算,起手优先继续 long_running);重放纪律引用 references/upstream-daily.md §5
+13. 单 turn 完成纪律:本轮一切后台任务(Bash run_in_background / 派 E)必须在输出最终报告前收口——后台测试用 TaskOutput block=true 轮询至完成并消费结果;**禁在存在未收口后台任务时结束回复**(headless 单 turn 语义下结束=进程退出=任务成孤儿);长测试单条 Bash 超时上限 600s 不够时,必须 run_in_background + 阻塞轮询,禁『挂标记等收口』跨 turn 模式
 
 ## 输出契约
 

@@ -40,7 +40,7 @@ description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao52
 1. **预检消费**:读 §0 环境变量确定各阶段可用性;`BASELINE_FILE_INVALID` 直接走升级报告
 2. **上游窗口扫描**:两 clone 各自 `git fetch origin`(单侧失败独立重试 1 次);baseline 从 `.claude/upstream-baseline.json` 读;`git rev-list --count <baseline>..origin/main` 得窗口数
 3. **issue 分诊**:`gh issue list --repo putao520/bao --state open --json number,title,body,labels`,按 `references/issue-rules.md` 判定
-4. **执行波**:吸收 wave(§2 边界内,含 BCE 重放)/ issue 修复 wave;零工作量(窗口=0 且无可做 issue)→ no-op clean
+4. **执行波**:吸收 wave(§2 边界内,含 BCE 重放)/ issue 修复 wave;wave 开工先落 `pending_wave` 写域声明(§8 state 契约);零工作量(窗口=0 且无可做 issue)→ no-op clean
 5. **波末验收**:§3 三重判据,任一不过 → `VERIFICATION_FAILED`
 6. **收尾**:**live 才** commit + push + 关 issue + 英文回复;dry-run 只在报告写「将会做什么」
 7. **报告+state**:报告写 `$DAILY_OPS_REPORT`(§5 模板);更新 `state.json`(`last_run` + `issue_cursor`)
@@ -80,6 +80,7 @@ description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao52
 - 单侧 fetch 重试 1 次仍失败 → 该侧标 `SKIPPED_<UPSTREAM>_FETCH_FAILED`,另一侧照常
 - gh 失败 → `GH_AUTH_FAILED`,跳过 issue 段
 - 修复波中途失败 → 不 close issue;live 下评论进展;**代码中途态保留,禁自动 reset**;`state.json` 记 pending,下次最多自动重试 1 次,再失败转 escalate
+- **暴毙中途态恢复(2026-08-24 缺口修补)**:会话起手若 `DAILY_OPS_DIRTY=1` 且 state.json 存在 `pending_wave`(见 §8 state 契约),脏树文件集 ⊆ `pending_wave.writes` 声明域 → 判定中途态恢复模式:**继续 wave(编译→测试→收口)而非 SKIPPED_BUSY**;脏树含声明域外文件 → 仍 SKIPPED_BUSY + 升级(防混入他人改动,原语义保留)
 - **报告必产出**:任何失败路径都要先写报告再退出,禁静默退出
 
 ## §5 报告模板(写 `$DAILY_OPS_REPORT`)
@@ -132,12 +133,13 @@ SUMMARY: clean|acted|failed|timeout escalated=<N>
 | 吸收「需进一步判断」项 | 交互会话(不猜原则) |
 | issue 语义不明 / PRD-SPEC 冲突 | 交互会话(宪法裁定权在用户) |
 
-## §8 基线契约
+## §8 基线与 state 契约
 
 - **SSOT = `.claude/upstream-baseline.json`**(bun/servo baseline hash + updated_at)
 - 更新时机 = 仅吸收 wave commit 内 bump(**同 commit**,不单独提交)
 - 读不到 / 字段缺失 → `BASELINE_FILE_INVALID` fail-closed 升级,禁继续
 - **禁从 memory 读基线**;auto-memory 只保留方法论(陷阱/教训),不存 hash
+- **state 契约:起手写域声明**:wave 开工前(第一个写动作前)先写 state.json `pending_wave: {writes: [<文件/目录 glob 清单>], started, phase}`(数据域写,随时可写);wave 收口(commit+push+报告)后清空。暴毙时下轮凭它与脏树比对走 §4 恢复路径
 
 ## §9 长任务协议(用户裁决 2026-08-24)
 
