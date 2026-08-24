@@ -12,7 +12,7 @@ name = "bun_core"
 # 0.1.5 (2026-08-21): +pub backpressure::BackpressureValve — the shared
 # watermark/park-latch core of the fetch staging + servo bridge response-body
 # backpressure templates (transport levers stay at the integration sites).
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

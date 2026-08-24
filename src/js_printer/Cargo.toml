@@ -1,7 +1,7 @@
 [package]
 name = "bun_js_printer"
 # 0.1.1 (2026-08-19): W3 parser trio dual-mode (e00e3dcb)
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
