@@ -749,7 +749,7 @@ pub(crate) fn to_bytes(
     // real variants.
     // let _serialize_trace = bun_perf::trace(bun_perf::PerfEvent::StandaloneModuleGraph_serialize);
 
-    let mut entry_point_id: Option<usize> = None;
+    let mut entry_point_file: Option<&OutputFile> = None;
     let mut string_builder = bun_core::StringBuilder::default();
     let mut module_count: usize = 0;
     for output_file in output_files {
@@ -768,11 +768,11 @@ pub(crate) fn to_bytes(
             } else if output_file.output_kind == options::OutputKind::ModuleInfo {
                 string_builder.cap += bytes.len();
             } else {
-                if entry_point_id.is_none() {
+                if entry_point_file.is_none() {
                     if output_file.side.is_none() || output_file.side == Some(options::Side::Server)
                     {
                         if output_file.output_kind == options::OutputKind::EntryPoint {
-                            entry_point_id = Some(module_count);
+                            entry_point_file = Some(output_file);
                         }
                     }
                 }
@@ -783,7 +783,7 @@ pub(crate) fn to_bytes(
         }
     }
 
-    if module_count == 0 || entry_point_id.is_none() {
+    if module_count == 0 || entry_point_file.is_none() {
         return Ok(Vec::new());
     }
 
@@ -795,7 +795,6 @@ pub(crate) fn to_bytes(
 
     string_builder.allocate()?;
 
-    let mut modules: Vec<CompiledModuleGraphFile> = Vec::with_capacity(module_count);
     let mut module_files: Vec<&OutputFile> = Vec::with_capacity(module_count);
 
     for output_file in output_files {
@@ -803,9 +802,28 @@ pub(crate) fn to_bytes(
             continue;
         }
 
-        let options::OutputValue::Buffer { bytes: buf_bytes } = &output_file.value else {
+        if !matches!(output_file.value, options::OutputValue::Buffer { .. }) {
             continue;
-        };
+        }
+
+        module_files.push(output_file);
+    }
+    let Some(entry_point_file) = entry_point_file else {
+        return Ok(Vec::new());
+    };
+    // Every per-module region below is written in load order (entry point's
+    // static imports first, then dynamic imports breadth-first) so the modules
+    // a process actually loads share pages instead of each dragging in its own.
+    // f039a9c563
+    module_files.sort_by_key(|f| f.load_order);
+    let entry_point_id = module_files
+        .iter()
+        .position(|f| core::ptr::eq(*f, entry_point_file))
+        .unwrap();
+
+    let mut modules: Vec<CompiledModuleGraphFile> = Vec::with_capacity(module_files.len());
+    for &output_file in &module_files {
+        let buf_bytes = output_file.value.as_slice();
 
         let bytecode: StringPointer = 'brk: {
             if output_file.bytecode_index != u32::MAX {
@@ -954,7 +972,6 @@ pub(crate) fn to_bytes(
             },
             sourcemap: StringPointer::default(),
         });
-        module_files.push(output_file);
     }
 
     // Region layout after the bytecode/module_info run above: source maps
@@ -1011,7 +1028,7 @@ pub(crate) fn to_bytes(
         )
     };
     let offsets = Offsets {
-        entry_point_id: entry_point_id.unwrap() as u32,
+        entry_point_id: entry_point_id as u32,
         modules_ptr: string_builder.append_count(modules_as_bytes),
         compile_exec_argv_ptr: string_builder.append_count_z(compile_exec_argv),
         byte_count: string_builder.len,

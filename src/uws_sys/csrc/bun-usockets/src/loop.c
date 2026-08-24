@@ -400,7 +400,7 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                     do {
                         struct us_poll_t *accepted_p = us_create_poll(loop, 0, sizeof(struct us_socket_t) - sizeof(struct us_poll_t) + listen_socket->socket_ext_size);
                         us_poll_init(accepted_p, client_fd, POLL_TYPE_SOCKET);
-                        us_poll_start(accepted_p, loop, LIBUS_SOCKET_READABLE);
+                        us_poll_start(accepted_p, loop, listen_socket->accept_paused ? 0 : LIBUS_SOCKET_READABLE);
 
                         struct us_socket_t *s = (struct us_socket_t *) accepted_p;
 
@@ -412,7 +412,7 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                         s->long_timeout = 255;
                         s->flags.low_prio_state = 0;
                         s->flags.allow_half_open = listen_socket->s.flags.allow_half_open;
-                        s->flags.is_paused = 0;
+                        s->flags.is_paused = listen_socket->accept_paused;
                         s->read_eof = 0;
                         s->flags.is_ipc = 0;
                         s->flags.is_closed = 0;

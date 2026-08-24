@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "updated_at": "2026-08-24",
-  "updated_by": "daily-ops-2026-08-24-wave2",
+  "updated_at": "2026-08-25",
+  "updated_by": "daily-ops-2026-08-25-wave",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "aeb1905d0a1d4890d07be72aba32075a867545cf",
-      "baseline_date": "2026-08-24",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。窗口 fb4227f7ee..aeb1905d0a 14 commits 全判定收口:吸收 2+1(wave1 7f5a7a3a20/d43ddf309a;wave2 bc713f9543 bun_core::String 所有权移植——String 弃 Copy、Drop=tag-guard deref、Clone=ref,OwnedString/OwnedStringCell/dupe_ref/From<WTFStringImpl> 移除,15 文件调用点清扫,ownership_tests 6/6;注:WTF 侧 FFI 现仅声明无链接定义,运行时全 borrow/static tag,移植零运行时影响、结构先行)+问题域移植 1(aeb1905d0a:五路径指纹全 N/A/已 fail-closed,三真实分歧落地——Buffer.from(BigInt64Array) TypeError/close 回调 capture-clear-route/upgrade throw 路由)+不适用 8(6 纯 JSC 层+aff756f8e7 REPL 面+865130f652 SM 原生 SC)+升级交互裁定 2(009107248b、9dd73746c7——台账 state.json,勿从窗口重 triage)"
+      "baseline": "b746c078b6982780231d5c7944de7f66b2582c31",
+      "baseline_date": "2026-08-25",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。窗口 aeb1905d0a..b746c078b6 11 commits 全判定收口:吸收 3(f039a9c563 --compile 模块图按加载序布局——OutputFile.load_order + linker chunk_load_order + to_bytes 稳定排序,payload 格式不变;e54bbfa70c usockets 暂停期保留读 knote——部分吸收 4/6 文件,C 域 flag 枚举+accept_paused 落镜像双树,socket.c us_socket_from_fd hunk 因 6 参旧签名跨 bao_uloop/SocketGroup.rs FFI 域 stop、kqueue hunk 依赖未吸收 #33974/#39949 机制且 Linux 构建死代码 stop,Rust 面零接线;b746c078b6 worker_threads 内建 MessageChannel/MessagePort/BroadcastChannel 捕获——node_worker_threads.rs:1291 运行时可变全局查找改 install() 头一次性捕获,fallback 语义逐字保留)+不适用 8(df75206625 bun:test matcher C++;66a8b8852c src/runtime/cli 无宿主;861e9ae04b mimalloc 构建脚本;4d35aad1f1 JSC bytecode 内嵌零宿主;44411167ac FileSink/Blob.get_writer 无宿主;e625fb7e9e jsCast JSC;a73ed2720f node:assert 构造器比较——bao JS fallback _deepEqual 无构造器比较路径,分歧点不存在;f2fe7d3249 bun:sql JSC 值层无宿主,bao SQL 面=bun:sqlite)"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "ad012d550e2c97b8dbdcf414d9c6bc0464cdf5cc",
-      "baseline_date": "2026-08-24",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md)。窗口 bd220a152..ad012d550 14 commits:BCE 重放吸收 3(a1c26a418 runtime 文件移入 script/runtime + patch 锚点迁移;e8d3a4d1b HTML elements 子目录移动;19b9d2164 set_ready_state spec 合规)+不适用 3(683eab21c WPT sync、602e3bf51/ad012d550 依赖 bump)+升级交互裁定 8(dfaaf332a JSContextify、e78ec33cd JSPrincipals、f9b4d1e60 insertLineBreak、89da31fa4 ElementInternals 移动、85852ad27 RsaKeyGenParams、ac1b09ea4 EnforceRange、b542580b completed_body、b70f159f6 revert-a11y——台账 state.json,勿从窗口重 triage)。19b9d2164 语义(initial about:blank readyState 立即 Complete)暴露 cdp_ws 测试弱门竞态已修(BCE-20260824-CDPWS-PLACEHOLDER-GATE);readablestream borrow_mut 监控维持"
+      "baseline": "81787035b7ff4184902bea94ec9506550aa57e22",
+      "baseline_date": "2026-08-25",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收,ports/servoshell 部分含);BCE 清单 11 文件(CLAUDE.md)。窗口 ad012d550..81787035b 12 commits:BCE 重放吸收 1(1728d63f4 accessibility node bounds——servo.rs :327-360 上游 delta 重放,:1310 Bao 补丁区零波及;webidl 联动 ServoTestUtils.webidl +nodesUpdatedBounds;C 组 layout_impl/servotestutils/shared-layout 与上游终态 diff=0 对位)+vendored 同步吸收 5(edf7b5c1c referrer getters 降分配;6441459da needs_accessibility_update→force_ 重命名 5 文件,layout_impl 语义对位;1b33709ae text-transform capitalize 仅小写排版单元;a8f6753e1 无 browsing context 的 Document 不算 active 8 文件;81787035b form submission initiator/referrer 取自 owning Document)+不适用 6(201c46059/2c0948754 android、b780274a1 ohos toolchain、c3bc20759 stylo 依赖 bump 属 W3 钉版本裁决域、4830f9f68/e69564318 servo-media-examples 发布面)。登记:vendor gui.rs 存 93 行窗口外旧基底漂移(9fc8f7389 等,非本窗口内容);csrc/loop.c 缺 packages/ 树独有的 f8b3cf06b0 error-drain 移植 4 hunk(编译源在 csrc,该语义未达二进制);bao-servo fork crates =0.5.x registry pin,vendor 改动不自动达 registry(先例姿态,下游分发面待用户裁定)"
     }
   }
 }

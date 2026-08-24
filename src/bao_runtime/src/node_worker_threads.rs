@@ -1285,137 +1285,227 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             );
         }
 
-        // MessageChannel — use globalThis.MessageChannel if available, otherwise in-process stub.
-        // We evaluate a JS helper that returns the constructor.
-        let source = r#"(function() {
-  var MC = (typeof globalThis.MessageChannel === 'function')
-    ? globalThis.MessageChannel
-    : function MessageChannel() {
-        var queue1 = [];
-        var queue2 = [];
-        var onmsg1 = null;
-        var onmsg2 = null;
-        this.port1 = {
-          postMessage: function(data) {
-            if (typeof onmsg2 === 'function') {
-              onmsg2({ data: data });
-            } else {
-              queue2.push(data);
-            }
-          },
-          get onmessage() { return onmsg1; },
-          set onmessage(fn) {
-            onmsg1 = fn;
-            while (queue1.length > 0 && typeof fn === 'function') {
-              fn({ data: queue1.shift() });
-            }
-          },
-          close: function() {},
-          start: function() {},
-          addEventListener: function() {},
-          removeEventListener: function() {},
-        };
-        this.port2 = {
-          postMessage: function(data) {
-            if (typeof onmsg1 === 'function') {
-              onmsg1({ data: data });
-            } else {
-              queue1.push(data);
-            }
-          },
-          get onmessage() { return onmsg2; },
-          set onmessage(fn) {
-            onmsg2 = fn;
-            while (queue2.length > 0 && typeof fn === 'function') {
-              fn({ data: queue2.shift() });
-            }
-          },
-          close: function() {},
-          start: function() {},
-          addEventListener: function() {},
-          removeEventListener: function() {},
-        };
-      };
-  return MC;
+        // b746c078b6 (#40268): capture the intrinsic web messaging
+        // constructors ONCE, here at realm setup. This installer runs at
+        // bootstrap (globals.rs `install_node_apis`), before any user code,
+        // so these reads see the constructors the realm was initialized
+        // with — a user replacement of globalThis.MessageChannel /
+        // MessagePort / BroadcastChannel can no longer hijack or break
+        // worker_threads: the exports below are built exclusively from these
+        // captured values and never re-read the mutable globals.
+        // @trace REQ-ENG-006 [api:node:worker_threads] — intrinsic capture.
+        let intrinsics_source = r#"(function() {
+  var g = globalThis;
+  function pick(name) {
+    return (typeof g[name] === 'function') ? g[name] : null;
+  }
+  return [pick('MessageChannel'), pick('MessagePort'), pick('BroadcastChannel')];
 })()"#;
-
-        let mut source_text = mozjs::rust::transform_str_to_source_text(source);
-        let mut rval = UndefinedValue();
-        let rval_handle = MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut rval,
-        };
-        let opts =
-            mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:MessageChannel>".as_ptr(), 1);
-        if !opts.is_null() {
-            let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
-            libc::free(opts as *mut _);
-            if ok && rval.is_object() {
-                // The source ends with `})()`, so Evaluate2's completion
-                // value IS the MessageChannel constructor already — do NOT
-                // call it again. The previous code re-invoked the constructor
-                // as a plain function (constructor has no `return` →
-                // undefined), so MessageChannel was never exported:
-                // require('worker_threads').MessageChannel === undefined
-                // (BCE sweep #19, same class as the http2 install() fix,
-                // commit 854677b0).
-                rooted!(&in(cx) let mc_val = ObjectValue(rval.to_object()));
-                JS_DefineProperty(
-                    raw_cx,
-                    exports.handle().into(),
-                    c"MessageChannel".as_ptr(),
-                    mc_val.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-        }
-
-        // MessagePort — delegate to globalThis.MessagePort or refuse.
-        // A bare `new MessagePort()` has no entangled peer, so an empty
-        // constructor would hand back an inert object whose postMessage
-        // silently dropped every message (silent-fake eradication group D).
-        // Real ports come from MessageChannel (port1/port2) or Worker.
-        let mp_source = r#"(typeof globalThis.MessagePort === 'function'
-  ? globalThis.MessagePort
-  : function MessagePort() {
-      throw new TypeError("worker_threads.MessagePort must be obtained from MessageChannel (port1/port2) or Worker — bare construction is not supported and would return an inert fake port.");
-    })"#;
-        let mut mp_text = mozjs::rust::transform_str_to_source_text(mp_source);
-        let mut mp_val = UndefinedValue();
-        let mp_opts =
-            mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:MessagePort>".as_ptr(), 1);
-        if !mp_opts.is_null() {
-            let mp_ok = mozjs_sys::jsapi::JS::Evaluate2(
+        let mut intr_text = mozjs::rust::transform_str_to_source_text(intrinsics_source);
+        rooted!(&in(cx) let mut intr_val = UndefinedValue());
+        let intr_opts = mozjs::glue::NewCompileOptions(
+            raw_cx,
+            c"<worker_threads:web-messaging-intrinsics>".as_ptr(),
+            1,
+        );
+        // Captured intrinsics; a non-object slot = intrinsic absent on this
+        // realm's global (CLI runtime) → that export's fallback applies.
+        rooted!(&in(cx) let mut mc_intrinsic = UndefinedValue());
+        rooted!(&in(cx) let mut mp_intrinsic = UndefinedValue());
+        rooted!(&in(cx) let mut bc_intrinsic = UndefinedValue());
+        if !intr_opts.is_null() {
+            let intr_ok = mozjs_sys::jsapi::JS::Evaluate2(
                 raw_cx,
-                mp_opts,
-                &mut mp_text,
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut mp_val,
-                },
+                intr_opts,
+                &mut intr_text,
+                intr_val.handle_mut().into(),
             );
-            libc::free(mp_opts as *mut _);
-            if mp_ok && mp_val.is_object() {
-                rooted!(&in(cx) let mp_obj = ObjectValue(mp_val.to_object()));
-                JS_DefineProperty(
+            libc::free(intr_opts as *mut _);
+            if intr_ok && intr_val.get().is_object() {
+                rooted!(&in(cx) let intr_arr = intr_val.get().to_object());
+                JS_GetElement(
                     raw_cx,
-                    exports.handle().into(),
-                    c"MessagePort".as_ptr(),
-                    mp_obj.handle().into(),
-                    JSPROP_ENUMERATE as u32,
+                    intr_arr.handle().into(),
+                    0,
+                    mc_intrinsic.handle_mut().into(),
+                );
+                JS_GetElement(
+                    raw_cx,
+                    intr_arr.handle().into(),
+                    1,
+                    mp_intrinsic.handle_mut().into(),
+                );
+                JS_GetElement(
+                    raw_cx,
+                    intr_arr.handle().into(),
+                    2,
+                    bc_intrinsic.handle_mut().into(),
                 );
             }
         }
 
-        // BroadcastChannel — delegate to globalThis, else real in-process
-        // broadcast: a registry keyed by channel name fans every postMessage
-        // out to the OTHER open instances of the same channel (per WHATWG
-        // semantics the sender does not receive its own message). The
-        // previous fallback's postMessage was a no-op that silently dropped
-        // every message (silent-fake eradication group D).
-        let bc_source = r#"(typeof globalThis.BroadcastChannel === 'function'
-  ? globalThis.BroadcastChannel
-  : (function() {
+        // MessageChannel — the captured intrinsic if this realm has one,
+        // otherwise the in-process stub below (unchanged fallback semantics).
+        if mc_intrinsic.get().is_object() {
+            rooted!(&in(cx) let mc_val = ObjectValue(mc_intrinsic.get().to_object()));
+            JS_DefineProperty(
+                raw_cx,
+                exports.handle().into(),
+                c"MessageChannel".as_ptr(),
+                mc_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        } else {
+            let source = r#"(function MessageChannel() {
+  var queue1 = [];
+  var queue2 = [];
+  var onmsg1 = null;
+  var onmsg2 = null;
+  this.port1 = {
+    postMessage: function(data) {
+      if (typeof onmsg2 === 'function') {
+        onmsg2({ data: data });
+      } else {
+        queue2.push(data);
+      }
+    },
+    get onmessage() { return onmsg1; },
+    set onmessage(fn) {
+      onmsg1 = fn;
+      while (queue1.length > 0 && typeof fn === 'function') {
+        fn({ data: queue1.shift() });
+      }
+    },
+    close: function() {},
+    start: function() {},
+    addEventListener: function() {},
+    removeEventListener: function() {},
+  };
+  this.port2 = {
+    postMessage: function(data) {
+      if (typeof onmsg1 === 'function') {
+        onmsg1({ data: data });
+      } else {
+        queue1.push(data);
+      }
+    },
+    get onmessage() { return onmsg2; },
+    set onmessage(fn) {
+      onmsg2 = fn;
+      while (queue2.length > 0 && typeof fn === 'function') {
+        fn({ data: queue2.shift() });
+      }
+    },
+    close: function() {},
+    start: function() {},
+    addEventListener: function() {},
+    removeEventListener: function() {},
+  };
+})"#;
+
+            let mut source_text = mozjs::rust::transform_str_to_source_text(source);
+            let mut rval = UndefinedValue();
+            let rval_handle = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            };
+            let opts = mozjs::glue::NewCompileOptions(
+                raw_cx,
+                c"<worker_threads:MessageChannel>".as_ptr(),
+                1,
+            );
+            if !opts.is_null() {
+                let ok =
+                    mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
+                libc::free(opts as *mut _);
+                if ok && rval.is_object() {
+                    // The source IS a function expression, so Evaluate2's
+                    // completion value is the stub constructor already — do
+                    // NOT call it again. The previous code re-invoked the
+                    // constructor as a plain function (constructor has no
+                    // `return` → undefined), so MessageChannel was never
+                    // exported: require('worker_threads').MessageChannel
+                    // === undefined (BCE sweep #19, same class as the http2
+                    // install() fix, commit 854677b0).
+                    rooted!(&in(cx) let mc_val = ObjectValue(rval.to_object()));
+                    JS_DefineProperty(
+                        raw_cx,
+                        exports.handle().into(),
+                        c"MessageChannel".as_ptr(),
+                        mc_val.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+        }
+
+        // MessagePort — the captured intrinsic if this realm has one,
+        // otherwise refuse. A bare `new MessagePort()` has no entangled
+        // peer, so an empty constructor would hand back an inert object
+        // whose postMessage silently dropped every message (silent-fake
+        // eradication group D). Real ports come from MessageChannel
+        // (port1/port2) or Worker.
+        if mp_intrinsic.get().is_object() {
+            rooted!(&in(cx) let mp_obj = ObjectValue(mp_intrinsic.get().to_object()));
+            JS_DefineProperty(
+                raw_cx,
+                exports.handle().into(),
+                c"MessagePort".as_ptr(),
+                mp_obj.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        } else {
+            let mp_source = r#"(function MessagePort() {
+  throw new TypeError("worker_threads.MessagePort must be obtained from MessageChannel (port1/port2) or Worker — bare construction is not supported and would return an inert fake port.");
+})"#;
+            let mut mp_text = mozjs::rust::transform_str_to_source_text(mp_source);
+            let mut mp_val = UndefinedValue();
+            let mp_opts = mozjs::glue::NewCompileOptions(
+                raw_cx,
+                c"<worker_threads:MessagePort>".as_ptr(),
+                1,
+            );
+            if !mp_opts.is_null() {
+                let mp_ok = mozjs_sys::jsapi::JS::Evaluate2(
+                    raw_cx,
+                    mp_opts,
+                    &mut mp_text,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut mp_val,
+                    },
+                );
+                libc::free(mp_opts as *mut _);
+                if mp_ok && mp_val.is_object() {
+                    rooted!(&in(cx) let mp_obj = ObjectValue(mp_val.to_object()));
+                    JS_DefineProperty(
+                        raw_cx,
+                        exports.handle().into(),
+                        c"MessagePort".as_ptr(),
+                        mp_obj.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+        }
+
+        // BroadcastChannel — the captured intrinsic if this realm has one,
+        // else real in-process broadcast: a registry keyed by channel name
+        // fans every postMessage out to the OTHER open instances of the same
+        // channel (per WHATWG semantics the sender does not receive its own
+        // message). The previous fallback's postMessage was a no-op that
+        // silently dropped every message (silent-fake eradication group D).
+        if bc_intrinsic.get().is_object() {
+            rooted!(&in(cx) let bc_obj = ObjectValue(bc_intrinsic.get().to_object()));
+            JS_DefineProperty(
+                raw_cx,
+                exports.handle().into(),
+                c"BroadcastChannel".as_ptr(),
+                bc_obj.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        } else {
+            let bc_source = r#"(function() {
       var registry = globalThis.__baoBroadcastRegistry || (globalThis.__baoBroadcastRegistry = {});
       function BroadcastChannel(name) {
         if (!(this instanceof BroadcastChannel)) return new BroadcastChannel(name);
@@ -1473,34 +1563,35 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
       };
       Object.defineProperty(BroadcastChannel.prototype, 'closed', { get: function() { return this._closed; }, configurable: true });
       return BroadcastChannel;
-    })())"#;
-        let mut bc_text = mozjs::rust::transform_str_to_source_text(bc_source);
-        let mut bc_val = UndefinedValue();
-        let bc_opts = mozjs::glue::NewCompileOptions(
-            raw_cx,
-            c"<worker_threads:BroadcastChannel>".as_ptr(),
-            1,
-        );
-        if !bc_opts.is_null() {
-            let bc_ok = mozjs_sys::jsapi::JS::Evaluate2(
+    })()"#;
+            let mut bc_text = mozjs::rust::transform_str_to_source_text(bc_source);
+            let mut bc_val = UndefinedValue();
+            let bc_opts = mozjs::glue::NewCompileOptions(
                 raw_cx,
-                bc_opts,
-                &mut bc_text,
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut bc_val,
-                },
+                c"<worker_threads:BroadcastChannel>".as_ptr(),
+                1,
             );
-            libc::free(bc_opts as *mut _);
-            if bc_ok && bc_val.is_object() {
-                rooted!(&in(cx) let bc_obj = ObjectValue(bc_val.to_object()));
-                JS_DefineProperty(
+            if !bc_opts.is_null() {
+                let bc_ok = mozjs_sys::jsapi::JS::Evaluate2(
                     raw_cx,
-                    exports.handle().into(),
-                    c"BroadcastChannel".as_ptr(),
-                    bc_obj.handle().into(),
-                    JSPROP_ENUMERATE as u32,
+                    bc_opts,
+                    &mut bc_text,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut bc_val,
+                    },
                 );
+                libc::free(bc_opts as *mut _);
+                if bc_ok && bc_val.is_object() {
+                    rooted!(&in(cx) let bc_obj = ObjectValue(bc_val.to_object()));
+                    JS_DefineProperty(
+                        raw_cx,
+                        exports.handle().into(),
+                        c"BroadcastChannel".as_ptr(),
+                        bc_obj.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
             }
         }
 

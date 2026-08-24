@@ -126,6 +126,12 @@ enum {
      * Safe for HTTP/TLS where the client always sends first; do not use for protocols where
      * the server sends the first bytes. */
     LIBUS_LISTEN_DEFER_ACCEPT = 64,
+    /* A socket adopted by us_socket_from_fd, or accepted by a listener created with this option,
+     * is registered as if us_socket_pause had been called on it, so no extra poll change is needed
+     * per connection (node:net's pauseOnConnect; cluster adopts every connection this way). Not
+     * for connects, and ignored for TLS sockets: the handshake needs the reads, the owner pauses
+     * those sockets itself. */
+    LIBUS_SOCKET_OPEN_PAUSED = 256,
 };
 
 /* Library types publicly available */
