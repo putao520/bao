@@ -33,9 +33,9 @@ gh issue list --repo putao520/bao --state open --json number,title,body,labels
 
 | 判定 | 判据 |
 |---|---|
-| **accept** | SPEC 有对应 REQ,且 issue 是其子集 / 澄清 / bug 报告;scope 可估:≤ 3 文件、非 vendor、非 BCE 10 文件清单 |
+| **accept** | SPEC 有对应 REQ,且 issue 是其子集 / 澄清 / bug 报告;scope 任意(2026-08-24 扩权)——大 scope 分批 C-E-W-V,触 vendor 按 upstream-daily.md §3 安全协议 |
 | **reject-and-close(门禁主路径)** | 四类:① 已实现(给 `file:line` 证据);② 重复(给 `#号`);③ 不适用(Bao 无对应结构,给理由);④ **超主任务范围(门禁,用户裁决 2026-08-21)**——超出 PRD 六域 / 主任务愿景、与主任务或 PRD/SPEC 直接冲突、无映射且判明是新能力诉求 |
-| **escalate(收窄)** | 仅两类:语义不明(读不出是否在范围内 / 证据不足无法判定)+ 工程类(触 BCE 10 文件 / scope > 3 文件,在范围内) |
+| **escalate(收窄)** | 仅三类:语义不明(读不出是否在范围内 / 证据不足无法判定)+ 工程类 mozjs 跨版本升级(用户裁决 2026-08-24)+ pending 重试耗尽 |
 
 **禁假绿**:每个判定必须落到证据锚点(SPEC 段落或 `file:line`),禁「大概」。
 
