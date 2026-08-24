@@ -77,24 +77,12 @@ impl SystemError {
     pub fn get_errno(&self) -> E {
         e_from_negated(self.errno)
     }
-    /// Zig: `SystemError.deref`.
-    pub fn deref(&self) {
-        self.path.deref();
-        self.code.deref();
-        self.message.deref();
-        self.syscall.deref();
-        self.hostname.deref();
-        self.dest.deref();
-    }
-    /// Zig: `SystemError.ref`.
-    pub fn ref_(&self) {
-        self.path.ref_();
-        self.code.ref_();
-        self.message.ref_();
-        self.syscall.ref_();
-        self.hostname.ref_();
-        self.dest.ref_();
-    }
+    // PORT NOTE (upstream bun bc713f9543): Zig's manual `SystemError.deref`/
+    // `.ref` are removed — every `bun_core::String` field owns its ref, so
+    // dropping the struct releases all six (the methods had no callers; a
+    // future sharing spelling is a `Clone` impl, which `String::clone` would
+    // back with one ref per field). Field layout is unchanged (`#[repr(C)]`
+    // C++ contract).
 }
 impl core::fmt::Display for SystemError {
     /// Port of `SystemError.format` (SystemError.zig:85). Zig forks on

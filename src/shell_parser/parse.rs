@@ -2492,7 +2492,7 @@ pub struct Lexer<'bump, const ENCODING: u8> {
 
     /// Contains a list of strings we need to escape
     /// Not owned by this struct
-    pub string_refs: &'bump mut [BunString],
+    pub string_refs: &'bump [BunString],
 
     /// Number of JS object references expected (for bounds validation)
     pub jsobjs_len: u32,
@@ -2504,7 +2504,7 @@ impl<'bump, const ENCODING: u8> Lexer<'bump, ENCODING> {
     pub fn new(
         bump: &'bump Bump,
         src: &'bump [u8],
-        strings_to_escape: &'bump mut [BunString],
+        strings_to_escape: &'bump [BunString],
         jsobjs_len: u32,
     ) -> Self {
         Self {
@@ -2564,9 +2564,9 @@ impl<'bump, const ENCODING: u8> Lexer<'bump, ENCODING> {
             word_start: self.word_start,
             j: self.j,
             delimit_quote: false,
-            // PORT NOTE: reshaped for borrowck — move the exclusive borrow into the sublexer
-            // and restore it in continue_from_sublexer (avoids aliased &mut).
-            string_refs: core::mem::take(&mut self.string_refs),
+            // bc713f9543: `string_refs` is a shared `&'bump [BunString]`
+            // borrow now — plain copy, no take/restore needed.
+            string_refs: self.string_refs,
             jsobjs_len: self.jsobjs_len,
         };
         sublexer.chars.state = CharState::Normal;
@@ -2588,7 +2588,7 @@ impl<'bump, const ENCODING: u8> Lexer<'bump, ENCODING> {
         self.word_start = sublexer.word_start;
         self.j = sublexer.j;
         self.delimit_quote = sublexer.delimit_quote;
-        self.string_refs = core::mem::take(&mut sublexer.string_refs);
+        self.string_refs = sublexer.string_refs;
     }
 
     fn make_snapshot(&self) -> BacktrackSnapshot<'bump, ENCODING> {
@@ -3452,7 +3452,7 @@ impl<'bump, const ENCODING: u8> Lexer<'bump, ENCODING> {
         Ok(())
     }
 
-    fn append_string_to_str_pool(&mut self, bunstr: BunString) -> Result<(), LexerError> {
+    fn append_string_to_str_pool(&mut self, bunstr: &BunString) -> Result<(), LexerError> {
         let start = self.strpool.len();
         if bunstr.is_utf16() {
             let utf16 = bunstr.utf16();
@@ -3496,7 +3496,7 @@ impl<'bump, const ENCODING: u8> Lexer<'bump, ENCODING> {
         Ok(())
     }
 
-    fn handle_js_string_ref(&mut self, bunstr: BunString) -> Result<(), LexerError> {
+    fn handle_js_string_ref(&mut self, bunstr: &BunString) -> Result<(), LexerError> {
         if bunstr.length() == 0 {
             // Empty JS string ref: emit a zero-length DoubleQuotedText token directly.
             // The parser converts this to a quoted_empty atom, preserving the empty arg.
@@ -3664,14 +3664,15 @@ impl<'bump, const ENCODING: u8> Lexer<'bump, ENCODING> {
         None
     }
 
-    /// __NOTE__: Do not store references to the returned BunString, it does not have its ref count incremented
-    fn eat_js_string_ref(&mut self) -> Option<BunString> {
+    fn eat_js_string_ref(&mut self) -> Option<&'bump BunString> {
         if let Some(idx) = self.eat_js_substitution_idx(
             LEX_JS_STRING_PREFIX,
             "JS string ref",
             Self::validate_js_string_ref_idx,
         ) {
-            return Some(self.string_refs[idx]);
+            // bc713f9543: the arena slice owns the refs for the whole parse;
+            // hand out a `'bump` borrow instead of an un-refcounted copy.
+            return Some(&self.string_refs[idx]);
         }
         None
     }
@@ -4263,7 +4264,7 @@ pub fn assert_special_char(c: u8) {
 pub const BACKSLASHABLE_CHARS: [u8; 4] = *b"$`\"\\";
 
 pub fn escape_bun_str<const ADD_QUOTES: bool>(
-    bunstr: BunString,
+    bunstr: &BunString,
     outbuf: &mut Vec<u8>,
 ) -> Result<bool, bun_alloc::AllocError> {
     if bunstr.is_utf16() {
@@ -4357,7 +4358,7 @@ pub fn escape_utf16<const ADD_QUOTES: bool>(
     Ok(EscapeUtf16Result { is_invalid: false })
 }
 
-pub fn needs_escape_bunstr(bunstr: BunString) -> bool {
+pub fn needs_escape_bunstr(bunstr: &BunString) -> bool {
     if bunstr.is_utf16() {
         return needs_escape_utf16(bunstr.utf16());
     }

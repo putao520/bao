@@ -77,9 +77,9 @@ pub use string::{
     string_joiner, write, zig_string,
 };
 pub use string::{
-    HashedString, MutableString, NodeEncoding, OwnedString, OwnedStringCell, PathString,
-    SliceWithUnderlyingString, SmolStr, String, StringBuilder, WTFStringImpl, WTFStringImplExt,
-    WTFStringImplStruct, ZigString, ZigStringSlice,
+    HashedString, MutableString, NodeEncoding, PathString, SliceWithUnderlyingString, SmolStr,
+    String, StringBuilder, WTFStringImpl, WTFStringImplExt, WTFStringImplStruct, ZigString,
+    ZigStringSlice,
 };
 pub use string::{StringPointer, Tag, slice_to_nul, slice_to_nul_mut};
 

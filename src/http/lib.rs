@@ -843,7 +843,7 @@ use bun_boringssl as boringssl;
 use bun_collections::{ArrayHashMap, VecExt};
 use bun_core::StringBuilder;
 use bun_core::{FeatureFlags, Global, Output, err};
-use bun_core::{OwnedString, String as BunString, Tag as BunStringTag, immutable as strings};
+use bun_core::{String as BunString, Tag as BunStringTag, immutable as strings};
 use bun_uws as uws;
 // TODO(port): spec http.zig:829 uses `std.hash.Wyhash` (NOT Wyhash11 — see
 // PORTING.md §Crate-map). bun_wyhash currently only exports Wyhash11; swap
@@ -5018,8 +5018,10 @@ impl<'a> HTTPClient<'a> {
 
                                 let input =
                                     BunString::borrow_utf8(string_builder.allocated_slice());
+                                // bc713f9543: plain owning `BunString` (was
+                                // `OwnedString` RAII; `Drop` is in the type).
                                 let normalized_url =
-                                    OwnedString::new(bun_url::href_from_string(&input));
+                                    bun_url::href_from_string(&input);
                                 if normalized_url.tag() == BunStringTag::Dead {
                                     // URL__getHref failed, dont pass dead tagged string to toOwnedSlice.
                                     return Err(err!(RedirectURLInvalid));
@@ -5079,8 +5081,10 @@ impl<'a> HTTPClient<'a> {
 
                                 let input =
                                     BunString::borrow_utf8(string_builder.allocated_slice());
+                                // bc713f9543: plain owning `BunString` (was
+                                // `OwnedString` RAII; `Drop` is in the type).
                                 let normalized_url =
-                                    OwnedString::new(bun_url::href_from_string(&input));
+                                    bun_url::href_from_string(&input);
                                 if normalized_url.tag() == BunStringTag::Dead {
                                     return Err(err!(RedirectURLInvalid));
                                 }
@@ -5104,7 +5108,7 @@ impl<'a> HTTPClient<'a> {
 
                                 let base = BunString::borrow_utf8(original_url.href);
                                 let rel = BunString::borrow_utf8(location);
-                                let new_url_ = OwnedString::new(bun_url::join(&base, &rel));
+                                let new_url_ = bun_url::join(&base, &rel);
 
                                 if new_url_.is_empty() {
                                     return Err(err!(InvalidRedirectURL));

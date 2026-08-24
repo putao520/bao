@@ -26,7 +26,7 @@ extern "C" fn __force_link_entry_bao_bundler() {}
 fn __bun_jsc_generate_cached_bytecode(
     _format: bun_options_types::Format,
     _source: &[u8],
-    _source_provider_url: &mut bun_core::String,
+    _source_provider_url: &bun_core::String,
 ) -> Option<Box<[u8]>> {
     // Phase 1: no SM bytecode cache. Return None so bundler emits source text.
     None
@@ -36,8 +36,8 @@ fn __bun_jsc_generate_cached_bytecode(
 // @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
 #[cfg(test)]
 pub fn generate_cached_bytecode_for_test() -> Option<Box<[u8]>> {
-    let mut url = bun_core::String::empty();
-    __bun_jsc_generate_cached_bytecode(bun_options_types::Format::Esm, b"let x = 1;", &mut url)
+    let url = bun_core::String::empty();
+    __bun_jsc_generate_cached_bytecode(bun_options_types::Format::Esm, b"let x = 1;", &url)
 }
 
 #[cfg(test)]
@@ -46,20 +46,20 @@ mod tests {
 
     #[test]
     fn bytecode_returns_none_phase1() {
-        let mut url = bun_core::String::empty();
+        let url = bun_core::String::empty();
         let result = __bun_jsc_generate_cached_bytecode(
             bun_options_types::Format::Esm,
             b"let x = 1;",
-            &mut url,
+            &url,
         );
         assert!(result.is_none());
     }
 
     #[test]
     fn bytecode_handles_empty_source() {
-        let mut url = bun_core::String::empty();
+        let url = bun_core::String::empty();
         let result =
-            __bun_jsc_generate_cached_bytecode(bun_options_types::Format::Esm, b"", &mut url);
+            __bun_jsc_generate_cached_bytecode(bun_options_types::Format::Esm, b"", &url);
         assert!(result.is_none());
     }
 
@@ -70,8 +70,8 @@ mod tests {
             ("Iife", bun_options_types::Format::Iife),
             ("Cjs", bun_options_types::Format::Cjs),
         ] {
-            let mut url = bun_core::String::empty();
-            let result = __bun_jsc_generate_cached_bytecode(format, b"x", &mut url);
+            let url = bun_core::String::empty();
+            let result = __bun_jsc_generate_cached_bytecode(format, b"x", &url);
             assert!(
                 result.is_none(),
                 "Phase 1 should return None for {}",
@@ -88,11 +88,11 @@ mod tests {
     #[test]
     fn bytecode_handles_large_source() {
         let large_source = "let x = 1;\n".repeat(10000);
-        let mut url = bun_core::String::empty();
+        let url = bun_core::String::empty();
         let result = __bun_jsc_generate_cached_bytecode(
             bun_options_types::Format::Esm,
             large_source.as_bytes(),
-            &mut url,
+            &url,
         );
         assert!(result.is_none());
     }
@@ -100,11 +100,11 @@ mod tests {
     #[test]
     fn bytecode_handles_unicode_source() {
         let unicode_source = "const greeting = \"你好世界\";";
-        let mut url = bun_core::String::empty();
+        let url = bun_core::String::empty();
         let result = __bun_jsc_generate_cached_bytecode(
             bun_options_types::Format::Esm,
             unicode_source.as_bytes(),
-            &mut url,
+            &url,
         );
         assert!(result.is_none());
     }

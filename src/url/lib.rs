@@ -179,7 +179,9 @@ pub mod whatwg {
             return String::dead();
         }
         drop(utf8);
-        *str
+        // bc713f9543: owning return — `Clone` refs the WTF arm, bitwise-copies
+        // the borrow tags (same bytes the old Copy return handed out).
+        str.clone()
     }
 
     /// Resolves `relative` against `base` and returns the joined href.
@@ -197,12 +199,12 @@ pub mod whatwg {
         let rel_utf8 = relative.to_utf8();
         let rel_bytes = rel_utf8.slice();
         if rel_bytes.is_empty() {
-            return *base;
+            return base.clone();
         }
         // Absolute URL — return as-is
         let rel_url = super::URL::parse(rel_bytes);
         if !rel_url.protocol.is_empty() {
-            return *relative;
+            return relative.clone();
         }
         // Resolve relative against base origin
         let origin = base_url.origin;
@@ -226,7 +228,7 @@ pub mod whatwg {
         }
         // Already a file URL — return as-is.
         if path.starts_with(b"file:") {
-            return *str;
+            return str.clone();
         }
         let mut buf: Vec<u8> = Vec::with_capacity(path.len() + 8);
         buf.extend_from_slice(b"file://");
@@ -481,10 +483,9 @@ impl<'a> URL<'a> {
         if href.tag() == BunStringTag::Dead {
             return Err(bun_core::err!("InvalidURL"));
         }
-        // Zig: `defer href.deref()` — `to_owned_slice` is infallible so explicit
-        // ordering suffices (no error path between alloc and deref).
+        // Zig: `defer href.deref()` — since bc713f9543 the owning `String`'s
+        // own `Drop` is that defer (covers the `Dead` early-return above too).
         let owned = href.to_owned_slice().into_boxed_slice();
-        href.deref();
         Ok(OwnedURL { href: owned })
     }
 

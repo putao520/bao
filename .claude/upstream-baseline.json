@@ -1,14 +1,14 @@
 {
   "version": 1,
   "updated_at": "2026-08-24",
-  "updated_by": "daily-ops-2026-08-24-wave1",
+  "updated_by": "daily-ops-2026-08-24-wave2",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "7a5d837b86630682d0e482b061c68083f38d9e81",
+      "baseline": "aeb1905d0a1d4890d07be72aba32075a867545cf",
       "baseline_date": "2026-08-24",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。窗口 fb4227f7ee..7a5d837b86 10 commits:吸收 2(7f5a7a3a20 standalone payload 区域布局→src/standalone_graph/StandaloneModuleGraph.rs;d43ddf309a ws-handler 抛错值传播→src/bao_runtime/src/bun_api.rs ws_on_open/message/close)+不适用 6(2082869555/acd342244f/31665f3d80/3e347b3e39/a03a0ec4ba/7a5d837b86 纯 JSC 层)+升级交互裁定 2(009107248b、9dd73746c7——升级台账 state.json,勿从窗口重 triage)。7a5d837b86 后 4 新 commit 本轮已预分类:aff756f8e7 N/A(bao 无 REPL 面)、865130f652 N/A(bao structuredClone 走 SM 原生 JS_Read/WriteStructuredClone,无自持常量池)、bc713f9543 吸收候选(指纹命中:bao fork 保留 Copy+caller-must-deref 形状)、aeb1905d0a 吸收候选(五路径 bao 均有对应面)——留 batch-2"
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。窗口 fb4227f7ee..aeb1905d0a 14 commits 全判定收口:吸收 2+1(wave1 7f5a7a3a20/d43ddf309a;wave2 bc713f9543 bun_core::String 所有权移植——String 弃 Copy、Drop=tag-guard deref、Clone=ref,OwnedString/OwnedStringCell/dupe_ref/From<WTFStringImpl> 移除,15 文件调用点清扫,ownership_tests 6/6;注:WTF 侧 FFI 现仅声明无链接定义,运行时全 borrow/static tag,移植零运行时影响、结构先行)+问题域移植 1(aeb1905d0a:五路径指纹全 N/A/已 fail-closed,三真实分歧落地——Buffer.from(BigInt64Array) TypeError/close 回调 capture-clear-route/upgrade throw 路由)+不适用 8(6 纯 JSC 层+aff756f8e7 REPL 面+865130f652 SM 原生 SC)+升级交互裁定 2(009107248b、9dd73746c7——台账 state.json,勿从窗口重 triage)"
     },
     "servo": {
       "repo": "servo/servo",

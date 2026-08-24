@@ -919,16 +919,14 @@ pub fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
                                 BYTECODE_EXTENSION
                             ))
                         };
-                        source_provider_url.ref_();
-                        // RAII: `defer source_provider_url.deref()` — `OwnedString::Drop`
-                        // releases the ref bumped above on every exit path (incl. `break 'brk`).
-                        let mut source_provider_url =
-                            bun_core::OwnedString::new(source_provider_url);
-
+                        // bc713f9543: `source_provider_url` (bound above) owns
+                        // its ref; `Drop` releases it on every exit path
+                        // (incl. `break 'brk`) — the old manual `.ref_()` +
+                        // `OwnedString` RAII pair is gone.
                         if let Some(bytecode) = crate::bundle_v2::dispatch::generate_cached_bytecode(
                             c.options.output_format,
                             &code_result.buffer,
-                            &mut source_provider_url,
+                            &source_provider_url,
                         ) {
                             let source_provider_url_str = source_provider_url.to_utf8();
                             debug!(

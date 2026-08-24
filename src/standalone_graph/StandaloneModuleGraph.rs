@@ -424,8 +424,9 @@ impl File {
                 }
             }
         }
-        // We don't want this to free.
-        self.wtf_string.dupe_ref()
+        // The cached `wtf_string` keeps the impl alive for the process; hand
+        // the caller its own ref (bc713f9543: `Clone` is the old `dupe_ref`).
+        self.wtf_string.clone()
     }
 
     // TODO(port): move to *_jsc — `pub const blob = @import("../runtime/api/standalone_graph_jsc.zig").fileBlob;`

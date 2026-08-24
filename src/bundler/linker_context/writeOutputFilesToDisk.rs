@@ -334,14 +334,13 @@ pub fn write_output_files_to_disk(
                         bstr::BStr::new(&chunk.final_rel_path),
                         BYTECODE_EXTENSION,
                     ));
-                    source_provider_url.ref_();
-                    // `defer source_provider_url.deref()` handled by Drop on OwnedString.
-                    let mut source_provider_url = bun_core::OwnedString::new(source_provider_url);
-
+                    // bc713f9543: `source_provider_url` (bound above) owns
+                    // its ref; `Drop` releases it (was `.ref_()` +
+                    // `OwnedString` RAII).
                     if let Some(bytecode) = crate::bundle_v2::dispatch::generate_cached_bytecode(
                         c.options.output_format,
                         &code_result.buffer,
-                        &mut source_provider_url,
+                        &source_provider_url,
                     ) {
                         let source_provider_url_str = source_provider_url.to_utf8();
                         debug!(

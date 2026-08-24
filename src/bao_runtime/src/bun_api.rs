@@ -5854,7 +5854,8 @@ unsafe extern "C" fn bun_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             } else {
                 let utf8 = result.to_utf8();
                 let p = ::std::str::from_utf8(utf8.slice()).unwrap_or(&href).to_string();
-                result.deref();
+                // bc713f9543: `result` owns its ref — `Drop` at scope exit is
+                // the old manual `.deref()` (after `utf8`'s own ref releases).
                 p
             };
             s = percent_decode_path(&path);
@@ -8573,7 +8574,7 @@ unsafe extern "C" fn bun_file_url_to_path(cx: *mut JSContext, argc: u32, vp: *mu
             let s = ::std::str::from_utf8(utf8.slice())
                 .unwrap_or(&url_str)
                 .to_string();
-            result.deref();
+            // bc713f9543: owning `result` — `Drop` replaces the manual deref.
             s
         }
     } else {
@@ -8654,7 +8655,7 @@ unsafe extern "C" fn bun_path_to_file_url(cx: *mut JSContext, argc: u32, vp: *mu
             let s = ::std::str::from_utf8(utf8.slice())
                 .unwrap_or("")
                 .to_string();
-            result.deref();
+            // bc713f9543: owning `result` — `Drop` replaces the manual deref.
             s
         }
     };
