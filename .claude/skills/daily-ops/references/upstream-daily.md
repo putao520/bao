@@ -1,13 +1,13 @@
-# 上游轻量日同步(daily-ops 自动线)
+# 上游日同步(daily-ops 自动线)
 
-daily-ops §1 阶段 2(窗口扫描)与阶段 4(吸收波)的上游操作细则。任意窗口与 BCE patch 重放均在本协议内自动执行(2026-08-24 用户裁决扩权);仅 mozjs 跨版本升级归交互会话 `upstream-absorb` skill。
+daily-ops §1 阶段 2(窗口扫描)与阶段 4(吸收波)的上游操作细则。任意窗口、BCE patch 重放与 mozjs 跨版本升级均在本协议内自动执行(2026-08-24 用户裁决扩权;mozjs 走 SKILL.md §9 长任务协议)。
 
 ## §1 分工表
 
 | 条件 | 路线 |
 |---|---|
 | 任意窗口、含触 BCE patch-replay 文件 | 本协议(daily-ops 内自动,2026-08-24 用户裁决扩权) |
-| mozjs 跨版本升级(vendor 重建 + rlib 重编 + 5 项 BAO patch 重放) | escalate → 交互会话(用户裁决 2026-08-24) |
+| mozjs 跨版本升级 | 本协议(长任务,SKILL.md §9;7 天预算跨日结转,用户裁决 2026-08-24) |
 
 BCE 清单锚点 = 项目 CLAUDE.md「servo 定制文件清单(11 个)」。**触其一 → 按 §5 重放协议自主执行。**
 
@@ -43,3 +43,10 @@ BCE 清单锚点 = 项目 CLAUDE.md「servo 定制文件清单(11 个)」。**�
 - **重放纪律**:upstream 基底 + patch 精确重放(patch 锚点与完整记录在 git log 各 stage commit message,`git show <old>:vendor/servo/...` 取旧版对照);上游版与 Bao 补丁版冲突时**Bao 补丁语义恒胜**(如 handle.rs 的 JSEngineSetup 幂等 init,禁用上游裸版)
 - **派工合同/陷阱库/收口协议**:全部继承 upstream-absorb skill §3/§4/§5(派工模板、并发零重叠、波末单 commit、基线 bump 同 commit、发布闭包)
 - **失败语义**:差异过大/语义不明 → stop 报告不猜;中途态保留禁自动 reset;pending 次日重试 ≤1,再失败 escalate(SKILL.md §4 不变)
+
+## §6 mozjs 跨版本升级(长任务)
+
+- **重放锚点** = 项目 CLAUDE.md「mozjs fork BAO patch 清单(5 项)」(EBUSY 激进版 / JSEngine init race / set_hide_script_from_debugger / BaselineFrame NULL guard / JS_NewEmulatesUndefinedFunction——注意第 5 项 `jsapi.h` 声明必须在 `namespace JS` 外(全局作用域),否则 bindgen 生成 `JS::` 前缀 mangled link_name 与 cpp 全局定义不匹配 → 链接失败)+ `mozjs-sys/build.rs` 2 patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)
+- **构建经验锚点** = CLAUDE.md「mozjs 构建经验」:rlib 打包 native code(改 `.a` 不够,必须删 rlib 重新编译)、make 增量 bug(手动 `ar -d` + `ar -q` 替换或删整个 build output 目录)、清理序(`.fingerprint` / `deps` / `build` / `incremental` 对真实 CARGO_TARGET_DIR 执行)、EBUSY patch 复现排查(`nm libmozjs_sys-*.rlib | grep MutexImplD1` 查 rlib 是否含旧代码)
+- **阶段化推进(跨日)**:① 外科移植上游 mozjs(参照 git 历史先例:servo/mozjs main 定点移植)→ ② 5+2 patch 重放 → ③ 构建清理序 → ④ scoped 测试三重判据 → ⑤ 发布闭包;每阶段完成度记 `long_running.phase`
+- **中断安全**:任何一日中断 → 中途态保留禁 reset,次日从 phase 继续
