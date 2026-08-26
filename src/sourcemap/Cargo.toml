@@ -3,7 +3,7 @@ name = "bun_sourcemap"
 # 0.1.1 (2026-08-19): W1 dual-mode — VecExt std-Vec imprint fix
 # (Mapping.rs proof) + ChanVec adaptation on core 0.1.2.
 # 0.1.2 (2026-08-19): post-0.1.1 sweep deltas.
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

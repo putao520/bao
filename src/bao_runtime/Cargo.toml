@@ -4,7 +4,7 @@ name = "bun_runtime"
 # so this patch release ships alone. runtime fix batch: atob/btoa binary fidelity, async_hooks promise identity, spawn watch, SC bridge + WHATWG URL parity, premature loop exit fetch teardown.
 # 0.1.2 (2026-08-19): stable-channel fix — http_client body handoff via
 # bun_core::vec::chan_vec_to_std (Bytes::From needs the std Vec).
-version = "0.1.9"
+version = "0.1.10"
 description = "Bao runtime integration — JS engine + Bun API + event loop"
 edition.workspace = true
 license.workspace = true

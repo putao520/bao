@@ -6,7 +6,7 @@ name = "bun_alloc"
 # api2 surface bun_collections 0.1.1 builds against.
 # 0.1.2 (2026-08-19): +pub adopt_std_box zero-copy Global adopter
 # (71afadb4 companion).
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

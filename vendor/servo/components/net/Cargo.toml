@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-net"
-version = "0.5.3"
+version = "0.5.4"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -120,7 +120,7 @@ hyper = { workspace = true, features = ["full"] }
 hyper-util = { workspace = true, features = ["server-graceful"] }
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
-net = { package = "bao-servo-net", path = ".", version = "=0.5.3", features = ["test-util"] }
+net = { package = "bao-servo-net", path = ".", version = "=0.5.4", features = ["test-util"] }
 rustls = { workspace = true, features = ["aws-lc-rs"] }
 servo-default-resources = { workspace = true }
 

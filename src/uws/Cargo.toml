@@ -4,7 +4,7 @@ name = "bun_uws"
 # workspace inheritance so this patch release can ship alone. Removes the
 # duplicate BUN__warn__extra_ca_load_failed export (single owner bao_uloop);
 # strict consumer linkers (wild) died on the old duplicate.
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
