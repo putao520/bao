@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{OnceCell, RefCell, RefMut};
+use std::collections::HashSet;
 use std::default::Default;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -69,7 +70,7 @@ use crate::dom::csp::{GlobalCspReporting, Violation, parse_csp_list_from_metadat
 use crate::dom::debugger::debuggerglobalscope::DebuggerGlobalScope;
 use crate::dom::dedicatedworkerglobalscope::DedicatedWorkerGlobalScope;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::globalscope::script_execution::{ErrorReporting, RethrowErrors};
+use crate::dom::globalscope::script_execution::RethrowErrors;
 use crate::dom::htmlscriptelement::{SCRIPT_JS_MIMES, Script};
 use crate::dom::idbfactory::IDBFactory;
 use crate::dom::performance::performance::Performance;
@@ -77,6 +78,7 @@ use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::dom::promise::Promise;
 use crate::dom::reporting::reportingendpoint::{ReportingEndpoint, SendReportsToEndpoints};
 use crate::dom::reporting::reportingobserver::ReportingObserver;
+use crate::dom::script_execution::ScriptOptions;
 use crate::dom::serviceworker::cachestorage::CacheStorage;
 use crate::dom::sharedworkerglobalscope::SharedWorkerGlobalScope;
 use crate::dom::trustedtypes::trustedscripturl::TrustedScriptURL;
@@ -245,11 +247,10 @@ impl FetchResponseListener for ScriptFetchContext {
             cx,
             source,
             scope.worker_url.borrow().clone(),
+            ScriptOptions::External,
             ScriptFetchOptions::default_classic_script(),
-            ErrorReporting::Unmuted,
             Some(IntroductionType::WORKER),
             1,
-            true,
         );
 
         // Step 6 Run onComplete given script.
@@ -682,9 +683,12 @@ impl WorkerGlobalScope {
             self.execution_ready.store(true, Ordering::Relaxed);
             match script {
                 Script::Classic(script) => {
-                    _ = self
-                        .globalscope
-                        .run_a_classic_script(cx, script, RethrowErrors::No);
+                    _ = self.globalscope.run_a_classic_script(
+                        cx,
+                        script,
+                        RethrowErrors::No,
+                        None, // return_value
+                    );
                 },
                 Script::Module(module_tree) => {
                     self.globalscope.run_a_module_script(cx, module_tree, false);
@@ -833,21 +837,25 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
 
             // Step 10. Let script be the result of creating a classic script
             // given sourceText, settingsObject, response's URL, the default script fetch options, and mutedErrors.
+            let mut script_options = ScriptOptions::External;
+            script_options.set(ScriptOptions::MutedErrors, muted_errors);
             let script = self.globalscope.create_a_classic_script(
                 cx,
                 source,
                 url,
+                script_options,
                 ScriptFetchOptions::default_classic_script(),
-                ErrorReporting::from(muted_errors),
                 Some(IntroductionType::WORKER),
                 1,
-                true,
             );
 
             // Run the classic script script, with rethrow errors set to true.
-            let result = self
-                .globalscope
-                .run_a_classic_script(cx, script, RethrowErrors::Yes);
+            let result = self.globalscope.run_a_classic_script(
+                cx,
+                script,
+                RethrowErrors::Yes,
+                None, // return_value
+            );
 
             if let Err(error) = result {
                 if self.is_closing() {
@@ -1106,7 +1114,8 @@ impl WorkerGlobalScope {
             CommonScriptMsg::Task(_, task, _, _) => task.run_box(cx),
             CommonScriptMsg::CollectReports(reports_chan) => {
                 perform_memory_report(|ops| {
-                    let reports = get_reports(cx, format!("url({})", self.get_url()), ops);
+                    let reports =
+                        get_reports(cx, format!("url({})", self.get_url()), ops, HashSet::new());
                     reports_chan.send(ProcessReports::new(reports));
                 });
             },

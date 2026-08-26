@@ -13,7 +13,7 @@ use bun_core::{Error, err};
 use super::stream::{State as StreamState, Stream};
 use super::{dispatch, encode};
 use crate::h2_frame_parser as wire;
-use crate::http_context::HTTPSocket;
+use crate::http_context::{HTTPSocket, PeerVerification};
 use crate::http_request_body::HTTPRequestBody;
 use crate::internal_state::HTTPStage;
 use crate::lshpack;
@@ -58,10 +58,10 @@ pub struct ClientSession {
     pub port: u16,
     pub ssl_config: Option<ssl_config::SharedPtr>,
     pub did_have_handshaking_error: bool,
-    /// True if the TLS handshake ran with `rejectUnauthorized=true`. Carried
-    /// into the keepalive pool so a strict caller never reuses a session whose
-    /// hostname was never validated.
-    pub established_with_reject_unauthorized: bool,
+    /// How the TLS peer was authenticated; carried into the keepalive pool and
+    /// checked by the coalescing path so a caller only multiplexes onto a
+    /// session verified the way it would verify a fresh one.
+    pub verification: PeerVerification,
     pub host_header_hash: u64,
 
     /// Queued bytes for the socket; whole frames are written here and
@@ -391,7 +391,7 @@ impl ClientSession {
             port: client.connected_url.get_port_auto(),
             ssl_config: client.tls_props.clone(),
             did_have_handshaking_error: client.flags.did_have_handshaking_error,
-            established_with_reject_unauthorized: client.flags.reject_unauthorized,
+            verification: client.socket_verification(),
             host_header_hash: client.proxy_auth_hash(),
             write_buffer: bun_io::StreamBuffer::default(),
             read_buffer: Vec::new(),
@@ -691,8 +691,8 @@ impl ClientSession {
         });
     }
 
-    /// JS just enabled `response_body_streaming` on the request, so flush any
-    /// body bytes that arrived between metadata delivery and `getReader()`.
+    /// A body consumer attached on the JS side: flush any body bytes that arrived between
+    /// metadata delivery and `getReader()`.
     fn drain_response_body(&mut self, async_http_id: u32) {
         for &stream in self.streams.values() {
             let Some(client) = stream_mut(stream).client_mut() else {
@@ -1122,7 +1122,7 @@ impl ClientSession {
             HTTPClient::ssl_ctx_mut(self.ctx).release_socket(
                 self.socket,
                 self.did_have_handshaking_error,
-                self.established_with_reject_unauthorized,
+                self.verification,
                 &self.hostname,
                 self.port,
                 self.ssl_config.as_ref(),

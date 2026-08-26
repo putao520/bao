@@ -67,6 +67,7 @@ mod final_remaining_integration_tests;
 mod fs_async_callback_tests;
 mod fs_buffer_write_tests;
 mod fs_deep_tests;
+mod fs_upstream_semantics_tests;
 mod fs_watch_events_tests;
 mod gc_stealth_unit_tests;
 mod gc_store_deep_tests;

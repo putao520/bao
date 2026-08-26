@@ -46,7 +46,7 @@ use servo_constellation_traits::{
     AuxiliaryWebViewCreationRequest, LoadData, LoadOrigin, NavigationHistoryBehavior,
     ScriptToConstellationMessage, TargetSnapshotParams,
 };
-use servo_url::{ImmutableOrigin, ServoUrl};
+use servo_url::{ImmutableOrigin, OriginSnapshot, ServoUrl};
 use storage_traits::webstorage_thread::WebStorageThreadMsg;
 use style::attr::parse_integer;
 
@@ -63,6 +63,7 @@ use crate::dom::dissimilaroriginwindow::DissimilarOriginWindow;
 use crate::dom::document::Document;
 use crate::dom::element::Element;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::node::node::NodeTraits;
 use crate::dom::window::Window;
 use crate::event_loop::script_thread::{ScriptThread, with_script_thread};
 use crate::event_loop::script_window_proxies::ScriptWindowProxies;
@@ -390,7 +391,7 @@ impl WindowProxy {
 
         let new_window_proxy = ScriptThread::find_document(response.new_pipeline_id)
             .and_then(|doc| doc.browsing_context())?;
-        if name.to_lowercase() != "_blank" {
+        if !name.eq_ignore_ascii_case("_blank") {
             new_window_proxy.set_name(name);
         }
         if noopener {
@@ -649,39 +650,35 @@ impl WindowProxy {
         name: DOMString,
         noopener: bool,
     ) -> (Option<DomRoot<WindowProxy>>, bool) {
-        match name.to_lowercase().as_ref() {
-            "" | "_self" => {
-                // Step 3.
-                (Some(DomRoot::from_ref(self)), false)
-            },
-            "_parent" => {
-                // Step 4
-                if let Some(parent) = self.parent() {
-                    return (Some(DomRoot::from_ref(parent)), false);
-                }
-                (None, false)
-            },
-            "_top" => {
-                // Step 5
-                (Some(DomRoot::from_ref(self.top())), false)
-            },
-            "_blank" => (
+        if name.is_empty() || name.eq_ignore_ascii_case("_self") {
+            // Step 3.
+            (Some(DomRoot::from_ref(self)), false)
+        } else if name.eq_ignore_ascii_case("_parent") {
+            // Step 4
+            if let Some(parent) = self.parent() {
+                return (Some(DomRoot::from_ref(parent)), false);
+            }
+            (None, false)
+        } else if name.eq_ignore_ascii_case("_top") {
+            // Step 5
+            (Some(DomRoot::from_ref(self.top())), false)
+        } else if name.eq_ignore_ascii_case("_blank") {
+            (
                 self.create_auxiliary_browsing_context(cx, name, noopener),
                 true,
-            ),
-            _ => {
-                // Step 6.
-                // TODO: expand the search to all 'familiar' bc,
-                // including auxiliaries familiar by way of their opener.
-                // See https://html.spec.whatwg.org/multipage/#familiar-with
-                match ScriptThread::find_window_proxy_by_name(&name) {
-                    Some(proxy) => (Some(proxy), false),
-                    None => (
-                        self.create_auxiliary_browsing_context(cx, name, noopener),
-                        true,
-                    ),
-                }
-            },
+            )
+        } else {
+            // Step 6.
+            // TODO: expand the search to all 'familiar' bc,
+            // including auxiliaries familiar by way of their opener.
+            // See https://html.spec.whatwg.org/multipage/#familiar-with
+            match ScriptThread::find_window_proxy_by_name(&name) {
+                Some(proxy) => (Some(proxy), false),
+                None => (
+                    self.create_auxiliary_browsing_context(cx, name, noopener),
+                    true,
+                ),
+            }
         }
     }
 
@@ -730,7 +727,7 @@ impl WindowProxy {
         result
     }
 
-    pub fn document_origin(&self) -> Option<String> {
+    pub(crate) fn document_origin(&self) -> Option<OriginSnapshot> {
         let pipeline_id = self.currently_active()?;
         let (result_sender, result_receiver) = generic_channel::channel().unwrap();
         self.global()
@@ -741,6 +738,52 @@ impl WindowProxy {
             ))
             .ok()?;
         result_receiver.recv().ok()?
+    }
+
+    pub(crate) fn internal_ancestor_origin_objects_list(&self) -> Option<Vec<ImmutableOrigin>> {
+        let pipeline_id = self.currently_active()?;
+        let (result_sender, result_receiver) = generic_channel::channel().unwrap();
+        self.global()
+            .script_to_constellation_chan()
+            .send(
+                ScriptToConstellationMessage::GetInternalAncestorOriginObjectsList(
+                    pipeline_id,
+                    result_sender,
+                ),
+            )
+            .ok()?;
+        result_receiver.recv().ok()?
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#internal-ancestor-origin-objects-list-creation-steps>
+    pub(crate) fn parent_origin_and_internal_ancestor_origin_objects_list(
+        &self,
+    ) -> Option<(OriginSnapshot, Vec<ImmutableOrigin>)> {
+        if let Some(frame_element) = self.frame_element() {
+            let parent_document = frame_element.owner_document();
+            // Step 4. Assert: parentDoc is fully active.
+            assert!(parent_document.is_fully_active());
+            Some((
+                parent_document.origin().snapshot(),
+                parent_document
+                    .internal_ancestor_origin_objects_list()
+                    .clone()
+                    .expect("Must always be fully active"),
+            ))
+        } else if let Some(parent_proxy) = self.parent() {
+            // Step 4. Assert: parentDoc is fully active.
+            assert!(parent_proxy.currently_active().is_some());
+
+            let origin = parent_proxy
+                .document_origin()
+                .expect("Must always be active");
+            let list = parent_proxy
+                .internal_ancestor_origin_objects_list()
+                .expect("Must always be active");
+            Some((origin, list))
+        } else {
+            None
+        }
     }
 
     #[expect(unsafe_code)]
@@ -800,6 +843,10 @@ impl WindowProxy {
             );
             self.reflector.rootable().set(new_js_proxy.get());
         }
+    }
+
+    pub(crate) fn set_pipeline_id(&self, pipeline_id: PipelineId) {
+        self.currently_active.set(Some(pipeline_id));
     }
 
     pub(crate) fn set_currently_active(&self, cx: &mut JSContext, window: &Window) {

@@ -114,15 +114,11 @@ pub use bun_core::base64::encode;
 
 /// [`encode`] appended to `out` (reserving the room itself); returns the number of bytes appended.
 pub fn encode_append(out: &mut Vec<u8>, source: &[u8]) -> usize {
-    encode_append_impl(out, source, false)
-}
-
-fn encode_append_impl(out: &mut Vec<u8>, source: &[u8], is_urlsafe: bool) -> usize {
-    let len = simdutf::base64::encode_len(source.len(), is_urlsafe);
+    let len = simdutf::base64::encode_len(source.len(), false);
     // SAFETY: `encode_raw` writes exactly `len` bytes into the `len` spare bytes reserved here.
     unsafe {
         bun_core::vec::fill_spare(out, len, |spare| {
-            let written = simdutf::base64::encode_raw(source, spare.as_mut_ptr(), is_urlsafe);
+            let written = simdutf::base64::encode_raw(source, spare.as_mut_ptr(), false);
             debug_assert_eq!(written, len);
             (written, written)
         })
@@ -150,9 +146,21 @@ pub(crate) fn simdutf_encode_url_safe(destination: &mut [u8], source: &[u8]) -> 
 }
 
 /// [`simdutf_encode_url_safe`] into a freshly-allocated `Vec<u8>`.
+// PORT NOTE (upstream 023e84ab11 deleted this fn as dead code in bun; bao
+// keeps it — `bao_runtime` Buffer.toString("base64url") is a live caller).
+// The shared `encode_append_impl` helper was folded away per upstream; the
+// url-safe append variant is inlined here.
 pub fn simdutf_encode_url_safe_alloc(source: &[u8]) -> Vec<u8> {
     let mut destination = Vec::new();
-    encode_append_impl(&mut destination, source, true);
+    let len = simdutf::base64::encode_len(source.len(), true);
+    // SAFETY: `encode_raw` writes exactly `len` bytes into the `len` spare bytes reserved here.
+    unsafe {
+        bun_core::vec::fill_spare(&mut destination, len, |spare| {
+            let written = simdutf::base64::encode_raw(source, spare.as_mut_ptr(), true);
+            debug_assert_eq!(written, len);
+            (written, written)
+        });
+    }
     destination
 }
 

@@ -7,7 +7,7 @@ use bun_core::{Error, err};
 use bun_uws as uws;
 
 use crate::http_cert_error::HTTPCertError;
-use crate::http_context::HTTPSocket;
+use crate::http_context::{HTTPSocket, PeerVerification};
 use crate::internal_state::{HTTPStage, Stage};
 use crate::ssl_config::SSLConfig;
 use crate::ssl_wrapper::{Handlers as SSLWrapperHandlers, InitError, SSLWrapper, WriteDataError};
@@ -58,12 +58,11 @@ pub struct ProxyTunnel {
     /// would re-pool with the flag erased, letting a later reject_unauthorized=true
     /// request silently reuse a tunnel whose cert failed validation.
     pub did_have_handshaking_error: bool,
-    /// Whether the inner TLS session was established with reject_unauthorized=true
-    /// (and therefore hostname-verified via checkServerIdentity). A CA-valid but
-    /// wrong-hostname cert produces error_no=0 so did_have_handshaking_error stays
-    /// false; without this flag, a strict caller could reuse a tunnel where
-    /// hostname was never checked.
-    pub established_with_reject_unauthorized: bool,
+    /// How the inner TLS peer was authenticated. A CA-valid but wrong-hostname
+    /// cert produces error_no=0 so did_have_handshaking_error stays false;
+    /// without this, a strict caller could reuse a tunnel where the hostname
+    /// was never checked natively.
+    pub verification: PeerVerification,
     pub ref_count: Cell<u32>,
 }
 
@@ -75,7 +74,7 @@ impl Default for ProxyTunnel {
             socket: Socket::None,
             write_buffer: bun_io::StreamBuffer::default(),
             did_have_handshaking_error: false,
-            established_with_reject_unauthorized: false,
+            verification: PeerVerification::None,
             ref_count: Cell::new(1),
         }
     }
@@ -826,12 +825,10 @@ impl ProxyTunnel {
         // of the inner TLS session, not the client. adopt() restores it to the
         // next client so re-pooling doesn't erase it.
         self.did_have_handshaking_error = client.flags.did_have_handshaking_error;
-        // OR semantics — a lax client is allowed to reuse a strict tunnel (the
+        // max semantics — a lax client is allowed to reuse a strict tunnel (the
         // existingSocket guard only blocks the reverse). When that lax client
-        // detaches, it must not downgrade a hostname-verified TLS session to
-        // lax-established; once true, stays true.
-        self.established_with_reject_unauthorized =
-            self.established_with_reject_unauthorized || client.flags.reject_unauthorized;
+        // detaches, it must not downgrade a hostname-verified TLS session.
+        self.verification = self.verification.max(client.target_verification());
         // We intentionally leave wrapper.handlers.ctx stale here. The tunnel is
         // idle in the pool and no callbacks will fire until adopt() reattaches
         // a new owner and socket.

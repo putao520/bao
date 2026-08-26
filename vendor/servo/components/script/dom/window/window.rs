@@ -101,7 +101,6 @@ use style::error_reporting::{ContextualParseError, ParseErrorReporter};
 use style::properties::PropertyId;
 use style::properties::style_structs::Font;
 use style::selector_parser::PseudoElement;
-use style::shared_lock::StylesheetGuards;
 use style::str::HTML_SPACE_CHARACTERS;
 use style::stylesheets::UrlExtraData;
 use style_traits::CSSPixel;
@@ -506,6 +505,12 @@ pub(crate) struct Window {
     /// A flag to indicate whether the developer tools has requested
     /// live updates from the window.
     devtools_wants_updates: Cell<bool>,
+
+    /// <https://www.w3.org/TR/largest-contentful-paint/#has-dispatched-scroll-event>
+    has_dispatched_scroll_event: Cell<bool>,
+
+    /// <https://wicg.github.io/event-timing/#has-dispatched-input-event>
+    has_dispatched_input_event: Cell<bool>,
 }
 
 impl Window {
@@ -520,6 +525,16 @@ impl Window {
 
     pub(crate) fn as_global_scope(&self) -> &GlobalScope {
         self.upcast::<GlobalScope>()
+    }
+
+    /// <https://www.w3.org/TR/largest-contentful-paint/#has-dispatched-scroll-event>
+    pub(crate) fn mark_has_dispatched_scroll_event(&self) {
+        self.has_dispatched_scroll_event.set(true);
+    }
+
+    /// <https://wicg.github.io/event-timing/#has-dispatched-input-event>
+    pub(crate) fn mark_has_dispatched_input_event(&self) {
+        self.has_dispatched_input_event.set(true);
     }
 
     pub(crate) fn layout(&self) -> Ref<'_, Box<dyn Layout>> {
@@ -2744,6 +2759,8 @@ impl Window {
             animations: document.animations().sets.clone(),
             animating_images: document.image_animation_manager().animating_images(),
             highlighted_dom_node: document.highlighted_dom_node().map(|node| node.to_opaque()),
+            halt_lcp: self.has_dispatched_scroll_event.get() ||
+                self.has_dispatched_input_event.get(),
             document_context,
             accessibility_damage,
             rooted_nodes_for_accessibility_integrity_check,
@@ -3725,7 +3742,11 @@ impl Window {
         let fonts = document.Fonts(cx);
         if !changed_web_fonts.removed_font_faces.is_empty() {
             fonts.notify_font_face_rules_removed(&changed_web_fonts.removed_font_faces);
+        }
 
+        if !changed_web_fonts.removed_font_faces.is_empty() ||
+            changed_web_fonts.cascade_index_of_any_rule_changed
+        {
             // TODO: This should only dirty nodes that are rendered using any of the removed
             // web fonts!
             document.dirty_all_nodes(cx.no_gc());
@@ -3734,14 +3755,8 @@ impl Window {
         if !changed_web_fonts.added_font_faces.is_empty() {
             fonts.switch_to_loading(cx);
 
-            let shared_locks = document.shared_style_locks();
-            let guards = StylesheetGuards {
-                author: &shared_locks.author.read(),
-                ua_or_user: &shared_locks.ua_or_user.read(),
-            };
             for new_web_font in changed_web_fonts.added_font_faces {
-                if let Some(font_face) =
-                    FontFace::new_for_web_font(cx, self.upcast(), new_web_font, &guards)
+                if let Some(font_face) = FontFace::new_for_web_font(cx, self.upcast(), new_web_font)
                 {
                     fonts.add(cx, font_face);
                 }
@@ -4023,6 +4038,8 @@ impl Window {
             pending_media_query_evaluation: Default::default(),
             last_activation_timestamp: Cell::new(UserActivationTimestamp::PositiveInfinity),
             devtools_wants_updates: Default::default(),
+            has_dispatched_scroll_event: Cell::new(false),
+            has_dispatched_input_event: Cell::new(false),
         });
 
         WindowBinding::Wrap::<crate::DomTypeHolder>(cx, &origin, win)

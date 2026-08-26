@@ -61,7 +61,7 @@ pub use decompressor::Decompressor;
 pub use header_builder::HeaderBuilder;
 pub use headers::{Headers, HeadersExt};
 pub use http_cert_error::HTTPCertError;
-pub use http_context::{HTTPContext, HTTPSocket};
+pub use http_context::{HTTPContext, HTTPSocket, PeerVerification};
 pub use http_request_body::HTTPRequestBody;
 pub use http_thread::HttpThread as HTTPThread;
 pub use http_thread::{defer_shutdown_reclaim, shutdown_for_exit};
@@ -194,6 +194,9 @@ pub struct Flags {
     pub disable_keepalive: bool,
     pub disable_decompression: bool,
     pub did_have_handshaking_error: bool,
+    /// `PooledSocket::verification` of the socket this request took from the
+    /// pool, so a weaker request re-pooling it doesn't downgrade the record.
+    pub(crate) reused_socket_verification: PeerVerification,
     pub force_last_modified: bool,
     pub redirected: bool,
     pub proxy_tunneling: bool,
@@ -250,6 +253,7 @@ impl Default for Flags {
             disable_keepalive: false,
             disable_decompression: false,
             did_have_handshaking_error: false,
+            reused_socket_verification: PeerVerification::None,
             force_last_modified: false,
             redirected: false,
             proxy_tunneling: false,
@@ -1611,6 +1615,38 @@ pub(crate) mod body_out {
 // ───────────────────────────── impl HTTPClient ─────────────────────────────
 
 impl<'a> HTTPClient<'a> {
+    /// How this request authenticates the target's TLS peer on a fresh handshake.
+    pub(crate) fn target_verification(&self) -> PeerVerification {
+        if !self.flags.reject_unauthorized {
+            PeerVerification::None
+        } else if self.signals.get(signals::Field::CertErrors) {
+            PeerVerification::Callback
+        } else {
+            PeerVerification::Native
+        }
+    }
+
+    /// How this request authenticates the peer of its outer socket on a fresh
+    /// handshake (an HTTPS proxy's own certificate always takes the native path).
+    pub(crate) fn socket_verification(&self) -> PeerVerification {
+        if self.http_proxy.is_some() {
+            if self.flags.reject_unauthorized {
+                PeerVerification::Native
+            } else {
+                PeerVerification::None
+            }
+        } else {
+            self.target_verification()
+        }
+    }
+
+    /// `PooledSocket::verification` to record when releasing the outer socket.
+    fn pooled_socket_verification(&self) -> PeerVerification {
+        self.flags
+            .reused_socket_verification
+            .max(self.socket_verification())
+    }
+
     pub fn check_server_identity<const IS_SSL: bool>(
         &mut self,
         socket: HttpSocket<IS_SSL>,
@@ -2637,7 +2673,7 @@ impl<'a> HTTPClient<'a> {
             Self::ssl_ctx_mut(ctx).release_socket(
                 socket,
                 self.flags.did_have_handshaking_error && !self.flags.reject_unauthorized,
-                self.flags.reject_unauthorized,
+                self.pooled_socket_verification(),
                 self.connected_url.hostname,
                 self.connected_url.get_port_auto(),
                 self.tls_props.as_ref(),
@@ -4080,7 +4116,7 @@ impl<'a> HTTPClient<'a> {
                 Self::ssl_ctx_mut(ctx).release_socket(
                     socket,
                     self.flags.did_have_handshaking_error && !self.flags.reject_unauthorized,
-                    self.flags.reject_unauthorized,
+                    self.pooled_socket_verification(),
                     self.connected_url.hostname,
                     self.connected_url.get_port_auto(),
                     self.tls_props.as_ref(),
@@ -4319,7 +4355,7 @@ impl<'a> HTTPClient<'a> {
         Self::ssl_ctx_mut(ctx).release_socket(
             socket,
             self.flags.did_have_handshaking_error && !self.flags.reject_unauthorized,
-            self.flags.reject_unauthorized,
+            self.pooled_socket_verification(),
             self.url.hostname,
             self.url.get_port_auto(),
             self.tls_props.as_ref(),

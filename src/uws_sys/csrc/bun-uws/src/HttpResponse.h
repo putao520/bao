@@ -92,12 +92,23 @@ public:
         getHttpResponseData()->state |= HttpResponseData<SSL>::HTTP_WROTE_DATE_HEADER;
     }
 
+    /* Ends the 101 of upgrade(): terminates the header section and marks the
+     * response done. Not internalEnd(), because the socket leaves HTTP right
+     * after: the connection close gate does not apply (Connection: close,
+     * HTTP/1.0 and close-when-idle describe the HTTP connection, not the
+     * WebSocket that takes over the socket), and the cork stays so the
+     * handshake batches with the first frames written from open(). */
+    void endUpgradeHandshake() {
+        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+        writeMark();
+        Super::write("\r\n", 2);
+        httpResponseData->state |= HttpResponseData<SSL>::HTTP_END_CALLED;
+        httpResponseData->markDone(this);
+    }
+
     /* Returns true on success, indicating that it might be feasible to write more data.
-     * Will start timeout if stream reaches totalSize or write failure.
-     * keepCorked: if true, skip the trailing uncork so the caller can batch
-     * more writes (used by upgrade() to batch the handshake with the first
-     * WebSocket frames). */
-    bool internalEnd(std::string_view data, uint64_t totalSize, bool optional, bool allowContentLength = true, bool closeConnection = false, bool keepCorked = false) {
+     * Will start timeout if stream reaches totalSize or write failure. */
+    bool internalEnd(std::string_view data, uint64_t totalSize, bool optional, bool allowContentLength = true, bool closeConnection = false) {
         /* Write status if not already done */
         writeStatus(HTTP_200_OK);
 
@@ -153,7 +164,7 @@ public:
                         }
                     }
                 }
-            } else if (!keepCorked) {
+            } else {
                 this->uncork();
             }
 
@@ -225,7 +236,7 @@ public:
                             }
                         }
                     }
-                }  else if (!keepCorked) {
+                } else {
                     this->uncork();
                 }
             }
@@ -306,9 +317,7 @@ public:
             }
         }
 
-        /* keepCorked so the handshake stays buffered and can batch with the
-         * first WebSocket frames written in the open handler. */
-        internalEnd({nullptr, 0}, 0, false, false, false, true);
+        endUpgradeHandshake();
 
         /* Grab the httpContext from res */
         HttpContext<SSL> *httpContext = HttpContext<SSL>::fromSocket((struct us_socket_t *) this);

@@ -2095,9 +2095,9 @@ impl<'a> Package<'a> {
 
     pub fn clone(self, builder: &mut Semver::semver_string::Builder) -> PackageExternal {
         PackageExternal {
-            name: builder.append_utf8_without_pool::<Semver::String>(self.name, 0),
-            version: builder.append_utf8_without_pool::<Semver::String>(self.version, 0),
-            subpath: builder.append_utf8_without_pool::<Semver::String>(self.subpath, 0),
+            name: builder.append_without_pool::<Semver::String>(self.name, 0),
+            version: builder.append_without_pool::<Semver::String>(self.version, 0),
+            subpath: builder.append_without_pool::<Semver::String>(self.subpath, 0),
         }
     }
 

@@ -129,7 +129,7 @@ pub(crate) fn execute_insert_paragraph_command(
                     .into_iter()
                     .find(|node| {
                         is_allowed_child(
-                            NodeOrString::Node(node.clone()),
+                            NodeOrString::from_node(node, cx.no_gc()),
                             NodeOrString::String("p".to_owned()),
                         )
                     })
@@ -141,7 +141,7 @@ pub(crate) fn execute_insert_paragraph_command(
             // Step 11.5.1. If tag is not an allowed child of the active range's start node, return true.
             if !is_allowed_child(
                 NodeOrString::String(tag.str().to_owned()),
-                NodeOrString::Node(active_range.start_container()),
+                NodeOrString::from_node(&active_range.start_container(), cx.no_gc()),
             ) {
                 return true;
             }
@@ -171,7 +171,7 @@ pub(crate) fn execute_insert_paragraph_command(
             .and_then(|node| node.GetNextSibling())
             .filter(|next_of_last| {
                 is_allowed_child(
-                    NodeOrString::Node(DomRoot::from_ref(next_of_last)),
+                    NodeOrString::from_node(next_of_last, cx.no_gc()),
                     NodeOrString::String("p".to_owned()),
                 )
             })
@@ -245,7 +245,7 @@ pub(crate) fn execute_insert_paragraph_command(
         // and it is not an allowed child of any of its ancestors in the same editing host,
         // set the tag name of container to the default single-line container name and let container be the result.
         if node_matches_local_name!(container, local_name!("dd") | local_name!("dt")) &&
-            container.is_no_allowed_child_in_same_editing_host()
+            container.is_no_allowed_child_in_same_editing_host(cx.no_gc())
         {
             container = container
                 .downcast::<Element>()
@@ -351,7 +351,10 @@ pub(crate) fn execute_insert_paragraph_command(
         unreachable!("Must always be able to insert");
     }
     // Step 26. Let contained nodes be all nodes contained in new line range.
-    let contained_nodes: Vec<DomRoot<Node>> = new_line_range.contained_nodes().collect();
+    let contained_nodes: Vec<DomRoot<Node>> = new_line_range
+        .contained_nodes(cx.no_gc())
+        .map(|node| node.as_rooted())
+        .collect();
     // Step 27. Let frag be the result of calling extractContents() on new line range.
     let Ok(frag) = new_line_range.ExtractContents(cx) else {
         unreachable!("Must always be able to extract");

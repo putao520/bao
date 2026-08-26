@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "updated_at": "2026-08-25",
-  "updated_by": "daily-ops-2026-08-25-wave",
+  "updated_at": "2026-08-26",
+  "updated_by": "daily-ops-2026-08-26-wave",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "b746c078b6982780231d5c7944de7f66b2582c31",
-      "baseline_date": "2026-08-25",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。窗口 aeb1905d0a..b746c078b6 11 commits 全判定收口:吸收 3(f039a9c563 --compile 模块图按加载序布局——OutputFile.load_order + linker chunk_load_order + to_bytes 稳定排序,payload 格式不变;e54bbfa70c usockets 暂停期保留读 knote——部分吸收 4/6 文件,C 域 flag 枚举+accept_paused 落镜像双树,socket.c us_socket_from_fd hunk 因 6 参旧签名跨 bao_uloop/SocketGroup.rs FFI 域 stop、kqueue hunk 依赖未吸收 #33974/#39949 机制且 Linux 构建死代码 stop,Rust 面零接线;b746c078b6 worker_threads 内建 MessageChannel/MessagePort/BroadcastChannel 捕获——node_worker_threads.rs:1291 运行时可变全局查找改 install() 头一次性捕获,fallback 语义逐字保留)+不适用 8(df75206625 bun:test matcher C++;66a8b8852c src/runtime/cli 无宿主;861e9ae04b mimalloc 构建脚本;4d35aad1f1 JSC bytecode 内嵌零宿主;44411167ac FileSink/Blob.get_writer 无宿主;e625fb7e9e jsCast JSC;a73ed2720f node:assert 构造器比较——bao JS fallback _deepEqual 无构造器比较路径,分歧点不存在;f2fe7d3249 bun:sql JSC 值层无宿主,bao SQL 面=bun:sqlite)"
+      "baseline": "225e617fc8b63ebf6fdaa968054aaf8ede11b766",
+      "baseline_date": "2026-08-26",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。窗口 b746c078b6..225e617fc8 23 commits 全判定收口:吸收 9(d8477b1d8c semver 8-byte/cursor-offset;7ca12365c4 install manifest 独立临时文件;023e84ab11 部分 base64/ptr dead-code——simdutf_encode_url_safe_alloc BAO 活调用保留分叉;4d62789da1 checkServerIdentity keep-alive 池化 PeerVerification 枚举;e4c2af4cef fetch 单一 BODY_HIGH_WATER_MARK+BodyReceiveMode 状态机接线,a8581291c4 HttpParser.h 空 TE chunked + 0823e5059a HttpResponse.h 101 endUpgradeHandshake——uws 双树 packages+csrc 同步,internalEnd 5 参符号签名实证达二进制;4c815c11a5+83350172b9 node:fs truncate undefined≡0 收敛 helper 6 处+ENAMETOOLONG reject_fs_error 语义 24 点横扫+6 回归用例 REQ-ENG-007)+已含 1(225e617fc8——bao 未吸收被回滚的 #40201,chunk-[hash] 终态行为已具备)+登记 1(bdf4738d8c openssl.c half-close,#35535 EOF-dispatch 前置子系统不在 bao 基底,同 csrc/loop.c 姿态)+升级 1(3e8b2e6b1e Utf8Bytes lifetime 244 文件跨 JSC 值层,String 域已分叉 own-ref,方向裁定留交互)+不适用 11(78526650c3 bytecode-depth/dc890ebec9 sql_jsc/5e77f99ec2+15c936cd93+2c10950774 test-infra/adc354d998 prefetch-bytecode/11fb73032c WebKit/2f1dd377dd+29b958ffb0 FakeTimers 无宿主/e3bd3e44ed jsc-exception-lint/47633071ca mimalloc 构建脚本)。途中根治 2 例编译敏感既有测试缺陷(bun_alloc alignment 栈布局分支断言;js_parser stack_check TCO 保帧——100% CPU hang 归因),产品代码零改动"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "81787035b7ff4184902bea94ec9506550aa57e22",
-      "baseline_date": "2026-08-25",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收,ports/servoshell 部分含);BCE 清单 11 文件(CLAUDE.md)。窗口 ad012d550..81787035b 12 commits:BCE 重放吸收 1(1728d63f4 accessibility node bounds——servo.rs :327-360 上游 delta 重放,:1310 Bao 补丁区零波及;webidl 联动 ServoTestUtils.webidl +nodesUpdatedBounds;C 组 layout_impl/servotestutils/shared-layout 与上游终态 diff=0 对位)+vendored 同步吸收 5(edf7b5c1c referrer getters 降分配;6441459da needs_accessibility_update→force_ 重命名 5 文件,layout_impl 语义对位;1b33709ae text-transform capitalize 仅小写排版单元;a8f6753e1 无 browsing context 的 Document 不算 active 8 文件;81787035b form submission initiator/referrer 取自 owning Document)+不适用 6(201c46059/2c0948754 android、b780274a1 ohos toolchain、c3bc20759 stylo 依赖 bump 属 W3 钉版本裁决域、4830f9f68/e69564318 servo-media-examples 发布面)。登记:vendor gui.rs 存 93 行窗口外旧基底漂移(9fc8f7389 等,非本窗口内容);csrc/loop.c 缺 packages/ 树独有的 f8b3cf06b0 error-drain 移植 4 hunk(编译源在 csrc,该语义未达二进制);bao-servo fork crates =0.5.x registry pin,vendor 改动不自动达 registry(先例姿态,下游分发面待用户裁定)"
+      "baseline": "94d656caa875d7cec56979692777dc36606c6b5a",
+      "baseline_date": "2026-08-26",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md)。窗口 81787035b..94d656caa 22 commits:BCE 重放吸收 1(b4b6d8c6a script thread 细粒度内存报告——document/script_runtime 整文件 IDENTICAL,script_thread+workerglobalscope 语义叠加,BAO 补丁 17 处 diff-of-diffs 内容行逐字节一致零丢失)+vendored 吸收 11(ac50f9f3f Location.ancestorOrigins webidl 联动+script_thread 串行①handle_get_internal_ancestor_origin_objects_list;d52e13828 evaluate_a_javascript_url 重写+ScriptOptions bitflags+script_thread 串行②;c93f007d0 Document selection mouse 17 文件含新文件 document_selection_drag.rs;f8dfb29a5+c4ff6cb0a+2ef5b9bb9 execcommand 三连——UnrootedDom/降分配 match_ignore_ascii_case/contained_nodes &NoGC 横扫残余 0,insertlinebreak.rs 属 f9b4d1e60 台账;1ed4640e9 LCP loadTime=0;5b05da308 webdriver IsArgumentsObject(vendor mozjs jsapi2_wrappers 已有);ad7cc470e a11y DOM damage+73a378148 LCP halting 归 layout+316924ea0 fonts cascade 平局解算——三批 diff=0 级对位,constellation RouterProxy 分叉保留)+不适用 10(94d656caa Taffy=W3 钉版本域同 c3bc20759 先例;9ec9e425a/f4866bae7/fa741bb9d/b878129bd/2bf2665d2/b76319e5b deps bump;ca49e5943 android;47d885615 ci;38eacf004 net 纯重命名零语义负收益)。登记:vendor gui.rs 旧基底漂移与 csrc/loop.c f8b3cf06b0 沿袭;bao-servo fork crates =0.5.x registry pin 分发面待用户裁定;components/servo/tests/largest_contentful_paint.rs 测试更新 out-of-domain 未吸收"
     }
   }
 }

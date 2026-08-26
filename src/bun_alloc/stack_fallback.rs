@@ -519,14 +519,82 @@ mod tests {
             .cast::<u8>();
         assert_eq!(p.as_ptr().addr() % 16, 0);
         assert!(sf.owns(p.as_ptr()));
-        // over-aligned request that can't fit the padding → fallback
+        // Over-aligned (256) request. `bump` aligns against the ABSOLUTE
+        // buffer address (Zig `FixedBufferAllocator` parity), so whether the
+        // 256-aligned block fits the inline buffer depends on where the stack
+        // placed `buf`: when `buf_base % 256` puts the next 256-boundary
+        // inside the 128-byte buffer with room for 8 bytes, `bump` legally
+        // serves the request from the stack; otherwise the padding pushes
+        // `end` past `N` and it spills to the fallback. The old unconditional
+        // `!sf.owns(q)` assumed the spill and falsely failed under layouts
+        // where the boundary lands inside (2026-08-26 wave-end full-suite
+        // FAIL attribution: a link-layout change flipped this binary's
+        // `buf_base % 256`; ASLR page granularity makes it constant per
+        // binary, so any linking change can flip it again). Predict the
+        // branch with `bump`'s exact math (plain adds — real addresses never
+        // approach `usize::MAX`, so the `checked_add`s can't fail) and lock
+        // the correct semantics per outcome.
+        let base = sf.buf_base().addr();
+        let cur_before = sf.cur.get();
+        let start = ((base + cur_before + 255) & !255usize) - base;
+        let stack_serves = start + 8 <= 128;
         let q = a
             .allocate(Layout::from_size_align(8, 256).unwrap())
             .unwrap()
             .cast::<u8>();
         assert_eq!(q.as_ptr().addr() % 256, 0);
-        assert!(!sf.owns(q.as_ptr()));
+        if stack_serves {
+            // bump carved the block out of the inline buffer
+            assert!(sf.owns(q.as_ptr()));
+            assert_eq!(sf.cur.get(), start + 8);
+            assert_eq!(sf.fallback().allocs.get(), 0);
+        } else {
+            // padding pushed past the buffer end → fallback, cursor untouched
+            assert!(!sf.owns(q.as_ptr()));
+            assert_eq!(sf.cur.get(), cur_before);
+            assert_eq!(sf.fallback().allocs.get(), 1);
+        }
         unsafe { a.deallocate(q, Layout::from_size_align(8, 256).unwrap()) };
+
+        // Deterministic constructions of BOTH forms (layout-independent), so
+        // each branch's semantics is exercised on every binary regardless of
+        // `buf_base % 256`:
+        //
+        // Form 1 — stack serves a 256-aligned request: with N = 512 and
+        // cur = 0 the next 256-boundary sits at offset (256 - base%256) % 256
+        // ≤ 255, so end = offset + 8 ≤ 263 ≤ 512 always fits.
+        let sf_big = StackFallback::<512, _>::new(Counting::new());
+        let a2 = &sf_big;
+        let base2 = sf_big.buf_base().addr();
+        let start2 = ((base2 + 255) & !255usize) - base2;
+        let q2 = a2
+            .allocate(Layout::from_size_align(8, 256).unwrap())
+            .unwrap()
+            .cast::<u8>();
+        assert_eq!(q2.as_ptr().addr() % 256, 0);
+        assert!(sf_big.owns(q2.as_ptr()));
+        assert_eq!(sf_big.cur.get(), start2 + 8);
+        assert_eq!(sf_big.fallback().allocs.get(), 0);
+        unsafe { a2.deallocate(q2, Layout::from_size_align(8, 256).unwrap()) };
+
+        // Form 2 — 256-aligned request forced to fallback: with N = 128 and
+        // cur = 121 already consumed, end = 121 + pad + 8 ≥ 129 > 128 for
+        // every padding value, so the spill is unconditional.
+        let sf_full = StackFallback::<128, _>::new(Counting::new());
+        let a3 = &sf_full;
+        let _prefill = a3
+            .allocate(Layout::from_size_align(121, 1).unwrap())
+            .unwrap();
+        let q3 = a3
+            .allocate(Layout::from_size_align(8, 256).unwrap())
+            .unwrap()
+            .cast::<u8>();
+        assert_eq!(q3.as_ptr().addr() % 256, 0);
+        assert!(!sf_full.owns(q3.as_ptr()));
+        assert_eq!(sf_full.cur.get(), 121);
+        assert_eq!(sf_full.fallback().allocs.get(), 1);
+        unsafe { a3.deallocate(q3, Layout::from_size_align(8, 256).unwrap()) };
+        assert_eq!(sf_full.fallback().deallocs.get(), 1);
     }
 
     #[test]

@@ -1341,6 +1341,22 @@ mod stack_check_tests {
             consumed_from_top: usize,
             usable_span: usize,
         }
+        // TCO defense (2026-08-26 wave-end hang attribution): `recurse`'s last
+        // statement used to be the recursive call itself — a tail-call shape.
+        // Under opt-level 2 (test-ci profile) a relink flipped LLVM's
+        // optimization decision and turned the recursion into a loop: SP
+        // stayed constant, every `check.update()` recorded the SAME stack
+        // pointer, `is_safe_to_recurse()` never went false, and the test spun
+        // at 100% CPU forever (zero syscalls, the 4 MiB stack never
+        // exhausted). The product code is immune — real `StackCheck` callers
+        // (the parser's `parse_expr`/`parse_prefix` chain) keep local state
+        // across their recursive calls, so their frames cannot be elided —
+        // only this test-side probe needed hardening. Keeping `probe` (a
+        // per-frame local whose address is taken) live ACROSS the recursive
+        // call via `black_box` makes the frame un-eliminable: the call is no
+        // longer in tail position, every level gets a real frame, SP strictly
+        // decreases, and the guard trips within its ~128 KiB platform
+        // headroom (`bun_core::util`) after a few ten-thousand frames.
         fn recurse(check: &mut bun_core::StackCheck, top: usize, levels: &mut usize) -> usize {
             let probe = &levels as *const _ as usize;
             check.update();
@@ -1348,7 +1364,9 @@ mod stack_check_tests {
                 return top - probe;
             }
             *levels += 1;
-            recurse(check, top, levels)
+            let r = recurse(check, top, levels);
+            std::hint::black_box(&probe);
+            r
         }
         let trip = std::thread::Builder::new()
             .stack_size(STACK)

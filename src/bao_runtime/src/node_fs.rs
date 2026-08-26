@@ -600,11 +600,44 @@ unsafe fn extract_callback_and_encoding(
     cb_idx.map(|idx| ((*args.get(idx).ptr).to_object(), encoding))
 }
 
+/// Truncate-family `len` argument coercion, single source for every entry
+/// point (truncateSync / truncate / promises.truncate / ftruncateSync /
+/// ftruncate / FileHandle.truncate).
+/// @trace REQ-ENG-007 — upstream 4c815c11a5 port: an explicit `undefined`
+/// len is the same as an absent one — truncate to 0 (Node's
+/// `if (len === undefined) len = 0`; `lib/internal/fs/promises.js` has
+/// `truncate(path, len = 0)`). Numbers coerce as before; bao's loose
+/// validation posture for other non-number values (→ 0) is unchanged.
+fn truncate_len_from_val(len_val: JSVal) -> i64 {
+    if len_val.is_int32() {
+        len_val.to_int32() as i64
+    } else if len_val.is_double() {
+        len_val.to_double() as i64
+    } else {
+        0
+    }
+}
+
+/// Errno → JS-visible `code` for EVERY fs error delivery face (sync throw in
+/// `throw_fs_error`, callback error objects, promise rejections in
+/// `reject_fs_error`) — single source of truth.
+/// @trace REQ-ENG-007 — upstream 83350172b9 port: ENAMETOOLONG (a path too
+/// long for ANY syscall) must surface as code "ENAMETOOLONG" on every face,
+/// as Node reports it; previously it fell into the "ERR" fallback. Raw
+/// errnos without an ErrorKind mapping surface verbatim (Node parity, e.g.
+/// mkdtemp('') → EINVAL).
 fn io_error_code(err: &::std::io::Error) -> &'static str {
+    match err.raw_os_error() {
+        Some(libc::EINVAL) => return "EINVAL",
+        Some(libc::ENAMETOOLONG) => return "ENAMETOOLONG",
+        _ => {}
+    }
     match err.kind() {
         ::std::io::ErrorKind::NotFound => "ENOENT",
         ::std::io::ErrorKind::PermissionDenied => "EACCES",
         ::std::io::ErrorKind::AlreadyExists => "EEXIST",
+        ::std::io::ErrorKind::IsADirectory => "EISDIR",
+        ::std::io::ErrorKind::NotADirectory => "ENOTDIR",
         _ => "ERR",
     }
 }
@@ -2175,20 +2208,10 @@ unsafe fn return_string_content(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn throw_fs_error(cx: *mut JSContext, op: &str, path: &str, err: &::std::io::Error) -> bool {
-    let code = if err.raw_os_error() == Some(libc::EINVAL) {
-        // Raw errno has no ErrorKind mapping; surface it verbatim (Node parity,
-        // e.g. mkdtemp('') must throw code EINVAL).
-        "EINVAL"
-    } else {
-        match err.kind() {
-            ::std::io::ErrorKind::NotFound => "ENOENT",
-            ::std::io::ErrorKind::PermissionDenied => "EACCES",
-            ::std::io::ErrorKind::AlreadyExists => "EEXIST",
-            ::std::io::ErrorKind::IsADirectory => "EISDIR",
-            ::std::io::ErrorKind::NotADirectory => "ENOTDIR",
-            _ => "ERR",
-        }
-    };
+    // @trace REQ-ENG-007 — shared errno→code source (io_error_code); the
+    // EINVAL verbatim rule and the ENAMETOOLONG mapping (upstream 83350172b9)
+    // live there so sync throw / callback / promise faces stay identical.
+    let code = io_error_code(err);
     let msg = format!("{} '{}': {}", op, path, err);
     let c_msg = ZBox::from_bytes(msg.as_bytes());
     let code_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(code.as_bytes()).as_ptr());
@@ -4885,13 +4908,7 @@ unsafe extern "C" fn fs_ftruncate(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     } else {
         UndefinedValue()
     };
-    let len = if len_val.is_int32() {
-        len_val.to_int32() as i64
-    } else if len_val.is_double() {
-        len_val.to_double() as i64
-    } else {
-        0
-    };
+    let len = truncate_len_from_val(len_val);
 
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 2) {
         spawn_fs_async(
@@ -5934,13 +5951,7 @@ unsafe extern "C" fn fs_truncate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     } else {
         UndefinedValue()
     };
-    let len = if len_val.is_int32() {
-        len_val.to_int32() as i64
-    } else if len_val.is_double() {
-        len_val.to_double() as i64
-    } else {
-        0
-    };
+    let len = truncate_len_from_val(len_val);
 
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 2) {
         spawn_fs_async(cx, "truncate", path.clone(), callback, None, move || {
@@ -6194,7 +6205,7 @@ macro_rules! promise_simple_op {
                     resolve_undefined(cx, promise.get());
                 }
                 ::std::result::Result::Err(e) => {
-                    reject_with_error(cx, promise.get(), &format!("{} '{}': {}", $op_name, path, e));
+                    reject_fs_error(cx, promise.get(), $op_name, &path, &e);
                 }
             }
             args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6228,7 +6239,7 @@ unsafe extern "C" fn fs_promises_rename(cx: *mut JSContext, argc: u32, vp: *mut 
     match fs::rename(&from, &to) {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("rename '{}': {}", from, e))
+            reject_fs_error(cx, promise.get(), "rename", &from, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6257,7 +6268,7 @@ unsafe extern "C" fn fs_promises_copy_file(cx: *mut JSContext, argc: u32, vp: *m
     match fs::copy(&from, &to) {
         ::std::result::Result::Ok(_) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("copyFile '{}': {}", from, e))
+            reject_fs_error(cx, promise.get(), "copyFile", &from, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6294,7 +6305,7 @@ unsafe extern "C" fn fs_promises_read_file(cx: *mut JSContext, argc: u32, vp: *m
             }
         }
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("readFile '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "readFile", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6334,7 +6345,7 @@ unsafe extern "C" fn fs_promises_write_file(cx: *mut JSContext, argc: u32, vp: *
     match bun_fs::write(&path, &bytes) {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("writeFile '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "writeFile", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6369,7 +6380,7 @@ unsafe extern "C" fn fs_promises_stat(cx: *mut JSContext, argc: u32, vp: *mut JS
             }
         }
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("stat '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "stat", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6431,7 +6442,7 @@ unsafe extern "C" fn fs_promises_readdir(cx: *mut JSContext, argc: u32, vp: *mut
             }
         }
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("readdir '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "readdir", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6467,7 +6478,7 @@ unsafe extern "C" fn fs_promises_lstat(cx: *mut JSContext, argc: u32, vp: *mut J
             }
         }
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("lstat '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "lstat", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6518,7 +6529,7 @@ unsafe extern "C" fn fs_promises_append_file(
     {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("appendFile '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "appendFile", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6562,7 +6573,7 @@ unsafe extern "C" fn fs_promises_chmod(cx: *mut JSContext, argc: u32, vp: *mut J
     match result {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("chmod '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "chmod", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6603,7 +6614,7 @@ unsafe extern "C" fn fs_promises_chown(cx: *mut JSContext, argc: u32, vp: *mut J
     match result {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("chown '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "chown", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6628,7 +6639,7 @@ unsafe extern "C" fn fs_promises_access(cx: *mut JSContext, argc: u32, vp: *mut 
     match fs::metadata(&path) {
         ::std::result::Result::Ok(_) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("access '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "access", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6659,7 +6670,7 @@ unsafe extern "C" fn fs_promises_rm(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     match result {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("rm '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "rm", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6693,7 +6704,7 @@ unsafe extern "C" fn fs_promises_rmdir(cx: *mut JSContext, argc: u32, vp: *mut J
     match result {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("rmdir '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "rmdir", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6734,7 +6745,7 @@ unsafe extern "C" fn fs_promises_realpath(cx: *mut JSContext, argc: u32, vp: *mu
             }
         }
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("realpath '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "realpath", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6775,7 +6786,7 @@ unsafe extern "C" fn fs_promises_readlink(cx: *mut JSContext, argc: u32, vp: *mu
             }
         }
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("readlink '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "readlink", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6808,7 +6819,7 @@ unsafe extern "C" fn fs_promises_symlink(cx: *mut JSContext, argc: u32, vp: *mut
     match result {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("symlink '{}': {}", target, e))
+            reject_fs_error(cx, promise.get(), "symlink", &target, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6837,7 +6848,7 @@ unsafe extern "C" fn fs_promises_link(cx: *mut JSContext, argc: u32, vp: *mut JS
     match fs::hard_link(&from, &to) {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("link '{}': {}", from, e))
+            reject_fs_error(cx, promise.get(), "link", &from, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6856,13 +6867,10 @@ unsafe extern "C" fn fs_promises_truncate(cx: *mut JSContext, argc: u32, vp: *mu
     } else {
         UndefinedValue()
     };
-    let len = if len_val.is_int32() {
-        len_val.to_int32() as u64
-    } else if len_val.is_double() {
-        len_val.to_double() as u64
-    } else {
-        0
-    };
+    // Same undefined≡absent≡0 rule as every other truncate face; `.max(0)`
+    // aligns the promise face with the sync/callback faces (which clamp
+    // instead of wrapping negative lens into u64 overflow).
+    let len = truncate_len_from_val(len_val).max(0) as u64;
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -6875,7 +6883,7 @@ unsafe extern "C" fn fs_promises_truncate(cx: *mut JSContext, argc: u32, vp: *mu
     match fs::OpenOptions::new().write(true).open(&path).and_then(|f| f.set_len(len)) {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("truncate '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "truncate", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -6938,10 +6946,12 @@ unsafe extern "C" fn fs_promises_utimes(cx: *mut JSContext, argc: u32, vp: *mut 
         if rv == 0 {
             resolve_undefined(cx, promise.get());
         } else {
-            reject_with_error(
+            reject_fs_error(
                 cx,
                 promise.get(),
-                &format!("utimes '{}': {}", path, ::std::io::Error::last_os_error()),
+                "utimes",
+                &path,
+                &::std::io::Error::last_os_error(),
             );
         }
     }
@@ -6986,7 +6996,7 @@ unsafe extern "C" fn fs_promises_mkdtemp(cx: *mut JSContext, argc: u32, vp: *mut
             }
         }
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("mkdtemp '{}': {}", prefix, e))
+            reject_fs_error(cx, promise.get(), "mkdtemp", &prefix, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -7063,10 +7073,12 @@ unsafe extern "C" fn fs_promises_open(cx: *mut JSContext, argc: u32, vp: *mut JS
                 }
             }
         } else {
-            reject_with_error(
+            reject_fs_error(
                 cx,
                 promise.get(),
-                &format!("open '{}': {}", path, ::std::io::Error::last_os_error()),
+                "open",
+                &path,
+                &::std::io::Error::last_os_error(),
             );
         }
     }
@@ -7372,10 +7384,12 @@ unsafe extern "C" fn fs_promises_statfs(cx: *mut JSContext, argc: u32, vp: *mut 
                 );
             }
         } else {
-            reject_with_error(
+            reject_fs_error(
                 cx,
                 promise.get(),
-                &format!("statfs '{}': {}", path, ::std::io::Error::last_os_error()),
+                "statfs",
+                &path,
+                &::std::io::Error::last_os_error(),
             );
         }
     }
@@ -7502,13 +7516,7 @@ unsafe extern "C" fn fs_truncate_sync(cx: *mut JSContext, argc: u32, vp: *mut JS
     } else {
         UndefinedValue()
     };
-    let len = if len_val.is_int32() {
-        len_val.to_int32() as i64
-    } else if len_val.is_double() {
-        len_val.to_double() as i64
-    } else {
-        0
-    };
+    let len = truncate_len_from_val(len_val);
     match fs::OpenOptions::new().write(true).open(&path).and_then(|f| f.set_len(len.max(0) as u64)) {
         ::std::result::Result::Ok(()) => {
             args.rval().set(UndefinedValue());
@@ -7929,13 +7937,7 @@ unsafe extern "C" fn fs_ftruncate_sync(cx: *mut JSContext, argc: u32, vp: *mut J
     } else {
         UndefinedValue()
     };
-    let len = if len_val.is_int32() {
-        len_val.to_int32() as i64
-    } else if len_val.is_double() {
-        len_val.to_double() as i64
-    } else {
-        0
-    };
+    let len = truncate_len_from_val(len_val);
     #[cfg(unix)]
     {
         let rv = unsafe { libc::ftruncate(fd, len) };
@@ -8676,7 +8678,7 @@ unsafe extern "C" fn fs_open_as_blob(cx: *mut JSContext, argc: u32, vp: *mut JSV
             }
         }
         ::std::result::Result::Err(e) => {
-            reject_with_error(cx, promise.get(), &format!("openAsBlob '{}': {}", path, e))
+            reject_fs_error(cx, promise.get(), "openAsBlob", &path, &e)
         }
     }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
@@ -9094,6 +9096,75 @@ unsafe fn resolve_undefined(cx: *mut JSContext, promise: *mut JSObject) {
     rooted!(&in(cx_ref) let val = UndefinedValue());
     rooted!(&in(cx_ref) let promise_rooted = promise);
     mozjs_sys::jsapi::JS::ResolvePromise(cx, promise_rooted.handle().into(), val.handle().into());
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+/// @trace REQ-ENG-007 — upstream 83350172b9 port: when a path is too long
+/// for any syscall, the promise form REJECTS (never a synchronous throw),
+/// and the rejected error is identifiable — `code` (e.g. ENAMETOOLONG) and
+/// `path`, mirroring `throw_fs_error`'s sync-throw shape and Node's
+/// `cb:ENAMETOOLONG` contract. The message format is byte-identical to the
+/// old `reject_with_error` call sites (`{op} '{path}': {err}`), so
+/// message-based consumers see no difference; `code`/`path` are additive.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn reject_fs_error(
+    cx: *mut JSContext,
+    promise: *mut JSObject,
+    op: &str,
+    path: &str,
+    err: &::std::io::Error,
+) {
+    let msg = format!("{} '{}': {}", op, path, err);
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let err_obj = JS_NewPlainObject(cx));
+    if !err_obj.get().is_null() {
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+        if !js_str.is_null() {
+            rooted!(&in(cx_ref) let msg_val = mozjs::jsval::StringValue(&*js_str));
+            JS_DefineProperty(
+                cx,
+                err_obj.handle().into(),
+                c"message".as_ptr(),
+                msg_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        let code = io_error_code(err);
+        let c_code = ZBox::from_bytes(code.as_bytes());
+        let code_str = JS_NewStringCopyZ(cx, c_code.as_ptr());
+        if !code_str.is_null() {
+            rooted!(&in(cx_ref) let code_val = mozjs::jsval::StringValue(&*code_str));
+            JS_DefineProperty(
+                cx,
+                err_obj.handle().into(),
+                c"code".as_ptr(),
+                code_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+        let c_path = ZBox::from_bytes(path.as_bytes());
+        let path_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
+        if !path_str.is_null() {
+            rooted!(&in(cx_ref) let path_val = mozjs::jsval::StringValue(&*path_str));
+            JS_DefineProperty(
+                cx,
+                err_obj.handle().into(),
+                c"path".as_ptr(),
+                path_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+    rooted!(&in(cx_ref) let err_val = mozjs::jsval::ObjectValue(err_obj.get()));
+    rooted!(&in(cx_ref) let promise_rooted = promise);
+    mozjs_sys::jsapi::JS::RejectPromise(
+        cx,
+        promise_rooted.handle().into(),
+        err_val.handle().into(),
+    );
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -10086,14 +10157,7 @@ unsafe extern "C" fn fh_truncate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     }
     let fd = get_hidden_int(cx, this.to_object(), "_fd");
     let len = if argc > 0 {
-        let v = *args.get(0).ptr;
-        if v.is_int32() {
-            v.to_int32() as i64
-        } else if v.is_double() {
-            v.to_double() as i64
-        } else {
-            0
-        }
+        truncate_len_from_val(*args.get(0).ptr)
     } else {
         0
     };

@@ -253,9 +253,10 @@ impl BunCancelHandle {
 
     /// The `Signals` view to wire into `AsyncHTTP::init` options.
     ///
-    /// Equivalent to `Store::to(&mut)` — every slot points at this handle's
-    /// atomics — but works from a shared reference (the atomics are
-    /// interior-mutable, exactly the `Signals` BACKREF contract).
+    /// Equivalent to `Store::to_with_backpressure(&mut)` — every slot,
+    /// receive-mode included, points at this handle's atomics — but works
+    /// from a shared reference (the atomics are interior-mutable, exactly
+    /// the `Signals` BACKREF contract).
     fn signals(&self) -> bun_http::signals::Signals {
         let store = &self.signal_box.store;
         bun_http::signals::Signals {
@@ -265,6 +266,19 @@ impl BunCancelHandle {
             )),
             aborted: Some(::std::ptr::NonNull::from(&store.aborted)),
             cert_errors: Some(::std::ptr::NonNull::from(&store.cert_errors)),
+            // Upstream e4c2af4cef (`Store::to_with_backpressure`), wired per
+            // the fetch_async.rs streaming-branch counterpart: the response
+            // body here is TRUE-streamed into servo, so park/unpark/cancel
+            // record Flowing/Paused/Abandoned where the transport can consult
+            // them. The bridge's own backpressure is the byte-accounted body
+            // channel (see file header), which parks at
+            // [`BODY_HIGH_WATER_MARK`] independent of this slot; bao's
+            // transports are queue-driven (no `is_receive_paused` read path
+            // yet), so this is state-recording only — zero behavior change
+            // until a consult lands. `SignalBox`'s Store defaults the slot to
+            // Flowing.
+            // @trace REQ-ENG-010 [entity:FetchTasklet] [api:AsyncHTTP signals wiring]
+            body_receive_mode: Some(::std::ptr::NonNull::from(&store.body_receive_mode)),
             upgraded: Some(::std::ptr::NonNull::from(&store.upgraded)),
         }
     }

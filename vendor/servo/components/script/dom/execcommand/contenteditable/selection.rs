@@ -263,7 +263,7 @@ impl Selection {
         let start_block = if (!start_block.is_block_node() && !start_block.is_editing_host()) ||
             !is_allowed_child(
                 NodeOrString::String("span".to_owned()),
-                NodeOrString::Node(start_block.clone()),
+                NodeOrString::from_node(&start_block, cx.no_gc()),
             ) ||
             start_block.is::<HTMLTableCellElement>()
         {
@@ -292,7 +292,7 @@ impl Selection {
         let end_block = if (!end_block.is_block_node() && !end_block.is_editing_host()) ||
             !is_allowed_child(
                 NodeOrString::String("span".to_owned()),
-                NodeOrString::Node(end_block.clone()),
+                NodeOrString::from_node(&end_block, cx.no_gc()),
             ) ||
             end_block.is::<HTMLTableCellElement>()
         {
@@ -365,7 +365,7 @@ impl Selection {
         // Step 24. For each node contained in the active range, append node to node list if the
         // last member of node list (if any) is not an ancestor of node; node is editable;
         // and node is not a thead, tbody, tfoot, tr, th, or td.
-        for node in active_range.contained_nodes() {
+        for node in active_range.contained_nodes(cx.no_gc()) {
             // This type is only used to tell the compiler how to handle the type of `node_list.last()`.
             // It is not allowed to add a `& DomRoot<Node>` annotation, as test-tidy disallows that.
             // However, if we omit the type, the compiler doesn't know what it is, since we also
@@ -383,7 +383,7 @@ impl Selection {
                     .last()
                     .is_none_or(|last: &DomRootNode| !last.is_ancestor_of(&node))
             {
-                node_list.push(node);
+                node_list.push(node.as_rooted());
             }
         }
 
@@ -861,7 +861,7 @@ impl Selection {
                 child.push_down_values(cx, &command, new_value.clone());
                 // Step 8.2. If node is an allowed child of "span", force the value of node.
                 if is_allowed_child(
-                    NodeOrString::Node(DomRoot::from_ref(child)),
+                    NodeOrString::from_node(child, cx.no_gc()),
                     NodeOrString::String("span".to_owned()),
                 ) {
                     child.force_the_value(cx, &command, new_value.as_ref());

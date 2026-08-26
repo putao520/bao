@@ -219,8 +219,10 @@ pub fn new_abort_id() -> u32 {
 
 /// Staging high-water mark: once this many body bytes sit staged without a
 /// pending JS pull, the fetch parks (unobserved-body bound; upstream Bun
-/// FetchTasklet alignment).
-pub const UNOBSERVED_BODY_HIGH_WATER_MARK: usize = 256 * 1024;
+/// FetchTasklet alignment). Upstream e4c2af4cef made this ONE rule shared by
+/// every consumer (fetch/S3/transports) off `bun_http::signals::
+/// BODY_HIGH_WATER_MARK` — aliased here so bao carries a single constant too.
+pub const UNOBSERVED_BODY_HIGH_WATER_MARK: usize = bun_http::signals::BODY_HIGH_WATER_MARK;
 
 /// Streaming state-machine phase (`FetchStreamLifecycle` SM). Atomic u8 so
 /// tests and the HTTP thread can observe transitions without the Mutex.
@@ -944,6 +946,17 @@ unsafe fn start_with_kind(
             }),
             aborted: Some(unsafe {
                 core::ptr::NonNull::new_unchecked(core::ptr::addr_of_mut!((*store_ptr).aborted))
+            }),
+            // Upstream e4c2af4cef (`Store::to_with_backpressure`): wire the
+            // receive-mode slot so park/unpark/cancel record
+            // Flowing/Paused/Abandoned where the transport can consult them.
+            // bao's transports are queue-driven (no `is_receive_paused` read
+            // path yet), so this is state-recording only — zero behavior
+            // change until a consult lands.
+            body_receive_mode: Some(unsafe {
+                core::ptr::NonNull::new_unchecked(core::ptr::addr_of_mut!(
+                    (*store_ptr).body_receive_mode
+                ))
             }),
             ..Default::default()
         })
@@ -2185,6 +2198,11 @@ fn park_stream(this: *mut PendingFetch) {
         return;
     };
     state.valve.latch_park();
+    // Upstream e4c2af4cef: record `Flowing -> Paused` in the shared
+    // receive-mode slot (`Store::pause_receive`). bao's actual pause lever
+    // stays the transport-pause queue below (h1 socket read gate / h2
+    // stream-level window withholding) — the slot is the consult surface.
+    state.signals_store.pause_receive();
     set_phase(this, StreamPhase::Parked);
     PENDING.with(|p| {
         let mut guard = p.borrow_mut();
@@ -2227,6 +2245,11 @@ fn unpark_stream(this: *mut PendingFetch) {
         // Nothing to resume — the terminal close-out handles the drain-down.
         return;
     }
+    // Upstream e4c2af4cef: record `Paused -> Flowing` (`Store::unpause_receive`).
+    // The bool ("was paused → schedule the resume") is intentionally not
+    // gating anything: bao's queue-driven Resume below is idempotent (a
+    // never-paused stream resolves to a no-op in the transport).
+    let _ = state.signals_store.unpause_receive();
     PENDING.with(|p| {
         p.borrow_mut().push(this);
     });
@@ -2322,6 +2345,11 @@ fn cancel_stream_core(this: *mut PendingFetch) {
     set_phase(this, StreamPhase::Canceled);
     let closed = state.shared.lock().map_or(true, |g| g.closed);
     if !closed {
+        // Upstream e4c2af4cef (`abandon_response_body`): nothing can ever read
+        // the rest of this body — record the terminal `Abandoned` mode, then
+        // abort the transport (the shutdown queue closes h1 / RSTs the one h2
+        // stream; the session stays pooled).
+        state.signals_store.abandon();
         state
             .signals_store
             .aborted
